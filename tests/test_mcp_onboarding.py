@@ -451,13 +451,17 @@ def test_setup_mcp_codex_write_escapes_toml_special_characters(tmp_path: Path) -
     assert parsed["mcp_servers"]["agentacct"]["args"] == ["mcp", "serve", "--store-dir", str(tricky_store)]
 
 
-def test_readme_recommends_read_only_mcp_doctor() -> None:
-    text = Path("README.md").read_text()
+def test_public_docs_recommend_read_only_mcp_doctor() -> None:
+    # The manual-setup block moved from the README to docs/reference.md in the
+    # value-first README rewrite; the doctor recommendation lives there now.
+    text = Path("docs/reference.md").read_text()
     # The resolver finds the project store from the project root; the old
     # explicit-relative form is retired everywhere except the Claude Code
     # prompt, which passes an explicit absolute "$SENTINEL_STORE".
     assert "agentacct mcp doctor --store-dir .agent-sentinel/state" not in text
     assert "agentacct mcp doctor" in text
+    # The README must not resurrect the retired explicit-relative form either.
+    assert "agentacct mcp doctor --store-dir .agent-sentinel/state" not in Path("README.md").read_text()
 
 
 def test_docs_no_longer_claim_doctor_writes() -> None:
@@ -758,21 +762,23 @@ def test_readme_links_public_alpha_checklist() -> None:
 
 
 def test_public_docs_include_live_agent_smoke_gate() -> None:
-    readme = Path("README.md").read_text()
+    # The smoke-gate commands moved from the README to docs/reference.md in the
+    # value-first README rewrite.
+    reference = Path("docs/reference.md").read_text()
     checklist = Path("docs/public-alpha-checklist.md").read_text()
     guide = Path("docs/live-agent-smoke.md").read_text()
     results = Path("docs/live-smoke-results.md").read_text()
 
-    # README, the maintainer checklist, and the smoke guide are all rebranded to
-    # the public agentacct CLI for current recommendations.
-    assert "agentacct smoke claude-code" in readme
-    assert "agentacct smoke codex" in readme
-    assert "agentacct smoke all --json" in readme
+    # The reference, the maintainer checklist, and the smoke guide are all
+    # rebranded to the public agentacct CLI for current recommendations.
+    assert "agentacct smoke claude-code" in reference
+    assert "agentacct smoke codex" in reference
+    assert "agentacct smoke all --json" in reference
     for text in (checklist, guide):
         assert "agentacct smoke claude-code" in text
         assert "agentacct smoke codex" in text
         assert "agentacct smoke all --json" in text
-    for text in (readme, checklist, guide):
+    for text in (reference, checklist, guide):
         assert "automatically monitors" in text
     # The results page is preserved dated evidence: its 2026-06-27 run used
     # the pre-rename binary, and dated evidence keeps the name it was
@@ -782,9 +788,9 @@ def test_public_docs_include_live_agent_smoke_gate() -> None:
     assert "agent-sentinel smoke all --json" in results
     assert "automatically monitors" in results
 
-    assert "docs/live-agent-smoke.md" in readme
+    assert "live-agent-smoke.md" in reference
     assert "docs/live-agent-smoke.md" in checklist
-    assert "docs/live-smoke-results.md" in readme
+    assert "live-smoke-results.md" in reference
     assert "docs/live-smoke-results.md" in checklist
     assert "docs/live-smoke-results.md" in guide
     assert "claude -p 'Reply with exactly: AGENT_CHRONICLE_CLAUDE_WRAP_OK'" in guide
@@ -809,25 +815,30 @@ def test_public_docs_include_live_agent_smoke_gate() -> None:
 
 
 def test_public_docs_include_explicit_command_wrappers_without_overclaiming() -> None:
-    readme = Path("README.md").read_text()
+    # The wrapper-command reference moved from the README to docs/reference.md
+    # in the value-first README rewrite.
+    reference = Path("docs/reference.md").read_text()
     checklist = Path("docs/public-alpha-checklist.md").read_text()
 
-    for text in (readme, checklist):
+    for text in (reference, checklist):
         assert "agentacct-claude" in text
         assert "agentacct-codex" in text
-    assert "explicit wrapper commands" in readme
-    assert "They do not automatically monitor Claude Code/Codex sessions started outside these wrapper commands" in readme
-    assert "do not provide exact subscription billing by themselves" in readme
+    assert "explicit wrapper commands" in reference
+    assert "They do not automatically monitor Claude Code/Codex sessions started outside these wrapper commands" in reference
+    assert "do not provide exact subscription billing by themselves" in reference
     assert "explicit opt-in wrappers" in checklist
 
 
 def test_public_docs_record_mcp_client_smoke_success_without_overclaiming() -> None:
-    readme = Path("README.md").read_text()
+    # The smoke-evidence pointers moved from the README to docs/reference.md in
+    # the value-first README rewrite (which links the results page relative to
+    # docs/, without the "docs/" prefix).
+    reference = Path("docs/reference.md").read_text()
     checklist = Path("docs/public-alpha-checklist.md").read_text()
     results = Path("docs/live-mcp-client-smoke-results.md").read_text()
 
-    for text in (readme, checklist):
-        assert "docs/live-mcp-client-smoke-results.md" in text
+    for text in (reference, checklist):
+        assert "live-mcp-client-smoke-results.md" in text
         assert "successfully called Sentinel MCP tools" in text or "smoke-tested as an MCP tool" in text
     assert "sentinel_record_event" in checklist
     assert "sentinel_attach_client_context" in checklist

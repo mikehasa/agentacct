@@ -564,12 +564,15 @@ def test_serve_note_names_the_refresh_button_not_a_page_reload() -> None:
     assert "read-only scan" in install_guide.SERVE_NOTE
 
 
-def test_readme_embeds_the_capability_matrix_verbatim() -> None:
-    """Work item 4 (Phase 3): the README shows the same per-client capability
-    matrix as INSTALL.md, from the same constants, so the two cannot drift."""
-    readme = Path("README.md").read_text(encoding="utf-8")
+def test_reference_embeds_the_capability_matrix_verbatim() -> None:
+    """Work item 4 (Phase 3), README rewrite follow-up: the public reference doc
+    shows the same per-client capability matrix as INSTALL.md, from the same
+    constants, so the two cannot drift. The README links to it instead of
+    embedding it (value-first layout), so the pinned public copy lives in
+    docs/reference.md."""
+    reference = Path("docs/reference.md").read_text(encoding="utf-8")
     for line in install_guide.CAPABILITY_MATRIX:
-        assert f"- {line}" in readme, f"README drifted from install_guide.CAPABILITY_MATRIX: {line[:60]}..."
+        assert f"- {line}" in reference, f"docs/reference.md drifted from install_guide.CAPABILITY_MATRIX: {line[:60]}..."
 
 
 # --- Phase 3: honest OS-support claims (item 3) --------------------------------

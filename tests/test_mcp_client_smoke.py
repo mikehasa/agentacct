@@ -36,14 +36,16 @@ def test_mcp_client_smoke_cli_is_disabled_by_default(monkeypatch):
 
 
 def test_mcp_client_smoke_command_is_documented() -> None:
-    readme = Path("README.md").read_text()
+    # The smoke-command reference moved from the README to docs/reference.md in
+    # the value-first README rewrite.
+    reference = Path("docs/reference.md").read_text()
     guide = Path("docs/coding-agent-integrations.md").read_text()
 
-    # README and the integrations guide both use the public agentacct CLI for
-    # current recommendations (the guide keeps its dated `agent-sentinel` evidence).
-    assert "agentacct smoke mcp-client --client hermes" in readme
+    # The reference and the integrations guide both use the public agentacct CLI
+    # for current recommendations (the guide keeps its dated `agent-sentinel` evidence).
+    assert "agentacct smoke mcp-client --client hermes" in reference
     assert "agentacct smoke mcp-client --client hermes" in guide
-    for text in (readme, guide):
+    for text in (reference, guide):
         assert "--i-understand-this-uses-real-api" in text
 
 

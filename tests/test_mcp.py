@@ -971,16 +971,18 @@ def test_mcp_workflow_smoke_rejects_bad_run_id(tmp_path):
 
 
 def test_mcp_workflow_smoke_is_documented() -> None:
-    readme = open("README.md", encoding="utf-8").read()
+    # The MCP tool/workflow reference moved from the README to docs/reference.md
+    # in the value-first README rewrite.
+    reference = open("docs/reference.md", encoding="utf-8").read()
     checklist = open("docs/public-alpha-checklist.md", encoding="utf-8").read()
 
-    # README uses the public agentacct CLI; the maintainer checklist still uses
-    # the transition-alias name (a later doc-rebrand pass).
-    assert "agentacct mcp workflow-smoke" in readme
+    # The reference uses the public agentacct CLI; the maintainer checklist
+    # still uses the transition-alias name (a later doc-rebrand pass).
+    assert "agentacct mcp workflow-smoke" in reference
     assert "agentacct mcp workflow-smoke" in checklist
-    assert "sentinel_record_event" in readme
-    assert "sentinel_get_event_summary" in readme
-    assert "does not call Claude, Codex, or provider APIs" in readme
+    assert "sentinel_record_event" in reference
+    assert "sentinel_get_event_summary" in reference
+    assert "does not call Claude, Codex, or provider APIs" in reference
 
 
 def test_mcp_content_length_framing_roundtrip():
