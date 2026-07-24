@@ -5,3 +5,6 @@
 # The repo is the test suite's home.
 prune tests
 prune examples
+# packaging/ holds the separate `agent-acct` alias distribution, which is built
+# and published on its own. It is not part of this package's source.
+prune packaging
