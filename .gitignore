@@ -1,0 +1,21 @@
+.env.local
+.env
+.env.*
+!.env.example
+.real-money-test-state/
+.sentinel-real-tests/
+# Machine-local runtime state + client config — never committed (they embed
+# absolute paths and local logs). Ignore the whole dirs, not just some files.
+.agent-sentinel/
+.claude/
+research/
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+*.pyc
+.hermes/
+*.local.md
+.gstack/

@@ -1,0 +1,39 @@
+name: Integration request
+description: Request support for another coding agent, runtime, or workflow
+title: "integration: "
+labels: ["integration"]
+body:
+  - type: dropdown
+    id: integration
+    attributes:
+      label: Integration target
+      options:
+        - Claude Code
+        - Codex
+        - Cursor
+        - OpenCode
+        - Aider
+        - Custom script or CI job
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Workflow
+      description: How do you use this agent/tool today?
+      placeholder: I usually run...
+    validations:
+      required: true
+  - type: textarea
+    id: desired
+    attributes:
+      label: Desired Chronicle behavior
+      description: What should Agent Chronicle track, block, report, or display?
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints or safety concerns
+      description: Include config scope, credentials, sandboxing, or localhost restrictions.

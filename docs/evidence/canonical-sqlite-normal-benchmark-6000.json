@@ -1,0 +1,323 @@
+{
+  "acceptance": {
+    "items": {
+      "canonical_scan": {
+        "evidence_field": "unbounded_core_scans",
+        "expected": [],
+        "observed": [],
+        "passed": true,
+        "required": true
+      },
+      "hook_checks": {
+        "expected": {
+          "ok": true
+        },
+        "observed": {
+          "foreign_key_violations": [],
+          "ok": true,
+          "quick_check": [
+            "ok"
+          ]
+        },
+        "passed": true,
+        "required": true
+      },
+      "hook_status": {
+        "expected": "passed",
+        "observed": "passed",
+        "passed": true,
+        "required": true
+      },
+      "normal_database_size_amplification": {
+        "applicable": true,
+        "closed_main_db_bytes": 3747840,
+        "compact_source_bytes": 2614300,
+        "measurement_scope": "closed_main_database_file",
+        "minimum_source_bytes": 1048576,
+        "observed_ratio": 1.4335921661630264,
+        "passed": true,
+        "required": true,
+        "threshold_ratio": 2.0
+      },
+      "query_budget": {
+        "expected": true,
+        "observed": true,
+        "passed": true,
+        "required": true
+      }
+    },
+    "passed": true
+  },
+  "acceptance_status": "passed",
+  "artifacts": {
+    "candidate_db": "candidate.sqlite3",
+    "result_json": "result.json",
+    "run_directory_included": false
+  },
+  "candidate": {
+    "canonical_sequence": 10008,
+    "closed_main_db_size_bytes": 3747840,
+    "foreign_key_violations": 0,
+    "path": "candidate.sqlite3",
+    "quick_check": "ok",
+    "schema_version": 1,
+    "size_bytes": 3747840,
+    "size_scope": "closed_main_database_file",
+    "store_role": "candidate"
+  },
+  "clock": {
+    "perf_counter_end": 614523.345109916,
+    "perf_counter_start": 614522.136127,
+    "seconds": 1.2089829159667715,
+    "source": "time.perf_counter"
+  },
+  "completed_at": "2026-07-19T19:48:20.014654Z",
+  "execution_status": "passed",
+  "hook": "agent_chronicle.canonical.benchmark:benchmark_sqlite_truth",
+  "hook_result": {
+    "acceptance_passed": true,
+    "candidate_bytes_with_wal": 7491256,
+    "candidate_files_open": {
+      "main": 3301376,
+      "shm": 32768,
+      "total": 7491256,
+      "wal": 4157112
+    },
+    "canonical_sequence": 10008,
+    "checks": {
+      "foreign_key_violations": [],
+      "ok": true,
+      "quick_check": [
+        "ok"
+      ]
+    },
+    "churn": {
+      "attempt_groups": {
+        "held_non_additive_reprice": {
+          "disposition": "noop",
+          "logical_attempts": 99000
+        },
+        "identical_cost_recalculation": {
+          "disposition": "noop",
+          "logical_attempts": 1000
+        },
+        "unchanged_cumulative_refresh": {
+          "logical_attempts": 1000000,
+          "result": {
+            "attempts": 1000000,
+            "canonical_sequence_delta": 0,
+            "canonical_writes": 0,
+            "inserted": 0,
+            "noops": 1000000
+          }
+        }
+      },
+      "candidate_files_after": {
+        "main": 3301376,
+        "shm": 32768,
+        "total": 7491256,
+        "wal": 4157112
+      },
+      "candidate_files_before": {
+        "main": 3301376,
+        "shm": 32768,
+        "total": 7491256,
+        "wal": 4157112
+      },
+      "canonical_sequence_delta": 0,
+      "canonical_writes": 0,
+      "collapse_basis": "three validated equivalent batches before the SQLite write boundary",
+      "database_growth_bytes": 0,
+      "database_growth_limit_bytes": 10000000,
+      "diagnostic_row_delta": 0,
+      "equivalent_attempt_count": 1100000,
+      "gate_passed": true,
+      "projection_row_delta": 0,
+      "seconds": 8.829194121062756e-05,
+      "valid_price_revisions": {
+        "initial": "inserted",
+        "new_version": "inserted"
+      },
+      "validated_physical_attempts": 3
+    },
+    "gates": {
+      "bounded_query_latency_and_plans": true,
+      "equivalent_churn_collapse": true,
+      "exact_replay_zero_write": true,
+      "sqlite_integrity": true
+    },
+    "import": {
+      "dispositions": {
+        "fact_conflict": 1000,
+        "fact_inserted": 2000,
+        "link_inserted": 1000,
+        "session_inserted": 1000,
+        "session_noop": 1000,
+        "usage_inserted": 2000,
+        "usage_noop": 1000,
+        "usage_updated": 1000
+      },
+      "records": 6000,
+      "sessions": 1000,
+      "source_kind": "synthetic_normal",
+      "tasks": 1000,
+      "unchanged_reconciliation": {
+        "canonical_sequence_delta": 0,
+        "gate_passed": true,
+        "physical_writes": 0,
+        "session_attempts": 1000,
+        "usage_attempts": 1000
+      }
+    },
+    "mode": "normal",
+    "projection": {
+      "built_through_sequence": 10008,
+      "task_count": 1001,
+      "usage_day_count": 2
+    },
+    "query": {
+      "index_expectations": {
+        "health": true,
+        "sessions": true,
+        "task": true,
+        "usage": true,
+        "work": true
+      },
+      "latency_budgets_ms": {
+        "health_p95_ms": 750.0,
+        "sessions_p95_ms": 750.0,
+        "task_p95_ms": 750.0,
+        "usage_p95_ms": 750.0,
+        "work_p95_ms": 750.0
+      },
+      "latency_gate_passed": true,
+      "p95_ms": {
+        "health_p95_ms": 0.0077909789979457855,
+        "sessions_p95_ms": 0.26358303148299456,
+        "task_p95_ms": 0.004915986210107803,
+        "usage_p95_ms": 0.038624973967671394,
+        "work_p95_ms": 0.1379579771310091
+      },
+      "plan_gate_passed": true,
+      "plans": {
+        "health": [
+          "SEARCH store_metadata USING INTEGER PRIMARY KEY (rowid=?)"
+        ],
+        "sessions": [
+          "SEARCH sessions USING COVERING INDEX idx_sessions_recent (sort_activity_at_us<?)"
+        ],
+        "task": [
+          "SEARCH rm_task_current USING INDEX sqlite_autoindex_rm_task_current_1 (public_task_id=?)"
+        ],
+        "usage": [
+          "SEARCH rm_usage_day USING INDEX idx_rm_usage_client_range (client=? AND day>? AND day<?)"
+        ],
+        "work": [
+          "SEARCH rm_task_current USING COVERING INDEX idx_rm_task_work_recent ((sort_activity_at_us,public_task_id)<(?,?))"
+        ]
+      },
+      "query_budget_passed": true,
+      "unbounded_core_scans": []
+    },
+    "status": "passed",
+    "table_counts": {
+      "cost_calculations": 2,
+      "facts": 2000,
+      "migration_issues": 0,
+      "rm_task_current": 1001,
+      "rm_usage_day": 2,
+      "session_edges": 0,
+      "sessions": 1001,
+      "source_conflicts": 1000,
+      "source_instances": 2,
+      "task_anchors": 1001,
+      "usage_checkpoints": 1000,
+      "usage_measurements": 2002,
+      "work_claims": 2000
+    },
+    "timings": {
+      "churn_probe_seconds": 0.001378290937282145,
+      "hook_total_seconds": 1.1516746249981225,
+      "import_seconds": 1.0760193329770118,
+      "projection_seconds": 0.031082000001333654,
+      "query_evidence_seconds": 0.011387167032808065,
+      "reconciliation_seconds": 1.1071013329783455
+    }
+  },
+  "manifest": null,
+  "mode": "normal",
+  "resource": {
+    "hook_process_max_rss": {
+      "bytes": 34848768,
+      "measurement_scope": "single_fresh_hook_process",
+      "process_model": "forked_child",
+      "raw": 34848768,
+      "raw_unit": "bytes"
+    },
+    "parent_max_rss_after": {
+      "bytes": 29229056,
+      "raw": 29229056,
+      "raw_unit": "bytes"
+    },
+    "parent_max_rss_before": {
+      "bytes": 24559616,
+      "raw": 24559616,
+      "raw_unit": "bytes"
+    },
+    "parent_process_source": "resource.getrusage(RUSAGE_SELF).ru_maxrss"
+  },
+  "schema_version": "agent-chronicle.sqlite-truth-benchmark.v1",
+  "source": {
+    "kind": "synthetic_normal",
+    "record_count": 6000,
+    "scenarios": [
+      "identity",
+      "conflict",
+      "correction",
+      "noop",
+      "usage",
+      "task"
+    ],
+    "sha256": "2367be23ff13f770d46a4927aecbd073a0af462ba77f1501de8a7b7bbcaa14a2",
+    "size_bytes": 2614300
+  },
+  "started_at": "2026-07-19T19:48:18.805662Z",
+  "status": "passed",
+  "timings": [
+    {
+      "name": "validate_scratch_root",
+      "perf_counter_end": 614522.136269666,
+      "perf_counter_start": 614522.136204833,
+      "seconds": 6.48329732939601e-05,
+      "status": "passed"
+    },
+    {
+      "name": "load_hook",
+      "perf_counter_end": 614522.137609708,
+      "perf_counter_start": 614522.136598458,
+      "seconds": 0.001011249958537519,
+      "status": "passed"
+    },
+    {
+      "name": "generate_normal_corpus",
+      "perf_counter_end": 614522.179606125,
+      "perf_counter_start": 614522.137612416,
+      "seconds": 0.04199370904825628,
+      "status": "passed"
+    },
+    {
+      "name": "canonical_hook",
+      "perf_counter_end": 614523.335144333,
+      "perf_counter_start": 614522.179619583,
+      "seconds": 1.1555247500073165,
+      "status": "passed"
+    },
+    {
+      "name": "candidate_quick_check",
+      "perf_counter_end": 614523.34507175,
+      "perf_counter_start": 614523.335152541,
+      "seconds": 0.009919208940118551,
+      "status": "passed"
+    }
+  ]
+}

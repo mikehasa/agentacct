@@ -1,0 +1,7 @@
+# The sdist ships the package source, not the test suite: setuptools' default
+# file list would include tests/test_*.py but NOT tests/conftest.py (the
+# autouse store pin + real-store byte-tripwire) or examples/ (which one test
+# imports) — an uncollectable suite with the store-safety net stripped.
+# The repo is the test suite's home.
+prune tests
+prune examples

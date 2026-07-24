@@ -1,0 +1,137 @@
+{
+  "schema_version": "golden-scenarios-v1",
+  "invariants": {
+    "false_exact": 0,
+    "metadata_only": true,
+    "overlapping_cost_claims_are_summed": false,
+    "missing_cost_is_zero": false,
+    "mcp_required_for_session_existence": false
+  },
+  "scenarios": [
+    {
+      "id": "duplicate-source-event",
+      "input": "The same hook event is replayed 100 times.",
+      "expected": "One envelope is indexed; all later appends are duplicate acknowledgements."
+    },
+    {
+      "id": "out-of-order-stop-start",
+      "input": "A session stop reaches Chronicle before its start.",
+      "expected": "Both observations are preserved and the derived lifecycle is rebuilt by occurred_at."
+    },
+    {
+      "id": "same-source-id-different-digest",
+      "input": "Two payloads share a source event ID but have different normalized content.",
+      "expected": "The first is not overwritten; a conflict is recorded."
+    },
+    {
+      "id": "mcp-absent",
+      "input": "Hooks and local usage exist but the agent never calls MCP.",
+      "expected": "Session, activity, and usage remain visible; semantic context is missing."
+    },
+    {
+      "id": "mcp-only",
+      "input": "An agent reports a completed section with no mechanical or machine evidence.",
+      "expected": "Completion is an agent claim and is not displayed as an objective passed outcome."
+    },
+    {
+      "id": "two-session-candidates",
+      "input": "One MCP section has two plausible client sessions and no exact key.",
+      "expected": "The link is ambiguous, never exact, and usage is not allocated."
+    },
+    {
+      "id": "exact-key-conflict",
+      "input": "An explicit session key disagrees with independently observed client-log evidence.",
+      "expected": "Conflict vetoes exact attribution and both source claims remain inspectable."
+    },
+    {
+      "id": "paperclip-null-cost",
+      "input": "Paperclip returns costUsd null for a completed run.",
+      "expected": "Cost is missing/incomplete and is never rendered as zero dollars."
+    },
+    {
+      "id": "paperclip-zero-vs-provider-cost",
+      "input": "Paperclip claims zero cost while a provider-billed record is positive.",
+      "expected": "The claims are not summed; a cost-basis discrepancy points to both envelopes."
+    },
+    {
+      "id": "paperclip-complete-ci-failed",
+      "input": "The orchestrator marks the task complete but CI reports a failed check.",
+      "expected": "Orchestrator completion and objective outcome remain separate and a discrepancy is shown."
+    },
+    {
+      "id": "otlp-duplicate-stop",
+      "input": "The collector retries the same OpenLIT session-stop span.",
+      "expected": "Deterministic span identity prevents duplicate activity or usage."
+    },
+    {
+      "id": "otlp-truncated-batch",
+      "input": "An OTLP batch is syntactically readable but reports dropped attributes or missing session ID.",
+      "expected": "Evidence is partial/unknown and cannot provide an exact session link."
+    },
+    {
+      "id": "collector-outage-replay",
+      "input": "Projection is unavailable after the hook wrote to the local spool.",
+      "expected": "Host remains unblocked and replay later indexes the envelope exactly once."
+    },
+    {
+      "id": "native-log-vs-otlp-usage",
+      "input": "Native log and OTLP report different token totals for the same scope.",
+      "expected": "Neither is overwritten or blindly added; the discrepancy includes basis and scope."
+    },
+    {
+      "id": "prompt-canary",
+      "input": "Hook and OTLP payloads include prompt/response/thought canary strings.",
+      "expected": "No canary appears in spool, projection, API, or HTML under metadata_only_v1."
+    },
+    {
+      "id": "tool-body-canary",
+      "input": "A tool payload contains secrets in arguments, stdout, and result.",
+      "expected": "Only category, status, duration, relative path metadata, and digests may persist."
+    },
+    {
+      "id": "command-without-exit-code",
+      "input": "Post-tool metadata includes a test command but no objective exit status.",
+      "expected": "It is tool activity with unknown outcome, not a passed machine check."
+    },
+    {
+      "id": "command-with-exit-code",
+      "input": "Post-tool metadata includes a recognized test command and exit code 0.",
+      "expected": "A machine-check observation is emitted with passed status and source provenance."
+    },
+    {
+      "id": "entire-commit-no-session",
+      "input": "An Entire-formatted commit exists without a matching client session.",
+      "expected": "The artifact exists; its session link remains missing rather than inferred."
+    },
+    {
+      "id": "session-no-code-change",
+      "input": "A mechanically observed session produces no commit or checkpoint.",
+      "expected": "Artifact coverage is missing and the session is not inferred to be incomplete or failed solely from no change."
+    },
+    {
+      "id": "entire-attribution-conflict",
+      "input": "An Entire attribution hint disagrees with Git object history.",
+      "expected": "Git object facts remain primary; the attribution stays heuristic and conflicting."
+    },
+    {
+      "id": "overlapping-checkpoint-usage",
+      "input": "Two checkpoints report cumulative usage over overlapping scopes.",
+      "expected": "Chronicle does not add cumulative totals without non-overlapping scope evidence."
+    },
+    {
+      "id": "clock-skew",
+      "input": "Source occurred_at is later than observed_at because of clock skew.",
+      "expected": "Original timestamps are preserved, skew is flagged, and ingestion order is not treated as occurrence order."
+    },
+    {
+      "id": "advisory-control-estimate",
+      "input": "Estimated cost crosses a Paperclip budget threshold.",
+      "expected": "Chronicle may emit an advisory signal but cannot authorize hard pause/cancel."
+    },
+    {
+      "id": "hard-control-provider-billed",
+      "input": "Fresh provider-billed evidence crosses a configured threshold for a controller-owned run.",
+      "expected": "The signal is eligible for hard enforcement, but the external controller still decides and Chronicle performs no write by default."
+    }
+  ]
+}

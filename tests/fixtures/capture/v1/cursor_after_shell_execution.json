@@ -1,0 +1,29 @@
+{
+  "schema_version": "capture-fixture-v1",
+  "vendor": "cursor",
+  "event": "afterShellExecution",
+  "context": {
+    "observed_at": "2026-07-13T03:04:05Z",
+    "workspace_roots": [
+      "/workspace/repo"
+    ]
+  },
+  "payload": {
+    "hook_event_name": "afterShellExecution",
+    "timestamp": "2026-07-13T03:04:05Z",
+    "conversation_id": "cursor-conversation-001",
+    "session_id": "cursor-process-999",
+    "generation_id": "cursor-generation-001",
+    "command": "npm run typecheck",
+    "exit_code": 2,
+    "duration": 1250,
+    "sandbox": true,
+    "cwd": "/workspace/repo",
+    "file_path": "/workspace/repo/src/example.ts",
+    "output": "CANARY_CURSOR_TOOL_RESULT",
+    "prompt": "CANARY_CURSOR_PROMPT",
+    "text": "CANARY_CURSOR_RESPONSE",
+    "thought": "CANARY_CURSOR_THOUGHT",
+    "authorization": "CANARY_CURSOR_SECRET"
+  }
+}

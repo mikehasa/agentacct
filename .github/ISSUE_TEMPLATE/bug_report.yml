@@ -1,0 +1,53 @@
+name: Bug report
+description: Report something broken in Agent Chronicle
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please do not paste real API keys, private logs, or secrets.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong?
+      placeholder: Agent Chronicle did...
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Minimal commands or steps to reproduce.
+      render: bash
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: 0.1.0 or git SHA
+  - type: input
+    id: os
+    attributes:
+      label: OS / environment
+      placeholder: macOS, Linux, WSL, container, etc.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or output
+      description: Remove secrets and private data first.
+      render: text

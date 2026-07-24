@@ -1,0 +1,78 @@
+{
+  "company": {
+    "id": "company-1",
+    "name": "Example Co",
+    "status": "active",
+    "createdAt": "2026-07-13T01:00:00Z",
+    "privateNotes": "PAPERCLIP_COMPANY_SECRET"
+  },
+  "agents": [
+    {
+      "id": "agent-1",
+      "companyId": "company-1",
+      "name": "Builder",
+      "role": "engineer",
+      "status": "idle",
+      "model": "example-model",
+      "systemPrompt": "PAPERCLIP_AGENT_PROMPT_SECRET",
+      "email": "hidden@example.invalid"
+    }
+  ],
+  "issues": [
+    {
+      "id": "issue-1",
+      "companyId": "company-1",
+      "assigneeAgentId": "agent-1",
+      "status": "in_progress",
+      "priority": "high",
+      "kind": "feature",
+      "title": "PAPERCLIP_ISSUE_TITLE_SECRET",
+      "description": "PAPERCLIP_ISSUE_BODY_SECRET"
+    }
+  ],
+  "runs": [
+    {
+      "id": "run-1",
+      "companyId": "company-1",
+      "agentId": "agent-1",
+      "issueId": "issue-1",
+      "status": "succeeded",
+      "trigger": "assignment",
+      "startedAt": "2026-07-13T01:01:00Z",
+      "completedAt": "2026-07-13T01:02:00Z",
+      "durationMs": 60000,
+      "logs": "PAPERCLIP_RUN_LOG_SECRET"
+    }
+  ],
+  "costEvents": [
+    {
+      "id": "cost-missing",
+      "companyId": "company-1",
+      "runId": "run-1",
+      "costUsd": null,
+      "currency": "usd",
+      "category": "model"
+    },
+    {
+      "id": "cost-zero",
+      "companyId": "company-1",
+      "runId": "run-1",
+      "costUsd": 0,
+      "currency": "usd",
+      "category": "credit"
+    }
+  ],
+  "workProducts": [
+    {
+      "id": "artifact-1",
+      "companyId": "company-1",
+      "runId": "run-1",
+      "issueId": "issue-1",
+      "kind": "commit",
+      "status": "created",
+      "commitSha": "0123456789abcdef0123456789abcdef01234567",
+      "path": "/private/PAPERCLIP_PATH_SECRET",
+      "body": "PAPERCLIP_ARTIFACT_BODY_SECRET"
+    }
+  ]
+}

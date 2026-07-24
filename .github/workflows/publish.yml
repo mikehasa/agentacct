@@ -1,0 +1,142 @@
+# PyPI trusted publishing for agentacct (OIDC — no long-lived tokens).
+#
+# Two paths, structurally separated:
+#   - Pushing a `v*` tag runs tests + build + TestPyPI ONLY (a rehearsal).
+#   - Publishing a GitHub release runs the full chain including real PyPI.
+#     The `github.event_name == 'release'` condition on the publish-pypi job
+#     is the STRUCTURAL gate: a bare tag push can never reach real PyPI.
+#
+# This workflow cannot publish until the repository owner completes these
+# one-time steps (agents must never do them; they involve account credentials):
+#
+#   1. Rename the GitHub repo first if desired (publisher matching is by
+#      owner+repo; renaming after configuring would orphan the publisher).
+#   2. On https://test.pypi.org — account sidebar -> Publishing -> "Add a
+#      pending publisher": project name `agentacct`, owner `mikehasa`,
+#      repository name (this repo), workflow filename `publish.yml`,
+#      environment `testpypi`.
+#   3. Same on https://pypi.org with environment `pypi`.
+#      NOTE: a pending publisher does NOT reserve the name — nothing reserves
+#      a PyPI name until the first successful upload.
+#   4. In GitHub repo Settings -> Environments, create `testpypi` and `pypi`,
+#      and the owner MUST add required reviewers on `pypi` for a manual
+#      approval checkpoint. WARNING: GitHub auto-creates any referenced
+#      environment WITHOUT protection rules, so the environment alone does
+#      not gate anything — skipping this step silently removes the human
+#      checkpoint. The release-event condition above is the gate that always
+#      holds; required reviewers add a second, human gate on top.
+#   5. Push a `v*` tag to rehearse on TestPyPI; publish a GitHub release
+#      (tag matching the pyproject version) to go to real PyPI.
+#
+# PyPI filenames can never be reused, even after deletion — the TestPyPI stage
+# exists so a bad artifact never burns the real `0.1.0` filename. Publishing a
+# release that creates its tag fires BOTH triggers; the TestPyPI step uses
+# skip-existing so the overlapping upload stays green instead of failing on
+# filename reuse.
+
+name: publish
+
+on:
+  push:
+    tags: ["v*"]
+  release:
+    types: [published]
+
+permissions: {}
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    # Nothing builds or publishes without a green suite at the tagged commit.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
+      - name: Run tests
+        run: pytest -q
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Fail unless the tag matches the pyproject version
+        env:
+          # Tag push: github.ref_name is the tag. Release: compare against
+          # the release's own tag.
+          TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
+        run: |
+          python - <<'EOF'
+          import os
+          import sys
+          import tomllib
+
+          with open("pyproject.toml", "rb") as fh:
+              version = tomllib.load(fh)["project"]["version"]
+          tag = os.environ["TAG"]
+          expected = tag.removeprefix("v")
+          if version != expected:
+              sys.exit(f"tag {tag} does not match pyproject version {version}: refusing to build a mislabeled artifact")
+          print(f"tag {tag} matches pyproject version {version}")
+          EOF
+      - run: python -m pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish-testpypi:
+    # Runs on both paths (tag rehearsal and release), never from forks.
+    needs: build
+    if: github.repository_owner == 'mikehasa'
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write # OIDC — the only credential
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          # A release that creates its tag fires both triggers; the second
+          # run's re-upload of identical filenames must not go red.
+          skip-existing: true
+
+  publish-pypi:
+    # STRUCTURAL gate: real PyPI only on a published GitHub release, never on
+    # a bare tag push, never from forks. The `pypi` environment's
+    # required-reviewer approval (owner setup step 4) adds a human gate ON TOP
+    # — it exists only if the owner configured protection rules.
+    needs: publish-testpypi
+    if: github.repository_owner == 'mikehasa' && github.event_name == 'release'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # OIDC — the only credential
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

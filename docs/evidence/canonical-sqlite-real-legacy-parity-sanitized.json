@@ -1,0 +1,95 @@
+{
+  "schema_version": "agent-chronicle.real-legacy-parity-sanitized.v1",
+  "privacy": {
+    "exact_manifest_fingerprint_included": false,
+    "raw_identity_included": false,
+    "absolute_paths_included": false,
+    "private_exact_evidence_retained_outside_repository": true
+  },
+  "capture": {
+    "mode": "read-only-shared-writer-lock",
+    "bytes": 6586027,
+    "file_count": 1,
+    "lock_held_seconds_rounded": 0.009,
+    "manifest_verified_before_and_after": true,
+    "watchers_stopped": false,
+    "live_content_modified": false
+  },
+  "corpus": {
+    "jsonl_lines": 3979,
+    "parsed_object_events": 3979
+  },
+  "comparisons": {
+    "sessions": {
+      "source_count": 1645,
+      "candidate_count": 1645,
+      "mismatch_count": 0
+    },
+    "task_membership": {
+      "source_count": 132,
+      "candidate_count": 132,
+      "mismatch_count": 0
+    },
+    "usage_presence": {
+      "source_count": 1609,
+      "candidate_count": 1609,
+      "mismatch_count": 0
+    },
+    "usage_aggregates": {
+      "source_count": 7,
+      "candidate_count": 7,
+      "mismatch_count": 4,
+      "actual_differing_groups": 2,
+      "counting_basis": "symmetric-multiset-difference"
+    }
+  },
+  "rerun": {
+    "canonical_writes": 0,
+    "canonical_sequence_delta": 0,
+    "task_ids_stable": true,
+    "opaque_task_ids_valid": true,
+    "table_counts_stable": true,
+    "second_import_noop_only": true
+  },
+  "issues": {
+    "issue_instances": 4952,
+    "affected_lines": 3200,
+    "excluded_lines": 2324,
+    "processed_with_issues_lines": 876,
+    "approved_exclusions": 0,
+    "by_reason": {
+      "unresolved_source_namespace": 2324,
+      "legacy_codex_input_tokens_presence_unavailable": 876,
+      "legacy_codex_output_tokens_presence_unavailable": 876,
+      "legacy_codex_reasoning_output_tokens_presence_unavailable": 876
+    }
+  },
+  "integrity": {
+    "sqlite_quick_check": "ok",
+    "foreign_key_issue_count": 0,
+    "snapshot_unchanged_after_run": true
+  },
+  "post_run_policy_decision": {
+    "policy_id": "historical_usage_reference_v1",
+    "approved_date": "2026-07-20",
+    "applies_to_issue_reasons": [
+      "legacy_codex_input_tokens_presence_unavailable",
+      "legacy_codex_output_tokens_presence_unavailable",
+      "legacy_codex_reasoning_output_tokens_presence_unavailable"
+    ],
+    "canonical_disposition": "approved_visible_missingness",
+    "compatibility_disposition": "read_only_historical_reference_only",
+    "approved_migration_exclusion": false,
+    "remaining_unresolved_reason": "unresolved_source_namespace",
+    "production_cutover": "no-go"
+  },
+  "decision": {
+    "core_truth_slice": "no-go",
+    "production_cutover": "no-go",
+    "migration_estimate_engineer_weeks": {
+      "minimum": 7,
+      "maximum": 10,
+      "confidence": "medium-low"
+    }
+  }
+}

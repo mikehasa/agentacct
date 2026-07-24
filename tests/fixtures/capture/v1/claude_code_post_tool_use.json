@@ -1,0 +1,34 @@
+{
+  "schema_version": "capture-fixture-v1",
+  "vendor": "claude-code",
+  "event": "PostToolUse",
+  "context": {
+    "observed_at": "2026-07-13T01:02:03Z",
+    "workspace_roots": [
+      "/workspace/repo"
+    ]
+  },
+  "payload": {
+    "hook_event_name": "PostToolUse",
+    "timestamp": "2026-07-13T01:02:03Z",
+    "session_id": "claude-session-001",
+    "turn_id": "claude-turn-001",
+    "tool_name": "Bash",
+    "tool_use_id": "tool-use-001",
+    "model": "claude-sonnet-4",
+    "file_path": "/workspace/repo/tests/test_demo.py",
+    "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "prompt": "CANARY_CLAUDE_PROMPT",
+    "response": "CANARY_CLAUDE_RESPONSE",
+    "thought": "CANARY_CLAUDE_THOUGHT",
+    "tool_input": {
+      "command": "python -m pytest -q",
+      "authorization": "CANARY_CLAUDE_SECRET"
+    },
+    "tool_response": {
+      "stdout": "CANARY_CLAUDE_TOOL_RESULT",
+      "stderr": "CANARY_CLAUDE_STDERR",
+      "exit_code": 0
+    }
+  }
+}

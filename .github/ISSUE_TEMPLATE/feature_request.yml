@@ -1,0 +1,32 @@
+name: Feature request
+description: Suggest an improvement to the Agent Chronicle CLI
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What developer workflow or agent-run pain should this solve?
+      placeholder: When I run a coding agent...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should Agent Chronicle do?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety/defaults
+      options:
+        - label: This should preserve local-first behavior.
+        - label: This should not require provider API keys by default.
+        - label: This should not control processes Agent Chronicle did not start.

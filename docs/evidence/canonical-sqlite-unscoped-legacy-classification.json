@@ -1,0 +1,236 @@
+{
+  "schema_version": "agent-chronicle.unscoped-legacy-classification.v4",
+  "date": "2026-07-21",
+  "design_id": "unscoped_legacy_recovery_v3",
+  "source": {
+    "kind": "legacy-chronicle",
+    "manifest_verified_before_and_after": true,
+    "file_count": 1,
+    "bytes": 6586027,
+    "live_store_accessed": false,
+    "live_store_modified": false,
+    "watchers_stopped": false
+  },
+  "privacy": {
+    "exact_manifest_fingerprint_included": false,
+    "raw_identity_included": false,
+    "raw_line_included": false,
+    "absolute_paths_included": false,
+    "counts_only": true
+  },
+  "corpus": {
+    "observed_jsonl_lines": 3979,
+    "parsed_object_events": 3979,
+    "scoped_rows": 1655,
+    "unscoped_rows": 2324,
+    "unscoped_partition_complete": true,
+    "full_source_line_conservation": true
+  },
+  "unscoped_surface": {
+    "semantic_rows": 1291,
+    "support_rows": 1033,
+    "semantic_event_types": {
+      "section_started": 551,
+      "section_checkpoint": 164,
+      "section_completed": 524,
+      "section_blocked": 2,
+      "task_started": 19,
+      "task_completed": 30,
+      "task_blocked": 1
+    },
+    "support_event_types": {
+      "machine_check": 985,
+      "agent_usage_debug_reported": 34,
+      "client_context_attached": 8,
+      "artifact_created": 2,
+      "instrumentation_installed": 2,
+      "run_started": 1,
+      "sentinel_install_check": 1
+    }
+  },
+  "unsupported_product_routing": {
+    "policy_id": "unsupported_legacy_product_routing_v1",
+    "policy_version": "v1",
+    "rules_digest": "187ded25cf6bf98c6274ece29f724ce6a61a4850af5f9e0e5491bf592bd9ee92",
+    "source_migration_disposition": "unsupported_retained",
+    "current_product_state": "retained_quarantined",
+    "typed_lanes_implemented": false,
+    "canonical_admission_authorized": false,
+    "legacy_receipts_reclassified": false,
+    "canonical_contribution": {
+      "work": 0,
+      "task": 0,
+      "usage": 0
+    },
+    "durable_archive_required": true,
+    "unknown_event_type_behavior": "refuse_route_and_retain_quarantine",
+    "event_types": {
+      "machine_check": {
+        "rows": 985,
+        "future_product_lane": "verification_health"
+      },
+      "agent_usage_debug_reported": {
+        "rows": 34,
+        "future_product_lane": "audit_debug"
+      },
+      "client_context_attached": {
+        "rows": 8,
+        "future_product_lane": "audit_debug"
+      },
+      "artifact_created": {
+        "rows": 2,
+        "future_product_lane": "artifact"
+      },
+      "instrumentation_installed": {
+        "rows": 2,
+        "future_product_lane": "operational_metadata"
+      },
+      "run_started": {
+        "rows": 1,
+        "future_product_lane": "operational_metadata"
+      },
+      "sentinel_install_check": {
+        "rows": 1,
+        "future_product_lane": "operational_metadata"
+      }
+    },
+    "future_product_lane_totals": {
+      "verification_health": 985,
+      "audit_debug": 42,
+      "artifact": 2,
+      "operational_metadata": 4
+    },
+    "total_rows": 1033
+  },
+  "classification": {
+    "candidate_recovery_high_log_evidenced": {
+      "rows": 1163,
+      "section_rows": 1116,
+      "task_rows": 47,
+      "provenance": "high_not_exact"
+    },
+    "quarantine_namespace_only_work_cohort": {
+      "rows": 3,
+      "observed_provenance": "work_cohort_revision_inheritance",
+      "row_level_identity_proven": false
+    },
+    "quarantine_identity_conflict": {
+      "rows": 54,
+      "client_conflicts": 17,
+      "session_and_transcript_conflicts": 37,
+      "candidate_semantic_namespace_conflicts": 0,
+      "scoped_sibling_namespace_conflicts": 0
+    },
+    "quarantine_ambiguous_session": {
+      "rows": 12,
+      "direct_multi_donor_rows": 6,
+      "work_cohort_guard_rows": 6,
+      "candidate_session_count_per_row": 2
+    },
+    "quarantine_conflicting_project_identity": {
+      "rows": 12,
+      "work_cohorts": 6,
+      "candidate_session_identity_proven": true,
+      "canonical_project_boundary_available": false,
+      "treatment": "fail_closed_ambiguous"
+    },
+    "quarantine_no_trusted_namespace_evidence": {
+      "rows": 47,
+      "section_rows": 44,
+      "task_rows": 3
+    },
+    "quarantine_unsupported_surface": {
+      "rows": 1033
+    },
+    "candidate_recovery_eligible_rows": 1163,
+    "visible_quarantine_rows": 1161,
+    "candidate_recovery_authorized_for_disposable_rows": 1163,
+    "direct_live_canonical_admission_rows": 0,
+    "partition_sum": 2324
+  },
+  "evidence_contract": {
+    "candidate_missing_namespace_used_as_evidence": false,
+    "project_path_used_as_identity_evidence": false,
+    "run_id_used_as_identity_evidence": false,
+    "event_id_uniqueness_alone_used_as_identity_evidence": false,
+    "isolated_session_id_alone_used_as_identity_evidence": false,
+    "trusted_local_usage_donor_required": true,
+    "unique_donor_required": true,
+    "donor_namespace_and_session_required": true,
+    "claimed_identity_conflict_vetoes": true,
+    "claimed_semantic_namespace_conflict_vetoes": true,
+    "conflicting_project_identity_vetoes": true,
+    "scoped_section_siblings_participate_in_project_veto": true,
+    "scoped_section_siblings_participate_in_namespace_veto": true,
+    "cohort_section_ids_use_canonical_strip_and_256_character_limit": true,
+    "cross_namespace_and_replay_guards_applied": true
+  },
+  "retention_contract": {
+    "raw_payload_in_canonical_database": false,
+    "manifest_bound_owner_only_archive_required": true,
+    "complete_physical_byte_range_coverage_required": true,
+    "candidate_recovery_subject_and_unique_donor_locators_required": true,
+    "quarantine_donor_set_matches_disposition_required": true,
+    "candidate_donor_sort_key": "manifest_relative_path_offset_length_raw_digest",
+    "duplicate_candidate_donors_allowed": false,
+    "append_only_hash_chained_migration_receipts_required": true,
+    "recovery_plan_publication_requires_fresh_archive": true,
+    "receipt_schema": "migration-recovery-receipt-v1",
+    "receipt_encoding": "strict_utf8_sorted_compact_json_integer_only",
+    "receipt_digest": "domain_separated_sha256",
+    "anchored_exclusive_publication_lock_required": true,
+    "head_compare_and_swap_required": true,
+    "unique_design_and_subject_locator_required": true,
+    "identical_subject_receipt_is_noop": true,
+    "same_design_subject_different_content_hard_fails": true,
+    "no_replace_publication_required": true,
+    "atomic_fsynced_receipt_publication_required": true,
+    "runtime_read_model_dependency_allowed": false,
+    "shadow_or_dual_write_allowed": false,
+    "automatic_archive_deletion_allowed": false,
+    "durable_archive_created_in_this_phase": false
+  },
+  "future_recovery_mapping": {
+    "implementation_authorized_for_fresh_disposable_candidates": true,
+    "live_or_persistent_candidate_admission_authorized": false,
+    "existing_scoped_donor_source_and_session_lookup_required": true,
+    "recovered_source_or_session_creation_allowed": false,
+    "fact_transport": "legacy_client_log_recovery_v1",
+    "fact_session_link_method": "client_log_evidenced_recovery",
+    "fact_session_link_confidence": "high",
+    "rule_version": "legacy-client-log-recovery-v1",
+    "legacy_explicit_or_exact_upgrade_allowed": false,
+    "same_candidate_second_import_noop_required": true,
+    "cross_fresh_candidate_random_task_id_stability_claimed": false
+  },
+  "verification": {
+    "recovery_and_runner_tests": {
+      "passed": 62,
+      "failed": 0,
+      "seconds": 6.52
+    },
+    "whole_repository_tests_passed": 2138,
+    "whole_repository_tests_failed": 0,
+    "known_third_party_warnings": 1,
+    "real_owner_only_runner_passed": true,
+    "json_parse": "passed",
+    "partition_arithmetic": "passed",
+    "repository_diff_check": "passed",
+    "counts_only_privacy_scan": "passed",
+    "post_analysis_manifest_verification": "passed",
+    "source_candidate_identity_mismatch_count": 0,
+    "source_candidate_work_output_mismatch_count": 0,
+    "source_candidate_task_output_mismatch_count": 0
+  },
+  "decision": {
+    "classification_and_design": "completed_successor_v3",
+    "offline_candidate_recovery": "go_fresh_disposable_candidates_only",
+    "production_migration": "no-go",
+    "live_cutover": "no-go",
+    "migration_estimate_engineer_weeks": {
+      "minimum": 6,
+      "maximum": 9,
+      "confidence": "medium"
+    }
+  }
+}

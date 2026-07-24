@@ -1,0 +1,356 @@
+{
+  "acceptance": {
+    "items": {
+      "canonical_scan": {
+        "evidence_field": "unbounded_core_scans",
+        "expected": [],
+        "observed": [],
+        "passed": true,
+        "required": true
+      },
+      "hook_checks": {
+        "expected": {
+          "ok": true
+        },
+        "observed": {
+          "foreign_key_violations": [],
+          "ok": true,
+          "quick_check": [
+            "ok"
+          ]
+        },
+        "passed": true,
+        "required": true
+      },
+      "hook_status": {
+        "expected": "passed",
+        "observed": "passed",
+        "passed": true,
+        "required": true
+      },
+      "query_budget": {
+        "expected": true,
+        "observed": true,
+        "passed": true,
+        "required": true
+      },
+      "snapshot_import_projection": {
+        "components": {
+          "import_seconds": 27.581693375017494,
+          "projection_seconds": 0.010019541019573808
+        },
+        "observed_seconds": 27.591712916037068,
+        "passed": true,
+        "required": true,
+        "threshold_seconds": 30.0
+      },
+      "snapshot_max_rss": {
+        "measurement_scope": "single_fresh_hook_process",
+        "observed_bytes": 448593920,
+        "passed": true,
+        "required": true,
+        "threshold_bytes": 536870912
+      }
+    },
+    "passed": true
+  },
+  "acceptance_status": "passed",
+  "artifacts": {
+    "candidate_db": "candidate.sqlite3",
+    "result_json": "result.json",
+    "run_directory_included": false
+  },
+  "candidate": {
+    "canonical_sequence": 2189,
+    "closed_main_db_size_bytes": 1331200,
+    "foreign_key_violations": 0,
+    "path": "candidate.sqlite3",
+    "quick_check": "ok",
+    "schema_version": 1,
+    "size_bytes": 1331200,
+    "size_scope": "closed_main_database_file",
+    "store_role": "candidate"
+  },
+  "clock": {
+    "perf_counter_end": 619568.086840458,
+    "perf_counter_start": 619531.323654541,
+    "seconds": 36.76318591693416,
+    "source": "time.perf_counter"
+  },
+  "completed_at": "2026-07-19T21:12:24.756374Z",
+  "execution_status": "passed",
+  "hook": "agent_chronicle.canonical.benchmark:benchmark_sqlite_truth",
+  "hook_result": {
+    "acceptance_passed": true,
+    "candidate_bytes_with_wal": 5492384,
+    "candidate_files_open": {
+      "main": 1306624,
+      "shm": 32768,
+      "total": 5492384,
+      "wal": 4152992
+    },
+    "canonical_sequence": 2189,
+    "checks": {
+      "foreign_key_violations": [],
+      "ok": true,
+      "quick_check": [
+        "ok"
+      ]
+    },
+    "churn": null,
+    "gates": {
+      "bounded_query_latency_and_plans": true,
+      "snapshot_coverage": true,
+      "sqlite_integrity": true
+    },
+    "import": {
+      "accepted_edges": 702,
+      "coverage_failures": [],
+      "coverage_passed": true,
+      "dispositions": {
+        "edge_inserted": 702,
+        "session_inserted": 730,
+        "usage_inserted": 729
+      },
+      "invalid_sqlite_integer_values": 0,
+      "manifest_kind": "codex",
+      "missing_rollout_files": 0,
+      "missing_rollout_path_digests": [],
+      "observed_sessions": 730,
+      "reader_diagnostics": {
+        "discovered": 730,
+        "error_codes": [],
+        "error_count": 0,
+        "excluded_by_limit": 0,
+        "ignored_non_transcript_files": 0,
+        "limit_unit": "root_groups",
+        "observed_sessions": 730,
+        "parsed": 730,
+        "returned_rows": 730,
+        "selected_root_groups": 28,
+        "sessions_without_usage": 1,
+        "skipped": 0,
+        "unparsed_selected_rows": 0,
+        "unresolved_identity_files": 0,
+        "usage_sessions": 729,
+        "watermark": 1784371376
+      },
+      "rejected_or_unresolved_edges": 1,
+      "result_source_bytes": 5190737655,
+      "result_source_files": 730,
+      "source_kind": "verified_codex_snapshot",
+      "usage_events": 729,
+      "verified_bytes": 5190742500,
+      "verified_files": 731,
+      "verified_rollout_bytes": 5190737655,
+      "verified_rollout_files": 730
+    },
+    "mode": "snapshot",
+    "projection": {
+      "built_through_sequence": 2189,
+      "task_count": 27,
+      "usage_day_count": 29
+    },
+    "query": {
+      "index_expectations": {
+        "health": true,
+        "sessions": true,
+        "task": true,
+        "usage": true,
+        "work": true
+      },
+      "latency_budgets_ms": {
+        "health_p95_ms": 750.0,
+        "sessions_p95_ms": 750.0,
+        "task_p95_ms": 750.0,
+        "usage_p95_ms": 750.0,
+        "work_p95_ms": 750.0
+      },
+      "latency_gate_passed": true,
+      "p95_ms": {
+        "health_p95_ms": 0.008541974239051342,
+        "sessions_p95_ms": 0.1723329769447446,
+        "task_p95_ms": 0.005083042196929455,
+        "usage_p95_ms": 0.3856669645756483,
+        "work_p95_ms": 0.07591699250042439
+      },
+      "plan_gate_passed": true,
+      "plans": {
+        "health": [
+          "SEARCH store_metadata USING INTEGER PRIMARY KEY (rowid=?)"
+        ],
+        "sessions": [
+          "SEARCH sessions USING COVERING INDEX idx_sessions_recent (sort_activity_at_us<?)"
+        ],
+        "task": [
+          "SEARCH rm_task_current USING INDEX sqlite_autoindex_rm_task_current_1 (public_task_id=?)"
+        ],
+        "usage": [
+          "SEARCH rm_usage_day USING INDEX idx_rm_usage_client_range (client=? AND day>? AND day<?)"
+        ],
+        "work": [
+          "SEARCH rm_task_current USING COVERING INDEX idx_rm_task_work_recent ((sort_activity_at_us,public_task_id)<(?,?))"
+        ]
+      },
+      "query_budget_passed": true,
+      "unbounded_core_scans": []
+    },
+    "status": "passed",
+    "table_counts": {
+      "cost_calculations": 0,
+      "facts": 0,
+      "migration_issues": 0,
+      "rm_task_current": 27,
+      "rm_usage_day": 29,
+      "session_edges": 702,
+      "sessions": 730,
+      "source_conflicts": 0,
+      "source_instances": 1,
+      "task_anchors": 27,
+      "usage_checkpoints": 729,
+      "usage_measurements": 729,
+      "work_claims": 0
+    },
+    "timings": {
+      "hook_total_seconds": 29.97051645803731,
+      "import_seconds": 27.581693375017494,
+      "projection_seconds": 0.010019541019573808,
+      "query_evidence_seconds": 0.013310290989466012,
+      "reconciliation_seconds": 27.591712916037068
+    },
+    "usage_field_presence": {
+      "fields": {
+        "cache_creation_input_tokens": {
+          "explicit_zero_rows": 0,
+          "missing_rows": 729,
+          "reported_rows": 0
+        },
+        "cache_read_input_tokens": {
+          "explicit_zero_rows": 0,
+          "missing_rows": 4,
+          "reported_rows": 725
+        },
+        "cached_input_tokens": {
+          "explicit_zero_rows": 0,
+          "missing_rows": 4,
+          "reported_rows": 725
+        },
+        "input_tokens": {
+          "explicit_zero_rows": 0,
+          "missing_rows": 4,
+          "reported_rows": 725
+        },
+        "output_tokens": {
+          "explicit_zero_rows": 0,
+          "missing_rows": 4,
+          "reported_rows": 725
+        },
+        "reasoning_output_tokens": {
+          "explicit_zero_rows": 0,
+          "missing_rows": 4,
+          "reported_rows": 725
+        },
+        "total_tokens": {
+          "explicit_zero_rows": 0,
+          "missing_rows": 4,
+          "reported_rows": 725
+        }
+      },
+      "measurement_rows": 729
+    }
+  },
+  "manifest": {
+    "file_count": 731,
+    "kind": "codex",
+    "known_live_path": false,
+    "manifest_integrity_verified": true,
+    "manifest_fingerprint_included": false,
+    "total_size_bytes": 5190742500,
+    "version": 1
+  },
+  "mode": "snapshot",
+  "resource": {
+    "hook_process_max_rss": {
+      "bytes": 448593920,
+      "measurement_scope": "single_fresh_hook_process",
+      "process_model": "forked_child",
+      "raw": 448593920,
+      "raw_unit": "bytes"
+    },
+    "parent_max_rss_after": {
+      "bytes": 73859072,
+      "raw": 73859072,
+      "raw_unit": "bytes"
+    },
+    "parent_max_rss_before": {
+      "bytes": 22544384,
+      "raw": 22544384,
+      "raw_unit": "bytes"
+    },
+    "parent_process_source": "resource.getrusage(RUSAGE_SELF).ru_maxrss"
+  },
+  "schema_version": "agent-chronicle.sqlite-truth-benchmark.v1",
+  "source": {
+    "file_count": 731,
+    "kind": "verified_snapshot",
+    "known_live_path": false,
+    "manifest_integrity_verified": true,
+    "manifest_kind": "codex",
+    "manifest_fingerprint_included": false,
+    "total_size_bytes": 5190742500,
+    "version": 1
+  },
+  "started_at": "2026-07-19T21:11:47.993189Z",
+  "status": "passed",
+  "timings": [
+    {
+      "name": "validate_scratch_root",
+      "perf_counter_end": 619531.323780791,
+      "perf_counter_start": 619531.323724291,
+      "seconds": 5.64999645575881e-05,
+      "status": "passed"
+    },
+    {
+      "name": "verify_snapshot_manifest",
+      "perf_counter_end": 619534.01686,
+      "perf_counter_start": 619531.32378175,
+      "seconds": 2.6930782499257475,
+      "status": "passed"
+    },
+    {
+      "name": "validate_candidate_target",
+      "perf_counter_end": 619534.017276416,
+      "perf_counter_start": 619534.017039958,
+      "seconds": 0.00023645791225135326,
+      "status": "passed"
+    },
+    {
+      "name": "load_hook",
+      "perf_counter_end": 619534.018601458,
+      "perf_counter_start": 619534.017277208,
+      "seconds": 0.0013242500135675073,
+      "status": "passed"
+    },
+    {
+      "name": "canonical_hook",
+      "perf_counter_end": 619566.025730833,
+      "perf_counter_start": 619534.018750708,
+      "seconds": 32.00698012497742,
+      "status": "passed"
+    },
+    {
+      "name": "verify_snapshot_unchanged",
+      "perf_counter_end": 619568.079282291,
+      "perf_counter_start": 619566.025735875,
+      "seconds": 2.05354641599115,
+      "status": "passed"
+    },
+    {
+      "name": "candidate_quick_check",
+      "perf_counter_end": 619568.086820583,
+      "perf_counter_start": 619568.0792865,
+      "seconds": 0.007534082978963852,
+      "status": "passed"
+    }
+  ]
+}

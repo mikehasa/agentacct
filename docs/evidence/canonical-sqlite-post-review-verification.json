@@ -1,0 +1,125 @@
+{
+  "schema_version": "agent-chronicle.sqlite-truth-post-review.v1",
+  "date": "2026-07-20",
+  "branch": "codex/sqlite-truth-spike",
+  "base_commit": "d1b7f633e1fb3ae939b6acb6727dc7f29839c232",
+  "private_paths_included": false,
+  "private_source_fingerprints_included": false,
+  "approved_truth_policy": {
+    "policy_id": "historical_usage_reference_v1",
+    "approved_date": "2026-07-20",
+    "unproven_canonical_components": "null_and_unreported",
+    "explicit_zero_requires_source_proof": true,
+    "historical_compatibility": "read_only_reference_only",
+    "included_in_canonical_aggregates_or_cost": false,
+    "migration_exclusion": false,
+    "live_cutover_authorized": false
+  },
+  "targeted_tests": {
+    "passed": 377,
+    "failed": 0,
+    "seconds": 6.26
+  },
+  "whole_repository_tests": {
+    "passed": 2087,
+    "failed": 0,
+    "seconds": 85.51,
+    "known_third_party_warnings": 1
+  },
+  "normal_corpus_recheck": {
+    "status": "passed",
+    "records": 6000,
+    "sessions": 1000,
+    "tasks": 1000,
+    "end_to_end_seconds": 1.1180380830774084,
+    "import_seconds": 1.0026728329248726,
+    "fresh_hook_process_peak_rss_bytes": 34455552,
+    "source_bytes": 2614300,
+    "closed_main_database_bytes": 3747840,
+    "database_size_amplification": 1.4335921661630264,
+    "database_size_gate": 2.0,
+    "canonical_sequence": 9008,
+    "first_import_link_disposition": "link_noop",
+    "unchanged_reconciliation": {
+      "physical_writes": 0,
+      "canonical_sequence_delta": 0
+    },
+    "equivalent_churn": {
+      "logical_attempts": 1100000,
+      "validated_physical_attempts": 3,
+      "canonical_writes": 0,
+      "canonical_sequence_delta": 0,
+      "database_growth_bytes": 0
+    },
+    "quick_check": "ok",
+    "foreign_key_violations": 0,
+    "unbounded_core_scans": [],
+    "query_p95_ms": {
+      "work": 0.14691695105284452,
+      "task": 0.004458008334040642,
+      "usage": 0.02795807085931301,
+      "sessions": 0.16249995678663254,
+      "health": 0.009292038157582283
+    },
+    "query_plans": {
+      "work": "SEARCH rm_task_current USING INDEX idx_rm_task_work_recent ((sort_activity_at_us,public_task_id)<(?,?))",
+      "task": "SEARCH rm_task_current USING INDEX sqlite_autoindex_rm_task_current_1 (public_task_id=?)",
+      "usage": [
+        "SEARCH rm_usage_day USING INDEX idx_rm_usage_day_range (day>? AND day<?)",
+        "SEARCH rm_usage_day USING INDEX idx_rm_usage_client_range (client=? AND day>? AND day<?)",
+        "SEARCH rm_usage_day USING INDEX idx_rm_usage_model_range (model=? AND day>? AND day<?)",
+        "SEARCH rm_usage_day USING INDEX idx_rm_usage_client_range (client=? AND day>? AND day<?)"
+      ],
+      "sessions": "SEARCH sessions USING INDEX idx_sessions_recent (sort_activity_at_us<?)",
+      "health": [
+        "SEARCH store_metadata USING INTEGER PRIMARY KEY (rowid=?)",
+        "SEARCH projection_generations USING INDEX sqlite_autoindex_projection_generations_1 (projection_name=?)",
+        "SEARCH source_health_current USING INTEGER PRIMARY KEY (rowid>?)"
+      ]
+    }
+  },
+  "sealed_codex_5gb_recheck": {
+    "status": "passed",
+    "verified_files": 731,
+    "verified_bytes": 5190742500,
+    "rollout_files": 730,
+    "observed_sessions": 730,
+    "usage_rows": 729,
+    "reader_errors": 0,
+    "missing_rollout_files": 0,
+    "end_to_end_including_manifest_seconds": 36.45522329106461,
+    "import_projection_seconds": 27.63840670802165,
+    "import_projection_gate_seconds": 30.0,
+    "fresh_hook_process_peak_rss_bytes": 451919872,
+    "peak_rss_gate_bytes": 536870912,
+    "quick_check": "ok",
+    "foreign_key_violations": 0,
+    "unbounded_core_scans": [],
+    "usage_component_presence": {
+      "measurement_rows": 729,
+      "input_reported": 725,
+      "input_missing": 4,
+      "output_reported": 725,
+      "output_missing": 4,
+      "reasoning_reported": 725,
+      "reasoning_missing": 4,
+      "cache_read_reported": 725,
+      "cache_read_missing": 4,
+      "cache_creation_reported": 0,
+      "cache_creation_missing": 729,
+      "total_reported": 725,
+      "total_missing": 4
+    },
+    "post_run_manifest_verification": "passed"
+  },
+  "wheel": {
+    "status": "passed",
+    "size_bytes": 802682,
+    "sha256": "ee5d18c20cf150c6fa2747648b2e47e9aa9356b3e1bac86d40a92bae46da75d9",
+    "canonical_schema_included": true,
+    "legacy_recovery_included": true,
+    "migration_archive_included": true,
+    "safe_scratch_included": true,
+    "tests_included": false
+  }
+}

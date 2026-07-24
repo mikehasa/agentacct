@@ -1,0 +1,29 @@
+{
+  "schema_version": "capture-fixture-v1",
+  "vendor": "cursor",
+  "event": "subagentStart",
+  "context": {
+    "observed_at": "2026-07-13T04:05:06Z",
+    "workspace_roots": [
+      "/workspace/repo"
+    ]
+  },
+  "payload": {
+    "hook_event_name": "subagentStart",
+    "conversation_id": "cursor-parent-conversation-001",
+    "session_id": "cursor-process-001",
+    "parent_conversation_id": "cursor-parent-conversation-001",
+    "subagent_id": "cursor-subagent-001",
+    "subagent_type": "research",
+    "tool_call_id": "cursor-tool-call-001",
+    "subagent_model": "gpt-5",
+    "is_parallel_worker": true,
+    "task": "CANARY_CURSOR_SUBAGENT_TASK",
+    "summary": "CANARY_CURSOR_SUBAGENT_SUMMARY",
+    "modified_files": [
+      "/workspace/repo/src/safe.py",
+      "/outside/private.txt",
+      "../escape.txt"
+    ]
+  }
+}

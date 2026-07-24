@@ -1,0 +1,24 @@
+{
+  "schema_version": "capture-fixture-v1",
+  "vendor": "codex",
+  "event": "Stop",
+  "context": {
+    "observed_at": "2026-07-13T02:03:04Z",
+    "workspace_roots": [
+      "/workspace/repo"
+    ]
+  },
+  "payload": {
+    "hook_event_name": "Stop",
+    "timestamp": "2026-07-13T02:03:04Z",
+    "session_id": "codex-child-session-001",
+    "parent_session_id": "codex-parent-session-001",
+    "turn_id": "codex-turn-001",
+    "model": "gpt-5",
+    "status": "completed",
+    "prompt": "CANARY_CODEX_PROMPT",
+    "last_assistant_message": "CANARY_CODEX_RESPONSE",
+    "thought": "CANARY_CODEX_THOUGHT",
+    "tool_output": "CANARY_CODEX_TOOL_RESULT"
+  }
+}

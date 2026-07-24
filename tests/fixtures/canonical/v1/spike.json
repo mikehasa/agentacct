@@ -1,0 +1,806 @@
+{
+  "fixture_schema_version": "canonical-sqlite-spike-fixture-v1",
+  "fixture_id": "canonical-sqlite-invariants-v1",
+  "description": "Synthetic, privacy-safe records for the canonical SQLite schema and invariant spike. All identifiers, digests, timestamps, usage, and prices are invented.",
+  "privacy": {
+    "synthetic_only": true,
+    "contains_live_store_data": false,
+    "contains_source_paths": false,
+    "contains_prompt_or_transcript_content": false
+  },
+  "source_instances": [
+    {
+      "ref": "source_codex_alpha_sqlite",
+      "client": "codex",
+      "adapter": "codex-local",
+      "representation": "sqlite",
+      "namespace_digest": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "fingerprint_scheme": "hmac-sha256-v1",
+      "representation_role": "authoritative",
+      "source_schema_version": "synthetic-codex-v1",
+      "privacy_safe_label": "synthetic-alpha"
+    },
+    {
+      "ref": "source_codex_alpha_rollout",
+      "client": "codex",
+      "adapter": "codex-local",
+      "representation": "rollout",
+      "namespace_digest": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "fingerprint_scheme": "hmac-sha256-v1",
+      "representation_role": "fallback",
+      "source_schema_version": "synthetic-codex-v1",
+      "privacy_safe_label": "synthetic-alpha"
+    },
+    {
+      "ref": "source_codex_beta_sqlite",
+      "client": "codex",
+      "adapter": "codex-local",
+      "representation": "sqlite",
+      "namespace_digest": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "fingerprint_scheme": "hmac-sha256-v1",
+      "representation_role": "authoritative",
+      "source_schema_version": "synthetic-codex-v1",
+      "privacy_safe_label": "synthetic-beta"
+    }
+  ],
+  "sessions": [
+    {
+      "ref": "session_alpha_root",
+      "source_instance_ref": "source_codex_alpha_sqlite",
+      "client_session_id": "shared-session-001",
+      "session_kind": "root",
+      "source_order": 10,
+      "observed_at_ms": 1784455200000
+    },
+    {
+      "ref": "session_alpha_child",
+      "source_instance_ref": "source_codex_alpha_sqlite",
+      "client_session_id": "alpha-continuation-001",
+      "session_kind": "continuation",
+      "source_order": 20,
+      "observed_at_ms": 1784455260000
+    },
+    {
+      "ref": "session_alpha_fallback_only",
+      "source_instance_ref": "source_codex_alpha_rollout",
+      "client_session_id": "alpha-fallback-only-001",
+      "session_kind": "root",
+      "source_order": 30,
+      "observed_at_ms": 1784455320000
+    },
+    {
+      "ref": "session_beta_root",
+      "source_instance_ref": "source_codex_beta_sqlite",
+      "client_session_id": "shared-session-001",
+      "session_kind": "root",
+      "source_order": 10,
+      "observed_at_ms": 1784455200000
+    },
+    {
+      "ref": "session_beta_child",
+      "source_instance_ref": "source_codex_beta_sqlite",
+      "client_session_id": "beta-continuation-001",
+      "session_kind": "continuation",
+      "source_order": 20,
+      "observed_at_ms": 1784455260000
+    }
+  ],
+  "identity_assertions": {
+    "same_client_session_id_across_namespaces": {
+      "client_session_id": "shared-session-001",
+      "session_refs": [
+        "session_alpha_root",
+        "session_beta_root"
+      ],
+      "expected_distinct_session_rows": 2,
+      "expected_join": "rejected",
+      "expected_veto_reason": "incompatible_source_namespace"
+    }
+  },
+  "task_anchors": [
+    {
+      "ref": "task_alpha",
+      "public_task_id": "task_4a54fc03c1a14a84a777ccd195d3eb3f",
+      "primary_root_session_ref": "session_alpha_root",
+      "anchor_state": "active",
+      "expected_member_session_refs": [
+        "session_alpha_root",
+        "session_alpha_child"
+      ],
+      "expected_stable_after": [
+        "exact_replay",
+        "semantic_correction",
+        "projection_rebuild",
+        "source_label_change"
+      ]
+    },
+    {
+      "ref": "task_beta",
+      "public_task_id": "task_b92a25bdf89542a59f54c9a7fffd0e30",
+      "primary_root_session_ref": "session_beta_root",
+      "anchor_state": "active",
+      "expected_member_session_refs": [
+        "session_beta_root",
+        "session_beta_child"
+      ],
+      "expected_stable_after": [
+        "exact_replay",
+        "projection_rebuild"
+      ]
+    },
+    {
+      "ref": "task_alpha_fallback",
+      "public_task_id": "task_e684e8f22e69443cbf9c87656141aadd",
+      "primary_root_session_ref": "session_alpha_fallback_only",
+      "anchor_state": "active",
+      "expected_member_session_refs": [
+        "session_alpha_fallback_only"
+      ],
+      "expected_stable_after": [
+        "projection_rebuild"
+      ]
+    }
+  ],
+  "session_edge_attempts": [
+    {
+      "ref": "edge_alpha_continuation",
+      "child_session_ref": "session_alpha_child",
+      "parent_session_ref": "session_alpha_root",
+      "relation": "continuation",
+      "identity_basis": "explicit_parent_session_id",
+      "validation_state": "accepted"
+    },
+    {
+      "ref": "edge_beta_continuation",
+      "child_session_ref": "session_beta_child",
+      "parent_session_ref": "session_beta_root",
+      "relation": "continuation",
+      "identity_basis": "explicit_parent_session_id",
+      "validation_state": "accepted"
+    },
+    {
+      "ref": "edge_beta_to_alpha_rejected",
+      "child_session_ref": "session_beta_child",
+      "parent_session_ref": "session_alpha_root",
+      "relation": "continuation",
+      "identity_basis": "explicit_parent_session_id",
+      "validation_state": "rejected",
+      "veto_reason": "incompatible_source_namespace"
+    }
+  ],
+  "semantic_ingest_attempts": [
+    {
+      "attempt_ref": "semantic_original",
+      "source_instance_ref": "source_codex_alpha_sqlite",
+      "session_ref": "session_alpha_root",
+      "source_event_id": "synthetic-work-001",
+      "fact_type": "work_claim",
+      "occurred_at_ms": 1784455210000,
+      "source_order": 11,
+      "canonical_content_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "normalized": {
+        "event_kind": "section",
+        "status": "started",
+        "title": "Build canonical storage spike",
+        "summary": "Schema spike started from synthetic evidence.",
+        "outcome_axis": "execution",
+        "work_id": "synthetic-work",
+        "section_id": "synthetic-schema"
+      },
+      "expected": {
+        "disposition": "inserted",
+        "canonical_fact_ref": "fact_original",
+        "fact_rows_delta": 1,
+        "conflict_rows_delta": 0
+      }
+    },
+    {
+      "attempt_ref": "semantic_exact_replay",
+      "source_instance_ref": "source_codex_alpha_sqlite",
+      "session_ref": "session_alpha_root",
+      "source_event_id": "synthetic-work-001",
+      "fact_type": "work_claim",
+      "occurred_at_ms": 1784455210000,
+      "source_order": 11,
+      "canonical_content_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "normalized": {
+        "event_kind": "section",
+        "status": "started",
+        "title": "Build canonical storage spike",
+        "summary": "Schema spike started from synthetic evidence.",
+        "outcome_axis": "execution",
+        "work_id": "synthetic-work",
+        "section_id": "synthetic-schema"
+      },
+      "expected": {
+        "disposition": "exact_replay_noop",
+        "canonical_fact_ref": "fact_original",
+        "fact_rows_delta": 0,
+        "conflict_rows_delta": 0,
+        "canonical_sequence_delta": 0,
+        "projection_generation_delta": 0
+      }
+    },
+    {
+      "attempt_ref": "semantic_content_conflict",
+      "source_instance_ref": "source_codex_alpha_sqlite",
+      "session_ref": "session_alpha_root",
+      "source_event_id": "synthetic-work-001",
+      "fact_type": "work_claim",
+      "occurred_at_ms": 1784455210000,
+      "source_order": 11,
+      "canonical_content_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+      "normalized": {
+        "event_kind": "section",
+        "status": "completed",
+        "title": "Build canonical storage spike",
+        "summary": "Conflicting content reused an existing source event ID.",
+        "outcome_axis": "execution",
+        "work_id": "synthetic-work",
+        "section_id": "synthetic-schema"
+      },
+      "expected": {
+        "disposition": "quarantined_conflict",
+        "canonical_fact_ref": "fact_original",
+        "fact_rows_delta": 0,
+        "conflict_rows_delta": 1,
+        "last_good_fact_unchanged": true
+      }
+    },
+    {
+      "attempt_ref": "semantic_explicit_correction",
+      "source_instance_ref": "source_codex_alpha_sqlite",
+      "session_ref": "session_alpha_root",
+      "source_event_id": "synthetic-work-002",
+      "fact_type": "work_claim",
+      "occurred_at_ms": 1784455330000,
+      "source_order": 12,
+      "canonical_content_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+      "supersedes_fact_ref": "fact_original",
+      "normalized": {
+        "event_kind": "section",
+        "status": "completed",
+        "title": "Build canonical storage spike",
+        "summary": "Synthetic schema and invariants were completed.",
+        "outcome_axis": "execution",
+        "work_id": "synthetic-work",
+        "section_id": "synthetic-schema"
+      },
+      "expected": {
+        "disposition": "inserted_revision",
+        "canonical_fact_ref": "fact_correction",
+        "fact_rows_delta": 1,
+        "conflict_rows_delta": 0,
+        "superseded_fact_remains_immutable": true,
+        "current_fact_ref": "fact_correction",
+        "public_task_id_unchanged": "task_4a54fc03c1a14a84a777ccd195d3eb3f"
+      }
+    }
+  ],
+  "usage_observations": [
+    {
+      "ref": "usage_alpha_authoritative",
+      "session_ref": "session_alpha_root",
+      "source_instance_ref": "source_codex_alpha_sqlite",
+      "lane": "session_total",
+      "representation": "sqlite",
+      "precedence_role": "authoritative",
+      "update_semantics": "cumulative_snapshot",
+      "granularity": "session",
+      "measurement_state": "complete",
+      "provider": "openai",
+      "model": "synthetic-model-a",
+      "usage_confidence": "observed",
+      "source_revision": "alpha-sqlite-r1",
+      "canonical_content_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+      "additivity_state": "additive",
+      "totals_eligible_expected": true,
+      "token_fields": {
+        "input_tokens": 1000,
+        "input_tokens_reported": true,
+        "output_tokens": 0,
+        "output_tokens_reported": true,
+        "cached_input_tokens": null,
+        "cached_input_tokens_reported": false,
+        "cache_creation_tokens": 100,
+        "cache_creation_tokens_reported": true,
+        "cache_read_tokens": null,
+        "cache_read_tokens_reported": false,
+        "reasoning_tokens": 0,
+        "reasoning_tokens_reported": true,
+        "total_tokens": 1100,
+        "total_tokens_reported": true
+      },
+      "client_reported_cost": {
+        "amount_microusd": null,
+        "reported": false
+      }
+    },
+    {
+      "ref": "usage_alpha_overlapping_fallback",
+      "session_ref": "session_alpha_root",
+      "source_instance_ref": "source_codex_alpha_rollout",
+      "lane": "session_total",
+      "representation": "rollout",
+      "precedence_role": "fallback",
+      "update_semantics": "cumulative_snapshot",
+      "granularity": "session",
+      "measurement_state": "complete",
+      "provider": "openai",
+      "model": "synthetic-model-a",
+      "usage_confidence": "observed",
+      "source_revision": "alpha-rollout-r1",
+      "canonical_content_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+      "additivity_state": "held_non_additive",
+      "totals_eligible_expected": false,
+      "held_reason": "authoritative_representation_available",
+      "token_fields": {
+        "input_tokens": 950,
+        "input_tokens_reported": true,
+        "output_tokens": 100,
+        "output_tokens_reported": true,
+        "cached_input_tokens": null,
+        "cached_input_tokens_reported": false,
+        "cache_creation_tokens": null,
+        "cache_creation_tokens_reported": false,
+        "cache_read_tokens": null,
+        "cache_read_tokens_reported": false,
+        "reasoning_tokens": null,
+        "reasoning_tokens_reported": false,
+        "total_tokens": 1050,
+        "total_tokens_reported": true
+      },
+      "client_reported_cost": {
+        "amount_microusd": null,
+        "reported": false
+      }
+    },
+    {
+      "ref": "usage_alpha_child_authoritative",
+      "session_ref": "session_alpha_child",
+      "source_instance_ref": "source_codex_alpha_sqlite",
+      "lane": "session_total",
+      "representation": "sqlite",
+      "precedence_role": "authoritative",
+      "update_semantics": "cumulative_snapshot",
+      "granularity": "session",
+      "measurement_state": "complete",
+      "provider": "openai",
+      "model": "synthetic-model-a",
+      "usage_confidence": "observed",
+      "source_revision": "alpha-sqlite-r2",
+      "canonical_content_hash": "6666666666666666666666666666666666666666666666666666666666666666",
+      "additivity_state": "held_unproven_lineage_cumulative",
+      "totals_eligible_expected": false,
+      "held_reason": "legacy_codex_descendant_cumulative_unproven",
+      "token_fields": {
+        "input_tokens": 200,
+        "input_tokens_reported": true,
+        "output_tokens": 50,
+        "output_tokens_reported": true,
+        "cached_input_tokens": 0,
+        "cached_input_tokens_reported": true,
+        "cache_creation_tokens": null,
+        "cache_creation_tokens_reported": false,
+        "cache_read_tokens": null,
+        "cache_read_tokens_reported": false,
+        "reasoning_tokens": null,
+        "reasoning_tokens_reported": false,
+        "total_tokens": 250,
+        "total_tokens_reported": true
+      },
+      "client_reported_cost": {
+        "amount_microusd": 0,
+        "reported": true
+      }
+    },
+    {
+      "ref": "usage_beta_partial",
+      "session_ref": "session_beta_root",
+      "source_instance_ref": "source_codex_beta_sqlite",
+      "lane": "session_total",
+      "representation": "sqlite",
+      "precedence_role": "authoritative",
+      "update_semantics": "cumulative_snapshot",
+      "granularity": "session",
+      "measurement_state": "partial",
+      "provider": "openai",
+      "model": null,
+      "usage_confidence": "partial",
+      "source_revision": "beta-sqlite-r1",
+      "canonical_content_hash": "7777777777777777777777777777777777777777777777777777777777777777",
+      "additivity_state": "held_non_additive",
+      "totals_eligible_expected": false,
+      "held_reason": "total_unavailable",
+      "token_fields": {
+        "input_tokens": 0,
+        "input_tokens_reported": true,
+        "output_tokens": null,
+        "output_tokens_reported": false,
+        "cached_input_tokens": null,
+        "cached_input_tokens_reported": false,
+        "cache_creation_tokens": null,
+        "cache_creation_tokens_reported": false,
+        "cache_read_tokens": null,
+        "cache_read_tokens_reported": false,
+        "reasoning_tokens": null,
+        "reasoning_tokens_reported": false,
+        "total_tokens": null,
+        "total_tokens_reported": false
+      },
+      "client_reported_cost": {
+        "amount_microusd": null,
+        "reported": false
+      }
+    },
+    {
+      "ref": "usage_alpha_fallback_selected",
+      "session_ref": "session_alpha_fallback_only",
+      "source_instance_ref": "source_codex_alpha_rollout",
+      "lane": "session_total",
+      "representation": "rollout",
+      "precedence_role": "fallback",
+      "update_semantics": "cumulative_snapshot",
+      "granularity": "session",
+      "measurement_state": "complete",
+      "provider": "openai",
+      "model": "synthetic-model-b",
+      "usage_confidence": "observed_fallback",
+      "source_revision": "alpha-rollout-r2",
+      "canonical_content_hash": "8888888888888888888888888888888888888888888888888888888888888888",
+      "additivity_state": "additive",
+      "totals_eligible_expected": true,
+      "selection_reason": "authoritative_representation_unavailable",
+      "token_fields": {
+        "input_tokens": 600,
+        "input_tokens_reported": true,
+        "output_tokens": 100,
+        "output_tokens_reported": true,
+        "cached_input_tokens": null,
+        "cached_input_tokens_reported": false,
+        "cache_creation_tokens": null,
+        "cache_creation_tokens_reported": false,
+        "cache_read_tokens": null,
+        "cache_read_tokens_reported": false,
+        "reasoning_tokens": null,
+        "reasoning_tokens_reported": false,
+        "total_tokens": 700,
+        "total_tokens_reported": true
+      },
+      "client_reported_cost": {
+        "amount_microusd": null,
+        "reported": false
+      }
+    },
+    {
+      "ref": "usage_beta_unavailable_attempt",
+      "session_ref": "session_beta_child",
+      "source_instance_ref": "source_codex_beta_sqlite",
+      "lane": "session_total",
+      "representation": "sqlite",
+      "precedence_role": "authoritative",
+      "measurement_state": "unavailable",
+      "source_revision": "beta-sqlite-r2",
+      "unavailable_reason": "unsupported_source_schema",
+      "expected_disposition": "health_only_no_usage_row",
+      "totals_eligible_expected": false
+    }
+  ],
+  "usage_assertions": {
+    "zero_and_unavailable_are_distinct": [
+      {
+        "explicit_zero_field": "usage_alpha_authoritative.token_fields.output_tokens",
+        "explicit_zero_reported_field": "usage_alpha_authoritative.token_fields.output_tokens_reported",
+        "unavailable_field": "usage_alpha_authoritative.token_fields.cached_input_tokens",
+        "unavailable_reported_field": "usage_alpha_authoritative.token_fields.cached_input_tokens_reported",
+        "expected_sql_values": {
+          "explicit_zero": 0,
+          "unavailable": null
+        }
+      },
+      {
+        "explicit_zero_field": "usage_beta_partial.token_fields.input_tokens",
+        "explicit_zero_reported_field": "usage_beta_partial.token_fields.input_tokens_reported",
+        "unavailable_field": "usage_beta_partial.token_fields.output_tokens",
+        "unavailable_reported_field": "usage_beta_partial.token_fields.output_tokens_reported",
+        "expected_sql_values": {
+          "explicit_zero": 0,
+          "unavailable": null
+        }
+      },
+      {
+        "explicit_zero_field": "usage_alpha_child_authoritative.client_reported_cost.amount_microusd",
+        "explicit_zero_reported_field": "usage_alpha_child_authoritative.client_reported_cost.reported",
+        "unavailable_field": "usage_alpha_authoritative.client_reported_cost.amount_microusd",
+        "unavailable_reported_field": "usage_alpha_authoritative.client_reported_cost.reported",
+        "expected_sql_values": {
+          "explicit_zero": 0,
+          "unavailable": null
+        }
+      }
+    ],
+    "representation_precedence": [
+      {
+        "case": "authoritative_wins_without_blending",
+        "session_ref": "session_alpha_root",
+        "selected_observation_ref": "usage_alpha_authoritative",
+        "held_observation_ref": "usage_alpha_overlapping_fallback",
+        "expected_total_tokens": 1100,
+        "forbidden_blended_total_tokens": 2150,
+        "expected_basis": "authoritative"
+      },
+      {
+        "case": "fallback_selected_as_a_whole",
+        "session_ref": "session_alpha_fallback_only",
+        "selected_observation_ref": "usage_alpha_fallback_selected",
+        "expected_total_tokens": 700,
+        "expected_basis": "fallback",
+        "expected_visible_reason": "authoritative_representation_unavailable"
+      }
+    ],
+    "task_totals": [
+      {
+        "task_ref": "task_alpha",
+        "expected_total_tokens": 1100,
+        "selected_observation_refs": [
+          "usage_alpha_authoritative"
+        ],
+        "held_observation_refs": [
+          "usage_alpha_overlapping_fallback",
+          "usage_alpha_child_authoritative"
+        ]
+      },
+      {
+        "task_ref": "task_beta",
+        "expected_total_tokens": null,
+        "expected_usage_state": "partial_or_unavailable",
+        "expected_explicit_input_tokens": 0,
+        "expected_output_tokens": null
+      },
+      {
+        "task_ref": "task_alpha_fallback",
+        "expected_total_tokens": 700,
+        "expected_usage_basis": "fallback"
+      }
+    ]
+  },
+  "checkpoint_policy_cases": [
+    {
+      "ref": "checkpoint_unchanged_poll",
+      "trigger": "watcher_poll",
+      "measurement_changed": false,
+      "expected_measurement_writes": 0,
+      "expected_checkpoint_writes": 0,
+      "expected_canonical_sequence_delta": 0
+    },
+    {
+      "ref": "checkpoint_changed_active_poll",
+      "trigger": "watcher_poll",
+      "measurement_changed": true,
+      "task_terminal": false,
+      "expected_measurement_writes": 1,
+      "expected_checkpoint_writes": 0
+    },
+    {
+      "ref": "checkpoint_session_terminal",
+      "trigger": "session_terminal",
+      "measurement_changed": false,
+      "expected_measurement_writes": 0,
+      "expected_checkpoint_writes": 1,
+      "checkpoint_reason": "session_terminal"
+    },
+    {
+      "ref": "checkpoint_day_boundary",
+      "trigger": "day_boundary",
+      "measurement_changed": false,
+      "expected_measurement_writes": 0,
+      "expected_checkpoint_writes": 1,
+      "checkpoint_reason": "day_boundary"
+    },
+    {
+      "ref": "checkpoint_source_rotation",
+      "trigger": "source_rotation",
+      "measurement_changed": true,
+      "expected_measurement_writes": 1,
+      "expected_checkpoint_writes": 1,
+      "checkpoint_reason": "source_rotation"
+    },
+    {
+      "ref": "checkpoint_explicit_correction",
+      "trigger": "explicit_correction",
+      "measurement_changed": true,
+      "expected_measurement_writes": 1,
+      "expected_checkpoint_writes": 1,
+      "checkpoint_reason": "explicit_correction"
+    },
+    {
+      "ref": "checkpoint_migration",
+      "trigger": "migration",
+      "measurement_changed": false,
+      "expected_measurement_writes": 0,
+      "expected_checkpoint_writes": 1,
+      "checkpoint_reason": "migration"
+    }
+  ],
+  "pricing_cases": [
+    {
+      "ref": "pricing_initial",
+      "usage_observation_ref": "usage_alpha_authoritative",
+      "price_source": "synthetic-catalog",
+      "price_version": "2026-07-v1",
+      "formula_version": "token-price-v1",
+      "currency": "USD",
+      "calculated_cost_microusd": 12000,
+      "expected_usage_writes": 0,
+      "expected_cost_writes": 1
+    },
+    {
+      "ref": "pricing_identical_recalculation",
+      "usage_observation_ref": "usage_alpha_authoritative",
+      "price_source": "synthetic-catalog",
+      "price_version": "2026-07-v1",
+      "formula_version": "token-price-v1",
+      "currency": "USD",
+      "calculated_cost_microusd": 12000,
+      "expected_usage_writes": 0,
+      "expected_cost_writes": 0,
+      "expected_disposition": "exact_recalculation_noop"
+    },
+    {
+      "ref": "pricing_versioned_revision",
+      "usage_observation_ref": "usage_alpha_authoritative",
+      "price_source": "synthetic-catalog",
+      "price_version": "2026-07-v2",
+      "formula_version": "token-price-v1",
+      "currency": "USD",
+      "calculated_cost_microusd": 12500,
+      "expected_usage_writes": 0,
+      "expected_cost_writes": 1,
+      "expected_observed_tokens_unchanged": true
+    },
+    {
+      "ref": "pricing_held_row_ineligible",
+      "usage_observation_ref": "usage_beta_partial",
+      "price_source": "synthetic-catalog",
+      "price_version": "2026-07-v1",
+      "formula_version": "token-price-v1",
+      "currency": "USD",
+      "calculated_cost_microusd": null,
+      "expected_usage_writes": 0,
+      "expected_cost_writes": 0,
+      "expected_disposition": "ineligible_noop"
+    }
+  ],
+  "churn_collapse_workload": {
+    "fixture_version": "churn-collapse-v1",
+    "description": "A parameterized 1.1M-equivalent workload; consumers may expand it or execute equivalent counted loops without materializing 1.1M JSON objects.",
+    "seed_state": {
+      "existing_usage_observation_ref": "usage_alpha_authoritative",
+      "existing_pricing_case_ref": "pricing_initial"
+    },
+    "attempt_groups": [
+      {
+        "kind": "unchanged_cumulative_refresh",
+        "source_ref": "usage_alpha_authoritative",
+        "attempt_count": 1000000,
+        "expected_canonical_writes_per_attempt": 0
+      },
+      {
+        "kind": "reprice_held_non_additive_usage",
+        "source_ref": "usage_beta_partial",
+        "attempt_count": 99000,
+        "expected_usage_writes_per_attempt": 0,
+        "expected_cost_writes_per_attempt": 0
+      },
+      {
+        "kind": "identical_cost_recalculation",
+        "source_ref": "pricing_identical_recalculation",
+        "attempt_count": 1000,
+        "expected_usage_writes_per_attempt": 0,
+        "expected_cost_writes_per_attempt": 0
+      }
+    ],
+    "equivalent_attempt_count": 1100000,
+    "execution_batch_size": 10000,
+    "expected": {
+      "canonical_writes": 0,
+      "canonical_sequence_delta": 0,
+      "projection_generation_delta": 0,
+      "maximum_diagnostic_rows": 3,
+      "database_growth_bytes_lt": 10000000,
+      "observed_usage_unchanged": true
+    }
+  },
+  "normal_corpus": {
+    "fixture_version": "normal-corpus-v1",
+    "description": "A deterministic 144-record synthetic benchmark corpus: 24 Tasks, each with one identity, conflict, correction, no-op, usage, and Task event. It contains no raw client content.",
+    "deterministic_seed": 20260720,
+    "generation": {
+      "record_count": 144,
+      "scenario_cycle": [
+        "identity",
+        "conflict",
+        "correction",
+        "noop",
+        "usage",
+        "task"
+      ],
+      "task_anchor_count": 24,
+      "root_session_count": 24,
+      "continuation_session_count": 0,
+      "session_count": 24,
+      "session_edge_count": 0,
+      "semantic_fact_count": 48,
+      "source_conflict_count": 24,
+      "authoritative_usage_observation_count": 24,
+      "overlapping_held_fallback_observation_count": 24,
+      "canonical_usage_measurement_count": 48,
+      "totals_eligible_usage_measurement_count": 24,
+      "usage_checkpoint_count": 24,
+      "machine_check_count": 0,
+      "artifact_ref_count": 0,
+      "public_task_id_policy": "stored_random_opaque_ids_reused_across_rebuilds"
+    },
+    "task_state_distribution": {
+      "reported_complete": 24
+    },
+    "expected": {
+      "distinct_public_task_ids": 24,
+      "public_task_ids_stable_after_projection_rebuild": true,
+      "cross_namespace_memberships": 0,
+      "task_lookup_by_public_id": "indexed",
+      "unchanged_reconcile_session_count": 24,
+      "unchanged_reconcile_usage_count": 24,
+      "unchanged_reconcile_canonical_writes": 0,
+      "post_churn_probe_table_counts": {
+        "source_instances": 2,
+        "sessions": 25,
+        "task_anchors": 25,
+        "facts": 48,
+        "work_claims": 48,
+        "source_conflicts": 24,
+        "usage_measurements": 50,
+        "usage_checkpoints": 24,
+        "cost_calculations": 2,
+        "rm_task_current": 25,
+        "rm_usage_day": 2
+      }
+    },
+    "benchmark_contract": {
+      "warmup_iterations": 5,
+      "measured_iterations": 25,
+      "work_warm_p95_ms_lte": 750,
+      "task_warm_p95_ms_lte": 750,
+      "usage_warm_p95_ms_lte": 750,
+      "sessions_warm_p95_ms_lte": 750,
+      "health_warm_p95_ms_lte": 750,
+      "database_size_measurement_scope": "closed_main_database_file",
+      "database_size_max_ratio_to_compact_source": 2.0,
+      "database_size_gate_min_source_bytes": 1048576,
+      "bounded_queries_must_not_full_scan_canonical_tables": true,
+      "task_detail_n_plus_one_allowed": false
+    }
+  },
+  "snapshot_parity_expectations": {
+    "source_instance_count": 3,
+    "session_count": 5,
+    "session_count_by_namespace": {
+      "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1": 3,
+      "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2": 2
+    },
+    "task_anchor_count": 3,
+    "accepted_session_edge_count": 2,
+    "rejected_session_edge_count": 1,
+    "canonical_semantic_fact_count": 2,
+    "semantic_conflict_count": 1,
+    "canonical_usage_measurement_count": 5,
+    "health_only_unavailable_usage_attempt_count": 1,
+    "totals_eligible_usage_measurement_count": 2,
+    "selected_total_tokens": 1800,
+    "explicit_zero_values_remain_zero": true,
+    "unreported_values_remain_null": true,
+    "raw_session_id_collision_does_not_join": true,
+    "correction_preserves_original_fact": true,
+    "task_ids_survive_correction_and_rebuild": true
+  }
+}
