@@ -27,6 +27,8 @@ pipx install agentacct
 agentacct onboard   # from your repo root
 ```
 
+No `pipx` yet? Install it first with `brew install pipx` (macOS) or `python3 -m pip install --user pipx` — or skip pipx entirely and use `uv tool install agentacct`. See [INSTALL.md](INSTALL.md) for a plain-`venv` fallback.
+
 `onboard` detects your local coding-agent logs, sets up the project-local store, runs a first usage sync, and starts the dashboard at `http://127.0.0.1:8765`. Then open a **new** agent session in the project — MCP servers and hooks bind at session start, so the session that ran onboarding cannot become the first recorded Task.
 
 Prefer to let the agent do it? Paste this into the coding agent working in your target repo:
