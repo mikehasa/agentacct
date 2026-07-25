@@ -9,6 +9,15 @@ on:
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # All three gate on the Linux CI runner. Local caveat: on macOS + 3.13
+        # the psutil-based process-ownership tests (control / runner / supervisor)
+        # currently fail — a platform quirk in how process identity reads back on
+        # that combo (create_time / cmdline / cwd). It does not affect Linux CI
+        # and is tracked as a separate follow-up.
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,7 +27,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
       - name: Install package
         run: |
           python -m pip install --upgrade pip

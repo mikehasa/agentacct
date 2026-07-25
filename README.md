@@ -1,5 +1,10 @@
 # agentacct
 
+[![tests](https://github.com/mikehasa/agentacct/actions/workflows/tests.yml/badge.svg)](https://github.com/mikehasa/agentacct/actions/workflows/tests.yml)
+[![PyPI](https://img.shields.io/pypi/v/agentacct.svg)](https://pypi.org/project/agentacct/)
+[![Python](https://img.shields.io/pypi/pyversions/agentacct.svg)](https://pypi.org/project/agentacct/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+
 **See what your coding agents actually did — and what it cost — on a dashboard that never leaves your machine.**
 
 agentacct is local-first Agent Work Intelligence for coding agents. It reads the session logs that Claude Code and Codex already write on your machine, joins them with the work each session records as it goes, and shows the result — tokens, estimated cost, tasks, and evidence — on a local dashboard.
