@@ -316,7 +316,11 @@ class RuntimeManager:
     DASHBOARD_HEALTH_TIMEOUT_SECONDS = 0.5
     DASHBOARD_HEALTH_RETRY_SECONDS = 0.05
     DASHBOARD_HEALTH_MAX_BODY_BYTES = 64 * 1024
-    DASHBOARD_HEALTH_SERVICE = "agent-sentinel-local-api"
+    DASHBOARD_HEALTH_SERVICE = "agentacct-local-api"
+    # Pre-rename value, still accepted so a running old dashboard is recognized
+    # by newer code during an upgrade (and vice versa).
+    DASHBOARD_HEALTH_SERVICE_LEGACY = "agent-sentinel-local-api"
+    DASHBOARD_HEALTH_SERVICES = (DASHBOARD_HEALTH_SERVICE, DASHBOARD_HEALTH_SERVICE_LEGACY)
 
     def __init__(
         self,
@@ -652,7 +656,7 @@ class RuntimeManager:
                 return (
                     "healthy"
                     if payload.get("ok") is True
-                    and payload.get("service") == cls.DASHBOARD_HEALTH_SERVICE
+                    and payload.get("service") in cls.DASHBOARD_HEALTH_SERVICES
                     else "unhealthy"
                 )
             except (OSError, http.client.HTTPException, TimeoutError, ValueError):

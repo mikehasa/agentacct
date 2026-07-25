@@ -33,7 +33,9 @@ DEFAULT_PORT = 8765
 DEFAULT_TIMEOUT_SECONDS = 2.0
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
-_EXPECTED_SERVICE = "agent-sentinel-local-api"
+# New brand first; the pre-rename value stays accepted so a cross-version
+# upgrade (old dashboard, newer canary or vice versa) is still recognized.
+_EXPECTED_SERVICES = ("agentacct-local-api", "agent-sentinel-local-api")
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 _BASE_PROBES = (
     ("/usage/summary?days=all", "usage_days"),
@@ -590,7 +592,7 @@ def _health_state(
                 endpoint="/health",
             )
         )
-    if payload.get("service") != _EXPECTED_SERVICE:
+    if payload.get("service") not in _EXPECTED_SERVICES:
         blockers.append(
             ReadCanaryBlocker(
                 code="unexpected_service",
