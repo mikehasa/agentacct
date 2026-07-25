@@ -1760,3 +1760,26 @@ def test_usage_only_store_evidence_rate_unmeasured_not_zero_percent(tmp_path):
     # measured-looking "0%" of zero items.
     assert '<div class="label">Evidence-backed completed</div><div class="value">—</div>' in sessions
     assert "0 / 0 completed work items" in sessions
+
+
+def test_health_endpoint_returns_agentacct_branded_service(tmp_path):
+    """#3: /health returns the agentacct-branded service string (was the
+    pre-rename `agent-sentinel-local-api`, a rename miss)."""
+    response = _client(tmp_path / "state").get("/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["service"] == "agentacct-local-api"
+
+
+def test_health_service_recognizers_accept_both_brands():
+    """#3: renaming the /health service string is compat-safe — both the
+    readiness check and the read canary still accept the pre-rename value, so a
+    cross-version upgrade (old dashboard checked by newer code, or vice versa)
+    never falsely reports the dashboard unhealthy / not-ours."""
+    from agent_chronicle.activation import RuntimeManager
+    from agent_chronicle.canonical.read_canary import _EXPECTED_SERVICES
+
+    both = {"agentacct-local-api", "agent-sentinel-local-api"}
+    assert set(RuntimeManager.DASHBOARD_HEALTH_SERVICES) == both
+    assert set(_EXPECTED_SERVICES) == both

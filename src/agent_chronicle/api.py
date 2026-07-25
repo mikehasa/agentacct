@@ -14401,12 +14401,14 @@ def create_local_api_app(
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        # frozen wire vocab: health-check consumers match this exact service
-        # string (pre-rename); it is format, not branding — never rename.
+        # Health-check consumers (activation readiness + the read canary) match
+        # this service string. It carries the agentacct brand now; the pre-rename
+        # "agent-sentinel-local-api" stays ACCEPTED by both recognizers forever,
+        # so a running old dashboard checked by newer code is still recognized.
         sync_health = ingestion_health.snapshot()
         return {
             "ok": True,
-            "service": "agent-sentinel-local-api",
+            "service": "agentacct-local-api",
             "ingestion_status": sync_health["state"],
             "ingestion": sync_health,
             # Canonical live shadow (migration phase 3): in-process counters
