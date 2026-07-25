@@ -211,6 +211,7 @@ mkdir -p "$HOME/.agent-sentinel-global/state"
 AGENTACCT_BIN="$(command -v agentacct)"
 [ -n "$AGENTACCT_BIN" ] || AGENTACCT_BIN="$HOME/.agentacct-cli/.venv/bin/agentacct"  # non-PATH install: substitute YOUR absolute path from Step 1 — an empty command would register a dead server
 # the two `mcp add` lines below rewrite USER-LEVEL client config (~/.claude.json, ~/.codex/config.toml): show them to the user and ask first (ground rule)
+# NO `claude`/`codex` CLI on PATH? (common: the Claude Code desktop app and ChatGPT.app's Codex ship none) — skip the two `mcp add` lines and hand-write the same registration per the "no CLI" note below.
 claude mcp add --scope user agentacct -- "$AGENTACCT_BIN" mcp serve --store-dir "$HOME/.agent-sentinel-global/state"
 codex mcp add agentacct -- "$AGENTACCT_BIN" mcp serve --store-dir "$HOME/.agent-sentinel-global/state"
 agentacct hooks claude-code install --project-dir "$HOME/.agent-sentinel-global" --store-dir "$HOME/.agent-sentinel-global/state" --user-settings-example
@@ -221,6 +222,7 @@ agentacct setup instructions --agent codex --user --store-dir "$HOME/.agent-sent
 agentacct serve --store-dir "$HOME/.agent-sentinel-global/state"
 ```
 
+- No CLI? The `claude mcp add` / `codex mcp add` lines need the `claude` and `codex` CLIs on PATH — but the Claude Code desktop app and ChatGPT.app's Codex read their config files directly and often ship NO such CLI, so those two lines fail with `command not found`. Register by hand instead, using the absolute path from `command -v agentacct` (call it BIN): (1) Codex — add to `~/.codex/config.toml` a table `[mcp_servers.agentacct]` with `command = "BIN"` and `args = ["mcp", "serve", "--store-dir", "$HOME/.agent-sentinel-global/state"]`; (2) Claude Code — add to `~/.claude.json`, under the top-level `mcpServers` object, `"agentacct": {"type": "stdio", "command": "BIN", "args": ["mcp", "serve", "--store-dir", "<the same absolute store path>"]}` (edit this JSON while no Claude Code session is running, or a live session may overwrite your change). Then start NEW client sessions.
 - The store is `$HOME/.agent-sentinel-global/state` — deliberately NOT the legacy `~/.agent-sentinel` directory, which older versions used as a silent fallback store; reusing it would mix that stray data into global mode. The directory keeps its pre-rename `agent-sentinel` name for compatibility with existing global stores.
 - Every registration embeds an explicit absolute `--store-dir` on purpose: GUI-launched clients (Claude Code desktop, Codex.app) do not inherit shell environment variables, so `AGENT_CHRONICLE_STORE_DIR` (or its pre-rename alias `AGENT_SENTINEL_STORE_DIR`) is shell convenience only — never the mechanism.
 - The printed settings example includes `"env": {"ENABLE_TOOL_SEARCH": "auto"}` alongside the hooks — merge that block too (never overwriting env keys the user already has): without it the agentacct MCP tools stay deferred in Claude Code and un-primed sessions record nothing, however well the hooks are wired.

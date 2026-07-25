@@ -354,3 +354,25 @@ def test_mcp_serve_relative_store_dir_refusal_flags_relative_env_value(tmp_path,
     assert result.exit_code == 2, result.output
     assert "not an absolute path" in result.output
     assert served == []
+
+
+def test_version_flag_prints_installed_version_and_exits() -> None:
+    """F5 (clean-machine finding): `agentacct --version` prints the installed
+    version and exits 0 without needing a subcommand — a new user's instinct to
+    check the version must not fall through to the help text."""
+    result = runner.invoke(app, ["--version"])
+    assert result.exit_code == 0, result.output
+    assert result.output.startswith("agentacct "), result.output
+    token = result.output.split("agentacct ", 1)[1].strip()
+    assert token, "version token is empty"
+
+
+def test_version_flag_does_not_change_help_or_break_subcommands() -> None:
+    """The added --version callback must not change the app-level help text or
+    stop `agentacct <subcommand>` from resolving."""
+    help_result = runner.invoke(app, ["--help"])
+    assert help_result.exit_code == 0, help_result.output
+    assert "Local-first Agent Work Intelligence" in help_result.output
+    # A known subcommand still resolves (its own help renders, exit 0).
+    sub = runner.invoke(app, ["serve", "--help"])
+    assert sub.exit_code == 0, sub.output

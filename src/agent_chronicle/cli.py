@@ -167,6 +167,38 @@ app = typer.Typer(
     help="Local-first Agent Work Intelligence for coding agents: usage truth, recorded work, and honest joins.",
     pretty_exceptions_show_locals=False,
 )
+
+
+def _version_callback(value: bool) -> None:
+    """Print the installed agentacct version and exit (eager --version option)."""
+    if not value:
+        return
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _dist_version
+
+    try:
+        resolved = _dist_version("agentacct")
+    except PackageNotFoundError:  # source checkout without installed dist metadata
+        resolved = "0.0.0+source"
+    print(f"agentacct {resolved}")
+    raise typer.Exit()
+
+
+@app.callback()
+def _app_main(
+    version: Annotated[
+        Optional[bool],
+        typer.Option(
+            "--version",
+            callback=_version_callback,
+            is_eager=True,
+            help="Show the installed agentacct version and exit.",
+        ),
+    ] = None,
+) -> None:
+    # No docstring: Typer falls back to the app-level help= above, so adding this
+    # callback for --version does not change `agentacct --help` output.
+    return
 cost_app = typer.Typer(help="Cost proxy and usage ledger commands.")
 hooks_app = typer.Typer(help="Hook pack commands for agent runtimes.")
 policy_app = typer.Typer(help="Project policy commands.")
