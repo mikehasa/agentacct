@@ -73,41 +73,59 @@ def test_overview_v2_metric_tiles_and_charts_render(tmp_path):
     assert '<path class="ov-line-path"' in html
     assert "No saved usage rows in this window yet" not in html
 
-    # Daily stacked bars: real chart-bar rects and the daily-usage subhead.
-    assert 'id="ov-usage-bars"' in html
+    # Daily stacked bars: real chart-bar rects and the daily-usage subhead. The
+    # default (agent) breakdown chart carries the ov-usage-bars-agent id; all
+    # three breakdown charts render up front for the CSS-only tab selector.
+    assert 'id="ov-usage-bars-agent"' in html
     assert '<rect class="chart-bar"' in html
     assert "Token usage over time" in html
 
 
-def test_overview_v2_breakdown_tabs_switch_series(tmp_path):
+def test_overview_v2_breakdown_tabs_are_css_only_and_render_all_series(tmp_path):
+    store_root = tmp_path / "state"
+    _seed_multiday(store_root)
+    html = _client(store_root).get("/", headers=HTML_ACCEPT).text
+
+    # Selector is CSS-only: visually-hidden radios + labels, NOT query-param links.
+    assert 'href="/?usage_breakdown=' not in html
+    assert '<input type="radio" name="ov-usage-breakdown" id="ov-bd-agent" class="ov-utab-radio" checked>' in html
+    assert '<input type="radio" name="ov-usage-breakdown" id="ov-bd-model" class="ov-utab-radio">' in html
+    assert '<input type="radio" name="ov-usage-breakdown" id="ov-bd-agent-model" class="ov-utab-radio">' in html
+    assert '<label class="ov-utab" for="ov-bd-agent"' in html
+    assert '<label class="ov-utab" for="ov-bd-model">By model</label>' in html
+    # The :checked ~ sibling rules do the switching — no JS anywhere.
+    assert "<script" not in html.lower()
+    assert ".ov-usage-bars #ov-bd-model:checked ~ .ov-utab-panel-model" in html
+
+    # ALL THREE breakdown series render up front (CSS reveals one at a time):
+    # agent legend, model legend, and agent-model composite labels all present.
+    for label in ("Claude Code", "Codex", "Hermes"):
+        assert f'</span>{label}</span>' in html
+    assert "fill:var(--lane-claude-code)" in html
+    assert "claude-opus-4" in html
+    assert "claude-sonnet-4" in html
+    assert "opacity:" in html
+    assert "Claude Code · claude-opus-4" in html
+    # One panel per breakdown, each with its own chart id.
+    assert 'id="ov-usage-bars-agent"' in html
+    assert 'id="ov-usage-bars-model"' in html
+    assert 'id="ov-usage-bars-agent-model"' in html
+
+
+def test_overview_v2_breakdown_deep_link_sets_the_default_checked_radio(tmp_path):
+    """The old ?usage_breakdown= link coexists: it only chooses which radio starts
+    checked, so an existing deep link opens on the right tab (then CSS switches)."""
     store_root = tmp_path / "state"
     _seed_multiday(store_root)
     client = _client(store_root)
 
-    # Default = by agent: three lane legends, the agent tab active.
-    agent_html = client.get("/", headers=HTML_ACCEPT).text
-    assert '<a class="ov-utab is-on" href="/?usage_breakdown=agent"' in agent_html
-    for label in ("Claude Code", "Codex", "Hermes"):
-        assert f'</span>{label}</span>' in agent_html
-    # Agent lanes use the shared platform lane color via an inline fill var.
-    assert "fill:var(--lane-claude-code)" in agent_html
-
-    # By model: the model tab active and model-named legend chips.
     model_html = client.get("/?usage_breakdown=model", headers=HTML_ACCEPT).text
-    assert '<a class="ov-utab is-on" href="/?usage_breakdown=model"' in model_html
-    assert "claude-opus-4" in model_html
-    assert "claude-sonnet-4" in model_html
-    # Sub-models within one agent step opacity so two Claude models differ.
-    assert "opacity:" in model_html
+    assert '<input type="radio" name="ov-usage-breakdown" id="ov-bd-model" class="ov-utab-radio" checked>' in model_html
+    assert '<input type="radio" name="ov-usage-breakdown" id="ov-bd-agent" class="ov-utab-radio">' in model_html
 
-    # By agent-model: composite labels.
-    am_html = client.get("/?usage_breakdown=agent-model", headers=HTML_ACCEPT).text
-    assert '<a class="ov-utab is-on" href="/?usage_breakdown=agent-model"' in am_html
-    assert "Claude Code · claude-opus-4" in am_html
-
-    # An unknown breakdown falls back to the agent view (page-wide _safe_choice).
+    # An unknown breakdown falls back to the agent radio (page-wide _safe_choice).
     bogus_html = client.get("/?usage_breakdown=bogus", headers=HTML_ACCEPT).text
-    assert '<a class="ov-utab is-on" href="/?usage_breakdown=agent"' in bogus_html
+    assert '<input type="radio" name="ov-usage-breakdown" id="ov-bd-agent" class="ov-utab-radio" checked>' in bogus_html
 
 
 def test_overview_v2_roster_shows_per_agent_tokens_and_cost(tmp_path):
@@ -281,8 +299,9 @@ def test_overview_v2_charts_have_instant_css_hover_tooltips_no_js(tmp_path):
     assert 'class="ovh-hit"' in html
     assert 'class="ovh-tip"' in html
     assert ".ovh:hover .ovh-cross, .ovh:hover .ovh-dot, .ovh:hover .ovh-tip" in html
-    # Bar-chart tooltip lists each series that day plus a Total row.
-    bars = html[html.index('id="ov-usage-bars"') : html.index("</figure>", html.index('id="ov-usage-bars"'))]
+    # Bar-chart tooltip lists each series that day plus a Total row (inspect the
+    # default agent-breakdown chart; all three render for the CSS-only tabs).
+    bars = html[html.index('id="ov-usage-bars-agent"') : html.index("</figure>", html.index('id="ov-usage-bars-agent"'))]
     assert ">Total<" in bars
     assert ">Claude Code<" in bars
     # Line-chart tooltip carries the daily + cumulative figures and a hover dot.
@@ -304,7 +323,8 @@ def test_overview_v2_bar_tooltip_folds_long_series_and_keeps_total(tmp_path):
                        input_tokens=1000 * (i + 1), output_tokens=100, cached_input_tokens=50,
                        cost=0.01 * (i + 1), started_at=now - 3600 - i * 30)
     html = _client(store_root).get("/?usage_breakdown=model", headers=HTML_ACCEPT).text
-    bars = html[html.index('id="ov-usage-bars"') : html.index("</figure>", html.index('id="ov-usage-bars"'))]
+    # The many models live in the by-model chart; inspect that panel directly.
+    bars = html[html.index('id="ov-usage-bars-model"') : html.index("</figure>", html.index('id="ov-usage-bars-model"'))]
     assert re.search(r">\+\d+ more<", bars)
     assert ">Total<" in bars
 
@@ -355,7 +375,7 @@ def test_overview_v2_bar_chart_axis_labels_are_compact(tmp_path):
         started_at=time.time() - 3600,
     )
     html = _client(store_root).get("/", headers=HTML_ACCEPT).text
-    bars_start = html.index('id="ov-usage-bars"')
+    bars_start = html.index('id="ov-usage-bars-agent"')
     bars = html[bars_start : html.index("</figure>", bars_start)]
     assert 'class="chart-axis-label"' in bars
     assert ">10B</text>" in bars
