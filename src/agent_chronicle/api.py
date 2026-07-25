@@ -3803,6 +3803,18 @@ _DASHBOARD_STYLE = """    :root {
     .ov-utabs { background: var(--color-surface-muted); border: 1px solid var(--color-border); border-radius: 8px; display: inline-flex; gap: 2px; letter-spacing: 0; padding: 2px; text-transform: none; }
     .ov-utab { border-radius: 6px; color: var(--color-text-muted); font-size: 0.72rem; font-weight: 650; min-height: 28px; padding: 0.2rem 0.55rem; text-decoration: none; display: inline-flex; align-items: center; }
     .ov-utab.is-on { background: var(--color-surface); box-shadow: var(--shadow-sm); color: var(--color-text); }
+    /* CSS-only breakdown tabs: visually-hidden radios drive which panel + label
+       is active via :checked ~ sibling rules. Zero JS, zero page navigation. */
+    .ov-usage-bars .ov-utab-radio { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    .ov-utab { cursor: pointer; }
+    .ov-usage-bars .ov-utab-panel { display: none; }
+    .ov-usage-bars #ov-bd-agent:checked ~ .ov-utab-panel-agent,
+    .ov-usage-bars #ov-bd-model:checked ~ .ov-utab-panel-model,
+    .ov-usage-bars #ov-bd-agent-model:checked ~ .ov-utab-panel-agent-model { display: block; }
+    .ov-usage-bars #ov-bd-agent:checked ~ .ov-chart-subhead label[for="ov-bd-agent"],
+    .ov-usage-bars #ov-bd-model:checked ~ .ov-chart-subhead label[for="ov-bd-model"],
+    .ov-usage-bars #ov-bd-agent-model:checked ~ .ov-chart-subhead label[for="ov-bd-agent-model"] { background: var(--color-surface); box-shadow: var(--shadow-sm); color: var(--color-text); }
+    .ov-usage-bars .ov-utab-radio:focus-visible ~ .ov-chart-subhead .ov-utabs { outline: 2px solid var(--color-text); outline-offset: 2px; }
     .ov-linechart svg, .ov-barchart svg { max-height: 220px; }
     .ov-line-path { fill: none; stroke: var(--color-accent); stroke-width: 2; }
     .ov-line-dot { fill: var(--color-surface); stroke: var(--color-accent); stroke-width: 2; }
@@ -8535,21 +8547,35 @@ def _overview_metric_tiles_html(
 def _overview_usage_charts_html(
     *,
     line_html: str,
-    bar_html: str,
-    breakdown: str,
+    bar_charts: dict[str, str],
+    active_breakdown: str,
     range_label: str,
     measured_days: int,
     esc: Any,
 ) -> str:
     """Usage section: the cumulative line chart plus the daily stacked-bar chart
-    with a no-JS breakdown selector (query-param links that re-render the page).
+    with a CSS-only (no-JS) breakdown selector.
+
+    All three breakdown charts (agent / model / agent-model) are rendered up
+    front; visually-hidden radio inputs plus `:checked ~` sibling rules show one
+    at a time, so switching costs no JS and no page navigation. The radios and
+    panels are siblings under `.ov-usage-bars` on purpose — the general-sibling
+    combinator only reaches following siblings. The `?usage_breakdown=` deep link
+    still works: it sets which radio starts `checked`, so an existing link opens
+    on the right tab and the user can switch from there without a reload.
     """
 
+    labels = (("agent", "By agent"), ("model", "By model"), ("agent-model", "By agent-model"))
+    radios: list[str] = []
     tabs: list[str] = []
-    for key, label in (("agent", "By agent"), ("model", "By model"), ("agent-model", "By agent-model")):
-        active = " is-on" if key == breakdown else ""
-        current = ' aria-current="true"' if key == breakdown else ""
-        tabs.append(f'<a class="ov-utab{active}" href="/?usage_breakdown={esc(key)}"{current}>{esc(label)}</a>')
+    panels: list[str] = []
+    for key, label in labels:
+        rid = f"ov-bd-{key}"
+        checked = " checked" if key == active_breakdown else ""
+        current = ' aria-current="true"' if key == active_breakdown else ""
+        radios.append(f'<input type="radio" name="ov-usage-breakdown" id="{rid}" class="ov-utab-radio"{checked}>')
+        tabs.append(f'<label class="ov-utab" for="{rid}"{current}>{esc(label)}</label>')
+        panels.append(f'<div class="ov-utab-panel ov-utab-panel-{key}">{bar_charts[key]}</div>')
     measured_note = (
         f"{_fmt_int(measured_days)} measured {'day' if measured_days == 1 else 'days'} in this window"
         if measured_days
@@ -8562,9 +8588,10 @@ def _overview_usage_charts_html(
         <div class="ov-chart-subhead"><span>Total usage</span><span class="note">cumulative · {esc(range_label)}</span></div>
         {line_html}
       </div>
-      <div class="ov-chart-block">
+      <div class="ov-chart-block ov-usage-bars">
+        {"".join(radios)}
         <div class="ov-chart-subhead"><span>Daily usage</span><span class="ov-utabs" role="tablist" aria-label="Daily usage breakdown">{"".join(tabs)}</span></div>
-        {bar_html}
+        {"".join(panels)}
       </div>
     </section>
     """
@@ -10141,12 +10168,30 @@ def _overview_body(
     )
     usage_totals_30d = usage_cube_30d["totals"]
     held_30d = int(usage_totals_30d.get("excluded_non_additive_rows") or 0)
-    line_days, bar_days, breakdown_series = _overview_breakdown_series(
-        usage_cube_30d, scoped_records, breakdown=safe_breakdown, today=today
-    )
-    measured_days = sum(1 for _period, rows, _total in line_days if rows > 0)
     range_label = "last 30 days"
-    breakdown_word = {"agent": "by agent", "model": "by model", "agent-model": "by agent-model"}[safe_breakdown]
+    breakdown_words = {"agent": "by agent", "model": "by model", "agent-model": "by agent-model"}
+    # Render all three breakdowns up front so the tab selector can be CSS-only.
+    # The cumulative line + measured-day count are breakdown-independent, so take
+    # them from the first computed breakdown.
+    line_days: list[tuple[str, int, int]] | None = None
+    bar_charts: dict[str, str] = {}
+    for key in ("agent", "model", "agent-model"):
+        b_line_days, bar_days, breakdown_series = _overview_breakdown_series(
+            usage_cube_30d, scoped_records, breakdown=key, today=today
+        )
+        if line_days is None:
+            line_days = b_line_days
+        bar_charts[key] = _overview_daily_stack_html(
+            bar_days,
+            breakdown_series,
+            esc=esc,
+            chart_id=f"ov-usage-bars-{key}",
+            held_rows=held_30d,
+            range_label=range_label,
+            breakdown_label=breakdown_words[key],
+        )
+    assert line_days is not None
+    measured_days = sum(1 for _period, rows, _total in line_days if rows > 0)
     usage_charts_html = _overview_usage_charts_html(
         line_html=_overview_usage_line_html(
             line_days,
@@ -10156,16 +10201,8 @@ def _overview_body(
             range_label=range_label,
             measured_days=measured_days,
         ),
-        bar_html=_overview_daily_stack_html(
-            bar_days,
-            breakdown_series,
-            esc=esc,
-            chart_id="ov-usage-bars",
-            held_rows=held_30d,
-            range_label=range_label,
-            breakdown_label=breakdown_word,
-        ),
-        breakdown=safe_breakdown,
+        bar_charts=bar_charts,
+        active_breakdown=safe_breakdown,
         range_label=range_label,
         measured_days=measured_days,
         esc=esc,
