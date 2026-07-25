@@ -78,7 +78,7 @@ def test_claude_code_hook_install_dry_run_does_not_write_files(tmp_path):
     assert result.exit_code == 0
     assert "Dry run" in result.output
     assert "claude_pre_tool_use.py" in result.output
-    assert not (tmp_path / ".agent-sentinel" / "hooks" / "claude_pre_tool_use.py").exists()
+    assert not (tmp_path / ".claude" / "hooks" / "claude_pre_tool_use.py").exists()
 
 
 def test_claude_code_hook_install_writes_project_local_files(tmp_path):
@@ -87,7 +87,7 @@ def test_claude_code_hook_install_writes_project_local_files(tmp_path):
     result = runner.invoke(app, ["hooks", "claude-code", "install", "--project-dir", str(tmp_path)])
 
     assert result.exit_code == 0
-    hook_path = tmp_path / ".agent-sentinel" / "hooks" / "claude_pre_tool_use.py"
+    hook_path = tmp_path / ".claude" / "hooks" / "claude_pre_tool_use.py"
     settings_path = tmp_path / ".claude" / "settings.agent-sentinel.example.json"
     assert hook_path.exists()
     assert settings_path.exists()
@@ -107,7 +107,7 @@ def test_claude_code_hook_install_writes_project_local_files(tmp_path):
 
 def test_claude_code_hook_install_refuses_to_overwrite_without_force(tmp_path):
     runner = CliRunner()
-    hook_path = tmp_path / ".agent-sentinel" / "hooks" / "claude_pre_tool_use.py"
+    hook_path = tmp_path / ".claude" / "hooks" / "claude_pre_tool_use.py"
     hook_path.parent.mkdir(parents=True)
     hook_path.write_text("custom hook")
 
@@ -784,7 +784,7 @@ def test_install_embeds_resolved_executable_and_python_paths(tmp_path, monkeypat
 
     assert result.exit_code == 0
     assert str(stub) in result.output
-    wrapper_text = (tmp_path / ".agent-sentinel" / "hooks" / "claude_pre_tool_use.py").read_text()
+    wrapper_text = (tmp_path / ".claude" / "hooks" / "claude_pre_tool_use.py").read_text()
     assert str(stub) in wrapper_text
     assert "'agent-chronicle'" in wrapper_text  # PATH fallback for relocated projects
     settings = json.loads((tmp_path / ".claude" / "settings.agent-sentinel.example.json").read_text())
@@ -792,7 +792,7 @@ def test_install_embeds_resolved_executable_and_python_paths(tmp_path, monkeypat
     # shlex round-trip, not naive whitespace split: the executable token must
     # survive shell parsing even if the interpreter path needed quoting.
     assert shlex.split(command)[0] == sys.executable
-    assert '"$CLAUDE_PROJECT_DIR/.agent-sentinel/hooks/claude_pre_tool_use.py"' in command
+    assert '"$CLAUDE_PROJECT_DIR/.claude/hooks/claude_pre_tool_use.py"' in command
 
 
 def test_install_warns_when_no_absolute_executable_resolvable(tmp_path, monkeypatch):
@@ -804,7 +804,7 @@ def test_install_warns_when_no_absolute_executable_resolvable(tmp_path, monkeypa
 
     assert result.exit_code == 0
     assert "Warning: no absolute agentacct executable could be resolved" in result.output
-    wrapper_text = (tmp_path / ".agent-sentinel" / "hooks" / "claude_pre_tool_use.py").read_text()
+    wrapper_text = (tmp_path / ".claude" / "hooks" / "claude_pre_tool_use.py").read_text()
     assert "AGENT_CHRONICLE_CANDIDATES = ['agentacct', 'agent-chronicle', 'agent-sentinel']" in wrapper_text
 
 
@@ -890,7 +890,7 @@ def test_installed_wrapper_end_to_end_without_shell_path(tmp_path):
         pytest.skip("no agent-chronicle executable available in this environment")
     install = CliRunner().invoke(app, ["hooks", "claude-code", "install", "--project-dir", str(tmp_path)])
     assert install.exit_code == 0
-    wrapper = tmp_path / ".agent-sentinel" / "hooks" / "claude_pre_tool_use.py"
+    wrapper = tmp_path / ".claude" / "hooks" / "claude_pre_tool_use.py"
     empty_bin = tmp_path / "emptybin"
     empty_bin.mkdir()
 
@@ -1129,9 +1129,10 @@ def test_install_force_migrates_legacy_install_to_embedded_paths(tmp_path, monke
     """The remediation every warn message prescribes must actually work."""
     from agent_chronicle import hooks as hooks_module
 
-    hook_path = tmp_path / ".agent-sentinel" / "hooks" / "claude_pre_tool_use.py"
-    hook_path.parent.mkdir(parents=True)
-    hook_path.write_text(_LEGACY_WRAPPER)
+    # A pre-relocation (F3) install: the wrapper lives under the store dir.
+    legacy_hook_path = tmp_path / ".agent-sentinel" / "hooks" / "claude_pre_tool_use.py"
+    legacy_hook_path.parent.mkdir(parents=True)
+    legacy_hook_path.write_text(_LEGACY_WRAPPER)
     settings_path = tmp_path / ".claude" / "settings.agent-sentinel.example.json"
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text(json.dumps({"hooks": {"PreToolUse": []}}))
@@ -1141,9 +1142,15 @@ def test_install_force_migrates_legacy_install_to_embedded_paths(tmp_path, monke
     result = CliRunner().invoke(app, ["hooks", "claude-code", "install", "--project-dir", str(tmp_path), "--force"])
 
     assert result.exit_code == 0
-    assert str(stub) in hook_path.read_text()
+    # --force migrates the wrapper to its new home OUTSIDE the store dir; the
+    # example settings command now points there. The legacy wrapper is left in
+    # place so an active settings file that still references it keeps working
+    # until the user re-merges the refreshed example.
+    new_hook_path = tmp_path / ".claude" / "hooks" / "claude_pre_tool_use.py"
+    assert str(stub) in new_hook_path.read_text()
     command = json.loads(settings_path.read_text())["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
     assert shlex.split(command)[0] == sys.executable
+    assert ".claude/hooks/claude_pre_tool_use.py" in command
     rows = hooks_module.claude_code_hook_doctor_checks(tmp_path)
     assert all(row["status"] == "ok" for row in rows), rows
 
@@ -1158,7 +1165,7 @@ def test_install_writes_utf8_wrapper_for_non_ascii_paths(tmp_path, monkeypatch):
     result = CliRunner().invoke(app, ["hooks", "claude-code", "install", "--project-dir", str(tmp_path)])
 
     assert result.exit_code == 0
-    raw = (tmp_path / ".agent-sentinel" / "hooks" / "claude_pre_tool_use.py").read_bytes()
+    raw = (tmp_path / ".claude" / "hooks" / "claude_pre_tool_use.py").read_bytes()
     text = raw.decode("utf-8")  # must be UTF-8 regardless of host locale
     assert "/opt/josé-venv/bin/agent-sentinel" in text
     ast.parse(text)  # and valid Python source
@@ -1575,3 +1582,52 @@ def test_hook_doctor_emits_no_env_row_without_active_settings_files(tmp_path):
     rows = [row for row in claude_code_hook_doctor_checks(tmp_path) if row["name"] == "env.ENABLE_TOOL_SEARCH"]
 
     assert rows == []
+
+
+def test_hook_wrapper_survives_a_store_dir_move(tmp_path):
+    """F3 regression: the installed wrapper lives OUTSIDE the store dir, so moving
+    or renaming the store (a normal admin action) can't vanish it. A vanished
+    wrapper makes `python <gone>` fail closed, and a "*" PreToolUse hook that fails
+    closed then blocks EVERY tool call in every running session (observed live)."""
+    from agent_chronicle.hooks import CLAUDE_HOOK_RELATIVE_PATH
+
+    assert ".agent-sentinel" not in CLAUDE_HOOK_RELATIVE_PATH.parts, CLAUDE_HOOK_RELATIVE_PATH
+    (tmp_path / ".agent-sentinel" / "state").mkdir(parents=True)
+    install = CliRunner().invoke(app, ["hooks", "claude-code", "install", "--project-dir", str(tmp_path)])
+    assert install.exit_code == 0
+    wrapper = tmp_path / CLAUDE_HOOK_RELATIVE_PATH
+    assert wrapper.exists()
+    # Move the whole store aside: the wrapper is not under it, so it stays put.
+    (tmp_path / ".agent-sentinel").rename(tmp_path / ".agent-sentinel.KEEP")
+    assert wrapper.exists(), "wrapper vanished when the store dir moved — F3 regression"
+
+
+def test_pre_tool_use_subcommand_fails_open_on_internal_error(monkeypatch):
+    """F3: the PreToolUse subcommand must NEVER exit non-zero — a crash would make
+    Claude Code block the tool call. On any internal error it emits an allow
+    decision and exits 0 (fail open)."""
+    from agent_chronicle import cli as cli_module
+
+    def _boom(_raw):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(cli_module, "evaluate_stdin_json", _boom)
+    result = CliRunner().invoke(app, ["hooks", "claude-code", "pre-tool-use"], input='{"tool_name": "Bash"}')
+    assert result.exit_code == 0, result.output
+    decision = json.loads(result.output)
+    assert decision["agent_sentinel"]["decision"] == "allow"
+    assert "failing open" in decision["agent_sentinel"]["reason"]
+
+
+def test_session_start_subcommand_fails_open_on_internal_error(monkeypatch):
+    """F3: a SessionStart subcommand crash must not break session startup; it
+    emits the empty no-op response and exits 0."""
+    from agent_chronicle import cli as cli_module
+
+    def _boom(_raw):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(cli_module, "claude_session_start_response", _boom)
+    result = CliRunner().invoke(app, ["hooks", "claude-code", "session-start"], input='{"hook_event_name": "SessionStart"}')
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == "{}"

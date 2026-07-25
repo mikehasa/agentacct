@@ -740,11 +740,25 @@ def claude_code_hook_context_status(
     return {"status": "invalid", "age_seconds": None, "client_session_id": None, "client_transcript_id": None, "fresh_count": 0}
 
 
-# frozen: both filenames predate the agentacct rename and are carried by
-# historical stores/logs/files forever — installed Claude Code settings point
-# at the wrapper path, and shipped docs/tests reference the example filename.
-# The wrapper lives inside the (equally frozen) ".agent-sentinel/" project dir.
-CLAUDE_HOOK_RELATIVE_PATH = Path(".agent-sentinel/hooks/claude_pre_tool_use.py")
+# The wrapper FILENAME is frozen (`claude_pre_tool_use.py`): doctor and the
+# settings-command matcher recognize an installed hook by this basename, so
+# pre-rename and pre-relocation installs keep being recognized forever.
+#
+# The wrapper DIRECTORY moved OUT of the store dir (was `.agent-sentinel/hooks/`,
+# now `.claude/hooks/`). Rationale (F3): the store directory is a movable thing —
+# renaming/moving it is a normal admin action — and a wrapper that lives INSIDE
+# the store vanishes when the store moves. Claude Code then runs `python <gone>`,
+# which fails before the wrapper's own fail-open can run, and a `"*"` PreToolUse
+# hook that fails closed blocks EVERY tool call in every running session. Homing
+# the wrapper under `.claude/` (a sibling of the settings that reference it, never
+# the store) keeps a store move from bricking sessions. Existing installs keep
+# their old `.agent-sentinel/hooks/` path until re-run; doctor recognizes both.
+CLAUDE_HOOK_RELATIVE_PATH = Path(".claude/hooks/claude_pre_tool_use.py")
+# Pre-relocation installs (F3) kept the wrapper under the store dir. Doctor still
+# finds and inspects it there so an un-migrated install stays diagnosable, and
+# `install --force` migrates it to the new home. Same frozen basename, so the
+# settings-command matcher recognizes both without a second name.
+LEGACY_CLAUDE_HOOK_RELATIVE_PATH = Path(".agent-sentinel/hooks/claude_pre_tool_use.py")
 CLAUDE_SETTINGS_RELATIVE_PATH = Path(".claude/settings.agent-sentinel.example.json")
 # Active settings files doctor also inspects for agentacct hook commands. The
 # example file is safe to rewrite; these are user-owned and only ever read.
@@ -1218,6 +1232,13 @@ def claude_code_hook_doctor_checks(project_dir: Path | str) -> list[dict[str, st
     """Doctor rows for the project-local hook install: (status, name, details)."""
     root = Path(project_dir)
     hook_path, settings_path = claude_code_hook_paths(root)
+    # Un-migrated install: the wrapper still lives at the pre-relocation store
+    # path. Inspect it there so doctor keeps diagnosing it (the settings-command
+    # matcher already recognizes both by the frozen basename).
+    if not hook_path.exists():
+        legacy_hook_path = root / LEGACY_CLAUDE_HOOK_RELATIVE_PATH
+        if legacy_hook_path.exists():
+            hook_path = legacy_hook_path
     checks: list[dict[str, str]] = [
         {"status": "ok" if hook_path.exists() else "warn", "name": "hook wrapper", "details": str(hook_path)},
         {"status": "ok" if settings_path.exists() else "warn", "name": "example settings", "details": str(settings_path)},

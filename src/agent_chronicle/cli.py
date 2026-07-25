@@ -2383,13 +2383,16 @@ def claude_code_pre_tool_use(
     Also persists hook-provided session_id/transcript_path as the project's
     current client context so MCP sections can inherit real join ids.
     """
-    raw = sys.stdin.read()
-    decision = evaluate_stdin_json(raw)
     try:
-        capture_claude_code_client_context(raw, store_dir=store_dir)
-    except Exception:  # noqa: BLE001 - context capture must never affect the hook decision.
-        pass
-    print(json.dumps(decision, ensure_ascii=False))
+        raw = sys.stdin.read()
+        decision = evaluate_stdin_json(raw)
+        try:
+            capture_claude_code_client_context(raw, store_dir=store_dir)
+        except Exception:  # noqa: BLE001 - context capture must never affect the hook decision.
+            pass
+        print(json.dumps(decision, ensure_ascii=False))
+    except Exception as exc:  # noqa: BLE001 - FAIL OPEN: a PreToolUse hook must NEVER block a tool call, even on an internal agentacct error. An observe-only recorder that can brick every tool call is worse than one that records nothing.
+        print(json.dumps({"agent_sentinel": {"decision": "allow", "risk": "low", "reason": f"agentacct hook error ({type(exc).__name__}); failing open"}}, ensure_ascii=False))
 
 
 @claude_code_hooks_app.command("session-start")
@@ -2407,17 +2410,20 @@ def claude_code_session_start(
     the agent to record its work as sections. Subagent sessions: no capture,
     empty response — the root session owns the semantic goal.
     """
-    raw = sys.stdin.read()
-    response = claude_session_start_response(raw)
-    if response:
-        # Subagent/malformed events return {} above AND skip capture: a burst
-        # of subagent captures could evict the root session's context file
-        # from the capped per-session dir.
-        try:
-            capture_claude_code_client_context(raw, store_dir=store_dir)
-        except Exception:  # noqa: BLE001 - context capture must never affect the hook response.
-            pass
-    print(json.dumps(response, ensure_ascii=False))
+    try:
+        raw = sys.stdin.read()
+        response = claude_session_start_response(raw)
+        if response:
+            # Subagent/malformed events return {} above AND skip capture: a burst
+            # of subagent captures could evict the root session's context file
+            # from the capped per-session dir.
+            try:
+                capture_claude_code_client_context(raw, store_dir=store_dir)
+            except Exception:  # noqa: BLE001 - context capture must never affect the hook response.
+                pass
+        print(json.dumps(response, ensure_ascii=False))
+    except Exception:  # noqa: BLE001 - FAIL OPEN: a SessionStart error must never break session startup; emit the empty no-op response and exit 0.
+        print("{}")
 
 
 @claude_code_hooks_app.command("install")

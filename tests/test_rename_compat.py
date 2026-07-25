@@ -450,9 +450,19 @@ def test_frozen_metadata_keys_wire_vocab_and_store_dirs() -> None:
     assert DEFAULT_POLICY_FILE == Path(".agent-sentinel/policy.yaml")
     assert '".agent-sentinel" / "state"' in _src("store_resolution.py")
     assert '"$HOME/.agent-sentinel-global/state"' in install_guide.GLOBAL_INSTALL_BLOCK
-    from agent_chronicle.hooks import CLAUDE_HOOK_RELATIVE_PATH, CLAUDE_SETTINGS_RELATIVE_PATH
+    from agent_chronicle.hooks import (
+        CLAUDE_HOOK_RELATIVE_PATH,
+        CLAUDE_SETTINGS_RELATIVE_PATH,
+        LEGACY_CLAUDE_HOOK_RELATIVE_PATH,
+    )
 
-    assert CLAUDE_HOOK_RELATIVE_PATH == Path(".agent-sentinel/hooks/claude_pre_tool_use.py")
+    # F3: the wrapper BASENAME is frozen (doctor + the settings-command matcher
+    # recognize an install by this filename), but the directory moved out of the
+    # store dir so a store move can't vanish it. The pre-relocation path stays
+    # recognized forever via LEGACY_CLAUDE_HOOK_RELATIVE_PATH.
+    assert CLAUDE_HOOK_RELATIVE_PATH == Path(".claude/hooks/claude_pre_tool_use.py")
+    assert LEGACY_CLAUDE_HOOK_RELATIVE_PATH == Path(".agent-sentinel/hooks/claude_pre_tool_use.py")
+    assert CLAUDE_HOOK_RELATIVE_PATH.name == LEGACY_CLAUDE_HOOK_RELATIVE_PATH.name == "claude_pre_tool_use.py"
     assert CLAUDE_SETTINGS_RELATIVE_PATH == Path(".claude/settings.agent-sentinel.example.json")
     # Legacy managed markers stay recognized verbatim.
     assert install_guide.LEGACY_INSTRUCTIONS_BEGIN_MARKER == (
