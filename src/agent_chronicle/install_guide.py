@@ -212,7 +212,7 @@ AGENTACCT_BIN="$(command -v agentacct)"
 # NO `claude`/`codex` CLI on PATH? (common: the Claude Code desktop app and ChatGPT.app's Codex ship none) — skip the two `mcp add` lines and hand-write the same registration per the "no CLI" note below.
 claude mcp add --scope user agentacct -- "$AGENTACCT_BIN" mcp serve --store-dir "$HOME/.agent-sentinel-global/state"
 codex mcp add agentacct -- "$AGENTACCT_BIN" mcp serve --store-dir "$HOME/.agent-sentinel-global/state"
-agentacct hooks claude-code install --project-dir "$HOME/.agent-sentinel-global" --store-dir "$HOME/.agent-sentinel-global/state" --user-settings-example
+agentacct hooks claude-code install --project-dir "$HOME" --store-dir "$HOME/.agent-sentinel-global/state" --user-settings-example  # wrapper homes in ~/.claude/hooks/ (NOT the store dir): a store move must never vanish the hook and brick sessions
 # merge the printed "hooks" AND "env" blocks into ~/.claude/settings.json (user-level; ask the user first; merge, never overwrite existing keys)
 # standing "record your work" instructions — this is what fills the dashboard with work context (writes ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md; ask the user first, --dry-run to preview)
 agentacct setup instructions --agent claude-code --user --store-dir "$HOME/.agent-sentinel-global/state"

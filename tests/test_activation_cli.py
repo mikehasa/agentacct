@@ -414,8 +414,10 @@ def test_existing_but_invalid_claude_hook_never_claims_ready(
         lambda **_kwargs: {"imported_events": 0, "refreshed_events": 0},
     )
     hook, example = claude_code_hook_paths(tmp_path)
-    hook.parent.mkdir(parents=True)
-    example.parent.mkdir(parents=True)
+    # hook (.claude/hooks/) and example (.claude/) now share the .claude/ parent,
+    # so both mkdirs must tolerate it already existing.
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    example.parent.mkdir(parents=True, exist_ok=True)
     hook.write_text("", encoding="utf-8")
     example.write_text(
         json.dumps({"env": {"ENABLE_TOOL_SEARCH": "auto"}, "hooks": {}}),
