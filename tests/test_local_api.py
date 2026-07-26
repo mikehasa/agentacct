@@ -609,8 +609,8 @@ def test_local_dashboard_renders_work_first_and_keeps_live_usage_in_advanced(tmp
     # source diagnostics remain in Sessions/Advanced instead of posing as
     # user-facing tasks.
     assert "<h1>Work</h1>" in html
-    assert "Recent Tasks" in html
-    assert 'id="work-feed" aria-label="Task feed"' in html
+    assert "Recent activity" in html
+    assert 'id="work-feed" aria-label="Recent activity"' in html
     assert "Source coverage" not in html
     assert "Usage snapshot" not in html
     assert "unknown is not zero" not in html

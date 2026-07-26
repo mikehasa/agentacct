@@ -180,7 +180,7 @@ def test_overview_v2_section_order_matches_approved_layout(tmp_path):
         '<section class="usage-pulse"',
         '<section class="section ov-usage"',
         '<section class="agent-board"',
-        'id="work-feed" aria-label="Task feed"',
+        'id="work-feed" aria-label="Recent activity"',
     ]
     positions = [html.index(marker) for marker in order]
     assert positions == sorted(positions), positions
