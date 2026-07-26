@@ -10513,6 +10513,14 @@ def _tokens_body(
 
 SESSION_JOIN_FILTER_CHOICES = ("attributed", "context", "ambiguous", "unjoined")
 SESSION_KIND_FILTER_CHOICES = ("grouped", "roots", "all-flat")
+# /sessions display order: newest-first browse (default) vs the attribution-first
+# triage order shared with the overview data. Kept separate from
+# _session_display_sort_key so changing the browse order never moves other views.
+SESSION_SORT_CHOICES = ("recent", "attributed")
+# Optional lens: only sessions with recorded agentacct work (sections/checks).
+SESSION_WORK_FILTER_CHOICES = ("all", "recorded")
+# The browse can page past the default slice; "Show more" raises the cap.
+SESSION_BROWSE_SHOW_CHOICES = (40, 100, 300, 1000)
 
 
 def _session_join_filter_bucket(entry: dict[str, Any]) -> str:
@@ -10595,6 +10603,8 @@ def _sessions_filter_controls_html(
     join: str,
     kind: str,
     days: str,
+    sort: str,
+    work: str,
     pill_projects: list[str],
     project_pill_note: str,
     esc: Any,
@@ -10604,7 +10614,19 @@ def _sessions_filter_controls_html(
     are capped with an honest overflow note, and ``url_project`` (never an
     unknown/unvalidated value) is what gets re-encoded into pill URLs."""
 
-    params = {"client": client, "project": url_project, "join": join, "kind": kind, "days": days}
+    params = {
+        "client": client,
+        "project": url_project,
+        "join": join,
+        "kind": kind,
+        "days": days,
+    }
+    # Only non-default sort/work ride the other pills' URLs, so default-page
+    # links stay clean and shareable (and each pill preserves active state).
+    if sort != "recent":
+        params["sort"] = sort
+    if work != "all":
+        params["work"] = work
     client_control = _sort_control(
         current=client,
         options=[("all", "All platforms"), *[(name, _human_client(name)) for name in KNOWN_USAGE_CLIENTS]],
@@ -10655,18 +10677,38 @@ def _sessions_filter_controls_html(
         esc=esc,
         base="/sessions",
     )
+    sort_control = _sort_control(
+        current=sort,
+        options=[("recent", "Newest first"), ("attributed", "Attributed first")],
+        param="sort",
+        extra=params,
+        esc=esc,
+        base="/sessions",
+    )
+    work_control = _sort_control(
+        current=work,
+        options=[("all", "All sessions"), ("recorded", "Recorded work only")],
+        param="work",
+        extra=params,
+        esc=esc,
+        base="/sessions",
+    )
     return (
         '<div class="filter-rows">'
+        f'<div class="filter-row"><span class="filter-label">Order</span>{sort_control}</div>'
         f'<div class="filter-row"><span class="filter-label">Platform</span>{client_control}</div>'
         f'<div class="filter-row"><span class="filter-label">Project</span>{project_control}</div>'
         f'<div class="filter-row"><span class="filter-label">Join state</span>{join_control}</div>'
         f'<div class="filter-row"><span class="filter-label">Sessions</span>{kind_control}</div>'
+        f'<div class="filter-row"><span class="filter-label">Work</span>{work_control}</div>'
         f'<div class="filter-row"><span class="filter-label">Last activity</span>{days_control}</div>'
         "</div>"
     )
 
 
-def _active_session_filter_labels(client: str, project: str, join: str, days: str) -> list[str]:
+def _active_session_filter_labels(
+    client: str, project: str, join: str, days: str, work: str = "all"
+) -> list[str]:
     """Human phrases for the non-default filters — named in the empty state
     and the filtered-count note so a reader always knows what excluded rows."""
 
@@ -10683,6 +10725,8 @@ def _active_session_filter_labels(client: str, project: str, join: str, days: st
             "unjoined": "join state no MCP context",
         }
         labels.append(join_names.get(join, f"join state {join}"))
+    if work == "recorded":
+        labels.append("recorded work only")
     if days != "all":
         labels.append(f"last activity in the last {days} days")
     return labels
@@ -10696,6 +10740,9 @@ def _sessions_body(
     join: str = "all",
     kind: str = "grouped",
     days: str = "30",
+    sort: str = "recent",
+    work: str = "all",
+    show: int = SESSION_ROLLUP_DISPLAY_LIMIT,
 ) -> str:
     """Sessions `/sessions` (PRD §6.2): the filterable session explorer +
     work items + attention + reconciliation + ledger insights.
@@ -10707,8 +10754,11 @@ def _sessions_body(
     (their notes say so). ``kind`` picks the row population: grouped
     (default — top-level rows with children nested as labeled lines), roots
     (root-kind sessions only), all-flat (every rollup entry as its own row;
-    lineage stays visible via child-of chips). The 40-row cap applies AFTER
-    filtering; filtered counts restate "Showing N of M (filtered from T)"."""
+    lineage stays visible via child-of chips). ``sort`` orders the browse
+    (recent = newest-first, the default; attributed = the shared triage
+    order). ``work`` optionally keeps only sessions with recorded work. The
+    ``show`` cap applies AFTER filtering (default 40; "Show more" raises it);
+    filtered counts restate "Showing N of M (filtered from T)"."""
 
     esc = data.esc
     rollup_summary = data.rollup_summary
@@ -10718,6 +10768,13 @@ def _sessions_body(
     join = _safe_choice(join, {"all", *SESSION_JOIN_FILTER_CHOICES}, "all")
     kind = _safe_choice(kind, set(SESSION_KIND_FILTER_CHOICES), "grouped")
     days = _safe_choice(days, set(USAGE_CUBE_DAYS_CHOICES), "30")
+    sort = _safe_choice(sort, set(SESSION_SORT_CHOICES), "recent")
+    work = _safe_choice(work, set(SESSION_WORK_FILTER_CHOICES), "all")
+    try:
+        show = int(show)
+    except (TypeError, ValueError):
+        show = SESSION_ROLLUP_DISPLAY_LIMIT
+    show = max(SESSION_ROLLUP_DISPLAY_LIMIT, min(show, SESSION_BROWSE_SHOW_CHOICES[-1]))
     project = str(project or "all")
     projects_present = _session_projects_present(data.rollup_sessions)
     project_known = project == "all" or project in projects_present
@@ -10755,8 +10812,15 @@ def _sessions_body(
         if (client == "all" or str(entry.get("client") or "") == client)
         and (project == "all" or str(entry.get("project") or "") == project)
         and (join == "all" or _session_join_filter_bucket(entry) == join)
+        and (work == "all" or int(((entry.get("work") or {}).get("counts") or {}).get("total") or 0) > 0)
         and (range_start is None or _session_last_activity_in_range(entry, range_start=range_start, today=today))
     ]
+    # Newest-first is the default browse order; sort=attributed restores the
+    # shared attribution-first order (the population's pre-sorted order).
+    if sort == "recent":
+        filtered_sessions = sorted(
+            filtered_sessions, key=lambda entry: -float(entry.get("last_activity_at") or 0.0)
+        )
 
     # Project pills: ranked by how many rollup sessions carry the label,
     # capped with an honest overflow note (the whitelist the filter validates
@@ -10775,6 +10839,8 @@ def _sessions_body(
         join=join,
         kind=kind,
         days=days,
+        sort=sort,
+        work=work,
         pill_projects=pill_projects,
         project_pill_note=project_pill_note,
         esc=esc,
@@ -10785,7 +10851,7 @@ def _sessions_body(
             f'<p class="section-note">Project <code>{esc(project)}</code> has no sessions in this store — showing '
             "the empty result for this filter (never a guess). Pick a project pill above.</p>"
         )
-    active_filter_labels = _active_session_filter_labels(client, project, join, days)
+    active_filter_labels = _active_session_filter_labels(client, project, join, days, work)
     # The filter-aware empty state names what excluded the rows — but only
     # when filters actually excluded something. A store with no sessions at
     # all keeps the generic what-to-do-next empty state.
@@ -10796,13 +10862,13 @@ def _sessions_body(
     ) if active_filter_labels and population else None
 
     session_rows_html, _default_cap_note, sessions_capped = _session_list_html(
-        filtered_sessions, SESSION_ROLLUP_DISPLAY_LIMIT, esc, empty_html=filtered_empty_html
+        filtered_sessions, show, esc, empty_html=filtered_empty_html
     )
     # Filtered counts restate their basis (PRD §10.6): when the filters
     # excluded anything, the note names shown / matching / total — a plain
-    # cap note alone would hide that a filter is active. The 40-row cap
-    # applies AFTER filtering, so "Showing N of M" always describes the
-    # filtered population.
+    # cap note alone would hide that a filter is active. The show cap applies
+    # AFTER filtering, so "Showing N of M" always describes the filtered
+    # population.
     if len(filtered_sessions) < len(population):
         session_cap_note = (
             f'<p class="section-note">Showing {esc(_fmt_int(sessions_capped["shown"]))} of '
@@ -10812,6 +10878,23 @@ def _sessions_body(
         )
     else:
         session_cap_note = _cap_note(sessions_capped["shown"], sessions_capped["total"], kind_noun)
+    # "Show more" raises the cap in place (preserves every active filter/sort).
+    if sessions_capped["shown"] < sessions_capped["total"]:
+        base_params = {
+            "client": client, "project": url_project, "join": join, "kind": kind,
+            "days": days, "sort": sort, "work": work,
+        }
+        more_pills = []
+        for choice in SESSION_BROWSE_SHOW_CHOICES:
+            if choice <= show or choice <= sessions_capped["shown"]:
+                continue
+            qs = "&".join(f"{k}={quote(str(v))}" for k, v in {**base_params, "show": choice}.items())
+            label = "Show all" if choice >= sessions_capped["total"] else f"Show {choice}"
+            more_pills.append(f'<a class="see-all" href="/sessions?{esc(qs)}">{esc(label)} →</a>')
+            if choice >= sessions_capped["total"]:
+                break
+        if more_pills:
+            session_cap_note += f'<p class="section-note">{" · ".join(more_pills)}</p>'
 
     rollup_total_sessions = int(rollup_summary.get("total_sessions") or 0)
     rollup_child_sessions = int(rollup_summary.get("child_sessions") or 0)
@@ -11707,13 +11790,19 @@ def _render_sessions_page(
     join: str = "all",
     kind: str = "grouped",
     days: str = "30",
+    sort: str = "recent",
+    work: str = "all",
+    show: int = SESSION_ROLLUP_DISPLAY_LIMIT,
     fallback_notice: str = "",
 ) -> str:
     return _page_doc(
         page_id="sessions",
         identity_html=data.identity_html,
         notice_html=fallback_notice,
-        body_html=_sessions_body(data, client=client, project=project, join=join, kind=kind, days=days),
+        body_html=_sessions_body(
+            data, client=client, project=project, join=join, kind=kind, days=days,
+            sort=sort, work=work, show=show,
+        ),
     )
 
 
@@ -14559,7 +14648,8 @@ def create_local_api_app(
         raise HTTPException(status_code=404, detail=f"work item not found: {work_id}")
 
     def _sessions_html_response(
-        *, client: str, project: str, join: str, kind: str, days: str, limit: int
+        *, client: str, project: str, join: str, kind: str, days: str, limit: int,
+        sort: str = "recent", work: str = "all", show: int = SESSION_ROLLUP_DISPLAY_LIMIT,
     ) -> HTMLResponse:
         """Sessions HTML: canonical when the read flag is on and the store
         serves; otherwise the v1 explorer. A flag-on canonical read that cannot
@@ -14593,13 +14683,15 @@ def create_local_api_app(
                 _render_sessions_page(
                     _page_data(),
                     client=client, project=project, join=join, kind=kind, days=days,
+                    sort=sort, work=work, show=show,
                     fallback_notice=fallback,
                 ),
                 headers=headers,
             )
         return HTMLResponse(
             _render_sessions_page(
-                _page_data(), client=client, project=project, join=join, kind=kind, days=days
+                _page_data(), client=client, project=project, join=join, kind=kind, days=days,
+                sort=sort, work=work, show=show,
             ),
             headers=headers,
         )
@@ -14613,6 +14705,9 @@ def create_local_api_app(
         join: str = "all",
         kind: str = "grouped",
         days: str = "30",
+        sort: str = "recent",
+        work: str = "all",
+        show: int = Query(SESSION_ROLLUP_DISPLAY_LIMIT, ge=1, le=1000),
     ) -> Any:
         """Session rollup: one entry per (client, base client session id).
 
@@ -14669,10 +14764,13 @@ def create_local_api_app(
         """
         if _accepts_html(request.headers.get("accept")):
             return _sessions_html_response(
-                client=client, project=project, join=join, kind=kind, days=days, limit=limit
+                client=client, project=project, join=join, kind=kind, days=days, limit=limit,
+                sort=sort, work=work, show=show,
             )
         ignored = sorted(
-            name for name in ("client", "project", "join", "kind", "days") if name in request.query_params
+            name
+            for name in ("client", "project", "join", "kind", "days", "sort", "work", "show")
+            if name in request.query_params
         )
         # Canonical read path (migration phase 4.2): the sessions table is a
         # base fact table (always current — no projection gate); the HTML
