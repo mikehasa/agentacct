@@ -1153,7 +1153,11 @@ def test_by_model_row_without_stored_cost_keeps_honest_no_estimate(tmp_path):
 
 def test_partial_cost_sum_is_labeled_with_row_coverage_everywhere(tmp_path):
     store_root = tmp_path / "state"
-    now = time.time()
+    # Anchor both rows to local midday so they always fall in one day bucket. A
+    # bare time.time() offset straddles midnight when the suite runs just after
+    # 00:00, and the per-period breakdown would then show two single-row days
+    # (each fully priced/unpriced) instead of one partially-priced day.
+    now = datetime.combine(date.today(), dtime(12, 0)).timestamp()
     _trusted_usage(
         store_root,
         session="priced-row",
