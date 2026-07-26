@@ -7128,17 +7128,16 @@ def _work_group_feed_item_html(
         session=sessions[0] if sessions else None,
         models=models,
         session_line=session_line,
-        action_html=_work_action_html(state_item, state, esc),
+        # Finding review + resolve/reopen render inline in the visible card body
+        # (action slot), not behind the details expander, so the disposition
+        # action is one click away instead of buried.
+        action_html=(
+            _work_action_html(state_item, state, esc)
+            + _finding_episode_controls_html(finding_episodes, csrf_token=csrf_token, esc=esc)
+        ),
         details_label=details_label,
-        details_extra_html=(
-            _work_group_details_html(
-                items, models, sessions, esc, show_session_totals=show_session_totals
-            )
-            + _finding_episode_controls_html(
-                finding_episodes,
-                csrf_token=csrf_token,
-                esc=esc,
-            )
+        details_extra_html=_work_group_details_html(
+            items, models, sessions, esc, show_session_totals=show_session_totals
         ),
         has_work=True,
     )
@@ -7766,13 +7765,8 @@ def _task_details_html(
             '<div class="run-detail-block"><strong>Session structure</strong>'
             f'<p class="note">{esc(root_copy)}.{esc(usage_copy)}</p></div>'
         )
-    blocks.append(
-        _finding_episode_controls_html(
-            task.get("finding_episodes"),
-            csrf_token=csrf_token,
-            esc=esc,
-        )
-    )
+    # Finding review/resolve controls now render inline in the card body (see
+    # _task_feed_item_html action slot); only task-link controls stay here.
     blocks.append(
         _task_controls_html(
             task,
@@ -7922,6 +7916,11 @@ def _task_feed_item_html(
         or state.get("key") == "resolved"
     ):
         action_html += _work_action_html(state_item, state, esc)
+    # Inline finding review + resolve/reopen in the visible card body, not the
+    # details expander, so the disposition action is one click away.
+    action_html += _finding_episode_controls_html(
+        task.get("finding_episodes"), csrf_token=csrf_token, esc=esc
+    )
     return _run_card_html(
         title=_task_title(task),
         client=display_client,
@@ -8004,16 +8003,20 @@ def _unassigned_finding_feed_item_html(
         metrics=[],
         esc=esc,
         session_line="Task association unavailable",
-        action_html=_work_action_html(item, state, esc),
-        details_label="Finding details",
-        details_extra_html=(
-            '<div class="run-detail-block"><strong>Assignment</strong>'
-            f'<p class="note">{esc(assignment_reason)}</p></div>'
+        # Resolve/review the unassigned finding inline in the visible card body,
+        # so it can be dispositioned in one click instead of via the expander.
+        action_html=(
+            _work_action_html(item, state, esc)
             + _finding_episode_controls_html(
                 [finding.get("episode")] if isinstance(finding.get("episode"), Mapping) else [],
                 csrf_token=csrf_token,
                 esc=esc,
             )
+        ),
+        details_label="Finding details",
+        details_extra_html=(
+            '<div class="run-detail-block"><strong>Assignment</strong>'
+            f'<p class="note">{esc(assignment_reason)}</p></div>'
         ),
         has_work=False,
     )
