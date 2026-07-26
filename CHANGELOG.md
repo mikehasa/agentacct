@@ -6,7 +6,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-27
+
 ### Added
+- Activity-first overview: the homepage feed is ordered newest-first, with open
+  findings and blockers pinned in a "Needs attention" strip above a "Recent
+  activity" timeline. A recently-run session now shows even before any work is
+  attributed, instead of being buried under attribution-first ordering.
+- Inline finding controls: resolve / mark reviewed / reopen render directly on
+  the card (in the Needs-attention strip and on workspace findings) instead of
+  inside a collapsed details expander, so a finding is one click from resolved.
+- `/sessions` is a time-first full-history browser: a newest-first / attributed
+  order toggle, a "Recorded work only" filter, and "Show more" pagination past
+  the default page.
+- The Task page's evidence inventory lists each redacted work record and check
+  (type, result, time, and source) instead of only counts; raw session and
+  transcript ids stay in the local forensic API.
 - `agentacct --version` prints the installed version.
 - CSS-only breakdown tabs on the Overview usage chart — the By agent / By model /
   By agent-model selector switches without JavaScript or a page reload; the
