@@ -11730,6 +11730,43 @@ def _task_detail_body(payload: Mapping[str, Any], esc: Any) -> str:
         else ""
     )
     raw = payload.get("raw_evidence") if isinstance(payload.get("raw_evidence"), Mapping) else {}
+    # Redacted evidence inventory: a per-item list built from the already-redacted
+    # timeline events (work records + checks), grouped by kind, so expanding the
+    # inventory shows an ACTUAL list — not just totals. Session rows stay a count
+    # only: their raw client_session_ids remain forensic-API-only, never here.
+    inventory_kind_labels = {
+        "work": "Work records",
+        "check": "Checks",
+        "attempt": "Control attempts",
+        "control": "Control events",
+    }
+    inventory_by_kind: dict[str, list[Mapping[str, Any]]] = {}
+    for event in timeline_events:
+        if isinstance(event, Mapping):
+            inventory_by_kind.setdefault(str(event.get("kind") or "event"), []).append(event)
+    _inventory_order = ["work", "check", "attempt", "control"]
+    inventory_blocks: list[str] = []
+    for kind_key in _inventory_order + sorted(set(inventory_by_kind) - set(_inventory_order)):
+        events = inventory_by_kind.get(kind_key)
+        if not events:
+            continue
+        label = inventory_kind_labels.get(kind_key, str(kind_key).replace("_", " ").title())
+        item_rows = "".join(
+            '<li class="evidence-inventory-row">'
+            f'<div><strong>{esc(event.get("title") or "Recorded item")}</strong>'
+            f'<small>{esc(str(event.get("status") or "recorded").replace("_", " ").title())}'
+            f'{esc(" · " + _fmt_time(event.get("occurred_at"))) if _fmt_time(event.get("occurred_at")) else ""}'
+            f'{esc(" · " + str(event.get("source"))) if event.get("source") else ""}</small></div>'
+            "</li>"
+            for event in sorted(events, key=lambda e: -float(e.get("occurred_at") or 0.0))
+        )
+        inventory_blocks.append(
+            f'<div class="run-detail-block"><strong>{esc(label)} ({esc(_fmt_int(len(events)))})</strong>'
+            f'<ul class="evidence-inventory-list">{item_rows}</ul></div>'
+        )
+    inventory_items_html = "".join(inventory_blocks) or (
+        '<p class="section-note">No itemized work records or checks were recorded for this Task.</p>'
+    )
     return f"""
     <a class="task-detail-back" href="/#work-feed">&larr; Back to Work</a>
     <section class="task-brief" aria-labelledby="decision-brief-title">
@@ -11746,7 +11783,7 @@ def _task_detail_body(payload: Mapping[str, Any], esc: Any) -> str:
     </section>
     <section class="task-detail-section" aria-labelledby="coverage-title"><h2 id="coverage-title">What agentacct can prove</h2><div class="coverage-grid">{coverage_html}</div></section>
     <section class="task-detail-section" aria-labelledby="timeline-title"><h2 id="timeline-title">Execution timeline</h2><p class="section-note">{esc(lane_summary)}. Milestones are chronological; raw turns and telemetry stay collapsed.</p>{truncation}<ol class="task-timeline">{"".join(timeline_rows) or '<li class="empty">No meaningful milestone was recorded.</li>'}</ol></section>
-    <section class="task-detail-section"><details><summary>Show raw evidence inventory</summary><p class="section-note">{esc(_fmt_int(raw.get("session_count") or 0))} sessions · {esc(_fmt_int(raw.get("work_item_count") or 0))} work records · {esc(_fmt_int(raw.get("check_count") or 0))} checks. Raw identifiers remain in the local forensic API, not this public Task URL.</p></details></section>
+    <section class="task-detail-section"><details><summary>Show evidence inventory</summary><p class="section-note">{esc(_fmt_int(raw.get("session_count") or 0))} sessions · {esc(_fmt_int(raw.get("work_item_count") or 0))} work records · {esc(_fmt_int(raw.get("check_count") or 0))} checks.</p><div class="evidence-inventory">{inventory_items_html}</div><p class="section-note">Each row is redacted to type, result, and time. Raw session and transcript identifiers stay in the local forensic API, not this public Task URL.</p></details></section>
     """
 
 
