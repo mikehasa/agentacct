@@ -169,6 +169,12 @@ from .work_ledger import (
 from .work_events import WORK_EVENT_KINDS, WORK_EVENT_STATUSES, WorkEvent
 
 DASHBOARD_USAGE_LIMIT_SESSIONS = 500
+# Recent-activity feed on the overview shows a newest-first slice; the full
+# history lives on /sessions.
+DASHBOARD_RECENT_ACTIVITY_LIMIT = 25
+# The pinned Needs-attention strip shows the newest open findings/blockers; the
+# rest stay one click away so the strip can never bury the recent-activity feed.
+DASHBOARD_ATTENTION_LIMIT = 6
 MECHANICAL_PROJECTION_LIMIT = 10_000
 ADVANCED_EVIDENCE_PRODUCT_LIMIT = 2_000
 # Conflict repair is a safety path for timestamp-only retry variants. Keep its
@@ -9909,6 +9915,21 @@ def _overview_body(
         for task in (projection.get("tasks") if isinstance(projection.get("tasks"), list) else [])
         if isinstance(task, dict) and task_in_scope(task)
     ]
+    # Root session groups (all in-scope sessions, incl. ones with no recorded
+    # work) are needed both for the activity feed below and, later, for the
+    # usage charts / roster. Compute once here.
+    scoped_sessions = [
+        entry
+        for entry in data.rollup_sessions
+        if isinstance(entry, dict)
+        and _overview_project_in_scope(
+            data,
+            entry.get("project"),
+            entry.get("project_identity"),
+            entry.get("project_identity_state"),
+        )
+    ]
+    session_groups = _overview_root_session_groups(scoped_sessions)
     task_entries: list[dict[str, Any]] = []
     states: list[dict[str, Any]] = []
     for task in tasks:
@@ -10051,29 +10072,30 @@ def _overview_body(
     </section>
         """
 
-    task_entries.sort(
-        key=lambda entry: (
-            0
-            if isinstance(entry.get("state"), Mapping) and entry["state"].get("action_required")
-            else 1
-            if isinstance(entry.get("state"), Mapping) and entry["state"].get("key") == "in_progress"
-            else 2,
-            0
-            if isinstance(entry.get("state"), Mapping) and entry["state"].get("finding_open")
-            else 1,
-            -float(entry.get("updated_at") or 0.0),
+    # Time-first: newest activity on top. The task projection already emits one
+    # entry per root session — work-bearing OR usage-only — so a recent hands-on
+    # session (with no recorded work yet) is a first-class entry here, not hidden.
+    # Attribution / severity are surfaced as card badges and the pinned
+    # Needs-attention strip below, never as the sort key.
+    task_entries.sort(key=lambda entry: -float(entry.get("updated_at") or 0.0))
+
+    def _entry_is_attention(entry: Mapping[str, Any]) -> bool:
+        # Open findings and blockers are pinned so they are never capped out of
+        # the recent slice, matching the pre-time-first force-keep behaviour.
+        state = entry.get("state")
+        return isinstance(state, Mapping) and bool(
+            state.get("action_required") or state.get("finding_open")
         )
-    )
-    visible_entries = _visible_attention_entries(task_entries)
-    feed_html = "".join(
-        _task_feed_item_html(
-            entry["task"],
-            candidate_tasks=[candidate for candidate in tasks if candidate is not entry["task"]],
-            csrf_token=data.task_csrf_token,
-            esc=esc,
-        )
-        if entry["kind"] == "task"
-        else _work_group_feed_item_html(
+
+    def _render_feed_entry(entry: Mapping[str, Any]) -> str:
+        if entry["kind"] == "task":
+            return _task_feed_item_html(
+                entry["task"],
+                candidate_tasks=[candidate for candidate in tasks if candidate is not entry["task"]],
+                csrf_token=data.task_csrf_token,
+                esc=esc,
+            )
+        return _work_group_feed_item_html(
             entry["items"],
             state=entry["state"],
             state_item=entry["state_item"],
@@ -10083,9 +10105,17 @@ def _overview_body(
             csrf_token=data.task_csrf_token,
             esc=esc,
         )
-        for entry in visible_entries
-    )
-    if not feed_html:
+
+    # Actionable entries (open findings, blockers) are pinned in a Needs-attention
+    # strip above the chronological feed; the recent feed below is a pure
+    # newest-first slice of everything else.
+    attention_entries = [entry for entry in task_entries if _entry_is_attention(entry)]
+    recent_entries = [entry for entry in task_entries if not _entry_is_attention(entry)]
+    visible_attention = attention_entries[:DASHBOARD_ATTENTION_LIMIT]
+    visible_recent = recent_entries[:DASHBOARD_RECENT_ACTIVITY_LIMIT]
+    attention_feed_html = "".join(_render_feed_entry(entry) for entry in visible_attention)
+    feed_html = "".join(_render_feed_entry(entry) for entry in visible_recent)
+    if not feed_html and not attention_feed_html:
         feed_html = (
             '<div class="empty-state">No work or local activity has been recorded for this workspace yet. '
             "Refresh local activity or start an agent with agentacct recording enabled.</div>"
@@ -10130,26 +10160,13 @@ def _overview_body(
         summary = "Agents found issues in the work being reviewed. agentacct recorded them without assigning the next action to you."
     else:
         headline = "You're caught up"
-        summary = "Nothing recorded needs your input or has an open finding. Recent Tasks and observed chats are below."
+        summary = "Nothing recorded needs your input or has an open finding. Recent activity is below, newest first."
     verified_share = round(verified_count / len(states) * 100) if states else 0
     cap_note = (
-        f"Showing {len(visible_entries)} of {len(task_entries)} recent Tasks."
-        if len(visible_entries) < len(task_entries)
-        else f"{len(task_entries)} recent {'Task' if len(task_entries) == 1 else 'Tasks'} in this workspace."
+        f"Showing the {len(visible_recent)} most recent of {len(recent_entries)} activity entries."
+        if len(visible_recent) < len(recent_entries)
+        else f"{len(recent_entries)} recent {'entry' if len(recent_entries) == 1 else 'entries'} in this workspace."
     )
-
-    scoped_sessions = [
-        entry
-        for entry in data.rollup_sessions
-        if isinstance(entry, dict)
-        and _overview_project_in_scope(
-            data,
-            entry.get("project"),
-            entry.get("project_identity"),
-            entry.get("project_identity_state"),
-        )
-    ]
-    session_groups = _overview_root_session_groups(scoped_sessions)
 
     # Dashboard v2 usage surface. One scoped 30-day daily cube drives the metric
     # tiles, the cumulative line, and the daily stacked bars so they can never
@@ -10234,6 +10251,23 @@ def _overview_body(
         top_sessions_html=_overview_top_sessions_html(session_groups, esc),
     )
 
+    needs_attention_section = ""
+    if attention_feed_html:
+        attention_cap_note = ""
+        if len(visible_attention) < len(attention_entries):
+            attention_cap_note = (
+                '<div class="work-feed-footer"><p>'
+                f"{esc(f'Showing the {len(visible_attention)} newest of {len(attention_entries)} open items.')}"
+                '</p><div><a class="see-all" href="/advanced">Review all findings →</a></div></div>'
+            )
+        needs_attention_section = f"""
+    <section class="section run-section needs-attention" id="needs-attention" aria-label="Needs attention">
+      <div class="section-header"><div><div class="eyebrow">Needs attention</div><h2>Open findings &amp; blockers</h2><p>The newest open findings and blockers are pinned here so they never scroll away with the recent-activity timeline below.</p></div></div>
+      <div class="work-feed">{attention_feed_html}</div>
+      {attention_cap_note}
+    </section>
+        """
+
     return f"""
     {_activation_panel_html(activation, esc)}
     <section class="work-overview" aria-labelledby="work-overview-title">
@@ -10256,10 +10290,12 @@ def _overview_body(
 
     {roster_html}
 
+    {needs_attention_section}
+
     {unassigned_findings_section}
 
-    <section class="section run-section" id="work-feed" aria-label="Task feed">
-      <div class="section-header"><div><div class="eyebrow">Task timeline</div><h2>Recent Tasks</h2><p>Each card starts with a real root chat. Continuations, subagents, reported runs, work steps, and checks stay nested inside it.</p></div><a class="see-all" href="/sessions">View all activity →</a></div>
+    <section class="section run-section" id="work-feed" aria-label="Recent activity">
+      <div class="section-header"><div><div class="eyebrow">Activity timeline</div><h2>Recent activity</h2><p>Every recent session, newest first — chats you ran, with reported runs, work steps, and checks nested inside the ones that recorded work.</p></div><a class="see-all" href="/sessions">View all activity →</a></div>
       <div class="work-feed">{feed_html}</div>
       <div class="work-feed-footer"><p>{esc(cap_note)}</p><div><a class="see-all" href="/tokens">View usage →</a> · <a class="see-all" href="/advanced">Data &amp; evidence →</a></div></div>
     </section>
@@ -11411,8 +11447,8 @@ def _overview_subtitle(data: _DashboardPageData) -> str:
     the same page stay identically worded."""
 
     if data.store_label == "All projects":
-        return "All projects · What agents are doing across all local projects. Blockers and verified outcomes come first."
-    return f"What agents are doing in {data.store_label}. Blockers and verified outcomes come first."
+        return "All projects · What agents are doing across all local projects. Newest activity first; open findings and blockers stay pinned."
+    return f"What agents are doing in {data.store_label}. Newest activity first; open findings and blockers stay pinned."
 
 
 def _render_overview_page(

@@ -496,8 +496,8 @@ def test_work_home_is_one_product_feed_and_hides_diagnostic_surfaces(tmp_path):
     )
     html = _client(store_root).get("/").text
 
-    assert "Recent Tasks" in html
-    assert 'id="work-feed" aria-label="Task feed"' in html
+    assert "Recent activity" in html
+    assert 'id="work-feed" aria-label="Recent activity"' in html
     assert "Productize the work dashboard" in html
     assert html.count('id="work-feed"') == 1
     assert 'id="attention"' not in html
@@ -963,21 +963,23 @@ def test_overview_caps_the_single_feed_and_keeps_full_sessions_explorer(tmp_path
     # Session ids whose 8-char display labels are unique (full ids never
     # render, so the probes below must target the short labels). codex labels
     # keep the LAST 8 chars (UUIDv7 tail rule), so the ids are tail-unique.
-    for index in range(12):
+    for index in range(30):
         _trusted_usage(store_root, session=f"session-rec{index:02d}", started_at=base + index * 3600)
     client = _client(store_root)
 
     overview = client.get("/").text
-    assert overview.count('<article class="work-feed-item">') == 10
+    # The recent-activity feed shows a newest-first slice (DASHBOARD_RECENT_ACTIVITY_LIMIT);
+    # the full history stays on /sessions.
+    assert overview.count('<article class="work-feed-item">') == 25
     assert '<details class="session-row">' not in overview
-    assert "Showing 10 of 12 recent Tasks." in overview
+    assert "Showing the 25 most recent of 30 activity entries." in overview
     assert '<a class="see-all" href="/sessions">View all activity →</a>' in overview
 
     # The explorer defaults to a 30-day last-activity window (locked PRD
     # decision); these synthetic sessions are older, so the full list needs
     # days=all.
     sessions_page = client.get("/sessions?days=all", headers=HTML_ACCEPT).text
-    assert sessions_page.count('<details class="session-row">') == 12
+    assert sessions_page.count('<details class="session-row">') == 30
 
 
 def test_recent_completed_task_is_not_hidden_behind_old_verified_tasks(tmp_path, monkeypatch):
@@ -1036,8 +1038,10 @@ def test_recent_completed_task_is_not_hidden_behind_old_verified_tasks(tmp_path,
     overview = _client(store_root).get("/").text
 
     assert "Newest completed Task" in overview
-    assert "Old verified 0" not in overview
-    assert "Showing 10 of 11 recent Tasks." in overview
+    # Time-first: the newest completed Task sorts to the top of the recent feed
+    # instead of being hidden behind older verified Tasks.
+    assert overview.index("Newest completed Task") < overview.index("Old verified 0")
+    assert "11 recent entries in this workspace." in overview
 
 
 def test_work_home_keeps_cost_compact_and_tokens_page_owns_full_disclosure(tmp_path):
@@ -1084,7 +1088,9 @@ def test_work_home_only_promotes_blocked_work_not_join_hygiene(tmp_path):
     assert "Choose the default homepage scope." in overview
     assert "3 usage row(s) have no work context" not in overview
     assert "Enable MCP context attach at session start" not in overview
-    assert "Needs attention" not in overview
+    # The blocked task is promoted into the pinned Needs-attention strip.
+    assert 'id="needs-attention"' in overview
+    assert "Ship the dashboard" in overview
 
 
 def test_work_home_shows_explicit_blocker_resolution_without_faking_verified_completion(tmp_path):
