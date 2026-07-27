@@ -140,3 +140,9 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # 0.2.0 reached real PyPI manually before its GitHub release existed;
+          # publishing that release now re-runs this job against an
+          # already-present filename. skip-existing keeps the re-run green
+          # (PyPI still never overwrites a file), mirroring the TestPyPI step.
+          skip-existing: true

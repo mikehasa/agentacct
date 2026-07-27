@@ -54,5 +54,6 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.1.0
