@@ -18,7 +18,7 @@ ledger first (under a cross-process lock), then a per-event canonical "shadow"
 write runs off-lock and may fail without ever failing the v1 write. v1 is the
 record; canonical is disposable evidence.
 
-"Authoritative" means the inverse for the lanes canonical models: the canonical
+"Authoritative" means the inverse for the lanes' canonical models: the canonical
 store becomes the primary write target and source of read truth, v1 becomes a
 compatibility mirror, and a canonical write failure surfaces instead of being
 swallowed. That inversion touches durability, concurrency, completeness, trust,
