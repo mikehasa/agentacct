@@ -32,7 +32,7 @@ agentacct demo
 
 Expected properties:
 
-- creates a agentacct-owned run
+- creates an agentacct-owned run
 - captures stdout/stderr
 - records objective machine-check evidence
 - writes a report
