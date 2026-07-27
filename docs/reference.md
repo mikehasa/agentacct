@@ -235,7 +235,7 @@ Task status is deliberately split into three independent axes:
 - **Outcome:** whether the result is unknown, agent-reported, verified, blocked, or has an open finding.
 - **Control:** whether agentacct is ready, awaiting approval, holding on policy, or encountered a control failure.
 
-This keeps a failed target-product check from being mislabeled as a agentacct failure or automatically turned into a user action. See [Task Intelligence and the local control plane](task-control-plane.md) for the contract.
+This keeps a failed target-product check from being mislabeled as an agentacct failure or automatically turned into a user action. See [Task Intelligence and the local control plane](task-control-plane.md) for the contract.
 
 ## Local Control
 
