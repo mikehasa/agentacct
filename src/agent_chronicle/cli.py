@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import math
@@ -7,6 +8,7 @@ import os
 import shlex
 import shutil
 import signal
+import socket
 import stat
 import sys
 import tempfile
@@ -8006,8 +8008,55 @@ def usage_truth_table_command(
         console.print(f"- {row['integration']}: {row['setup_path']}")
 
 
+_SERVE_PORT_FALLBACK_SPAN = 20
+"""How many ports past the default the dashboard probes before giving up."""
+
+
+def _probe_port_free(host: str, port: int) -> bool:
+    """Return True if ``(host, port)`` can be bound right now.
+
+    Mirrors uvicorn's own socket setup (``SO_REUSEADDR``) so the probe reflects
+    what the server will attempt a moment later. There is an unavoidable TOCTOU
+    window between this check and uvicorn's bind, but for a localhost dashboard
+    the practical risk is negligible.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def _select_serve_port(
+    host: str,
+    port: int,
+    *,
+    allow_fallback: bool,
+    max_offset: int = _SERVE_PORT_FALLBACK_SPAN,
+) -> int:
+    """Pick a bindable port for the local dashboard.
+
+    When ``allow_fallback`` is False (the user passed an explicit ``--port``) the
+    requested port must be free or an ``OSError`` is raised so the caller can
+    fail with an actionable message. When True (the default-port path) a busy
+    port advances through ``port+1 .. port+max_offset`` and the first free port is
+    returned; ``OSError`` is raised only if the whole range is occupied.
+    """
+    if _probe_port_free(host, port):
+        return port
+    if not allow_fallback:
+        raise OSError(errno.EADDRINUSE, f"port {port} is already in use")
+    for candidate in range(port + 1, port + max_offset + 1):
+        if _probe_port_free(host, candidate):
+            return candidate
+    raise OSError(errno.EADDRINUSE, f"no free port in range {port}-{port + max_offset}")
+
+
 @app.command("serve")
 def serve(
+    ctx: typer.Context,
     host: Annotated[str, typer.Option(help="Bind host. Default is 127.0.0.1 for local dashboard safety.")] = "127.0.0.1",
     port: Annotated[int, typer.Option(help="Bind port for the local dashboard and event API.")] = 8765,
     store_dir: Annotated[
@@ -8016,7 +8065,13 @@ def serve(
     ] = None,
     allow_host: Annotated[Optional[list[str]], typer.Option("--allow-host", help=_ALLOW_HOST_HELP)] = None,
 ) -> None:
-    """Serve the local dashboard on localhost with local usage discovery enabled."""
+    """Serve the local dashboard on localhost with local usage discovery enabled.
+
+    The default port (8765) auto-advances to the next free port when it is busy,
+    so the dashboard never fails to start just because a port is taken. An
+    explicit ``--port`` is honored strictly: if that exact port is occupied the
+    command fails rather than silently moving.
+    """
     import uvicorn
 
     if host not in {"127.0.0.1", "localhost"}:
@@ -8026,7 +8081,29 @@ def serve(
     # not a server crash mid-startup.
     resolution = _resolve_dashboard_cli_store_dir(store_dir)
     effective_store_dir = resolution.path
-    console.print(f"Starting agentacct dashboard: http://{host}:{port}")
+    # Only auto-advance when the port came from the default; an explicit --port
+    # is a specific request and must fail loudly instead of moving. Compare the
+    # click ParameterSource by name -- typer's runtime enum is not identical to
+    # click.core's, so identity/value comparisons are unreliable across versions.
+    port_source = ctx.get_parameter_source("port")
+    port_explicitly_set = getattr(port_source, "name", "DEFAULT") != "DEFAULT"
+    try:
+        bound_port = _select_serve_port(host, port, allow_fallback=not port_explicitly_set)
+    except OSError:
+        if port_explicitly_set:
+            console.print(
+                f"Port {port} is already in use. Pass a free --port, or omit --port to let "
+                "agentacct pick the next free port automatically."
+            )
+        else:
+            console.print(
+                f"Ports {port}-{port + _SERVE_PORT_FALLBACK_SPAN} are all in use. "
+                "Free one up or pass an explicit --port."
+            )
+        raise typer.Exit(1)
+    if bound_port != port:
+        console.print(f"Port {port} was busy; dashboard on http://{host}:{bound_port}")
+    console.print(f"Starting agentacct dashboard: http://{host}:{bound_port}")
     if resolution.source == "global":
         console.print("Dashboard scope: All projects (machine-wide store).")
         _warn_dashboard_mcp_store_shadow(effective_store_dir)
@@ -8045,7 +8122,7 @@ def serve(
             extra_allowed_hosts=tuple(allow_host or ()),
         ),
         host=host,
-        port=port,
+        port=bound_port,
         log_level="info",
     )
 
