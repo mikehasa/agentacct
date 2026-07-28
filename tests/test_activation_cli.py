@@ -107,7 +107,7 @@ def test_onboard_auto_skips_detected_but_unimportable_opencode_db(
     assert result.exit_code == 1
     assert calls == []
     assert "no importable usage path is available" in result.output
-    assert "OpenCode native database parsing is pending" in result.output
+    assert "OpenCode was detected but no single importable store resolved" in result.output
     assert not (tmp_path / ".agent-sentinel").exists()
 
 

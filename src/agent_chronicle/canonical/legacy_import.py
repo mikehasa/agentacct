@@ -75,6 +75,7 @@ _LEGACY_CUMULATIVE_USAGE_SEMANTICS = frozenset(
         CODEX_LINEAGE_DELTA_SEMANTICS,
         "claude_assistant_message_usage_rows",
         "opencode_step_finish_events",
+        "opencode_session_rollup",
         "hermes_state_db_session_rows",
         "openclaw_assistant_usage_rows",
     }

@@ -193,6 +193,15 @@ _OPENCODE_USAGE_FIXTURE = _verification(
         "tests/test_client_usage.py::test_discover_opencode_usage_reads_json_event_stream_tokens_and_cost",
     ),
 )
+_OPENCODE_DB_FIXTURE = _verification(
+    "synthetic_fixture",
+    verified_at="2026-07-29",
+    evidence_refs=(
+        "tests/test_client_usage.py::test_discover_opencode_usage_reads_native_session_db",
+        "tests/test_client_usage.py::test_discover_opencode_usage_recomputes_cost_from_tokens_when_stored_zero",
+        "tests/test_client_usage.py::test_discover_opencode_usage_presence_flags_track_schema_columns",
+    ),
+)
 _OPENCLAW_USAGE_FIXTURE = _verification(
     "synthetic_fixture",
     verified_at="2026-07-17",
@@ -439,8 +448,8 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
         "client": "opencode",
         "display_name": "OpenCode",
         "roadmap_phase": "phase_1",
-        "source_formats": ["captured/exported JSON event stream"],
-        "session_scope": "Usage-bearing step-finish exports only.",
+        "source_formats": ["native opencode.db SQLite session rollup", "captured/exported JSON event stream"],
+        "session_scope": "Usage-bearing session rollups (SQLite) or step-finish exports.",
         "zero_usage_observation": "unavailable",
         "namespace_hardening": "not_hardened",
         "verified_stability": _stability(
@@ -453,19 +462,22 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
         "capabilities": {
             "session_discovery": _capability(
                 "experimental",
-                "Session IDs found in captured/exported JSON step-finish streams.",
+                "Session IDs from the native opencode.db session rollup, or captured/exported JSON step-finish streams as a fallback.",
                 activation="opt_in_project",
-                verification=_OPENCODE_USAGE_FIXTURE,
-                limitations=("The official SQLite store is detected but not imported; zero-token sessions are absent.",),
+                verification=_OPENCODE_DB_FIXTURE,
+                limitations=("Only usage-bearing sessions are emitted; zero-token sessions are absent.",),
             ),
             "usage_import": _capability(
                 "experimental",
-                "Input, output, reasoning, cache, and client cost from exported step-finish rows.",
+                "Per-session input, output, reasoning, and cache token totals from the native SQLite session rollup (JSON export fallback); cost recomputed from tokens when the store records none.",
                 activation="opt_in_project",
-                verification=_OPENCODE_USAGE_FIXTURE,
-                limitations=("Synthetic happy-path fixture only; malformed/schema-drift diagnostics are incomplete.",),
+                verification=_OPENCODE_DB_FIXTURE,
+                limitations=(
+                    "Synthetic-fixture only; per-message granularity is not imported (session totals only).",
+                    "OpenCode usually stores cost 0, so cost is typically estimated_from_tokens; a nonzero stored cost is kept as client_reported.",
+                ),
                 usage_basis="client_reported",
-                cost_basis="client_reported",
+                cost_basis="estimated_from_tokens",
             ),
             "mechanical_capture": _unavailable("No realtime OpenCode plugin adapter is implemented."),
             "mcp_semantics": _capability(
@@ -477,9 +489,10 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
             ),
             "model_attribution": _capability(
                 "experimental",
-                "First model-like field found in a captured JSON export.",
+                "Model id and provider id parsed from the session rollup's model JSON (JSON-export model field as fallback).",
                 activation="opt_in_project",
-                limitations=("No fixture asserts model extraction; model is not bound to each step-finish row.",),
+                verification=_OPENCODE_DB_FIXTURE,
+                limitations=("Per-message model binding is not imported; the session rollup carries one model per session.",),
             ),
             "cache_read": _capability(
                 "experimental",
@@ -501,7 +514,7 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
                 "agentacct renders the setup command but does not write OpenCode user config or install a plugin."
             ),
         },
-        "limitations": ["Remain experimental until real fixtures, namespace hardening, and official SQLite parsing exist."],
+        "limitations": ["Remain experimental until real-client fixtures, namespace hardening, and per-message SQLite granularity exist."],
     },
     {
         "client": "openclaw",

@@ -329,6 +329,285 @@ def _make_opencode_home(root: Path) -> Path:
     return opencode_home
 
 
+_OPENCODE_SESSION_COLUMNS = (
+    "id",
+    "project_id",
+    "parent_id",
+    "directory",
+    "title",
+    "cost",
+    "tokens_input",
+    "tokens_output",
+    "tokens_reasoning",
+    "tokens_cache_read",
+    "tokens_cache_write",
+    "model",
+    "time_created",
+    "time_updated",
+)
+
+
+def _make_opencode_db_home(
+    root: Path,
+    *,
+    rows: list[dict[str, object]] | None = None,
+    columns: tuple[str, ...] = _OPENCODE_SESSION_COLUMNS,
+    db_name: str = "opencode.db",
+    dir_name: str = "opencode-db-home",
+) -> Path:
+    """Build an OpenCode data home whose native ``session`` rollup is populated."""
+
+    opencode_home = root / dir_name
+    opencode_home.mkdir(parents=True)
+    if rows is None:
+        rows = [
+            {
+                "id": "ses_alpha",
+                "project_id": "global",
+                "parent_id": None,
+                "directory": "/Users/dev/project",
+                "title": "session alpha",
+                "cost": 0.0,
+                "tokens_input": 19589,
+                "tokens_output": 516,
+                "tokens_reasoning": 526,
+                "tokens_cache_read": 63488,
+                "tokens_cache_write": 0,
+                "model": json.dumps(
+                    {"id": "gpt-4o-mini", "providerID": "openai", "variant": "high"}
+                ),
+                "time_created": 1_785_248_922_730,
+                "time_updated": 1_785_249_081_561,
+            }
+        ]
+    column_defs = {
+        "id": "id text primary key",
+        "project_id": "project_id text not null",
+        "parent_id": "parent_id text",
+        "directory": "directory text not null",
+        "title": "title text not null",
+        "cost": "cost real default 0 not null",
+        "tokens_input": "tokens_input integer default 0 not null",
+        "tokens_output": "tokens_output integer default 0 not null",
+        "tokens_reasoning": "tokens_reasoning integer default 0 not null",
+        "tokens_cache_read": "tokens_cache_read integer default 0 not null",
+        "tokens_cache_write": "tokens_cache_write integer default 0 not null",
+        "model": "model text",
+        "time_created": "time_created integer not null",
+        "time_updated": "time_updated integer not null",
+    }
+    con = sqlite3.connect(opencode_home / db_name)
+    try:
+        con.execute(
+            f"create table session ({', '.join(column_defs[name] for name in columns)})"
+        )
+        placeholders = ", ".join("?" for _ in columns)
+        con.executemany(
+            f"insert into session ({', '.join(columns)}) values ({placeholders})",
+            [tuple(row.get(name) for name in columns) for row in rows],
+        )
+        con.commit()
+    finally:
+        con.close()
+    return opencode_home
+
+
+def test_discover_opencode_usage_reads_native_session_db(tmp_path):
+    opencode_home = _make_opencode_db_home(tmp_path)
+
+    events = discover_opencode_usage(opencode_home=opencode_home, limit_sessions=10)
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.client == "opencode"
+    assert event.client_session_id == "ses_alpha"
+    assert event.model == "gpt-4o-mini"
+    assert event.provider == "openai"
+    # Fresh input is stored verbatim (cache reads are a separate additive bucket
+    # in OpenCode, not a subset of input).
+    assert event.input_tokens == 19589
+    assert event.output_tokens == 516
+    assert event.reasoning_output_tokens == 526
+    assert event.cache_read_input_tokens == 63488
+    assert event.cache_creation_input_tokens == 0
+    assert event.cached_input_tokens == 63488
+    assert event.cwd == "/Users/dev/project"
+    assert event.usage_update_semantics == "opencode_session_rollup"
+    assert event.source_revision_at == 1_785_249_081_561 * 1000
+    assert event.source_revision_basis == "opencode_session_time_updated_us"
+
+    payload = event.to_sentinel_event()
+    assert payload["provider"] == "openai"
+    assert payload["metadata"]["usage_update_semantics"] == "opencode_session_rollup"
+
+
+def test_discover_opencode_usage_recomputes_cost_from_tokens_when_stored_zero(tmp_path):
+    opencode_home = _make_opencode_db_home(tmp_path)
+
+    event = discover_opencode_usage(opencode_home=opencode_home, limit_sessions=10)[0]
+    assert event.client_reported_cost_usd is None
+
+    payload = event.to_sentinel_event()
+    applied = apply_pricing_estimate_to_event(payload)
+
+    assert applied is True
+    assert payload["cost_confidence"] == "estimated_from_tokens"
+    assert payload["estimated_cost_usd"] > 0
+
+
+def test_opencode_model_id_strips_fast_routing_suffix_for_pricing():
+    from agent_chronicle.client_usage import (
+        _normalize_opencode_model_id,
+        _opencode_model_fields,
+    )
+
+    # OpenCode reports "<base>-fast"; only the base model is in the price table,
+    # so the suffixed form must normalize to the base or cost stays unknown.
+    assert _normalize_opencode_model_id("gpt-5.6-sol-fast") == "gpt-5.6-sol"
+    assert _normalize_opencode_model_id("gpt-5.6-luna-fast") == "gpt-5.6-luna"
+    assert _normalize_opencode_model_id("gpt-5.6-sol") == "gpt-5.6-sol"
+    assert _normalize_opencode_model_id("-fast") == "-fast"  # only-suffix untouched
+    assert _normalize_opencode_model_id(None) is None
+
+    # End-to-end from the session.model cell (dict form and JSON-string form).
+    assert _opencode_model_fields(
+        {"id": "gpt-5.6-sol-fast", "providerID": "openai", "variant": "high"}
+    ) == ("gpt-5.6-sol", "openai")
+    assert _opencode_model_fields(
+        json.dumps({"id": "gpt-5.6-luna-fast", "providerID": "openai"})
+    ) == ("gpt-5.6-luna", "openai")
+
+
+def test_discover_opencode_usage_keeps_nonzero_stored_cost_as_reported(tmp_path):
+    opencode_home = _make_opencode_db_home(
+        tmp_path,
+        rows=[
+            {
+                "id": "ses_paid",
+                "project_id": "global",
+                "parent_id": None,
+                "directory": "/tmp/paid",
+                "title": "paid session",
+                "cost": 1.25,
+                "tokens_input": 100,
+                "tokens_output": 20,
+                "tokens_reasoning": 0,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+                "model": json.dumps({"id": "gpt-4o-mini", "providerID": "openai"}),
+                "time_created": 1_785_248_922_730,
+                "time_updated": 1_785_249_081_561,
+            }
+        ],
+    )
+
+    event = discover_opencode_usage(opencode_home=opencode_home, limit_sessions=10)[0]
+
+    assert event.client_reported_cost_usd == 1.25
+    assert event.client_cost_source == "opencode_session_cost"
+    payload = event.to_sentinel_event()
+    assert payload["cost_confidence"] == "client_reported"
+    # A real reported cost is not overwritten by the pricing estimate.
+    assert apply_pricing_estimate_to_event(payload) is False
+    assert payload["estimated_cost_usd"] == 1.25
+
+
+def test_discover_opencode_usage_presence_flags_track_schema_columns(tmp_path):
+    # Full schema: reasoning column present but its measured value is zero.
+    full_home = _make_opencode_db_home(tmp_path, dir_name="full")
+    full_event = discover_opencode_usage(opencode_home=full_home, limit_sessions=10)[0]
+    assert full_event.reasoning_output_tokens_reported is True
+    assert full_event.cache_read_tokens_reported is True
+
+    # Degraded schema: no reasoning / cache columns at all -> absent, not zero.
+    lean_columns = (
+        "id",
+        "project_id",
+        "directory",
+        "title",
+        "cost",
+        "tokens_input",
+        "tokens_output",
+        "model",
+        "time_created",
+        "time_updated",
+    )
+    lean_home = _make_opencode_db_home(
+        tmp_path,
+        dir_name="lean",
+        columns=lean_columns,
+        rows=[
+            {
+                "id": "ses_lean",
+                "project_id": "global",
+                "directory": "/tmp/lean",
+                "title": "lean",
+                "cost": 0.0,
+                "tokens_input": 800,
+                "tokens_output": 40,
+                "model": json.dumps({"id": "gpt-4o-mini", "providerID": "openai"}),
+                "time_created": 1_785_248_922_730,
+                "time_updated": 1_785_249_081_561,
+            }
+        ],
+    )
+    lean_event = discover_opencode_usage(opencode_home=lean_home, limit_sessions=10)[0]
+    assert lean_event.input_tokens == 800
+    assert lean_event.reasoning_output_tokens_reported is False
+    assert lean_event.cache_read_tokens_reported is False
+    assert lean_event.cache_creation_tokens_reported is False
+
+
+def test_discover_opencode_usage_db_takes_precedence_over_json(tmp_path):
+    # A home carrying BOTH a native db and JSON export streams imports the db.
+    opencode_home = _make_opencode_db_home(tmp_path, dir_name="both")
+    session_dir = opencode_home / "sessions"
+    session_dir.mkdir()
+    (session_dir / "ses_json.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "step_finish",
+                "sessionID": "ses_json",
+                "part": {
+                    "type": "step-finish",
+                    "tokens": {"input": 5, "output": 5, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+                    "cost": 0.0,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    events = discover_opencode_usage(opencode_home=opencode_home, limit_sessions=10)
+
+    assert {event.client_session_id for event in events} == {"ses_alpha"}
+    assert all(event.usage_update_semantics == "opencode_session_rollup" for event in events)
+
+
+def test_discover_opencode_usage_corrupt_db_fails_closed(tmp_path):
+    opencode_home = tmp_path / "corrupt-home"
+    opencode_home.mkdir()
+    (opencode_home / "opencode.db").write_bytes(b"this is not a sqlite database")
+
+    result = discover_client_usage_with_diagnostics(
+        client="opencode",
+        codex_home=tmp_path / "missing-codex",
+        claude_home=tmp_path / "missing-claude",
+        opencode_home=opencode_home,
+        hermes_home=tmp_path / "missing-hermes",
+        openclaw_home=tmp_path / "missing-openclaw",
+        cursor_home=tmp_path / "missing-cursor",
+        limit_sessions=10,
+    )
+
+    opencode_events = [event for event in result.events if event.client == "opencode"]
+    assert opencode_events == []
+    diagnostics = result.diagnostics.get("opencode", {})
+    assert diagnostics.get("error_count", 0) >= 1
+    assert "sqlite_read_failed" in (diagnostics.get("error_codes") or [])
+
+
 def _make_openclaw_home(root: Path) -> Path:
     openclaw_home = root / "openclaw-home"
     session_dir = openclaw_home / "agents" / "default" / "sessions"

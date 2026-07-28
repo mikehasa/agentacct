@@ -91,11 +91,56 @@ def test_discover_usage_sources_reports_found_and_pending_sources(tmp_path):
     assert sources["opencode"].status == "missing"
 
 
-def test_opencode_native_db_is_detected_but_not_importable(tmp_path):
-    opencode_home = tmp_path / "opencode-home"
+def _make_opencode_db_source(root: Path) -> Path:
+    opencode_home = root / "opencode-home"
     opencode_home.mkdir()
     con = sqlite3.connect(opencode_home / "opencode.db")
-    con.close()
+    try:
+        con.execute(
+            """
+            create table session (
+                id text primary key,
+                project_id text not null,
+                directory text not null,
+                title text not null,
+                cost real default 0 not null,
+                tokens_input integer default 0 not null,
+                tokens_output integer default 0 not null,
+                tokens_reasoning integer default 0 not null,
+                tokens_cache_read integer default 0 not null,
+                tokens_cache_write integer default 0 not null,
+                model text,
+                time_created integer not null,
+                time_updated integer not null
+            )
+            """
+        )
+        con.execute(
+            "insert into session values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "ses_one",
+                "global",
+                "/tmp/x",
+                "title",
+                0.0,
+                1000,
+                200,
+                0,
+                50,
+                0,
+                json.dumps({"id": "gpt-4o-mini", "providerID": "openai"}),
+                1_785_000_000_000,
+                1_785_000_100_000,
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return opencode_home
+
+
+def test_opencode_native_db_is_detected_and_importable(tmp_path):
+    opencode_home = _make_opencode_db_source(tmp_path)
 
     source = next(
         row
@@ -110,9 +155,11 @@ def test_opencode_native_db_is_detected_but_not_importable(tmp_path):
     )
 
     assert source.status == "found"
-    assert source.importer is None
-    assert source.usage_confidence == "unknown"
-    assert "native database parsing is pending" in " ".join(source.notes)
+    assert source.importer == "agentacct usage import-local --client opencode"
+    assert source.evidence == "sqlite-session-store"
+    assert source.session_count == 1
+    assert "native OpenCode SQLite session store" in " ".join(source.notes)
+    assert "native database parsing is pending" not in " ".join(source.notes)
 
 
 def test_usage_discover_sources_cli_json(tmp_path):
