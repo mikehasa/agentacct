@@ -3372,6 +3372,17 @@ def test_discover_opencode_usage_reads_json_event_stream_tokens_and_cost(tmp_pat
     assert "OPENCODE_DEEPSEEK_REAL_TASK_OK" not in json.dumps(payload)
 
 
+def test_discover_opencode_usage_skips_json_arrays(tmp_path):
+    opencode_home = _make_opencode_home(tmp_path)
+    stream = opencode_home / "sessions" / "non-event.json"
+    stream.write_text(json.dumps([{"sessionID": "not-an-event"}]), encoding="utf-8")
+
+    events = discover_opencode_usage(opencode_home=opencode_home, limit_sessions=10)
+
+    assert len(events) == 1
+    assert events[0].client_session_id == "ses_example"
+
+
 def test_discover_openclaw_usage_reads_jsonl_tokens_and_cost(tmp_path):
     openclaw_home = _make_openclaw_home(tmp_path)
 

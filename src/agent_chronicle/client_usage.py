@@ -7363,6 +7363,11 @@ def _read_opencode_json_usage(
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            # Export directories can contain valid JSON that is not an OpenCode
+            # event record, such as a JSON array. Ignore it so one stale file
+            # cannot abort discovery for every client during onboarding.
+            if not isinstance(obj, dict):
+                continue
             if session_id is None and obj.get("sessionID"):
                 session_id = str(obj.get("sessionID"))
             if model is None:
