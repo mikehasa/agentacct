@@ -589,6 +589,12 @@ _ALLOWED_OLD_NAME_TOKENS = (
     # the pre-rename smoke commands its 2026-06-27 run actually used, and the
     # doc-gate test quotes them (dated evidence keeps the observed name).
     "agent-sentinel smoke",
+    # Stale-registration remediation (fix/opencode-connection): the MCP preview
+    # and install notes deliberately name the old server so the user can REMOVE
+    # a leftover pre-rename registration (its old binary no longer exists — the
+    # ENOENT that reads as a crash). These two forms carry that guidance.
+    "mcp remove agent-sentinel",  # `opencode mcp remove agent-sentinel` remediation command
+    "agent-sentinel/agent-chronicle",  # prose pairing in the "remove any stale ..." guidance
 )
 
 

@@ -215,30 +215,46 @@ def test_mcp_serve_relative_store_dir_resolves_against_project_root(tmp_path, mo
     assert not (subdir / ".agent-sentinel").exists()
 
 
-def test_mcp_serve_relative_store_dir_without_project_fails_loudly(tmp_path, monkeypatch) -> None:
+def test_mcp_serve_relative_store_dir_without_project_starts_degraded(tmp_path, monkeypatch) -> None:
+    """A legacy relative --store-dir with no project anchor must NOT exit — a
+    non-zero exit reads to the MCP host as a crashed server. It starts a
+    degraded-but-connected session and still never creates a stray store."""
     cwd, fake_home = _isolate(monkeypatch, tmp_path)
-    served: list[Path] = []
-    monkeypatch.setattr(cli_module, "serve_stdio", lambda *, store_dir: served.append(Path(store_dir)))
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        cli_module,
+        "serve_stdio",
+        lambda *, store_dir=None, degraded_reason=None: calls.append({"store_dir": store_dir, "degraded_reason": degraded_reason}),
+    )
 
     result = runner.invoke(app, ["mcp", "serve", "--store-dir", ".agent-sentinel/state"])
 
-    assert result.exit_code == 2, result.output
+    assert result.exit_code == 0, result.output
     assert "legacy config form" in result.output
     assert "setup mcp --agent" in result.output
-    assert served == []
+    assert "degraded" in result.output.lower()
+    assert len(calls) == 1
+    assert calls[0]["store_dir"] is None
+    assert calls[0]["degraded_reason"] is not None
     assert not (cwd / ".agent-sentinel").exists()
     assert not (fake_home / ".agent-sentinel").exists()
 
 
-def test_mcp_serve_without_store_dir_uses_resolver_and_fails_outside_project(tmp_path, monkeypatch) -> None:
+def test_mcp_serve_without_store_dir_starts_degraded_outside_project(tmp_path, monkeypatch) -> None:
     _isolate(monkeypatch, tmp_path)
-    served: list[Path] = []
-    monkeypatch.setattr(cli_module, "serve_stdio", lambda *, store_dir: served.append(Path(store_dir)))
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        cli_module,
+        "serve_stdio",
+        lambda *, store_dir=None, degraded_reason=None: calls.append({"store_dir": store_dir, "degraded_reason": degraded_reason}),
+    )
 
     outside = runner.invoke(app, ["mcp", "serve"])
-    assert outside.exit_code == 2, outside.output
+    assert outside.exit_code == 0, outside.output
     assert "No agentacct store found" in outside.output
-    assert served == []
+    assert len(calls) == 1
+    assert calls[0]["store_dir"] is None
+    assert calls[0]["degraded_reason"] is not None
 
     project = tmp_path / "project"
     project.mkdir()
@@ -246,7 +262,8 @@ def test_mcp_serve_without_store_dir_uses_resolver_and_fails_outside_project(tmp
     monkeypatch.chdir(project)
     inside = runner.invoke(app, ["mcp", "serve"])
     assert inside.exit_code == 0, inside.output
-    assert served == [(project / ".agent-sentinel" / "state").resolve()]
+    assert calls[-1]["store_dir"] == (project / ".agent-sentinel" / "state").resolve()
+    assert calls[-1]["degraded_reason"] is None
 
 
 def test_mcp_serve_honors_env_store_dir(tmp_path, monkeypatch) -> None:
@@ -331,29 +348,39 @@ def test_mcp_serve_relative_store_dir_without_project_honors_env_store(tmp_path,
 
 def test_mcp_serve_relative_store_dir_refusal_mentions_env_option(tmp_path, monkeypatch) -> None:
     _isolate(monkeypatch, tmp_path)
-    served: list[Path] = []
-    monkeypatch.setattr(cli_module, "serve_stdio", lambda *, store_dir: served.append(Path(store_dir)))
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        cli_module,
+        "serve_stdio",
+        lambda *, store_dir=None, degraded_reason=None: calls.append({"store_dir": store_dir, "degraded_reason": degraded_reason}),
+    )
 
     result = runner.invoke(app, ["mcp", "serve", "--store-dir", ".agent-sentinel/state"])
 
-    assert result.exit_code == 2, result.output
+    assert result.exit_code == 0, result.output
     assert "legacy config form" in result.output
     assert "setup mcp --agent" in result.output
     assert f"set {ENV_STORE_DIR}=<absolute path>" in result.output
-    assert served == []
+    assert calls[0]["degraded_reason"] is not None
+    assert calls[0]["store_dir"] is None
 
 
 def test_mcp_serve_relative_store_dir_refusal_flags_relative_env_value(tmp_path, monkeypatch) -> None:
     _isolate(monkeypatch, tmp_path)
     monkeypatch.setenv(ENV_STORE_DIR, "relative/env-store")
-    served: list[Path] = []
-    monkeypatch.setattr(cli_module, "serve_stdio", lambda *, store_dir: served.append(Path(store_dir)))
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        cli_module,
+        "serve_stdio",
+        lambda *, store_dir=None, degraded_reason=None: calls.append({"store_dir": store_dir, "degraded_reason": degraded_reason}),
+    )
 
     result = runner.invoke(app, ["mcp", "serve", "--store-dir", ".agent-sentinel/state"])
 
-    assert result.exit_code == 2, result.output
+    assert result.exit_code == 0, result.output
     assert "not an absolute path" in result.output
-    assert served == []
+    assert calls[0]["degraded_reason"] is not None
+    assert calls[0]["store_dir"] is None
 
 
 def test_version_flag_prints_installed_version_and_exits() -> None:

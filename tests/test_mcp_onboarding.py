@@ -555,9 +555,24 @@ def test_setup_mcp_opencode_preview_uses_verified_separator_syntax(tmp_path: Pat
 
     assert result.exit_code == 0, result.output
     assert "OpenCode" in result.output
-    assert "opencode mcp add agentacct -- agentacct mcp serve" in result.output
+    # The registration command must carry the absolute --store-dir (store-pinned
+    # form), not the bare `mcp serve` that would resolve against the client cwd.
+    expected_store = str((tmp_path / ".agent-sentinel" / "state").resolve())
+    assert f"opencode mcp add agentacct -- agentacct mcp serve --store-dir {expected_store}" in result.output
     assert "Preview only" in result.output
     assert not (tmp_path / ".config" / "opencode" / "opencode.jsonc").exists()
+
+
+def test_setup_mcp_opencode_preview_advises_removing_stale_old_name_server(tmp_path: Path) -> None:
+    """The reported opencode crash was a leftover pre-rename registration whose
+    old binary no longer exists (ENOENT). The preview must tell the user to
+    remove any stale agent-sentinel/agent-chronicle server before adding
+    agentacct."""
+    result = runner.invoke(app, ["setup", "mcp", "--agent", "opencode", "--project-dir", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "opencode mcp remove agent-sentinel" in result.output
+    assert "opencode mcp remove agent-chronicle" in result.output
 
 
 def test_setup_mcp_openclaw_preview_uses_repeatable_arg_syntax(tmp_path: Path) -> None:

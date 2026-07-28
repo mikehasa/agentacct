@@ -149,6 +149,7 @@ def mcp_preview_block(agent: str) -> str:
 
 MCP_PREVIEW_NOTES = (
     "These clients keep MCP config in profile/global or client-specific locations, so `setup mcp` PREVIEWS the exact registration command instead of writing it.",
+    "First remove any stale pre-rename server, e.g. `opencode mcp remove agent-sentinel` (also `agent-chronicle`): only `agentacct` ships now, so a leftover old-name entry launches a command that no longer exists (ENOENT), which the client reports as a crashed MCP server.",
     "Show the previewed command to the user and ask before modifying global agent configuration, then paste it into that client's own MCP setup flow.",
     "For an unlisted MCP-capable client, use `--agent generic` to get a portable stdio server definition.",
 )
