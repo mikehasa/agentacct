@@ -670,6 +670,7 @@ _SOURCE_CUMULATIVE_USAGE_SEMANTICS = frozenset(
         "codex_sqlite_tokens_used_fallback",
         "claude_assistant_message_usage_rows",
         "opencode_step_finish_events",
+        "opencode_session_rollup",
         "hermes_state_db_session_rows",
         "openclaw_assistant_usage_rows",
     }

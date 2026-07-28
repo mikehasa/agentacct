@@ -11,7 +11,7 @@ The current build is private and unpublished. Client support is capability-based
 | Claude Code | Project config can be written | JSONL importer | Installed context/directive bridge; generic Evidence v2 capture remains separate/manual | Usage + MCP sections form semantic Tasks; manual mechanical capture can form an observed activity Task |
 | Codex | Project config can be written | SQLite + rollout importer | No installed native hook; generic payload adapter is manual | Usage + client-log-evidenced MCP sections form semantic Tasks; manual mechanical capture can form an observed activity Task |
 | Hermes | Manual profile command preview | `state.db` importer | Not installed yet | Usage plus MCP work when the user registers it |
-| OpenCode | Manual user-config command preview | Captured/exported JSON only | Realtime plugin not installed; current official SQLite is not parsed yet | Usage plus MCP work when separately configured |
+| OpenCode | Manual user-config command preview | Native SQLite `session` rollup importer (JSON export fallback) | Realtime plugin not installed; native `opencode.db` session totals are imported (per-message granularity pending) | Usage plus MCP work when separately configured |
 | OpenClaw | Manual profile command preview | JSONL importer | Typed plugin hooks and `sessions.json` routing are not integrated yet | Usage plus MCP work when separately configured |
 | Cursor | Portable MCP definition only | Primary `state.vscdb` composer observations only; no token importer | Metadata payload normalization exists, but onboarding does not install it | A metadata-only composer Task after explicit refresh/manual capture; usage, cache, and cost unavailable |
 | Other MCP clients | Portable stdio definition | None unless a client-specific importer exists | None | MCP work context only |
@@ -56,7 +56,7 @@ Currently implemented local import paths:
 - Claude Code local JSONL session files
 - Codex local SQLite/JSONL session data
 - Hermes local `state.db` session rows
-- OpenCode exported or captured JSON event streams from `opencode run --format json`
+- OpenCode native `opencode.db` SQLite `session` rollups (per-session token/cost totals), with exported/captured `opencode run --format json` event streams as a fallback when no database is present
 - OpenClaw JSONL session logs
 - Cursor primary `User/globalStorage/state.vscdb` composer identities, timestamps, explicit model metadata, and exact child links (observation-only; no usage/cost rows)
 

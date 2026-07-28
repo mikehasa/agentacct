@@ -195,30 +195,47 @@ def _codex_rollout_session_ids(paths: Iterable[Path], *, root: Path) -> set[str]
 
 
 def _discover_opencode_source(opencode_home: Path | None) -> UsageSourceDiscovery:
-    homes = _paths_from_explicit_or_env(opencode_home, env_name="OPENCODE_DATA_DIR", defaults=[Path.home() / ".local" / "share" / "opencode"])
+    homes = _paths_from_explicit_or_env(
+        opencode_home,
+        env_name="OPENCODE_DATA_DIR",
+        defaults=[_opencode_default_home()],
+    )
+    # The native SQLite store is named opencode.db / opencode-<channel>.db; glob
+    # that prefix so unrelated *.db files in the home are not mistaken for it.
+    db_files = _dedupe_paths(path for home in homes for path in _matching_files(home, ["opencode*.db"]))
     json_files = _dedupe_paths(path for home in homes for path in _matching_files(home, ["*.jsonl", "*.json"]))
-    db_files = _dedupe_paths(path for home in homes for path in _matching_files(home, ["*.db"]))
-    files = [*json_files, *db_files]
+    files = [*db_files, *json_files]
     found = bool(files)
-    notes = ["JSON event streams can be imported; native database parsing is pending"]
     multiple_homes = len(homes) > 1
+    if db_files:
+        evidence = "sqlite-session-store"
+        notes = ["native OpenCode SQLite session store (opencode.db) can be imported"]
+        session_count = sum(_sqlite_count(db_path, "session") or 0 for db_path in db_files)
+    elif json_files:
+        evidence = "json-event-streams"
+        notes = ["OpenCode run --format json export streams can be imported"]
+        session_count = len(json_files)
+    else:
+        evidence = "json-event-streams-or-db"
+        notes = ["no OpenCode SQLite store or JSON export streams found"]
+        session_count = None
     if multiple_homes:
         notes.append(
             "multiple OpenCode homes detected; select one explicitly with --opencode-home so raw session ids cannot cross namespaces"
         )
     importer = (
         "agentacct usage import-local --client opencode"
-        if json_files and not multiple_homes
+        if found and not multiple_homes
         else None
     )
     return UsageSourceDiscovery(
         client="opencode",
         display_name="OpenCode",
         status="found" if found else "missing",
-        evidence="json-event-streams-or-db",
+        evidence=evidence,
         paths=_existing_or_attempted_paths(homes),
         file_count=len(files),
-        session_count=len(json_files) if json_files else None,
+        session_count=session_count,
         latest_updated_at=_latest_mtime(files),
         usage_confidence=USAGE_UNKNOWN,
         cost_confidence=COST_UNKNOWN,
@@ -370,6 +387,15 @@ def _discover_cursor_source(cursor_home: Path | None) -> UsageSourceDiscovery:
         ),
         notes=notes,
     )
+def _opencode_default_home() -> Path:
+    """OpenCode's default data home: ``$XDG_DATA_HOME/opencode`` else the
+    ``~/.local/share`` fallback (opencode honors XDG, not OPENCODE_DATA_DIR)."""
+
+    xdg_data_home = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg_data_home).expanduser() if xdg_data_home and xdg_data_home.strip() else Path.home() / ".local" / "share"
+    return base / "opencode"
+
+
 def _paths_from_explicit_or_env(explicit: Path | None, *, env_name: str, defaults: list[Path]) -> list[Path]:
     if explicit is not None:
         return [explicit.expanduser()]

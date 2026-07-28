@@ -1261,7 +1261,7 @@ def onboard(
                 )
             elif opencode_row is not None:
                 console.print(
-                    "OpenCode native database parsing is pending; current OpenCode import requires captured/exported JSON."
+                    "OpenCode was detected but no single importable store resolved; ensure one home holds an opencode.db session store (or exported JSON) and select it with `--opencode-home`."
                 )
         else:
             console.print("No readable known local usage source was found.")

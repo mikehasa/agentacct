@@ -2930,33 +2930,72 @@ def _peek_claude_session_id(
     return result
 
 
-def discover_opencode_usage(*, opencode_home: Path | None = None, limit_sessions: int = 20) -> list[ClientUsageEvent]:
-    """Read exported/OpenCode JSON event streams and return sanitized usage summaries.
+def _opencode_home_roots(opencode_home: Path | None) -> list[Path]:
+    """Resolve the OpenCode data home(s) to scan.
 
-    OpenCode `run --format json` emits newline-delimited JSON events with
-    `step-finish` parts containing token and cost summaries. This importer scans
-    JSON/JSONL files under the supplied OpenCode home/export directory and does
-    not retain prompts, text parts, tool payloads, or transcript content.
+    OpenCode itself stores under ``$XDG_DATA_HOME/opencode`` (falling back to
+    ``~/.local/share/opencode``). ``OPENCODE_DATA_DIR`` is NOT an opencode
+    environment variable — it is a ccusage convention — but agentacct keeps it
+    as an optional side-channel override so an operator can point the importer
+    at a relocated store without exporting XDG variables.
     """
 
     if opencode_home is not None:
-        roots = [opencode_home.expanduser()]
-    else:
-        configured = _env_text("OPENCODE_DATA_DIR")
-        roots = (
-            [
-                Path(value).expanduser()
-                for value in configured.split(",")
-                if value.strip()
-            ]
-            if configured
-            else [Path.home() / ".local" / "share" / "opencode"]
-        )
+        return [opencode_home.expanduser()]
+    configured = _env_text("OPENCODE_DATA_DIR")
+    if configured:
+        return [
+            Path(value).expanduser()
+            for value in configured.split(",")
+            if value.strip()
+        ]
+    xdg_data_home = _env_text("XDG_DATA_HOME")
+    base = Path(xdg_data_home).expanduser() if xdg_data_home else Path.home() / ".local" / "share"
+    return [base / "opencode"]
+
+
+def discover_opencode_usage(*, opencode_home: Path | None = None, limit_sessions: int = 20) -> list[ClientUsageEvent]:
+    """Read OpenCode local usage and return sanitized per-session summaries.
+
+    Since v1.2.0 OpenCode persists usage in a native SQLite store
+    (``opencode*.db``) whose ``session`` table carries an authoritative
+    per-session token/cost rollup. When that store is present it is the import
+    target; otherwise this falls back to the legacy ``run --format json`` export
+    path (newline-delimited events with ``step-finish`` token parts). Neither
+    path retains prompts, text parts, tool payloads, or transcript content.
+    """
+
+    roots = _opencode_home_roots(opencode_home)
     # OpenCode session ids are not yet proven globally unique across homes.
     # Fail closed before applying a scan limit; otherwise one half of a
     # collision can be truncated away and silently imported as trustworthy.
     if len(roots) > 1:
         return []
+    db_sources = sorted(
+        (
+            source
+            for root in roots
+            for source in _matching_regular_source_files(
+                root,
+                patterns=("opencode*.db",),
+            )
+        ),
+        key=lambda source: source.mtime,
+        reverse=True,
+    )
+    if db_sources:
+        return discover_opencode_usage_from_db(
+            db_sources=db_sources,
+            limit_sessions=limit_sessions,
+        )
+    return _discover_opencode_json_usage(roots=roots, limit_sessions=limit_sessions)
+
+
+def _discover_opencode_json_usage(
+    *, roots: list[Path], limit_sessions: int
+) -> list[ClientUsageEvent]:
+    """Legacy ``opencode run --format json`` export importer (no native db)."""
+
     sources = sorted(
         (
             source
@@ -3001,6 +3040,222 @@ def discover_opencode_usage(*, opencode_home: Path | None = None, limit_sessions
                 ),
             )
         )
+    return events
+
+
+_OPENCODE_MODEL_PRICING_SUFFIXES = ("-fast",)
+
+
+def _normalize_opencode_model_id(model_id: str | None) -> str | None:
+    """Strip OpenCode's trailing routing suffix so cost pricing resolves.
+
+    OpenCode reports model ids as a base OpenAI model plus a routing suffix
+    (``gpt-5.6-sol-fast`` = ``gpt-5.6-sol`` + ``-fast``). Upstream price tables
+    (LiteLLM) key only the base model, so the suffixed form never matches and
+    cost falls back to unknown. Normalizing to the base model both recovers the
+    real price and is the more accurate model identity. A non-matching id (or
+    one that is only the suffix) is returned unchanged.
+    """
+
+    if not model_id:
+        return model_id
+    lowered = model_id.lower()
+    for suffix in _OPENCODE_MODEL_PRICING_SUFFIXES:
+        if lowered.endswith(suffix) and len(model_id) > len(suffix):
+            return model_id[: -len(suffix)]
+    return model_id
+
+
+def _opencode_model_fields(raw_model: Any) -> tuple[str | None, str | None]:
+    """Extract (model id, provider id) from an OpenCode ``session.model`` cell.
+
+    OpenCode stores the column as a JSON object ``{"id","providerID","variant"?}``.
+    Older/degraded rows may hold a bare model-id string. Anything unparseable
+    yields ``(None, None)`` so a malformed cell cannot invent a model label. The
+    model id is normalized via ``_normalize_opencode_model_id`` (strips the
+    ``-fast`` routing suffix) so cost estimation resolves against the base model.
+    """
+
+    if isinstance(raw_model, str):
+        text = raw_model.strip()
+        if not text:
+            return None, None
+        if text.startswith("{"):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return _limited_optional_text(text, 120), None
+            if isinstance(parsed, dict):
+                model_id = _normalize_opencode_model_id(_limited_optional_text(parsed.get("id"), 120))
+                provider = _limited_optional_text(parsed.get("providerID"), 80)
+                return model_id, (provider.strip().lower() if provider else None)
+            return None, None
+        return _normalize_opencode_model_id(_limited_optional_text(text, 120)), None
+    if isinstance(raw_model, dict):
+        model_id = _normalize_opencode_model_id(_limited_optional_text(raw_model.get("id"), 120))
+        provider = _limited_optional_text(raw_model.get("providerID"), 80)
+        return model_id, (provider.strip().lower() if provider else None)
+    return None, None
+
+
+def _read_opencode_session_db_usage(
+    db_source: _RegularSourceFile,
+    *,
+    limit_sessions: int,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Read the authoritative ``session`` rollup from one ``opencode*.db``.
+
+    Returns ``(discovered_rows, selected_rows)``. Only the per-session token,
+    cost, model, lineage, directory, and timestamp columns are read; message
+    bodies, prompts, and tool payloads are never touched. Raises on a corrupt
+    or unreadable database so discovery fails closed rather than reporting the
+    store as silently absent.
+    """
+
+    con = _connect_regular_source_sqlite_read_only(db_source)
+    con.row_factory = sqlite3.Row
+    try:
+        columns = _sqlite_table_columns(con, "session")
+        if "id" not in columns:
+            raise _ClientUsageDiscoveryReadError("opencode_session_table_missing")
+        required = [
+            "id",
+            "cost",
+            "tokens_input",
+            "tokens_output",
+            "tokens_reasoning",
+            "tokens_cache_read",
+            "tokens_cache_write",
+            "model",
+            "time_created",
+            "time_updated",
+        ]
+        optional = [
+            column
+            for column in ("parent_id", "directory", "title")
+            if column in columns
+        ]
+        select_columns = [
+            column for column in required if column in columns
+        ] + optional
+        discovered_rows = int(
+            con.execute("select count(*) from session").fetchone()[0]
+        )
+        order_by = (
+            "time_updated desc, id asc"
+            if "time_updated" in columns
+            else "id asc"
+        )
+        rows = con.execute(
+            f"""
+            select {", ".join(select_columns)}
+            from session
+            order by {order_by}
+            limit ?
+            """,
+            (max(0, limit_sessions),),
+        ).fetchall()
+    finally:
+        con.close()
+    selected: list[dict[str, Any]] = []
+    for row in rows:
+        usage = dict(row)
+        # These counters are NOT NULL columns with a default of 0, so a present
+        # column is a measured value (possibly a real zero) — distinct from an
+        # absent column on a future/degraded schema.
+        usage["input_tokens_reported"] = "tokens_input" in columns
+        usage["output_tokens_reported"] = "tokens_output" in columns
+        usage["reasoning_output_tokens_reported"] = "tokens_reasoning" in columns
+        usage["cache_read_tokens_reported"] = "tokens_cache_read" in columns
+        usage["cache_write_tokens_reported"] = "tokens_cache_write" in columns
+        selected.append(usage)
+    return max(0, discovered_rows), selected
+
+
+def discover_opencode_usage_from_db(
+    *,
+    db_sources: list[_RegularSourceFile],
+    limit_sessions: int = 20,
+) -> list[ClientUsageEvent]:
+    """Emit one sanitized usage event per OpenCode ``session`` rollup row.
+
+    Each row is a cumulative per-session snapshot: the ``session`` table stores
+    the running token/cost total for the session, so the import is treated as a
+    refreshable cumulative snapshot (``opencode_session_rollup``). OpenCode most
+    often persists ``cost = 0`` and expects clients to price locally, so cost is
+    left for the pricing catalog to recompute from tokens (honest
+    ``estimated_from_tokens`` confidence) unless a real nonzero cost is stored.
+    """
+
+    events: list[ClientUsageEvent] = []
+    seen_sessions: set[tuple[str, str]] = set()
+    for db_source in db_sources:
+        namespace = _source_home_namespace(db_source.root)
+        _discovered, selected_rows = _read_opencode_session_db_usage(
+            db_source,
+            limit_sessions=limit_sessions,
+        )
+        for usage in selected_rows:
+            session_id = str(usage.get("id") or "").strip()
+            if not session_id:
+                continue
+            identity = (namespace, session_id)
+            if identity in seen_sessions:
+                continue
+            model_id, provider_id = _opencode_model_fields(usage.get("model"))
+            # OpenCode's ``tokens_input`` is the fresh, uncached prompt input;
+            # cache reads/writes are tracked as SEPARATE additive buckets (real
+            # rows show cache_read > tokens_input, so cache is not a subset of
+            # input the way OpenAI/Codex report it). Store the column verbatim —
+            # this also matches the legacy JSON step-finish importer — so the
+            # cache buckets are priced once at their own rate, not subtracted.
+            fresh_input = _safe_nonnegative_int(usage.get("tokens_input"))
+            cache_read = _safe_nonnegative_int(usage.get("tokens_cache_read"))
+            cache_write = _safe_nonnegative_int(usage.get("tokens_cache_write"))
+            stored_cost = _optional_float(usage.get("cost"))
+            reported_cost = stored_cost if stored_cost is not None and stored_cost > 0 else None
+            updated_at = _timestamp_seconds(usage.get("time_updated"))
+            source_revision_ms = _optional_int(usage.get("time_updated"))
+            parent_id = _limited_optional_text(usage.get("parent_id"), 512)
+            if parent_id == session_id:
+                parent_id = None
+            event = ClientUsageEvent(
+                client="opencode",
+                client_session_id=session_id,
+                source_path=db_source.path,
+                title=usage.get("title"),
+                cwd=_limited_optional_text(usage.get("directory"), 240),
+                model=model_id,
+                provider_name=provider_id,
+                input_tokens=fresh_input,
+                output_tokens=_safe_nonnegative_int(usage.get("tokens_output")),
+                input_tokens_reported=bool(usage.get("input_tokens_reported")),
+                output_tokens_reported=bool(usage.get("output_tokens_reported")),
+                cached_input_tokens=cache_read + cache_write,
+                cache_creation_input_tokens=cache_write,
+                cache_read_input_tokens=cache_read,
+                cache_creation_tokens_reported=bool(usage.get("cache_write_tokens_reported")),
+                cache_read_tokens_reported=bool(usage.get("cache_read_tokens_reported")),
+                reasoning_output_tokens=_safe_nonnegative_int(usage.get("tokens_reasoning")),
+                reasoning_output_tokens_reported=bool(usage.get("reasoning_output_tokens_reported")),
+                started_at=_timestamp_seconds(usage.get("time_created")),
+                updated_at=updated_at,
+                client_reported_cost_usd=reported_cost,
+                client_cost_source="opencode_session_cost" if reported_cost is not None else None,
+                client_session_kind="child" if parent_id else "root",
+                parent_client_session_id=parent_id,
+                client_transcript_id=session_id,
+                usage_update_semantics_override="opencode_session_rollup",
+                # ``time_updated`` is a genuine per-session revision clock (unlike
+                # a shared container mtime), so it can order refreshable
+                # revisions. Stored in microseconds for the observation lane.
+                source_revision_at=source_revision_ms * 1000 if source_revision_ms is not None else None,
+                source_revision_basis="opencode_session_time_updated_us" if source_revision_ms is not None else None,
+                source_namespace_fingerprint=namespace,
+            )
+            if _event_has_usage_or_cost(event):
+                seen_sessions.add(identity)
+                events.append(event)
     return events
 
 
