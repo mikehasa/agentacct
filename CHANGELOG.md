@@ -6,6 +6,35 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-29
+
+### Added
+- OpenCode usage now imports from the native `opencode.db` session store. Per-session
+  tokens (input / output / reasoning / cache) and the model are read directly from the
+  authoritative `session` rollup, so an interactive OpenCode session shows token usage
+  without an exported `run --format json` file. The database is opened read-only and a
+  corrupt store fails closed. When OpenCode records no cost, cost is estimated from tokens
+  (labeled as an estimate, never a fabricated figure); OpenCode's `-fast` routing suffix
+  (e.g. `gpt-5.6-sol-fast`) is normalized to the base model so it prices against the
+  published rate. The legacy exported-JSON path is kept as a fallback. (#18)
+
+### Changed
+- The local dashboard's default port (8765) auto-advances to the next free port when it is
+  busy — the dashboard no longer fails to start just because a port is taken — and prints
+  the port it actually bound. An explicit `--port` is still honored strictly: if that exact
+  port is occupied the command fails with a clear message instead of silently moving. (#16)
+
+### Fixed
+- `agentacct mcp serve` no longer exits when it cannot resolve a store. A server that exits
+  at startup reads to the host agent (OpenCode / Claude Code / Codex) as a crash, which was
+  the most likely cause of reports that agentacct "crashed" a client. The MCP server now
+  stays connected in a degraded mode — answering the handshake and returning a clear
+  JSON-RPC error on any recording call — and never silently creates or picks a store. MCP
+  setup previews also tell users to remove any stale pre-rename (`agent-sentinel` /
+  `agent-chronicle`) server registration first, which is the other crash vector. (#17)
+- The OpenCode usage importer skips non-object JSON records, so one stale export file can no
+  longer abort usage discovery for every client during onboarding. Thanks to @ZPVIP. (#15)
+
 ## [0.2.0] - 2026-07-27
 
 ### Added
