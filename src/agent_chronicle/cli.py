@@ -114,7 +114,7 @@ from .hooks import (
 from .log_evidence import build_log_evidence_index, summarize_log_evidence_donor_rows
 from . import install_guide
 from .install_guide import full_prompt as install_guide_full_prompt, one_line_prompt as install_guide_one_line_prompt
-from .mcp import TOOLS, SentinelMCPServer, run_mcp_event_workflow_smoke, serve_stdio
+from .mcp import DEGRADED_NO_STORE_MESSAGE, TOOLS, SentinelMCPServer, run_mcp_event_workflow_smoke, serve_stdio
 from .mcp_client_smoke import MCPClientSmokeError, assert_deepseek_mcp_client_smoke_passed, run_deepseek_mcp_client_smoke
 from .outcome import (
     apply_judge_result,
@@ -951,11 +951,34 @@ def _print_codex_mcp_setup(config_store_dir: Path | str, *, command: str = "agen
     print(_codex_mcp_toml_block(config_store_dir, command=command).rstrip())
 
 
+def _print_stale_registration_remediation(agent: str) -> None:
+    """Tell the user to remove any leftover pre-rename server before adding agentacct.
+
+    A registration left over from the ``agent-sentinel`` / ``agent-chronicle``
+    era points at a command name that no longer ships (only ``agentacct`` does),
+    so the host tries to launch a missing binary — an ENOENT that reads to the
+    client as a crashed MCP server. Removing the dead entry first is the fix.
+    """
+    console.print(
+        "First remove any stale pre-rename server — a leftover agent-sentinel/agent-chronicle "
+        "entry launches a command that no longer exists (ENOENT), which the client reports as a crash:"
+    )
+    if agent == "generic":
+        console.print(
+            "In the agent's MCP config, delete any server named 'agent-sentinel' or 'agent-chronicle' "
+            "(only 'agentacct' ships now), then add the definition below."
+        )
+        return
+    print(f"{agent} mcp remove agent-sentinel")
+    print(f"{agent} mcp remove agent-chronicle")
+
+
 def _print_agent_mcp_preview(agent: str, config_store_dir: Path | str, *, command: str = "agentacct") -> None:
     quoted_store_dir = shlex.quote(str(config_store_dir))
     quoted_command = shlex.quote(command)
     if agent == "generic":
         console.print("Generic MCP-capable agent")
+        _print_stale_registration_remediation(agent)
         console.print("Use this stdio MCP server definition in the agent's project-local MCP config:")
         print(_claude_mcp_json(config_store_dir, command=command).rstrip())
         console.print("Command form:")
@@ -964,16 +987,19 @@ def _print_agent_mcp_preview(agent: str, config_store_dir: Path | str, *, comman
     if agent == "hermes":
         console.print("Hermes")
         console.print("Hermes manages MCP servers in the active Hermes profile, not in this repo.")
+        _print_stale_registration_remediation(agent)
         console.print("Copy/paste command:")
         print(f"hermes mcp add agentacct --command {quoted_command} --args mcp serve --store-dir {quoted_store_dir}")
         return
     if agent == "opencode":
         console.print("OpenCode")
+        _print_stale_registration_remediation(agent)
         console.print("Copy/paste command:")
         print(f"opencode mcp add agentacct -- {quoted_command} mcp serve --store-dir {quoted_store_dir}")
         return
     if agent == "openclaw":
         console.print("OpenClaw")
+        _print_stale_registration_remediation(agent)
         console.print("Copy/paste command:")
         print(
             "openclaw mcp add agentacct "
@@ -3237,15 +3263,31 @@ def mcp_serve(
     """Serve agentacct MCP tools over stdio.
 
     This exposes safe report/outcome/value primitives and does not call paid judge APIs.
-    Store resolution is strict: the MCP client controls this process's cwd, so a
-    visibly failed server beats a silently wrong ledger.
+    Store resolution stays strict — the MCP client controls this process's cwd,
+    so a silently wrong ledger is never acceptable — but a server that EXITS reads
+    to the host as a crash. So an unresolvable store starts a degraded-but-connected
+    session instead: initialize and tools/list still answer, recording tools return
+    a legible "no store configured" error, and no store is ever silently created.
     """
+    # As an MCP server this process's exit is the ONLY liveness signal the host
+    # has: an exit at startup reads as a crash. So an unresolvable store must
+    # NOT exit — it starts a degraded-but-connected session (initialize +
+    # tools/list still answer; recording tools return a legible error). We still
+    # never silently create or pick a store (honesty rule): degraded_reason is
+    # set and no store path is resolved.
+    resolved: Path | None = None
+    degraded_reason: str | None = None
     if store_dir is None:
         try:
             resolved = resolve_store_dir(None).path
         except StoreResolutionError as exc:
-            print(str(exc), file=sys.stderr)
-            raise typer.Exit(2) from exc
+            print(
+                f"agentacct mcp serve: {exc}\n"
+                "Starting a degraded MCP session (connected, but not recording): restart the server with "
+                f"--store-dir <absolute path> or set {ENV_STORE_DIR}=<absolute path>.",
+                file=sys.stderr,
+            )
+            degraded_reason = DEGRADED_NO_STORE_MESSAGE
     else:
         expanded = store_dir.expanduser()
         if expanded.is_absolute():
@@ -3260,7 +3302,7 @@ def mcp_serve(
             # named the store, which beats a dead server.
             try:
                 resolution = resolve_store_dir(None, env={})
-            except StoreResolutionError as exc:
+            except StoreResolutionError:
                 try:
                     env_value = store_env_dir_value(os.environ) or ""
                 except StoreResolutionError:
@@ -3286,13 +3328,19 @@ def mcp_serve(
                         )
                     print(
                         "Fix: re-run `agentacct setup mcp --agent <claude-code|codex> --write` in the project root to "
-                        f"write an absolute store path into the MCP config, or set {ENV_STORE_DIR}=<absolute path>.",
+                        f"write an absolute store path into the MCP config, or set {ENV_STORE_DIR}=<absolute path>. "
+                        "Starting a degraded MCP session (connected, but not recording) until then.",
                         file=sys.stderr,
                     )
-                    raise typer.Exit(2) from exc
+                    degraded_reason = DEGRADED_NO_STORE_MESSAGE
             else:
                 anchor = resolution.project_root if resolution.project_root is not None else resolution.path.parent.parent
                 resolved = anchor / expanded
+    if degraded_reason is not None:
+        # No resolvable store: stay connected but refuse to record. serve_stdio
+        # gets store_dir=None so it never constructs (or creates) a store.
+        serve_stdio(store_dir=None, degraded_reason=degraded_reason)
+        return
     print(f"agentacct mcp serve: store={resolved}", file=sys.stderr)
     serve_stdio(store_dir=resolved)
 

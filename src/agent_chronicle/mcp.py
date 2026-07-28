@@ -763,26 +763,7 @@ class SentinelMCPServer:
         msg_id = message.get("id")
         try:
             if method == "initialize":
-                params = message.get("params", {})
-                requested_protocol = params.get("protocolVersion") if isinstance(params, dict) else None
-                protocol_version = requested_protocol if isinstance(requested_protocol, str) and requested_protocol else "2024-11-05"
-                return self._response(
-                    msg_id,
-                    {
-                        "protocolVersion": protocol_version,
-                        # Pre-rename registrations still launch this server under the old
-                        # config key; pairing accepts both (log_evidence), so the
-                        # serverInfo name can advertise the new brand unconditionally.
-                        "serverInfo": {"name": "agent-chronicle", "version": "0.1.0"},
-                        "capabilities": {"tools": {}},
-                        # Directive, tool-aware guidance delivered at the tool
-                        # layer, where Claude Code's tool-deferral barrier lives:
-                        # tells the agent to record its work (and to load these
-                        # tools first if they are deferred) even when a
-                        # background CLAUDE.md instruction would not reach it.
-                        "instructions": MCP_SERVER_INSTRUCTIONS,
-                    },
-                )
+                return self._response(msg_id, build_initialize_result(message.get("params", {})))
             if method == "notifications/initialized":
                 return None
             if method == "tools/list":
@@ -1575,10 +1556,107 @@ def run_mcp_event_workflow_smoke(*, store_dir: Path | str | None = None, run_id:
     }
 
 
-def serve_stdio(*, store_dir: Path | str, stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None:
-    server = SentinelMCPServer(store_dir=store_dir)
+def build_initialize_result(params: Any) -> dict[str, Any]:
+    """The static MCP ``initialize`` result, shared by the live and degraded servers.
+
+    A degraded (store-less) server must answer ``initialize`` and ``tools/list``
+    byte-identically to the live server so the host stays fully connected;
+    factoring the payload here keeps the two from drifting.
+    """
+    requested_protocol = params.get("protocolVersion") if isinstance(params, dict) else None
+    protocol_version = requested_protocol if isinstance(requested_protocol, str) and requested_protocol else "2024-11-05"
+    return {
+        "protocolVersion": protocol_version,
+        # Pre-rename registrations still launch this server under the old
+        # config key; pairing accepts both (log_evidence), so the
+        # serverInfo name can advertise the new brand unconditionally.
+        "serverInfo": {"name": "agent-chronicle", "version": "0.1.0"},
+        "capabilities": {"tools": {}},
+        # Directive, tool-aware guidance delivered at the tool
+        # layer, where Claude Code's tool-deferral barrier lives:
+        # tells the agent to record its work (and to load these
+        # tools first if they are deferred) even when a
+        # background CLAUDE.md instruction would not reach it.
+        "instructions": MCP_SERVER_INSTRUCTIONS,
+    }
+
+
+# The tool-call error a degraded server returns when no store could be
+# resolved. It must be legible in a host's error surface and tell the user
+# exactly how to recover — WITHOUT the server ever creating or picking a store
+# on its own (agentacct's honesty rule).
+DEGRADED_NO_STORE_MESSAGE = (
+    "agentacct: no store configured — restart the MCP server with "
+    "--store-dir <abs path> (or set an absolute AGENT_CHRONICLE_STORE_DIR). "
+    "The server is connected but cannot record work until a store is set; "
+    "it will not create or pick a store on its own."
+)
+
+
+def degraded_store_unwritable_message(store_dir: Path | str | None, error: object) -> str:
+    """Tool-call error when a configured --store-dir cannot be used (mkdir failed)."""
+    return (
+        f"agentacct: configured store directory {store_dir} is not usable ({error}). "
+        "Restart the MCP server with a writable --store-dir <abs path> "
+        "(or an absolute AGENT_CHRONICLE_STORE_DIR). The server is connected but "
+        "cannot record work until a usable store is set."
+    )
+
+
+class _DegradedMCPServer:
+    """Store-less stand-in that keeps an MCP stdio session alive and honest.
+
+    When the store cannot be resolved — or the configured ``--store-dir`` is
+    not usable — constructing the real server would raise before the read loop,
+    and a server that exits at startup looks CRASHED to the host (the most
+    likely cause of the reported "it crashed my opencode"). Instead we run this:
+    it answers ``initialize`` and ``tools/list`` exactly like the live server so
+    the host stays connected, but every tool call returns a legible JSON-RPC
+    error explaining how to configure a store. It NEVER creates or selects a
+    store — staying connected while refusing to record is the entire point.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self._reason = reason
+
+    def handle_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        method = message.get("method")
+        msg_id = message.get("id")
+        if method == "initialize":
+            return SentinelMCPServer._response(msg_id, build_initialize_result(message.get("params", {})))
+        if method == "notifications/initialized":
+            return None
+        if method == "tools/list":
+            return SentinelMCPServer._response(msg_id, {"tools": TOOLS})
+        if method == "tools/call":
+            # Same serialized-error shape the live server uses for unexpected
+            # failures: a clear message, never a crash, never a silent store.
+            return SentinelMCPServer._error(msg_id, -32000, self._reason)
+        return SentinelMCPServer._error(msg_id, -32601, f"Unknown method: {method}")
+
+
+def serve_stdio(
+    *,
+    store_dir: Path | str | None,
+    stdin: BinaryIO | None = None,
+    stdout: BinaryIO | None = None,
+    degraded_reason: str | None = None,
+) -> None:
     stdin_stream: BinaryIO = stdin or sys.stdin.buffer
     stdout_stream: BinaryIO = stdout or sys.stdout.buffer
+    server: SentinelMCPServer | _DegradedMCPServer
+    if degraded_reason is not None:
+        # The store was unresolvable upstream (cli.mcp_serve): run degraded
+        # WITHOUT touching the filesystem. Never construct a store here.
+        server = _DegradedMCPServer(degraded_reason)
+    else:
+        try:
+            server = SentinelMCPServer(store_dir=store_dir)
+        except Exception as exc:  # noqa: BLE001 - a store we cannot build must degrade, not crash the server.
+            # An unwritable/invalid --store-dir (RunStore.mkdir failed) must
+            # surface as a JSON-RPC error at the first tool call, NOT an
+            # uncaught startup exception that the host reads as a dead server.
+            server = _DegradedMCPServer(degraded_store_unwritable_message(store_dir, exc))
     while True:
         framed = read_mcp_message_with_framing(stdin_stream)
         if framed is None:
