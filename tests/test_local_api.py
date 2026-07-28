@@ -1,7 +1,9 @@
 import json
 import os
+import socket
 import sqlite3
 
+import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
@@ -2032,6 +2034,9 @@ def test_top_level_serve_prints_local_usage_scan_notice(tmp_path, monkeypatch):
         calls.append({"api_app": api_app, "host": host, "port": port, "log_level": log_level})
 
     monkeypatch.setattr("uvicorn.run", fake_run)
+    # Keep the default-port path deterministic regardless of what is bound on the
+    # machine running the suite (the live dashboard may hold 8765).
+    monkeypatch.setattr("agent_chronicle.cli._probe_port_free", lambda host, port: True)
 
     result = CliRunner().invoke(app, ["serve", "--store-dir", str(tmp_path / "state")])
 
@@ -2048,6 +2053,81 @@ def test_top_level_serve_help_describes_local_dashboard():
     assert result.exit_code == 0
     assert "dashboard" in result.output.lower()
     assert "127.0.0.1" in result.output
+
+
+def test_top_level_serve_falls_back_when_default_port_busy(tmp_path, monkeypatch):
+    """A busy DEFAULT port advances to the next free one and reports it."""
+    calls = []
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: calls.append(kwargs))
+    # Simulate the default 8765 being occupied and 8766 free.
+    monkeypatch.setattr("agent_chronicle.cli._probe_port_free", lambda host, port: port != 8765)
+
+    result = CliRunner().invoke(app, ["serve", "--store-dir", str(tmp_path / "state")])
+
+    assert result.exit_code == 0, result.output
+    assert calls[0]["port"] == 8766
+    assert "Port 8765 was busy" in result.output
+    assert "http://127.0.0.1:8766" in result.output
+
+
+def test_top_level_serve_explicit_busy_port_errors(tmp_path, monkeypatch):
+    """An explicit --port that is occupied fails loudly instead of moving."""
+    calls = []
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: calls.append(kwargs))
+    # Every port is busy; with an explicit --port there must be no silent move.
+    monkeypatch.setattr("agent_chronicle.cli._probe_port_free", lambda host, port: False)
+
+    result = CliRunner().invoke(app, ["serve", "--port", "9000", "--store-dir", str(tmp_path / "state")])
+
+    assert result.exit_code == 1, result.output
+    assert "Port 9000 is already in use" in result.output
+    assert calls == []  # uvicorn.run was never reached
+
+
+def test_top_level_serve_explicit_free_port_binds_exactly(tmp_path, monkeypatch):
+    """An explicit --port that is free binds that exact port (no probing drift)."""
+    calls = []
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: calls.append(kwargs))
+    monkeypatch.setattr("agent_chronicle.cli._probe_port_free", lambda host, port: True)
+
+    result = CliRunner().invoke(app, ["serve", "--port", "9123", "--store-dir", str(tmp_path / "state")])
+
+    assert result.exit_code == 0, result.output
+    assert calls[0]["port"] == 9123
+    assert "was busy" not in result.output
+
+
+def test_select_serve_port_advances_past_real_busy_socket():
+    """End-to-end probe: a real listening socket forces a real fallback."""
+    from agent_chronicle.cli import _select_serve_port
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+    busy_port = sock.getsockname()[1]
+    try:
+        chosen = _select_serve_port("127.0.0.1", busy_port, allow_fallback=True)
+        assert chosen != busy_port
+        assert busy_port < chosen <= busy_port + 20
+    finally:
+        sock.close()
+
+
+def test_select_serve_port_explicit_busy_raises_on_real_socket():
+    """With fallback disabled, a real busy port raises instead of moving."""
+    from agent_chronicle.cli import _select_serve_port
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+    busy_port = sock.getsockname()[1]
+    try:
+        with pytest.raises(OSError):
+            _select_serve_port("127.0.0.1", busy_port, allow_fallback=False)
+    finally:
+        sock.close()
 
 
 def _make_home_claude_mixed_model_source(home):
