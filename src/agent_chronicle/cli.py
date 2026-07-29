@@ -115,7 +115,7 @@ from .log_evidence import build_log_evidence_index, summarize_log_evidence_donor
 from . import install_guide
 from .install_guide import full_prompt as install_guide_full_prompt, one_line_prompt as install_guide_one_line_prompt
 from .mcp import DEGRADED_NO_STORE_MESSAGE, TOOLS, SentinelMCPServer, run_mcp_event_workflow_smoke, serve_stdio
-from .mcp_client_smoke import MCPClientSmokeError, assert_deepseek_mcp_client_smoke_passed, run_deepseek_mcp_client_smoke
+from .mcp_client_smoke import MCPClientSmokeError, assert_mcp_client_smoke_passed, run_mcp_client_smoke
 from .outcome import (
     apply_judge_result,
     apply_value_score,
@@ -147,6 +147,7 @@ from .store_resolution import (
     ENV_STORE_DIR,
     StoreResolution,
     StoreResolutionError,
+    canonical_global_store_dir,
     claude_worktree_owner_dir,
     resolve_dashboard_store_dir,
     resolve_store_dir,
@@ -331,10 +332,10 @@ def _has_agent_section(text: str) -> bool:
 def _agent_section(agent: str) -> str:
     return f"""{_agent_section_marker(agent)}
 
-Use agentacct in observe-only mode by default for this project.
+Use agentacct in observe-only mode.
 
 - Prefer `agentacct run -- <command>` for tracked local commands.
-- Keep `.agent-sentinel/state/` and local env files gitignored.
+- If a project-local store exists, keep `.agent-sentinel/state/` and local env files gitignored (a global install keeps its store outside any repo, so there is nothing to ignore).
 - Do not connect provider API keys unless the user explicitly asks for provider cost proxy/forwarding.
 - If the agentacct MCP tools are available, use them as the normal workflow ledger:
   - call `sentinel_attach_client_context` when local session, parent session, turn, request, or message IDs are known;
@@ -556,6 +557,17 @@ def _merge_claude_project_settings(project_dir: Path) -> tuple[Path, str]:
     if not example_path.exists():
         raise RuntimeManagerError("Claude Code hook settings example was not generated")
     target = project_dir / ".claude" / "settings.local.json"
+    return _merge_claude_settings_from_example(example_path, target)
+
+
+def _merge_claude_settings_from_example(example_path: Path, target: Path) -> tuple[Path, str]:
+    """Non-destructively merge a generated hook/env example into a settings file.
+
+    Shared by the project install (``.claude/settings.local.json``) and the
+    default-global install (user-level ``~/.claude/settings.json``): an env key is
+    never overwritten when the user set a different value, hook rows are deduped
+    by fingerprint, and the write is atomic + 0600.
+    """
     try:
         generated = json.loads(example_path.read_text(encoding="utf-8"))
         current = json.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
@@ -638,6 +650,22 @@ def _resolve_mcp_command(value: str | None) -> str:
     if shutil.which("agent-sentinel"):
         # Pre-rename installs: only the oldest binary name is on PATH.
         return "agent-sentinel"
+    return _current_agent_chronicle_executable() or "agentacct"
+
+
+def _resolve_absolute_mcp_command() -> str:
+    """An ABSOLUTE path to the agentacct binary for user-scope registrations.
+
+    GUI-launched clients (Claude Code desktop, Codex.app) do NOT inherit the
+    shell PATH, so a bare ``agentacct`` command would fail to launch there. The
+    global install bakes the absolute path (like the manual runbook's
+    ``command -v agentacct``) instead. Falls back to the bare name only if no
+    absolute path can be found — never registers an empty command.
+    """
+    for name in ("agentacct", "agent-chronicle", "agent-sentinel"):
+        found = shutil.which(name)
+        if found:
+            return found
     return _current_agent_chronicle_executable() or "agentacct"
 
 
@@ -882,7 +910,10 @@ def _write_claude_mcp_config(project_dir: Path, config_store_dir: Path | str, *,
 
 
 def _write_codex_mcp_config(project_dir: Path, config_store_dir: Path | str, *, command: str = "agentacct") -> tuple[Path, str]:
-    config_path = project_dir / ".codex" / "config.toml"
+    return _write_codex_mcp_config_at(project_dir / ".codex" / "config.toml", config_store_dir, command=command)
+
+
+def _write_codex_mcp_config_at(config_path: Path, config_store_dir: Path | str, *, command: str = "agentacct") -> tuple[Path, str]:
     generated = _mcp_server_config(config_store_dir, command=command)
     env: dict[str, str] = {}
     if config_path.exists():
@@ -928,6 +959,88 @@ def _write_codex_mcp_config(project_dir: Path, config_store_dir: Path | str, *, 
             '[mcp_servers."agent-sentinel"]',
         },
     )
+    return config_path, action
+
+
+def _atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
+    """Write ``text`` to ``path`` atomically (temp file + os.replace) at ``mode``.
+
+    Used for user-level config that a concurrently-running client may also
+    rewrite (notably ``~/.claude.json``): a torn read-modify-write would corrupt
+    the client's own state, so the swap is atomic and the file mode is preserved.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.parent / f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        try:
+            path.chmod(mode)
+        except OSError:
+            pass
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _write_user_claude_mcp_config(
+    config_path: Path, config_store_dir: Path | str, *, command: str = "agentacct"
+) -> tuple[Path, str]:
+    """Merge the agentacct server into the USER-level ``~/.claude.json``.
+
+    Unlike the project ``.mcp.json`` writer, this file is Claude Code's own
+    global state (caches, projects, account): we merge into the top-level
+    ``mcpServers`` object, PRESERVE every other top-level key AND every extra key
+    on the ``agentacct`` entry (e.g. ``alwaysLoad``), and only set
+    ``type``/``command``/``args``. User-scope entries use ``type: "stdio"``. The
+    write is atomic + 0600 because a live Claude session may rewrite this file.
+    """
+    existing: dict[str, object] = {}
+    mode = 0o600
+    if config_path.exists():
+        mode = (config_path.stat().st_mode & 0o777) or 0o600
+        try:
+            loaded = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise typer.BadParameter(
+                f"{config_path} could not be read as JSON ({type(exc).__name__}); refusing to overwrite it. "
+                "Fix or move the file, then re-run."
+            ) from exc
+        if not isinstance(loaded, dict):
+            raise typer.BadParameter(f"{config_path} is not a JSON object; refusing to modify it.")
+        existing = loaded
+    servers = existing.setdefault("mcpServers", {})
+    if not isinstance(servers, dict):
+        raise typer.BadParameter(f"{config_path} has a non-object mcpServers; refusing to modify it.")
+
+    args = ["mcp", "serve", "--store-dir", str(config_store_dir)]
+    generated_for_match = {"command": command, "args": args}
+    # Collapse this tool's own prior name (always safe to replace); carry env.
+    # A CUSTOM pre-rename (old-name) entry is the user's — leave it + warn
+    # rather than clobber it (they may still run a second server; documented).
+    carried_env = dict(_registration_env(servers.pop("agent-chronicle", None)))
+    old_sentinel = servers.get("agent-sentinel")
+    if old_sentinel is not None:
+        if _pre_rename_registration_matches_generated(old_sentinel, generated_for_match):
+            carried_env.update(_registration_env(servers.pop("agent-sentinel")))
+        else:
+            console.print(_PRE_RENAME_CUSTOM_SETTINGS_NOTE)
+
+    entry_obj = servers.get("agentacct")
+    entry: dict[str, object] = dict(entry_obj) if isinstance(entry_obj, dict) else {}
+    action = "updated" if entry else "wrote"
+    merged_env = {**carried_env, **_registration_env(entry)}
+    entry["type"] = "stdio"
+    entry["command"] = command
+    entry["args"] = args
+    if merged_env:
+        entry["env"] = merged_env
+    servers["agentacct"] = entry
+
+    _atomic_write_text(config_path, json.dumps(existing, indent=2) + "\n", mode=mode)
     return config_path, action
 
 
@@ -1190,13 +1303,186 @@ def init_project(
     return install_receipts
 
 
+def _consent_to_write(prompt: str, *, assume_yes: bool) -> bool:
+    """Ask before writing a USER-owned file. --yes skips the prompt; a
+    non-interactive run without --yes declines (never touch a user file blindly)."""
+    if assume_yes:
+        return True
+    if not sys.stdin.isatty():
+        return False
+    return typer.confirm(prompt, default=True)
+
+
+def _onboard_global_claude(store_dir: Path, command: str, *, assume_yes: bool) -> bool:
+    """Configure Claude Code at USER scope (zero repo files). Returns readiness."""
+    home = Path.home()
+    # 1. standing "record your work" instructions -> ~/.claude/CLAUDE.md
+    setup_instructions(
+        agent="claude-code", user=True, path=None, remove=False, dry_run=False, store_dir=store_dir
+    )
+    # 2. hook wrapper OUTSIDE the store (~/.claude/hooks/) + user settings example
+    #    rendered with the wrapper's ABSOLUTE path and an embedded --store-dir.
+    install_claude_code_hook(
+        home, force=True, store_dir=store_dir, user_settings_example=True
+    )
+    _hook_path, example_path = claude_code_hook_paths(home)
+    # 3. merge the hook + ENABLE_TOOL_SEARCH env into ~/.claude/settings.json (consent)
+    settings_target = home / ".claude" / "settings.json"
+    if _consent_to_write(
+        f"Merge the agentacct hook + ENABLE_TOOL_SEARCH=auto into {settings_target}?",
+        assume_yes=assume_yes,
+    ):
+        try:
+            _merge_claude_settings_from_example(example_path, settings_target)
+            console.print(f"Merged Claude Code hook + env into {settings_target}")
+        except RuntimeManagerError as exc:
+            console.print(f"Left {settings_target} unchanged: {exc}")
+            console.print(f"Merge {example_path} into {settings_target} yourself to finish.")
+    else:
+        console.print(
+            f"Skipped {settings_target}. Merge the 'hooks' and 'env' blocks from "
+            f"{example_path} into it yourself (needed for recording)."
+        )
+    # 4. native user-scope MCP registration -> ~/.claude.json (merge, preserve keys)
+    path, action = _write_user_claude_mcp_config(home / ".claude.json", store_dir, command=command)
+    if action == "skipped":
+        return False
+    console.print(f"{action.capitalize()} Claude Code MCP server in {path}")
+    console.print("Start a NEW Claude Code session so it loads the server + hook.")
+    return True
+
+
+def _onboard_global_codex(store_dir: Path, command: str) -> bool:
+    """Configure Codex at USER scope (zero repo files). Returns readiness."""
+    home = Path.home()
+    setup_instructions(
+        agent="codex", user=True, path=None, remove=False, dry_run=False, store_dir=store_dir
+    )
+    path, action = _write_codex_mcp_config_at(home / ".codex" / "config.toml", store_dir, command=command)
+    if action == "skipped":
+        return False
+    console.print(f"{action.capitalize()} Codex MCP server block in {path}")
+    console.print("Start a NEW Codex session so it loads the server.")
+    return True
+
+
+def _print_opencode_global_preview(store_dir: Path, command: str) -> None:
+    console.print(
+        "OpenCode detected. agentacct does not write OpenCode config; run this to register the server:"
+    )
+    print(
+        f"opencode mcp add agentacct -- {shlex.quote(command)} mcp serve "
+        f"--store-dir {shlex.quote(str(store_dir))}"
+    )
+    console.print(
+        "OpenCode gets the 'record your work' instruction from the MCP server on connect (no AGENTS.md needed)."
+    )
+
+
+def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, assume_yes: bool) -> None:
+    """Install agentacct ONCE, machine-wide: user-scope MCP + hooks + instructions
+    against one global store, writing ZERO files into any repo."""
+    store_dir = canonical_global_store_dir()
+    store_dir.mkdir(parents=True, exist_ok=True)
+    # Absolute path: GUI clients do not inherit the shell PATH (see helper).
+    command = _resolve_absolute_mcp_command()
+
+    found = {row.client for row in discover_usage_sources() if row.status == "found"}
+    if agent in {"auto", "all"}:
+        targets = [client for client in ("claude-code", "codex") if client in found] or [
+            "claude-code",
+            "codex",
+        ]
+        opencode_detected = "opencode" in found
+    elif agent in {"claude-code", "codex"}:
+        targets = [agent]
+        opencode_detected = False
+    elif agent == "opencode":
+        targets = []
+        opencode_detected = True
+    else:
+        raise typer.BadParameter(
+            "global scope configures claude-code and codex (opencode is previewed). "
+            "Use --scope project for other clients."
+        )
+
+    console.print("agentacct global install: one machine-wide store, ZERO files written into any repo.")
+    console.print(f"- global store: {store_dir}")
+    console.print(f"- clients: {', '.join(targets) if targets else '(opencode preview only)'}")
+    console.print("- writes user-level MCP + hooks + instructions; merges ~/.claude/settings.json only with your ok")
+
+    recording_clients: list[str] = []
+    if mcp and "claude-code" in targets:
+        if _onboard_global_claude(store_dir, command, assume_yes=assume_yes):
+            recording_clients.append("claude-code")
+    if mcp and "codex" in targets:
+        if _onboard_global_codex(store_dir, command):
+            recording_clients.append("codex")
+    if opencode_detected:
+        _print_opencode_global_preview(store_dir, command)
+
+    imported = _local_usage_import_payload(
+        store_dir=store_dir,
+        client="all",
+        codex_home=None,
+        claude_home=None,
+        opencode_home=None,
+        hermes_home=None,
+        openclaw_home=None,
+        cursor_home=None,
+        limit_sessions=20,
+        dry_run=False,
+        estimate_costs=True,
+        refresh=True,
+    )
+    console.print(
+        "Initial local usage sync: "
+        f"imported={int(imported.get('imported_events', 0) or 0)} "
+        f"refreshed={int(imported.get('refreshed_events', 0) or 0)}"
+    )
+
+    if recording_clients:
+        try:
+            ActivationStateStore(store_dir).mark_configured(
+                project_dir=Path.home(), clients=recording_clients
+            )
+        except ActivationStateError as exc:
+            console.print(f"Onboarding stopped safely: {exc}")
+            raise typer.Exit(1) from exc
+
+    if start_runtime:
+        _health, external_watcher_running = _runtime_ingestion_health(store_dir)
+        try:
+            runtime_payload = _managed_runtime(store_dir, port=port, project_dir=None).start(
+                external_watcher_running=external_watcher_running
+            )
+        except RuntimeManagerError as exc:
+            console.print("Global install completed, but the managed runtime did not start.")
+            console.print(f"Cause: {exc}")
+            console.print("Next: run `agentacct start`.")
+            raise typer.Exit(1) from exc
+        console.print(f"Dashboard: {runtime_payload['dashboard_url']}")
+
+    if recording_clients:
+        console.print("Ready. Open a NEW agent session (in ANY repo) — recording is machine-wide now.")
+    else:
+        console.print("Local usage capture is ready; no semantic recording client was configured.")
+
+
 @app.command("onboard")
 def onboard(
-    project_dir: Annotated[Path, typer.Option(help="Project directory to connect.")] = Path("."),
+    project_dir: Annotated[Path, typer.Option(help="Project directory to connect (project scope only).")] = Path("."),
     agent: Annotated[
         str,
         typer.Option(help="Client to configure: auto, all, codex, claude-code, hermes, opencode, or openclaw."),
     ] = "auto",
+    scope: Annotated[
+        str,
+        typer.Option(
+            help="Install scope: 'global' (default) installs ONCE machine-wide with zero files in any repo; "
+            "'project' configures only this repo (legacy per-repo install)."
+        ),
+    ] = "global",
     port: Annotated[int, typer.Option(help="Managed localhost dashboard port.")] = 8765,
     start_runtime: Annotated[
         bool,
@@ -1204,10 +1490,30 @@ def onboard(
     ] = True,
     mcp: Annotated[
         bool,
-        typer.Option("--mcp/--no-mcp", help="Write implemented project-local MCP configuration."),
+        typer.Option("--mcp/--no-mcp", help="Write implemented MCP configuration."),
     ] = True,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Assume yes for the user-level ~/.claude/settings.json merge (global scope). "
+            "Required to merge it in a non-interactive run.",
+        ),
+    ] = False,
 ) -> None:
-    """Connect a project and get to the first real Task with one command."""
+    """Install agentacct once machine-wide (default), or connect a single project.
+
+    Global scope writes ZERO files into your repo: user-level MCP + hooks +
+    instructions against one machine-wide store. Use --scope project for the
+    legacy per-repo install.
+    """
+
+    if scope not in {"global", "project"}:
+        raise typer.BadParameter("scope must be 'global' or 'project'")
+    if scope == "global":
+        _onboard_global(agent=agent, port=port, start_runtime=start_runtime, mcp=mcp, assume_yes=yes)
+        return
 
     project_dir, remapped_worktree = _onboarding_project_dir(project_dir)
     if remapped_worktree is not None:
@@ -1927,28 +2233,44 @@ def smoke_all(
 @smoke_app.command("mcp-client")
 def smoke_mcp_client(
     client: Annotated[str, typer.Option(help="Client to test: hermes, opencode, openclaw, or all.")] = "all",
-    provider: Annotated[str, typer.Option(help="Provider to use. Currently only deepseek is supported.")] = "deepseek",
+    provider: Annotated[str, typer.Option(help="Provider: deepseek (default) or openai (opencode only).")] = "deepseek",
+    model: Annotated[Optional[str], typer.Option(help="Override the model id, e.g. openai/gpt-5.4-mini-fast.")] = None,
     store_dir: Annotated[Optional[Path], typer.Option(help="State directory for smoke artifacts. Defaults to a temporary directory per client.")] = None,
     deepseek_key_env: Annotated[str, typer.Option(help="Environment variable containing the DeepSeek API key.")] = "DEEPSEEK_API_KEY",
+    reuse_opencode_auth: Annotated[
+        bool,
+        typer.Option(
+            "--reuse-opencode-auth",
+            help="Let opencode authenticate with its OWN stored auth (~/.local/share/opencode/auth.json) "
+            "instead of an env API key. Needed for OAuth providers that have no plain API key.",
+        ),
+    ] = False,
     acknowledge_real_api: Annotated[bool, typer.Option("--i-understand-this-uses-real-api", help="Required acknowledgement: this command can spend real provider credits.")] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
-    """Run real DeepSeek-backed MCP client smokes for Hermes/OpenCode/OpenClaw."""
-    if provider != "deepseek":
-        raise typer.BadParameter("only provider=deepseek is currently supported")
-    clients = ["hermes", "opencode", "openclaw"] if client == "all" else [client]
+    """Run real provider-backed MCP client smokes for Hermes/OpenCode/OpenClaw."""
+    if provider not in {"deepseek", "openai"}:
+        raise typer.BadParameter("provider must be deepseek or openai")
+    if client == "all":
+        clients = ["opencode"] if provider != "deepseek" else ["hermes", "opencode", "openclaw"]
+    else:
+        clients = [client]
+    key_env = deepseek_key_env if provider == "deepseek" else None
     results = []
     for item in clients:
         if item not in {"hermes", "opencode", "openclaw"}:
             raise typer.BadParameter("client must be hermes, opencode, openclaw, or all")
         try:
-            result = run_deepseek_mcp_client_smoke(
+            result = run_mcp_client_smoke(
                 item,  # type: ignore[arg-type]
+                provider=provider,
+                model=model,
+                key_env=key_env,
+                reuse_client_auth=reuse_opencode_auth and item == "opencode",
                 store_dir=store_dir,
-                deepseek_key_env=deepseek_key_env,
                 acknowledge_real_api=acknowledge_real_api,
             )
-            assert_deepseek_mcp_client_smoke_passed(result)
+            assert_mcp_client_smoke_passed(result)
         except MCPClientSmokeError as exc:
             raise typer.BadParameter(f"{item}: {exc}") from exc
         results.append(result)

@@ -930,6 +930,9 @@ class LegacyImporter:
             (".agent-sentinel-global", "state"),
             (".agent-chronicle", "state"),
             (".agent-chronicle-global", "state"),
+            # New canonical global store: match the agentacct/state pair (the bare
+            # name "agentacct" is too generic to forbid on its own).
+            ("agentacct", "state"),
         }
         if any(
             lowered_parts[index : index + 2] in forbidden_pairs

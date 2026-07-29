@@ -119,6 +119,7 @@ from .session_observations import (
 )
 from .source_discovery import UsageSourceDiscovery, discover_usage_sources
 from .storage import validate_run_id
+from .store_resolution import is_recognized_global_store
 from .supervisor import OwnedSupervisor, SupervisorAlreadyRunning, SupervisorError
 from .task_continuations import ClientSessionRef, ContinuationTaskError, ContinuationTaskStore
 from .task_identity import TaskIdentityCodec
@@ -185,10 +186,14 @@ MECHANICAL_CONFLICT_ROW_LIMIT = DEFAULT_MECHANICAL_CONFLICT_ROW_LIMIT
 
 
 def _is_documented_global_store(store_dir: Path | str) -> bool:
-    """Whether this is agentacct's frozen machine-wide store layout."""
+    """Whether this is one of agentacct's machine-wide store layouts.
 
-    path = Path(store_dir).expanduser()
-    return path.name == "state" and path.parent.name == ".agent-sentinel-global"
+    Recognizes the legacy ``-global`` dot family AND the new canonical
+    ``$XDG_STATE_HOME/agentacct/state`` location (delegated to the single
+    recognize-many source of truth in store_resolution).
+    """
+
+    return is_recognized_global_store(store_dir)
 
 
 def _store_scope_and_label(store_dir: Path | str) -> tuple[str, str | None]:

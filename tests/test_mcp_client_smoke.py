@@ -9,7 +9,13 @@ from typer.testing import CliRunner
 
 from agent_chronicle.cli import app
 from agent_chronicle.mcp import SentinelMCPServer
-from agent_chronicle.mcp_client_smoke import MCPClientSmokeError, assert_deepseek_mcp_client_smoke_passed, run_deepseek_mcp_client_smoke
+from agent_chronicle.mcp_client_smoke import (
+    MCPClientSmokeError,
+    assert_deepseek_mcp_client_smoke_passed,
+    assert_mcp_client_smoke_passed,
+    run_deepseek_mcp_client_smoke,
+    run_mcp_client_smoke,
+)
 
 
 def test_deepseek_mcp_client_smoke_requires_acknowledgement(tmp_path, monkeypatch):
@@ -159,3 +165,84 @@ def test_openclaw_smoke_uses_isolated_profile_and_custom_deepseek_provider(tmp_p
     assert set(result.events) == {"section_started", "section_completed"}
     assert result.by_source == {"openclaw-deepseek-smoke": 2}
     assert any(call[0] == "openclaw" and "models.providers.deepseek" in call for call in calls)
+
+
+def test_opencode_openai_smoke_reuses_client_auth_and_default_model(tmp_path):
+    """openai provider (opencode only): default model + copies opencode's own
+    stored auth into the isolated home instead of needing an API key."""
+    auth_src = tmp_path / "auth.json"
+    auth_src.write_text('{"openai": {"type": "oauth"}}')
+    calls: list[list[str]] = []
+    store_holder: dict[str, Path] = {}
+
+    def fake_runner(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:3] == ["opencode", "mcp", "add"]:
+            store_holder["store"] = Path(cmd[-1])
+            return subprocess.CompletedProcess(cmd, 0, stdout="server connected", stderr="")
+        if cmd[:2] == ["opencode", "run"]:
+            server = SentinelMCPServer(store_dir=store_holder["store"])
+            for section_status in ["started", "completed"]:
+                server.handle_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": section_status,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "sentinel_record_section",
+                            "arguments": {
+                                "source": "opencode-openai-smoke",
+                                "section_id": "mcp-client-smoke",
+                                "section_status": section_status,
+                                "run_id": "fake-openai-smoke",
+                            },
+                        },
+                    }
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout="AGENT_CHRONICLE_OPENCODE_OPENAI_MCP_OK", stderr="")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unexpected command")
+
+    result = run_mcp_client_smoke(
+        "opencode",
+        provider="openai",
+        reuse_client_auth=True,
+        client_auth_src=auth_src,
+        repo_dir=tmp_path,
+        store_dir=tmp_path / "state",
+        acknowledge_real_api=True,
+        runner=fake_runner,
+    )
+
+    assert_mcp_client_smoke_passed(result)
+    assert result.provider == "openai"
+    assert result.model == "openai/gpt-5.4-mini-fast"  # provider default
+    assert result.by_source == {"opencode-openai-smoke": 2}
+    run_call = next(call for call in calls if call[:2] == ["opencode", "run"])
+    assert "--model" in run_call and "openai/gpt-5.4-mini-fast" in run_call
+    # opencode authenticated from the COPIED auth (no env key needed)
+    assert (Path(result.isolated_home) / ".local" / "share" / "opencode" / "auth.json").exists()
+
+
+def test_opencode_openai_smoke_fails_clearly_when_auth_missing(tmp_path):
+    result = run_mcp_client_smoke(
+        "opencode",
+        provider="openai",
+        reuse_client_auth=True,
+        client_auth_src=tmp_path / "nope.json",
+        repo_dir=tmp_path,
+        store_dir=tmp_path / "state",
+        acknowledge_real_api=True,
+        runner=lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="", stderr=""),
+    )
+    assert result.status == "failed"
+    assert "opencode auth not found" in (result.error or "")
+
+
+def test_openai_provider_rejected_for_non_opencode_clients(tmp_path):
+    with pytest.raises(MCPClientSmokeError, match="only supported for opencode"):
+        run_mcp_client_smoke(
+            "hermes",
+            provider="openai",
+            reuse_client_auth=True,
+            acknowledge_real_api=True,
+        )

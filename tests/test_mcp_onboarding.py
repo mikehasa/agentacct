@@ -481,7 +481,7 @@ def test_readme_leads_with_the_one_line_install_prompt() -> None:
     # single ~500-char line overflows on GitHub); `setup prompt` still emits the
     # canonical single line (test_one_liner_is_a_single_public_install_line), so
     # here we assert the prompt's substance is present, not the exact one line.
-    assert "Install and set up agentacct in this repo" in text
+    assert "Install and set up agentacct" in text
     assert "pipx install agentacct" in text
     assert "agentacct onboard" in text
     assert "never store, request, or echo any API key" in text
