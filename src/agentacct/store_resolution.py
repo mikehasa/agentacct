@@ -335,6 +335,26 @@ def _same_store_path(left: Path, right: Path) -> bool:
         return False
 
 
+def onboard_global_store_dir(
+    *, env: Mapping[str, str] | None = None, home: Path | None = None
+) -> tuple[Path, bool]:
+    """The global store a global install should USE, plus whether it pre-existed.
+
+    Fresh machine -> the new canonical (XDG) store. But when a recognized global
+    store ALREADY holds records (an upgrading user whose ledger lives in the
+    pre-rename ``~/.agent-sentinel-global``), keep using THAT one: silently
+    pointing an upgrade at a different, empty store strands the user's history
+    and splits their clients across two ledgers.
+
+    Returns ``(store_dir, pre_existing)``. Pure: never creates anything.
+    """
+
+    for candidate in recognized_global_store_dirs(env=env, home=home):
+        if candidate.is_dir() and _store_has_records(candidate):
+            return candidate, True
+    return canonical_global_store_dir(env=env, home=home), False
+
+
 def is_recognized_global_store(
     store_dir: Path | str,
     *,

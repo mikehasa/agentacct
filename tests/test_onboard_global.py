@@ -82,3 +82,112 @@ def test_onboard_global_without_yes_is_non_interactive_safe(
     # but MCP registration still happened
     claude_json = json.loads((isolated_home / ".claude.json").read_text())
     assert "agentacct" in claude_json["mcpServers"]
+
+
+# --- upgrade path: an existing global store must not be silently abandoned ----
+# The regression this covers: global onboard used to ALWAYS target the new
+# canonical (XDG) store, so an upgrading user whose ledger lived in the
+# pre-rename ~/.agent-sentinel-global got every client repointed at a new empty
+# store — history apparently gone, and clients split across two ledgers.
+
+
+def _seed_store(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "events.jsonl").write_text('{"event_id": "evt_seed"}\n', encoding="utf-8")
+    return path
+
+
+def test_onboard_global_reuses_an_existing_populated_legacy_store(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy = _seed_store(isolated_home / ".agent-sentinel-global" / "state")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    result = CliRunner().invoke(app, ["onboard", "--scope", "global", "--yes", "--no-start"])
+    assert result.exit_code == 0, result.output
+
+    # Every client registration points at the EXISTING ledger, not a new one.
+    claude_json = json.loads((isolated_home / ".claude.json").read_text())
+    assert str(legacy) in claude_json["mcpServers"]["agentacct"]["args"]
+    assert str(legacy) in (isolated_home / ".codex" / "config.toml").read_text()
+    # ...and the empty canonical store was not adopted as the target.
+    assert str(isolated_home / ".local" / "state" / "agentacct" / "state") not in claude_json["mcpServers"][
+        "agentacct"
+    ]["args"]
+    assert "reusing it" in result.output
+
+
+def test_onboard_global_uses_canonical_store_on_a_fresh_machine(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    result = CliRunner().invoke(app, ["onboard", "--scope", "global", "--yes", "--no-start"])
+    assert result.exit_code == 0, result.output
+
+    canonical = isolated_home / ".local" / "state" / "agentacct" / "state"
+    claude_json = json.loads((isolated_home / ".claude.json").read_text())
+    assert str(canonical) in claude_json["mcpServers"]["agentacct"]["args"]
+    assert "reusing it" not in result.output
+
+
+def test_onboard_global_ignores_an_existing_but_EMPTY_legacy_store(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty legacy dir carries no history, so the canonical store still wins."""
+    (isolated_home / ".agent-sentinel-global" / "state").mkdir(parents=True)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    result = CliRunner().invoke(app, ["onboard", "--scope", "global", "--yes", "--no-start"])
+    assert result.exit_code == 0, result.output
+
+    canonical = isolated_home / ".local" / "state" / "agentacct" / "state"
+    claude_json = json.loads((isolated_home / ".claude.json").read_text())
+    assert str(canonical) in claude_json["mcpServers"]["agentacct"]["args"]
+
+
+def test_onboard_global_warns_when_opencode_points_at_another_store(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = _seed_store(tmp_path / "elsewhere" / "state")
+    config = isolated_home / ".config" / "opencode" / "opencode.jsonc"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        json.dumps({"mcp": {"agentacct": {"type": "local", "command": ["agentacct", "mcp", "serve", "--store-dir", str(other)]}}}),
+        encoding="utf-8",
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    result = CliRunner().invoke(app, ["onboard", "--scope", "global", "--yes", "--no-start"])
+    assert result.exit_code == 0, result.output
+    assert "OpenCode is registered against a DIFFERENT store" in result.output
+    assert "opencode mcp add agentacct" in result.output
+
+
+def test_onboard_global_warns_when_hook_wrapper_lives_outside_claude_hooks(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stale = isolated_home / ".agent-sentinel-global" / ".agent-sentinel" / "hooks" / "claude_pre_tool_use.py"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("# stale wrapper\n", encoding="utf-8")
+    settings = isolated_home / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(
+        json.dumps({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": f"python3 {stale}"}]}]}}),
+        encoding="utf-8",
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    result = CliRunner().invoke(app, ["onboard", "--scope", "global", "--yes", "--no-start"])
+    assert result.exit_code == 0, result.output
+    assert "outside ~/.claude/hooks/" in result.output
