@@ -6,6 +6,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-30
+
+### Changed
+- `AGENTACCT_*` is now the primary environment-variable prefix (for example
+  `AGENTACCT_STORE_DIR`). The pre-rename `AGENT_CHRONICLE_*` and `AGENT_SENTINEL_*`
+  names stay accepted forever; when two aliases are set to different values,
+  agentacct refuses rather than silently pick one. Env writers export all three
+  names into child processes so existing scripts keep working. (#24)
+
 ## [0.5.0] - 2026-07-30
 
 ### Changed
@@ -118,7 +127,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.5.1
 [0.5.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.5.0
 [0.4.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.4.0
 [0.3.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.3.0
