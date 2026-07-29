@@ -6,6 +6,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-29
+
+### Changed
+- `agentacct onboard` now installs **once, machine-wide, by default** (`--scope global`)
+  and writes **zero files into your repository**. It registers user-level MCP servers
+  (`~/.claude.json`, `~/.codex/config.toml`), installs the Claude Code hook wrapper outside
+  the store, adds the standing "record your work" instructions, and merges the hook block
+  into `~/.claude/settings.json` only with your consent (`--yes` or an interactive prompt).
+  The previous per-repository behavior is still available with
+  `agentacct onboard --scope project`. Registrations embed the absolute `agentacct` path so
+  GUI-launched desktop clients (which do not inherit your shell `PATH`) can launch the
+  server. (#20)
+- The default global store moved to an XDG-standard location:
+  `$XDG_STATE_HOME/agentacct/state` (`~/.local/state/agentacct/state`). Older global stores
+  under `~/.agent-sentinel-global/` are still recognized, and a store that already holds
+  recorded data is preferred, so upgrading never blanks a populated dashboard. Fold an old
+  store into the new one with `agentacct usage merge-store` when you want a single ledger.
+  (#20)
+
 ## [0.3.0] - 2026-07-29
 
 ### Added
@@ -83,6 +102,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.4.0
+[0.3.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.3.0
 [0.2.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.1.0
