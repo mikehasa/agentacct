@@ -6,6 +6,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-30
+
+### Changed
+- The MCP tools were renamed from `sentinel_*` to `agentacct_*` (for example
+  `agentacct_record_section`); the server now exposes only the `agentacct_*` names.
+  **After upgrading, re-run `agentacct onboard` (or `agentacct setup instructions`)**
+  so your `CLAUDE.md` / `AGENTS.md` instruction block uses the new tool names, then
+  restart your coding-agent client. Your recorded history is unaffected: the
+  pre-rename `sentinel_*` names stay recognized in historical logs, and stored
+  event data is unchanged. (#22)
+- The internal Python package was renamed `agent_chronicle` → `agentacct`, and the
+  MCP server now advertises the name `agentacct`. Instruction-block markers now
+  write `agentacct`; the pre-rename `agent-chronicle` / `agent-sentinel` markers
+  stay recognized, so an existing managed block migrates in place on the next
+  setup run. (#22)
+
 ## [0.4.0] - 2026-07-29
 
 ### Changed
@@ -102,7 +118,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.5.0
 [0.4.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.4.0
 [0.3.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.3.0
 [0.2.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.2.0
