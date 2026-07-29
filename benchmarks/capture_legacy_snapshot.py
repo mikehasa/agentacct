@@ -34,13 +34,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from agent_chronicle.canonical.live_paths import (
+from agentacct.canonical.live_paths import (
     LivePathSafetyError,
     configured_live_state_roots,
     paths_overlap,
     reject_live_state_overlap,
 )
-from agent_chronicle.canonical.snapshot import SNAPSHOT_MANIFEST_VERSION, VerifiedSnapshot
+from agentacct.canonical.snapshot import SNAPSHOT_MANIFEST_VERSION, VerifiedSnapshot
 
 
 EVENTS_NAME = "events.jsonl"

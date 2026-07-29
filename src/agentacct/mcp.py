@@ -26,7 +26,7 @@ EVIDENCE_TYPES = {"test", "build", "lint", "typecheck", "smoke", "benchmark", "b
 EVIDENCE_RESULTS = {"passed", "failed", "skipped", "error", "unknown"}
 
 # Join keys that stay valid for a whole client session, so sections recorded on
-# the same stdio server may inherit them from sentinel_attach_client_context.
+# the same stdio server may inherit them from agentacct_attach_client_context.
 # Turn/message/request ids are per-turn and must never be inherited.
 INHERITABLE_CLIENT_CONTEXT_KEYS = ("client", "client_session_id", "client_transcript_id", "parent_client_session_id", "project_dir")
 # The (session, transcript) id pair must come from a single inheritance source;
@@ -41,7 +41,7 @@ CLIENT_CONTEXT_ID_KEYS = ("client_session_id", "client_transcript_id")
 # quote them. Never rename; any future rename must be additive.
 TOOLS: list[dict[str, Any]] = [
     {
-        "name": "sentinel_list_runs",
+        "name": "agentacct_list_runs",
         "description": "List recent agentacct runs from the local store.",
         "inputSchema": {
             "type": "object",
@@ -50,7 +50,7 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "sentinel_get_report",
+        "name": "agentacct_get_report",
         "description": "Return the JSON report for a run. Use run_id='latest' for the newest run.",
         "inputSchema": {
             "type": "object",
@@ -59,7 +59,7 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "sentinel_record_machine_check",
+        "name": "agentacct_record_machine_check",
         "description": "Record machine-check evidence for local work. A passed check may explicitly resolve one exact blocked event, but only as a reported resolution; it never fabricates a verified/completed outcome.",
         "inputSchema": {
             "type": "object",
@@ -95,7 +95,7 @@ TOOLS: list[dict[str, Any]] = [
     },
 
     {
-        "name": "sentinel_record_event",
+        "name": "agentacct_record_event",
         "description": "Record a redacted local integration event for the agentacct dashboard/event hub. Does not call paid APIs.",
         "inputSchema": {
             "type": "object",
@@ -117,7 +117,7 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "sentinel_attach_client_context",
+        "name": "agentacct_attach_client_context",
         "description": "Record local client/session/turn/message identifiers so MCP notes can later be joined to local usage logs. Does not call paid APIs.",
         "inputSchema": {
             "type": "object",
@@ -142,7 +142,7 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "sentinel_record_section",
+        "name": "agentacct_record_section",
         "description": "Record a human-readable task section/chapter with optional client join keys. Use logs for token/cost truth; use this for semantic attribution.",
         "inputSchema": {
             "type": "object",
@@ -176,7 +176,7 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "sentinel_record_agent_usage_debug",
+        "name": "agentacct_record_agent_usage_debug",
         "description": "Record a debug-only usage snapshot that the agent can see about itself. This is join evidence, not billing truth, and does not add to agentacct cost totals.",
         "inputSchema": {
             "type": "object",
@@ -213,7 +213,7 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "sentinel_list_events",
+        "name": "agentacct_list_events",
         "description": "List recent local integration events recorded for the dashboard/event hub.",
         "inputSchema": {
             "type": "object",
@@ -225,7 +225,7 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "sentinel_get_event_summary",
+        "name": "agentacct_get_event_summary",
         "description": "Summarize recent local integration events without returning raw event metadata. Useful for agent self-checks before continuing work.",
         "inputSchema": {
             "type": "object",
@@ -237,7 +237,7 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "sentinel_prepare_judge",
+        "name": "agentacct_prepare_judge",
         "description": "Prepare an isolated judge package/prompt. This does not call an LLM or spend money.",
         "inputSchema": {
             "type": "object",
@@ -252,7 +252,7 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "sentinel_compute_value",
+        "name": "agentacct_compute_value",
         "description": "Compute advisory cost-efficiency value score from existing report, machine checks, and judge score. Does not call an LLM.",
         "inputSchema": {
             "type": "object",
@@ -591,7 +591,7 @@ def _context_join_warnings(quality: str) -> list[str]:
         return []
     if quality == "inherited":
         return [
-            "Join keys were inherited from the last sentinel_attach_client_context on this MCP session; agentacct attributes inherited joins at medium confidence, never exact, because freshness across conversations cannot be proven. Pass client_session_id/client_transcript_id explicitly, or re-attach at the start of each conversation, for exact attribution."
+            "Join keys were inherited from the last agentacct_attach_client_context on this MCP session; agentacct attributes inherited joins at medium confidence, never exact, because freshness across conversations cannot be proven. Pass client_session_id/client_transcript_id explicitly, or re-attach at the start of each conversation, for exact attribution."
         ]
     if quality == "partial":
         return [
@@ -643,7 +643,7 @@ class SentinelMCPServer:
         hook_consumer_ancestor_pids: Sequence[int] | None | Any = _AUTO,
     ) -> None:
         # No silent home-store default: callers must resolve the store first
-        # (see agent_chronicle.store_resolution.resolve_store_dir).
+        # (see agentacct.store_resolution.resolve_store_dir).
         self.service = SentinelService(store_dir)
         # Bindings used to prove WHICH concurrent Claude Code session's hook
         # context belongs to this server. Captured once at construction; the
@@ -788,14 +788,14 @@ class SentinelMCPServer:
 
     def call_tool(self, name: Any, arguments: Any) -> dict[str, Any]:
         arguments = _require_object(arguments)
-        if name == "sentinel_list_runs":
+        if name == "agentacct_list_runs":
             _reject_unknown_keys(arguments, {"limit"})
             limit = _optional_int(arguments, "limit", 20, minimum=1, maximum=100)
             payload = {"runs": self.service.list_runs(limit=limit)}
-        elif name == "sentinel_get_report":
+        elif name == "agentacct_get_report":
             _reject_unknown_keys(arguments, {"run_id"})
             payload = self.service.get_report(_optional_str(arguments, "run_id", "latest"))
-        elif name == "sentinel_record_machine_check":
+        elif name == "agentacct_record_machine_check":
             _reject_unknown_keys(
                 arguments,
                 {
@@ -974,7 +974,7 @@ class SentinelMCPServer:
                     trusted_blocker_resolution=resolution_requested,
                     transport="mcp",
                 )
-        elif name == "sentinel_record_event":
+        elif name == "agentacct_record_event":
             allowed = {
                 "source",
                 "event_type",
@@ -1003,7 +1003,7 @@ class SentinelMCPServer:
                 "metadata": _optional_metadata(arguments),
             }
             payload = {"event": self.service.record_event(event, transport="mcp")}
-        elif name == "sentinel_attach_client_context":
+        elif name == "agentacct_attach_client_context":
             # Fail safe: any attach attempt invalidates the prior context so a
             # failed re-attach in a new client session cannot leak the previous
             # session's ids into sections recorded afterwards.
@@ -1072,7 +1072,7 @@ class SentinelMCPServer:
                 "warnings": _context_join_warnings(recorded_quality),
                 "event": recorded,
             }
-        elif name == "sentinel_record_section":
+        elif name == "agentacct_record_section":
             allowed = {
                 "source",
                 "section_id",
@@ -1233,7 +1233,7 @@ class SentinelMCPServer:
                         "Multiple concurrent Claude Code sessions were detected for this project store; "
                         "hook-context id inheritance was refused to avoid attributing one session's usage "
                         "to another (missing beats wrong). This section still carries join ids inherited "
-                        "from the last sentinel_attach_client_context on this MCP server (capped at medium "
+                        "from the last agentacct_attach_client_context on this MCP server (capped at medium "
                         "confidence); pass ids explicitly for exact attribution."
                     )
                     refusal_warning = (
@@ -1268,10 +1268,10 @@ class SentinelMCPServer:
                     "note": (
                         "Join keys were captured from the Claude Code hook (client-derived); agentacct attributes them at high confidence."
                         if source_label == "claude_code_hook"
-                        else "Join keys were inherited from the last sentinel_attach_client_context on this MCP session. If this is a new conversation, attach the current session ids first."
+                        else "Join keys were inherited from the last agentacct_attach_client_context on this MCP session. If this is a new conversation, attach the current session ids first."
                     ),
                 }
-        elif name == "sentinel_record_agent_usage_debug":
+        elif name == "agentacct_record_agent_usage_debug":
             allowed = {
                 "source",
                 "client",
@@ -1317,17 +1317,17 @@ class SentinelMCPServer:
                 "metadata": _metadata_with_context(arguments, _agent_usage_debug_metadata(arguments, provider=provider, model=model)),
             }
             payload = {"event": self.service.record_event(event, transport="mcp")}
-        elif name == "sentinel_list_events":
+        elif name == "agentacct_list_events":
             _reject_unknown_keys(arguments, {"limit", "run_id"})
             limit = _optional_int(arguments, "limit", 20, minimum=1, maximum=200)
             run_id = _optional_run_id(arguments, "run_id")
             payload = {"events": self.service.list_events(limit=limit, run_id=run_id)}
-        elif name == "sentinel_get_event_summary":
+        elif name == "agentacct_get_event_summary":
             _reject_unknown_keys(arguments, {"limit", "run_id"})
             limit = _optional_int(arguments, "limit", 200, minimum=1, maximum=200)
             run_id = _optional_run_id(arguments, "run_id")
             payload = {"summary": self.service.summarize_events(limit=limit, run_id=run_id)}
-        elif name == "sentinel_prepare_judge":
+        elif name == "agentacct_prepare_judge":
             _reject_unknown_keys(arguments, {"run_id", "task_goal", "rubric", "write_package"})
             payload = self.service.prepare_judge(
                 _optional_str(arguments, "run_id", "latest"),
@@ -1335,7 +1335,7 @@ class SentinelMCPServer:
                 rubric=_required_str(arguments, "rubric"),
                 write_package=_optional_bool(arguments, "write_package", True),
             )
-        elif name == "sentinel_compute_value":
+        elif name == "agentacct_compute_value":
             _reject_unknown_keys(arguments, {"run_id", "budget_usd"})
             payload = {
                 "value": self.service.compute_value(
@@ -1465,8 +1465,8 @@ def run_mcp_event_workflow_smoke(*, store_dir: Path | str | None = None, run_id:
 
     This is a zero-network, zero-paid-token release-gate helper. It uses normal
     JSON-RPC method dispatch rather than calling service methods directly:
-    initialize -> tools/list -> sentinel_record_event -> sentinel_list_events ->
-    sentinel_get_event_summary.
+    initialize -> tools/list -> agentacct_record_event -> agentacct_list_events ->
+    agentacct_get_event_summary.
 
     Without an explicit ``store_dir`` the smoke runs against a THROWAWAY
     temporary store: it records real events, and a write-y smoke must never
@@ -1498,7 +1498,7 @@ def run_mcp_event_workflow_smoke(*, store_dir: Path | str | None = None, run_id:
     initialized = call("initialize", {"clientInfo": {"name": "agent-sentinel-workflow-smoke"}})
     tools_response = call("tools/list", {})
     tool_names = [tool.get("name") for tool in tools_response["result"].get("tools", [])]
-    required_tools = {"sentinel_record_event", "sentinel_list_events", "sentinel_get_event_summary"}
+    required_tools = {"agentacct_record_event", "agentacct_list_events", "agentacct_get_event_summary"}
     missing_tools = sorted(required_tools - set(tool_names))
     if missing_tools:
         raise RuntimeError("MCP workflow missing required tool(s): " + ", ".join(missing_tools))
@@ -1506,7 +1506,7 @@ def run_mcp_event_workflow_smoke(*, store_dir: Path | str | None = None, run_id:
     record_response = call(
         "tools/call",
         {
-            "name": "sentinel_record_event",
+            "name": "agentacct_record_event",
             "arguments": {
                 # Diagnostic signature: this type/source pair MUST stay
                 # registered in usage_truth.DIAGNOSTIC_EVENT_TYPES/_SOURCES or
@@ -1530,11 +1530,11 @@ def run_mcp_event_workflow_smoke(*, store_dir: Path | str | None = None, run_id:
     if not event_id:
         raise RuntimeError("MCP workflow event did not include event_id")
 
-    list_response = call("tools/call", {"name": "sentinel_list_events", "arguments": {"run_id": run_id, "limit": 20}})
+    list_response = call("tools/call", {"name": "agentacct_list_events", "arguments": {"run_id": run_id, "limit": 20}})
     events = _tool_payload(list_response)["events"]
     event_round_tripped = any(item.get("event_id") == event_id for item in events)
 
-    summary_response = call("tools/call", {"name": "sentinel_get_event_summary", "arguments": {"run_id": run_id, "limit": 20}})
+    summary_response = call("tools/call", {"name": "agentacct_get_event_summary", "arguments": {"run_id": run_id, "limit": 20}})
     summary = _tool_payload(summary_response)["summary"]
     summary_ok = summary.get("event_count", 0) >= 1 and summary.get("by_source", {}).get("agent-sentinel-mcp-workflow-smoke", 0) >= 1
     metadata_redacted = event.get("metadata", {}).get("api_key") == "[REDACTED]"
@@ -1570,7 +1570,7 @@ def build_initialize_result(params: Any) -> dict[str, Any]:
         # Pre-rename registrations still launch this server under the old
         # config key; pairing accepts both (log_evidence), so the
         # serverInfo name can advertise the new brand unconditionally.
-        "serverInfo": {"name": "agent-chronicle", "version": "0.1.0"},
+        "serverInfo": {"name": "agentacct", "version": "0.1.0"},
         "capabilities": {"tools": {}},
         # Directive, tool-aware guidance delivered at the tool
         # layer, where Claude Code's tool-deferral barrier lives:

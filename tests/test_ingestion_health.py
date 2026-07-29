@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-import agent_chronicle.ingestion_health as health_module
-from agent_chronicle.ingestion_health import (
+import agentacct.ingestion_health as health_module
+from agentacct.ingestion_health import (
     EVIDENCE_REFRESHABLE_USAGE_ERROR_CODE,
     IngestionHealthStore,
     apply_evidence_refreshable_usage_health,
@@ -669,7 +669,7 @@ def test_cli_repair_dead_scans_is_explicit_and_reports_result(
 ) -> None:
     from typer.testing import CliRunner
 
-    from agent_chronicle.cli import app
+    from agentacct.cli import app
 
     store_dir = tmp_path / "state"
     store = IngestionHealthStore(store_dir)

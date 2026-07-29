@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from agent_chronicle.api import DashboardUsageRecord, _usage_record_time
-from agent_chronicle.task_projection import build_task_projection
-from agent_chronicle.usage_cube import build_usage_cube
-from agent_chronicle.work_ledger import build_work_ledger
+from agentacct.api import DashboardUsageRecord, _usage_record_time
+from agentacct.task_projection import build_task_projection
+from agentacct.usage_cube import build_usage_cube
+from agentacct.work_ledger import build_work_ledger
 
 
 def _trusted_usage(

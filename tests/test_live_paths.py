@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.canonical.live_paths import (
+from agentacct.canonical.live_paths import (
     LivePathSafetyError,
     reject_live_state_overlap,
 )

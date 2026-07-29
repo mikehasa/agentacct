@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.store_resolution import ENV_STORE_DIR
+from agentacct.store_resolution import ENV_STORE_DIR
 
 _TESTS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _TESTS_DIR.parent
@@ -122,9 +122,9 @@ def _allow_test_client_host(monkeypatch: pytest.MonkeyPatch) -> None:
     patching those two references covers create_local_api_app and
     proxy.create_app (including the apps the CLI serve commands build).
     """
-    import agent_chronicle.api as api_module
-    import agent_chronicle.proxy as proxy_module
-    from agent_chronicle import localhost_guard
+    import agentacct.api as api_module
+    import agentacct.proxy as proxy_module
+    from agentacct import localhost_guard
 
     real_install = localhost_guard.install_localhost_guard
 

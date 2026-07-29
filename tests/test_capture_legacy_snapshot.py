@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.canonical.snapshot import VerifiedSnapshot
+from agentacct.canonical.snapshot import VerifiedSnapshot
 
 
 _CAPTURE_PATH = (

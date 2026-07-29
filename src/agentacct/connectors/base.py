@@ -259,7 +259,7 @@ class ConnectorRecord:
         """
 
         try:
-            from agent_chronicle.evidence import (
+            from agentacct.evidence import (
                 Completeness,
                 EvidenceEnvelope,
                 PrivacyMetadata,
@@ -267,7 +267,7 @@ class ConnectorRecord:
             )
         except (ImportError, ModuleNotFoundError) as exc:  # pragma: no cover - rollout seam
             raise EvidenceCoreUnavailable(
-                "agent_chronicle.evidence is not installed; use to_evidence_dict() during shadow rollout"
+                "agentacct.evidence is not installed; use to_evidence_dict() during shadow rollout"
             ) from exc
 
         create = getattr(EvidenceEnvelope, "create", None)

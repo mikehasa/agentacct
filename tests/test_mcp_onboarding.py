@@ -7,7 +7,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from agent_chronicle.cli import app
+from agentacct.cli import app
 
 runner = CliRunner()
 
@@ -618,10 +618,10 @@ def test_readme_links_coding_agent_integration_guide() -> None:
 
 
 def test_mcp_doctor_is_read_only_by_default(tmp_path: Path) -> None:
-    from agent_chronicle.mcp import SentinelMCPServer
+    from agentacct.mcp import SentinelMCPServer
 
     server = SentinelMCPServer(store_dir=tmp_path)
-    server.call_tool("sentinel_record_event", {"source": "codex", "event_type": "note", "metadata": {"summary": "seed"}})
+    server.call_tool("agentacct_record_event", {"source": "codex", "event_type": "note", "metadata": {"summary": "seed"}})
     events_path = tmp_path / "events.jsonl"
     before_bytes = events_path.read_bytes()
 
@@ -630,8 +630,8 @@ def test_mcp_doctor_is_read_only_by_default(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert events_path.read_bytes() == before_bytes
     normalized = " ".join(result.output.split())
-    assert "sentinel_record_event" in normalized
-    assert "sentinel_list_events" in normalized
+    assert "agentacct_record_event" in normalized
+    assert "agentacct_list_events" in normalized
     assert "Read-only diagnostics: no events were written." in normalized
     assert "--write-probe" in normalized
     assert "mcp_doctor_test" not in events_path.read_text(encoding="utf-8")
@@ -672,7 +672,7 @@ def test_mcp_doctor_write_probe_round_trips_in_temp_store_only(tmp_path: Path) -
 
 
 def test_mcp_doctor_write_probe_failure_exits_1(tmp_path: Path, monkeypatch) -> None:
-    from agent_chronicle import cli as cli_module
+    from agentacct import cli as cli_module
 
     class _BrokenServer:
         def __init__(self, *, store_dir) -> None:
@@ -690,10 +690,10 @@ def test_mcp_doctor_write_probe_failure_exits_1(tmp_path: Path, monkeypatch) -> 
 
 
 def test_mcp_doctor_json_shape(tmp_path: Path) -> None:
-    from agent_chronicle.mcp import SentinelMCPServer
+    from agentacct.mcp import SentinelMCPServer
 
     server = SentinelMCPServer(store_dir=tmp_path)
-    server.call_tool("sentinel_record_event", {"source": "codex", "event_type": "note", "metadata": {"summary": "seed"}})
+    server.call_tool("agentacct_record_event", {"source": "codex", "event_type": "note", "metadata": {"summary": "seed"}})
 
     result = runner.invoke(app, ["mcp", "doctor", "--store-dir", str(tmp_path), "--json"])
 
@@ -721,7 +721,7 @@ def test_mcp_doctor_write_probe_json_reports_temp_store(tmp_path: Path) -> None:
 
 
 def test_mcp_doctor_warns_on_relative_store_path_in_mcp_config(tmp_path: Path, monkeypatch) -> None:
-    from agent_chronicle.store_resolution import ENV_STORE_DIR
+    from agentacct.store_resolution import ENV_STORE_DIR
 
     monkeypatch.delenv(ENV_STORE_DIR, raising=False)
     project = tmp_path / "project"
@@ -744,7 +744,7 @@ def test_mcp_doctor_warns_on_relative_store_path_in_mcp_config(tmp_path: Path, m
 
 
 def test_mcp_doctor_reports_resolution_failure_as_failing_check(tmp_path: Path, monkeypatch) -> None:
-    from agent_chronicle.store_resolution import ENV_STORE_DIR
+    from agentacct.store_resolution import ENV_STORE_DIR
 
     monkeypatch.delenv(ENV_STORE_DIR, raising=False)
     bare = tmp_path / "bare"
@@ -763,8 +763,8 @@ def test_mcp_doctor_reports_resolution_failure_as_failing_check(tmp_path: Path, 
 
 def test_full_demo_docs_list_event_mcp_tools() -> None:
     text = Path("docs/full-demo.md").read_text()
-    assert "sentinel_record_event" in text
-    assert "sentinel_list_events" in text
+    assert "agentacct_record_event" in text
+    assert "agentacct_list_events" in text
 
 
 def test_readme_links_public_alpha_checklist() -> None:
@@ -881,15 +881,15 @@ def test_public_docs_record_mcp_client_smoke_success_without_overclaiming() -> N
 
 
 def test_mcp_doctor_warns_when_client_context_is_not_joinable(tmp_path: Path) -> None:
-    from agent_chronicle.mcp import SentinelMCPServer
+    from agentacct.mcp import SentinelMCPServer
 
     server = SentinelMCPServer(store_dir=tmp_path)
     server.call_tool(
-        "sentinel_attach_client_context",
+        "agentacct_attach_client_context",
         {"source": "codex", "client": "codex", "project_dir": "/tmp/project"},
     )
     server.call_tool(
-        "sentinel_record_section",
+        "agentacct_record_section",
         {"source": "codex", "section_id": "weak-section", "section_status": "started"},
     )
 
@@ -904,15 +904,15 @@ def test_mcp_doctor_warns_when_client_context_is_not_joinable(tmp_path: Path) ->
 
 
 def test_mcp_doctor_reports_joinable_context_without_warnings(tmp_path: Path) -> None:
-    from agent_chronicle.mcp import SentinelMCPServer
+    from agentacct.mcp import SentinelMCPServer
 
     server = SentinelMCPServer(store_dir=tmp_path)
     server.call_tool(
-        "sentinel_attach_client_context",
+        "agentacct_attach_client_context",
         {"source": "claude-code", "client": "claude-code", "client_session_id": "session-1"},
     )
     server.call_tool(
-        "sentinel_record_section",
+        "agentacct_record_section",
         {"source": "claude-code", "section_id": "joined-section", "section_status": "started"},
     )
 
@@ -932,7 +932,7 @@ def test_mcp_doctor_reports_hook_context_status(tmp_path: Path) -> None:
     assert "claude-code hook context: absent" in normalized
     assert "hooks claude-code install" in normalized
 
-    from agent_chronicle.hooks import write_claude_code_hook_context
+    from agentacct.hooks import write_claude_code_hook_context
 
     write_claude_code_hook_context(
         tmp_path,
@@ -954,7 +954,7 @@ def test_mcp_doctor_reports_hook_context_status(tmp_path: Path) -> None:
 
 
 def test_mcp_doctor_notes_concurrent_hook_contexts(tmp_path: Path) -> None:
-    from agent_chronicle.hooks import write_claude_code_hook_context
+    from agentacct.hooks import write_claude_code_hook_context
 
     for session_id in ("3778e5d9-aaaa-bbbb-cccc-1234567890ab", "9b2c1a00-dddd-eeee-ffff-0987654321fe"):
         write_claude_code_hook_context(

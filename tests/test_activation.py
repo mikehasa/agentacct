@@ -5,10 +5,10 @@ import time
 
 from fastapi.testclient import TestClient
 
-from agent_chronicle.activation import ActivationStateStore, build_activation_snapshot
-from agent_chronicle.api import create_local_api_app
-from agent_chronicle.ingestion_health import IngestionHealthStore
-from agent_chronicle.service import SentinelService
+from agentacct.activation import ActivationStateStore, build_activation_snapshot
+from agentacct.api import create_local_api_app
+from agentacct.ingestion_health import IngestionHealthStore
+from agentacct.service import SentinelService
 
 
 def _runtime(state: str = "running") -> dict[str, object]:

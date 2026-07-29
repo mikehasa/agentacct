@@ -1,9 +1,9 @@
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-from agent_chronicle.cli import app
-from agent_chronicle.cost import CostLedger, CostPolicy
-from agent_chronicle.proxy import create_app
+from agentacct.cli import app
+from agentacct.cost import CostLedger, CostPolicy
+from agentacct.proxy import create_app
 
 
 class FakeForwarder:

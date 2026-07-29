@@ -9,8 +9,8 @@ import re
 
 from fastapi.testclient import TestClient
 
-from agent_chronicle.api import create_local_api_app
-from agent_chronicle.service import SentinelService
+from agentacct.api import create_local_api_app
+from agentacct.service import SentinelService
 
 ROOT_UUID = "f224d28b-1234-4abc-8def-0123456789ab"
 CHILD_SESSION = f"{ROOT_UUID}:agent-abcdef1234"

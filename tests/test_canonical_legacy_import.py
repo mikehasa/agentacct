@@ -7,19 +7,19 @@ from typing import Any
 
 import pytest
 
-import agent_chronicle.canonical.legacy_import as legacy_import_module
-from agent_chronicle.client_usage import ClientUsageEvent
-from agent_chronicle.canonical.legacy_import import (
+import agentacct.canonical.legacy_import as legacy_import_module
+from agentacct.client_usage import ClientUsageEvent
+from agentacct.canonical.legacy_import import (
     LegacyImportError,
     LegacyImporter,
     import_legacy_snapshot,
 )
-from agent_chronicle.canonical.product_parity import (
+from agentacct.canonical.product_parity import (
     build_legacy_product_parity_report,
 )
-from agent_chronicle.canonical.snapshot import VerifiedSnapshot
-from agent_chronicle.canonical.sqlite import CanonicalStore
-from agent_chronicle.usage_truth import mark_trusted_local_usage_import_event
+from agentacct.canonical.snapshot import VerifiedSnapshot
+from agentacct.canonical.sqlite import CanonicalStore
+from agentacct.usage_truth import mark_trusted_local_usage_import_event
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "canonical" / "v1" / "spike.json"
@@ -1796,7 +1796,7 @@ def test_aborted_import_leaves_candidate_at_pre_import_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_chronicle.canonical.sqlite import CanonicalRepository
+    from agentacct.canonical.sqlite import CanonicalRepository
 
     namespace = "d9" * 32
     session = _session_event(

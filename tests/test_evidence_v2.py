@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from agent_chronicle.evidence import (
+from agentacct.evidence import (
     CLAIMED_LINK_SCHEMA_VERSION,
     EVIDENCE_SCHEMA_VERSION,
     ClaimedLink,
@@ -16,7 +16,7 @@ from agent_chronicle.evidence import (
     adapt_v1_event,
     raw_digest_for,
 )
-from agent_chronicle.source_policy import Authority, EvidenceDimension, default_source_authority_policy
+from agentacct.source_policy import Authority, EvidenceDimension, default_source_authority_policy
 
 
 EVENT_TIME = "2026-07-13T08:30:00+08:00"

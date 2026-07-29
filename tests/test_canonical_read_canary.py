@@ -6,12 +6,12 @@ from typing import Any
 
 import pytest
 
-from agent_chronicle.canonical.read_canary import (
+from agentacct.canonical.read_canary import (
     READ_CANARY_SCHEMA_VERSION,
     ReadCanaryHttpResponse,
     verify_read_canary,
 )
-from agent_chronicle.canonical.sqlite import SCHEMA_VERSION
+from agentacct.canonical.sqlite import SCHEMA_VERSION
 
 
 _TASK_ID = "task_0123456789abcdef0123456789abcdef"

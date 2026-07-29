@@ -5,13 +5,13 @@ from dataclasses import replace
 from pathlib import Path
 from threading import Barrier
 
-from agent_chronicle.client_usage import (
+from agentacct.client_usage import (
     ClientUsageEvent,
     bind_discovered_usage_source_namespaces,
 )
-from agent_chronicle.service import SentinelService
-from agent_chronicle.task_projection import build_task_projection
-from agent_chronicle.work_ledger import build_work_ledger
+from agentacct.service import SentinelService
+from agentacct.task_projection import build_task_projection
+from agentacct.work_ledger import build_work_ledger
 
 
 NAMESPACE_A = "sha256:" + "a" * 64

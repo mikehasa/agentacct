@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.canonical.legacy_recovery import RECOVERY_DESIGN_ID
-from agent_chronicle.canonical.unsupported_legacy_routing import (
+from agentacct.canonical.legacy_recovery import RECOVERY_DESIGN_ID
+from agentacct.canonical.unsupported_legacy_routing import (
     STATIC_UNSUPPORTED_LEGACY_EVENT_TYPE_COUNTS,
     STATIC_UNSUPPORTED_LEGACY_ROW_COUNT,
     UNSUPPORTED_LEGACY_EVENT_TYPE_TO_FUTURE_PRODUCT_LANE,

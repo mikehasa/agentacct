@@ -4,7 +4,7 @@ import json
 
 from typer.testing import CliRunner
 
-from agent_chronicle.cli import app
+from agentacct.cli import app
 
 
 runner = CliRunner()

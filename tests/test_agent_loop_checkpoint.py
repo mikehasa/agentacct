@@ -1,6 +1,6 @@
 import json
 
-from agent_chronicle.agent_loop import AgentLoopOptions, run_agent_like_loop
+from agentacct.agent_loop import AgentLoopOptions, run_agent_like_loop
 
 
 def test_checkpoint_pauses_after_visible_steps_without_calling_next_step(tmp_path):

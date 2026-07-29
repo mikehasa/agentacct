@@ -21,15 +21,15 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
-from agent_chronicle.log_evidence import (
+from agentacct.log_evidence import (
     apply_log_evidence_to_snapshots,
     build_log_evidence_index,
 )
-from agent_chronicle.usage_truth import (
+from agentacct.usage_truth import (
     is_local_usage_import_event,
     normalized_local_usage_session_id,
 )
-from agent_chronicle.work_ledger import (
+from agentacct.work_ledger import (
     _project_identity,
     _propagate_log_evidenced_source_constraints,
     build_work_events,

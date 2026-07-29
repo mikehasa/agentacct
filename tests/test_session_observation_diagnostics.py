@@ -8,15 +8,15 @@ import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-import agent_chronicle.api as api_module
-import agent_chronicle.cli as cli_module
-from agent_chronicle.api import UsageDiscoveryConfig, create_local_api_app
-from agent_chronicle.client_usage import (
+import agentacct.api as api_module
+import agentacct.cli as cli_module
+from agentacct.api import UsageDiscoveryConfig, create_local_api_app
+from agentacct.client_usage import (
     ClientSessionObservation,
     ClientUsageDiscoveryResult,
 )
-from agent_chronicle.ingestion_health import IngestionHealthStore
-from agent_chronicle.service import SentinelService, SessionObservationConflict
+from agentacct.ingestion_health import IngestionHealthStore
+from agentacct.service import SentinelService, SessionObservationConflict
 
 
 def _discovery(tmp_path: Path) -> ClientUsageDiscoveryResult:

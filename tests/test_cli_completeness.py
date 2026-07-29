@@ -4,9 +4,9 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from agent_chronicle import cli as cli_module
-from agent_chronicle.cli import app
-from agent_chronicle.policy import DEFAULT_POLICY_FILE, load_policy, validate_policy
+from agentacct import cli as cli_module
+from agentacct.cli import app
+from agentacct.policy import DEFAULT_POLICY_FILE, load_policy, validate_policy
 
 
 def test_init_creates_project_policy_without_overwriting(tmp_path):
@@ -60,9 +60,9 @@ def test_init_can_add_agent_instructions_idempotently(tmp_path):
     assert "agentacct" in claude.read_text()
     assert "agentacct run" in claude.read_text()
     assert "Do not connect provider API keys" in claude.read_text()
-    assert "sentinel_record_event" in claude.read_text()
-    assert "sentinel_attach_client_context" in claude.read_text()
-    assert "sentinel_record_section" in claude.read_text()
+    assert "agentacct_record_event" in claude.read_text()
+    assert "agentacct_attach_client_context" in claude.read_text()
+    assert "agentacct_record_section" in claude.read_text()
     # Sections-only work contract: templates must not re-teach task_* events.
     assert "task_started" not in claude.read_text()
     assert "task_completed" not in claude.read_text()
@@ -72,9 +72,9 @@ def test_init_can_add_agent_instructions_idempotently(tmp_path):
     assert "section_status=blocked" in claude.read_text()
     assert "agentacct" in agents.read_text()
     assert "agentacct run" in agents.read_text()
-    assert "sentinel_record_event" in agents.read_text()
-    assert "sentinel_attach_client_context" in agents.read_text()
-    assert "sentinel_record_section" in agents.read_text()
+    assert "agentacct_record_event" in agents.read_text()
+    assert "agentacct_attach_client_context" in agents.read_text()
+    assert "agentacct_record_section" in agents.read_text()
     assert "task_started" not in agents.read_text()
     assert "task_completed" not in agents.read_text()
     assert "task_blocked" not in agents.read_text()
@@ -155,7 +155,7 @@ def test_init_agent_mcp_preview_does_not_write_config_by_default(tmp_path):
 
 
 def test_setup_prompt_prints_the_short_one_liner_for_every_agent():
-    from agent_chronicle import install_guide
+    from agentacct import install_guide
 
     for agent in install_guide.PROMPT_AGENTS:
         result = CliRunner().invoke(app, ["setup", "prompt", "--agent", agent])
@@ -177,7 +177,7 @@ def test_setup_prompt_rejects_unknown_agent():
 
 
 def test_setup_prompt_full_is_self_contained_offline_for_claude_code():
-    from agent_chronicle import install_guide
+    from agentacct import install_guide
 
     result = CliRunner().invoke(app, ["setup", "prompt", "--agent", "claude-code", "--full"])
 
@@ -297,7 +297,7 @@ def test_init_auto_uses_current_executable_when_command_is_not_on_path(tmp_path,
     command_path.write_text("#!/bin/sh\n", encoding="utf-8")
 
     monkeypatch.setattr(cli_module.shutil, "which", lambda name: None)
-    monkeypatch.setattr(cli_module, "_current_agent_chronicle_executable", lambda: str(command_path))
+    monkeypatch.setattr(cli_module, "_current_agentacct_executable", lambda: str(command_path))
 
     result = runner.invoke(app, ["init", "--project-dir", str(tmp_path), "--agent", "codex", "--write-mcp"])
 
@@ -541,8 +541,8 @@ def test_workflow_docs_and_hermes_skill_template_are_present() -> None:
     integrations = Path("docs/coding-agent-integrations.md").read_text()
     skill = Path("integrations/hermes/agent-chronicle-workflow/SKILL.md").read_text()
 
-    assert "sentinel_record_event" in workflow
-    assert "sentinel_record_section" in workflow
+    assert "agentacct_record_event" in workflow
+    assert "agentacct_record_section" in workflow
     # Sections-only work contract: docs must not re-teach task_* events.
     assert "task_started" not in workflow
     assert "task_completed" not in workflow
@@ -558,5 +558,5 @@ def test_workflow_docs_and_hermes_skill_template_are_present() -> None:
     assert "agent-chronicle-workflow/SKILL.md" in integrations
     assert skill.startswith("---\nname: agent-chronicle-workflow")
     assert "description:" in skill
-    assert "sentinel_record_machine_check" in skill
+    assert "agentacct_record_machine_check" in skill
     assert "Do not say agentacct hard-stopped" in skill

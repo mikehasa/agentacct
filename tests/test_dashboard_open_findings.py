@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-import agent_chronicle.api as api_module
-from agent_chronicle.api import create_local_api_app
-from agent_chronicle.service import SentinelService
+import agentacct.api as api_module
+from agentacct.api import create_local_api_app
+from agentacct.service import SentinelService
 
 
 def _record_root_usage(service: SentinelService, *, session_id: str) -> None:

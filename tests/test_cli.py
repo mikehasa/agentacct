@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from agent_chronicle.cli import _exit_if_unsupported_platform, app
+from agentacct.cli import _exit_if_unsupported_platform, app
 
 
 def test_win32_platform_fails_fast_with_one_actionable_sentence(capsys):
@@ -29,7 +29,7 @@ def test_wrapper_entry_points_fail_fast_on_win32(monkeypatch, capsys):
     # agentacct-claude / agentacct-codex never import cli, so they carry their own
     # copy of the same guard: on native Windows they must exit 2 with the WSL
     # pointer, not reach runner.py's POSIX process-group calls as a traceback.
-    import agent_chronicle.wrappers as wrappers
+    import agentacct.wrappers as wrappers
 
     monkeypatch.setattr(wrappers.sys, "platform", "win32")
 

@@ -15,10 +15,10 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from agent_chronicle.cli import app
-from agent_chronicle.service import SentinelService
-from agent_chronicle.store_merge import plan_store_merge
-from agent_chronicle.usage_truth import (
+from agentacct.cli import app
+from agentacct.service import SentinelService
+from agentacct.store_merge import plan_store_merge
+from agentacct.usage_truth import (
     LOCAL_SESSION_OBSERVATION_PROVENANCE,
     LOCAL_SESSION_OBSERVATION_SOURCE,
     LOCAL_USAGE_PROVENANCE,
@@ -28,7 +28,7 @@ from agent_chronicle.usage_truth import (
     mark_trusted_local_session_observation_event,
     reduce_local_session_observation_events,
 )
-from agent_chronicle.work_ledger import build_work_ledger
+from agentacct.work_ledger import build_work_ledger
 
 runner = CliRunner()
 
@@ -695,7 +695,7 @@ def test_default_kind_is_mcp_and_never_touches_usage_rows(tmp_path: Path) -> Non
 
 def test_plan_all_logical_dedup_against_target_identities() -> None:
     """Pure-plan pin of the FIX-1 logical dedup contract."""
-    from agent_chronicle.store_merge import usage_row_identities
+    from agentacct.store_merge import usage_row_identities
 
     target_usage = _usage_row("evt_tgt000000001", "codex-shared-1")
     identities = usage_row_identities([target_usage])
@@ -1071,7 +1071,7 @@ def test_merged_sections_link_via_client_log_evidence(tmp_path: Path) -> None:
     """The whole point: a section merged into a store whose usage rows already
     reference its event_id (client-log evidence) becomes session-linked, not
     orphaned. This mirrors the legacy-project-a -> global join."""
-    from agent_chronicle.work_ledger import build_work_ledger
+    from agentacct.work_ledger import build_work_ledger
 
     section_id = "evt_abcdef012345"  # must be valid hex for the evidence id regex
     # Target store: a trusted usage row whose client log evidenced the section id.

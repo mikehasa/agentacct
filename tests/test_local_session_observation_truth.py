@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import pytest
 
-from agent_chronicle.context_bridge import build_usage_context_bridge
-from agent_chronicle.log_evidence import build_log_evidence_index
-from agent_chronicle.service import SentinelService, SessionObservationConflict
-from agent_chronicle.task_projection import build_task_projection
-from agent_chronicle.usage_truth import (
+from agentacct.context_bridge import build_usage_context_bridge
+from agentacct.log_evidence import build_log_evidence_index
+from agentacct.service import SentinelService, SessionObservationConflict
+from agentacct.task_projection import build_task_projection
+from agentacct.usage_truth import (
     LOCAL_SESSION_OBSERVATION_PROVENANCE,
     LOCAL_SESSION_OBSERVATION_SOURCE,
     is_local_session_observation_event,
     mark_trusted_local_session_observation_event,
     reduce_local_session_observation_events,
 )
-from agent_chronicle.work_ledger import build_work_ledger
+from agentacct.work_ledger import build_work_ledger
 
 
 SESSION = "zero-usage-session"

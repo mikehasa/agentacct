@@ -1,13 +1,13 @@
 from fastapi.testclient import TestClient
 
-from agent_chronicle.cost import (
+from agentacct.cost import (
     CostLedger,
     CostPolicy,
     estimate_anthropic_messages_usage,
     estimate_gemini_generate_content_usage,
     estimate_openai_chat_usage,
 )
-from agent_chronicle.proxy import create_app
+from agentacct.proxy import create_app
 
 
 def test_anthropic_messages_estimator_parses_native_request():

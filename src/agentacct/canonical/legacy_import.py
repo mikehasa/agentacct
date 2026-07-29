@@ -26,7 +26,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, BinaryIO, Iterator, Mapping
 
-from agent_chronicle.usage_truth import (
+from agentacct.usage_truth import (
     CODEX_LINEAGE_DELTA_SEMANTICS,
     local_usage_additivity,
     local_usage_row_lane,

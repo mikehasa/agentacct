@@ -21,11 +21,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 
-from agent_chronicle.canonical.live_paths import (
+from agentacct.canonical.live_paths import (
     LivePathSafetyError,
     reject_live_state_overlap,
 )
-from agent_chronicle.canonical.snapshot import (
+from agentacct.canonical.snapshot import (
     MAX_MANIFEST_FILES,
     SNAPSHOT_MANIFEST_VERSION,
     SnapshotSafetyError,

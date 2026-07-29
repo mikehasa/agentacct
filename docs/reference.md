@@ -194,19 +194,19 @@ agentacct mcp serve
 
 Current MCP tools include:
 
-- `sentinel_list_runs`
-- `sentinel_get_report`
-- `sentinel_record_event`
-- `sentinel_attach_client_context`
-- `sentinel_record_section`
-- `sentinel_record_agent_usage_debug`
-- `sentinel_list_events`
-- `sentinel_get_event_summary`
-- `sentinel_record_machine_check`
-- `sentinel_prepare_judge`
-- `sentinel_compute_value`
+- `agentacct_list_runs`
+- `agentacct_get_report`
+- `agentacct_record_event`
+- `agentacct_attach_client_context`
+- `agentacct_record_section`
+- `agentacct_record_agent_usage_debug`
+- `agentacct_list_events`
+- `agentacct_get_event_summary`
+- `agentacct_record_machine_check`
+- `agentacct_prepare_judge`
+- `agentacct_compute_value`
 
-Use local usage import for token/cost truth, and use MCP tools for workflow context. `sentinel_attach_client_context` stores local session/turn/message identifiers, while `sentinel_record_section` stores human-readable task chapters that can later be joined to imported usage. `sentinel_record_agent_usage_debug` stores agent-visible usage snapshots for comparison only; it does not add to agentacct's usage or cost totals.
+Use local usage import for token/cost truth, and use MCP tools for workflow context. `agentacct_attach_client_context` stores local session/turn/message identifiers, while `agentacct_record_section` stores human-readable task chapters that can later be joined to imported usage. `agentacct_record_agent_usage_debug` stores agent-visible usage snapshots for comparison only; it does not add to agentacct's usage or cost totals.
 
 How agents learn to record: the MCP server returns record-your-work instructions in its initialize result, and for Claude Code the SessionStart hook injects the same directive into every new session. `agentacct setup instructions --agent <client> --user` writes a standing instruction block into user-level `~/.claude/CLAUDE.md` / `~/.codex/AGENTS.md` (idempotent markers; `--remove` strips it, `--dry-run` previews). For one machine-wide store and dashboard instead of per-repo installs, follow the "Global install" section of [INSTALL.md](../INSTALL.md); fold older per-project stores in with `agentacct usage merge-store`.
 

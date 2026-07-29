@@ -2,9 +2,9 @@ import json
 
 from typer.testing import CliRunner
 
-from agent_chronicle.cli import app
-from agent_chronicle.cost import CostLedger, estimate_openai_chat_usage, estimate_anthropic_messages_usage
-from agent_chronicle.runner import RunOptions, start_guarded_run
+from agentacct.cli import app
+from agentacct.cost import CostLedger, estimate_openai_chat_usage, estimate_anthropic_messages_usage
+from agentacct.runner import RunOptions, start_guarded_run
 
 
 def test_report_command_includes_cost_summary_for_run(tmp_path):

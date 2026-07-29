@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
-from agent_chronicle.cli import app
+from agentacct.cli import app
 
 
 runner = CliRunner()
@@ -29,7 +29,7 @@ def _json_stdout_only(result) -> dict[str, object]:
 
 
 def test_prepare_cutover_cli_emits_typed_receipt(monkeypatch, tmp_path: Path) -> None:
-    import agent_chronicle.canonical.cutover as cutover
+    import agentacct.canonical.cutover as cutover
 
     candidate = tmp_path / "candidate.sqlite3"
     report = tmp_path / "parity-report.json"
@@ -65,7 +65,7 @@ def test_prepare_cutover_cli_emits_typed_receipt(monkeypatch, tmp_path: Path) ->
 def test_prepare_cutover_cli_json_refusal_uses_stdout_only(
     monkeypatch, tmp_path: Path
 ) -> None:
-    import agent_chronicle.canonical.cutover as cutover
+    import agentacct.canonical.cutover as cutover
 
     monkeypatch.setattr(
         cutover,
@@ -92,7 +92,7 @@ def test_prepare_cutover_cli_json_refusal_uses_stdout_only(
 def test_prepare_cutover_cli_human_refusal_uses_stderr(
     monkeypatch, tmp_path: Path
 ) -> None:
-    import agent_chronicle.canonical.cutover as cutover
+    import agentacct.canonical.cutover as cutover
 
     monkeypatch.setattr(
         cutover,
@@ -119,7 +119,7 @@ def test_prepare_cutover_cli_human_refusal_uses_stderr(
 def test_promote_cli_requires_explicit_writers_stopped_confirmation(
     monkeypatch, tmp_path: Path
 ) -> None:
-    import agent_chronicle.canonical.cutover as cutover
+    import agentacct.canonical.cutover as cutover
 
     def unexpected(*_args, **_kwargs):
         raise AssertionError("promotion must not inspect evidence without confirmation")
@@ -149,7 +149,7 @@ def test_promote_cli_requires_explicit_writers_stopped_confirmation(
 
 
 def test_promote_cli_wires_durable_receipt_and_result(monkeypatch, tmp_path: Path) -> None:
-    import agent_chronicle.canonical.cutover as cutover
+    import agentacct.canonical.cutover as cutover
 
     candidate = tmp_path / "candidate.sqlite3"
     report = tmp_path / "parity-report.json"
@@ -203,7 +203,7 @@ def test_promote_cli_wires_durable_receipt_and_result(monkeypatch, tmp_path: Pat
 def test_promote_cli_reports_installed_state_and_emergency_receipt(
     monkeypatch, tmp_path: Path
 ) -> None:
-    import agent_chronicle.canonical.cutover as cutover
+    import agentacct.canonical.cutover as cutover
 
     requested = tmp_path / "promotion-receipt.json"
     fallback = tmp_path / ".chronicle.sqlite3.promotion-receipt-op.json"
@@ -247,7 +247,7 @@ def test_promote_cli_reports_installed_state_and_emergency_receipt(
 def test_promote_cli_reports_ambiguous_replace_on_stdout_only(
     monkeypatch, tmp_path: Path
 ) -> None:
-    import agent_chronicle.canonical.cutover as cutover
+    import agentacct.canonical.cutover as cutover
 
     fallback = tmp_path / ".chronicle.sqlite3.promotion-receipt-op.json"
     promotion_receipt = _Wire({"operation_id": "op-ambiguous"})
@@ -311,7 +311,7 @@ def test_promote_cli_reports_ambiguous_replace_on_stdout_only(
 def test_verify_cutover_cli_exits_two_on_verification_blocker(
     monkeypatch, tmp_path: Path
 ) -> None:
-    import agent_chronicle.canonical.cutover as cutover
+    import agentacct.canonical.cutover as cutover
 
     receipt_path = tmp_path / "promotion-receipt.json"
     verification = _Wire(
@@ -342,7 +342,7 @@ def test_verify_cutover_cli_exits_two_on_verification_blocker(
 def test_rollback_cli_requires_confirmation_before_loading_receipt(
     monkeypatch, tmp_path: Path
 ) -> None:
-    import agent_chronicle.canonical.cutover as cutover
+    import agentacct.canonical.cutover as cutover
 
     def unexpected(_path):
         raise AssertionError("receipt must not be opened without confirmation")
@@ -366,7 +366,7 @@ def test_rollback_cli_requires_confirmation_before_loading_receipt(
 def test_rollback_cli_reports_installed_verification_failure(
     monkeypatch, tmp_path: Path
 ) -> None:
-    import agent_chronicle.canonical.cutover as cutover
+    import agentacct.canonical.cutover as cutover
 
     rollback_receipt = _Wire({"operation_id": "rollback-op"})
     verification = _Wire(
@@ -406,7 +406,7 @@ def test_rollback_cli_reports_installed_verification_failure(
 
 
 def test_read_canary_cli_propagates_structured_blockers(monkeypatch) -> None:
-    import agent_chronicle.canonical.read_canary as canary
+    import agentacct.canonical.read_canary as canary
 
     blocker = SimpleNamespace(
         code="canonical_read_disabled",

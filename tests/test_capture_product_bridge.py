@@ -9,12 +9,12 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from agent_chronicle import api as api_module
-from agent_chronicle.api import create_local_api_app
-from agent_chronicle.evidence_runtime import EvidenceRuntime
-from agent_chronicle.evidence_store import EVIDENCE_STORE_DIRNAME
-from agent_chronicle.finding_disposition import FindingDispositionConflict
-from agent_chronicle.service import SentinelService
+from agentacct import api as api_module
+from agentacct.api import create_local_api_app
+from agentacct.evidence_runtime import EvidenceRuntime
+from agentacct.evidence_store import EVIDENCE_STORE_DIRNAME
+from agentacct.finding_disposition import FindingDispositionConflict
+from agentacct.service import SentinelService
 
 
 def _codex_payload(

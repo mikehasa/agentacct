@@ -4,9 +4,9 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from agent_chronicle.cli import app
-from agent_chronicle.cost import CostLedger, estimate_openai_chat_usage
-from agent_chronicle.runner import RunOptions, start_guarded_run
+from agentacct.cli import app
+from agentacct.cost import CostLedger, estimate_openai_chat_usage
+from agentacct.runner import RunOptions, start_guarded_run
 
 
 def test_guarded_run_injects_run_identity_env_vars(tmp_path):
@@ -52,8 +52,8 @@ def test_cost_ledger_filters_and_totals_by_run_id(tmp_path):
 
 def test_proxy_header_run_id_is_visible_in_cost_status(tmp_path):
     from fastapi.testclient import TestClient
-    from agent_chronicle.cost import CostPolicy
-    from agent_chronicle.proxy import create_app
+    from agentacct.cost import CostPolicy
+    from agentacct.proxy import create_app
 
     client = TestClient(create_app(store_dir=tmp_path, policy=CostPolicy(max_total_usd=1.0), dry_run=True))
     response = client.post(

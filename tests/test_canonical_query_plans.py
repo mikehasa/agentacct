@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_chronicle.canonical import (
+from agentacct.canonical import (
     CanonicalStore,
     FactInput,
     SessionInput,

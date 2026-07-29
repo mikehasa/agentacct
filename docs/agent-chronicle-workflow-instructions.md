@@ -11,7 +11,7 @@ Agent Chronicle should be a workflow ledger for AI-agent work, not only a comman
 When the client exposes local identifiers, first attach context:
 
 ```text
-Call sentinel_attach_client_context with:
+Call agentacct_attach_client_context with:
   source: <client-or-agent-name>
   client: <codex|claude-code|hermes|opencode|openclaw|other>
   client_session_id: <local session/thread id>
@@ -28,12 +28,12 @@ How to obtain the join ids (be honest when you cannot):
 - Codex: the thread id is not exposed in-band. Attach whatever you have (`project_dir` at minimum) and expect the attach response to report `join_hint_quality: weak`.
 - Never guess or fabricate ids. A missing id is diagnosable; a wrong id is silent mis-attribution.
 
-Context inheritance: sections recorded without explicit ids inherit them from, in priority order, (1) the Claude Code hook context file (client-derived — captured by the hook from the client itself) and (2) the last successful `sentinel_attach_client_context` on the same MCP server process (agent-reported). Inherited keys are recorded in `metadata.client_context_inherited_keys` with `client_context_source` (server-authored; forged values are stripped on every other recording path), and the (session, transcript) id pair always comes from a single source: if you pass either id explicitly, ids are never inherited — the pair is yours to complete. Inherited ids are fail-safe and never `exact`: hook-captured ids attribute at `high` confidence (`client_derived_*` strategies — client-derived and TTL-fresh, but not bound to the recording MCP session), attach-inherited ids at `medium` (`inherited_*` strategies — freshness unproven). Exact attribution requires ids passed explicitly on the section call, and explicitly passed ids always override inherited ones. Attach again at the start of every NEW conversation (including after `/clear` or resume). Run `agent-chronicle mcp doctor` to check whether recorded context and the hook bridge are joinable (read-only; it never writes to the ledger).
+Context inheritance: sections recorded without explicit ids inherit them from, in priority order, (1) the Claude Code hook context file (client-derived — captured by the hook from the client itself) and (2) the last successful `agentacct_attach_client_context` on the same MCP server process (agent-reported). Inherited keys are recorded in `metadata.client_context_inherited_keys` with `client_context_source` (server-authored; forged values are stripped on every other recording path), and the (session, transcript) id pair always comes from a single source: if you pass either id explicitly, ids are never inherited — the pair is yours to complete. Inherited ids are fail-safe and never `exact`: hook-captured ids attribute at `high` confidence (`client_derived_*` strategies — client-derived and TTL-fresh, but not bound to the recording MCP session), attach-inherited ids at `medium` (`inherited_*` strategies — freshness unproven). Exact attribution requires ids passed explicitly on the section call, and explicitly passed ids always override inherited ones. Attach again at the start of every NEW conversation (including after `/clear` or resume). Run `agent-chronicle mcp doctor` to check whether recorded context and the hook bridge are joinable (read-only; it never writes to the ledger).
 
 Before meaningful work:
 
 ```text
-Call sentinel_record_section with:
+Call agentacct_record_section with:
   section_id: <short stable id for this piece of work>
   section_status: started
   section_title: concise task description
@@ -43,16 +43,16 @@ Call sentinel_record_section with:
 
 During work:
 
-- Record checkpoints after important decisions, handoffs, or scope changes: call `sentinel_record_section` again with the same `section_id` and `section_status=checkpoint`.
+- Record checkpoints after important decisions, handoffs, or scope changes: call `agentacct_record_section` again with the same `section_id` and `section_status=checkpoint`.
 - Sections are the work contract: use `section_status=started`, `checkpoint`, `completed`, or `blocked`, and include the same client/session/turn identifiers when known.
-- If the client exposes visible token/cost usage during the session, call `sentinel_record_agent_usage_debug` with `reporting_basis=visible_client_usage` and the same client/session/turn identifiers. If the client does not expose usage, call it with `reporting_basis=unavailable`; do not invent token or cost numbers.
+- If the client exposes visible token/cost usage during the session, call `agentacct_record_agent_usage_debug` with `reporting_basis=visible_client_usage` and the same client/session/turn identifiers. If the client does not expose usage, call it with `reporting_basis=unavailable`; do not invent token or cost numbers.
 - Record failures/blockers instead of hiding them.
-- After tests, builds, lint, smoke tests, or browser checks, record machine-check evidence with `sentinel_record_machine_check` when available; otherwise use `sentinel_record_event` with a compact result summary.
+- After tests, builds, lint, smoke tests, or browser checks, record machine-check evidence with `agentacct_record_machine_check` when available; otherwise use `agentacct_record_event` with a compact result summary.
 
 At completion:
 
 ```text
-Call sentinel_record_section with:
+Call agentacct_record_section with:
   section_id: <same section id>
   section_status: completed
   source: <client-or-agent-name>
@@ -63,7 +63,7 @@ Call sentinel_record_section with:
 If blocked:
 
 ```text
-Call sentinel_record_section with:
+Call agentacct_record_section with:
   section_id: <same section id>
   section_status: blocked
   source: <client-or-agent-name>
@@ -111,5 +111,5 @@ OpenClaw should receive these instructions through an OpenClaw skill or agent id
 ## Minimal smoke prompt
 
 ```text
-Use Agent Chronicle MCP to record a section with sentinel_record_section (section_status=started). Inspect the integration docs if available. Record the same section with section_status=completed and one objective finding in the summary. Reply exactly SENTINEL_WORKFLOW_OK.
+Use Agent Chronicle MCP to record a section with agentacct_record_section (section_status=started). Inspect the integration docs if available. Record the same section with section_status=completed and one objective finding in the summary. Reply exactly SENTINEL_WORKFLOW_OK.
 ```

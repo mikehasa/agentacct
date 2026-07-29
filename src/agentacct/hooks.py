@@ -827,7 +827,7 @@ AGENT_CHRONICLE_HOOK_ARGS = __AGENT_CHRONICLE_HOOK_ARGS__
 HOOK_EVENT = ""
 
 
-def resolve_agent_chronicle():
+def resolve_agentacct():
     for candidate in AGENT_CHRONICLE_CANDIDATES:
         if not candidate:
             continue
@@ -868,7 +868,7 @@ def main():
     except ValueError:
         pass
     subcommand = "session-start" if HOOK_EVENT == "SessionStart" else "pre-tool-use"
-    executable = resolve_agent_chronicle()
+    executable = resolve_agentacct()
     if executable is None:
         return fail_open("agentacct executable not found (re-run: agentacct hooks claude-code install --force)", HOOK_EVENT)
     # Equivalent shell command:
@@ -899,7 +899,7 @@ if __name__ == "__main__":
 '''
 
 
-def resolve_agent_chronicle_executable() -> str | None:
+def resolve_agentacct_executable() -> str | None:
     """Absolute path of the agentacct CLI belonging to this interpreter.
 
     Prefers the console script next to sys.executable (the venv that is
@@ -917,10 +917,10 @@ def resolve_agent_chronicle_executable() -> str | None:
     return shutil.which("agentacct") or shutil.which("agent-chronicle") or shutil.which("agent-sentinel")
 
 
-def render_claude_hook_wrapper(agent_chronicle_executable: str | None = None, *, store_dir: Path | str | None = None) -> str:
+def render_claude_hook_wrapper(agentacct_executable: str | None = None, *, store_dir: Path | str | None = None) -> str:
     candidates: list[str] = []
-    if agent_chronicle_executable:
-        candidates.append(str(agent_chronicle_executable))
+    if agentacct_executable:
+        candidates.append(str(agentacct_executable))
     # Bare-name fallbacks: new binary name first, pre-rename aliases after.
     for bare_name in ("agentacct", "agent-chronicle", "agent-sentinel"):
         if bare_name not in candidates:
@@ -1003,7 +1003,7 @@ def claude_code_hook_paths(project_dir: Path | str) -> tuple[Path, Path]:
 class ClaudeCodeHookInstall:
     hook_path: Path
     settings_path: Path
-    agent_chronicle_executable: str | None
+    agentacct_executable: str | None
     python_command: str
     store_dir: Path | None = None
     user_settings_example: bool = False
@@ -1020,7 +1020,7 @@ def install_claude_code_hook(
     *,
     dry_run: bool = False,
     force: bool = False,
-    agent_chronicle_executable: str | None = None,
+    agentacct_executable: str | None = None,
     python_executable: str | None = None,
     store_dir: Path | str | None = None,
     user_settings_example: bool = False,
@@ -1039,7 +1039,7 @@ def install_claude_code_hook(
         # path it embeds must be absolute, whatever form project_dir took.
         project_dir = Path(project_dir).expanduser().resolve()
     hook_path, settings_path = claude_code_hook_paths(project_dir)
-    resolved_executable = agent_chronicle_executable or resolve_agent_chronicle_executable()
+    resolved_executable = agentacct_executable or resolve_agentacct_executable()
     resolved_python = python_executable or sys.executable or "python3"
     resolved_store_dir = Path(store_dir).expanduser() if store_dir is not None else None
     if resolved_store_dir is not None and not resolved_store_dir.is_absolute():

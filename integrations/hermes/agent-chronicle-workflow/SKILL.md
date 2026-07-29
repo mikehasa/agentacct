@@ -23,7 +23,7 @@ This skill does not mean agentacct automatically sees every token or exact provi
 Use this skill when:
 
 - Working in a repository that has agentacct initialized.
-- agentacct MCP tools such as `sentinel_record_event` are available.
+- agentacct MCP tools such as `agentacct_record_event` are available.
 - Running Hermes, OpenCode, OpenClaw, Claude Code, Codex, or another coding agent with agentacct integration.
 - The user asks for evidence of AI-agent work, token/cost tracking, MCP smoke tests, or Agent FinOps workflow validation.
 
@@ -31,7 +31,7 @@ Do not use this skill to claim exact billing unless the run used a supported usa
 
 ## Workflow
 
-1. If local client identifiers are available, call `sentinel_attach_client_context`:
+1. If local client identifiers are available, call `agentacct_attach_client_context`:
 
 ```text
 source: hermes or the active coding-agent name
@@ -43,7 +43,7 @@ turn_id/message_id/request_id: current ids if known
 client_event_timestamp: client timestamp if known
 ```
 
-2. Before meaningful work, open a section with `sentinel_record_section`:
+2. Before meaningful work, open a section with `agentacct_record_section`:
 
 ```text
 section_id: short stable id for this piece of work
@@ -53,7 +53,7 @@ source: hermes or the active coding-agent name
 run_id: stable task/session id if known
 ```
 
-3. During work, record important checkpoints (`sentinel_record_section` with the same `section_id` and `section_status=checkpoint`):
+3. During work, record important checkpoints (`agentacct_record_section` with the same `section_id` and `section_status=checkpoint`):
 
 - major decisions
 - scope changes
@@ -63,7 +63,7 @@ run_id: stable task/session id if known
 
 Sections are the work contract. Use `section_status=started`, `checkpoint`, `completed`, or `blocked`, and include client/session/turn identifiers when known.
 
-4. If visible token/cost usage is available, call `sentinel_record_agent_usage_debug`:
+4. If visible token/cost usage is available, call `agentacct_record_agent_usage_debug`:
 
 ```text
 reporting_basis: visible_client_usage
@@ -76,10 +76,10 @@ If the client does not expose token/cost usage, call the same tool with `reporti
 
 5. After tests/builds/smokes, record machine-check evidence:
 
-- Prefer `sentinel_record_machine_check` when available.
-- Otherwise call `sentinel_record_event` with a compact test/build result.
+- Prefer `agentacct_record_machine_check` when available.
+- Otherwise call `agentacct_record_event` with a compact test/build result.
 
-6. At completion, close the section with `sentinel_record_section`:
+6. At completion, close the section with `agentacct_record_section`:
 
 ```text
 section_id: same section id
@@ -87,7 +87,7 @@ section_status: completed
 summary: what changed, with tests, builds, diffs, tool calls, token/cost evidence actually observed
 ```
 
-7. If blocked, call `sentinel_record_section` with `section_status=blocked`:
+7. If blocked, call `agentacct_record_section` with `section_status=blocked`:
 
 ```text
 section_id: same section id
@@ -137,14 +137,14 @@ Confirm the actual workspace path before reading repo files. If OpenClaw is runn
 ## Minimal Smoke Prompt
 
 ```text
-Use agentacct MCP to record a section with sentinel_record_section (section_status=started). Inspect the integration docs if available. Record the same section with section_status=completed and one objective finding in the summary. Reply exactly SENTINEL_WORKFLOW_OK.
+Use agentacct MCP to record a section with agentacct_record_section (section_status=started). Inspect the integration docs if available. Record the same section with section_status=completed and one objective finding in the summary. Reply exactly SENTINEL_WORKFLOW_OK.
 ```
 
 ## Verification Checklist
 
-- [ ] `sentinel_record_section` was called with `section_status=started`.
-- [ ] `sentinel_attach_client_context` was used when local ids were available.
-- [ ] `sentinel_record_agent_usage_debug` was called with visible usage or `reporting_basis=unavailable`.
+- [ ] `agentacct_record_section` was called with `section_status=started`.
+- [ ] `agentacct_attach_client_context` was used when local ids were available.
+- [ ] `agentacct_record_agent_usage_debug` was called with visible usage or `reporting_basis=unavailable`.
 - [ ] Meaningful checkpoints or machine checks were recorded when applicable.
 - [ ] Completion or blocker was recorded.
 - [ ] Final response separates MCP evidence from token/cost/billing evidence.

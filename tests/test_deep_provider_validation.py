@@ -1,8 +1,8 @@
 import pytest
 
-from agent_chronicle.cost import CostLedger
-from agent_chronicle.deep_provider_validation import build_deep_validation_cases, run_deep_provider_validation
-from agent_chronicle.provider_smoke import ProviderSmokeError
+from agentacct.cost import CostLedger
+from agentacct.deep_provider_validation import build_deep_validation_cases, run_deep_provider_validation
+from agentacct.provider_smoke import ProviderSmokeError
 
 
 class MockResponse:

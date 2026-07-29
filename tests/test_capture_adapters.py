@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.capture import (
+from agentacct.capture import (
     CaptureContext,
     CaptureService,
     build_default_registry,
@@ -14,7 +14,7 @@ from agent_chronicle.capture import (
     merge_hook_manifest,
     render_hook_manifest,
 )
-from agent_chronicle.capture.base import safe_relative_path
+from agentacct.capture.base import safe_relative_path
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "capture" / "v1"
@@ -359,7 +359,7 @@ class _BrokenSink:
 
 
 def test_capture_service_writes_through_narrow_sink_and_builds_evidence_envelopes() -> None:
-    from agent_chronicle.source_policy import Authority, EvidenceDimension, default_source_authority_policy
+    from agentacct.source_policy import Authority, EvidenceDimension, default_source_authority_policy
 
     fixture = _fixture("claude_code_post_tool_use.json")
     sink = _MemorySink()
@@ -427,7 +427,7 @@ def test_capture_service_reports_a_durable_prefix_when_a_later_append_fails() ->
 
 
 def test_capture_service_appends_to_real_v2_spool_idempotently(tmp_path: Path) -> None:
-    from agent_chronicle.evidence_store import EvidenceStore
+    from agentacct.evidence_store import EvidenceStore
 
     fixture = _fixture("cursor_after_shell_execution.json")
     store = EvidenceStore(tmp_path)

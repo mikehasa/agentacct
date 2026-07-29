@@ -11,9 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_chronicle.evidence import ClaimedLink, EvidenceEnvelope, SubjectRefs, canonical_digest
-from agent_chronicle.evidence_runtime import EvidenceRuntime
-from agent_chronicle.evidence_store import (
+from agentacct.evidence import ClaimedLink, EvidenceEnvelope, SubjectRefs, canonical_digest
+from agentacct.evidence_runtime import EvidenceRuntime
+from agentacct.evidence_store import (
     EVIDENCE_STORE_DIRNAME,
     EVIDENCE_SPOOL_SCHEMA_VERSION,
     REFRESHABLE_USAGE_SPOOL_FILENAME,
@@ -1195,7 +1195,7 @@ def test_locked_writer_rebinds_to_the_live_lock_inode_after_atomic_swap(
         real_flock(descriptor, operation)
 
     monkeypatch.setattr(
-        "agent_chronicle.evidence_store.fcntl",
+        "agentacct.evidence_store.fcntl",
         SimpleNamespace(
             LOCK_EX=fcntl.LOCK_EX,
             LOCK_UN=fcntl.LOCK_UN,

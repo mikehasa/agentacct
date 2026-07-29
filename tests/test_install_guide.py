@@ -2,7 +2,7 @@
 
 INSTALL.md is the canonical agent-facing runbook that the one-line install
 prompt points at. Its command blocks, notes, and capability matrix are defined
-once in ``agent_chronicle.install_guide`` (also used by ``setup prompt``); this
+once in ``agentacct.install_guide`` (also used by ``setup prompt``); this
 suite fails CI whenever the document drifts from the module.
 """
 
@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from agent_chronicle import install_guide
-from agent_chronicle.cli import app
+from agentacct import install_guide
+from agentacct.cli import app
 
 INSTALL_MD = Path("INSTALL.md")
 
@@ -169,7 +169,7 @@ def test_public_install_surfaces_do_not_reference_the_deleted_repository() -> No
         Path("INSTALL.md"),
         Path("CONTRIBUTING.md"),
         Path("pyproject.toml"),
-        Path("src/agent_chronicle/install_guide.py"),
+        Path("src/agentacct/install_guide.py"),
     ):
         text = path.read_text(encoding="utf-8")
         assert "mikehasa/agent-chronicle" not in text, path
@@ -230,8 +230,8 @@ def test_workflow_instruction_block_is_sections_only_and_concise() -> None:
     assert "task_started" not in block
     assert "task_completed" not in block
     # It must name the sections tool and the machine-check tool.
-    assert "sentinel_record_section" in block
-    assert "sentinel_record_machine_check" in block
+    assert "agentacct_record_section" in block
+    assert "agentacct_record_machine_check" in block
     # Concise: it loads into every session. Keep it short (bounded line count).
     body_lines = [line for line in block.splitlines() if line.strip()]
     assert len(body_lines) <= 14, f"instruction block grew to {len(body_lines)} non-blank lines; keep it short"
@@ -271,9 +271,9 @@ def test_mcp_server_instructions_are_directive_honest_and_deferral_aware() -> No
     assert "records what this session actually did" in text
     assert "dashboard" in text
     # Directs the two recording tools.
-    assert "sentinel_record_section" in text
+    assert "agentacct_record_section" in text
     assert "section_status=started" in text
-    assert "sentinel_record_machine_check" in text
+    assert "agentacct_record_machine_check" in text
     # THE deferral line — the key nudge that beats Claude Code's tool deferral.
     assert "not directly available" in text
     assert "load them first" in text
@@ -333,8 +333,8 @@ def test_session_start_additional_context_is_directive_honest_and_concise() -> N
     assert text.strip()
     # Says WHY (dashboard, work-not-tokens) and directs the recording tools.
     assert "dashboard" in text
-    assert "sentinel_record_section" in text
-    assert "sentinel_record_machine_check" in text
+    assert "agentacct_record_section" in text
+    assert "agentacct_record_machine_check" in text
     # Deferral-aware: the tools may need loading first.
     assert "load them first" in text
     # Honesty guardrail + sections-only contract.
@@ -389,7 +389,7 @@ def test_setup_instructions_cli_writes_merges_and_removes(tmp_path: Path) -> Non
     dry = runner.invoke(app, ["setup", "instructions", "--agent", "claude-code", "--path", str(target), "--dry-run"])
     assert dry.exit_code == 0, dry.output
     assert "Dry run" in dry.output
-    assert "sentinel_record_section" in dry.output
+    assert "agentacct_record_section" in dry.output
     assert target.read_text(encoding="utf-8") == original, "dry-run must not touch the file"
 
     # apply merges without clobbering owner content.

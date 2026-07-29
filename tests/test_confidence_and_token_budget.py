@@ -4,9 +4,9 @@ import math
 import pytest
 from typer.testing import CliRunner
 
-from agent_chronicle.cli import app
-from agent_chronicle.cost import CostLedger, CostPolicy, estimate_openai_chat_usage, estimate_subscription_cost
-from agent_chronicle.proxy import create_app
+from agentacct.cli import app
+from agentacct.cost import CostLedger, CostPolicy, estimate_openai_chat_usage, estimate_subscription_cost
+from agentacct.proxy import create_app
 
 
 def test_usage_estimates_default_to_estimated_confidence():

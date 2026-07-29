@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from agent_chronicle.context_bridge import build_usage_context_bridge
-from agent_chronicle.service import SentinelService, summarize_events
+from agentacct.context_bridge import build_usage_context_bridge
+from agentacct.service import SentinelService, summarize_events
 
 
 def _usage_event(*, session: str, client: str = "codex", parent: str | None = None) -> dict:
@@ -109,7 +109,7 @@ def test_parent_child_hint_agrees_across_ledger_inspector_and_bridge() -> None:
     a non-allocating low-confidence hint everywhere: ledger, inspector,
     bridge.  Claude is used here because legacy Codex descendants now follow
     the separate cumulative-replay quarantine contract."""
-    from agent_chronicle.work_ledger import build_work_ledger
+    from agentacct.work_ledger import build_work_ledger
 
     events = [
         _usage_event(
@@ -190,7 +190,7 @@ def test_event_summary_includes_bridge_without_counting_usage_debug_totals() -> 
 
 
 def test_client_context_join_health_flags_non_joinable_context() -> None:
-    from agent_chronicle.context_bridge import build_client_context_join_health
+    from agentacct.context_bridge import build_client_context_join_health
 
     events = [
         _usage_event(session="sess-1"),
@@ -223,7 +223,7 @@ def test_client_context_join_health_flags_non_joinable_context() -> None:
 
 
 def test_client_context_join_health_ok_with_joinable_sections() -> None:
-    from agent_chronicle.context_bridge import build_client_context_join_health
+    from agentacct.context_bridge import build_client_context_join_health
 
     events = [
         _usage_event(session="sess-1"),
@@ -245,7 +245,7 @@ def test_client_context_join_health_ok_with_joinable_sections() -> None:
 
 def test_client_context_join_health_degrades_when_only_one_usage_row_is_attributed() -> None:
     """One joinable section must not make a mostly-unjoined store look healthy."""
-    from agent_chronicle.context_bridge import build_client_context_join_health
+    from agentacct.context_bridge import build_client_context_join_health
 
     events = [_usage_event(session=f"sess-{index}") for index in range(10)]
     events.append(_section_event(session="sess-0"))
@@ -266,7 +266,7 @@ def test_client_context_join_health_degrades_when_only_one_usage_row_is_attribut
 
 
 def test_codex_child_quarantine_is_counted_but_excluded_from_bridge_health_and_event_totals() -> None:
-    from agent_chronicle.context_bridge import build_client_context_join_health
+    from agentacct.context_bridge import build_client_context_join_health
 
     events = [
         _usage_event(session="root-session"),
@@ -374,7 +374,7 @@ def test_service_summary_uses_full_store_for_bridge_truth_and_marks_limited_deta
 
 
 def test_client_context_join_health_counts_legacy_sections_without_semantic_kind() -> None:
-    from agent_chronicle.context_bridge import build_client_context_join_health
+    from agentacct.context_bridge import build_client_context_join_health
 
     events = [
         _usage_event(session="sess-1"),
@@ -397,7 +397,7 @@ def test_client_context_join_health_counts_legacy_sections_without_semantic_kind
 def test_run_id_link_is_low_everywhere() -> None:
     """run_id is Chronicle-authored grouping, never client-derived usage truth:
     the ledger AND the bridge report it as a low, non-allocating hint."""
-    from agent_chronicle.work_ledger import build_work_ledger
+    from agentacct.work_ledger import build_work_ledger
 
     section = _section_event(session="other-session")
     section["run_id"] = "client_codex_sess-1"
@@ -437,7 +437,7 @@ def test_ledger_and_bridge_agree_on_strategy_and_confidence_matrix() -> None:
     """The three join surfaces share one matcher: for every provenance tier and
     every hint/conflict scenario the bridge link must carry the canonical
     confidence and the canonical strategy family."""
-    from agent_chronicle.work_ledger import build_work_ledger
+    from agentacct.work_ledger import build_work_ledger
 
     run_id_section = _section_event(session="other-session")
     run_id_section["run_id"] = "client_codex_sess-1"
@@ -527,7 +527,7 @@ def test_context_only_authored_attach_match_is_capped_at_medium() -> None:
     """Adversarial repro: usage row matches ONLY a client_context attach event
     (authored id, no sections). The canonical ledger says unjoined; the bridge
     used to render exact (green) anyway."""
-    from agent_chronicle.work_ledger import build_work_ledger
+    from agentacct.work_ledger import build_work_ledger
 
     events = [_usage_event(session="shared"), _attach_context_event(session="shared", tier="explicit")]
 
@@ -564,7 +564,7 @@ def test_context_only_hook_and_unverified_matches_never_show_high() -> None:
 def test_no_bridge_link_ever_outranks_its_canonical_attribution() -> None:
     """Property over assorted event mixes: for every link, confidence above
     medium requires attribution_status == 'attributed'."""
-    from agent_chronicle.join_rules import JOIN_RANK
+    from agentacct.join_rules import JOIN_RANK
 
     scenarios = [
         [_usage_event(session="s1"), _attach_context_event(session="s1")],
@@ -603,7 +603,7 @@ def _claude_authored_section(*, session: str = "S") -> dict:
 
 
 def test_bridge_normalizes_legacy_model_suffixed_keys_like_the_ledger() -> None:
-    from agent_chronicle.work_ledger import build_work_ledger
+    from agentacct.work_ledger import build_work_ledger
 
     events = [
         _legacy_claude_usage_event(session_key="S:model:claude-opus-4-8", event_id="evt_suffixed"),
@@ -624,7 +624,7 @@ def test_bridge_normalizes_legacy_model_suffixed_keys_like_the_ledger() -> None:
 
 
 def test_bridge_excludes_shadowed_stale_base_rows_like_the_ledger() -> None:
-    from agent_chronicle.work_ledger import build_work_ledger
+    from agentacct.work_ledger import build_work_ledger
 
     events = [
         _legacy_claude_usage_event(session_key="S", event_id="evt_stale_base", input_tokens=1000),
@@ -697,7 +697,7 @@ def test_bridge_intake_excludes_diagnostic_tool_events() -> None:
 
 
 def test_join_health_intake_excludes_diagnostic_tool_events() -> None:
-    from agent_chronicle.context_bridge import build_client_context_join_health
+    from agentacct.context_bridge import build_client_context_join_health
 
     health = build_client_context_join_health(
         [

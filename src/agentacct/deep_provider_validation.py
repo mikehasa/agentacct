@@ -61,7 +61,7 @@ def run_deep_provider_validation(
         # inside CostLedger after budget/env validation.
         raise ProviderSmokeError(
             "store_dir is required: pass an explicit store directory "
-            "(e.g. resolve one with agent_chronicle.store_resolution.resolve_store_dir()); "
+            "(e.g. resolve one with agentacct.store_resolution.resolve_store_dir()); "
             "there is no ~/.agent-sentinel fallback anymore"
         )
     if max_provider_usd <= 0:

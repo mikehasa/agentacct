@@ -15,9 +15,9 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from agent_chronicle.api import DASHBOARD_CSP, create_local_api_app
-from agent_chronicle.service import SentinelService
-from agent_chronicle.task_continuations import (
+from agentacct.api import DASHBOARD_CSP, create_local_api_app
+from agentacct.service import SentinelService
+from agentacct.task_continuations import (
     CONTINUATION_ACTIONS_FILENAME,
     CONTINUATION_STORE_DIRNAME,
 )

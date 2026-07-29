@@ -3,9 +3,9 @@ import json
 import pytest
 from typer.testing import CliRunner
 
-from agent_chronicle.cli import app
-from agent_chronicle.cost import CostLedger, UsageEstimate
-from agent_chronicle.outcome import (
+from agentacct.cli import app
+from agentacct.cost import CostLedger, UsageEstimate
+from agentacct.outcome import (
     apply_judge_result,
     build_judge_package,
     compute_advisory_value_score,
@@ -13,9 +13,9 @@ from agent_chronicle.outcome import (
     run_openrouter_judge,
     write_outcome,
 )
-from agent_chronicle.reports import build_run_report_payload
-from agent_chronicle.runner import RunOptions, start_guarded_run
-from agent_chronicle.storage import RunStore
+from agentacct.reports import build_run_report_payload
+from agentacct.runner import RunOptions, start_guarded_run
+from agentacct.storage import RunStore
 
 
 def _make_run(tmp_path):

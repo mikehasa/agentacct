@@ -18,17 +18,17 @@ from typing import Any, Mapping
 
 import pytest
 
-from agent_chronicle.canonical import legacy_import as legacy_import_module
-from agent_chronicle.canonical import product_parity as product_parity_module
-from agent_chronicle.canonical.legacy_recovery import RECOVERY_DESIGN_ID
-from agent_chronicle.canonical.product_parity import (
+from agentacct.canonical import legacy_import as legacy_import_module
+from agentacct.canonical import product_parity as product_parity_module
+from agentacct.canonical.legacy_recovery import RECOVERY_DESIGN_ID
+from agentacct.canonical.product_parity import (
     RECOVERY_PRODUCT_ORACLE_CODE_VERSION,
     RECOVERY_PRODUCT_ORACLE_CONTRACT_VERSION,
     _candidate_product_events,
     _claim_surface_key,
 )
-from agent_chronicle.canonical.types import RECOVERY_FACT_TRANSPORT
-from agent_chronicle.usage_truth import mark_trusted_local_usage_import_event
+from agentacct.canonical.types import RECOVERY_FACT_TRANSPORT
+from agentacct.usage_truth import mark_trusted_local_usage_import_event
 
 
 _RUNNER_PATH = (

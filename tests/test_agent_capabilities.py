@@ -7,17 +7,17 @@ import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-from agent_chronicle.agent_capabilities import (
+from agentacct.agent_capabilities import (
     CAPABILITY_NAMES,
     agent_capability_manifest,
     validate_agent_capability_manifest,
 )
-from agent_chronicle.api import create_local_api_app
-from agent_chronicle.capture import DEFAULT_CAPTURE_REGISTRY
-from agent_chronicle.cli import app
-from agent_chronicle.client_usage import SUPPORTED_CLIENTS, USAGE_EVENT_CLIENTS
-from agent_chronicle.evidence_html import render_agent_capability_manifest_body
-from agent_chronicle.usage_cube import KNOWN_USAGE_CLIENTS
+from agentacct.api import create_local_api_app
+from agentacct.capture import DEFAULT_CAPTURE_REGISTRY
+from agentacct.cli import app
+from agentacct.client_usage import SUPPORTED_CLIENTS, USAGE_EVENT_CLIENTS
+from agentacct.evidence_html import render_agent_capability_manifest_body
+from agentacct.usage_cube import KNOWN_USAGE_CLIENTS
 
 
 def _client_rows() -> dict[str, dict]:

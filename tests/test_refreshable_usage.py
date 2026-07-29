@@ -4,7 +4,7 @@ from copy import deepcopy
 
 import pytest
 
-from agent_chronicle.refreshable_usage import (
+from agentacct.refreshable_usage import (
     CANONICAL_CUMULATIVE_USAGE_SEMANTICS,
     CUMULATIVE_USAGE_SEMANTICS,
     UNRESOLVED_SOURCE_NAMESPACE,
@@ -18,7 +18,7 @@ from agent_chronicle.refreshable_usage import (
     refreshable_usage_truth_material,
     stable_refreshable_usage_revision_id,
 )
-from agent_chronicle.usage_truth import (
+from agentacct.usage_truth import (
     CODEX_LINEAGE_DELTA_SEMANTICS,
     LOCAL_USAGE_SOURCE,
     mark_trusted_local_usage_import_event,

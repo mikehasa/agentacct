@@ -1,6 +1,6 @@
 from typer.testing import CliRunner
 
-from agent_chronicle.cli import app
+from agentacct.cli import app
 
 
 def test_agent_loop_demo_uses_checkpoint_language_and_pauses(tmp_path):

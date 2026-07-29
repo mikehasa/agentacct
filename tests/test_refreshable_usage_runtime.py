@@ -8,10 +8,10 @@ from typing import Any
 
 import pytest
 
-from agent_chronicle.evidence_runtime import EvidenceRuntime
-from agent_chronicle.refreshable_usage import refreshable_usage_source_order
-from agent_chronicle.service import SentinelService
-from agent_chronicle.usage_truth import (
+from agentacct.evidence_runtime import EvidenceRuntime
+from agentacct.refreshable_usage import refreshable_usage_source_order
+from agentacct.service import SentinelService
+from agentacct.usage_truth import (
     LOCAL_USAGE_PROVENANCE,
     LOCAL_USAGE_SOURCE,
     is_legacy_local_usage_import_shape,

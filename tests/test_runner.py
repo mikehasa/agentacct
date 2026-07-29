@@ -8,10 +8,10 @@ from pathlib import Path
 
 import psutil
 
-from agent_chronicle.runner import RunOptions, RunStatus, start_guarded_run
+from agentacct.runner import RunOptions, RunStatus, start_guarded_run
 import pytest
 
-from agent_chronicle.storage import RunStore
+from agentacct.storage import RunStore
 
 
 def write_dummy(path: Path, source: str) -> Path:
@@ -61,7 +61,7 @@ def test_post_popen_metadata_failure_reaps_blocked_shim_without_running_target(t
     def fail_metadata(_self, _run_id, _metadata):
         raise OSError("simulated metadata fsync failure")
 
-    monkeypatch.setattr("agent_chronicle.runner.subprocess.Popen", capture_popen)
+    monkeypatch.setattr("agentacct.runner.subprocess.Popen", capture_popen)
     monkeypatch.setattr(RunStore, "write_metadata", fail_metadata)
 
     with pytest.raises(OSError, match="fsync"):

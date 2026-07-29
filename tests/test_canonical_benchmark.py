@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.canonical.benchmark import BenchmarkHookError, benchmark_sqlite_truth
-from agent_chronicle.canonical.sqlite import CanonicalRepository
+from agentacct.canonical.benchmark import BenchmarkHookError, benchmark_sqlite_truth
+from agentacct.canonical.sqlite import CanonicalRepository
 
 
 _HARNESS_PATH = Path(__file__).resolve().parents[1] / "benchmarks" / "sqlite_truth_benchmark.py"
@@ -459,7 +459,7 @@ def test_default_snapshot_hook_rejects_transient_unmanifested_rollout_before_imp
 ) -> None:
     import sqlite3
 
-    import agent_chronicle.client_usage as client_usage
+    import agentacct.client_usage as client_usage
 
     root = tmp_path / "offline-codex"
     declared = root / "sessions" / "rollout-declared.jsonl"

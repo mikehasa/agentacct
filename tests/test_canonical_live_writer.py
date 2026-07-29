@@ -9,10 +9,10 @@ from typing import Any
 
 import pytest
 
-from agent_chronicle.activation import RUNTIME_ENV_ALLOWLIST
-from agent_chronicle.canonical.legacy_import import LegacyImporter
-from agent_chronicle.canonical.sqlite import CanonicalStore, LIVE_STORE_FILENAME
-from agent_chronicle.canonical_live import (
+from agentacct.activation import RUNTIME_ENV_ALLOWLIST
+from agentacct.canonical.legacy_import import LegacyImporter
+from agentacct.canonical.sqlite import CanonicalStore, LIVE_STORE_FILENAME
+from agentacct.canonical_live import (
     CANONICAL_LIVE_ENV,
     CanonicalAuthoritativeNotReady,
     CanonicalLiveRuntime,
@@ -21,7 +21,7 @@ from agent_chronicle.canonical_live import (
     canonical_live_write_mode,
     require_supported_write_mode,
 )
-from agent_chronicle.service import SentinelService
+from agentacct.service import SentinelService
 
 from test_canonical_legacy_import import _verified_events_snapshot
 
@@ -548,11 +548,11 @@ def test_flag_off_keeps_canonical_package_unimported(tmp_path):
     probe = (
         "import sys\n"
         "from pathlib import Path\n"
-        "from agent_chronicle.service import SentinelService\n"
+        "from agentacct.service import SentinelService\n"
         f"service = SentinelService(Path({str(tmp_path / 'store')!r}))\n"
         "service.record_event({'source': 't', 'event_type': 'section_started',"
         " 'metadata': {'client_session_id': 's1'}})\n"
-        "loaded = [name for name in sys.modules if name.startswith('agent_chronicle.canonical.')]\n"
+        "loaded = [name for name in sys.modules if name.startswith('agentacct.canonical.')]\n"
         "assert not loaded, f'canonical modules loaded with flag off: {loaded}'\n"
     )
     environment = dict(os.environ)
@@ -632,7 +632,7 @@ def test_legacy_importer_refuses_a_live_store_destination(tmp_path):
     # owner-only scratch tree to prove the ROLE check is what refuses it.
     live = CanonicalStore.create_live(live_root)
     snapshot = _verified_events_snapshot(tmp_path, b"")
-    from agent_chronicle.canonical.legacy_import import LegacyImportError
+    from agentacct.canonical.legacy_import import LegacyImportError
 
     with pytest.raises(LegacyImportError, match="must be a candidate store"):
         LegacyImporter(snapshot=snapshot, store=live, scratch_root=live_root)
@@ -930,7 +930,7 @@ def test_valid_parent_retires_a_previously_minted_anchor(tmp_path):
 
 
 def test_trusted_session_observation_lane_shadows_canonically(tmp_path):
-    from agent_chronicle.usage_truth import mark_trusted_local_session_observation_event
+    from agentacct.usage_truth import mark_trusted_local_session_observation_event
 
     store_dir = tmp_path / "store"
     service = SentinelService(store_dir, canonical_live_enabled=True)
@@ -1398,7 +1398,7 @@ def test_usage_without_session_identity_is_visible(tmp_path):
 
 
 def test_replace_events_lane_shadows_usage_canonically(tmp_path):
-    from agent_chronicle.usage_truth import mark_trusted_local_usage_import_event
+    from agentacct.usage_truth import mark_trusted_local_usage_import_event
 
     store_dir = tmp_path / "store"
     service = SentinelService(store_dir, canonical_live_enabled=True)
@@ -1519,7 +1519,7 @@ def test_stale_cross_representation_arrival_still_conflicts(tmp_path):
 
 
 def test_merge_and_append_lanes_shadow_canonically(tmp_path):
-    from agent_chronicle.usage_truth import mark_trusted_local_usage_import_event
+    from agentacct.usage_truth import mark_trusted_local_usage_import_event
 
     source_dir = tmp_path / "source-store"
     source_service = SentinelService(source_dir)
@@ -1600,7 +1600,7 @@ def test_integrated_priced_rescan_churn_collapses(tmp_path):
     identical-content usage batches produce zero canonical writes after the
     first, even across many rounds."""
 
-    from agent_chronicle.usage_truth import mark_trusted_local_usage_import_event
+    from agentacct.usage_truth import mark_trusted_local_usage_import_event
 
     store_dir = tmp_path / "store"
     service = SentinelService(store_dir, canonical_live_enabled=True)
@@ -1624,7 +1624,7 @@ def test_integrated_priced_rescan_churn_collapses(tmp_path):
 
 
 def test_finding_disposition_lane_flows_through_the_shadow_funnel(tmp_path):
-    from agent_chronicle.work_ledger import build_evidence_events
+    from agentacct.work_ledger import build_evidence_events
 
     store_dir = tmp_path / "store"
     service = SentinelService(store_dir, canonical_live_enabled=True)
@@ -1670,7 +1670,7 @@ def test_finding_disposition_lane_flows_through_the_shadow_funnel(tmp_path):
 def test_health_endpoint_reports_canonical_live_status(tmp_path, monkeypatch):
     from starlette.testclient import TestClient
 
-    from agent_chronicle.api import create_local_api_app
+    from agentacct.api import create_local_api_app
 
     monkeypatch.setenv("AGENT_CHRONICLE_CANONICAL_LIVE_WRITE", "shadow")
     app = create_local_api_app(store_dir=tmp_path / "store")

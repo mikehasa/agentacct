@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_chronicle.canonical.lane_inventory import (
+from agentacct.canonical.lane_inventory import (
     PAYLOAD_COMPLETE_SESSION_EVENT_TYPES,
     V1_ONLY_RETAINED,
     canonical_lanes_for_event,

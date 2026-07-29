@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from agent_chronicle.api import _attach_evidence_to_task_projection, create_local_api_app
-from agent_chronicle.service import SentinelService
+from agentacct.api import _attach_evidence_to_task_projection, create_local_api_app
+from agentacct.service import SentinelService
 
 
 def _seed_task(store_root: Path) -> tuple[TestClient, str]:

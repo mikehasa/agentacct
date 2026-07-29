@@ -756,7 +756,7 @@ class SubscriptionPlan:
 class SubscriptionStore:
     def __init__(self, root: Path | str, *, create: bool = True) -> None:
         if root is None:
-            raise ValueError("store root is required; resolve it with agent_chronicle.store_resolution.resolve_store_dir()")
+            raise ValueError("store root is required; resolve it with agentacct.store_resolution.resolve_store_dir()")
         self.root = Path(root).expanduser()
         # Read-only callers pass create=False so a typo'd --store-dir on a read
         # command never leaves a stray empty store (list_plans handles an
@@ -794,7 +794,7 @@ class SubscriptionStore:
 class CostLedger:
     def __init__(self, root: Path | str, *, create: bool = True) -> None:
         if root is None:
-            raise ValueError("store root is required; resolve it with agent_chronicle.store_resolution.resolve_store_dir()")
+            raise ValueError("store root is required; resolve it with agentacct.store_resolution.resolve_store_dir()")
         self.root = Path(root).expanduser()
         # Read-only callers (cost status / subscription-estimate) pass
         # create=False so a typo'd --store-dir never mkdirs a stray empty store;

@@ -84,7 +84,7 @@ Interfaces may change while agentacct is alpha.
 agentacct keeps two evidence streams separate and joins them on real client ids instead of guessing:
 
 - **Usage truth** comes from the client's own local session files: imported tokens are labeled `client_reported`, and costs are pricing-table estimates — never provider invoices.
-- **Work meaning** comes from the sections and events the agent records over MCP while it works (`sentinel_record_section`, `sentinel_record_machine_check`), plus machine checks like test runs.
+- **Work meaning** comes from the sections and events the agent records over MCP while it works (`agentacct_record_section`, `agentacct_record_machine_check`), plus machine checks like test runs.
 - **The join** links the two through session/transcript ids and labels every attribution `exact`, `high`, `medium`, or `low`. For Claude Code, an installed hook bridge captures real session/transcript ids at session start and on every tool call; for Codex, the link is evidenced from the client's own session logs at import time.
 
 The per-client join mechanics, confidence-label glossary, daily workflow, MCP tool list, and optional enforcement extras are in [docs/reference.md](docs/reference.md).

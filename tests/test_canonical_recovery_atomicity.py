@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.canonical import (
+from agentacct.canonical import (
     CanonicalStore,
     FactInput,
     FactSessionLinkInput,

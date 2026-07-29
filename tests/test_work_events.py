@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_chronicle.work_events import WORK_EVENT_SCHEMA_VERSION, WorkEvent
+from agentacct.work_events import WORK_EVENT_SCHEMA_VERSION, WorkEvent
 
 
 def test_mcp_section_normalizes_to_transport_neutral_work_event() -> None:
@@ -17,7 +17,7 @@ def test_mcp_section_normalizes_to_transport_neutral_work_event() -> None:
             "summary": "Implemented the immutable evidence layer.",
             "client": "codex",
             "client_session_id": "session-1",
-            "files": ["src/agent_chronicle/evidence.py"],
+            "files": ["src/agentacct/evidence.py"],
         },
     }
 
@@ -27,7 +27,7 @@ def test_mcp_section_normalizes_to_transport_neutral_work_event() -> None:
     assert normalized.status == "completed"
     assert normalized.transport == "mcp"
     assert normalized.client_session_id == "session-1"
-    assert normalized.files == ("src/agent_chronicle/evidence.py",)
+    assert normalized.files == ("src/agentacct/evidence.py",)
     assert normalized.to_dict()["schema_version"] == WORK_EVENT_SCHEMA_VERSION
 
 

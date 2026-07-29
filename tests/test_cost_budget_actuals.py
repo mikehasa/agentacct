@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
-from agent_chronicle.cost import CostLedger, CostPolicy, UsageEstimate
-from agent_chronicle.proxy import create_app
+from agentacct.cost import CostLedger, CostPolicy, UsageEstimate
+from agentacct.proxy import create_app
 
 
 class CountingForwarder:
