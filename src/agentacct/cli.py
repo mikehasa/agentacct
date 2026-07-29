@@ -103,6 +103,7 @@ from .cost import (
 )
 from .context_bridge import build_client_context_join_health
 from .hooks import (
+    CLAUDE_HOOK_RELATIVE_PATH,
     capture_claude_code_client_context,
     claude_code_hook_context_status,
     claude_code_hook_doctor_checks,
@@ -148,6 +149,7 @@ from .store_resolution import (
     StoreResolution,
     StoreResolutionError,
     canonical_global_store_dir,
+    onboard_global_store_dir,
     claude_worktree_owner_dir,
     resolve_dashboard_store_dir,
     resolve_store_dir,
@@ -1379,10 +1381,76 @@ def _print_opencode_global_preview(store_dir: Path, command: str) -> None:
     )
 
 
+def _warn_global_store_mismatches(store_dir: Path, command: str) -> None:
+    """Warn when a surface agentacct does NOT rewrite still points elsewhere.
+
+    Global onboard writes Claude Code and Codex config, but the OpenCode
+    registration and an already-merged Claude hook command are the user's to
+    update. Silently leaving one pointed at a different store splits recording
+    across two ledgers (the hook writes join context to store A while MCP
+    records work in store B), which reads as "attribution mysteriously got
+    worse". Detection is best-effort and never fails onboarding.
+    """
+
+    target = str(store_dir)
+
+    opencode_config = Path.home() / ".config" / "opencode" / "opencode.jsonc"
+    try:
+        if opencode_config.is_file():
+            text = opencode_config.read_text(encoding="utf-8")
+            if "agentacct" in text and target not in text:
+                console.print(
+                    "OpenCode is registered against a DIFFERENT store than this install. "
+                    "agentacct cannot rewrite OpenCode config — re-register it:"
+                )
+                print(
+                    f"opencode mcp remove agentacct; opencode mcp add agentacct -- "
+                    f"{shlex.quote(command)} mcp serve --store-dir {shlex.quote(target)}"
+                )
+    except OSError:
+        pass
+
+    settings = Path.home() / ".claude" / "settings.json"
+    try:
+        if settings.is_file():
+            payload = json.loads(settings.read_text(encoding="utf-8"))
+            commands = [
+                str(entry.get("command") or "")
+                for rows in (payload.get("hooks") or {}).values()
+                if isinstance(rows, list)
+                for row in rows
+                if isinstance(row, dict)
+                for entry in (row.get("hooks") or [])
+                if isinstance(entry, dict)
+            ]
+            stale = [
+                text
+                for text in commands
+                if CLAUDE_HOOK_RELATIVE_PATH.name in text
+                and str(Path.home() / ".claude" / "hooks") not in text
+            ]
+            if stale:
+                console.print(
+                    f"Your ~/.claude/settings.json runs a hook wrapper from outside ~/.claude/hooks/ "
+                    f"({stale[0].split()[-1]}). It may capture join context into another store — "
+                    f"re-point it at the wrapper this install manages:"
+                )
+                print(
+                    f"agentacct hooks claude-code install --project-dir {shlex.quote(str(Path.home()))} "
+                    f"--store-dir {shlex.quote(target)} --user-settings-example --force"
+                )
+    except (OSError, json.JSONDecodeError):
+        pass
+
+
 def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, assume_yes: bool) -> None:
     """Install agentacct ONCE, machine-wide: user-scope MCP + hooks + instructions
     against one global store, writing ZERO files into any repo."""
-    store_dir = canonical_global_store_dir()
+    # An upgrading user's ledger may already live in a recognized global store
+    # (e.g. the pre-rename ~/.agent-sentinel-global). Keep using it instead of
+    # silently repointing every client at a new, empty store — that strands the
+    # history and splits clients across two ledgers.
+    store_dir, store_pre_existing = onboard_global_store_dir()
     store_dir.mkdir(parents=True, exist_ok=True)
     # Absolute path: GUI clients do not inherit the shell PATH (see helper).
     command = _resolve_absolute_mcp_command()
@@ -1408,6 +1476,8 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
 
     console.print("agentacct global install: one machine-wide store, ZERO files written into any repo.")
     console.print(f"- global store: {store_dir}")
+    if store_pre_existing:
+        console.print("  (existing global store with recorded history — reusing it, not starting a new one)")
     console.print(f"- clients: {', '.join(targets) if targets else '(opencode preview only)'}")
     console.print("- writes user-level MCP + hooks + instructions; merges ~/.claude/settings.json only with your ok")
 
@@ -1462,6 +1532,11 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
             console.print("Next: run `agentacct start`.")
             raise typer.Exit(1) from exc
         console.print(f"Dashboard: {runtime_payload['dashboard_url']}")
+
+    # Surfaces agentacct does NOT rewrite (OpenCode config, an already-merged
+    # hook command) can still point at another store — say so loudly rather than
+    # let recording silently split across two ledgers.
+    _warn_global_store_mismatches(store_dir, command)
 
     if recording_clients:
         console.print("Ready. Open a NEW agent session (in ANY repo) — recording is machine-wide now.")
