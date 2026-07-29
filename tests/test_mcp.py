@@ -3,13 +3,13 @@ import json
 
 from typer.testing import CliRunner
 
-from agent_chronicle.cli import app
-from agent_chronicle.mcp import SentinelMCPServer, read_mcp_message, run_mcp_event_workflow_smoke, serve_stdio, write_mcp_message
-from agent_chronicle.outcome import apply_judge_result, write_outcome
-from agent_chronicle.reports import build_run_report_payload
-from agent_chronicle.runner import RunOptions, start_guarded_run
-from agent_chronicle.storage import RunStore
-from agent_chronicle.work_ledger import build_work_ledger
+from agentacct.cli import app
+from agentacct.mcp import SentinelMCPServer, read_mcp_message, run_mcp_event_workflow_smoke, serve_stdio, write_mcp_message
+from agentacct.outcome import apply_judge_result, write_outcome
+from agentacct.reports import build_run_report_payload
+from agentacct.runner import RunOptions, start_guarded_run
+from agentacct.storage import RunStore
+from agentacct.work_ledger import build_work_ledger
 
 
 def _make_run(tmp_path):
@@ -31,22 +31,22 @@ def test_mcp_initialize_and_tools_list(tmp_path):
     initialized = server.handle_message(
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}}}
     )
-    assert initialized["result"]["serverInfo"]["name"] == "agent-chronicle"
+    assert initialized["result"]["serverInfo"]["name"] == "agentacct"
     assert initialized["result"]["capabilities"] == {"tools": {}}
     assert initialized["result"]["protocolVersion"] == "2025-06-18"
 
     tools = server.handle_message({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
     names = {tool["name"] for tool in tools["result"]["tools"]}
-    assert "sentinel_list_runs" in names
-    assert "sentinel_get_report" in names
-    assert "sentinel_record_machine_check" in names
-    assert "sentinel_record_event" in names
-    assert "sentinel_attach_client_context" in names
-    assert "sentinel_record_section" in names
-    assert "sentinel_list_events" in names
-    assert "sentinel_get_event_summary" in names
-    assert "sentinel_prepare_judge" in names
-    assert "sentinel_compute_value" in names
+    assert "agentacct_list_runs" in names
+    assert "agentacct_get_report" in names
+    assert "agentacct_record_machine_check" in names
+    assert "agentacct_record_event" in names
+    assert "agentacct_attach_client_context" in names
+    assert "agentacct_record_section" in names
+    assert "agentacct_list_events" in names
+    assert "agentacct_get_event_summary" in names
+    assert "agentacct_prepare_judge" in names
+    assert "agentacct_compute_value" in names
     assert "sentinel_run_judge" not in names
 
 
@@ -59,7 +59,7 @@ def test_mcp_initialize_returns_directive_instructions(tmp_path):
     non-empty, directive, tool-aware, and honest, while the pre-existing keys
     (protocolVersion/serverInfo/capabilities) are unchanged.
     """
-    from agent_chronicle.install_guide import MCP_SERVER_INSTRUCTIONS
+    from agentacct.install_guide import MCP_SERVER_INSTRUCTIONS
 
     server = SentinelMCPServer(store_dir=tmp_path / "state")
     result = server.handle_message(
@@ -72,8 +72,8 @@ def test_mcp_initialize_returns_directive_instructions(tmp_path):
     assert instructions == MCP_SERVER_INSTRUCTIONS
 
     # Directive to record work via sections + machine-check evidence.
-    assert "sentinel_record_section" in instructions
-    assert "sentinel_record_machine_check" in instructions
+    assert "agentacct_record_section" in instructions
+    assert "agentacct_record_machine_check" in instructions
     # THE deferral-beating line: load the tools first if they are not available.
     assert "not directly available" in instructions
     assert "load them first" in instructions
@@ -86,7 +86,7 @@ def test_mcp_initialize_returns_directive_instructions(tmp_path):
     assert "task_completed" not in instructions
 
     # Pre-existing fields are unchanged by adding instructions.
-    assert result["serverInfo"] == {"name": "agent-chronicle", "version": "0.1.0"}
+    assert result["serverInfo"] == {"name": "agentacct", "version": "0.1.0"}
     assert result["capabilities"] == {"tools": {}}
     assert result["protocolVersion"] == "2025-06-18"
 
@@ -94,7 +94,7 @@ def test_mcp_initialize_returns_directive_instructions(tmp_path):
 def test_workflow_smoke_initialize_carries_instructions(tmp_path):
     """The release-gate workflow smoke drives a real initialize; its returned
     initialize result must include the same directive instructions field."""
-    from agent_chronicle.install_guide import MCP_SERVER_INSTRUCTIONS
+    from agentacct.install_guide import MCP_SERVER_INSTRUCTIONS
 
     result = run_mcp_event_workflow_smoke(store_dir=tmp_path / "state")
     assert result["ok"] is True
@@ -108,7 +108,7 @@ def test_mcp_tools_call_report_machine_check_judge_prepare_and_value(tmp_path):
     server = SentinelMCPServer(store_dir=store_root)
 
     runs_response = server.handle_message(
-        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "sentinel_list_runs", "arguments": {"limit": 5}}}
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "agentacct_list_runs", "arguments": {"limit": 5}}}
     )
     assert _tool_payload(runs_response)["runs"][0]["run_id"] == result.run_id
 
@@ -118,7 +118,7 @@ def test_mcp_tools_call_report_machine_check_judge_prepare_and_value(tmp_path):
             "id": 2,
             "method": "tools/call",
             "params": {
-                "name": "sentinel_record_machine_check",
+                "name": "agentacct_record_machine_check",
                 "arguments": {
                     "run_id": result.run_id,
                     "name": "pytest",
@@ -138,7 +138,7 @@ def test_mcp_tools_call_report_machine_check_judge_prepare_and_value(tmp_path):
             "id": 3,
             "method": "tools/call",
             "params": {
-                "name": "sentinel_prepare_judge",
+                "name": "agentacct_prepare_judge",
                 "arguments": {"run_id": result.run_id, "task_goal": "Fix tests", "rubric": "Score test improvement."},
             },
         }
@@ -162,7 +162,7 @@ def test_mcp_tools_call_report_machine_check_judge_prepare_and_value(tmp_path):
             "jsonrpc": "2.0",
             "id": 4,
             "method": "tools/call",
-            "params": {"name": "sentinel_compute_value", "arguments": {"run_id": result.run_id, "budget_usd": 0.01}},
+            "params": {"name": "agentacct_compute_value", "arguments": {"run_id": result.run_id, "budget_usd": 0.01}},
         }
     )
     assert _tool_payload(value_response)["value"]["score"] == 90
@@ -172,7 +172,7 @@ def test_mcp_tools_call_report_machine_check_judge_prepare_and_value(tmp_path):
             "jsonrpc": "2.0",
             "id": 5,
             "method": "tools/call",
-            "params": {"name": "sentinel_get_report", "arguments": {"run_id": result.run_id}},
+            "params": {"name": "agentacct_get_report", "arguments": {"run_id": result.run_id}},
         }
     )
     assert _tool_payload(report_response)["outcome"]["value"]["score"] == 90
@@ -188,7 +188,7 @@ def test_mcp_records_and_lists_redacted_events(tmp_path):
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "sentinel_record_event",
+                "name": "agentacct_record_event",
                 "arguments": {
                     "source": "hermes",
                     "event_type": "model_usage",
@@ -214,7 +214,7 @@ def test_mcp_records_and_lists_redacted_events(tmp_path):
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
-            "params": {"name": "sentinel_list_events", "arguments": {"run_id": result.run_id, "limit": 5}},
+            "params": {"name": "agentacct_list_events", "arguments": {"run_id": result.run_id, "limit": 5}},
         }
     )
     events = _tool_payload(list_response)["events"]
@@ -225,7 +225,7 @@ def test_mcp_records_and_lists_redacted_events(tmp_path):
             "jsonrpc": "2.0",
             "id": 3,
             "method": "tools/call",
-            "params": {"name": "sentinel_get_event_summary", "arguments": {"run_id": result.run_id}},
+            "params": {"name": "agentacct_get_event_summary", "arguments": {"run_id": result.run_id}},
         }
     )
     summary = _tool_payload(summary_response)["summary"]
@@ -251,7 +251,7 @@ def test_mcp_record_event_cannot_forge_local_usage_truth(tmp_path):
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "sentinel_record_event",
+                "name": "agentacct_record_event",
                 "arguments": {
                     "source": "codex-local-session-import",
                     "event_type": "model_usage",
@@ -285,7 +285,7 @@ def test_mcp_record_event_cannot_forge_local_usage_truth(tmp_path):
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
-            "params": {"name": "sentinel_get_event_summary", "arguments": {"run_id": result.run_id}},
+            "params": {"name": "agentacct_get_event_summary", "arguments": {"run_id": result.run_id}},
         }
     )
     summary = _tool_payload(summary_response)["summary"]
@@ -304,7 +304,7 @@ def test_mcp_records_client_context_and_sections_with_join_keys(tmp_path):
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "sentinel_attach_client_context",
+                "name": "agentacct_attach_client_context",
                 "arguments": {
                     "source": "codex",
                     "client": "codex",
@@ -347,7 +347,7 @@ def test_mcp_records_client_context_and_sections_with_join_keys(tmp_path):
             "id": 2,
             "method": "tools/call",
             "params": {
-                "name": "sentinel_record_section",
+                "name": "agentacct_record_section",
                 "arguments": {
                     "source": "claude-code",
                     "section_id": "dashboard-refresh",
@@ -362,7 +362,7 @@ def test_mcp_records_client_context_and_sections_with_join_keys(tmp_path):
                     "request_id": "req_456",
                     "message_id": "msg_456",
                     "client_event_timestamp": "2026-07-01T12:10:00Z",
-                    "files": ["src/agent_chronicle/local_api.py"],
+                    "files": ["src/agentacct/local_api.py"],
                     "next_step": "Run dashboard smoke.",
                     "run_id": result.run_id,
                 },
@@ -380,7 +380,7 @@ def test_mcp_records_client_context_and_sections_with_join_keys(tmp_path):
     assert section_metadata["client_session_id"] == "claude-session"
     assert section_metadata["project_dir"] == "/tmp/project"
     assert section_metadata["kind"] == "implementation"
-    assert section_metadata["files"] == ["src/agent_chronicle/local_api.py"]
+    assert section_metadata["files"] == ["src/agentacct/local_api.py"]
     assert section_metadata["next_step"] == "Run dashboard smoke."
 
     list_response = server.handle_message(
@@ -388,7 +388,7 @@ def test_mcp_records_client_context_and_sections_with_join_keys(tmp_path):
             "jsonrpc": "2.0",
             "id": 3,
             "method": "tools/call",
-            "params": {"name": "sentinel_list_events", "arguments": {"run_id": result.run_id, "limit": 5}},
+            "params": {"name": "agentacct_list_events", "arguments": {"run_id": result.run_id, "limit": 5}},
         }
     )
     event_types = {event["event_type"] for event in _tool_payload(list_response)["events"]}
@@ -405,7 +405,7 @@ def test_mcp_records_agent_usage_debug_without_counting_usage_totals(tmp_path):
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "sentinel_record_agent_usage_debug",
+                "name": "agentacct_record_agent_usage_debug",
                 "arguments": {
                     "source": "codex",
                     "client": "codex",
@@ -457,7 +457,7 @@ def test_mcp_records_agent_usage_debug_without_counting_usage_totals(tmp_path):
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
-            "params": {"name": "sentinel_get_event_summary", "arguments": {"run_id": result.run_id, "limit": 20}},
+            "params": {"name": "agentacct_get_event_summary", "arguments": {"run_id": result.run_id, "limit": 20}},
         }
     )
     summary = _tool_payload(summary_response)["summary"]
@@ -480,13 +480,13 @@ def test_mcp_record_section_is_work_item_compatible_and_idempotent(tmp_path):
         "client": "codex",
         "client_session_id": "codex-session",
         "project_dir": "/tmp/project",
-        "files": ["src/agent_chronicle/mcp.py"],
+        "files": ["src/agentacct/mcp.py"],
         "next_step": "Run pytest.",
         "idempotency_key": "section-mcp-v1-checkpoint",
     }
 
-    first = server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "sentinel_record_section", "arguments": args}})
-    second = server.handle_message({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "sentinel_record_section", "arguments": args}})
+    first = server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "agentacct_record_section", "arguments": args}})
+    second = server.handle_message({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "agentacct_record_section", "arguments": args}})
 
     first_event = _tool_payload(first)["event"]
     second_event = _tool_payload(second)["event"]
@@ -498,7 +498,7 @@ def test_mcp_record_section_is_work_item_compatible_and_idempotent(tmp_path):
     assert ledger["work_items"][0]["section_id"] == "mcp-v1"
     assert ledger["work_items"][0]["latest_status"] == "checkpoint"
     assert ledger["work_items"][0]["kind"] == "implementation"
-    assert ledger["work_items"][0]["files"] == ["src/agent_chronicle/mcp.py"]
+    assert ledger["work_items"][0]["files"] == ["src/agentacct/mcp.py"]
     assert ledger["work_items"][0]["next_step"] == "Run pytest."
 
 
@@ -510,7 +510,7 @@ def test_mcp_record_machine_check_creates_evidence_event_linked_to_section(tmp_p
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "sentinel_record_section",
+                "name": "agentacct_record_section",
                 "arguments": {
                     "source": "codex",
                     "section_id": "mcp-v1",
@@ -534,10 +534,10 @@ def test_mcp_record_machine_check_creates_evidence_event_linked_to_section(tmp_p
         "idempotency_key": "evidence-mcp-v1-tests",
     }
     evidence = server.handle_message(
-        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "sentinel_record_machine_check", "arguments": evidence_args}}
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "agentacct_record_machine_check", "arguments": evidence_args}}
     )
     duplicate_evidence = server.handle_message(
-        {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "sentinel_record_machine_check", "arguments": evidence_args}}
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "agentacct_record_machine_check", "arguments": evidence_args}}
     )
 
     assert "error" not in section
@@ -572,7 +572,7 @@ def test_mcp_machine_check_server_stamps_only_complete_blocker_resolutions(tmp_p
         "resolution_summary": "The exact authentication blocker is resolved.",
     }
 
-    valid = _tool_payload(_call_tool(server, 1, "sentinel_record_machine_check", valid_args))
+    valid = _tool_payload(_call_tool(server, 1, "agentacct_record_machine_check", valid_args))
     metadata = valid["event"]["metadata"]
 
     assert metadata["blocker_resolution_contract"] == "server_validated_v1"
@@ -594,7 +594,7 @@ def test_mcp_machine_check_server_stamps_only_complete_blocker_resolutions(tmp_p
                 "id": index,
                 "method": "tools/call",
                 "params": {
-                    "name": "sentinel_record_machine_check",
+                    "name": "agentacct_record_machine_check",
                     "arguments": arguments,
                 },
             }
@@ -608,7 +608,7 @@ def test_free_form_event_cannot_forge_blocker_resolution_provenance(tmp_path):
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {
             "source": "codex",
             "section_id": "publish-pr",
@@ -623,7 +623,7 @@ def test_free_form_event_cannot_forge_blocker_resolution_provenance(tmp_path):
         _call_tool(
             server,
             2,
-            "sentinel_record_event",
+            "agentacct_record_event",
             {
             "source": "codex",
             "event_type": "machine_check",
@@ -660,7 +660,7 @@ def test_mcp_event_summary_filters_limits_and_validates_arguments(tmp_path):
                 "id": index,
                 "method": "tools/call",
                 "params": {
-                    "name": "sentinel_record_event",
+                    "name": "agentacct_record_event",
                     "arguments": {
                         "source": source,
                         "event_type": "note" if index == 0 else "model_usage",
@@ -682,7 +682,7 @@ def test_mcp_event_summary_filters_limits_and_validates_arguments(tmp_path):
             "jsonrpc": "2.0",
             "id": 10,
             "method": "tools/call",
-            "params": {"name": "sentinel_get_event_summary", "arguments": {"run_id": result.run_id, "limit": 200}},
+            "params": {"name": "agentacct_get_event_summary", "arguments": {"run_id": result.run_id, "limit": 200}},
         }
     )
     summary = _tool_payload(filtered)["summary"]
@@ -700,22 +700,22 @@ def test_mcp_event_summary_filters_limits_and_validates_arguments(tmp_path):
             "jsonrpc": "2.0",
             "id": 11,
             "method": "tools/call",
-            "params": {"name": "sentinel_get_event_summary", "arguments": {"limit": 1}},
+            "params": {"name": "agentacct_get_event_summary", "arguments": {"limit": 1}},
         }
     )
     assert _tool_payload(limited)["summary"]["event_count"] == 1
 
     bad_limit = server.handle_message(
-        {"jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": {"name": "sentinel_get_event_summary", "arguments": {"limit": 0}}}
+        {"jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": {"name": "agentacct_get_event_summary", "arguments": {"limit": 0}}}
     )
     bad_run_id = server.handle_message(
-        {"jsonrpc": "2.0", "id": 13, "method": "tools/call", "params": {"name": "sentinel_get_event_summary", "arguments": {"run_id": "../bad"}}}
+        {"jsonrpc": "2.0", "id": 13, "method": "tools/call", "params": {"name": "agentacct_get_event_summary", "arguments": {"run_id": "../bad"}}}
     )
     unknown = server.handle_message(
-        {"jsonrpc": "2.0", "id": 14, "method": "tools/call", "params": {"name": "sentinel_get_event_summary", "arguments": {"unexpected": True}}}
+        {"jsonrpc": "2.0", "id": 14, "method": "tools/call", "params": {"name": "agentacct_get_event_summary", "arguments": {"unexpected": True}}}
     )
     bad_falsy_arguments = [
-        server.handle_message({"jsonrpc": "2.0", "id": 20, "method": "tools/call", "params": {"name": "sentinel_get_event_summary", "arguments": value}})
+        server.handle_message({"jsonrpc": "2.0", "id": 20, "method": "tools/call", "params": {"name": "agentacct_get_event_summary", "arguments": value}})
         for value in ([], "", 0, False)
     ]
     bad_params = server.handle_message({"jsonrpc": "2.0", "id": 21, "method": "tools/call", "params": []})
@@ -738,7 +738,7 @@ def test_mcp_event_tools_validate_arguments(tmp_path):
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
-            "params": {"name": "sentinel_record_event", "arguments": {"source": "x", "event_type": "y", "run_id": "../bad"}},
+            "params": {"name": "agentacct_record_event", "arguments": {"source": "x", "event_type": "y", "run_id": "../bad"}},
         }
     )
     assert bad_run["error"]["code"] == -32602
@@ -748,7 +748,7 @@ def test_mcp_event_tools_validate_arguments(tmp_path):
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
-            "params": {"name": "sentinel_record_event", "arguments": {"source": "x", "event_type": "y", "extra_blob": "x"}},
+            "params": {"name": "agentacct_record_event", "arguments": {"source": "x", "event_type": "y", "extra_blob": "x"}},
         }
     )
     assert unknown["error"]["code"] == -32602
@@ -758,7 +758,7 @@ def test_mcp_event_tools_validate_arguments(tmp_path):
             "jsonrpc": "2.0",
             "id": 3,
             "method": "tools/call",
-            "params": {"name": "sentinel_record_event", "arguments": {"source": "x", "event_type": "y", "metadata": {"blob": "x" * 9000}}},
+            "params": {"name": "agentacct_record_event", "arguments": {"source": "x", "event_type": "y", "metadata": {"blob": "x" * 9000}}},
         }
     )
     assert huge_metadata["error"]["code"] == -32602
@@ -768,19 +768,19 @@ def test_mcp_event_tools_validate_arguments(tmp_path):
             "jsonrpc": "2.0",
             "id": 4,
             "method": "tools/call",
-            "params": {"name": "sentinel_list_events", "arguments": {"run_id": "../bad"}},
+            "params": {"name": "agentacct_list_events", "arguments": {"run_id": "../bad"}},
         }
     )
     assert bad_filter["error"]["code"] == -32602
 
     missing_both = server.handle_message(
-        {"jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {"name": "sentinel_record_event", "arguments": {}}}
+        {"jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {"name": "agentacct_record_event", "arguments": {}}}
     )
     missing_event_type = server.handle_message(
-        {"jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {"name": "sentinel_record_event", "arguments": {"source": "x"}}}
+        {"jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {"name": "agentacct_record_event", "arguments": {"source": "x"}}}
     )
     missing_source = server.handle_message(
-        {"jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": {"name": "sentinel_record_event", "arguments": {"event_type": "y"}}}
+        {"jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": {"name": "agentacct_record_event", "arguments": {"event_type": "y"}}}
     )
     assert missing_both["error"]["code"] == -32602
     assert missing_event_type["error"]["code"] == -32602
@@ -791,7 +791,7 @@ def test_mcp_event_tools_validate_arguments(tmp_path):
             "jsonrpc": "2.0",
             "id": 13,
             "method": "tools/call",
-            "params": {"name": "sentinel_record_event", "arguments": {"source": "x", "event_type": "y", "estimated_cost_usd": float("nan")}},
+            "params": {"name": "agentacct_record_event", "arguments": {"source": "x", "event_type": "y", "estimated_cost_usd": float("nan")}},
         }
     )
     nan_metadata = server.handle_message(
@@ -799,7 +799,7 @@ def test_mcp_event_tools_validate_arguments(tmp_path):
             "jsonrpc": "2.0",
             "id": 14,
             "method": "tools/call",
-            "params": {"name": "sentinel_record_event", "arguments": {"source": "x", "event_type": "y", "metadata": {"bad": float("nan")}}},
+            "params": {"name": "agentacct_record_event", "arguments": {"source": "x", "event_type": "y", "metadata": {"bad": float("nan")}}},
         }
     )
     assert nan_cost["error"]["code"] == -32602
@@ -814,7 +814,7 @@ def test_mcp_semantic_tools_validate_arguments(tmp_path):
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
-            "params": {"name": "sentinel_attach_client_context", "arguments": {"source": "codex", "client": "codex"}},
+            "params": {"name": "agentacct_attach_client_context", "arguments": {"source": "codex", "client": "codex"}},
         }
     )
     unknown_context_key = server.handle_message(
@@ -823,7 +823,7 @@ def test_mcp_semantic_tools_validate_arguments(tmp_path):
             "id": 2,
             "method": "tools/call",
             "params": {
-                "name": "sentinel_attach_client_context",
+                "name": "agentacct_attach_client_context",
                 "arguments": {"source": "codex", "client": "codex", "client_session_id": "session", "unexpected": True},
             },
         }
@@ -834,7 +834,7 @@ def test_mcp_semantic_tools_validate_arguments(tmp_path):
             "id": 3,
             "method": "tools/call",
             "params": {
-                "name": "sentinel_attach_client_context",
+                "name": "agentacct_attach_client_context",
                 "arguments": {"source": "codex", "client": "codex", "client_session_id": "session", "turn_index": -1},
             },
         }
@@ -844,7 +844,7 @@ def test_mcp_semantic_tools_validate_arguments(tmp_path):
             "jsonrpc": "2.0",
             "id": 4,
             "method": "tools/call",
-            "params": {"name": "sentinel_record_section", "arguments": {"source": "codex", "section_id": "s1", "section_status": "done"}},
+            "params": {"name": "agentacct_record_section", "arguments": {"source": "codex", "section_id": "s1", "section_status": "done"}},
         }
     )
     too_many_files = server.handle_message(
@@ -853,7 +853,7 @@ def test_mcp_semantic_tools_validate_arguments(tmp_path):
             "id": 5,
             "method": "tools/call",
             "params": {
-                "name": "sentinel_record_section",
+                "name": "agentacct_record_section",
                 "arguments": {"source": "codex", "section_id": "s1", "section_status": "started", "files": [f"file-{index}" for index in range(51)]},
             },
         }
@@ -864,7 +864,7 @@ def test_mcp_semantic_tools_validate_arguments(tmp_path):
             "id": 6,
             "method": "tools/call",
             "params": {
-                "name": "sentinel_record_agent_usage_debug",
+                "name": "agentacct_record_agent_usage_debug",
                 "arguments": {"source": "codex", "client": "codex", "reporting_basis": "billing_truth"},
             },
         }
@@ -875,7 +875,7 @@ def test_mcp_semantic_tools_validate_arguments(tmp_path):
             "id": 7,
             "method": "tools/call",
             "params": {
-                "name": "sentinel_record_agent_usage_debug",
+                "name": "agentacct_record_agent_usage_debug",
                 "arguments": {"source": "codex", "client": "codex", "reporting_basis": "visible_client_usage", "input_tokens": -1},
             },
         }
@@ -895,12 +895,12 @@ def test_mcp_event_tool_schema_documents_limits(tmp_path):
     tools = server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
     assert tools is not None
     tool_by_name = {tool["name"]: tool for tool in tools["result"]["tools"]}
-    record_tool = tool_by_name["sentinel_record_event"]
-    context_tool = tool_by_name["sentinel_attach_client_context"]
-    machine_tool = tool_by_name["sentinel_record_machine_check"]
-    section_tool = tool_by_name["sentinel_record_section"]
-    usage_debug_tool = tool_by_name["sentinel_record_agent_usage_debug"]
-    summary_tool = tool_by_name["sentinel_get_event_summary"]
+    record_tool = tool_by_name["agentacct_record_event"]
+    context_tool = tool_by_name["agentacct_attach_client_context"]
+    machine_tool = tool_by_name["agentacct_record_machine_check"]
+    section_tool = tool_by_name["agentacct_record_section"]
+    usage_debug_tool = tool_by_name["agentacct_record_agent_usage_debug"]
+    summary_tool = tool_by_name["agentacct_get_event_summary"]
     props = record_tool["inputSchema"]["properties"]
 
     assert record_tool["inputSchema"]["required"] == ["source", "event_type"]
@@ -945,7 +945,7 @@ def test_mcp_workflow_smoke_records_lists_and_summarizes_event(tmp_path):
     assert payload["event"]["metadata"]["api_key"] == "[REDACTED]"
     assert payload["summary"]["event_count"] == 1
     assert payload["summary"]["by_source"] == {"agent-sentinel-mcp-workflow-smoke": 1}
-    assert "sentinel_record_event" in payload["tool_names"]
+    assert "agentacct_record_event" in payload["tool_names"]
     assert "fake-key-for-redaction-test" not in json.dumps(payload)
 
 
@@ -980,8 +980,9 @@ def test_mcp_workflow_smoke_is_documented() -> None:
     # still uses the transition-alias name (a later doc-rebrand pass).
     assert "agentacct mcp workflow-smoke" in reference
     assert "agentacct mcp workflow-smoke" in checklist
-    assert "sentinel_record_event" in reference
-    assert "sentinel_get_event_summary" in reference
+    # docs/reference.md now names the live agentacct_* MCP tools (post-cutover).
+    assert "agentacct_record_event" in reference
+    assert "agentacct_get_event_summary" in reference
     assert "does not call Claude, Codex, or provider APIs" in reference
 
 
@@ -1037,20 +1038,20 @@ def test_mcp_serve_stdio_replies_with_matching_content_length_framing(tmp_path):
 
     raw = stdout.getvalue()
     assert raw.startswith(b"Content-Length:")
-    assert b"sentinel_get_event_summary" in raw
+    assert b"agentacct_get_event_summary" in raw
 
 
 def test_mcp_rejects_invalid_tool_arguments(tmp_path):
     server = SentinelMCPServer(store_dir=tmp_path / "state")
 
     bad_limit = server.handle_message(
-        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "sentinel_list_runs", "arguments": {"limit": 0}}}
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "agentacct_list_runs", "arguments": {"limit": 0}}}
     )
     assert bad_limit["error"]["code"] == -32602
     assert "limit" in bad_limit["error"]["message"]
 
     missing_required = server.handle_message(
-        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "sentinel_prepare_judge", "arguments": {}}}
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "agentacct_prepare_judge", "arguments": {}}}
     )
     assert missing_required["error"]["code"] == -32602
     assert "task_goal" in missing_required["error"]["message"]
@@ -1060,7 +1061,7 @@ def test_mcp_rejects_invalid_tool_arguments(tmp_path):
             "jsonrpc": "2.0",
             "id": 3,
             "method": "tools/call",
-            "params": {"name": "sentinel_compute_value", "arguments": {"run_id": "latest", "budget_usd": -0.01}},
+            "params": {"name": "agentacct_compute_value", "arguments": {"run_id": "latest", "budget_usd": -0.01}},
         }
     )
     assert bad_budget["error"]["code"] == -32602
@@ -1075,7 +1076,7 @@ def test_mcp_rejects_unknown_keys_and_bad_optional_types(tmp_path):
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
-            "params": {"name": "sentinel_get_report", "arguments": {"run_id": "latest", "unexpected": True}},
+            "params": {"name": "agentacct_get_report", "arguments": {"run_id": "latest", "unexpected": True}},
         }
     )
     assert unknown["error"]["code"] == -32602
@@ -1087,7 +1088,7 @@ def test_mcp_rejects_unknown_keys_and_bad_optional_types(tmp_path):
             "id": 2,
             "method": "tools/call",
             "params": {
-                "name": "sentinel_prepare_judge",
+                "name": "agentacct_prepare_judge",
                 "arguments": {"run_id": "latest", "task_goal": "Fix tests", "rubric": "Score results", "write_package": "false"},
             },
         }
@@ -1101,7 +1102,7 @@ def test_mcp_rejects_unknown_keys_and_bad_optional_types(tmp_path):
             "id": 3,
             "method": "tools/call",
             "params": {
-                "name": "sentinel_record_machine_check",
+                "name": "agentacct_record_machine_check",
                 "arguments": {"run_id": "latest", "before_summary": {"not": "a string"}},
             },
         }
@@ -1129,7 +1130,7 @@ def test_mcp_record_section_inherits_attached_client_context(tmp_path):
     attach_response = _call_tool(
         server,
         1,
-        "sentinel_attach_client_context",
+        "agentacct_attach_client_context",
         {
             "source": "claude-code",
             "client": "claude-code",
@@ -1146,7 +1147,7 @@ def test_mcp_record_section_inherits_attached_client_context(tmp_path):
     section_response = _call_tool(
         server,
         2,
-        "sentinel_record_section",
+        "agentacct_record_section",
         {"source": "claude-code", "section_id": "join-fix", "section_status": "started", "section_title": "Join fix"},
     )
     section_payload = _tool_payload(section_response)
@@ -1173,7 +1174,7 @@ def test_mcp_record_section_explicit_ids_override_inherited_context(tmp_path):
     _call_tool(
         server,
         1,
-        "sentinel_attach_client_context",
+        "agentacct_attach_client_context",
         {
             "source": "codex",
             "client": "codex",
@@ -1184,7 +1185,7 @@ def test_mcp_record_section_explicit_ids_override_inherited_context(tmp_path):
     section_response = _call_tool(
         server,
         2,
-        "sentinel_record_section",
+        "agentacct_record_section",
         {
             "source": "codex",
             "section_id": "explicit-ids",
@@ -1207,7 +1208,7 @@ def test_mcp_attach_client_context_without_join_keys_warns(tmp_path):
     attach_response = _call_tool(
         server,
         1,
-        "sentinel_attach_client_context",
+        "agentacct_attach_client_context",
         {"source": "codex", "client": "codex", "project_dir": "/tmp/project"},
     )
     attach_payload = _tool_payload(attach_response)
@@ -1219,7 +1220,7 @@ def test_mcp_attach_client_context_without_join_keys_warns(tmp_path):
     section_response = _call_tool(
         server,
         2,
-        "sentinel_record_section",
+        "agentacct_record_section",
         {"source": "codex", "section_id": "weak-context", "section_status": "started"},
     )
     section_payload = _tool_payload(section_response)
@@ -1235,7 +1236,7 @@ def test_usage_import_row_joins_section_with_inherited_context(tmp_path):
     _call_tool(
         server,
         1,
-        "sentinel_attach_client_context",
+        "agentacct_attach_client_context",
         {
             "source": "claude-code",
             "client": "claude-code",
@@ -1246,7 +1247,7 @@ def test_usage_import_row_joins_section_with_inherited_context(tmp_path):
     _call_tool(
         server,
         2,
-        "sentinel_record_section",
+        "agentacct_record_section",
         {
             "source": "claude-code",
             "section_id": "inherited-join",
@@ -1289,13 +1290,13 @@ def test_mcp_failed_attach_clears_inherited_context(tmp_path):
     _call_tool(
         server,
         1,
-        "sentinel_attach_client_context",
+        "agentacct_attach_client_context",
         {"source": "claude-code", "client": "claude-code", "client_session_id": "old-session"},
     )
     failed = _call_tool(
         server,
         2,
-        "sentinel_attach_client_context",
+        "agentacct_attach_client_context",
         {"source": "claude-code", "client": "claude-code"},
     )
     assert failed["error"]["code"] == -32602
@@ -1303,7 +1304,7 @@ def test_mcp_failed_attach_clears_inherited_context(tmp_path):
     section_response = _call_tool(
         server,
         3,
-        "sentinel_record_section",
+        "agentacct_record_section",
         {"source": "claude-code", "section_id": "after-failed-attach", "section_status": "started"},
     )
     section_payload = _tool_payload(section_response)
@@ -1322,7 +1323,7 @@ def test_mcp_idempotent_attach_reports_persisted_join_quality(tmp_path):
         _call_tool(
             server,
             1,
-            "sentinel_attach_client_context",
+            "agentacct_attach_client_context",
             {"source": "codex", "client": "codex", "project_dir": "/tmp/project", "idempotency_key": "attach-ctx"},
         )
     )
@@ -1330,7 +1331,7 @@ def test_mcp_idempotent_attach_reports_persisted_join_quality(tmp_path):
         _call_tool(
             server,
             2,
-            "sentinel_attach_client_context",
+            "agentacct_attach_client_context",
             {"source": "codex", "client": "codex", "client_session_id": "real-session", "idempotency_key": "attach-ctx"},
         )
     )
@@ -1341,7 +1342,7 @@ def test_mcp_idempotent_attach_reports_persisted_join_quality(tmp_path):
     assert replay["warnings"]
 
     section_metadata = _tool_payload(
-        _call_tool(server, 3, "sentinel_record_section", {"source": "codex", "section_id": "s1", "section_status": "started"})
+        _call_tool(server, 3, "agentacct_record_section", {"source": "codex", "section_id": "s1", "section_status": "started"})
     )["event"]["metadata"]
     assert "client_session_id" not in section_metadata
     assert section_metadata["project_dir"] == "/tmp/project"
@@ -1353,7 +1354,7 @@ def test_mcp_section_drops_inherited_context_instead_of_breaking_metadata_limit(
     _call_tool(
         server,
         1,
-        "sentinel_attach_client_context",
+        "agentacct_attach_client_context",
         {
             "source": "claude-code",
             "client": "claude-code",
@@ -1365,7 +1366,7 @@ def test_mcp_section_drops_inherited_context_instead_of_breaking_metadata_limit(
     section_response = _call_tool(
         server,
         2,
-        "sentinel_record_section",
+        "agentacct_record_section",
         {
             "source": "claude-code",
             "section_id": "size-test",
@@ -1389,7 +1390,7 @@ def test_mcp_section_provenance_keys_cannot_be_forged(tmp_path):
     section_response = _call_tool(
         server,
         1,
-        "sentinel_record_section",
+        "agentacct_record_section",
         {
             "source": "codex",
             "section_id": "forged",
@@ -1434,7 +1435,7 @@ def test_stale_inherited_context_never_produces_exact_attribution(tmp_path):
     _call_tool(
         server,
         1,
-        "sentinel_attach_client_context",
+        "agentacct_attach_client_context",
         {
             "source": "claude-code",
             "client": "claude-code",
@@ -1447,7 +1448,7 @@ def test_stale_inherited_context_never_produces_exact_attribution(tmp_path):
     _call_tool(
         server,
         2,
-        "sentinel_record_section",
+        "agentacct_record_section",
         {"source": "claude-code", "section_id": "conversation-b-work", "section_status": "completed"},
     )
     _record_trusted_usage(server, session_id="conversation-a-session")
@@ -1471,7 +1472,7 @@ def test_explicit_section_ids_still_produce_exact_attribution(tmp_path):
     _call_tool(
         server,
         1,
-        "sentinel_record_section",
+        "agentacct_record_section",
         {
             "source": "claude-code",
             "section_id": "explicit-work",
@@ -1496,7 +1497,7 @@ def test_generic_record_event_cannot_forge_client_context_provenance(tmp_path):
     response = _call_tool(
         server,
         1,
-        "sentinel_record_event",
+        "agentacct_record_event",
         {
             "source": "codex",
             "event_type": "section_started",
@@ -1540,13 +1541,13 @@ def test_context_bridge_does_not_upgrade_stale_inherited_section_to_exact(tmp_pa
     """The old attach event matches the usage explicitly, but the section that
     canonically won attribution inherited its ids; the advisory bridge must
     agree with the canonical work_ledger confidence, never exact."""
-    from agent_chronicle.context_bridge import build_usage_context_bridge
+    from agentacct.context_bridge import build_usage_context_bridge
 
     server = SentinelMCPServer(store_dir=tmp_path / "state")
     _call_tool(
         server,
         1,
-        "sentinel_attach_client_context",
+        "agentacct_attach_client_context",
         {
             "source": "claude-code",
             "client": "claude-code",
@@ -1558,7 +1559,7 @@ def test_context_bridge_does_not_upgrade_stale_inherited_section_to_exact(tmp_pa
     _call_tool(
         server,
         2,
-        "sentinel_record_section",
+        "agentacct_record_section",
         {"source": "claude-code", "section_id": "conversation-b-work", "section_status": "completed"},
     )
     _record_trusted_usage(server, session_id="conversation-a-session")
@@ -1585,13 +1586,13 @@ def test_context_bridge_does_not_upgrade_stale_inherited_section_to_exact(tmp_pa
 
 
 def test_context_bridge_explicit_section_ids_still_exact(tmp_path):
-    from agent_chronicle.context_bridge import build_usage_context_bridge
+    from agentacct.context_bridge import build_usage_context_bridge
 
     server = SentinelMCPServer(store_dir=tmp_path / "state")
     _call_tool(
         server,
         1,
-        "sentinel_attach_client_context",
+        "agentacct_attach_client_context",
         {
             "source": "claude-code",
             "client": "claude-code",
@@ -1602,7 +1603,7 @@ def test_context_bridge_explicit_section_ids_still_exact(tmp_path):
     _call_tool(
         server,
         2,
-        "sentinel_record_section",
+        "agentacct_record_section",
         {
             "source": "claude-code",
             "section_id": "explicit-work",
@@ -1628,7 +1629,7 @@ def test_context_bridge_explicit_section_ids_still_exact(tmp_path):
 def _write_hook_context(store_root, *, session_id="hooked-session", transcript_id=None, now=None):
     import time as _time
 
-    from agent_chronicle.hooks import write_claude_code_hook_context
+    from agentacct.hooks import write_claude_code_hook_context
 
     write_claude_code_hook_context(
         store_root,
@@ -1650,7 +1651,7 @@ def _write_per_session_hook_context(store_root, *, session_id, transcript_id=Non
     session's hook had since overwritten the shared slot."""
     import time as _time
 
-    from agent_chronicle.hooks import _hook_context_filename, claude_code_hook_context_dir
+    from agentacct.hooks import _hook_context_filename, claude_code_hook_context_dir
 
     context_dir = claude_code_hook_context_dir(store_root)
     context_dir.mkdir(parents=True, exist_ok=True)
@@ -1679,7 +1680,7 @@ def test_mcp_section_inherits_hook_client_context(tmp_path):
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {"source": "claude-code", "section_id": "hook-join", "section_status": "completed"},
         )
     )
@@ -1699,14 +1700,14 @@ def test_mcp_section_inherits_hook_client_context(tmp_path):
 
 
 def test_usage_joins_hook_derived_section_at_high_confidence(tmp_path):
-    from agent_chronicle.context_bridge import build_usage_context_bridge
+    from agentacct.context_bridge import build_usage_context_bridge
 
     server = SentinelMCPServer(store_dir=tmp_path / "state")
     _write_hook_context(server.service.store.root)
     _call_tool(
         server,
         1,
-        "sentinel_record_section",
+        "agentacct_record_section",
         {"source": "claude-code", "section_id": "hook-join", "section_status": "completed"},
     )
     _record_trusted_usage(server, session_id="hooked-session")
@@ -1737,7 +1738,7 @@ def test_stale_hook_context_is_not_inherited(tmp_path):
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {"source": "claude-code", "section_id": "after-stale-hook", "section_status": "started"},
         )
     )
@@ -1757,7 +1758,7 @@ def test_hook_context_outranks_attach_context_for_ids(tmp_path):
     _call_tool(
         server,
         1,
-        "sentinel_attach_client_context",
+        "agentacct_attach_client_context",
         {"source": "claude-code", "client": "claude-code", "client_session_id": "agent-reported-session"},
     )
 
@@ -1765,7 +1766,7 @@ def test_hook_context_outranks_attach_context_for_ids(tmp_path):
         _call_tool(
             server,
             2,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {"source": "claude-code", "section_id": "priority", "section_status": "started"},
         )
     )["event"]["metadata"]
@@ -1784,7 +1785,7 @@ def test_hook_context_not_applied_to_other_clients(tmp_path):
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {"source": "codex", "section_id": "codex-work", "section_status": "started", "client": "codex"},
         )
     )["event"]["metadata"]
@@ -1800,7 +1801,7 @@ def test_explicit_section_ids_override_hook_context(tmp_path):
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {
                 "source": "claude-code",
                 "section_id": "explicit-wins",
@@ -1821,7 +1822,7 @@ def test_generic_record_event_cannot_forge_hook_provenance(tmp_path):
     response = _call_tool(
         server,
         1,
-        "sentinel_record_event",
+        "agentacct_record_event",
         {
             "source": "codex",
             "event_type": "section_started",
@@ -1861,7 +1862,7 @@ def test_section_cannot_forge_hook_provenance_without_inheritance(tmp_path):
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {
                 "source": "claude-code",
                 "section_id": "forged-freshness",
@@ -1892,7 +1893,7 @@ def test_hook_context_not_mixed_with_conflicting_explicit_id(tmp_path):
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {
                 "source": "claude-code",
                 "section_id": "conflicting-session",
@@ -1919,7 +1920,7 @@ def test_explicit_session_id_with_hook_context_yields_exact(tmp_path):
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {
                 "source": "claude-code",
                 "section_id": "explicit-upgrade",
@@ -1948,7 +1949,7 @@ def test_attach_ids_not_mixed_with_explicit_id(tmp_path):
     _call_tool(
         server,
         1,
-        "sentinel_attach_client_context",
+        "agentacct_attach_client_context",
         {
             "source": "claude-code",
             "client": "claude-code",
@@ -1961,7 +1962,7 @@ def test_attach_ids_not_mixed_with_explicit_id(tmp_path):
         _call_tool(
             server,
             2,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {
                 "source": "claude-code",
                 "section_id": "new-conversation",
@@ -1982,7 +1983,7 @@ def test_hook_context_requires_claude_source_when_client_unset(tmp_path):
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {"source": "codex", "section_id": "codex-no-client", "section_status": "started"},
         )
     )["event"]["metadata"]
@@ -2006,7 +2007,7 @@ def test_concurrent_hook_contexts_refuse_inheritance_end_to_end(tmp_path):
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {"source": "claude-code", "section_id": "ambiguous-work", "section_status": "completed"},
         )
     )
@@ -2044,7 +2045,7 @@ def test_concurrent_contexts_env_binding_selects_own_session(tmp_path):
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {"source": "claude-code", "section_id": "env-bound", "section_status": "completed"},
         )
     )
@@ -2084,7 +2085,7 @@ def test_concurrent_contexts_env_binding_requires_strict_recency_end_to_end(tmp_
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {"source": "claude-code", "section_id": "stale-env", "section_status": "completed"},
         )
     )["event"]["metadata"]
@@ -2110,7 +2111,7 @@ def test_concurrent_contexts_pid_lineage_selects_own_session(tmp_path):
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {"source": "claude-code", "section_id": "lineage-bound", "section_status": "completed"},
         )
     )
@@ -2134,7 +2135,7 @@ def test_concurrent_contexts_pid_lineage_selects_own_session(tmp_path):
         _call_tool(
             sibling_server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {"source": "claude-code", "section_id": "sibling-work", "section_status": "completed"},
         )
     )["event"]["metadata"]
@@ -2156,7 +2157,7 @@ def test_explicit_ids_suppress_refusal_stamp(tmp_path):
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {
                 "source": "claude-code",
                 "section_id": "explicit-own-id",
@@ -2186,11 +2187,11 @@ def test_refused_section_replay_payload_matches_persisted_event(tmp_path):
         "section_status": "started",
         "idempotency_key": "replay-vs-refusal-1",
     }
-    first = _tool_payload(_call_tool(server, 1, "sentinel_record_section", args))
+    first = _tool_payload(_call_tool(server, 1, "agentacct_record_section", args))
     assert first["event"]["metadata"]["client_session_id"] == "session-a"
 
     _write_hook_context(server.service.store.root, session_id="session-b")
-    replay = _tool_payload(_call_tool(server, 2, "sentinel_record_section", args))
+    replay = _tool_payload(_call_tool(server, 2, "agentacct_record_section", args))
     assert replay["event"]["event_id"] == first["event"]["event_id"]
     assert replay["event"]["metadata"]["client_session_id"] == "session-a"
     assert "client_context_inheritance_refused" not in replay["event"]["metadata"]
@@ -2209,7 +2210,7 @@ def test_metadata_overflow_keeps_refusal_marker(tmp_path):
     _call_tool(
         server,
         1,
-        "sentinel_attach_client_context",
+        "agentacct_attach_client_context",
         {
             "source": "claude-code",
             "client": "claude-code",
@@ -2223,7 +2224,7 @@ def test_metadata_overflow_keeps_refusal_marker(tmp_path):
         _call_tool(
             server,
             2,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {
                 "source": "claude-code",
                 "section_id": "overflow-refusal",
@@ -2254,14 +2255,14 @@ def test_section_spanning_sessions_keeps_per_session_snapshots(tmp_path):
     inheritance instead — covered by the concurrent-context tests."""
     import time as _time
 
-    from agent_chronicle.context_bridge import build_usage_context_bridge
+    from agentacct.context_bridge import build_usage_context_bridge
 
     server = SentinelMCPServer(store_dir=tmp_path / "state")
     _write_hook_context(server.service.store.root, session_id="conversation-a")
     _call_tool(
         server,
         1,
-        "sentinel_record_section",
+        "agentacct_record_section",
         {"source": "claude-code", "section_id": "spanning-work", "section_status": "started"},
     )
     # Conversation A's context expires (idle gap), then a new conversation
@@ -2271,7 +2272,7 @@ def test_section_spanning_sessions_keeps_per_session_snapshots(tmp_path):
     _call_tool(
         server,
         2,
-        "sentinel_record_section",
+        "agentacct_record_section",
         {"source": "claude-code", "section_id": "spanning-work", "section_status": "completed"},
     )
     _record_trusted_usage(server, session_id="conversation-a")
@@ -2306,13 +2307,13 @@ def test_item_mixed_inheritance_sources_stay_per_key(tmp_path):
     _call_tool(
         server,
         1,
-        "sentinel_attach_client_context",
+        "agentacct_attach_client_context",
         {"source": "claude-code", "client": "claude-code", "client_transcript_id": "attach-transcript"},
     )
     _call_tool(
         server,
         2,
-        "sentinel_record_section",
+        "agentacct_record_section",
         {"source": "claude-code", "section_id": "mixed-sources", "section_status": "started"},
     )
     # Hook context appears with a session id but no usable transcript.
@@ -2324,7 +2325,7 @@ def test_item_mixed_inheritance_sources_stay_per_key(tmp_path):
     _call_tool(
         server,
         3,
-        "sentinel_record_section",
+        "agentacct_record_section",
         {"source": "claude-code", "section_id": "mixed-sources", "section_status": "checkpoint"},
     )
     _record_trusted_usage(server, session_id="unrelated-session", transcript_id="attach-transcript")
@@ -2350,20 +2351,20 @@ def test_idempotent_section_replay_payload_matches_persisted_event(tmp_path):
         "section_status": "started",
         "idempotency_key": "section-replay",
     }
-    first = _tool_payload(_call_tool(server, 1, "sentinel_record_section", args))
+    first = _tool_payload(_call_tool(server, 1, "agentacct_record_section", args))
     assert "inherited_client_context" not in first
 
     # Hook context appears after the first call; the replay returns the stored
     # event and must not claim inheritance that was never persisted.
     _write_hook_context(server.service.store.root, session_id="hooked-session")
-    replay = _tool_payload(_call_tool(server, 2, "sentinel_record_section", args))
+    replay = _tool_payload(_call_tool(server, 2, "agentacct_record_section", args))
     assert replay["event"]["event_id"] == first["event"]["event_id"]
     assert "inherited_client_context" not in replay
     assert "client_session_id" not in replay["event"]["metadata"]
 
 
 def test_mcp_section_inherits_windows_hook_context_without_raw_paths(tmp_path):
-    from agent_chronicle.hooks import derive_claude_code_client_context, write_claude_code_hook_context
+    from agentacct.hooks import derive_claude_code_client_context, write_claude_code_hook_context
 
     server = SentinelMCPServer(store_dir=tmp_path / "state")
     context = derive_claude_code_client_context(
@@ -2380,7 +2381,7 @@ def test_mcp_section_inherits_windows_hook_context_without_raw_paths(tmp_path):
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {"source": "claude-code", "section_id": "windows-host", "section_status": "started"},
         )
     )["event"]["metadata"]
@@ -2398,7 +2399,7 @@ def test_section_free_form_metadata_cannot_smuggle_join_keys(tmp_path):
     response = _call_tool(
         server,
         1,
-        "sentinel_record_section",
+        "agentacct_record_section",
         {
             "source": "codex",
             "section_id": "smuggle",
@@ -2427,7 +2428,7 @@ def test_attach_debug_and_machine_check_metadata_cannot_smuggle_join_keys(tmp_pa
         _call_tool(
             server,
             1,
-            "sentinel_attach_client_context",
+            "agentacct_attach_client_context",
             {
                 "source": "codex",
                 "client": "codex",
@@ -2444,7 +2445,7 @@ def test_attach_debug_and_machine_check_metadata_cannot_smuggle_join_keys(tmp_pa
         _call_tool(
             server,
             2,
-            "sentinel_record_agent_usage_debug",
+            "agentacct_record_agent_usage_debug",
             {
                 "source": "codex",
                 "client": "codex",
@@ -2457,12 +2458,12 @@ def test_attach_debug_and_machine_check_metadata_cannot_smuggle_join_keys(tmp_pa
     assert "client_transcript_id" not in debug_metadata
     assert "client_session_id" in debug_metadata["reserved_context_keys_stripped"]
 
-    # sentinel_record_machine_check accepts no free-form metadata argument at
+    # agentacct_record_machine_check accepts no free-form metadata argument at
     # all, so this smuggling surface is rejected outright.
     check_response = _call_tool(
         server,
         3,
-        "sentinel_record_machine_check",
+        "agentacct_record_machine_check",
         {
             "source": "codex",
             "result": "passed",
@@ -2480,7 +2481,7 @@ def test_generic_record_event_section_ids_never_earn_exact(tmp_path):
     _call_tool(
         server,
         1,
-        "sentinel_record_event",
+        "agentacct_record_event",
         {
             "source": "codex",
             "event_type": "section_started",
@@ -2511,7 +2512,7 @@ def test_authored_marker_cannot_be_forged(tmp_path):
         _call_tool(
             server,
             1,
-            "sentinel_record_event",
+            "agentacct_record_event",
             {
                 "source": "codex",
                 "event_type": "section_started",
@@ -2531,7 +2532,7 @@ def test_authored_marker_cannot_be_forged(tmp_path):
         _call_tool(
             server,
             2,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {
                 "source": "codex",
                 "section_id": "no-ids",
@@ -2550,7 +2551,7 @@ def test_explicit_section_ids_persist_authored_marker_and_stay_exact(tmp_path):
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {
                 "source": "claude-code",
                 "section_id": "explicit-marker",
@@ -2580,7 +2581,7 @@ def test_benign_metadata_display_fields_survive_and_are_not_labelled_smuggled(tm
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {
                 "source": "codex",
                 "section_id": "display-fields",
@@ -2603,7 +2604,7 @@ def test_supplied_argument_overwrites_colliding_benign_metadata_without_label(tm
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {
                 "source": "codex",
                 "section_id": "server-wins",
@@ -2626,7 +2627,7 @@ def test_forged_strip_label_in_metadata_is_discarded(tmp_path):
         _call_tool(
             server,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {
                 "source": "codex",
                 "section_id": "forged-label",
@@ -2649,7 +2650,7 @@ def test_refusal_note_with_attach_inherited_ids_does_not_claim_unattributed(tmp_
     _call_tool(
         server,
         1,
-        "sentinel_attach_client_context",
+        "agentacct_attach_client_context",
         {
             "source": "claude-code",
             "client": "claude-code",
@@ -2664,7 +2665,7 @@ def test_refusal_note_with_attach_inherited_ids_does_not_claim_unattributed(tmp_
         _call_tool(
             server,
             2,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {"source": "claude-code", "section_id": "attach-after-refusal", "section_status": "completed"},
         )
     )
@@ -2675,7 +2676,7 @@ def test_refusal_note_with_attach_inherited_ids_does_not_claim_unattributed(tmp_
     note = payload["refused_client_context"]["note"]
     assert "stays unattributed" not in note
     assert "hook-context id inheritance was refused" in note
-    assert "sentinel_attach_client_context" in note
+    assert "agentacct_attach_client_context" in note
     assert any("attach-inherited ids were used instead" in warning for warning in payload["warnings"])
     # The pure-refusal wording is preserved when no attach ids exist.
     fresh = SentinelMCPServer(
@@ -2687,7 +2688,7 @@ def test_refusal_note_with_attach_inherited_ids_does_not_claim_unattributed(tmp_
         _call_tool(
             fresh,
             1,
-            "sentinel_record_section",
+            "agentacct_record_section",
             {"source": "claude-code", "section_id": "bare-refusal", "section_status": "completed"},
         )
     )

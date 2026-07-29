@@ -23,11 +23,11 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-from agent_chronicle.api import _session_detail_html, _session_join_chip_html, create_local_api_app
-from agent_chronicle.cli import app
-from agent_chronicle.client_usage import ClientUsageEvent, discover_claude_code_usage, discover_codex_usage
-from agent_chronicle.context_bridge import build_usage_context_bridge
-from agent_chronicle.join_rules import (
+from agentacct.api import _session_detail_html, _session_join_chip_html, create_local_api_app
+from agentacct.cli import app
+from agentacct.client_usage import ClientUsageEvent, discover_claude_code_usage, discover_codex_usage
+from agentacct.context_bridge import build_usage_context_bridge
+from agentacct.join_rules import (
     TIER_CONFIDENCE,
     TIER_STRATEGY_PREFIX,
     decide_attribution,
@@ -35,7 +35,7 @@ from agent_chronicle.join_rules import (
     pair_confidence,
     pair_match,
 )
-from agent_chronicle.log_evidence import (
+from agentacct.log_evidence import (
     CANONICAL_EVENT_IDENTITY_CONFLICT_REASON,
     CODEX_REPLAY_CLOCK_SKEW_SECONDS,
     CODEX_REPLAY_REJECTION_REASON,
@@ -46,8 +46,8 @@ from agent_chronicle.log_evidence import (
     build_log_evidence_index,
     extract_created_event_id,
 )
-from agent_chronicle.service import SentinelService
-from agent_chronicle.work_ledger import build_work_ledger
+from agentacct.service import SentinelService
+from agentacct.work_ledger import build_work_ledger
 
 SESSION = "019f2303-6ae1-7000-8000-000000000001"
 OTHER_SESSION = "019f272c-bb18-7000-8000-000000000002"
@@ -395,7 +395,7 @@ def test_codex_144_foreign_or_absent_server_rejected_and_skip_counted(tmp_path) 
         _mcp_tool_call_end(None, "sentinel_record_section", "call_2", _mcp_ok_result(_creation_payload("evt_f6f6f6f6f6f6")), omit_server=True),
         # Accepted namespaces: exact match modulo underscore normalization
         # and the optional mcp__ prefix, same rule as the function_call path.
-        _mcp_tool_call_end("mcp__agent_chronicle", "sentinel_record_section", "call_3", _mcp_ok_result(_creation_payload("evt_a7a7a7a7a7a7"))),
+        _mcp_tool_call_end("mcp__agentacct", "sentinel_record_section", "call_3", _mcp_ok_result(_creation_payload("evt_a7a7a7a7a7a7"))),
     ]
 
     event = _single_codex_event(_make_codex_home(tmp_path, lines))
@@ -528,7 +528,7 @@ def test_codex_model_label_never_poisoned_by_tool_call_payloads(tmp_path) -> Non
     """Agent-chosen tool ARGUMENTS (and tool results) must never become the
     session model label: the model scan skips tool-call channel payloads."""
 
-    from agent_chronicle.client_usage import _read_codex_rollout_usage
+    from agentacct.client_usage import _read_codex_rollout_usage
 
     poisoned_end = _mcp_tool_call_end(
         "agent-sentinel", "sentinel_record_section", "call_p", _mcp_ok_result(_creation_payload("evt_0011aabbccdd"))
@@ -583,7 +583,7 @@ def test_codex_model_label_never_poisoned_by_tool_call_payloads(tmp_path) -> Non
 
 
 def test_classify_codex_mcp_invocation_and_unwrap_codex_mcp_result_units() -> None:
-    from agent_chronicle.log_evidence import classify_codex_mcp_invocation, unwrap_codex_mcp_result
+    from agentacct.log_evidence import classify_codex_mcp_invocation, unwrap_codex_mcp_result
 
     assert classify_codex_mcp_invocation("agent-sentinel", "sentinel_record_section") == "accepted"
     assert classify_codex_mcp_invocation("agent-chronicle", "sentinel_record_event") == "accepted"
@@ -740,7 +740,7 @@ def test_claude_subagent_evidence_lands_on_child_row_and_lanes_dedupe_to_one_don
     assert len(child_rows) == 1
     assert list(child_rows[0].evidenced_event_ids) == ["evt_bbbb33334444"]
 
-    from agent_chronicle.usage_truth import mark_trusted_local_usage_import_event
+    from agentacct.usage_truth import mark_trusted_local_usage_import_event
 
     index = build_log_evidence_index(
         [
@@ -1889,7 +1889,7 @@ def test_fix4_trailing_whitespace_evt_ids_rejected() -> None:
 
     import re
 
-    from agent_chronicle.log_evidence import EVIDENCED_EVENT_ID_RE
+    from agentacct.log_evidence import EVIDENCED_EVENT_ID_RE
 
     for bad in ("evt_deadbeef\n", "evt_deadbeef\r\n", "evt_deadbeef\t", "evt_deadbeef ", "evt_deadbeef\n\n"):
         assert EVIDENCED_EVENT_ID_RE.match(bad) is None, f"must reject {bad!r}"

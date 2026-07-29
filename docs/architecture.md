@@ -195,16 +195,16 @@ agent-chronicle mcp serve
 
 Current MCP tools are safe/local:
 
-- `sentinel_list_runs`
-- `sentinel_get_report`
-- `sentinel_record_event`
-- `sentinel_attach_client_context`
-- `sentinel_record_section`
-- `sentinel_record_agent_usage_debug`
-- `sentinel_list_events`
-- `sentinel_record_machine_check`
-- `sentinel_prepare_judge`
-- `sentinel_compute_value`
+- `agentacct_list_runs`
+- `agentacct_get_report`
+- `agentacct_record_event`
+- `agentacct_attach_client_context`
+- `agentacct_record_section`
+- `agentacct_record_agent_usage_debug`
+- `agentacct_list_events`
+- `agentacct_record_machine_check`
+- `agentacct_prepare_judge`
+- `agentacct_compute_value`
 
 The event tools continue to write/read `events.jsonl` and shadow normalized
 claims into Evidence v2. Public `sentinel_*` names do not change. Local usage

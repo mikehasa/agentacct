@@ -14,7 +14,7 @@ import http.cookies
 import time
 from urllib.parse import urlencode
 
-from agent_chronicle.api import REFRESH_FLASH_COOKIE, _decode_refresh_flash
+from agentacct.api import REFRESH_FLASH_COOKIE, _decode_refresh_flash
 
 
 def run_dashboard_refresh(client, *, timeout_s: float = 20.0):

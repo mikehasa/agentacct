@@ -563,7 +563,7 @@ def _import_codex_snapshot(
 
     # Reuse the existing, tested Codex reader.  This is an explicit offline
     # invocation, not a new adapter and not source discovery.
-    from agent_chronicle.client_usage import _discover_codex_usage_from_home
+    from agentacct.client_usage import _discover_codex_usage_from_home
 
     stats: dict[str, Any] = {}
     observations: list[Any] = []

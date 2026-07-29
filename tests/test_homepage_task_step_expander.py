@@ -4,8 +4,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from agent_chronicle.api import create_local_api_app
-from agent_chronicle.service import SentinelService
+from agentacct.api import create_local_api_app
+from agentacct.service import SentinelService
 
 
 def _task_home(tmp_path: Path, *, step_count: int) -> str:

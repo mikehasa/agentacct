@@ -53,14 +53,24 @@ from .usage_truth import (
 
 # The ONLY tools whose responses may donate an evidenced event id. Every one
 # of them returns exactly one created event under a top-level "event" key
-# (mcp.py); read tools (sentinel_list_events, sentinel_get_event_summary,
-# sentinel_list_runs, sentinel_get_report, ...) echo foreign ids and must
-# never appear here.
-# frozen: the sentinel_* tool names survive the Agent Chronicle rename —
-# historical stores/logs/files carry them forever, and three shipped
-# instruction surfaces plus real user CLAUDE.md/AGENTS.md files quote them.
+# (mcp.py); read tools (agentacct_list_events / sentinel_list_events,
+# agentacct_get_event_summary / sentinel_get_event_summary, ...) echo foreign
+# ids and must never appear here.
+# RECOGNIZE-MANY (this is a READ path over historical transcripts): BOTH
+# tool-name generations are accepted forever — the new `agentacct_*` names
+# that live installs now emit, AND the pre-rename `sentinel_*` names that
+# historical Claude/Codex transcripts (and real user CLAUDE.md/AGENTS.md
+# files) carry forever. Dropping the old names would silently unlink every
+# pre-rename session on the next import, so this set only ever grows.
 SENTINEL_CREATION_TOOLS = frozenset(
     {
+        # agentacct (new) — what live installs now emit.
+        "agentacct_record_event",
+        "agentacct_attach_client_context",
+        "agentacct_record_section",
+        "agentacct_record_agent_usage_debug",
+        "agentacct_record_machine_check",
+        # sentinel_* (legacy) — historical transcripts/files carry these forever.
         "sentinel_record_event",
         "sentinel_attach_client_context",
         "sentinel_record_section",
@@ -92,7 +102,7 @@ CANONICAL_EVENT_IDENTITY_CONFLICT_REASON = "canonical_event_identity_conflict"
 # The documented MCP registration names (every current setup path writes
 # "agentacct"). Claude Code transcripts carry the registration key verbatim in
 # `mcp__<server>__<tool>`; Codex normalizes the config key to underscores in the
-# rollout `namespace` field (`mcp__agent_chronicle` / `mcp__agent_sentinel`; the
+# rollout `namespace` field (`mcp__agentacct` / `mcp__agent_sentinel`; the
 # hyphen-free `agentacct` normalizes to itself). A custom registration name
 # loses evidence links (skipped-but-counted, never guessed) — documented in
 # INSTALL.md.
@@ -145,7 +155,7 @@ def codex_namespace_matches_sentinel(namespace: Any) -> bool:
     tool-name allowlist still gates). A present namespace must be exactly one
     of the pinned server keys (new or pre-rename) modulo codex's underscore
     normalization and the optional ``mcp__`` prefix — substring matches
-    (``mcp__not_agent_chronicle_fake``) are rejected.
+    (``mcp__not_agentacct_fake``) are rejected.
     """
 
     if namespace is None:

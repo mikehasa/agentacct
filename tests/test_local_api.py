@@ -7,16 +7,16 @@ import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-from agent_chronicle.api import UsageDiscoveryConfig, create_local_api_app
-from agent_chronicle.cli import app
-from agent_chronicle.cost import CostLedger, UsageEstimate
-from agent_chronicle.mcp import SentinelMCPServer
-from agent_chronicle.outcome import apply_judge_result, write_outcome
-from agent_chronicle.pricing_catalog import default_pricing_catalog_snapshot_path
-from agent_chronicle.reports import build_run_report_payload
-from agent_chronicle.runner import RunOptions, start_guarded_run
-from agent_chronicle.service import SentinelService
-from agent_chronicle.storage import RunStore
+from agentacct.api import UsageDiscoveryConfig, create_local_api_app
+from agentacct.cli import app
+from agentacct.cost import CostLedger, UsageEstimate
+from agentacct.mcp import SentinelMCPServer
+from agentacct.outcome import apply_judge_result, write_outcome
+from agentacct.pricing_catalog import default_pricing_catalog_snapshot_path
+from agentacct.reports import build_run_report_payload
+from agentacct.runner import RunOptions, start_guarded_run
+from agentacct.service import SentinelService
+from agentacct.storage import RunStore
 from refresh_flash import refresh_flash_qs, run_dashboard_refresh
 
 
@@ -790,7 +790,7 @@ def test_refreshing_page_redirects_home_when_no_refresh_is_running(tmp_path, mon
 
 
 def test_refresh_progress_is_single_flight_and_consumes_result_once():
-    from agent_chronicle.api import RefreshProgress
+    from agentacct.api import RefreshProgress
 
     progress = RefreshProgress()
     assert progress.begin() is not None
@@ -808,7 +808,7 @@ def test_refresh_progress_is_single_flight_and_consumes_result_once():
 
 
 def test_render_refreshing_page_running_shows_counts_error_stops_polling():
-    from agent_chronicle.api import _render_refreshing_page
+    from agentacct.api import _render_refreshing_page
 
     running = _render_refreshing_page(
         {
@@ -835,8 +835,8 @@ def test_render_refreshing_page_running_shows_counts_error_stops_polling():
 
 
 def test_pricing_catalog_scope_overrides_the_env(monkeypatch, tmp_path):
-    from agent_chronicle.cost import _builtin_pricing_entries, pricing_catalog, pricing_catalog_scope
-    from agent_chronicle.pricing_catalog import PricingCatalog
+    from agentacct.cost import _builtin_pricing_entries, pricing_catalog, pricing_catalog_scope
+    from agentacct.pricing_catalog import PricingCatalog
 
     # Point the global env at a bogus catalog; the scope must ignore it. A
     # distinct catalog instance proves the override — not the env fallback — won.
@@ -851,7 +851,7 @@ def test_dashboard_noop_refresh_reconciles_evidence_and_surfaces_failure(
     tmp_path,
     monkeypatch,
 ):
-    from agent_chronicle.ingestion_health import (
+    from agentacct.ingestion_health import (
         EVIDENCE_REFRESHABLE_USAGE_ERROR_CODE,
     )
 
@@ -1028,8 +1028,8 @@ def test_pricing_middleware_honors_legacy_env_pin_over_store_snapshot(tmp_path, 
     # (the alias contract accepts the old name forever). The per-request store
     # snapshot activation must treat that legacy pin exactly like the new
     # name: never shadow it with the store snapshot.
-    from agent_chronicle.cost import LEGACY_PRICING_CATALOG_PATH_ENV, PRICING_CATALOG_PATH_ENV
-    from agent_chronicle.env_compat import read_env_alias
+    from agentacct.cost import LEGACY_PRICING_CATALOG_PATH_ENV, PRICING_CATALOG_PATH_ENV
+    from agentacct.env_compat import read_env_alias
 
     store_root = tmp_path / "state"
     snapshot_path = default_pricing_catalog_snapshot_path(store_root)
@@ -1240,7 +1240,7 @@ def test_dashboard_refresh_auto_fetches_snapshot_unless_user_pinned(tmp_path, mo
 def test_dashboard_refresh_never_fetches_over_a_user_pinned_catalog(tmp_path, monkeypatch):
     import httpx
 
-    from agent_chronicle.cost import PRICING_CATALOG_PATH_ENV
+    from agentacct.cost import PRICING_CATALOG_PATH_ENV
 
     monkeypatch.setenv("AGENT_CHRONICLE_PRICING_AUTO_REFRESH", "1")
 
@@ -1512,7 +1512,7 @@ def test_local_dashboard_aggregates_usage_reported_through_mcp(tmp_path):
                 "id": input_tokens,
                 "method": "tools/call",
                 "params": {
-                    "name": "sentinel_record_event",
+                    "name": "agentacct_record_event",
                     "arguments": {
                         "source": source,
                         "event_type": "model_usage",
@@ -1563,7 +1563,7 @@ def test_local_dashboard_shows_usage_context_bridge(tmp_path):
             "id": 2,
             "method": "tools/call",
             "params": {
-                "name": "sentinel_record_section",
+                "name": "agentacct_record_section",
                 "arguments": {
                     "source": "codex",
                     "section_id": "context-bridge",
@@ -1582,7 +1582,7 @@ def test_local_dashboard_shows_usage_context_bridge(tmp_path):
             "id": 3,
             "method": "tools/call",
             "params": {
-                "name": "sentinel_record_agent_usage_debug",
+                "name": "agentacct_record_agent_usage_debug",
                 "arguments": {
                     "source": "codex",
                     "client": "codex",
@@ -1734,8 +1734,8 @@ def test_local_api_public_work_items_redact_paths_and_commands(tmp_path):
                 "client_session_id": "codex-session",
                 "project_dir": "C:\\Users\\alice\\private-repo",
                 "files": [
-                    "src/agent_chronicle/api.py",
-                    "src\\agent_chronicle\\cli.py",
+                    "src/agentacct/api.py",
+                    "src\\agentacct\\cli.py",
                     "/Users/alice/private-repo/secret.py",
                     "..\\secret.py",
                     "C:\\Users\\alice\\private-repo\\secret.py",
@@ -1765,7 +1765,7 @@ def test_local_api_public_work_items_redact_paths_and_commands(tmp_path):
     encoded = json.dumps(payload)
 
     assert payload["project_dir"] == "private-repo"
-    assert payload["files"] == ["src/agent_chronicle/api.py", "src/agent_chronicle/cli.py"]
+    assert payload["files"] == ["src/agentacct/api.py", "src/agentacct/cli.py"]
     assert payload["evidence_events"][0]["command"] is None
     assert payload["evidence_events"][0]["artifact_path"] is None
     assert payload["evidence_events"][0]["artifact_url"] is None
@@ -1816,7 +1816,7 @@ def test_local_dashboard_overhaul_surfaces_work_timeline_and_trust(tmp_path):
                 "summary": "Reworked the local dashboard information architecture.",
                 "client": "codex",
                 "client_session_id": "codex-ui-session",
-                "files": ["src/agent_chronicle/api.py"],
+                "files": ["src/agentacct/api.py"],
             },
         },
     )
@@ -2036,7 +2036,7 @@ def test_top_level_serve_prints_local_usage_scan_notice(tmp_path, monkeypatch):
     monkeypatch.setattr("uvicorn.run", fake_run)
     # Keep the default-port path deterministic regardless of what is bound on the
     # machine running the suite (the live dashboard may hold 8765).
-    monkeypatch.setattr("agent_chronicle.cli._probe_port_free", lambda host, port: True)
+    monkeypatch.setattr("agentacct.cli._probe_port_free", lambda host, port: True)
 
     result = CliRunner().invoke(app, ["serve", "--store-dir", str(tmp_path / "state")])
 
@@ -2060,7 +2060,7 @@ def test_top_level_serve_falls_back_when_default_port_busy(tmp_path, monkeypatch
     calls = []
     monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: calls.append(kwargs))
     # Simulate the default 8765 being occupied and 8766 free.
-    monkeypatch.setattr("agent_chronicle.cli._probe_port_free", lambda host, port: port != 8765)
+    monkeypatch.setattr("agentacct.cli._probe_port_free", lambda host, port: port != 8765)
 
     result = CliRunner().invoke(app, ["serve", "--store-dir", str(tmp_path / "state")])
 
@@ -2075,7 +2075,7 @@ def test_top_level_serve_explicit_busy_port_errors(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: calls.append(kwargs))
     # Every port is busy; with an explicit --port there must be no silent move.
-    monkeypatch.setattr("agent_chronicle.cli._probe_port_free", lambda host, port: False)
+    monkeypatch.setattr("agentacct.cli._probe_port_free", lambda host, port: False)
 
     result = CliRunner().invoke(app, ["serve", "--port", "9000", "--store-dir", str(tmp_path / "state")])
 
@@ -2088,7 +2088,7 @@ def test_top_level_serve_explicit_free_port_binds_exactly(tmp_path, monkeypatch)
     """An explicit --port that is free binds that exact port (no probing drift)."""
     calls = []
     monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: calls.append(kwargs))
-    monkeypatch.setattr("agent_chronicle.cli._probe_port_free", lambda host, port: True)
+    monkeypatch.setattr("agentacct.cli._probe_port_free", lambda host, port: True)
 
     result = CliRunner().invoke(app, ["serve", "--port", "9123", "--store-dir", str(tmp_path / "state")])
 
@@ -2099,7 +2099,7 @@ def test_top_level_serve_explicit_free_port_binds_exactly(tmp_path, monkeypatch)
 
 def test_select_serve_port_advances_past_real_busy_socket():
     """End-to-end probe: a real listening socket forces a real fallback."""
-    from agent_chronicle.cli import _select_serve_port
+    from agentacct.cli import _select_serve_port
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -2116,7 +2116,7 @@ def test_select_serve_port_advances_past_real_busy_socket():
 
 def test_select_serve_port_explicit_busy_raises_on_real_socket():
     """With fallback disabled, a real busy port raises instead of moving."""
-    from agent_chronicle.cli import _select_serve_port
+    from agentacct.cli import _select_serve_port
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

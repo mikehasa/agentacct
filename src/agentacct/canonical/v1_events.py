@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from agent_chronicle.usage_truth import normalized_local_usage_session_id
+from agentacct.usage_truth import normalized_local_usage_session_id
 
 from .types import SQLITE_INT64_MAX
 

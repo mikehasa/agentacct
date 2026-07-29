@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from agent_chronicle.cli import app
-from agent_chronicle.hooks import HookDecision, evaluate_claude_code_event
+from agentacct.cli import app
+from agentacct.hooks import HookDecision, evaluate_claude_code_event
 
 
 def test_claude_code_hook_blocks_destructive_bash_command():
@@ -142,7 +142,7 @@ def _hook_event(session_id="3778e5d9-aaaa-bbbb-cccc-1234567890ab", transcript="/
 
 
 def test_derive_claude_code_client_context_extracts_ids_only():
-    from agent_chronicle.hooks import derive_claude_code_client_context
+    from agentacct.hooks import derive_claude_code_client_context
 
     context = derive_claude_code_client_context(_hook_event(cwd="/Users/someone/code/secret-project"))
 
@@ -162,7 +162,7 @@ def test_derive_claude_code_client_context_extracts_ids_only():
 
 
 def test_derive_claude_code_client_context_requires_session_id():
-    from agent_chronicle.hooks import derive_claude_code_client_context
+    from agentacct.hooks import derive_claude_code_client_context
 
     assert derive_claude_code_client_context({"transcript_path": "/tmp/x.jsonl"}) is None
     assert derive_claude_code_client_context({"session_id": ""}) is None
@@ -212,7 +212,7 @@ def test_pre_tool_use_cli_skips_write_when_project_has_no_store(tmp_path: Path, 
 
 
 def test_load_claude_code_hook_context_freshness(tmp_path: Path):
-    from agent_chronicle.hooks import derive_claude_code_client_context, load_claude_code_hook_context, write_claude_code_hook_context
+    from agentacct.hooks import derive_claude_code_client_context, load_claude_code_hook_context, write_claude_code_hook_context
 
     context = derive_claude_code_client_context(_hook_event(cwd=str(tmp_path)))
     write_claude_code_hook_context(tmp_path, context, now=1000.0)
@@ -226,7 +226,7 @@ def test_load_claude_code_hook_context_freshness(tmp_path: Path):
 
 
 def test_hook_store_resolution_prefers_claude_project_dir(tmp_path: Path, monkeypatch):
-    from agent_chronicle.hooks import capture_claude_code_client_context
+    from agentacct.hooks import capture_claude_code_client_context
 
     project_a = tmp_path / "project-a"
     (project_a / ".agent-sentinel" / "state").mkdir(parents=True)
@@ -245,7 +245,7 @@ def test_hook_store_resolution_prefers_claude_project_dir(tmp_path: Path, monkey
 
 
 def test_hook_store_resolution_stops_at_repo_boundary(tmp_path: Path, monkeypatch):
-    from agent_chronicle.hooks import capture_claude_code_client_context
+    from agentacct.hooks import capture_claude_code_client_context
 
     monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
     # Hook capture honors AGENT_CHRONICLE_STORE_DIR first (env-first, like every
@@ -266,7 +266,7 @@ def test_hook_store_resolution_stops_at_repo_boundary(tmp_path: Path, monkeypatc
 
 def _write_session_context_file(store_dir, session_id, observed_at, *, hook_ancestor_pids=None, transcript_id=None):
     """Hand-write ONE per-session context file (no legacy slot side effects)."""
-    from agent_chronicle.hooks import _hook_context_filename, claude_code_hook_context_dir
+    from agentacct.hooks import _hook_context_filename, claude_code_hook_context_dir
 
     context_dir = claude_code_hook_context_dir(store_dir)
     context_dir.mkdir(parents=True, exist_ok=True)
@@ -288,7 +288,7 @@ def _write_session_context_file(store_dir, session_id, observed_at, *, hook_ance
 
 
 def test_write_hook_context_dual_writes_legacy_and_per_session(tmp_path: Path):
-    from agent_chronicle.hooks import claude_code_hook_context_dir, derive_claude_code_client_context, write_claude_code_hook_context
+    from agentacct.hooks import claude_code_hook_context_dir, derive_claude_code_client_context, write_claude_code_hook_context
 
     context = derive_claude_code_client_context(_hook_event(cwd=str(tmp_path)))
     returned = write_claude_code_hook_context(tmp_path, context, now=1000.0)
@@ -312,7 +312,7 @@ def test_write_hook_context_dual_writes_legacy_and_per_session(tmp_path: Path):
 def test_per_session_context_files_pruned(tmp_path: Path):
     import time as _time
 
-    from agent_chronicle.hooks import claude_code_hook_context_dir, derive_claude_code_client_context, write_claude_code_hook_context
+    from agentacct.hooks import claude_code_hook_context_dir, derive_claude_code_client_context, write_claude_code_hook_context
 
     now = _time.time()
     context_dir = claude_code_hook_context_dir(tmp_path)
@@ -351,7 +351,7 @@ def test_per_session_context_files_pruned(tmp_path: Path):
 
 
 def test_load_claude_code_hook_contexts_dedupes_and_prefers_legacy_on_tie(tmp_path: Path):
-    from agent_chronicle.hooks import derive_claude_code_client_context, load_claude_code_hook_contexts, write_claude_code_hook_context
+    from agentacct.hooks import derive_claude_code_client_context, load_claude_code_hook_contexts, write_claude_code_hook_context
 
     now = 40000.0
     session_id = "3778e5d9-aaaa-bbbb-cccc-1234567890ab"
@@ -379,7 +379,7 @@ def test_load_claude_code_hook_contexts_dedupes_and_prefers_legacy_on_tie(tmp_pa
 
 
 def test_select_single_fresh_context_needs_no_disambiguation(tmp_path: Path):
-    from agent_chronicle.hooks import claude_code_hook_context_path, select_claude_code_hook_context
+    from agentacct.hooks import claude_code_hook_context_path, select_claude_code_hook_context
 
     # Old-format legacy slot only: no per-session file, no pid info — the
     # live pre-upgrade store. Env/pid arguments that could never match must
@@ -411,7 +411,7 @@ def test_select_single_fresh_context_needs_no_disambiguation(tmp_path: Path):
 
 
 def test_select_refuses_multiple_fresh_without_disambiguation(tmp_path: Path):
-    from agent_chronicle.hooks import select_claude_code_hook_context
+    from agentacct.hooks import select_claude_code_hook_context
 
     now = 30000.0
     _write_session_context_file(tmp_path, "session-a", now - 5)
@@ -426,7 +426,7 @@ def test_select_refuses_multiple_fresh_without_disambiguation(tmp_path: Path):
 
 
 def test_select_env_binding_requires_strict_recency(tmp_path: Path):
-    from agent_chronicle.hooks import select_claude_code_hook_context
+    from agentacct.hooks import select_claude_code_hook_context
 
     now = 50000.0
 
@@ -459,7 +459,7 @@ def test_select_env_binding_requires_strict_recency(tmp_path: Path):
 
 
 def test_select_pid_lineage_unique_rank(tmp_path: Path):
-    from agent_chronicle.hooks import select_claude_code_hook_context
+    from agentacct.hooks import select_claude_code_hook_context
 
     now = 60000.0
 
@@ -513,7 +513,7 @@ def test_select_pid_lineage_unique_rank(tmp_path: Path):
 
 
 def test_select_ignores_stale_candidates(tmp_path: Path):
-    from agent_chronicle.hooks import select_claude_code_hook_context
+    from agentacct.hooks import select_claude_code_hook_context
 
     now = 70000.0
     _write_session_context_file(tmp_path, "fresh-session", now - 10)
@@ -527,7 +527,7 @@ def test_select_ignores_stale_candidates(tmp_path: Path):
 
 
 def test_process_ancestor_pids_is_failsafe_ints_only(monkeypatch):
-    from agent_chronicle import hooks
+    from agentacct import hooks
 
     current = os.getpid()
     table = f"{current} 4242\n4242 3131\n3131 1\n"
@@ -550,8 +550,8 @@ def test_process_ancestor_pids_is_failsafe_ints_only(monkeypatch):
 
 
 def test_capture_persists_hook_ancestor_pids_ids_only(tmp_path: Path, monkeypatch):
-    from agent_chronicle import hooks
-    from agent_chronicle.hooks import capture_claude_code_client_context, claude_code_hook_context_dir
+    from agentacct import hooks
+    from agentacct.hooks import capture_claude_code_client_context, claude_code_hook_context_dir
 
     monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
     # Hook capture honors AGENT_CHRONICLE_STORE_DIR first (env-first, like every
@@ -579,7 +579,7 @@ def test_capture_persists_hook_ancestor_pids_ids_only(tmp_path: Path, monkeypatc
 
 
 def test_hook_context_status_reports_fresh_count(tmp_path: Path):
-    from agent_chronicle.hooks import claude_code_hook_context_status
+    from agentacct.hooks import claude_code_hook_context_status
 
     now = 9000.0
     absent = claude_code_hook_context_status(tmp_path, now=now)
@@ -601,7 +601,7 @@ def test_hook_context_status_reports_fresh_count(tmp_path: Path):
 
 
 def test_hook_store_resolution_remaps_claude_worktree_to_owning_repo(tmp_path: Path, monkeypatch):
-    from agent_chronicle.hooks import capture_claude_code_client_context
+    from agentacct.hooks import capture_claude_code_client_context
 
     monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
     # Hook capture honors AGENT_CHRONICLE_STORE_DIR first (env-first, like every
@@ -624,7 +624,7 @@ def test_hook_store_resolution_remaps_claude_worktree_to_owning_repo(tmp_path: P
 
 
 def test_hook_store_resolution_worktree_own_store_wins(tmp_path: Path, monkeypatch):
-    from agent_chronicle.hooks import capture_claude_code_client_context
+    from agentacct.hooks import capture_claude_code_client_context
 
     monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
     # Hook capture honors AGENT_CHRONICLE_STORE_DIR first (env-first, like every
@@ -646,7 +646,7 @@ def test_hook_store_resolution_worktree_own_store_wins(tmp_path: Path, monkeypat
 
 
 def test_hook_store_resolution_remaps_worktree_project_dir_env(tmp_path: Path, monkeypatch):
-    from agent_chronicle.hooks import capture_claude_code_client_context
+    from agentacct.hooks import capture_claude_code_client_context
 
     monkeypatch.delenv("AGENT_CHRONICLE_STORE_DIR", raising=False)
     owner = tmp_path / "owner-repo"
@@ -672,7 +672,7 @@ def test_hook_store_resolution_remaps_worktree_project_dir_env(tmp_path: Path, m
 
 
 def test_derive_claude_code_client_context_sanitizes_windows_paths():
-    from agent_chronicle.hooks import derive_claude_code_client_context
+    from agentacct.hooks import derive_claude_code_client_context
 
     context = derive_claude_code_client_context(
         {
@@ -758,7 +758,7 @@ def _run_wrapper(wrapper_path: Path, event: dict, *, path_env: str, env_extra: d
 
 
 def test_render_wrapper_embeds_absolute_path_with_bare_name_fallback():
-    from agent_chronicle.hooks import render_claude_hook_wrapper
+    from agentacct.hooks import render_claude_hook_wrapper
 
     text = render_claude_hook_wrapper("/opt/venv/bin/agent-sentinel")
 
@@ -775,10 +775,10 @@ def test_render_wrapper_embeds_absolute_path_with_bare_name_fallback():
 
 
 def test_install_embeds_resolved_executable_and_python_paths(tmp_path, monkeypatch):
-    from agent_chronicle import hooks as hooks_module
+    from agentacct import hooks as hooks_module
 
     stub = _write_stub_sentinel(tmp_path / "venvbin" / "agent-chronicle", stdout="{}")
-    monkeypatch.setattr(hooks_module, "resolve_agent_chronicle_executable", lambda: str(stub))
+    monkeypatch.setattr(hooks_module, "resolve_agentacct_executable", lambda: str(stub))
 
     result = CliRunner().invoke(app, ["hooks", "claude-code", "install", "--project-dir", str(tmp_path)])
 
@@ -796,9 +796,9 @@ def test_install_embeds_resolved_executable_and_python_paths(tmp_path, monkeypat
 
 
 def test_install_warns_when_no_absolute_executable_resolvable(tmp_path, monkeypatch):
-    from agent_chronicle import hooks as hooks_module
+    from agentacct import hooks as hooks_module
 
-    monkeypatch.setattr(hooks_module, "resolve_agent_chronicle_executable", lambda: None)
+    monkeypatch.setattr(hooks_module, "resolve_agentacct_executable", lambda: None)
 
     result = CliRunner().invoke(app, ["hooks", "claude-code", "install", "--project-dir", str(tmp_path)])
 
@@ -808,9 +808,9 @@ def test_install_warns_when_no_absolute_executable_resolvable(tmp_path, monkeypa
     assert "AGENT_CHRONICLE_CANDIDATES = ['agentacct', 'agent-chronicle', 'agent-sentinel']" in wrapper_text
 
 
-def test_wrapper_fails_open_when_agent_chronicle_is_unresolvable(tmp_path):
+def test_wrapper_fails_open_when_agentacct_is_unresolvable(tmp_path):
     """Regression: venv-only installs must not error the hook on every tool call."""
-    from agent_chronicle.hooks import render_claude_hook_wrapper
+    from agentacct.hooks import render_claude_hook_wrapper
 
     wrapper = tmp_path / "claude_pre_tool_use.py"
     wrapper.write_text(render_claude_hook_wrapper(str(tmp_path / "gone" / "agent-chronicle")))
@@ -827,7 +827,7 @@ def test_wrapper_fails_open_when_agent_chronicle_is_unresolvable(tmp_path):
 
 
 def test_wrapper_uses_embedded_absolute_path_without_shell_path(tmp_path):
-    from agent_chronicle.hooks import render_claude_hook_wrapper
+    from agentacct.hooks import render_claude_hook_wrapper
 
     canned = json.dumps({"agent_sentinel": {"decision": "checkpoint", "risk": "medium", "reason": "stub decision"}})
     stub = _write_stub_sentinel(tmp_path / "venv" / "bin" / "agent-chronicle", stdout=canned)
@@ -843,7 +843,7 @@ def test_wrapper_uses_embedded_absolute_path_without_shell_path(tmp_path):
 
 
 def test_wrapper_falls_back_to_path_lookup_when_embedded_path_moved(tmp_path):
-    from agent_chronicle.hooks import render_claude_hook_wrapper
+    from agentacct.hooks import render_claude_hook_wrapper
 
     canned = json.dumps({"agent_sentinel": {"decision": "allow", "risk": "low", "reason": "stub decision"}})
     stub = _write_stub_sentinel(tmp_path / "pathbin" / "agent-chronicle", stdout=canned)
@@ -857,7 +857,7 @@ def test_wrapper_falls_back_to_path_lookup_when_embedded_path_moved(tmp_path):
 
 
 def test_wrapper_fails_open_when_cli_crashes_or_returns_no_decision(tmp_path):
-    from agent_chronicle.hooks import render_claude_hook_wrapper
+    from agentacct.hooks import render_claude_hook_wrapper
 
     empty_bin = tmp_path / "emptybin"
     empty_bin.mkdir()
@@ -884,9 +884,9 @@ def test_wrapper_fails_open_when_cli_crashes_or_returns_no_decision(tmp_path):
 
 def test_installed_wrapper_end_to_end_without_shell_path(tmp_path):
     """The exact dogfood scenario: a fresh install must survive a PATH-less hook environment."""
-    from agent_chronicle.hooks import resolve_agent_chronicle_executable
+    from agentacct.hooks import resolve_agentacct_executable
 
-    if resolve_agent_chronicle_executable() is None:
+    if resolve_agentacct_executable() is None:
         pytest.skip("no agent-chronicle executable available in this environment")
     install = CliRunner().invoke(app, ["hooks", "claude-code", "install", "--project-dir", str(tmp_path)])
     assert install.exit_code == 0
@@ -902,7 +902,7 @@ def test_installed_wrapper_end_to_end_without_shell_path(tmp_path):
 
 
 def test_wrapper_executable_candidates_parses_new_and_legacy_formats():
-    from agent_chronicle.hooks import render_claude_hook_wrapper, wrapper_executable_candidates
+    from agentacct.hooks import render_claude_hook_wrapper, wrapper_executable_candidates
 
     new = render_claude_hook_wrapper("/opt/venv/bin/agent-chronicle")
     assert wrapper_executable_candidates(new) == ["/opt/venv/bin/agent-chronicle", "agentacct", "agent-chronicle", "agent-sentinel"]
@@ -915,7 +915,7 @@ def test_wrapper_executable_candidates_parses_new_and_legacy_formats():
 
 
 def test_hook_doctor_flags_legacy_path_dependent_install(tmp_path):
-    from agent_chronicle.hooks import claude_code_hook_doctor_checks
+    from agentacct.hooks import claude_code_hook_doctor_checks
 
     hook_path = tmp_path / ".agent-sentinel" / "hooks" / "claude_pre_tool_use.py"
     hook_path.parent.mkdir(parents=True)
@@ -940,10 +940,10 @@ def test_hook_doctor_flags_legacy_path_dependent_install(tmp_path):
 
 
 def test_hook_doctor_ok_after_fresh_install_with_resolvable_paths(tmp_path, monkeypatch):
-    from agent_chronicle import hooks as hooks_module
+    from agentacct import hooks as hooks_module
 
     stub = _write_stub_sentinel(tmp_path / "venv" / "bin" / "agent-chronicle", stdout="{}")
-    monkeypatch.setattr(hooks_module, "resolve_agent_chronicle_executable", lambda: str(stub))
+    monkeypatch.setattr(hooks_module, "resolve_agentacct_executable", lambda: str(stub))
     install = CliRunner().invoke(app, ["hooks", "claude-code", "install", "--project-dir", str(tmp_path)])
     assert install.exit_code == 0
 
@@ -954,7 +954,7 @@ def test_hook_doctor_ok_after_fresh_install_with_resolvable_paths(tmp_path, monk
 
 
 def test_hook_doctor_validates_active_settings_files(tmp_path):
-    from agent_chronicle.hooks import claude_code_hook_doctor_checks
+    from agentacct.hooks import claude_code_hook_doctor_checks
 
     stub = _write_stub_sentinel(tmp_path / "venv" / "bin" / "agent-chronicle", stdout="{}")
     claude_dir = tmp_path / ".claude"
@@ -1017,7 +1017,7 @@ def test_doctor_cli_flags_path_dependent_hooks(tmp_path):
 
 
 def test_wrapper_forwards_hook_event_to_cli_stdin(tmp_path):
-    from agent_chronicle.hooks import render_claude_hook_wrapper
+    from agentacct.hooks import render_claude_hook_wrapper
 
     echo = _write_stub_sentinel(tmp_path / "venv" / "bin" / "agent-chronicle", echo_stdin=True)
     wrapper = tmp_path / "claude_pre_tool_use.py"
@@ -1055,7 +1055,7 @@ def _run_wrapper_bytes(wrapper_path: Path, payload: bytes, *, path_env: str) -> 
 def test_wrapper_fail_open_shape_survives_undecodable_stdin(tmp_path):
     """Invalid UTF-8 on stdin must not lose the hook event: a SessionStart
     payload still fails open to {}, never to the PreToolUse allow-decision."""
-    from agent_chronicle.hooks import render_claude_hook_wrapper
+    from agentacct.hooks import render_claude_hook_wrapper
 
     wrapper = tmp_path / "claude_pre_tool_use.py"
     wrapper.write_text(render_claude_hook_wrapper(str(tmp_path / "gone" / "agent-chronicle")))
@@ -1078,7 +1078,7 @@ def test_wrapper_fail_open_shape_survives_undecodable_stdin(tmp_path):
 def test_doctor_flags_wrapper_that_predates_session_start_support(tmp_path):
     """Version skew: an old wrapper (no SessionStart dispatch) wired to the new
     settings entry silently answers session starts with an allow-decision."""
-    from agent_chronicle import hooks as hooks_module
+    from agentacct import hooks as hooks_module
 
     hook_path = tmp_path / ".agent-sentinel" / "hooks" / "claude_pre_tool_use.py"
     hook_path.parent.mkdir(parents=True)
@@ -1102,7 +1102,7 @@ def test_doctor_flags_wrapper_that_predates_session_start_support(tmp_path):
 
 
 def test_wrapper_fails_open_on_undecodable_cli_output(tmp_path):
-    from agent_chronicle.hooks import render_claude_hook_wrapper
+    from agentacct.hooks import render_claude_hook_wrapper
 
     garbage = _write_stub_sentinel(tmp_path / "venv" / "bin" / "agent-chronicle", raw_stdout_escape="\\377\\376")
     wrapper = tmp_path / "claude_pre_tool_use.py"
@@ -1127,7 +1127,7 @@ def test_wrapper_fails_open_on_undecodable_cli_output(tmp_path):
 
 def test_install_force_migrates_legacy_install_to_embedded_paths(tmp_path, monkeypatch):
     """The remediation every warn message prescribes must actually work."""
-    from agent_chronicle import hooks as hooks_module
+    from agentacct import hooks as hooks_module
 
     # A pre-relocation (F3) install: the wrapper lives under the store dir.
     legacy_hook_path = tmp_path / ".agent-sentinel" / "hooks" / "claude_pre_tool_use.py"
@@ -1137,7 +1137,7 @@ def test_install_force_migrates_legacy_install_to_embedded_paths(tmp_path, monke
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text(json.dumps({"hooks": {"PreToolUse": []}}))
     stub = _write_stub_sentinel(tmp_path / "venv" / "bin" / "agent-chronicle", stdout="{}")
-    monkeypatch.setattr(hooks_module, "resolve_agent_chronicle_executable", lambda: str(stub))
+    monkeypatch.setattr(hooks_module, "resolve_agentacct_executable", lambda: str(stub))
 
     result = CliRunner().invoke(app, ["hooks", "claude-code", "install", "--project-dir", str(tmp_path), "--force"])
 
@@ -1158,9 +1158,9 @@ def test_install_force_migrates_legacy_install_to_embedded_paths(tmp_path, monke
 def test_install_writes_utf8_wrapper_for_non_ascii_paths(tmp_path, monkeypatch):
     import ast
 
-    from agent_chronicle import hooks as hooks_module
+    from agentacct import hooks as hooks_module
 
-    monkeypatch.setattr(hooks_module, "resolve_agent_chronicle_executable", lambda: "/opt/josé-venv/bin/agent-sentinel")
+    monkeypatch.setattr(hooks_module, "resolve_agentacct_executable", lambda: "/opt/josé-venv/bin/agent-sentinel")
 
     result = CliRunner().invoke(app, ["hooks", "claude-code", "install", "--project-dir", str(tmp_path)])
 
@@ -1172,7 +1172,7 @@ def test_install_writes_utf8_wrapper_for_non_ascii_paths(tmp_path, monkeypatch):
 
 
 def test_diagnose_hook_command_supports_braced_project_dir_form(tmp_path):
-    from agent_chronicle.hooks import diagnose_hook_command
+    from agentacct.hooks import diagnose_hook_command
 
     hook_path = tmp_path / ".agent-sentinel" / "hooks" / "claude_pre_tool_use.py"
     hook_path.parent.mkdir(parents=True)
@@ -1187,7 +1187,7 @@ def test_diagnose_hook_command_supports_braced_project_dir_form(tmp_path):
 
 
 def test_diagnose_hook_command_warns_on_single_quoted_project_dir(tmp_path):
-    from agent_chronicle.hooks import diagnose_hook_command
+    from agentacct.hooks import diagnose_hook_command
 
     # sh does not expand $CLAUDE_PROJECT_DIR inside single quotes: python
     # would exit 2 (a Claude Code blocking error) before the fail-open
@@ -1201,7 +1201,7 @@ def test_diagnose_hook_command_warns_on_single_quoted_project_dir(tmp_path):
 
 
 def test_diagnose_hook_command_flags_windows_style_commands_as_unverifiable(tmp_path):
-    from agent_chronicle.hooks import diagnose_hook_command
+    from agentacct.hooks import diagnose_hook_command
 
     status, details = diagnose_hook_command(
         "C:\\proj\\.venv\\Scripts\\agent-chronicle.exe hooks claude-code pre-tool-use", tmp_path
@@ -1212,7 +1212,7 @@ def test_diagnose_hook_command_flags_windows_style_commands_as_unverifiable(tmp_
 
 
 def test_diagnose_wrapper_relative_candidate_resolves_against_project_dir(tmp_path):
-    from agent_chronicle.hooks import diagnose_wrapper_executables
+    from agentacct.hooks import diagnose_wrapper_executables
 
     _write_stub_sentinel(tmp_path / ".venv" / "bin" / "agent-chronicle", stdout="{}")
     wrapper_text = 'AGENT_CHRONICLE_CANDIDATES = [".venv/bin/agent-chronicle"]\n'
@@ -1230,7 +1230,7 @@ def test_diagnose_wrapper_relative_candidate_resolves_against_project_dir(tmp_pa
 
 
 def test_hook_doctor_warns_on_unreadable_or_malformed_files(tmp_path):
-    from agent_chronicle.hooks import claude_code_hook_doctor_checks
+    from agentacct.hooks import claude_code_hook_doctor_checks
 
     hook_path = tmp_path / ".agent-sentinel" / "hooks" / "claude_pre_tool_use.py"
     hook_path.parent.mkdir(parents=True)
@@ -1254,7 +1254,7 @@ def test_hook_doctor_warns_on_unreadable_or_malformed_files(tmp_path):
 
 
 def test_derive_claude_code_client_context_posix_paths_unchanged():
-    from agent_chronicle.hooks import derive_claude_code_client_context
+    from agentacct.hooks import derive_claude_code_client_context
 
     context = derive_claude_code_client_context(
         {
@@ -1273,8 +1273,8 @@ def test_hook_capture_honors_env_store_dir_first(tmp_path: Path, monkeypatch):
     exactly like every consumer (mcp serve, CLI, doctor), so an env-configured
     setup can never split hook writes from server reads (the split allowed
     cross-project inheritance at high confidence)."""
-    from agent_chronicle.hooks import capture_claude_code_client_context
-    from agent_chronicle.store_resolution import resolve_store_dir
+    from agentacct.hooks import capture_claude_code_client_context
+    from agentacct.store_resolution import resolve_store_dir
 
     env_store = tmp_path / "env-store"
     env_store.mkdir()
@@ -1298,7 +1298,7 @@ def test_hook_capture_refuses_relative_env_store_dir(tmp_path: Path, monkeypatch
     """A relative env value is refused by resolve_store_dir for every consumer;
     capturing into a diverging store would re-open the split, so the hook
     captures nothing."""
-    from agent_chronicle.hooks import capture_claude_code_client_context
+    from agentacct.hooks import capture_claude_code_client_context
 
     project = tmp_path / "project"
     (project / ".agent-sentinel" / "state").mkdir(parents=True)
@@ -1328,8 +1328,8 @@ def _session_start_event(session_id="3778e5d9-aaaa-bbbb-cccc-1234567890ab", cwd=
 
 
 def test_session_start_response_injects_recording_directive():
-    from agent_chronicle import install_guide
-    from agent_chronicle.hooks import claude_session_start_response
+    from agentacct import install_guide
+    from agentacct.hooks import claude_session_start_response
 
     response = claude_session_start_response(json.dumps(_session_start_event()))
 
@@ -1340,14 +1340,14 @@ def test_session_start_response_injects_recording_directive():
     assert context == install_guide.SESSION_START_ADDITIONAL_CONTEXT
     assert context == install_guide.session_start_additional_context()
     # The directive core: record sections, load deferred tools first, honesty.
-    assert "sentinel_record_section" in context
+    assert "agentacct_record_section" in context
     assert "BEFORE your first other tool call" in context
     assert "load them first" in context
     assert "never fabricate" in context
 
 
 def test_session_start_response_empty_for_subagent_and_malformed():
-    from agent_chronicle.hooks import claude_session_start_response
+    from agentacct.hooks import claude_session_start_response
 
     # Subagent sessions (agent identity fields populated) get a no-op response:
     # the ROOT session owns the semantic goal; child sections would be noise.
@@ -1371,7 +1371,7 @@ def test_session_start_cli_writes_context_and_prints_additional_context(tmp_path
     assert result.exit_code == 0
     response = json.loads(result.output.strip().splitlines()[-1])
     assert response["hookSpecificOutput"]["hookEventName"] == "SessionStart"
-    assert "sentinel_record_section" in response["hookSpecificOutput"]["additionalContext"]
+    assert "agentacct_record_section" in response["hookSpecificOutput"]["additionalContext"]
     # Context captured from the very start of the session — before any tool call.
     legacy_slot = store / "client-context" / "claude-code.json"
     assert legacy_slot.exists()
@@ -1411,7 +1411,7 @@ def _write_argv_recording_stub(path: Path, args_file: Path, *, stdout: str) -> P
 
 
 def test_wrapper_dispatches_on_hook_event_name(tmp_path):
-    from agent_chronicle.hooks import render_claude_hook_wrapper
+    from agentacct.hooks import render_claude_hook_wrapper
 
     args_file = tmp_path / "argv.txt"
     stub = _write_argv_recording_stub(tmp_path / "venv" / "bin" / "agent-chronicle", args_file, stdout="{}")
@@ -1437,7 +1437,7 @@ def test_wrapper_dispatches_on_hook_event_name(tmp_path):
 
 def test_wrapper_fails_open_with_empty_object_for_session_start(tmp_path):
     """A broken install must not inject an allow-decision into SessionStart."""
-    from agent_chronicle.hooks import render_claude_hook_wrapper
+    from agentacct.hooks import render_claude_hook_wrapper
 
     wrapper = tmp_path / "claude_pre_tool_use.py"
     wrapper.write_text(render_claude_hook_wrapper(str(tmp_path / "gone" / "agent-chronicle")))
@@ -1497,7 +1497,7 @@ def test_install_output_explains_why_the_env_block_matters(tmp_path):
 
 
 def test_hook_doctor_warns_when_active_settings_lack_enable_tool_search(tmp_path):
-    from agent_chronicle.hooks import claude_code_hook_doctor_checks
+    from agentacct.hooks import claude_code_hook_doctor_checks
 
     stub = _write_stub_sentinel(tmp_path / "venv" / "bin" / "agent-chronicle", stdout="{}")
     claude_dir = tmp_path / ".claude"
@@ -1523,7 +1523,7 @@ def test_hook_doctor_warns_when_active_settings_lack_enable_tool_search(tmp_path
 
 
 def test_hook_doctor_reports_ok_when_active_settings_set_enable_tool_search(tmp_path):
-    from agent_chronicle.hooks import claude_code_hook_doctor_checks
+    from agentacct.hooks import claude_code_hook_doctor_checks
 
     claude_dir = tmp_path / ".claude"
     claude_dir.mkdir(parents=True)
@@ -1540,7 +1540,7 @@ def test_hook_doctor_ok_for_all_upfront_enabling_values(tmp_path):
     """ENABLE_TOOL_SEARCH values that keep tools loaded upfront read ok: the
     documented `auto`, its `auto:N` threshold form, and `false` (which disables
     tool-search deferral entirely)."""
-    from agent_chronicle.hooks import claude_code_hook_doctor_checks
+    from agentacct.hooks import claude_code_hook_doctor_checks
 
     for index, value in enumerate(("auto", "auto:5", "false", False)):
         claude_dir = tmp_path / f"case_{index}" / ".claude"
@@ -1557,7 +1557,7 @@ def test_hook_doctor_warns_for_deferral_forcing_enable_tool_search_value(tmp_pat
     read ok: the Chronicle MCP tools stay deferred and un-primed sessions record
     nothing — the exact failure this doctor row exists to catch. The warn names
     the offending value."""
-    from agent_chronicle.hooks import claude_code_hook_doctor_checks
+    from agentacct.hooks import claude_code_hook_doctor_checks
 
     for index, value in enumerate(("true", True, "0", "")):
         claude_dir = tmp_path / f"case_{index}" / ".claude"
@@ -1575,7 +1575,7 @@ def test_hook_doctor_emits_no_env_row_without_active_settings_files(tmp_path):
     """A fresh install has only the EXAMPLE settings (which always carry the
     key): with no active settings file merged yet there is nothing to judge,
     and a warn here would flag every fresh install before its first merge."""
-    from agent_chronicle.hooks import claude_code_hook_doctor_checks
+    from agentacct.hooks import claude_code_hook_doctor_checks
 
     CliRunner().invoke(app, ["hooks", "claude-code", "install", "--project-dir", str(tmp_path)])
 
@@ -1589,7 +1589,7 @@ def test_hook_wrapper_survives_a_store_dir_move(tmp_path):
     or renaming the store (a normal admin action) can't vanish it. A vanished
     wrapper makes `python <gone>` fail closed, and a "*" PreToolUse hook that fails
     closed then blocks EVERY tool call in every running session (observed live)."""
-    from agent_chronicle.hooks import CLAUDE_HOOK_RELATIVE_PATH
+    from agentacct.hooks import CLAUDE_HOOK_RELATIVE_PATH
 
     assert ".agent-sentinel" not in CLAUDE_HOOK_RELATIVE_PATH.parts, CLAUDE_HOOK_RELATIVE_PATH
     (tmp_path / ".agent-sentinel" / "state").mkdir(parents=True)
@@ -1606,7 +1606,7 @@ def test_pre_tool_use_subcommand_fails_open_on_internal_error(monkeypatch):
     """F3: the PreToolUse subcommand must NEVER exit non-zero — a crash would make
     Claude Code block the tool call. On any internal error it emits an allow
     decision and exits 0 (fail open)."""
-    from agent_chronicle import cli as cli_module
+    from agentacct import cli as cli_module
 
     def _boom(_raw):
         raise RuntimeError("boom")
@@ -1622,7 +1622,7 @@ def test_pre_tool_use_subcommand_fails_open_on_internal_error(monkeypatch):
 def test_session_start_subcommand_fails_open_on_internal_error(monkeypatch):
     """F3: a SessionStart subcommand crash must not break session startup; it
     emits the empty no-op response and exits 0."""
-    from agent_chronicle import cli as cli_module
+    from agentacct import cli as cli_module
 
     def _boom(_raw):
         raise RuntimeError("boom")

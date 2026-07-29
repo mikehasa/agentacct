@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from agent_chronicle.evidence_runtime import EVIDENCE_V2_ENV, EvidenceRuntime, evidence_v2_enabled
-from agent_chronicle.service import SentinelService
+from agentacct.evidence_runtime import EVIDENCE_V2_ENV, EvidenceRuntime, evidence_v2_enabled
+from agentacct.service import SentinelService
 
 
 def _v1_event() -> dict[str, object]:

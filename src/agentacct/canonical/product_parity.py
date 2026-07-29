@@ -25,9 +25,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from agent_chronicle.task_projection import build_task_projection
-from agent_chronicle.usage_truth import normalized_local_usage_session_id
-from agent_chronicle.work_ledger import build_work_ledger
+from agentacct.task_projection import build_task_projection
+from agentacct.usage_truth import normalized_local_usage_session_id
+from agentacct.work_ledger import build_work_ledger
 
 from .legacy_import import MigrationReport
 from .migration_archive import RecoveryIdentity, VerifiedRecoveryPlan

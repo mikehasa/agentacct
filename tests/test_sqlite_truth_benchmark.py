@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.canonical import safe_scratch
+from agentacct.canonical import safe_scratch
 
 
 _HARNESS_PATH = Path(__file__).resolve().parents[1] / "benchmarks" / "sqlite_truth_benchmark.py"
@@ -44,7 +44,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-from agent_chronicle.canonical.sqlite import CanonicalStore
+from agentacct.canonical.sqlite import CanonicalStore
 
 
 def _create_candidate(path):

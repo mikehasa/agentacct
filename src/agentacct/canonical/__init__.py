@@ -3,7 +3,7 @@
 Offline writers (importer, recovery, benchmarks) still require an explicit
 candidate path or a verified offline snapshot and refuse live state roots.
 Since migration phase 3 the runtime additionally imports this package through
-exactly one sanctioned seam — ``agent_chronicle.canonical_live``, the
+exactly one sanctioned seam — ``agentacct.canonical_live``, the
 flag-gated live shadow writer targeting ``CanonicalStore.open_live`` — and
 that import is lazy: with the flag off, nothing here loads or runs.
 """

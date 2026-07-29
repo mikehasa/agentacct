@@ -20,24 +20,24 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-from agent_chronicle.canonical.legacy_import import import_legacy_snapshot
-from agent_chronicle.canonical.product_parity import (
+from agentacct.canonical.legacy_import import import_legacy_snapshot
+from agentacct.canonical.product_parity import (
     ProductParityError,
     SUPPORTED_LEGACY_MANIFEST_KINDS,
     build_legacy_product_parity_report,
 )
-from agent_chronicle.canonical.safe_scratch import (
+from agentacct.canonical.safe_scratch import (
     AnchoredRunDirectory,
     ScratchSafetyError,
     create_anchored_run_directory,
 )
-from agent_chronicle.canonical.snapshot import (
+from agentacct.canonical.snapshot import (
     SnapshotManifest,
     SnapshotSafetyError,
     VerifiedSnapshot,
 )
-from agent_chronicle.canonical.sqlite import CanonicalStore
-from agent_chronicle.store_resolution import (
+from agentacct.canonical.sqlite import CanonicalStore
+from agentacct.store_resolution import (
     ENV_STORE_DIR,
     LEGACY_ENV_STORE_DIR,
 )

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.task_continuations import (
+from agentacct.task_continuations import (
     CONTINUATION_ACTIONS_FILENAME,
     CONTINUATION_STORE_DIRNAME,
     USER_CONFIRMATION,

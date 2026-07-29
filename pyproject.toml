@@ -54,9 +54,9 @@ Repository = "https://github.com/mikehasa/agentacct"
 Issues = "https://github.com/mikehasa/agentacct/issues"
 
 [project.scripts]
-agentacct = "agent_chronicle.cli:app"
-agentacct-claude = "agent_chronicle.wrappers:sentinel_claude_main"
-agentacct-codex = "agent_chronicle.wrappers:sentinel_codex_main"
+agentacct = "agentacct.cli:app"
+agentacct-claude = "agentacct.wrappers:sentinel_claude_main"
+agentacct-codex = "agentacct.wrappers:sentinel_codex_main"
 
 # Artifacts ship src/ packages only. tests/ is excluded from BOTH the wheel
 # (src-layout find below) and the sdist (MANIFEST.in prunes): the shipped
@@ -67,7 +67,7 @@ agentacct-codex = "agent_chronicle.wrappers:sentinel_codex_main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"agent_chronicle.canonical" = ["schema.sql"]
+"agentacct.canonical" = ["schema.sql"]
 
 [tool.pytest.ini_options]
 # Include the repo root ("." after src) so cross-test helper imports like

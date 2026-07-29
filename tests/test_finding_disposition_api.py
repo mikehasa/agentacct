@@ -8,9 +8,9 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from agent_chronicle.api import DASHBOARD_CSP, _finding_form_token, create_local_api_app
-from agent_chronicle.service import SentinelService
-from agent_chronicle.work_ledger import build_evidence_events
+from agentacct.api import DASHBOARD_CSP, _finding_form_token, create_local_api_app
+from agentacct.service import SentinelService
+from agentacct.work_ledger import build_evidence_events
 
 
 def _record_root_usage(service: SentinelService, *, session_id: str) -> None:

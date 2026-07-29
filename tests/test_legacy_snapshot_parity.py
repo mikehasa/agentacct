@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.client_usage import ClientUsageEvent
-from agent_chronicle.canonical import safe_scratch
-from agent_chronicle.usage_truth import mark_trusted_local_usage_import_event
+from agentacct.client_usage import ClientUsageEvent
+from agentacct.canonical import safe_scratch
+from agentacct.usage_truth import mark_trusted_local_usage_import_event
 
 
 _RUNNER_PATH = (

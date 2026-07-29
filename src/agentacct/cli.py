@@ -338,10 +338,10 @@ Use agentacct in observe-only mode.
 - If a project-local store exists, keep `.agent-sentinel/state/` and local env files gitignored (a global install keeps its store outside any repo, so there is nothing to ignore).
 - Do not connect provider API keys unless the user explicitly asks for provider cost proxy/forwarding.
 - If the agentacct MCP tools are available, use them as the normal workflow ledger:
-  - call `sentinel_attach_client_context` when local session, parent session, turn, request, or message IDs are known;
-  - open a section with `sentinel_record_section` (`section_status=started`) before meaningful work; use `section_status=checkpoint` while it progresses;
-  - call `sentinel_record_agent_usage_debug` when the client exposes visible token/cost usage, or with `reporting_basis=unavailable` when it does not;
-  - record machine-check evidence after tests/builds with `sentinel_record_machine_check` or `sentinel_record_event`;
+  - call `agentacct_attach_client_context` when local session, parent session, turn, request, or message IDs are known;
+  - open a section with `agentacct_record_section` (`section_status=started`) before meaningful work; use `section_status=checkpoint` while it progresses;
+  - call `agentacct_record_agent_usage_debug` when the client exposes visible token/cost usage, or with `reporting_basis=unavailable` when it does not;
+  - record machine-check evidence after tests/builds with `agentacct_record_machine_check` or `agentacct_record_event`;
   - finish the section with `section_status=completed` or `section_status=blocked` and include objective evidence.
 - Keep MCP/event claims separate from usage/cost claims. MCP events prove that the agent recorded work and semantic context; agent usage debug events are comparison evidence only. A client-reported token usage claim requires a supported local usage importer or explicit client JSON output.
 - After meaningful work, show the run/report path or event summary and summarize objective evidence: tests, build result, changed files, tool calls, token/cost data if actually observed, and repeated errors.
@@ -504,7 +504,7 @@ def _limited_text(value: str | None, *, field: str, max_length: int) -> str | No
     return value
 
 
-def _current_agent_chronicle_executable() -> str | None:
+def _current_agentacct_executable() -> str | None:
     candidate = Path(sys.argv[0]).expanduser()
     # agentacct is the published console command; "agent-chronicle" /
     # "agent-sentinel" are pre-rename aliases of the same entry point.
@@ -525,7 +525,7 @@ def _managed_runtime(
     project_dir: Path | None = None,
 ) -> RuntimeManager:
     executable = (
-        _current_agent_chronicle_executable()
+        _current_agentacct_executable()
         or shutil.which("agentacct")
         or shutil.which("agent-chronicle")
         or shutil.which("agent-sentinel")
@@ -650,7 +650,7 @@ def _resolve_mcp_command(value: str | None) -> str:
     if shutil.which("agent-sentinel"):
         # Pre-rename installs: only the oldest binary name is on PATH.
         return "agent-sentinel"
-    return _current_agent_chronicle_executable() or "agentacct"
+    return _current_agentacct_executable() or "agentacct"
 
 
 def _resolve_absolute_mcp_command() -> str:
@@ -666,7 +666,7 @@ def _resolve_absolute_mcp_command() -> str:
         found = shutil.which(name)
         if found:
             return found
-    return _current_agent_chronicle_executable() or "agentacct"
+    return _current_agentacct_executable() or "agentacct"
 
 
 def _parse_metadata_json(value: str | None) -> dict[str, object]:
@@ -2815,8 +2815,8 @@ def claude_code_install(
     prefix = "Dry run: would write" if dry_run else "Wrote"
     print(f"{prefix} hook wrapper: {install.hook_path}")
     print(f"{prefix} example settings: {install.settings_path}")
-    if install.agent_chronicle_executable:
-        print(f"Hook wrapper executes agentacct via install-time absolute path: {install.agent_chronicle_executable}")
+    if install.agentacct_executable:
+        print(f"Hook wrapper executes agentacct via install-time absolute path: {install.agentacct_executable}")
     else:
         print(
             "Warning: no absolute agentacct executable could be resolved; the wrapper will rely on PATH at hook time, "
@@ -3773,7 +3773,7 @@ def _mcp_doctor_write_probe() -> tuple[dict[str, object], dict[str, str]]:
     try:
         server = SentinelMCPServer(store_dir=temp_store)
         result = server.call_tool(
-            "sentinel_record_event",
+            "agentacct_record_event",
             {
                 # Diagnostic signature: this type/source pair MUST stay
                 # registered in usage_truth.DIAGNOSTIC_EVENT_TYPES/_SOURCES or
@@ -3784,7 +3784,7 @@ def _mcp_doctor_write_probe() -> tuple[dict[str, object], dict[str, str]]:
                 "metadata": {"summary": "safe local MCP doctor test event (throwaway temp store)"},
             },
         )
-        listed = server.call_tool("sentinel_list_events", {"limit": 20, "run_id": "mcp_doctor_test"})
+        listed = server.call_tool("agentacct_list_events", {"limit": 20, "run_id": "mcp_doctor_test"})
         recorded = json.loads(result["content"][0]["text"])["event"]
         listed_events = json.loads(listed["content"][0]["text"])["events"]
         recorded_event_id = recorded.get("event_id")

@@ -20,8 +20,8 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from agent_chronicle.canonical_live import CANONICAL_LIVE_ENV, CanonicalRebuildPolicy
-from agent_chronicle.canonical_read import (
+from agentacct.canonical_live import CANONICAL_LIVE_ENV, CanonicalRebuildPolicy
+from agentacct.canonical_read import (
     CANONICAL_READ_ENV,
     CanonicalReadRuntime,
     CanonicalReadUnavailable,
@@ -53,7 +53,7 @@ class _FakeClock:
 
 
 def _advance_canonical_sequence(store_root: Path) -> None:
-    from agent_chronicle.canonical.sqlite import CanonicalStore
+    from agentacct.canonical.sqlite import CanonicalStore
 
     store = CanonicalStore.open_live(store_root)
     try:
@@ -115,7 +115,7 @@ def test_health_probe_is_flag_independent(tmp_path):
 
 
 def test_health_probe_reports_never_built_projections(tmp_path):
-    from agent_chronicle.canonical.sqlite import CanonicalStore
+    from agentacct.canonical.sqlite import CanonicalStore
 
     store_root = tmp_path / "store-shadow"
     store_root.mkdir()
@@ -142,7 +142,7 @@ def test_health_probe_malformed_summary_is_error_shape_not_raise(tmp_path, monke
     malformed value out of a byte-corrupted store must become the honest
     error shape, exactly like a failing open."""
 
-    from agent_chronicle.canonical.sqlite import CanonicalRepository
+    from agentacct.canonical.sqlite import CanonicalRepository
 
     store_root = _imported_live_store(
         tmp_path, [_usage_event(event_id="evt_u1", created_at=1_700_000_000.0)], name="malformed"
@@ -206,7 +206,7 @@ def test_per_surface_error_lane_via_guarded_read(tmp_path, monkeypatch):
     surface_failure) must count on the surface lane exactly as on the
     aggregate — a lane that under-reports errors is silent wrong data."""
 
-    from agent_chronicle.canonical.sqlite import CanonicalRepository
+    from agentacct.canonical.sqlite import CanonicalRepository
 
     store_root = _imported_live_store(
         tmp_path, [_usage_event(event_id="evt_u1", created_at=1_700_000_000.0)], name="err-lane"
@@ -236,7 +236,7 @@ def test_reads_hold_one_read_snapshot(tmp_path, monkeypatch):
     gate (4.3 introduces the first live-store rm_* writer concurrent with
     request reads), and the snapshot is released when the read returns."""
 
-    from agent_chronicle.canonical.sqlite import CanonicalRepository
+    from agentacct.canonical.sqlite import CanonicalRepository
 
     store_root = _imported_live_store(
         tmp_path, [_usage_event(event_id="evt_u1", created_at=1_700_000_000.0)], name="snapshot"
@@ -313,7 +313,7 @@ def test_policy_rebuilds_the_live_shadow_shape_end_to_end(tmp_path):
     never-built read models (readers refuse). One policy tick rebuilds, and
     the SAME reader that refused now serves."""
 
-    from agent_chronicle.canonical_live import CanonicalLiveRuntime
+    from agentacct.canonical_live import CanonicalLiveRuntime
 
     store_root = tmp_path / "store"
     store_root.mkdir()
@@ -465,7 +465,7 @@ def test_policy_env_flag_gates_default_enablement(tmp_path, monkeypatch):
 
 
 def test_cli_canonical_health_json(tmp_path):
-    from agent_chronicle.cli import app
+    from agentacct.cli import app
 
     absent = runner.invoke(
         app, ["canonical", "health", "--store-dir", str(tmp_path / "empty"), "--json"]
@@ -488,7 +488,7 @@ def test_cli_canonical_health_json(tmp_path):
 
 
 def test_cli_canonical_rebuild_read_models(tmp_path):
-    from agent_chronicle.cli import app
+    from agentacct.cli import app
 
     store_root = _imported_live_store(
         tmp_path, [_usage_event(event_id="evt_u1", created_at=1_700_000_000.0)], name="cli-rb"
@@ -520,8 +520,8 @@ def test_cli_canonical_health_unresolved_store_dir_is_honest(tmp_path, monkeypat
     monitoring script keyed on 'exit 0, parse the probe' must not break
     because of its working directory."""
 
-    from agent_chronicle.cli import app
-    from agent_chronicle.store_resolution import ENV_STORE_DIR, LEGACY_ENV_STORE_DIR
+    from agentacct.cli import app
+    from agentacct.store_resolution import ENV_STORE_DIR, LEGACY_ENV_STORE_DIR
 
     monkeypatch.delenv(ENV_STORE_DIR, raising=False)
     monkeypatch.delenv(LEGACY_ENV_STORE_DIR, raising=False)
@@ -542,7 +542,7 @@ def test_cli_canonical_success_paths_human_output(tmp_path):
     """The non-JSON success formatting is operator surface too — it must not
     be reachable only by the first operator who runs it."""
 
-    from agent_chronicle.cli import app
+    from agentacct.cli import app
 
     store_root = _imported_live_store(
         tmp_path, [_usage_event(event_id="evt_u1", created_at=1_700_000_000.0)], name="cli-human"
@@ -563,8 +563,8 @@ def test_cli_canonical_rebuild_midway_failure_is_one_line_exit_2(tmp_path, monke
     same operator contract as the refusal paths: one line on stderr and
     exit 2, never a raw traceback."""
 
-    from agent_chronicle.canonical.sqlite import CanonicalRepository
-    from agent_chronicle.cli import app
+    from agentacct.canonical.sqlite import CanonicalRepository
+    from agentacct.cli import app
 
     store_root = _imported_live_store(
         tmp_path, [_usage_event(event_id="evt_u1", created_at=1_700_000_000.0)], name="cli-midfail"
@@ -583,7 +583,7 @@ def test_cli_canonical_rebuild_midway_failure_is_one_line_exit_2(tmp_path, monke
 
 
 def test_cli_canonical_rebuild_absent_store_exits_2(tmp_path):
-    from agent_chronicle.cli import app
+    from agentacct.cli import app
 
     result = runner.invoke(
         app, ["canonical", "rebuild-read-models", "--store-dir", str(tmp_path)]
@@ -598,7 +598,7 @@ def test_cli_canonical_rebuild_refuses_candidate_role(tmp_path):
 
     import shutil
 
-    from agent_chronicle.cli import app
+    from agentacct.cli import app
 
     candidate = _run_importer(
         tmp_path, [_usage_event(event_id="evt_u1", created_at=1_700_000_000.0)], name="cli-role"
@@ -622,7 +622,7 @@ def test_usage_watch_once_rebuilds_stale_canonical_store(tmp_path, monkeypatch):
     """One watcher tick (usage watch --once) with the shadow flag on performs
     the maintenance rebuild after a successful scan."""
 
-    from agent_chronicle.cli import app
+    from agentacct.cli import app
 
     events = _trusted([_usage_event(event_id="evt_u1", created_at=1_700_000_000.0)])
     store_dir = tmp_path / "store"
@@ -670,7 +670,7 @@ def test_usage_watch_once_json_rebuild_outcome_stays_json(tmp_path, monkeypatch)
     """--json's stdout contract is one JSON document per line; the rebuild
     notice must honor it too, not corrupt the stream with a plain-text line."""
 
-    from agent_chronicle.cli import app
+    from agentacct.cli import app
 
     events = _trusted([_usage_event(event_id="evt_u1", created_at=1_700_000_000.0)])
     store_dir = tmp_path / "store"
@@ -720,8 +720,8 @@ def test_usage_watch_once_failed_scan_skips_maintenance(tmp_path, monkeypatch):
     """Contract 1's 'after a SUCCESSFUL scan': a daemon whose scan fails must
     not perform writable canonical maintenance on that tick."""
 
-    from agent_chronicle import cli as cli_module
-    from agent_chronicle.cli import app
+    from agentacct import cli as cli_module
+    from agentacct.cli import app
 
     events = _trusted([_usage_event(event_id="evt_u1", created_at=1_700_000_000.0)])
     store_dir = tmp_path / "store"
@@ -745,7 +745,7 @@ def test_usage_watch_once_failed_scan_skips_maintenance(tmp_path, monkeypatch):
 
 
 def test_usage_watch_once_flag_off_touches_nothing(tmp_path, monkeypatch):
-    from agent_chronicle.cli import app
+    from agentacct.cli import app
 
     events = _trusted([_usage_event(event_id="evt_u1", created_at=1_700_000_000.0)])
     store_dir = tmp_path / "store"

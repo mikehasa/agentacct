@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.finding_disposition import (
+from agentacct.finding_disposition import (
     FINDING_DISPOSITION_CONTRACT_KEY,
     FINDING_DISPOSITION_CONTRACT_VERSION,
     FindingDispositionConflict,
@@ -16,8 +16,8 @@ from agent_chronicle.finding_disposition import (
     finding_target_digest,
     reduce_finding_dispositions,
 )
-from agent_chronicle.service import SentinelService
-from agent_chronicle.work_ledger import build_evidence_events
+from agentacct.service import SentinelService
+from agentacct.work_ledger import build_evidence_events
 
 
 def _record_failure(service: SentinelService, *, name: str = "Boundary probe") -> dict[str, object]:

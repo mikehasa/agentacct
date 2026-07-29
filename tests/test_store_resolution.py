@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.store_resolution import (
+from agentacct.store_resolution import (
     ENV_GLOBAL_STORE_DIR,
     ENV_STORE_DIR,
     StoreResolutionError,

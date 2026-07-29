@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from agent_chronicle.evidence_product import build_evidence_product
+from agentacct.evidence_product import build_evidence_product
 
 
 def _envelope(

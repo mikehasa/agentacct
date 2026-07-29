@@ -11,10 +11,10 @@ dogfood ledger)."""
 
 from fastapi.testclient import TestClient
 
-import agent_chronicle.api as api_module
-import agent_chronicle.service as service_module
-from agent_chronicle.api import DASHBOARD_CSP, UsageDiscoveryConfig, create_local_api_app
-from agent_chronicle.service import SentinelService
+import agentacct.api as api_module
+import agentacct.service as service_module
+from agentacct.api import DASHBOARD_CSP, UsageDiscoveryConfig, create_local_api_app
+from agentacct.service import SentinelService
 from refresh_flash import run_dashboard_refresh
 
 HTML_ACCEPT = {"Accept": "text/html"}
@@ -1783,8 +1783,8 @@ def test_health_service_recognizers_accept_both_brands():
     readiness check and the read canary still accept the pre-rename value, so a
     cross-version upgrade (old dashboard checked by newer code, or vice versa)
     never falsely reports the dashboard unhealthy / not-ours."""
-    from agent_chronicle.activation import RuntimeManager
-    from agent_chronicle.canonical.read_canary import _EXPECTED_SERVICES
+    from agentacct.activation import RuntimeManager
+    from agentacct.canonical.read_canary import _EXPECTED_SERVICES
 
     both = {"agentacct-local-api", "agent-sentinel-local-api"}
     assert set(RuntimeManager.DASHBOARD_HEALTH_SERVICES) == both

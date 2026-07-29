@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from agent_chronicle.canonical.legacy_recovery import (
+from agentacct.canonical.legacy_recovery import (
     LegacyRecoveryError,
     RECOVERY_DESIGN_ID,
     RecoveryClassification,
@@ -30,33 +30,33 @@ from agent_chronicle.canonical.legacy_recovery import (
     classify_legacy_recovery,
     replay_verified_recovery,
 )
-from agent_chronicle.canonical.live_paths import (
+from agentacct.canonical.live_paths import (
     LivePathSafetyError,
     paths_overlap,
     reject_live_state_overlap,
 )
-from agent_chronicle.canonical.migration_archive import (
+from agentacct.canonical.migration_archive import (
     MigrationArchiveError,
     VerifiedMigrationArchive,
     build_migration_archive,
     scan_snapshot_lines,
 )
-from agent_chronicle.canonical.product_parity import (
+from agentacct.canonical.product_parity import (
     RECOVERY_PRODUCT_ORACLE_CODE_VERSION,
     RECOVERY_PRODUCT_ORACLE_CONTRACT_VERSION,
     build_legacy_recovery_product_oracle_report,
 )
-from agent_chronicle.canonical.safe_scratch import (
+from agentacct.canonical.safe_scratch import (
     AnchoredRunDirectory,
     ScratchSafetyError,
     create_anchored_run_directory,
 )
-from agent_chronicle.canonical.snapshot import (
+from agentacct.canonical.snapshot import (
     SnapshotManifest,
     SnapshotSafetyError,
     VerifiedSnapshot,
 )
-from agent_chronicle.canonical.sqlite import CanonicalStore
+from agentacct.canonical.sqlite import CanonicalStore
 
 
 _ALLOWED_MANIFEST_KINDS = frozenset({"legacy", "legacy-chronicle"})

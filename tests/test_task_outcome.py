@@ -6,9 +6,9 @@ from typing import Any
 
 import pytest
 
-from agent_chronicle.api import _task_product_state
-from agent_chronicle.finding_disposition import finding_target_digest
-from agent_chronicle.task_intelligence import build_task_intelligence
+from agentacct.api import _task_product_state
+from agentacct.finding_disposition import finding_target_digest
+from agentacct.task_intelligence import build_task_intelligence
 
 
 def _check(result: str, *, created_at: float, event_id: str, identity: str = "check:test") -> dict[str, Any]:

@@ -4,14 +4,14 @@
 ``normal`` mode creates a deterministic synthetic JSONL corpus below an
 explicit scratch root. ``snapshot`` mode accepts only an explicit offline root
 and canonical manifest, delegates every source check to
-``agent_chronicle.canonical.snapshot``, and gives the benchmark hook only the
+``agentacct.canonical.snapshot``, and gives the benchmark hook only the
 manifest-declared file paths. The harness never discovers agentacct or coding
 client state.
 
 The hook contract is one callable accepting a JSON-compatible request mapping
 and returning a JSON-compatible mapping. The default target is::
 
-    agent_chronicle.canonical.benchmark:benchmark_sqlite_truth
+    agentacct.canonical.benchmark:benchmark_sqlite_truth
 
 The request contains a candidate database path beneath the per-run scratch
 directory. A hook must create that candidate and must not independently
@@ -38,28 +38,28 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from agent_chronicle.canonical.live_paths import (
+from agentacct.canonical.live_paths import (
     LivePathSafetyError,
     reject_live_state_overlap,
 )
-from agent_chronicle.canonical.safe_scratch import (
+from agentacct.canonical.safe_scratch import (
     AnchoredRunDirectory,
     ScratchSafetyError,
     create_anchored_run_directory,
 )
-from agent_chronicle.canonical.snapshot import (
+from agentacct.canonical.snapshot import (
     SNAPSHOT_MANIFEST_VERSION,
     SnapshotManifest,
     SnapshotSafetyError,
     VerifiedSnapshot,
 )
-from agent_chronicle.canonical.sqlite import CanonicalStore
+from agentacct.canonical.sqlite import CanonicalStore
 
 
 RESULT_SCHEMA_VERSION = "agent-chronicle.sqlite-truth-benchmark.v1"
 REQUEST_SCHEMA_VERSION = "agent-chronicle.sqlite-truth-benchmark-request.v1"
 MANIFEST_SCHEMA_VERSION = SNAPSHOT_MANIFEST_VERSION
-DEFAULT_HOOK = "agent_chronicle.canonical.benchmark:benchmark_sqlite_truth"
+DEFAULT_HOOK = "agentacct.canonical.benchmark:benchmark_sqlite_truth"
 MAX_NORMAL_RECORDS = 1_000_000
 SNAPSHOT_IMPORT_PROJECTION_LIMIT_SECONDS = 30.0
 SNAPSHOT_MAX_RSS_BYTES = 512 * 1024 * 1024

@@ -15,10 +15,10 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from agent_chronicle import cli as cli_module
-from agent_chronicle.cli import app
-from agent_chronicle.storage import RunStore
-from agent_chronicle.store_resolution import ENV_STORE_DIR
+from agentacct import cli as cli_module
+from agentacct.cli import app
+from agentacct.storage import RunStore
+from agentacct.store_resolution import ENV_STORE_DIR
 
 runner = CliRunner()
 

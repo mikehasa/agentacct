@@ -4,7 +4,7 @@ import json
 import sys
 from pathlib import Path
 
-from agent_chronicle.wrappers import CLAUDE_WRAPPER, CODEX_WRAPPER, _main, build_agent_command, run_agent_wrapper, split_wrapper_args
+from agentacct.wrappers import CLAUDE_WRAPPER, CODEX_WRAPPER, _main, build_agent_command, run_agent_wrapper, split_wrapper_args
 
 
 def test_sentinel_claude_wrapper_runs_child_under_sentinel_and_preserves_args(tmp_path, monkeypatch) -> None:
@@ -119,5 +119,5 @@ def test_wrapper_main_relays_child_output_and_returns_child_failure_code(tmp_pat
 def test_package_declares_public_wrapper_scripts() -> None:
     text = Path("pyproject.toml").read_text(encoding="utf-8")
 
-    assert 'agentacct-claude = "agent_chronicle.wrappers:sentinel_claude_main"' in text
-    assert 'agentacct-codex = "agent_chronicle.wrappers:sentinel_codex_main"' in text
+    assert 'agentacct-claude = "agentacct.wrappers:sentinel_claude_main"' in text
+    assert 'agentacct-codex = "agentacct.wrappers:sentinel_codex_main"' in text

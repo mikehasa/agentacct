@@ -16,8 +16,8 @@ import time
 
 from fastapi.testclient import TestClient
 
-from agent_chronicle.api import _session_join_filter_bucket, create_local_api_app
-from agent_chronicle.service import SentinelService
+from agentacct.api import _session_join_filter_bucket, create_local_api_app
+from agentacct.service import SentinelService
 
 HTML_ACCEPT = {"Accept": "text/html"}
 
@@ -383,7 +383,7 @@ def test_work_items_section_is_filter_aware_per_client_and_project(tmp_path):
 def test_work_item_filter_predicate_missing_fields_and_days(tmp_path):
     from datetime import date, datetime, timedelta
 
-    from agent_chronicle.api import _work_item_matches_filters
+    from agentacct.api import _work_item_matches_filters
 
     today = date(2026, 7, 10)
     range_start = today - timedelta(days=29)

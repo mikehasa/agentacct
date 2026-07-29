@@ -22,7 +22,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_chronicle.mcp import (
+from agentacct.mcp import (
     DEGRADED_NO_STORE_MESSAGE,
     read_mcp_message_with_framing,
     serve_stdio,
@@ -36,7 +36,7 @@ _REQUESTS = (
         "id": 3,
         "method": "tools/call",
         "params": {
-            "name": "sentinel_record_section",
+            "name": "agentacct_record_section",
             "arguments": {"source": "opencode", "section_id": "x", "section_status": "started"},
         },
     },
@@ -84,7 +84,7 @@ def test_serve_stdio_degraded_answers_handshake_and_errors_on_tool_call() -> Non
     init, tools, call = responses
 
     # initialize + tools/list answer exactly like the live server.
-    assert init["result"]["serverInfo"]["name"] == "agent-chronicle"
+    assert init["result"]["serverInfo"]["name"] == "agentacct"
     assert init["result"]["protocolVersion"] == "2024-11-05"
     assert "instructions" in init["result"]
     assert isinstance(tools["result"]["tools"], list) and tools["result"]["tools"]
@@ -109,7 +109,7 @@ def test_serve_stdio_unwritable_store_dir_degrades_instead_of_raising(tmp_path: 
 
     assert len(responses) == 3
     init, _tools, call = responses
-    assert init["result"]["serverInfo"]["name"] == "agent-chronicle"
+    assert init["result"]["serverInfo"]["name"] == "agentacct"
     assert call["error"]["code"] == -32000
     assert "not usable" in call["error"]["message"]
     assert str(bad_store) in call["error"]["message"]
@@ -134,7 +134,7 @@ def _serve_env(home: Path) -> dict[str, str]:
 
 def _run_serve(args: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, "-c", "from agent_chronicle.cli import app; app()", *args],
+        [sys.executable, "-c", "from agentacct.cli import app; app()", *args],
         input=_request_bytes(),
         cwd=str(cwd),
         env=env,
@@ -161,7 +161,7 @@ def test_storeless_mcp_serve_stays_connected_end_to_end(tmp_path: Path) -> None:
     responses = _parse_responses(proc.stdout)
     assert len(responses) == 3
     init, tools, call = responses
-    assert init["result"]["serverInfo"]["name"] == "agent-chronicle"
+    assert init["result"]["serverInfo"]["name"] == "agentacct"
     assert isinstance(tools["result"]["tools"], list) and tools["result"]["tools"]
     assert call["error"]["code"] == -32000
     assert "no store configured" in call["error"]["message"]
@@ -194,7 +194,7 @@ def test_unwritable_store_dir_mcp_serve_does_not_crash_end_to_end(tmp_path: Path
     responses = _parse_responses(proc.stdout)
     assert len(responses) == 3
     init, _tools, call = responses
-    assert init["result"]["serverInfo"]["name"] == "agent-chronicle"
+    assert init["result"]["serverInfo"]["name"] == "agentacct"
     assert call["error"]["code"] == -32000
     assert "not usable" in call["error"]["message"]
     assert not bad_store.exists()

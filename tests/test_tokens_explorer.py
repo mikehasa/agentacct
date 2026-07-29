@@ -19,10 +19,10 @@ from datetime import date, datetime, time as dtime, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
-import agent_chronicle.api as api_module
-from agent_chronicle.api import DashboardUsageRecord, _usage_record_time, create_local_api_app
-from agent_chronicle.service import SentinelService
-from agent_chronicle.usage_cube import (
+import agentacct.api as api_module
+from agentacct.api import DashboardUsageRecord, _usage_record_time, create_local_api_app
+from agentacct.service import SentinelService
+from agentacct.usage_cube import (
     build_usage_cube,
     client_lane_class,
     filter_usage_records,
@@ -1446,7 +1446,7 @@ def test_work_keeps_cost_compact_while_usage_owns_confidence(tmp_path):
 
 
 def test_pages_resolve_today_once_and_pass_it_to_the_cube(tmp_path, monkeypatch):
-    import agent_chronicle.usage_cube as usage_cube_module
+    import agentacct.usage_cube as usage_cube_module
 
     store_root = tmp_path / "state"
     _trusted_usage(store_root, session="today-sess", started_at=time.time() - 3600)

@@ -14,8 +14,8 @@ from typing import Any, Callable
 
 import pytest
 
-from agent_chronicle.client_usage import ClientUsageEvent
-from agent_chronicle.canonical.cutover import (
+from agentacct.client_usage import ClientUsageEvent
+from agentacct.canonical.cutover import (
     CUTOVER_RECEIPT_VERSION,
     CutoverError,
     CutoverPostReplaceError,
@@ -30,18 +30,18 @@ from agent_chronicle.canonical.cutover import (
     verify_promotion,
     write_promotion_receipt,
 )
-from agent_chronicle.canonical.legacy_import import (
+from agentacct.canonical.legacy_import import (
     LEGACY_EVENTS_ADAPTER,
     LEGACY_EVENTS_REPRESENTATION,
 )
-from agent_chronicle.canonical.migration_disposition_policy import (
+from agentacct.canonical.migration_disposition_policy import (
     build_migration_disposition_policy_evidence,
 )
-from agent_chronicle.canonical.product_parity import PRODUCT_PARITY_SCHEMA_VERSION
-from agent_chronicle.canonical.sqlite import CanonicalStore
-from agent_chronicle.canonical.types import SourceInstanceInput
-from agent_chronicle.canonical_live import LIVE_EVENTS_ADAPTER
-from agent_chronicle.usage_truth import mark_trusted_local_usage_import_event
+from agentacct.canonical.product_parity import PRODUCT_PARITY_SCHEMA_VERSION
+from agentacct.canonical.sqlite import CanonicalStore
+from agentacct.canonical.types import SourceInstanceInput
+from agentacct.canonical_live import LIVE_EVENTS_ADAPTER
+from agentacct.usage_truth import mark_trusted_local_usage_import_event
 
 
 _PARITY_RUNNER_PATH = (
@@ -695,7 +695,7 @@ def test_open_store_root_closes_descriptor_on_validation_exception(
     monkeypatch: pytest.MonkeyPatch,
     failure_point: str,
 ) -> None:
-    from agent_chronicle.canonical import cutover
+    from agentacct.canonical import cutover
 
     root = tmp_path / "store-root"
     root.mkdir()
@@ -900,7 +900,7 @@ def test_promotion_receipt_write_failure_after_replace_carries_receipt(
     preparation = prepare_cutover(candidate, report)
     receipt_path = _receipt_path(tmp_path)
 
-    from agent_chronicle.canonical import cutover
+    from agentacct.canonical import cutover
 
     original_write = cutover.write_promotion_receipt
     calls = 0
@@ -913,7 +913,7 @@ def test_promotion_receipt_write_failure_after_replace_carries_receipt(
         return original_write(path, receipt)  # type: ignore[arg-type]
 
     monkeypatch.setattr(
-        "agent_chronicle.canonical.cutover.write_promotion_receipt",
+        "agentacct.canonical.cutover.write_promotion_receipt",
         fail_primary_then_write_fallback,
     )
     with pytest.raises(CutoverReceiptPersistenceError) as captured:
@@ -935,7 +935,7 @@ def test_post_replace_failure_writes_emergency_receipt(
     candidate, report, candidate_uuid = _candidate(tmp_path)
     root, shadow_uuid, _shadow_digest = _shadow(tmp_path)
     preparation = prepare_cutover(candidate, report)
-    from agent_chronicle.canonical import cutover
+    from agentacct.canonical import cutover
 
     original_require = cutover._require_private_regular
 
@@ -968,7 +968,7 @@ def test_replace_async_exception_keeps_backup_and_prewrite_receipt(
     candidate, report, candidate_uuid = _candidate(tmp_path)
     root, shadow_uuid, _shadow_digest = _shadow(tmp_path)
     preparation = prepare_cutover(candidate, report)
-    from agent_chronicle.canonical import cutover
+    from agentacct.canonical import cutover
 
     original_replace = cutover.os.replace
 
@@ -1000,7 +1000,7 @@ def test_replace_async_exception_reports_ambiguous_if_live_inode_is_unrelated(
     candidate, report, _candidate_uuid = _candidate(tmp_path)
     root, _shadow_uuid, _shadow_digest = _shadow(tmp_path)
     preparation = prepare_cutover(candidate, report)
-    from agent_chronicle.canonical import cutover
+    from agentacct.canonical import cutover
 
     unrelated = root / "unrelated.sqlite3"
     unrelated.write_bytes(b"unrelated replacement bytes")
@@ -1032,7 +1032,7 @@ def test_recovery_receipt_is_durable_before_atomic_replace(
     candidate, report, _candidate_uuid = _candidate(tmp_path)
     root, _shadow_uuid, _shadow_digest = _shadow(tmp_path)
     preparation = prepare_cutover(candidate, report)
-    from agent_chronicle.canonical import cutover
+    from agentacct.canonical import cutover
 
     original_replace = cutover.os.replace
     observed_prewrite = False
@@ -1194,7 +1194,7 @@ def test_rollback_verification_failure_reports_installed_receipt(
     *_, root, shadow_uuid, _shadow_digest, _receipt_path_value, promotion = _promote(
         tmp_path
     )
-    from agent_chronicle.canonical import cutover
+    from agentacct.canonical import cutover
 
     failed = cutover.CutoverVerification(
         verified_at_us=1,
@@ -1224,7 +1224,7 @@ def test_rollback_verification_exception_reports_installed_receipt(
     *_, _root, shadow_uuid, _shadow_digest, _receipt_path_value, promotion = _promote(
         tmp_path
     )
-    from agent_chronicle.canonical import cutover
+    from agentacct.canonical import cutover
 
     def fail_verification(_receipt: object) -> None:
         raise KeyboardInterrupt("simulated interruption during rollback verification")
@@ -1246,7 +1246,7 @@ def test_rollback_replace_async_exception_reports_observed_installed_state(
     *_, root, shadow_uuid, _shadow_digest, _receipt_path_value, promotion = _promote(
         tmp_path
     )
-    from agent_chronicle.canonical import cutover
+    from agentacct.canonical import cutover
 
     original_replace = cutover.os.replace
 

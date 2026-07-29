@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import random
 
-import agent_chronicle.work_ledger as work_ledger_module
-from agent_chronicle.task_projection import build_task_projection
-from agent_chronicle.work_ledger import build_work_ledger
+import agentacct.work_ledger as work_ledger_module
+from agentacct.task_projection import build_task_projection
+from agentacct.work_ledger import build_work_ledger
 
 
 def _usage(

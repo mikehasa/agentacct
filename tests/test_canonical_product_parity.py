@@ -7,18 +7,18 @@ from typing import Any
 
 import pytest
 
-import agent_chronicle.canonical.product_parity as product_parity_module
-from agent_chronicle.canonical.legacy_import import (
+import agentacct.canonical.product_parity as product_parity_module
+from agentacct.canonical.legacy_import import (
     MigrationReport,
     import_legacy_snapshot,
 )
-from agent_chronicle.canonical.product_parity import (
+from agentacct.canonical.product_parity import (
     build_legacy_product_parity_report,
 )
-from agent_chronicle.canonical.snapshot import VerifiedSnapshot
-from agent_chronicle.canonical.sqlite import CanonicalStore
-from agent_chronicle.client_usage import ClientUsageEvent
-from agent_chronicle.usage_truth import mark_trusted_local_usage_import_event
+from agentacct.canonical.snapshot import VerifiedSnapshot
+from agentacct.canonical.sqlite import CanonicalStore
+from agentacct.client_usage import ClientUsageEvent
+from agentacct.usage_truth import mark_trusted_local_usage_import_event
 
 
 RAW_ROOT_SESSION = "legacy-root-session-raw-secret"

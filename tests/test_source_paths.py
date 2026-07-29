@@ -8,10 +8,10 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-import agent_chronicle.client_usage as client_usage_module
-from agent_chronicle.api import UsageDiscoveryConfig, create_local_api_app
-from agent_chronicle.cli import app
-from agent_chronicle.client_usage import (
+import agentacct.client_usage as client_usage_module
+from agentacct.api import UsageDiscoveryConfig, create_local_api_app
+from agentacct.cli import app
+from agentacct.client_usage import (
     ClientSessionObservation,
     ClientUsageEvent,
     build_usage_import_write,
@@ -26,11 +26,11 @@ from agent_chronicle.client_usage import (
     select_usage_import_candidates,
     source_namespace_adoption_candidates,
 )
-from agent_chronicle.service import SentinelService
-from agent_chronicle.source_discovery import discover_usage_sources
-from agent_chronicle.source_paths import MAX_USAGE_SOURCE_HOMES, resolve_usage_source_paths
-from agent_chronicle.task_projection import build_task_projection
-from agent_chronicle.work_ledger import build_work_ledger
+from agentacct.service import SentinelService
+from agentacct.source_discovery import discover_usage_sources
+from agentacct.source_paths import MAX_USAGE_SOURCE_HOMES, resolve_usage_source_paths
+from agentacct.task_projection import build_task_projection
+from agentacct.work_ledger import build_work_ledger
 from refresh_flash import refresh_flash_qs, run_dashboard_refresh
 
 
@@ -199,7 +199,7 @@ def test_discovery_freezes_symlink_target_before_reading_and_hashing(
         return [candidate]
 
     monkeypatch.setattr(
-        "agent_chronicle.client_usage._discover_codex_usage_from_home",
+        "agentacct.client_usage._discover_codex_usage_from_home",
         fake_discovery,
     )
 

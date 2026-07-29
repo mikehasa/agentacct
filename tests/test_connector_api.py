@@ -5,9 +5,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from agent_chronicle.api import create_local_api_app
-from agent_chronicle.evidence import EvidenceEnvelope
-from agent_chronicle.evidence_runtime import EvidenceRuntime
+from agentacct.api import create_local_api_app
+from agentacct.evidence import EvidenceEnvelope
+from agentacct.evidence_runtime import EvidenceRuntime
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "connectors"

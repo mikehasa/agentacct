@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.task_identity import TASK_PUBLIC_ID_RE, TaskIdentityCodec
+from agentacct.task_identity import TASK_PUBLIC_ID_RE, TaskIdentityCodec
 
 
 def _task(session_id: str = "raw-secret-session") -> dict[str, object]:

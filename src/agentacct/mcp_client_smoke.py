@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Literal
 
-from agent_chronicle.mcp import SentinelMCPServer
+from agentacct.mcp import SentinelMCPServer
 
 MCPClient = Literal["hermes", "opencode", "openclaw"]
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
@@ -75,13 +75,13 @@ def _default_runner(*args, **kwargs) -> subprocess.CompletedProcess[str]:
 
 
 def _sentinel_module_command() -> list[str]:
-    return [sys.executable, "-m", "agent_chronicle.cli"]
+    return [sys.executable, "-m", "agentacct.cli"]
 
 
 def _prompt(client: str, source: str, run_id: str, marker: str, provider: str = "deepseek") -> str:
     return (
         f"You are doing a tiny real agentacct {provider} MCP smoke test. "
-        "Use the agentacct MCP tool sentinel_record_section twice: "
+        "Use the agentacct MCP tool agentacct_record_section twice: "
         f"first record section_id=mcp-client-smoke section_status=started source={source} run_id={run_id} summary={provider}-mcp-client-smoke; "
         f"then record section_id=mcp-client-smoke section_status=completed source={source} run_id={run_id} summary=MCP workflow ledger works for {client}. "
         f"Finally reply exactly {marker}."
@@ -104,10 +104,10 @@ def _mcp_text(response: dict[str, object]) -> str:
 
 def _read_event_summary(store_dir: Path) -> tuple[int, dict[str, int], list[str]]:
     server = SentinelMCPServer(store_dir=store_dir)
-    response = server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "sentinel_get_event_summary", "arguments": {"limit": 200}}})
+    response = server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "agentacct_get_event_summary", "arguments": {"limit": 200}}})
     parsed = json.loads(_mcp_text(response or {}))
     summary = parsed.get("summary", parsed)
-    events_response = server.handle_message({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "sentinel_list_events", "arguments": {"limit": 200}}})
+    events_response = server.handle_message({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "agentacct_list_events", "arguments": {"limit": 200}}})
     events = json.loads(_mcp_text(events_response or {})).get("events", [])
     return int(summary.get("event_count", 0)), dict(summary.get("by_source", {})), [str(event.get("event_type")) for event in events]
 

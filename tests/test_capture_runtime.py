@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 
-from agent_chronicle.capture import CaptureContext
-from agent_chronicle.capture_runtime import capture_hook_payload
-from agent_chronicle.evidence_runtime import EvidenceRuntime
+from agentacct.capture import CaptureContext
+from agentacct.capture_runtime import capture_hook_payload
+from agentacct.evidence_runtime import EvidenceRuntime
 
 
 def _payload() -> dict[str, object]:

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agent_chronicle import cli
+from agentacct import cli
 
 
 def test_user_claude_mcp_fresh_file(tmp_path: Path) -> None:

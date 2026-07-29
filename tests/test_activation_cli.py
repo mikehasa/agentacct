@@ -9,12 +9,12 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from agent_chronicle import cli as cli_module
-from agent_chronicle.activation import ActivationStateStore, RuntimeManagerError
-from agent_chronicle.cli import _merge_claude_project_settings, app
-from agent_chronicle.hooks import claude_code_hook_paths
-from agent_chronicle.ingestion_health import IngestionHealthStore
-from agent_chronicle.source_discovery import UsageSourceDiscovery
+from agentacct import cli as cli_module
+from agentacct.activation import ActivationStateStore, RuntimeManagerError
+from agentacct.cli import _merge_claude_project_settings, app
+from agentacct.hooks import claude_code_hook_paths
+from agentacct.ingestion_health import IngestionHealthStore
+from agentacct.source_discovery import UsageSourceDiscovery
 
 
 class _RuntimeProbe:

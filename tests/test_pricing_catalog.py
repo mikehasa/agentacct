@@ -4,7 +4,7 @@ from pathlib import Path
 
 import httpx
 
-from agent_chronicle.cost import (
+from agentacct.cost import (
     LEGACY_PRICING_CATALOG_PATH_ENV,
     PRICING_CATALOG_PATH_ENV,
     estimate_model_cost_breakdown_usd,
@@ -13,7 +13,7 @@ from agent_chronicle.cost import (
     model_pricing_entry,
     reset_pricing_catalog_cache,
 )
-from agent_chronicle.pricing_catalog import (
+from agentacct.pricing_catalog import (
     default_pricing_catalog_snapshot_path,
     ensure_fresh_pricing_snapshot,
     pricing_catalog_metadata_path,
@@ -364,7 +364,7 @@ def test_ensure_fresh_treats_future_dated_sidecar_as_stale(tmp_path, monkeypatch
 def test_pricing_snapshot_writes_are_atomic_temp_plus_replace(tmp_path, monkeypatch):
     import os as os_module
 
-    import agent_chronicle.pricing_catalog as pricing_catalog_module
+    import agentacct.pricing_catalog as pricing_catalog_module
 
     snapshot_path = tmp_path / "pricing" / "litellm_model_prices.json"
     write_litellm_pricing_snapshot(snapshot_path, _LITELLM_TTL_FIXTURE, source_url="test://seed", fetched_at=1.0)
@@ -407,8 +407,8 @@ def test_concurrent_same_pid_snapshot_writers_use_unique_temp_files(tmp_path, mo
     import os as os_module
     import threading
 
-    import agent_chronicle.pricing_catalog as pricing_catalog_module
-    from agent_chronicle.pricing_catalog import _write_json_atomic
+    import agentacct.pricing_catalog as pricing_catalog_module
+    from agentacct.pricing_catalog import _write_json_atomic
 
     final_path = tmp_path / "pricing" / "snap.json"
     real_replace = os_module.replace

@@ -5,8 +5,8 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from agent_chronicle.cli import app
-from agent_chronicle.usage_truth import (
+from agentacct.cli import app
+from agentacct.usage_truth import (
     CODEX_LINEAGE_DELTA_SEMANTICS,
     CODEX_REPLAY_QUARANTINE_STATE,
     local_usage_base_session_id,
@@ -217,7 +217,7 @@ def test_codex_lineage_delta_requires_exact_parent_and_same_namespace() -> None:
 
 
 def test_is_diagnostic_event_matches_type_or_source_never_run_id_only() -> None:
-    from agent_chronicle.usage_truth import (
+    from agentacct.usage_truth import (
         DIAGNOSTIC_EVENT_SOURCES,
         DIAGNOSTIC_EVENT_TYPES,
         DIAGNOSTIC_RUN_IDS,
@@ -244,7 +244,7 @@ def test_is_diagnostic_event_matches_type_or_source_never_run_id_only() -> None:
 
 
 def test_split_diagnostic_events_preserves_order_and_content() -> None:
-    from agent_chronicle.usage_truth import split_diagnostic_events
+    from agentacct.usage_truth import split_diagnostic_events
 
     events = [
         {"event_id": "a", "event_type": "model_usage", "source": "codex-local-session-import"},

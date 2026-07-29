@@ -13,9 +13,9 @@ from pathlib import Path
 import psutil
 import pytest
 
-from agent_chronicle.control_plane import ControlStore
-from agent_chronicle.storage import OWNERSHIP_SCHEMA_VERSION, RunStore
-from agent_chronicle.supervisor import OwnedSupervisor, SupervisorAlreadyRunning, SupervisorError
+from agentacct.control_plane import ControlStore
+from agentacct.storage import OWNERSHIP_SCHEMA_VERSION, RunStore
+from agentacct.supervisor import OwnedSupervisor, SupervisorAlreadyRunning, SupervisorError
 
 
 def _attempt(

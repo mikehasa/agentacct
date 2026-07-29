@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from agent_chronicle.cli import app
-from agent_chronicle.mcp import SentinelMCPServer
-from agent_chronicle.mcp_client_smoke import (
+from agentacct.cli import app
+from agentacct.mcp import SentinelMCPServer
+from agentacct.mcp_client_smoke import (
     MCPClientSmokeError,
     assert_deepseek_mcp_client_smoke_passed,
     assert_mcp_client_smoke_passed,
@@ -75,7 +75,7 @@ def test_opencode_deepseek_mcp_client_smoke_with_fake_runner_records_events(tmp_
                         "id": section_status,
                         "method": "tools/call",
                         "params": {
-                            "name": "sentinel_record_section",
+                            "name": "agentacct_record_section",
                             "arguments": {
                                 "source": "opencode-deepseek-smoke",
                                 "section_id": "mcp-client-smoke",
@@ -139,7 +139,7 @@ def test_openclaw_smoke_uses_isolated_profile_and_custom_deepseek_provider(tmp_p
                         "id": section_status,
                         "method": "tools/call",
                         "params": {
-                            "name": "sentinel_record_section",
+                            "name": "agentacct_record_section",
                             "arguments": {
                                 "source": "openclaw-deepseek-smoke",
                                 "section_id": "mcp-client-smoke",
@@ -189,7 +189,7 @@ def test_opencode_openai_smoke_reuses_client_auth_and_default_model(tmp_path):
                         "id": section_status,
                         "method": "tools/call",
                         "params": {
-                            "name": "sentinel_record_section",
+                            "name": "agentacct_record_section",
                             "arguments": {
                                 "source": "opencode-openai-smoke",
                                 "section_id": "mcp-client-smoke",

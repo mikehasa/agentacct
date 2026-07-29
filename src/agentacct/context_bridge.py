@@ -78,12 +78,12 @@ def build_client_context_join_health(events: list[dict[str, Any]]) -> dict[str, 
     if context_events and context_events_with_join_keys == 0:
         warnings.append(
             f"None of the {context_events} client_context events carry client_session_id or client_transcript_id, "
-            "so imported usage cannot be attributed to them. Pass the real client session id to sentinel_attach_client_context."
+            "so imported usage cannot be attributed to them. Pass the real client session id to agentacct_attach_client_context."
         )
     if section_events and section_events_with_join_keys == 0:
         warnings.append(
             f"None of the {section_events} section events carry client_session_id or client_transcript_id. "
-            "Call sentinel_attach_client_context with real ids first; sections recorded on the same MCP session inherit them."
+            "Call agentacct_attach_client_context with real ids first; sections recorded on the same MCP session inherit them."
         )
     if usage_rows and not section_events:
         warnings.append(

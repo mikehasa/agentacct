@@ -55,7 +55,7 @@ def _default_envelope_factory(
 ) -> Any:
     # Lazy import keeps capture parsing independent of the shadow evidence
     # kernel and makes the hook return cleanly when v2 is disabled/unavailable.
-    from agent_chronicle.evidence import (
+    from agentacct.evidence import (
         Completeness,
         EvidenceEnvelope,
         PrivacyMetadata,

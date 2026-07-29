@@ -9,13 +9,13 @@ from types import SimpleNamespace
 import pytest
 import typer
 
-import agent_chronicle.evidence_rebuild_candidate as rebuild
-from agent_chronicle.cli import _validate_usage_import_args
-from agent_chronicle.client_usage import ClientUsageEvent
-from agent_chronicle.evidence import ClaimedLink, EvidenceEnvelope, adapt_v1_event
-from agent_chronicle.evidence_rebuild_snapshot import create_evidence_snapshot
-from agent_chronicle.evidence_store import EvidenceStore
-from agent_chronicle.usage_truth import mark_trusted_local_usage_import_event
+import agentacct.evidence_rebuild_candidate as rebuild
+from agentacct.cli import _validate_usage_import_args
+from agentacct.client_usage import ClientUsageEvent
+from agentacct.evidence import ClaimedLink, EvidenceEnvelope, adapt_v1_event
+from agentacct.evidence_rebuild_snapshot import create_evidence_snapshot
+from agentacct.evidence_store import EvidenceStore
+from agentacct.usage_truth import mark_trusted_local_usage_import_event
 
 
 def _private_directory(path: Path) -> Path:

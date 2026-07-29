@@ -23,15 +23,15 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-from agent_chronicle.api import _session_join_chip_html, create_local_api_app
-from agent_chronicle.cli import app
-from agent_chronicle.service import SentinelService
-from agent_chronicle.usage_truth import (
+from agentacct.api import _session_join_chip_html, create_local_api_app
+from agentacct.cli import app
+from agentacct.service import SentinelService
+from agentacct.usage_truth import (
     CLI_INSTRUMENTATION_PROVENANCE,
     INSTRUMENTATION_MARKER_EVENT_TYPE,
     is_instrumentation_marker_event,
 )
-from agent_chronicle.work_ledger import build_work_ledger
+from agentacct.work_ledger import build_work_ledger
 
 runner = CliRunner()
 
@@ -623,7 +623,7 @@ def test_setup_instructions_no_change_path_records_nothing_and_hints(tmp_path: P
     """The surface being already installed does NOT prove it was installed NOW:
     stamping installed_at=now would flip genuinely-instrumented history to
     pre_instrumentation (wrong beats missing, the forbidden direction)."""
-    from agent_chronicle import install_guide
+    from agentacct import install_guide
 
     store = tmp_path / "state"
     target = tmp_path / "CLAUDE.md"
@@ -641,7 +641,7 @@ def test_setup_instructions_no_change_path_records_nothing_and_hints(tmp_path: P
 
 
 def test_setup_instructions_block_replacement_records_nothing_and_hints(tmp_path: Path) -> None:
-    from agent_chronicle import install_guide
+    from agentacct import install_guide
 
     store = tmp_path / "state"
     target = tmp_path / "CLAUDE.md"

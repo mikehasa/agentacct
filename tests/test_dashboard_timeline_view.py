@@ -8,11 +8,11 @@ import json
 
 from fastapi.testclient import TestClient
 
-import agent_chronicle.api as api_module
-from agent_chronicle.api import _human_event_type, create_local_api_app
-from agent_chronicle.cost import CostLedger, UsageEstimate
-from agent_chronicle.service import SentinelService
-from agent_chronicle.work_ledger import build_work_ledger
+import agentacct.api as api_module
+from agentacct.api import _human_event_type, create_local_api_app
+from agentacct.cost import CostLedger, UsageEstimate
+from agentacct.service import SentinelService
+from agentacct.work_ledger import build_work_ledger
 
 LEDGER_SCHEMA_V2 = "agent-sentinel.work-ledger.v2"
 

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_chronicle.api import _attach_evidence_to_task_projection
-from agent_chronicle.task_projection import build_task_projection
-from agent_chronicle.work_ledger import build_work_ledger
+from agentacct.api import _attach_evidence_to_task_projection
+from agentacct.task_projection import build_task_projection
+from agentacct.work_ledger import build_work_ledger
 
 
 def _session(

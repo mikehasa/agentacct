@@ -1,7 +1,7 @@
 import pytest
 
-from agent_chronicle.cost import CostLedger
-from agent_chronicle.provider_smoke import ProviderSmokeError, build_provider_smoke_spec, run_provider_smoke
+from agentacct.cost import CostLedger
+from agentacct.provider_smoke import ProviderSmokeError, build_provider_smoke_spec, run_provider_smoke
 
 
 class MockResponse:

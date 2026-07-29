@@ -12,18 +12,18 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-import agent_chronicle.cli as cli_module
-import agent_chronicle.api as api_module
-import agent_chronicle.client_usage as client_usage_module
-from agent_chronicle.api import UsageDiscoveryConfig, create_local_api_app
-from agent_chronicle.cli import app
-from agent_chronicle.ingestion_health import (
+import agentacct.cli as cli_module
+import agentacct.api as api_module
+import agentacct.client_usage as client_usage_module
+from agentacct.api import UsageDiscoveryConfig, create_local_api_app
+from agentacct.cli import app
+from agentacct.ingestion_health import (
     INGESTION_HEALTH_DIRNAME,
     INGESTION_HEALTH_FILENAME,
     IngestionHealthStore,
 )
-from agent_chronicle.service import SentinelService
-from agent_chronicle.usage_truth import is_local_session_observation_event
+from agentacct.service import SentinelService
+from agentacct.usage_truth import is_local_session_observation_event
 from refresh_flash import refresh_flash_qs, run_dashboard_refresh
 
 
@@ -511,7 +511,7 @@ def test_usage_watch_sigterm_releases_lease_without_waiting_for_interval(tmp_pat
         [
             sys.executable,
             "-m",
-            "agent_chronicle.cli",
+            "agentacct.cli",
             "usage",
             "watch",
             "--client",

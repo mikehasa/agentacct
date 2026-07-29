@@ -8,10 +8,10 @@ from types import SimpleNamespace
 import pytest
 from typer.testing import CliRunner
 
-import agent_chronicle.cli as cli
-import agent_chronicle.evidence_rebuild_activation as activation
-import agent_chronicle.evidence_rebuild_candidate as candidate
-import agent_chronicle.evidence_rebuild_snapshot as snapshot
+import agentacct.cli as cli
+import agentacct.evidence_rebuild_activation as activation
+import agentacct.evidence_rebuild_candidate as candidate
+import agentacct.evidence_rebuild_snapshot as snapshot
 from test_evidence_rebuild_snapshot import COMMIT, STORE_UUID, _build_source
 
 

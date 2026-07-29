@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_chronicle.canonical.migration_disposition_policy import (
+from agentacct.canonical.migration_disposition_policy import (
     MIGRATION_DISPOSITION_POLICY_RULES_DIGEST,
     build_migration_disposition_policy_evidence,
 )

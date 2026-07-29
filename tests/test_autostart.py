@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-import agent_chronicle.autostart as autostart
-from agent_chronicle.autostart import (
+import agentacct.autostart as autostart
+from agentacct.autostart import (
     DEFAULT_HOST,
     DEFAULT_PORT,
     LAUNCHD_LABEL,
@@ -23,7 +23,7 @@ from agent_chronicle.autostart import (
     render_systemd_unit,
     uninstall_autostart,
 )
-from agent_chronicle.cli import _supervise_foreground, app
+from agentacct.cli import _supervise_foreground, app
 
 ABS_EXE = "/opt/venv/bin/agentacct"
 ABS_STORE = "/home/dev/.agent-sentinel/state"
@@ -325,7 +325,7 @@ def test_uninstall_dry_run_changes_nothing(tmp_path: Path) -> None:
 def test_cli_install_autostart_win32_exits_2_with_wsl_pointer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("agent_chronicle.cli.sys.platform", "win32")
+    monkeypatch.setattr("agentacct.cli.sys.platform", "win32")
     result = CliRunner().invoke(app, ["install-autostart"])
     assert result.exit_code == 2
     assert "WSL" in result.output
@@ -334,7 +334,7 @@ def test_cli_install_autostart_win32_exits_2_with_wsl_pointer(
 def test_cli_uninstall_autostart_win32_exits_2_with_wsl_pointer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("agent_chronicle.cli.sys.platform", "win32")
+    monkeypatch.setattr("agentacct.cli.sys.platform", "win32")
     result = CliRunner().invoke(app, ["uninstall-autostart"])
     assert result.exit_code == 2
     assert "WSL" in result.output
@@ -350,11 +350,11 @@ def test_cli_install_autostart_dry_run_writes_and_loads_nothing(
     fake_exe = tmp_path / "agentacct"
     fake_exe.write_text("#!/bin/sh\n", encoding="utf-8")
 
-    monkeypatch.setattr("agent_chronicle.cli.sys.platform", "linux")
-    monkeypatch.setattr("agent_chronicle.cli.Path.home", classmethod(lambda cls: home))
-    monkeypatch.setattr("agent_chronicle.cli.os.getuid", lambda: 1000, raising=False)
+    monkeypatch.setattr("agentacct.cli.sys.platform", "linux")
+    monkeypatch.setattr("agentacct.cli.Path.home", classmethod(lambda cls: home))
+    monkeypatch.setattr("agentacct.cli.os.getuid", lambda: 1000, raising=False)
     monkeypatch.setattr(
-        "agent_chronicle.cli._managed_runtime",
+        "agentacct.cli._managed_runtime",
         lambda resolved, host="127.0.0.1", port=8765: type(
             "M", (), {"executable": str(fake_exe)}
         )(),

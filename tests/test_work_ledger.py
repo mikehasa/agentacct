@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from agent_chronicle.service import summarize_events
-from agent_chronicle.work_ledger import build_work_ledger
+from agentacct.service import summarize_events
+from agentacct.work_ledger import build_work_ledger
 
 
 def _usage_event(
@@ -79,7 +79,7 @@ def _section_event(
             "section_title": "MCP v1 convergence",
             "summary": "Converged MCP fields into the work ledger.",
             "kind": "implementation",
-            "files": files or ["src/agent_chronicle/work_ledger.py"],
+            "files": files or ["src/agentacct/work_ledger.py"],
             "blocker": blocker,
             "next_step": next_step,
         },
@@ -859,7 +859,7 @@ def test_work_ledger_redacts_public_derived_paths_and_commands() -> None:
                 session="codex-session",
                 project_dir="C:\\Users\\alice\\private-repo",
                 files=[
-                    "src\\agent_chronicle\\api.py",
+                    "src\\agentacct\\api.py",
                     "..\\secret.py",
                     "C:\\Users\\alice\\private-repo\\secret.py",
                     "/Users/alice/private-repo/absolute.py",
@@ -872,7 +872,7 @@ def test_work_ledger_redacts_public_derived_paths_and_commands() -> None:
     item = ledger["work_items"][0]
     evidence = ledger["evidence_events"][0]
     assert item["project_dir"] == "private-repo"
-    assert item["files"] == ["src/agent_chronicle/api.py"]
+    assert item["files"] == ["src/agentacct/api.py"]
     assert evidence["command"] is None
     assert evidence["command_redacted"] is True
     assert evidence["artifact_path"] is None
@@ -1016,7 +1016,7 @@ def test_evidence_links_only_unique_namespaced_candidate() -> None:
 
 
 def test_task_events_are_not_work_items_but_stay_listed(tmp_path) -> None:
-    from agent_chronicle.service import SentinelService
+    from agentacct.service import SentinelService
 
     service = SentinelService(tmp_path / "state")
     service.record_event({"source": "codex", "event_type": "task_started", "metadata": {"task": "legacy task event"}})
@@ -1066,7 +1066,7 @@ def _claude_section_event(*, session: str = "S", inherited: bool = False) -> dic
         "section_title": "Claude section",
         "summary": "Work done in the claude session.",
         "kind": "implementation",
-        "files": ["src/agent_chronicle/work_ledger.py"],
+        "files": ["src/agentacct/work_ledger.py"],
     }
     if inherited:
         metadata["client_context_inherited_keys"] = ["client_session_id"]
@@ -1490,7 +1490,7 @@ def test_reconciliation_tiebreak_is_fresh_tokens_desc_not_total() -> None:
 def test_attributed_row_survives_the_120_row_cap_at_the_data_level() -> None:
     """Exact review regression class: >120 unattributed rows + 1 attributed.
     The attributed row must be rows[0] and inside any capped slice."""
-    from agent_chronicle.work_ledger import capped_rows
+    from agentacct.work_ledger import capped_rows
 
     events = [
         _usage_event(session=f"noise-session-{index:03d}", event_id=f"usage_noise_{index:03d}")
@@ -1513,7 +1513,7 @@ def test_attributed_row_survives_the_120_row_cap_at_the_data_level() -> None:
 
 
 def test_capped_rows_metadata_when_not_truncated() -> None:
-    from agent_chronicle.work_ledger import capped_rows
+    from agentacct.work_ledger import capped_rows
 
     capped = capped_rows([1, 2, 3], 10)
     assert capped == {"rows": [1, 2, 3], "total": 3, "shown": 3}

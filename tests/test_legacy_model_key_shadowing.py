@@ -16,15 +16,15 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from agent_chronicle.api import _build_usage_view
-from agent_chronicle.cli import app
-from agent_chronicle.context_bridge import build_usage_context_bridge
-from agent_chronicle.usage_truth import (
+from agentacct.api import _build_usage_view
+from agentacct.cli import app
+from agentacct.context_bridge import build_usage_context_bridge
+from agentacct.usage_truth import (
     is_shadowed_legacy_usage_import_event,
     legacy_suffixed_claude_code_bases,
     split_shadowed_legacy_usage_events,
 )
-from agent_chronicle.work_ledger import build_work_ledger
+from agentacct.work_ledger import build_work_ledger
 
 
 def _claude_row(event_id: str, session_key: str, input_tokens: int, *, model: str = "claude-opus-4-8", lane: str | None = None) -> dict:
@@ -172,7 +172,7 @@ def test_migration_yields_the_same_totals_the_read_time_rule_reported(tmp_path: 
     BEFORE any migration, then run the real `usage import-local` migration and
     assert the attributed totals are unchanged and the exclusion counter drops
     to zero."""
-    from agent_chronicle.client_usage import discover_claude_code_usage
+    from agentacct.client_usage import discover_claude_code_usage
 
     claude_home = _make_claude_home(tmp_path)
     store_dir = tmp_path / "sentinel-state"

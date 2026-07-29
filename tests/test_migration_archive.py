@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-import agent_chronicle.canonical.migration_archive as migration_archive_module
-from agent_chronicle.canonical.migration_archive import (
+import agentacct.canonical.migration_archive as migration_archive_module
+from agentacct.canonical.migration_archive import (
     EMPTY_ARCHIVE_HEAD,
     ArchiveHead,
     MigrationArchiveError,
@@ -25,7 +25,7 @@ from agent_chronicle.canonical.migration_archive import (
     receipt_digest,
     scan_snapshot_lines,
 )
-from agent_chronicle.canonical.snapshot import VerifiedSnapshot
+from agentacct.canonical.snapshot import VerifiedSnapshot
 
 
 RULES_DIGEST = "a1" * 32

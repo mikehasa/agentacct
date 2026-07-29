@@ -6,9 +6,9 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from agent_chronicle.cli import app
-from agent_chronicle.evidence import EvidenceEnvelope
-from agent_chronicle.evidence_runtime import EvidenceRuntime
+from agentacct.cli import app
+from agentacct.evidence import EvidenceEnvelope
+from agentacct.evidence_runtime import EvidenceRuntime
 
 
 runner = CliRunner()

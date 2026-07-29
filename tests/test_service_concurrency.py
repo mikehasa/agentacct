@@ -18,7 +18,7 @@ import threading
 import time
 from pathlib import Path
 
-from agent_chronicle.service import SentinelService
+from agentacct.service import SentinelService
 
 
 def _usage_event(session: str, *, source: str = "codex-local-session-import") -> dict:

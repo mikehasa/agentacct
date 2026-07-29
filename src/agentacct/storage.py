@@ -43,7 +43,7 @@ class StoredRun:
 class RunStore:
     def __init__(self, root: Path | str, *, create: bool = True) -> None:
         if root is None:
-            raise ValueError("store root is required; resolve it with agent_chronicle.store_resolution.resolve_store_dir()")
+            raise ValueError("store root is required; resolve it with agentacct.store_resolution.resolve_store_dir()")
         self.root = Path(root).expanduser()
         self.runs_root = self.root / "runs"
         if create:

@@ -2,7 +2,7 @@
 --
 -- Two store roles share this schema: offline candidate databases built by the
 -- verified importer, and the live store (`chronicle.sqlite3` inside a
--- Chronicle state root) written by the flag-gated live shadow runtime. The
+-- agentacct state root) written by the flag-gated live shadow runtime. The
 -- role is pinned per store in store_metadata and enforced at open time.
 
 CREATE TABLE schema_migrations (

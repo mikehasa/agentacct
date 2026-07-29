@@ -8,31 +8,31 @@ from typing import Any
 
 import pytest
 
-from agent_chronicle.canonical.legacy_import import (
+from agentacct.canonical.legacy_import import (
     LEGACY_EVENTS_ADAPTER,
     LEGACY_EVENTS_REPRESENTATION,
 )
-from agent_chronicle.canonical.legacy_recovery import (
+from agentacct.canonical.legacy_recovery import (
     LegacyRecoveryError,
     append_verified_recovery_claims,
     publish_verified_recovery_plan,
     replay_verified_recovery,
 )
-from agent_chronicle.canonical.migration_archive import (
+from agentacct.canonical.migration_archive import (
     VerifiedMigrationArchive,
     VerifiedRecoveryPlan,
     build_migration_archive,
     scan_snapshot_lines,
 )
-from agent_chronicle.canonical.snapshot import VerifiedSnapshot
-from agent_chronicle.canonical.sqlite import CanonicalStore
-from agent_chronicle.canonical.types import (
+from agentacct.canonical.snapshot import VerifiedSnapshot
+from agentacct.canonical.sqlite import CanonicalStore
+from agentacct.canonical.types import (
     RECOVERY_FACT_TRANSPORT,
     RECOVERY_LINK_METHOD,
     RECOVERY_LINK_RULE_VERSION,
     SourceInstanceInput,
 )
-from agent_chronicle.usage_truth import (
+from agentacct.usage_truth import (
     mark_trusted_local_session_observation_event,
     mark_trusted_local_usage_import_event,
 )

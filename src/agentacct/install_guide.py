@@ -228,7 +228,7 @@ GLOBAL_INSTALL_NOTES = (
     "The printed settings example includes `\"env\": {\"ENABLE_TOOL_SEARCH\": \"auto\"}` alongside the hooks — merge that block too (never overwriting env keys the user already has): without it the agentacct MCP tools stay deferred in Claude Code and un-primed sessions record nothing, however well the hooks are wired.",
     "REQUIRED cleanup in every repo you switch to global mode: remove the `agentacct` (or pre-rename `agent-chronicle`/`agent-sentinel`) entry from that repo's `.mcp.json` and the `[mcp_servers.agentacct]` (or pre-rename `[mcp_servers.agent-chronicle]` / `[mcp_servers.agent-sentinel]`) block from its `.codex/config.toml` (and stop merging its per-project hooks block) — a project-scope entry silently shadows the user-scope server and pins that repo's MCP context to its old per-project store.",
     "Point any `usage watch` / `usage import-local` daemons at the same store, ONE watch daemon per store: `agentacct usage watch --store-dir \"$HOME/.agent-sentinel-global/state\"`. By default each session is imported once at first observation and never updated; add `--refresh` if the daemon should keep growing sessions' totals current (the dashboard's \"Refresh & save usage\" replace semantics).",
-    "REQUIRED to fill the dashboard with work context: `setup instructions` writes a short, idempotent 'record your work as sections' block into `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` (merged inside `<!-- agent-chronicle:begin -->`/`<!-- agent-chronicle:end -->` markers, so your own content is never touched; re-run to update — pre-rename `agent-sentinel:begin` blocks are recognized and replaced — add `--remove` to strip it, `--dry-run` to preview). Without it, global mode records tokens but almost no work context, because global installs no standing instruction the way a per-project setup does.",
+    "REQUIRED to fill the dashboard with work context: `setup instructions` writes a short, idempotent 'record your work as sections' block into `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` (merged inside `<!-- agentacct:begin -->`/`<!-- agentacct:end -->` markers, so your own content is never touched; re-run to update — pre-rename `agent-chronicle:begin` and `agent-sentinel:begin` blocks are recognized and replaced — add `--remove` to strip it, `--dry-run` to preview). Without it, global mode records tokens but almost no work context, because global installs no standing instruction the way a per-project setup does.",
     "What you get and what stays behind: one dashboard with machine-wide usage and all NEW work context; MCP context already recorded in per-project stores can be folded in with `agentacct usage merge-store --from <repo>/.agent-sentinel/state --into \"$HOME/.agent-sentinel-global/state\"` (dedup-safe, additive-only, `--dry-run` first) — or browse an old store in place with `agentacct serve --store-dir <repo>/.agent-sentinel/state --port 8790`.",
     "As with every section: start NEW client sessions after registering — running sessions never see newly added MCP servers or hooks.",
 )
@@ -257,9 +257,9 @@ GLOBAL_INSTALL_NOTES = (
 
 # The per-task directive bullets, shared verbatim by every recording surface.
 _RECORDING_CONTRACT_LINES = (
-    "- Open a section with `sentinel_record_section` (`section_status=started`) BEFORE your first other tool call, and again before each meaningful task; set `title` to a short human goal (e.g. \"add rate-limit to login\"). Complete it (`section_status=completed`) or block it (`blocked`) when done.",
+    "- Open a section with `agentacct_record_section` (`section_status=started`) BEFORE your first other tool call, and again before each meaningful task; set `title` to a short human goal (e.g. \"add rate-limit to login\"). Complete it (`section_status=completed`) or block it (`blocked`) when done.",
     "- For a long task, send `section_status=checkpoint` updates rather than one giant section.",
-    "- After running tests or a build, record the objective result with `sentinel_record_machine_check`.",
+    "- After running tests or a build, record the objective result with `agentacct_record_machine_check`.",
     "- Keep MCP/event evidence separate from token/cost claims: MCP events prove what work happened; a token or cost figure is only real if it comes from actual client usage the importer read — never fabricate one.",
 )
 
@@ -347,17 +347,29 @@ def session_start_additional_context() -> str:
 # Two comment styles because Codex AGENTS.md is Markdown (HTML comments render
 # invisibly) and CLAUDE.md is Markdown too — a single HTML-comment marker works
 # for both. Kept as one constant so the merge logic has a single source.
-INSTRUCTIONS_BEGIN_MARKER = "<!-- agent-chronicle:begin (managed block — edit via `agent-chronicle setup instructions`) -->"
-INSTRUCTIONS_END_MARKER = "<!-- agent-chronicle:end -->"
-# Pre-rename marker pair: RECOGNIZED FOREVER (user files sync across machines
-# upgrading at different times). Rewrites always WRITE the new pair, so any
-# re-run of `setup instructions` migrates a legacy block in place; `--remove`
-# strips either pair. Mixed pairs (old begin + new end) are accepted
-# defensively.
+INSTRUCTIONS_BEGIN_MARKER = "<!-- agentacct:begin (managed block — edit via `agentacct setup instructions`) -->"
+INSTRUCTIONS_END_MARKER = "<!-- agentacct:end -->"
+# Pre-rename marker pairs: RECOGNIZED FOREVER (user files sync across machines
+# upgrading at different times). TWO legacy generations are recognized — the
+# former-new `agent-chronicle` pair and the original `agent-sentinel` pair.
+# Rewrites always WRITE the new `agentacct` pair, so any re-run of
+# `setup instructions` migrates a legacy block in place; `--remove` strips any
+# recognized pair. Mixed pairs (a legacy begin + the new end, or the reverse)
+# are accepted defensively.
+LEGACY_CHRONICLE_INSTRUCTIONS_BEGIN_MARKER = "<!-- agent-chronicle:begin (managed block — edit via `agent-chronicle setup instructions`) -->"
+LEGACY_CHRONICLE_INSTRUCTIONS_END_MARKER = "<!-- agent-chronicle:end -->"
 LEGACY_INSTRUCTIONS_BEGIN_MARKER = "<!-- agent-sentinel:begin (managed block — edit via `agent-sentinel setup instructions`) -->"
 LEGACY_INSTRUCTIONS_END_MARKER = "<!-- agent-sentinel:end -->"
-INSTRUCTIONS_BEGIN_MARKERS = (INSTRUCTIONS_BEGIN_MARKER, LEGACY_INSTRUCTIONS_BEGIN_MARKER)
-INSTRUCTIONS_END_MARKERS = (INSTRUCTIONS_END_MARKER, LEGACY_INSTRUCTIONS_END_MARKER)
+INSTRUCTIONS_BEGIN_MARKERS = (
+    INSTRUCTIONS_BEGIN_MARKER,
+    LEGACY_CHRONICLE_INSTRUCTIONS_BEGIN_MARKER,
+    LEGACY_INSTRUCTIONS_BEGIN_MARKER,
+)
+INSTRUCTIONS_END_MARKERS = (
+    INSTRUCTIONS_END_MARKER,
+    LEGACY_CHRONICLE_INSTRUCTIONS_END_MARKER,
+    LEGACY_INSTRUCTIONS_END_MARKER,
+)
 
 # The instruction body. Same guidance for every agent (the recording contract is
 # client-agnostic); the surrounding heading differs only in the target filename.
@@ -437,10 +449,10 @@ def _split_around_managed_block(text: str) -> tuple[str, bool]:
 
     Everything between a recognized begin marker and a recognized end marker
     (inclusive) is removed; content outside the markers is preserved verbatim.
-    BOTH marker generations are recognized — the new `agent-chronicle` pair
-    and the pre-rename `agent-sentinel` pair (mixed pairs accepted
-    defensively) — while writes always emit the new pair, so re-running
-    `setup instructions` migrates a legacy block in place.
+    ALL THREE marker generations are recognized — the new `agentacct` pair and
+    the pre-rename `agent-chronicle` and `agent-sentinel` pairs (mixed pairs
+    accepted defensively) — while writes always emit the new `agentacct` pair,
+    so re-running `setup instructions` migrates a legacy block in place.
 
     Marker detection is ROBUST against user content that merely QUOTES the
     marker strings (e.g. a user documenting this feature inside a fenced code

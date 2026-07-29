@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_chronicle.evidence_html import (
+from agentacct.evidence_html import (
     ADVANCED_WORK_EVIDENCE_LIMIT,
     ADVANCED_WORK_EVIDENCE_RECORD_LIMIT,
     render_advanced_index_body,

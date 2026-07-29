@@ -5,7 +5,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
 
-from agent_chronicle.session_observations import (
+from agentacct.session_observations import (
     build_session_observations,
     select_session_projection_envelopes,
 )

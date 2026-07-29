@@ -11,9 +11,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, Literal
 
-from agent_chronicle.confidence import COST_PROVIDER_BILLED
-from agent_chronicle.evidence_runtime import EvidenceRuntime
-from agent_chronicle.source_policy import DEFAULT_SOURCE_AUTHORITY_POLICY
+from agentacct.confidence import COST_PROVIDER_BILLED
+from agentacct.evidence_runtime import EvidenceRuntime
+from agentacct.source_policy import DEFAULT_SOURCE_AUTHORITY_POLICY
 
 from .base import stable_digest
 
