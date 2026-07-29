@@ -14,6 +14,8 @@ from pathlib import Path
 _LIVE_ROOT_ENV_NAMES = (
     "AGENT_CHRONICLE_STORE_DIR",
     "AGENT_SENTINEL_STORE_DIR",
+    "AGENT_CHRONICLE_GLOBAL_STORE_DIR",
+    "AGENT_SENTINEL_GLOBAL_STORE_DIR",
     "CODEX_HOME",
 )
 
@@ -55,7 +57,15 @@ def configured_live_state_roots() -> tuple[Path, ...]:
         home / ".agent-chronicle",
         home / ".agent-chronicle-global" / "state",
         home / ".codex",
+        # New canonical global store (XDG-shaped). Concrete path, so no bare
+        # "agentacct" name enters the component-shape blocklists.
+        home / ".local" / "state" / "agentacct" / "state",
     }
+    xdg_state = (os.environ.get("XDG_STATE_HOME") or "").strip()
+    if xdg_state:
+        xdg_base = Path(xdg_state).expanduser()
+        if xdg_base.is_absolute():
+            roots.add(xdg_base / "agentacct" / "state")
     for variable in _LIVE_ROOT_ENV_NAMES:
         value = (os.environ.get(variable) or "").strip()
         if not value:

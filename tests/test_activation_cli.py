@@ -95,7 +95,7 @@ def test_onboard_auto_skips_detected_but_unimportable_opencode_db(
     result = CliRunner().invoke(
         app,
         [
-            "onboard",
+            "onboard", "--scope", "project",
             "--project-dir",
             str(tmp_path),
             "--agent",
@@ -131,7 +131,7 @@ def test_onboard_uses_one_absolute_store_and_requires_a_new_session(
     result = CliRunner().invoke(
         app,
         [
-            "onboard",
+            "onboard", "--scope", "project",
             "--project-dir",
             str(tmp_path),
             "--agent",
@@ -175,7 +175,7 @@ def test_onboard_from_claude_worktree_uses_one_owner_project_store(
     result = CliRunner().invoke(
         app,
         [
-            "onboard",
+            "onboard", "--scope", "project",
             "--project-dir",
             str(worktree),
             "--agent",
@@ -214,7 +214,7 @@ def test_onboard_runtime_failure_keeps_configuration_and_gives_recovery(
 
     result = CliRunner().invoke(
         app,
-        ["onboard", "--project-dir", str(tmp_path), "--agent", "codex"],
+        ["onboard", "--scope", "project", "--project-dir", str(tmp_path), "--agent", "codex"],
     )
 
     assert result.exit_code == 1
@@ -243,7 +243,7 @@ def test_onboard_retires_dead_external_watcher_before_starting_runtime(
 
     result = CliRunner().invoke(
         app,
-        ["onboard", "--project-dir", str(tmp_path), "--agent", "codex"],
+        ["onboard", "--scope", "project", "--project-dir", str(tmp_path), "--agent", "codex"],
     )
 
     assert result.exit_code == 0, result.output
@@ -286,7 +286,7 @@ def test_codex_no_mcp_does_not_claim_work_recording_is_configured(
     result = CliRunner().invoke(
         app,
         [
-            "onboard",
+            "onboard", "--scope", "project",
             "--project-dir",
             str(tmp_path),
             "--agent",
@@ -320,7 +320,7 @@ def test_claude_no_mcp_does_not_claim_work_recording_is_configured(
     result = CliRunner().invoke(
         app,
         [
-            "onboard",
+            "onboard", "--scope", "project",
             "--project-dir",
             str(tmp_path),
             "--agent",
@@ -352,7 +352,7 @@ def test_client_without_auto_recording_adapter_never_claims_ready(
     result = CliRunner().invoke(
         app,
         [
-            "onboard",
+            "onboard", "--scope", "project",
             "--project-dir",
             str(tmp_path),
             "--agent",
@@ -387,7 +387,7 @@ def test_codex_conflicting_existing_registration_never_claims_ready(
     result = CliRunner().invoke(
         app,
         [
-            "onboard",
+            "onboard", "--scope", "project",
             "--project-dir",
             str(tmp_path),
             "--agent",
@@ -427,7 +427,7 @@ def test_existing_but_invalid_claude_hook_never_claims_ready(
     result = CliRunner().invoke(
         app,
         [
-            "onboard",
+            "onboard", "--scope", "project",
             "--project-dir",
             str(tmp_path),
             "--agent",
@@ -456,7 +456,7 @@ def test_fresh_claude_hook_is_verified_before_ready(
     result = CliRunner().invoke(
         app,
         [
-            "onboard",
+            "onboard", "--scope", "project",
             "--project-dir",
             str(tmp_path),
             "--agent",

@@ -32,12 +32,12 @@ REPO_URL = "https://github.com/mikehasa/agentacct"
 # agentacct is published on PyPI; the git+https form installs the latest source
 # straight from the public repository.
 ONE_LINE_PROMPT = (
-    "Install and set up agentacct in this repo — a local-first dashboard that reads my coding-agent "
+    "Install and set up agentacct — a local-first dashboard that reads my coding-agent "
     "logs read-only and shows honest token usage and cost. Run `pipx install agentacct` "
-    "(or `pipx install git+https://github.com/mikehasa/agentacct`), then `agentacct onboard` from this "
-    "repo root, then tell me the dashboard URL. Observe-only: never store, request, or echo any API key; "
-    "all state stays local under `.agent-sentinel/`. Don't modify my global client config without showing "
-    "the exact command first."
+    "(or `pipx install git+https://github.com/mikehasa/agentacct`), then `agentacct onboard` "
+    "(installs once per machine, global by default, zero files written into the repo), then tell me the "
+    "dashboard URL. Observe-only: never store, request, or echo any API key; all state stays local on this "
+    "machine. Don't modify my global client config without showing the exact command first."
 )
 
 # Agents accepted by `setup prompt` / `setup mcp`. The last four share one
@@ -70,7 +70,7 @@ PREAMBLE_LINES = (
 
 GROUND_RULES = (
     "Observe-only. NEVER store, request, or echo provider API keys — nothing in this install needs one.",
-    "No telemetry. All state stays local to this machine: in the project store under `.agent-sentinel/` (gitignored; the store directory keeps the pre-rename name `.agent-sentinel/` for compatibility with existing stores) by default, or in the global store directory if you follow the optional Global install section, plus the client config files named below.",
+    "No telemetry. All state stays local to this machine: `agentacct onboard` uses one global store by default; with `--scope project` it uses a per-repo store under `.agent-sentinel/` (gitignored; the directory keeps the pre-rename name `.agent-sentinel/` for compatibility with existing stores). Either way, only the client config files each path writes change.",
     "Do not modify global/profile client configuration without showing the exact command and asking first.",
     "If `agentacct` is not on PATH, run it via its durable absolute path — never a throwaway temp venv. MCP config writes embed the absolute executable automatically.",
 )
@@ -190,13 +190,14 @@ SERVE_NOTE = (
 # clients (Claude Code desktop, Codex.app) do not inherit shell environment
 # variables, so env-var-based store selection cannot be the mechanism.
 
-GLOBAL_INSTALL_SECTION_TITLE = "## Global install (single-user machine, optional)"
+GLOBAL_INSTALL_SECTION_TITLE = "## Global install by hand (single-user machine)"
 
 GLOBAL_INSTALL_INTRO = (
-    "The per-agent sections above install agentacct per repository: each repo gets its own store, dashboard, and MCP registration. "
-    "On a single-user machine you can instead register ONE user-scope MCP server, hook, and dashboard against ONE global store — "
-    "machine-wide usage AND machine-wide work context on a single dashboard, no per-repo install step. "
-    "State then lives in the global store directory below instead of each repository."
+    "This is what `agentacct onboard` does for you by default: it installs agentacct ONCE per machine — one user-scope MCP server, hook, and dashboard against ONE global store — "
+    "so machine-wide usage AND machine-wide work context land on a single dashboard, with ZERO files written into any repo. "
+    "The default onboard store is the XDG state dir (`~/.local/state/agentacct/state`); older global stores (`~/.agent-sentinel-global/state`) are still recognized. "
+    "The runbook below is the do-it-by-hand equivalent — use it when you want to wire the registrations yourself or point them at an explicit store. "
+    "The per-agent sections above are the other path: `--scope project` installs per repository, giving each repo its own store, dashboard, and MCP registration."
 )
 
 # Store dir choice: NOT ~/.agent-sentinel — that path was older versions'
@@ -581,7 +582,7 @@ def full_prompt(agent: str) -> str:
     notes = "\n".join(f"- {note}" for note in agent_notes(agent))
     rules = "\n".join(f"- {rule}" for rule in GROUND_RULES)
     preamble = "\n".join(PREAMBLE_LINES)
-    return f"""Install and set up agentacct in this repository, in observe-only mode. agentacct is public: install it with `pipx install agentacct` (or `pipx install git+https://github.com/mikehasa/agentacct`). You are the installing agent: run the commands yourself, from the repository root.
+    return f"""Install and set up agentacct in observe-only mode. agentacct is public: install it with `pipx install agentacct` (or `pipx install git+https://github.com/mikehasa/agentacct`). The one-step setup is `agentacct onboard` — it installs agentacct once per machine (global by default) and writes zero files into the repo. You are the installing agent: the per-client steps below are the manual, per-project equivalent; run the commands yourself.
 
 {preamble}
 

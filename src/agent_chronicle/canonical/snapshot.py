@@ -40,6 +40,10 @@ _FORBIDDEN_STATE_COMPONENT_SEQUENCES = (
     (".agent-sentinel-global", "state"),
     (".agent-chronicle", "state"),
     (".agent-chronicle-global", "state"),
+    # New canonical global store ($XDG_STATE_HOME/agentacct/state). Matched as a
+    # PAIR: the bare name "agentacct" is too generic (pkg dir / repo dir) to add
+    # to the single-component root list below.
+    ("agentacct", "state"),
 )
 _FORBIDDEN_LIVE_ROOT_COMPONENTS = frozenset(
     {

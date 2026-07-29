@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,21 @@ from agent_chronicle.mcp import SentinelMCPServer
 
 MCPClient = Literal["hermes", "opencode", "openclaw"]
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
+
+# Standard env var each provider's key is read from (API-key providers).
+_PROVIDER_KEY_ENV = {"deepseek": "DEEPSEEK_API_KEY", "openai": "OPENAI_API_KEY"}
+# Default opencode model per provider (override with --model).
+_OPENCODE_DEFAULT_MODEL = {
+    "deepseek": "deepseek/deepseek-chat",
+    "openai": "openai/gpt-5.4-mini-fast",
+}
+
+
+def _default_opencode_auth_path() -> Path:
+    """Real opencode credential store (~/.local/share/opencode/auth.json)."""
+    base = os.environ.get("XDG_DATA_HOME")
+    root = Path(base) if base else Path.home() / ".local" / "share"
+    return root / "opencode" / "auth.json"
 
 
 @dataclass(frozen=True)
@@ -62,11 +78,11 @@ def _sentinel_module_command() -> list[str]:
     return [sys.executable, "-m", "agent_chronicle.cli"]
 
 
-def _prompt(client: str, source: str, run_id: str, marker: str) -> str:
+def _prompt(client: str, source: str, run_id: str, marker: str, provider: str = "deepseek") -> str:
     return (
-        "You are doing a tiny real agentacct DeepSeek MCP smoke test. "
+        f"You are doing a tiny real agentacct {provider} MCP smoke test. "
         "Use the agentacct MCP tool sentinel_record_section twice: "
-        f"first record section_id=mcp-client-smoke section_status=started source={source} run_id={run_id} summary=deepseek-mcp-client-smoke; "
+        f"first record section_id=mcp-client-smoke section_status=started source={source} run_id={run_id} summary={provider}-mcp-client-smoke; "
         f"then record section_id=mcp-client-smoke section_status=completed source={source} run_id={run_id} summary=MCP workflow ledger works for {client}. "
         f"Finally reply exactly {marker}."
     )
@@ -112,45 +128,63 @@ def _opencode_token_cost_observed(stdout: str) -> bool:
     return False
 
 
-def run_deepseek_mcp_client_smoke(
+def run_mcp_client_smoke(
     client: MCPClient,
     *,
+    provider: str = "deepseek",
+    model: str | None = None,
+    key_env: str | None = None,
+    reuse_client_auth: bool = False,
+    client_auth_src: Path | None = None,
     repo_dir: Path | None = None,
     store_dir: Path | None = None,
-    deepseek_key_env: str = "DEEPSEEK_API_KEY",
     acknowledge_real_api: bool = False,
     runner: CommandRunner = _default_runner,
     timeout_seconds: int = 420,
 ) -> MCPClientSmokeResult:
-    """Run a tiny real DeepSeek-backed MCP client smoke.
+    """Run a tiny real provider-backed MCP client smoke.
 
-    This is intentionally disabled unless acknowledge_real_api=True because it can
-    consume paid provider credits. Tests should inject a fake runner.
+    Disabled unless acknowledge_real_api=True (it can spend paid credits). Tests
+    inject a fake runner. ``reuse_client_auth`` copies the client's OWN stored
+    auth (e.g. opencode's OAuth ``auth.json``) into the isolated home instead of
+    requiring an API key in ``key_env`` — needed for OAuth providers that have no
+    plain API key. Non-deepseek providers are currently opencode-only.
     """
     if not acknowledge_real_api:
         raise MCPClientSmokeError("real client smoke is disabled; pass --i-understand-this-uses-real-api")
     if client not in {"hermes", "opencode", "openclaw"}:
         raise MCPClientSmokeError(f"unsupported client: {client}")
-    key = os.environ.get(deepseek_key_env)
-    if not key:
-        raise MCPClientSmokeError(f"missing required environment variable: {deepseek_key_env}")
+    if provider != "deepseek" and client != "opencode":
+        raise MCPClientSmokeError(f"provider {provider!r} is currently only supported for opencode")
+
+    key_env = key_env or _PROVIDER_KEY_ENV.get(provider)
+    key: str | None = None
+    if not reuse_client_auth:
+        if not key_env:
+            raise MCPClientSmokeError(
+                f"no key env known for provider {provider!r}; pass key_env or use reuse_client_auth"
+            )
+        key = os.environ.get(key_env)
+        if not key:
+            raise MCPClientSmokeError(f"missing required environment variable: {key_env}")
 
     repo = (repo_dir or Path.cwd()).resolve()
-    state = store_dir or Path(tempfile.mkdtemp(prefix=f"as-{client}-deepseek-smoke-store-"))
+    state = store_dir or Path(tempfile.mkdtemp(prefix=f"as-{client}-{provider}-smoke-store-"))
     state.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
-    env[deepseek_key_env] = key
-    source = f"{client}-deepseek-smoke"
-    run_id = f"{client}_deepseek_smoke_{int(time.time())}"
-    marker = f"AGENT_CHRONICLE_{client.upper()}_DEEPSEEK_MCP_OK".replace("-", "_")
-    prompt = _prompt(client, source, run_id, marker)
+    if key and key_env:
+        env[key_env] = key
+    source = f"{client}-{provider}-smoke"
+    run_id = f"{client}_{provider}_smoke_{int(time.time())}"
+    marker = f"AGENT_CHRONICLE_{client.upper()}_{provider.upper()}_MCP_OK".replace("-", "_")
+    prompt = _prompt(client, source, run_id, marker, provider)
     sentinel_cmd = _sentinel_module_command()
 
     isolated_home: str | None = None
     isolated_profile: str | None = None
     stdout = ""
     stderr = ""
-    model = "deepseek/deepseek-chat"
+    model = model or ""
 
     try:
         if client == "hermes":
@@ -168,7 +202,7 @@ def run_deepseek_mcp_client_smoke(
             )
             if add.returncode != 0:
                 raise MCPClientSmokeError((add.stderr or add.stdout)[-1000:])
-            model = "deepseek-v4-flash"
+            model = model or "deepseek-v4-flash"
             run = _run_checked(
                 runner,
                 # "agent-sentinel-smoke" is a frozen stored source string (pre-rename).
@@ -178,9 +212,20 @@ def run_deepseek_mcp_client_smoke(
                 timeout=timeout_seconds,
             )
         elif client == "opencode":
-            home = Path(tempfile.mkdtemp(prefix="as-opencode-deepseek-smoke-home-"))
+            home = Path(tempfile.mkdtemp(prefix=f"as-opencode-{provider}-smoke-home-"))
             isolated_home = str(home)
             env["HOME"] = str(home)
+            if reuse_client_auth:
+                # Copy opencode's OWN stored auth (e.g. OAuth) so the isolated run
+                # authenticates without any API key. Opaque file copy — the token
+                # is never read into this process.
+                src = Path(client_auth_src) if client_auth_src is not None else _default_opencode_auth_path()
+                if not src.exists():
+                    raise MCPClientSmokeError(f"opencode auth not found at {src}; cannot reuse client auth")
+                dst = home / ".local" / "share" / "opencode" / "auth.json"
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src, dst)
+            model = model or _OPENCODE_DEFAULT_MODEL.get(provider, "deepseek/deepseek-chat")
             add = _run_checked(
                 runner,
                 ["opencode", "mcp", "add", "agent-chronicle", "--", *sentinel_cmd, "mcp", "serve", "--store-dir", str(state)],
@@ -200,6 +245,7 @@ def run_deepseek_mcp_client_smoke(
         else:
             profile = f"agent-chronicle-deepseek-smoke-{int(time.time())}"
             isolated_profile = profile
+            model = model or "deepseek/deepseek-chat"
             add = _run_checked(
                 runner,
                 ["openclaw", "--profile", profile, "mcp", "add", "agent-chronicle", "--command", sentinel_cmd[0], "--arg", sentinel_cmd[1], "--arg", sentinel_cmd[2], "--arg", "mcp", "--arg", "serve", "--arg", "--store-dir", "--arg", str(state), "--no-probe"],
@@ -211,7 +257,7 @@ def run_deepseek_mcp_client_smoke(
                 raise MCPClientSmokeError((add.stderr or add.stdout)[-1000:])
             provider = {
                 "baseUrl": "https://api.deepseek.com/v1",
-                "apiKey": {"source": "env", "provider": "default", "id": deepseek_key_env},
+                "apiKey": {"source": "env", "provider": "default", "id": key_env},
                 "auth": "api-key",
                 "api": "openai-completions",
                 "contextWindow": 64000,
@@ -235,7 +281,7 @@ def run_deepseek_mcp_client_smoke(
         status = "passed" if marker in (stdout + stderr) and event_count >= 2 else "failed"
         return MCPClientSmokeResult(
             client=client,
-            provider="deepseek",
+            provider=provider,
             model=model,
             status=status,
             marker_found=marker in (stdout + stderr),
@@ -251,7 +297,7 @@ def run_deepseek_mcp_client_smoke(
     except MCPClientSmokeError as exc:
         return MCPClientSmokeResult(
             client=client,
-            provider="deepseek",
+            provider=provider,
             model=model,
             status="failed",
             marker_found=marker in (stdout + stderr),
@@ -266,6 +312,33 @@ def run_deepseek_mcp_client_smoke(
         )
 
 
-def assert_deepseek_mcp_client_smoke_passed(result: MCPClientSmokeResult) -> None:
+def run_deepseek_mcp_client_smoke(
+    client: MCPClient,
+    *,
+    repo_dir: Path | None = None,
+    store_dir: Path | None = None,
+    deepseek_key_env: str = "DEEPSEEK_API_KEY",
+    acknowledge_real_api: bool = False,
+    runner: CommandRunner = _default_runner,
+    timeout_seconds: int = 420,
+) -> MCPClientSmokeResult:
+    """Back-compat wrapper: DeepSeek-backed smoke (see run_mcp_client_smoke)."""
+    return run_mcp_client_smoke(
+        client,
+        provider="deepseek",
+        key_env=deepseek_key_env,
+        repo_dir=repo_dir,
+        store_dir=store_dir,
+        acknowledge_real_api=acknowledge_real_api,
+        runner=runner,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def assert_mcp_client_smoke_passed(result: MCPClientSmokeResult) -> None:
     if result.status != "passed":
         raise MCPClientSmokeError(result.error or f"{result.client} smoke failed")
+
+
+# Back-compat alias.
+assert_deepseek_mcp_client_smoke_passed = assert_mcp_client_smoke_passed

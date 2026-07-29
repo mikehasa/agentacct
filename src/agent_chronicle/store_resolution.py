@@ -30,7 +30,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from .env_compat import legacy_env_name
+from .env_compat import legacy_env_name, read_env_alias
 from .policy import default_policy_path
 
 ENV_STORE_DIR = "AGENT_CHRONICLE_STORE_DIR"
@@ -39,8 +39,25 @@ ENV_STORE_DIR = "AGENT_CHRONICLE_STORE_DIR"
 LEGACY_ENV_STORE_DIR = legacy_env_name(ENV_STORE_DIR)
 # Frozen pre-rename directory name: existing global installs and registration
 # commands already point here. This is the documented machine-wide store, not
-# the retired silent ``~/.agent-sentinel`` fallback.
+# the retired silent ``~/.agent-sentinel`` fallback. It stays a RECOGNIZED read
+# location forever (dropping it would strand existing users' ledgers).
 GLOBAL_STORE_DIRNAME = ".agent-sentinel-global"
+
+# New canonical (XDG-shaped) global store, introduced with the default-global
+# install. WRITE-ONE-NEW: fresh installs create ``$XDG_STATE_HOME/agentacct/state``
+# (falling back to ``~/.local/state/agentacct/state``); the legacy dir names
+# above stay recognized for READS. Deliberately NOT ``~/.agentacct`` — that path
+# is already the CLI venv install dir, and a bare dotdir re-litters $HOME the
+# tiny-footprint pivot is trying to shrink.
+NEW_GLOBAL_STORE_APPNAME = "agentacct"
+# Operator override for the canonical global store (absolute path). Accepts the
+# pre-rename ``AGENT_SENTINEL_*`` alias forever, like every other env read.
+ENV_GLOBAL_STORE_DIR = "AGENT_CHRONICLE_GLOBAL_STORE_DIR"
+LEGACY_ENV_GLOBAL_STORE_DIR = legacy_env_name(ENV_GLOBAL_STORE_DIR)
+# Recognized-forever legacy global store dir NAMES (the ``-global`` dot family).
+# Matched structurally (location-independent) so a ``--store-dir`` pointed at one
+# of these anywhere still classifies as a machine-wide store.
+LEGACY_GLOBAL_STORE_DIRNAMES = (".agent-sentinel-global", ".agent-chronicle-global")
 
 
 @dataclass(frozen=True)
@@ -220,10 +237,117 @@ def resolve_store_dir(
 
 
 def default_global_store_dir(*, home: Path | None = None) -> Path:
-    """Return the documented machine-wide store path without creating it."""
+    """Return the LEGACY machine-wide store path without creating it.
+
+    This is the pre-rename ``~/.agent-sentinel-global/state`` location. It stays
+    a recognized read candidate forever; new installs write
+    :func:`canonical_global_store_dir` instead.
+    """
 
     home_dir = Path.home() if home is None else Path(home)
     return home_dir.expanduser() / GLOBAL_STORE_DIRNAME / "state"
+
+
+def canonical_global_store_dir(
+    *, env: Mapping[str, str] | None = None, home: Path | None = None
+) -> Path:
+    """The WRITE-ONE-NEW global store path (XDG-shaped), without creating it.
+
+    ``$XDG_STATE_HOME/agentacct/state`` when ``XDG_STATE_HOME`` is set to an
+    absolute path, else ``~/.local/state/agentacct/state``. Pure.
+    """
+
+    environment: Mapping[str, str] = os.environ if env is None else env
+    home_dir = (Path.home() if home is None else Path(home)).expanduser()
+    xdg_state = (environment.get("XDG_STATE_HOME") or "").strip()
+    if xdg_state:
+        base = Path(xdg_state).expanduser()
+        if base.is_absolute():
+            return base / NEW_GLOBAL_STORE_APPNAME / "state"
+    return home_dir / ".local" / "state" / NEW_GLOBAL_STORE_APPNAME / "state"
+
+
+def recognized_global_store_dirs(
+    *, env: Mapping[str, str] | None = None, home: Path | None = None
+) -> tuple[Path, ...]:
+    """Ordered global-store read candidates: override, new canonical, legacy.
+
+    The single source of truth for "which machine-wide stores do we recognize".
+    Order is preference order for reads; every entry is recognized forever so an
+    existing ledger keeps opening after the new canonical name lands. Pure.
+    """
+
+    environment: Mapping[str, str] = os.environ if env is None else env
+    home_dir = (Path.home() if home is None else Path(home)).expanduser()
+
+    ordered: list[Path] = []
+    override = read_env_alias(ENV_GLOBAL_STORE_DIR, environment)
+    if override and override.strip():
+        candidate = Path(override).expanduser()
+        if candidate.is_absolute():
+            ordered.append(candidate)
+    ordered.append(canonical_global_store_dir(env=environment, home=home_dir))
+    ordered.append(home_dir / GLOBAL_STORE_DIRNAME / "state")
+
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in ordered:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return tuple(unique)
+
+
+def _store_has_records(path: Path) -> bool:
+    """Whether a store dir already holds data. A light stat, not a content read.
+
+    Lets an existing populated legacy store win over a freshly-created (empty)
+    canonical store during migration, so an upgrading user's dashboard does not
+    silently go blank before they merge.
+    """
+
+    try:
+        events = path / "events.jsonl"
+        if events.is_file() and events.stat().st_size > 0:
+            return True
+        if (path / "chronicle.sqlite3").is_file():
+            return True
+    except OSError:
+        return False
+    return False
+
+
+def _same_store_path(left: Path, right: Path) -> bool:
+    if left == right:
+        return True
+    try:
+        return left.resolve(strict=False) == right.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return False
+
+
+def is_recognized_global_store(
+    store_dir: Path | str,
+    *,
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> bool:
+    """Whether a store path is one of agentacct's machine-wide stores.
+
+    True for the legacy ``-global`` dot family (matched structurally, so a
+    ``--store-dir`` at one of those anywhere counts) and for the new canonical /
+    operator-override location (matched by path, since ``agentacct/state`` is too
+    generic a shape to match structurally). Used for the "All projects" label.
+    """
+
+    path = Path(store_dir).expanduser()
+    if path.name == "state" and path.parent.name in LEGACY_GLOBAL_STORE_DIRNAMES:
+        return True
+    for candidate in recognized_global_store_dirs(env=env, home=home):
+        if _same_store_path(candidate, path):
+            return True
+    return False
 
 
 def resolve_dashboard_store_dir(
@@ -237,20 +361,27 @@ def resolve_dashboard_store_dir(
 
     Explicit flags and environment variables retain the shared resolver's
     precedence and validation. With neither override, an already-installed
-    machine-wide store becomes the product home; otherwise the normal project
-    walk-up/failure behavior remains unchanged. Pure: never creates state.
+    machine-wide store becomes the product home: the recognized global stores
+    are tried in preference order (operator override, new canonical, legacy),
+    and a store that already holds records wins over an empty one so an upgrade
+    that creates the new store does not blank out a populated legacy ledger.
+    Otherwise the normal project walk-up/failure behavior remains unchanged.
+    Pure: never creates state.
     """
 
     environment: Mapping[str, str] = os.environ if env is None else env
     if explicit is not None:
         return resolve_store_dir(explicit, cwd=cwd, env=environment)
     if store_env_dir_value(environment):
-        return resolve_store_dir(explicit, cwd=cwd, env=environment)
+        return resolve_store_dir(None, cwd=cwd, env=environment)
 
-    global_store = default_global_store_dir(home=home)
-    if global_store.is_dir():
+    candidates = recognized_global_store_dirs(env=environment, home=home)
+    existing = [path for path in candidates if path.is_dir()]
+    if existing:
+        with_records = [path for path in existing if _store_has_records(path)]
+        chosen = with_records[0] if with_records else existing[0]
         return StoreResolution(
-            path=global_store,
+            path=chosen,
             source="global",
             project_root=None,
             worktree_remapped=False,

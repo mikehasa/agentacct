@@ -1,6 +1,6 @@
 # agentacct — install runbook for coding agents
 
-This file is written for the CODING AGENT performing the install (Claude Code, Codex, Hermes, OpenCode, OpenClaw, or any MCP-capable agent). agentacct is public: install it with `pipx install agentacct` (or straight from the public repository with `pipx install git+https://github.com/mikehasa/agentacct`). Work from the target repository's root and follow the section for the client you are running inside.
+This file is written for the CODING AGENT performing the install (Claude Code, Codex, Hermes, OpenCode, OpenClaw, or any MCP-capable agent). agentacct is public: install it with `pipx install agentacct` (or straight from the public repository with `pipx install git+https://github.com/mikehasa/agentacct`). The fast path is `agentacct onboard`, which installs agentacct once per machine (global by default, zero repo files) — see Step 2. The per-client sections (Step 3) are the manual, per-project equivalent; run them from the target repository's root for the client you are running inside.
 
 <!-- Consistency contract: the command blocks, notes, and capability matrix below
      are defined in src/agent_chronicle/install_guide.py and embedded here verbatim.
@@ -17,7 +17,7 @@ agentacct is local-first Agent Work Intelligence for coding agents:
 Hard rules for this install:
 
 - Observe-only. NEVER store, request, or echo provider API keys — nothing in this install needs one.
-- No telemetry. All state stays local to this machine: in the project store under `.agent-sentinel/` (gitignored; the store directory keeps the pre-rename name `.agent-sentinel/` for compatibility with existing stores) by default, or in the global store directory if you follow the optional Global install section, plus the client config files named below.
+- No telemetry. All state stays local to this machine: `agentacct onboard` uses one global store by default; with `--scope project` it uses a per-repo store under `.agent-sentinel/` (gitignored; the directory keeps the pre-rename name `.agent-sentinel/` for compatibility with existing stores). Either way, only the client config files each path writes change.
 - Do not modify global/profile client configuration without showing the exact command and asking first.
 - If `agentacct` is not on PATH, run it via its durable absolute path — never a throwaway temp venv. MCP config writes embed the absolute executable automatically.
 
@@ -56,20 +56,20 @@ command -v agentacct
 
 If `command -v` prints nothing, use the absolute path for every command below: pipx installs to `$HOME/.local/bin/agentacct`; the dedicated-venv fallback is `$HOME/.agentacct/bin/agentacct`. Requires Python >= 3.11 on macOS or Linux (Windows via WSL).
 
-## Step 2 — preferred project onboarding
+## Step 2 — onboard (install once, global by default)
 
-From the target repository root, run:
+Run:
 
 ```bash
 agentacct onboard
 agentacct status
 ```
 
-`onboard` detects an importable local usage source, initializes the project-local store and recording configuration, performs one real local usage sync, and starts continuous sync plus the dashboard. It changes project-local files only: no provider keys, billing connection, or global client settings are required. To select a client explicitly, use `--agent codex` or `--agent claude-code`.
+`onboard` installs agentacct ONCE per machine and writes ZERO files into any repo: it registers a user-scope MCP server, hook, and standing instructions against one global store (default `~/.local/state/agentacct/state`; older `~/.agent-sentinel-global/state` stores are still recognized), performs one real local usage sync, and starts continuous sync plus the dashboard. It merges the hook and `ENABLE_TOOL_SEARCH` env into `~/.claude/settings.json` only with your ok (pass `--yes` for a non-interactive run). To select a client explicitly, use `--agent codex` or `--agent claude-code`. For the legacy per-repo install, add `--scope project`: it changes project-local files only and gives this repo its own `.agent-sentinel/` store (see Step 3 and "Global install by hand" below).
 
-The command finishing successfully means agentacct is configured; it does not mean a real Task has appeared. **Open a NEW agent session in this project after onboarding.** MCP servers and hooks bind when the client session starts, so the session that ran onboarding cannot see the newly registered tools. agentacct stays in an honest waiting state until a real recognized client session appears; a demo row does not count.
+The command finishing successfully means agentacct is configured; it does not mean a real Task has appeared. **Open a NEW agent session (in ANY repo) after onboarding.** MCP servers and hooks bind when the client session starts, so the session that ran onboarding cannot see the newly registered tools. agentacct stays in an honest waiting state until a real recognized client session appears; a demo row does not count.
 
-The managed local runtime survives the invoking shell and uses one project-local store. Its lifecycle is:
+The managed local runtime survives the invoking shell and uses one store. Its lifecycle is:
 
 ```bash
 agentacct start
@@ -83,7 +83,7 @@ agentacct repair
 - `stop` signals only processes whose complete agentacct ownership proof still matches.
 - `repair` clears dead or corrupt owned runtime state without adopting or killing an unknown process.
 
-The dashboard is at http://127.0.0.1:8765 by default. Everything stays local to this machine under `.agent-sentinel/` (gitignored); onboarding neither requests provider API keys nor uploads session data.
+The dashboard is at http://127.0.0.1:8765 by default. Everything stays local to this machine (the global store by default, or a per-repo `.agent-sentinel/` store under `--scope project`); onboarding neither requests provider API keys nor uploads session data.
 
 ## Migration notes (formerly Agent Sentinel)
 
@@ -94,9 +94,9 @@ agentacct was formerly Agent Sentinel; pre-rename installs keep working without 
 - Pre-rename `agent-sentinel` MCP registrations and `agent-sentinel:begin` instruction blocks stay recognized; stored data and the `.agent-sentinel/` store directories keep their pre-rename spellings forever (data format, not branding).
 - Caveat — foreign PyPI package collision: an unrelated PyPI project named `agent-sentinel` (0.5.0) also installs a `bin/agent-sentinel` script. If both packages land in the SAME environment, the later install silently overwrites that script (pip prints no warning), and `pip uninstall agent-sentinel` (the foreign package) deletes the alias out from under agentacct — pre-rename registrations and wrappers resolving the old binary name then fail until `pip install --force-reinstall agentacct`. Do not install both in one environment; pipx refuses the second install because the app names collide.
 
-## Step 3 — advanced manual client setup
+## Step 3 — advanced: manual per-project client setup
 
-Use this fallback when client auto-detection is unavailable or you need to configure integrations separately. Run everything from the target repository root.
+Use this per-repo (`--scope project`) path when client auto-detection is unavailable, when you want a repo to keep its own store, or when you need to configure integrations separately. Run everything from the target repository root.
 
 ### Claude Code
 
@@ -203,9 +203,9 @@ agentacct control launch --help
 
 `control launch` stays in the foreground until the attempt is terminal; the long-running dashboard owns the persistent web supervisor. An attempt freezes the current registered agent revision, and launch fails closed if that agent's argv changes after the attempt or approval was created; create a new attempt to authorize the new revision. Control status and product JSON are sanitized: they never return registered absolute paths, argv, PIDs/process groups, executable/cwd fingerprints, manifest ids, or ownership nonces.
 
-## Global install (single-user machine, optional)
+## Global install by hand (single-user machine)
 
-The per-agent sections above install agentacct per repository: each repo gets its own store, dashboard, and MCP registration. On a single-user machine you can instead register ONE user-scope MCP server, hook, and dashboard against ONE global store — machine-wide usage AND machine-wide work context on a single dashboard, no per-repo install step. State then lives in the global store directory below instead of each repository.
+This is what `agentacct onboard` does for you by default: it installs agentacct ONCE per machine — one user-scope MCP server, hook, and dashboard against ONE global store — so machine-wide usage AND machine-wide work context land on a single dashboard, with ZERO files written into any repo. The default onboard store is the XDG state dir (`~/.local/state/agentacct/state`); older global stores (`~/.agent-sentinel-global/state`) are still recognized. The runbook below is the do-it-by-hand equivalent — use it when you want to wire the registrations yourself or point them at an explicit store. The per-agent sections above are the other path: `--scope project` installs per repository, giving each repo its own store, dashboard, and MCP registration.
 
 ```bash
 mkdir -p "$HOME/.agent-sentinel-global/state"
