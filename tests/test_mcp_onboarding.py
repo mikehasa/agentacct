@@ -466,7 +466,7 @@ def test_public_docs_recommend_read_only_mcp_doctor() -> None:
 
 def test_docs_no_longer_claim_doctor_writes() -> None:
     checklist = Path("docs/public-alpha-checklist.md").read_text()
-    workflow = Path("docs/agent-chronicle-workflow-instructions.md").read_text()
+    workflow = Path("docs/agentacct-workflow-instructions.md").read_text()
 
     assert "`mcp doctor` is read-only by default" in checklist
     assert "throwaway temp store" in checklist
@@ -724,6 +724,8 @@ def test_mcp_doctor_warns_on_relative_store_path_in_mcp_config(tmp_path: Path, m
     from agentacct.store_resolution import ENV_STORE_DIR
 
     monkeypatch.delenv(ENV_STORE_DIR, raising=False)
+    monkeypatch.delenv("AGENT_CHRONICLE_STORE_DIR", raising=False)  # suite-wide isolation alias
+    monkeypatch.delenv("AGENT_SENTINEL_STORE_DIR", raising=False)
     project = tmp_path / "project"
     (project / ".agent-sentinel" / "state").mkdir(parents=True)
     (project / ".mcp.json").write_text(
@@ -747,6 +749,8 @@ def test_mcp_doctor_reports_resolution_failure_as_failing_check(tmp_path: Path, 
     from agentacct.store_resolution import ENV_STORE_DIR
 
     monkeypatch.delenv(ENV_STORE_DIR, raising=False)
+    monkeypatch.delenv("AGENT_CHRONICLE_STORE_DIR", raising=False)  # suite-wide isolation alias
+    monkeypatch.delenv("AGENT_SENTINEL_STORE_DIR", raising=False)
     bare = tmp_path / "bare"
     bare.mkdir()
     monkeypatch.chdir(bare)

@@ -16,6 +16,7 @@ from typing import Literal
 
 import psutil
 
+from .env_compat import read_env_alias
 from .storage import OWNERSHIP_SCHEMA_VERSION, RunStore
 
 
@@ -175,7 +176,7 @@ def _abort_blocked_runner(
             and os.getpgid(proc.pid) == pgid
             and str(Path(live.exe()).resolve()) == executable
             and str(Path(live.cwd()).resolve()) == cwd
-            and live.environ().get("AGENT_CHRONICLE_OWNERSHIP_NONCE") == nonce
+            and read_env_alias("AGENTACCT_OWNERSHIP_NONCE", live.environ()) == nonce
         )
     except (OSError, psutil.Error):
         return
@@ -206,13 +207,18 @@ def start_guarded_run(command: list[str], options: RunOptions | None = None) -> 
     child_env = os.environ.copy()
     child_env.update(
         {
+            # New AGENTACCT_* primary names, plus the pre-rename
+            # AGENT_CHRONICLE_* / AGENT_SENTINEL_* names exported additively,
+            # forever: existing user scripts read the old names.
+            "AGENTACCT_RUN_ID": run_id,
+            "AGENTACCT_RUN_DIR": str(run_dir),
             "AGENT_CHRONICLE_RUN_ID": run_id,
             "AGENT_CHRONICLE_RUN_DIR": str(run_dir),
-            # Pre-rename names exported additively, forever: existing user
-            # scripts read them.
             "AGENT_SENTINEL_RUN_ID": run_id,
             "AGENT_SENTINEL_RUN_DIR": str(run_dir),
+            "AGENTACCT_OWNERSHIP_NONCE": ownership_nonce,
             "AGENT_CHRONICLE_OWNERSHIP_NONCE": ownership_nonce,
+            "AGENT_SENTINEL_OWNERSHIP_NONCE": ownership_nonce,
         }
     )
 

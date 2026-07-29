@@ -3,8 +3,9 @@
 One precedence order everywhere (Phase 1 decision 4a):
 
 1. explicit ``--store-dir`` flag,
-2. ``AGENT_CHRONICLE_STORE_DIR`` environment variable (must be absolute; the
-   pre-rename ``AGENT_SENTINEL_STORE_DIR`` is accepted forever as an alias),
+2. ``AGENTACCT_STORE_DIR`` environment variable (must be absolute; the
+   pre-rename ``AGENT_CHRONICLE_STORE_DIR`` / ``AGENT_SENTINEL_STORE_DIR`` names
+   are accepted forever as aliases),
 3. project-store walk-up from the current directory — stops at a ``.git``
    repository boundary, and remaps ``<owner>/.claude/worktrees/<name>``
    temporary Claude Code worktrees to the owning repository (a worktree's own
@@ -30,12 +31,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from .env_compat import legacy_env_name, read_env_alias
+from .env_compat import env_alias_names, legacy_env_name, legacy_env_names, read_env_alias
 from .policy import default_policy_path
 
-ENV_STORE_DIR = "AGENT_CHRONICLE_STORE_DIR"
-# Pre-rename alias, accepted silently forever: live installs (shell profiles,
-# launchd plists, hook settings) still export it.
+ENV_STORE_DIR = "AGENTACCT_STORE_DIR"
+# Most-recent pre-rename alias, accepted silently forever: live installs (shell
+# profiles, launchd plists, hook settings) still export it. The oldest
+# ``AGENT_SENTINEL_STORE_DIR`` alias is accepted too (see env_alias_names).
 LEGACY_ENV_STORE_DIR = legacy_env_name(ENV_STORE_DIR)
 # Frozen pre-rename directory name: existing global installs and registration
 # commands already point here. This is the documented machine-wide store, not
@@ -52,7 +54,7 @@ GLOBAL_STORE_DIRNAME = ".agent-sentinel-global"
 NEW_GLOBAL_STORE_APPNAME = "agentacct"
 # Operator override for the canonical global store (absolute path). Accepts the
 # pre-rename ``AGENT_SENTINEL_*`` alias forever, like every other env read.
-ENV_GLOBAL_STORE_DIR = "AGENT_CHRONICLE_GLOBAL_STORE_DIR"
+ENV_GLOBAL_STORE_DIR = "AGENTACCT_GLOBAL_STORE_DIR"
 LEGACY_ENV_GLOBAL_STORE_DIR = legacy_env_name(ENV_GLOBAL_STORE_DIR)
 # Recognized-forever legacy global store dir NAMES (the ``-global`` dot family).
 # Matched structurally (location-independent) so a ``--store-dir`` pointed at one
@@ -73,24 +75,29 @@ class StoreResolutionError(RuntimeError):
 
 
 def store_env_dir_value(environment: Mapping[str, str]) -> str | None:
-    """The effective store-dir env value under the new/legacy alias pair.
+    """The effective store-dir env value across the new/legacy alias chain.
 
-    ``AGENT_CHRONICLE_STORE_DIR`` wins; the pre-rename
-    ``AGENT_SENTINEL_STORE_DIR`` is accepted silently. When BOTH are set to
-    DIFFERENT paths this refuses instead of picking one: two names pointing at
-    two stores is a silently split ledger (the Phase 1 rule this module
-    enforces). Hook capture (hooks.py) and every CLI consumer share this exact
-    rule so they can never resolve to different stores.
+    ``AGENTACCT_STORE_DIR`` wins, then the pre-rename ``AGENT_CHRONICLE_STORE_DIR``,
+    then the oldest ``AGENT_SENTINEL_STORE_DIR`` — all accepted silently. When
+    TWO of them are set to DIFFERENT paths this refuses instead of picking one:
+    two names pointing at two stores is a silently split ledger (the Phase 1
+    rule this module enforces). The refusal names the conflicting variables.
+    Hook capture (hooks.py) and every CLI consumer share this exact rule so
+    they can never resolve to different stores.
     """
-    new_value = (environment.get(ENV_STORE_DIR) or "").strip() or None
-    legacy_value = (environment.get(LEGACY_ENV_STORE_DIR) or "").strip() or None
-    if new_value and legacy_value and new_value != legacy_value:
+    present: list[tuple[str, str]] = []
+    for name in env_alias_names(ENV_STORE_DIR):
+        value = (environment.get(name) or "").strip()
+        if value:
+            present.append((name, value))
+    if len({value for _, value in present}) > 1:
+        joined = ", ".join(f"{name}={value}" for name, value in present)
         raise StoreResolutionError(
-            f"{ENV_STORE_DIR} and {LEGACY_ENV_STORE_DIR} are both set but point at different paths "
-            f"({new_value} vs {legacy_value}). Two store variables pointing at two stores would silently "
-            f"split the ledger. Unset {LEGACY_ENV_STORE_DIR} (the pre-rename alias) or make both equal."
+            f"Conflicting store-dir environment variables ({joined}). Two store "
+            "variables pointing at two stores would silently split the ledger. "
+            f"Unset all but one — keep {ENV_STORE_DIR} — or make them equal."
         )
-    return new_value or legacy_value
+    return present[0][1] if present else None
 
 
 def worktree_owner_root(candidate: Path) -> Path | None:
@@ -193,7 +200,8 @@ def resolve_store_dir(
         env_path = Path(env_value).expanduser()
         if not env_path.is_absolute():
             raise StoreResolutionError(
-                f"{ENV_STORE_DIR} (or its pre-rename alias {LEGACY_ENV_STORE_DIR}) must be an absolute path "
+                f"{ENV_STORE_DIR} (or its pre-rename aliases "
+                f"{' / '.join(legacy_env_names(ENV_STORE_DIR))}) must be an absolute path "
                 f"(got: {env_value}). "
                 "A relative value would depend on each command's working directory and silently split the ledger."
             )

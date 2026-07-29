@@ -128,13 +128,13 @@ or slow network costs at most one download attempt per hour per store —
 never one per tick — and every import proceeds immediately on the existing
 snapshot. Snapshot writes are atomic (per-write unique temp file + rename),
 so a concurrently-serving dashboard never reads a torn file. Disable the
-auto-refresh with `AGENT_CHRONICLE_PRICING_AUTO_REFRESH=0`; `cost
+auto-refresh with `AGENTACCT_PRICING_AUTO_REFRESH=0`; `cost
 pricing-catalog --refresh` stays available as the force-now path. No
 telemetry: the download is a plain GET of LiteLLM's public open-source
 pricing table — nothing about your machine, store, or usage is sent.
 
 You can still point at an explicit local Chronicle or LiteLLM JSON catalog with
-`--catalog-path` or `AGENT_CHRONICLE_PRICING_CATALOG_PATH`; a pinned catalog is
+`--catalog-path` or `AGENTACCT_PRICING_CATALOG_PATH`; a pinned catalog is
 respected as-is and is never auto-refreshed.
 
 Provider aliases: `claude-code` rows fall back to `anthropic`-keyed prices and

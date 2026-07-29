@@ -38,7 +38,7 @@ import agentacct
 from agentacct import install_guide
 from agentacct.cli import app
 from agentacct.client_usage import discover_claude_code_usage, discover_codex_usage
-from agentacct.env_compat import env_alias_names, legacy_env_name, read_env_alias
+from agentacct.env_compat import env_alias_names, legacy_env_name, legacy_env_names, read_env_alias
 from agentacct.hooks import CLAUDE_CODE_HOOK_CONTEXT_SCHEMA, _AGENT_CHRONICLE_EXECUTABLE_NAMES
 from agentacct.log_evidence import (
     ACCEPTED_SERVER_KEYS,
@@ -327,43 +327,86 @@ def test_new_writes_emit_new_markers() -> None:
 
 
 def test_read_env_alias_new_wins_and_old_accepted() -> None:
-    assert legacy_env_name("AGENT_CHRONICLE_STORE_DIR") == "AGENT_SENTINEL_STORE_DIR"
-    assert env_alias_names("AGENT_CHRONICLE_OPENAI_API_KEY") == (
+    # AGENTACCT_* is the new PRIMARY; the full chain is
+    # AGENTACCT_* -> AGENT_CHRONICLE_* -> AGENT_SENTINEL_*, newest wins.
+    assert legacy_env_name("AGENTACCT_STORE_DIR") == "AGENT_CHRONICLE_STORE_DIR"
+    assert legacy_env_names("AGENTACCT_STORE_DIR") == (
+        "AGENT_CHRONICLE_STORE_DIR",
+        "AGENT_SENTINEL_STORE_DIR",
+    )
+    assert env_alias_names("AGENTACCT_OPENAI_API_KEY") == (
+        "AGENTACCT_OPENAI_API_KEY",
         "AGENT_CHRONICLE_OPENAI_API_KEY",
         "AGENT_SENTINEL_OPENAI_API_KEY",
     )
-    both = {"AGENT_CHRONICLE_OPENAI_API_KEY": "new", "AGENT_SENTINEL_OPENAI_API_KEY": "old"}
-    assert read_env_alias("AGENT_CHRONICLE_OPENAI_API_KEY", both) == "new"
-    assert read_env_alias("AGENT_CHRONICLE_OPENAI_API_KEY", {"AGENT_SENTINEL_OPENAI_API_KEY": "old"}) == "old"
-    assert read_env_alias("AGENT_CHRONICLE_OPENAI_API_KEY", {}) is None
+    # New primary wins over BOTH pre-rename names.
+    all_three = {
+        "AGENTACCT_OPENAI_API_KEY": "new",
+        "AGENT_CHRONICLE_OPENAI_API_KEY": "mid",
+        "AGENT_SENTINEL_OPENAI_API_KEY": "old",
+    }
+    assert read_env_alias("AGENTACCT_OPENAI_API_KEY", all_three) == "new"
+    # AGENT_CHRONICLE_* wins over AGENT_SENTINEL_* when the primary is unset.
+    assert (
+        read_env_alias(
+            "AGENTACCT_OPENAI_API_KEY",
+            {"AGENT_CHRONICLE_OPENAI_API_KEY": "mid", "AGENT_SENTINEL_OPENAI_API_KEY": "old"},
+        )
+        == "mid"
+    )
+    # BOTH pre-rename names stay accepted on their own, forever.
+    assert read_env_alias("AGENTACCT_OPENAI_API_KEY", {"AGENT_CHRONICLE_OPENAI_API_KEY": "mid"}) == "mid"
+    assert read_env_alias("AGENTACCT_OPENAI_API_KEY", {"AGENT_SENTINEL_OPENAI_API_KEY": "old"}) == "old"
+    assert read_env_alias("AGENTACCT_OPENAI_API_KEY", {}) is None
     # Empty/whitespace values are unset, matching call-site truthiness checks.
-    assert read_env_alias("AGENT_CHRONICLE_OPENAI_API_KEY", {"AGENT_CHRONICLE_OPENAI_API_KEY": " "}) is None
+    assert read_env_alias("AGENTACCT_OPENAI_API_KEY", {"AGENTACCT_OPENAI_API_KEY": " "}) is None
 
 
 def test_store_dir_env_alias_resolves_and_conflicts_refuse(tmp_path) -> None:
-    legacy_only = {LEGACY_ENV_STORE_DIR: str(tmp_path / "state")}
-    resolution = resolve_store_dir(None, env=legacy_only)
-    assert resolution.source == "env"
-    assert resolution.path == tmp_path / "state"
+    # Every recognized store-dir name resolves on its own (source == "env"):
+    # the new AGENTACCT_* primary AND BOTH pre-rename aliases.
+    for name in ("AGENTACCT_STORE_DIR", "AGENT_CHRONICLE_STORE_DIR", "AGENT_SENTINEL_STORE_DIR"):
+        resolution = resolve_store_dir(None, env={name: str(tmp_path / "state")})
+        assert resolution.source == "env", name
+        assert resolution.path == tmp_path / "state", name
 
-    new_wins = {ENV_STORE_DIR: str(tmp_path / "new"), LEGACY_ENV_STORE_DIR: str(tmp_path / "new")}
-    assert resolve_store_dir(None, env=new_wins).path == tmp_path / "new"
+    # No conflict when all names agree; the primary value is returned.
+    agree = {
+        "AGENTACCT_STORE_DIR": str(tmp_path / "new"),
+        "AGENT_CHRONICLE_STORE_DIR": str(tmp_path / "new"),
+        "AGENT_SENTINEL_STORE_DIR": str(tmp_path / "new"),
+    }
+    assert resolve_store_dir(None, env=agree).path == tmp_path / "new"
 
-    conflicting = {ENV_STORE_DIR: str(tmp_path / "a"), LEGACY_ENV_STORE_DIR: str(tmp_path / "b")}
-    try:
-        store_env_dir_value(conflicting)
-    except StoreResolutionError as exc:
-        assert "split the ledger" in str(exc)
-    else:  # pragma: no cover - the refusal is the point
-        raise AssertionError("conflicting store env values must refuse")
+    # ANY two names set to DIFFERENT paths refuses (never silently split), and
+    # the refusal names the conflicting variables.
+    for left, right in (
+        ("AGENTACCT_STORE_DIR", "AGENT_CHRONICLE_STORE_DIR"),
+        ("AGENTACCT_STORE_DIR", "AGENT_SENTINEL_STORE_DIR"),
+        ("AGENT_CHRONICLE_STORE_DIR", "AGENT_SENTINEL_STORE_DIR"),
+    ):
+        conflicting = {left: str(tmp_path / "a"), right: str(tmp_path / "b")}
+        try:
+            store_env_dir_value(conflicting)
+        except StoreResolutionError as exc:
+            assert "split the ledger" in str(exc)
+            assert left in str(exc) and right in str(exc)
+        else:  # pragma: no cover - the refusal is the point
+            raise AssertionError(f"conflicting store env values must refuse: {left} vs {right}")
 
 
 def test_wrapper_binary_env_alias(monkeypatch) -> None:
-    assert CLAUDE_WRAPPER.env_binary == "AGENT_CHRONICLE_CLAUDE_BINARY"
-    monkeypatch.delenv("AGENT_CHRONICLE_CLAUDE_BINARY", raising=False)
+    assert CLAUDE_WRAPPER.env_binary == "AGENTACCT_CLAUDE_BINARY"
+    for name in ("AGENTACCT_CLAUDE_BINARY", "AGENT_CHRONICLE_CLAUDE_BINARY", "AGENT_SENTINEL_CLAUDE_BINARY"):
+        monkeypatch.delenv(name, raising=False)
+    # Oldest pre-rename alias is still honored on its own.
     monkeypatch.setenv("AGENT_SENTINEL_CLAUDE_BINARY", "/old/claude")
     assert build_agent_command(CLAUDE_WRAPPER, ["-p", "hi"]) == ["/old/claude", "-p", "hi"]
-    monkeypatch.setenv("AGENT_CHRONICLE_CLAUDE_BINARY", "/new/claude")
+    # AGENT_CHRONICLE_* wins over AGENT_SENTINEL_*.
+    monkeypatch.setenv("AGENT_CHRONICLE_CLAUDE_BINARY", "/mid/claude")
+    assert build_agent_command(CLAUDE_WRAPPER, [])[0] == "/mid/claude"
+    # New AGENTACCT_* primary wins over both.
+    monkeypatch.setenv("AGENTACCT_CLAUDE_BINARY", "/new/claude")
     assert build_agent_command(CLAUDE_WRAPPER, [])[0] == "/new/claude"
 
 

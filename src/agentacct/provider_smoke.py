@@ -49,7 +49,7 @@ def build_provider_smoke_spec(
         }
         return ProviderSmokeSpec(
             provider="openai",
-            env_var="AGENT_CHRONICLE_OPENAI_API_KEY",
+            env_var="AGENTACCT_OPENAI_API_KEY",
             endpoint="/openai/v1/chat/completions",
             url="https://api.openai.com/v1/chat/completions",
             model=selected_model,
@@ -67,7 +67,7 @@ def build_provider_smoke_spec(
         }
         return ProviderSmokeSpec(
             provider="deepseek",
-            env_var="AGENT_CHRONICLE_DEEPSEEK_API_KEY",
+            env_var="AGENTACCT_DEEPSEEK_API_KEY",
             endpoint="/deepseek/v1/chat/completions",
             url="https://api.deepseek.com/v1/chat/completions",
             model=selected_model,
@@ -85,7 +85,7 @@ def build_provider_smoke_spec(
         }
         return ProviderSmokeSpec(
             provider="anthropic",
-            env_var="AGENT_CHRONICLE_ANTHROPIC_API_KEY",
+            env_var="AGENTACCT_ANTHROPIC_API_KEY",
             endpoint="/anthropic/v1/messages",
             url="https://api.anthropic.com/v1/messages",
             model=selected_model,
@@ -101,7 +101,7 @@ def build_provider_smoke_spec(
         }
         return ProviderSmokeSpec(
             provider="gemini",
-            env_var="AGENT_CHRONICLE_GEMINI_API_KEY",
+            env_var="AGENTACCT_GEMINI_API_KEY",
             endpoint=f"/gemini/v1beta/models/{selected_model}:generateContent",
             url=f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent",
             model=selected_model,
@@ -115,10 +115,10 @@ def build_provider_smoke_spec(
 def env_var_for_provider(provider: str) -> str:
     provider = provider.lower().strip()
     mapping = {
-        "openai": "AGENT_CHRONICLE_OPENAI_API_KEY",
-        "anthropic": "AGENT_CHRONICLE_ANTHROPIC_API_KEY",
-        "gemini": "AGENT_CHRONICLE_GEMINI_API_KEY",
-        "deepseek": "AGENT_CHRONICLE_DEEPSEEK_API_KEY",
+        "openai": "AGENTACCT_OPENAI_API_KEY",
+        "anthropic": "AGENTACCT_ANTHROPIC_API_KEY",
+        "gemini": "AGENTACCT_GEMINI_API_KEY",
+        "deepseek": "AGENTACCT_DEEPSEEK_API_KEY",
     }
     try:
         return mapping[provider]
@@ -153,7 +153,8 @@ def run_provider_smoke(
 
     env = os.environ if env is None else env
     env_var = env_var_for_provider(provider)
-    # New AGENT_CHRONICLE_* name wins; pre-rename AGENT_SENTINEL_* accepted silently.
+    # New AGENTACCT_* name wins; pre-rename AGENT_CHRONICLE_* / AGENT_SENTINEL_*
+    # accepted silently (read_env_alias).
     api_key = (read_env_alias(env_var, env) or "").strip()
     if not api_key:
         raise ProviderSmokeError(f"Missing {env_var}")

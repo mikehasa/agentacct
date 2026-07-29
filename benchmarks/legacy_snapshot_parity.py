@@ -37,10 +37,8 @@ from agentacct.canonical.snapshot import (
     VerifiedSnapshot,
 )
 from agentacct.canonical.sqlite import CanonicalStore
-from agentacct.store_resolution import (
-    ENV_STORE_DIR,
-    LEGACY_ENV_STORE_DIR,
-)
+from agentacct.env_compat import env_alias_names
+from agentacct.store_resolution import ENV_STORE_DIR
 
 
 RUNNER_SCHEMA_VERSION = "agent-chronicle.legacy-parity-runner.v3"
@@ -151,7 +149,9 @@ def _configured_live_store_roots() -> tuple[Path, ...]:
         # runner preflight prevents a custom CODEX_HOME from being scanned.
         home / ".codex",
     }
-    for variable in (ENV_STORE_DIR, LEGACY_ENV_STORE_DIR, "CODEX_HOME"):
+    # All recognized store-dir names (new AGENTACCT_* primary + both pre-rename
+    # aliases) fail closed, so a live store configured under ANY name is protected.
+    for variable in (*env_alias_names(ENV_STORE_DIR), "CODEX_HOME"):
         value = (os.environ.get(variable) or "").strip()
         if not value:
             continue

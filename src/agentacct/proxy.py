@@ -278,7 +278,7 @@ def create_app(
         if not api_key:
             return 400, {"error": {"message": f"Forwarding requires API key for {provider}", "type": "agent_sentinel_missing_api_key"}}
         if provider == "openrouter" and not api_key.startswith("sk-or-v1-"):
-            return 400, {"error": {"message": "AGENT_CHRONICLE_OPENROUTER_API_KEY (or its pre-rename alias AGENT_SENTINEL_OPENROUTER_API_KEY) does not look like a full OpenRouter key", "type": "agent_sentinel_invalid_api_key_format"}}
+            return 400, {"error": {"message": "AGENTACCT_OPENROUTER_API_KEY (or its pre-rename aliases AGENT_CHRONICLE_OPENROUTER_API_KEY / AGENT_SENTINEL_OPENROUTER_API_KEY) does not look like a full OpenRouter key", "type": "agent_sentinel_invalid_api_key_format"}}
         decision = _policy_decision(usage)
         if not decision.allowed:
             return _blocked_response(usage, run_id, decision.reason)

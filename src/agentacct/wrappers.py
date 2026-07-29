@@ -19,10 +19,11 @@ class AgentWrapperSpec:
     env_binary: str
 
 
-# env_binary is the NEW name; read_env_alias also accepts the pre-rename
-# AGENT_SENTINEL_* alias silently (build_agent_command).
-CLAUDE_WRAPPER = AgentWrapperSpec(agent="claude-code", default_binary="claude", env_binary="AGENT_CHRONICLE_CLAUDE_BINARY")
-CODEX_WRAPPER = AgentWrapperSpec(agent="codex", default_binary="codex", env_binary="AGENT_CHRONICLE_CODEX_BINARY")
+# env_binary is the NEW primary name; read_env_alias also accepts the
+# pre-rename AGENT_CHRONICLE_* / AGENT_SENTINEL_* aliases silently
+# (build_agent_command).
+CLAUDE_WRAPPER = AgentWrapperSpec(agent="claude-code", default_binary="claude", env_binary="AGENTACCT_CLAUDE_BINARY")
+CODEX_WRAPPER = AgentWrapperSpec(agent="codex", default_binary="codex", env_binary="AGENTACCT_CODEX_BINARY")
 
 
 @dataclass(frozen=True)
@@ -85,7 +86,7 @@ def _parser(spec: AgentWrapperSpec) -> argparse.ArgumentParser:
         help=(
             "State directory. Defaults to the project store (.agent-sentinel/state found by walking up from the "
             "current directory; Claude worktrees resolve to the owning project). Override here or with "
-            "AGENT_CHRONICLE_STORE_DIR (pre-rename alias AGENT_SENTINEL_STORE_DIR also accepted). "
+            "AGENTACCT_STORE_DIR (pre-rename aliases AGENT_CHRONICLE_STORE_DIR / AGENT_SENTINEL_STORE_DIR also accepted). "
             "Fails if no project store exists."
         ),
     )
@@ -125,8 +126,8 @@ def build_agent_command(spec: AgentWrapperSpec, child_args: Sequence[str]) -> li
 def run_agent_wrapper(spec: AgentWrapperSpec, argv: Sequence[str] | None = None) -> WrapperResult:
     options, child_args = split_wrapper_args(spec, sys.argv[1:] if argv is None else argv)
     command = build_agent_command(spec, child_args)
-    # One shared resolution rule (flag > AGENT_CHRONICLE_STORE_DIR (legacy
-    # alias accepted) > project walk-up > explicit failure); raises
+    # One shared resolution rule (flag > AGENTACCT_STORE_DIR (legacy
+    # aliases accepted) > project walk-up > explicit failure); raises
     # StoreResolutionError with an
     # actionable message instead of silently writing to ~/.agent-sentinel.
     store_dir = resolve_store_dir(options.store_dir).path

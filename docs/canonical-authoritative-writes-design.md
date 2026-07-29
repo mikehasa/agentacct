@@ -49,9 +49,9 @@ owner approves — matching the locked principle that v1 leaves the hot path onl
   written, trusting v1 as the record. The module docstring names replicating the
   importer's absorb semantics as a precondition "before any import may target a
   live store."
-- **Write flag** — `AGENT_CHRONICLE_CANONICAL_LIVE_WRITE`, binary today
+- **Write flag** — `AGENTACCT_CANONICAL_LIVE_WRITE`, binary today
   (`{"1","true","yes","on","shadow"}` all mean "on"). No authoritative branch
-  exists anywhere. The read flag `AGENT_CHRONICLE_CANONICAL_READ` is separate and
+  exists anywhere. The read flag `AGENTACCT_CANONICAL_READ` is separate and
   independent, OFF in prod (this cut's Block 1 migrated the four HTML read surfaces
   behind it; still OFF).
 - **Evidence v2** — a third, independent additive shadow store (`evidence-v2/`),

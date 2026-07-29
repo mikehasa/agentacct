@@ -36,7 +36,7 @@ from typing import Any, Mapping
 from .env_compat import read_env_alias
 
 
-CANONICAL_LIVE_ENV = "AGENT_CHRONICLE_CANONICAL_LIVE_WRITE"
+CANONICAL_LIVE_ENV = "AGENTACCT_CANONICAL_LIVE_WRITE"
 
 # Historical truthy set: every one of these has always meant "shadow" (canonical
 # writes on, v1 stays the record). Kept exact so no existing deployment's value
@@ -95,7 +95,7 @@ def require_supported_write_mode(mode: CanonicalWriteMode) -> CanonicalWriteMode
 
     if mode is CanonicalWriteMode.AUTHORITATIVE and not _AUTHORITATIVE_WRITE_SUPPORTED:
         raise CanonicalAuthoritativeNotReady(
-            "AGENT_CHRONICLE_CANONICAL_LIVE_WRITE=authoritative is not supported "
+            "AGENTACCT_CANONICAL_LIVE_WRITE=authoritative is not supported "
             "yet: canonical-authoritative writes land across migration increments "
             "I1–I6 (docs/canonical-authoritative-writes-design.md) and the flip is "
             "owner-gated after a soak. Use 'shadow' (the current production mode) "

@@ -35,6 +35,7 @@ from .control_plane import (
     RunAttempt,
     contract_requires_launch_approval,
 )
+from .env_compat import env_alias_names, read_env_alias
 from .storage import OWNERSHIP_SCHEMA_VERSION, RunStore
 
 
@@ -517,7 +518,11 @@ class OwnedSupervisor:
             "argv_file_identities": argv_file_identities,
             "supervisor_shim_executable": str(Path(sys.executable).resolve()),
             "environment_key_names": list(self.env_allowlist)
-            + ["AGENT_CHRONICLE_RUN_ID", "AGENT_CHRONICLE_RUN_DIR", "AGENT_CHRONICLE_OWNERSHIP_NONCE"],
+            + [
+                name
+                for base in ("AGENTACCT_RUN_ID", "AGENTACCT_RUN_DIR", "AGENTACCT_OWNERSHIP_NONCE")
+                for name in env_alias_names(base)
+            ],
         }
         return attempt, command, root, manifest_payload
 
@@ -567,7 +572,7 @@ class OwnedSupervisor:
                 and os.getpgid(process.pid) == pgid
                 and str(Path(live.exe()).resolve()) == str(Path(sys.executable).resolve())
                 and str(Path(live.cwd()).resolve()) == str(cwd)
-                and live.environ().get("AGENT_CHRONICLE_OWNERSHIP_NONCE") == nonce
+                and read_env_alias("AGENTACCT_OWNERSHIP_NONCE", live.environ()) == nonce
             )
         except (OSError, psutil.Error):
             return
@@ -677,11 +682,18 @@ class OwnedSupervisor:
             child_env = {key: os.environ[key] for key in self.env_allowlist if key in os.environ}
             child_env.update(
                 {
+                    # New AGENTACCT_* primary names, plus both pre-rename
+                    # aliases exported additively so existing user scripts that
+                    # read the old names keep working.
+                    "AGENTACCT_RUN_ID": attempt_id,
+                    "AGENTACCT_RUN_DIR": str(run_dir),
+                    "AGENTACCT_OWNERSHIP_NONCE": nonce,
                     "AGENT_CHRONICLE_RUN_ID": attempt_id,
                     "AGENT_CHRONICLE_RUN_DIR": str(run_dir),
                     "AGENT_CHRONICLE_OWNERSHIP_NONCE": nonce,
                     "AGENT_SENTINEL_RUN_ID": attempt_id,
                     "AGENT_SENTINEL_RUN_DIR": str(run_dir),
+                    "AGENT_SENTINEL_OWNERSHIP_NONCE": nonce,
                 }
             )
             handshake_read, handshake_write = os.pipe()
@@ -727,7 +739,7 @@ class OwnedSupervisor:
             # cancellation even when the target leader exits before children.
             executable = str(Path(sys.executable).resolve())
             process_cwd = str(Path(live.cwd()).resolve())
-            if live.environ().get("AGENT_CHRONICLE_OWNERSHIP_NONCE") != nonce:
+            if read_env_alias("AGENTACCT_OWNERSHIP_NONCE", live.environ()) != nonce:
                 raise SupervisorError("process launch nonce handshake failed")
             self._assert_preflight_identities(manifest_payload)
         except Exception as exc:

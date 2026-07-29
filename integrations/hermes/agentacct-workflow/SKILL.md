@@ -1,5 +1,5 @@
 ---
-name: agent-chronicle-workflow
+name: agentacct-workflow
 description: Use when working in a repo with agentacct MCP configured, or when asked to track coding-agent work, smoke-test agentacct integrations, or report objective AI-agent task evidence.
 version: 1.0.0
 author: agentacct
@@ -123,7 +123,7 @@ Do not say agentacct hard-stopped, billed exactly, or tracked all sessions unles
 If agentacct MCP is configured, call agentacct tools directly. For one-shot work, load this skill explicitly:
 
 ```bash
-hermes chat -s agent-chronicle-workflow -q "..."
+hermes chat -s agentacct-workflow -q "..."
 ```
 
 ### OpenCode

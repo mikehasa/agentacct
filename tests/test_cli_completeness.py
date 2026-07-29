@@ -449,7 +449,7 @@ def test_doctor_gives_actionable_setup_steps_for_uninitialized_project(tmp_path,
     assert "Protect local secrets" in result.output
     # Phase 3 (item 5): the missing-key mention stays neutral and optional —
     # enforcement is secondary in the observe-only alpha.
-    assert "AGENT_CHRONICLE_OPENROUTER_API_KEY" in result.output
+    assert "AGENTACCT_OPENROUTER_API_KEY" in result.output
     assert "observe-only" in result.output
     assert "Optional provider forwarding" not in result.output
     assert "agentacct serve" in result.output
@@ -537,9 +537,9 @@ def test_validate_policy_model_directly_reports_errors(tmp_path):
 
 
 def test_workflow_docs_and_hermes_skill_template_are_present() -> None:
-    workflow = Path("docs/agent-chronicle-workflow-instructions.md").read_text()
+    workflow = Path("docs/agentacct-workflow-instructions.md").read_text()
     integrations = Path("docs/coding-agent-integrations.md").read_text()
-    skill = Path("integrations/hermes/agent-chronicle-workflow/SKILL.md").read_text()
+    skill = Path("integrations/hermes/agentacct-workflow/SKILL.md").read_text()
 
     assert "agentacct_record_event" in workflow
     assert "agentacct_record_section" in workflow
@@ -555,8 +555,8 @@ def test_workflow_docs_and_hermes_skill_template_are_present() -> None:
     assert "task_blocked" not in skill
     assert "section_status=started" in skill
     assert "Keep these claims separate" in workflow
-    assert "agent-chronicle-workflow/SKILL.md" in integrations
-    assert skill.startswith("---\nname: agent-chronicle-workflow")
+    assert "agentacct-workflow/SKILL.md" in integrations
+    assert skill.startswith("---\nname: agentacct-workflow")
     assert "description:" in skill
     assert "agentacct_record_machine_check" in skill
     assert "Do not say agentacct hard-stopped" in skill

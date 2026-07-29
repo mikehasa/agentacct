@@ -17,10 +17,11 @@ PRICING_CATALOG_METADATA_SUFFIX = ".metadata.json"
 
 # Defined here (not cost.py) so the snapshot-refresh path can honor a user pin
 # without a circular import; cost.py re-exports it for its many importers.
-PRICING_CATALOG_PATH_ENV = "AGENT_CHRONICLE_PRICING_CATALOG_PATH"
+PRICING_CATALOG_PATH_ENV = "AGENTACCT_PRICING_CATALOG_PATH"
 # TTL auto-refresh opt-out (read through read_env_alias: the pre-rename
-# AGENT_SENTINEL_PRICING_AUTO_REFRESH spelling is accepted forever).
-PRICING_AUTO_REFRESH_ENV = "AGENT_CHRONICLE_PRICING_AUTO_REFRESH"
+# AGENT_CHRONICLE_PRICING_AUTO_REFRESH / AGENT_SENTINEL_PRICING_AUTO_REFRESH
+# spellings are accepted forever).
+PRICING_AUTO_REFRESH_ENV = "AGENTACCT_PRICING_AUTO_REFRESH"
 PRICING_SNAPSHOT_TTL_DAYS = 7.0
 # The un-compressed ~1.6 MB table has been observed to take >60 s on slow
 # links; 120 s keeps the force-now and auto-refresh paths from false-failing.
@@ -442,11 +443,11 @@ def ensure_fresh_pricing_snapshot(
     snapshot (missing beats wrong, stale beats missing).
 
     Never fetches when:
-    - the user pinned ``AGENT_CHRONICLE_PRICING_CATALOG_PATH`` (or the
+    - the user pinned ``AGENTACCT_PRICING_CATALOG_PATH`` (or the
       pre-rename alias) — an explicit catalog choice is respected; callers
       that pin the env themselves (the serve middleware) pass ``env_pinned``
       explicitly so their own per-request pin is not mistaken for the user's;
-    - ``AGENT_CHRONICLE_PRICING_AUTO_REFRESH=0`` (or the pre-rename alias);
+    - ``AGENTACCT_PRICING_AUTO_REFRESH=0`` (or the pre-rename aliases);
     - the sidecar's ``fetched_at`` is within ``ttl_days`` AND the snapshot
       itself still parses (an unreadable/empty snapshot counts as stale so
       the fetch repairs it, and the sidecar records ``last_refresh_error:

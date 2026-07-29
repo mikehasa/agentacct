@@ -12,6 +12,8 @@ from typing import Any, Iterator, Mapping
 
 import psutil
 
+from .env_compat import read_env_alias
+
 
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 OWNERSHIP_SCHEMA_VERSION = "agent-chronicle.process-ownership.v1"
@@ -231,7 +233,7 @@ class RunStore:
             live_pgid = os.getpgid(pid)
             live_executable = str(Path(process.exe()).resolve())
             live_cwd = str(Path(process.cwd()).resolve())
-            live_nonce = process.environ().get("AGENT_CHRONICLE_OWNERSHIP_NONCE")
+            live_nonce = read_env_alias("AGENTACCT_OWNERSHIP_NONCE", process.environ())
         except (ProcessLookupError, psutil.NoSuchProcess, psutil.ZombieProcess) as exc:
             raise PermissionError(f"run {run_id} already exited; refusing to control it") from exc
         except (OSError, psutil.AccessDenied) as exc:

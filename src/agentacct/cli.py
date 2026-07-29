@@ -363,14 +363,14 @@ def _install_agent_instructions(project_dir: Path, agent: str) -> Path:
 _STORE_DIR_HELP = (
     "State directory. Defaults to the project store (.agent-sentinel/state, found by walking up from the current "
     "directory; Claude worktrees resolve to the owning project). Override with --store-dir or "
-    "AGENT_CHRONICLE_STORE_DIR. Fails if no project store exists."
+    "AGENTACCT_STORE_DIR. Fails if no project store exists."
 )
 
 _DASHBOARD_STORE_DIR_HELP = (
     "State directory for the dashboard. With no override, an installed machine-wide "
     "~/.agent-sentinel-global/state store opens as the All projects product view; otherwise agentacct uses the "
     "current project store. Pass a project .agent-sentinel/state path for an explicit workspace view. "
-    "AGENT_CHRONICLE_STORE_DIR (or its pre-rename alias) overrides both defaults."
+    "AGENTACCT_STORE_DIR (or its pre-rename aliases) overrides both defaults."
 )
 
 # One --allow-host help string for every local HTTP server command.
@@ -413,7 +413,7 @@ def _resolve_dashboard_cli_store_dir(store_dir: Path | str | None) -> StoreResol
 def _resolve_scratch_store_dir(store_dir: Path | str | None, *, label: str) -> tuple[Path, bool]:
     """Store resolution for demo-style commands that write throwaway data.
 
-    Explicit flag and AGENT_CHRONICLE_STORE_DIR are honored; otherwise a
+    Explicit flag and AGENTACCT_STORE_DIR are honored; otherwise a
     THROWAWAY temporary store is created (never the project ledger — demo
     events in a production store are junk data). Returns (path, is_temporary).
     """
@@ -2081,7 +2081,7 @@ def doctor(
     checks.append(("git repository", (project_dir / ".git").exists(), "detected" if (project_dir / ".git").exists() else "not detected"))
     secrets_ignored = _is_ignored_by_git(project_dir, ".env.local") and _is_ignored_by_git(project_dir, ".env")
     checks.append(("secret files ignored", secrets_ignored, ".env and .env.local protected" if secrets_ignored else "add .env and .env.local to .gitignore"))
-    has_openrouter = bool(read_env_alias("AGENT_CHRONICLE_OPENROUTER_API_KEY"))
+    has_openrouter = bool(read_env_alias("AGENTACCT_OPENROUTER_API_KEY"))
     checks.append(("OpenRouter key", has_openrouter, "present" if has_openrouter else "not set; forwarding examples will be dry-run/local only"))
 
     next_steps: list[str] = []
@@ -2095,7 +2095,7 @@ def doctor(
         next_steps.append("Protect local secrets: add .env and .env.local to .gitignore, or re-run agentacct init.")
     if not has_openrouter:
         next_steps.append(
-            "Optional: AGENT_CHRONICLE_OPENROUTER_API_KEY is only needed for opt-in provider forwarding; "
+            "Optional: AGENTACCT_OPENROUTER_API_KEY is only needed for opt-in provider forwarding; "
             "the default observe-only workflow requires no API key."
         )
     next_steps.append("Try a safe local run: agentacct run -- python --version")
@@ -2585,9 +2585,9 @@ def judge_run(
         raise typer.BadParameter("--max-total-usd must be > 0")
     if max_tokens <= 0:
         raise typer.BadParameter("--max-tokens must be > 0")
-    api_key = read_env_alias("AGENT_CHRONICLE_OPENROUTER_API_KEY")
+    api_key = read_env_alias("AGENTACCT_OPENROUTER_API_KEY")
     if not api_key:
-        raise typer.BadParameter("judge run requires AGENT_CHRONICLE_OPENROUTER_API_KEY")
+        raise typer.BadParameter("judge run requires AGENTACCT_OPENROUTER_API_KEY")
     with _friendly_run_lookup_errors(run_id):
         store = RunStore(_resolve_cli_store_dir(store_dir).path, create=False)
         if run_id == "latest":
@@ -2923,7 +2923,7 @@ def _download_litellm_pricing_snapshot(snapshot_path: Path, *, source_url: str) 
 def cost_pricing_catalog(
     store_dir: Annotated[
         Optional[Path],
-        typer.Option(help="State directory for the default local pricing snapshot. Resolved like every store command (flag, then AGENT_CHRONICLE_STORE_DIR, then project walk-up); without a resolvable store the builtin catalog is used."),
+        typer.Option(help="State directory for the default local pricing snapshot. Resolved like every store command (flag, then AGENTACCT_STORE_DIR, then project walk-up); without a resolvable store the builtin catalog is used."),
     ] = None,
     catalog_path: Annotated[Optional[Path], typer.Option(help="Optional local agentacct or LiteLLM pricing catalog JSON path.")] = None,
     refresh: Annotated[bool, typer.Option("--refresh", help="Download the latest LiteLLM pricing snapshot into the local pricing catalog path before inspecting.")] = False,
@@ -3620,7 +3620,7 @@ def mcp_serve(
             # that is how stray stores were silently created. The env var is
             # deliberately ignored for ANCHORING (it names a store, not a
             # project root), but when no project root exists a valid absolute
-            # AGENT_CHRONICLE_STORE_DIR wins outright — the user explicitly
+            # AGENTACCT_STORE_DIR wins outright — the user explicitly
             # named the store, which beats a dead server.
             try:
                 resolution = resolve_store_dir(None, env={})
@@ -3990,7 +3990,7 @@ def mcp_workflow_smoke(
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
     """Exercise a full local MCP event workflow: initialize, tool list, record, list, summary."""
-    # Same scratch rule as `demo`: explicit flag and AGENT_CHRONICLE_STORE_DIR
+    # Same scratch rule as `demo`: explicit flag and AGENTACCT_STORE_DIR
     # are honored, otherwise the smoke's real events land in a throwaway temp
     # store — never a silently-resolved production ledger.
     resolved_store_dir, store_is_temporary = _resolve_scratch_store_dir(store_dir, label="workflow-smoke")
@@ -8552,19 +8552,19 @@ def cost_proxy(
             raise typer.BadParameter("forwarding requires at least one --forward-provider")
         if max_total_usd is None:
             raise typer.BadParameter("forwarding requires --max-total-usd local budget cap")
-        # New AGENT_CHRONICLE_* names win; pre-rename AGENT_SENTINEL_* aliases
+        # New AGENTACCT_* names win; pre-rename AGENT_CHRONICLE_* / AGENT_SENTINEL_* aliases
         # are accepted silently.
-        openrouter_api_key = read_env_alias("AGENT_CHRONICLE_OPENROUTER_API_KEY")
-        openai_api_key = read_env_alias("AGENT_CHRONICLE_OPENAI_API_KEY")
-        deepseek_api_key = read_env_alias("AGENT_CHRONICLE_DEEPSEEK_API_KEY")
+        openrouter_api_key = read_env_alias("AGENTACCT_OPENROUTER_API_KEY")
+        openai_api_key = read_env_alias("AGENTACCT_OPENAI_API_KEY")
+        deepseek_api_key = read_env_alias("AGENTACCT_DEEPSEEK_API_KEY")
         if "openrouter" in allowed_forward_providers and not openrouter_api_key:
-            raise typer.BadParameter("OpenRouter forwarding requires AGENT_CHRONICLE_OPENROUTER_API_KEY")
+            raise typer.BadParameter("OpenRouter forwarding requires AGENTACCT_OPENROUTER_API_KEY")
         if "openrouter" in allowed_forward_providers and openrouter_api_key and not openrouter_api_key.startswith("sk-or-v1-"):
-            raise typer.BadParameter("AGENT_CHRONICLE_OPENROUTER_API_KEY does not look like a full OpenRouter key")
+            raise typer.BadParameter("AGENTACCT_OPENROUTER_API_KEY does not look like a full OpenRouter key")
         if "openai" in allowed_forward_providers and not openai_api_key:
-            raise typer.BadParameter("OpenAI forwarding requires AGENT_CHRONICLE_OPENAI_API_KEY")
+            raise typer.BadParameter("OpenAI forwarding requires AGENTACCT_OPENAI_API_KEY")
         if "deepseek" in allowed_forward_providers and not deepseek_api_key:
-            raise typer.BadParameter("DeepSeek forwarding requires AGENT_CHRONICLE_DEEPSEEK_API_KEY")
+            raise typer.BadParameter("DeepSeek forwarding requires AGENTACCT_DEEPSEEK_API_KEY")
     else:
         openrouter_api_key = None
         openai_api_key = None

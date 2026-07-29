@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from agentacct.store_resolution import ENV_STORE_DIR
+from agentacct.store_resolution import ENV_STORE_DIR, LEGACY_ENV_STORE_DIR
 
 _TESTS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _TESTS_DIR.parent
@@ -66,8 +66,19 @@ def _digest(path: Path) -> str:
 
 @pytest.fixture(autouse=True)
 def _isolated_default_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default every test's store resolution to a private temp directory."""
-    monkeypatch.setenv(ENV_STORE_DIR, str(tmp_path / "isolated-default-store"))
+    """Default every test's store resolution to a private temp directory.
+
+    Isolation is bound to the pre-rename ``AGENT_CHRONICLE_STORE_DIR`` alias
+    (still a fully recognized store-dir name). The suite's many opt-out sites
+    clear that exact name, and its many override sites re-set it, so keeping
+    the isolation on that one alias preserves the whole suite's single
+    store-env design across the ``AGENTACCT_*`` primary rename. The new-primary
+    and oldest aliases are cleared so an ambient developer export can neither
+    leak in nor trip the three-name conflict-refuse check.
+    """
+    monkeypatch.delenv(ENV_STORE_DIR, raising=False)  # AGENTACCT_STORE_DIR (new primary)
+    monkeypatch.delenv("AGENT_SENTINEL_STORE_DIR", raising=False)  # oldest alias
+    monkeypatch.setenv(LEGACY_ENV_STORE_DIR, str(tmp_path / "isolated-default-store"))
 
 
 @pytest.fixture(autouse=True)
@@ -91,6 +102,7 @@ def _pin_canonical_live_flag_off(monkeypatch: pytest.MonkeyPatch) -> None:
     through the constructor override or an explicit ``monkeypatch.setenv``.
     """
 
+    monkeypatch.delenv("AGENTACCT_CANONICAL_LIVE_WRITE", raising=False)
     monkeypatch.delenv("AGENT_CHRONICLE_CANONICAL_LIVE_WRITE", raising=False)
     monkeypatch.delenv("AGENT_SENTINEL_CANONICAL_LIVE_WRITE", raising=False)
 
@@ -105,6 +117,7 @@ def _pin_canonical_read_flag_off(monkeypatch: pytest.MonkeyPatch) -> None:
     override or an explicit ``monkeypatch.setenv``.
     """
 
+    monkeypatch.delenv("AGENTACCT_CANONICAL_READ", raising=False)
     monkeypatch.delenv("AGENT_CHRONICLE_CANONICAL_READ", raising=False)
     monkeypatch.delenv("AGENT_SENTINEL_CANONICAL_READ", raising=False)
 

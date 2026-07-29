@@ -97,7 +97,7 @@ hermes mcp add agent-chronicle --command agent-chronicle --args mcp serve --stor
 For one-shot runs, load the skill explicitly when available:
 
 ```bash
-hermes chat -s agent-chronicle-workflow -q "..."
+hermes chat -s agentacct-workflow -q "..."
 ```
 
 ### OpenCode

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from .confidence import COST_BASIS_CLIENT_SESSION, COST_BASIS_PRICING_TABLE, COST_CLIENT_REPORTED, COST_ESTIMATED_FROM_TOKENS, COST_UNKNOWN, USAGE_CLIENT_REPORTED
+from .env_compat import read_env_alias
 from .cost import estimate_model_cost_breakdown_usd, has_model_price, model_pricing_entry
 from .log_evidence import (
     LogEvidenceAccumulator,
@@ -6623,7 +6624,7 @@ _CODEX_MODEL_SCAN_EXCLUDED_PAYLOAD_TYPES = frozenset(
 
 _CODEX_PARSE_CACHE_FORMAT = 1
 _CODEX_PARSE_CACHE_FILENAME = "codex_rollout_parse.pkl"
-_CODEX_PARSE_CACHE_DISABLE_ENV = "AGENT_CHRONICLE_CODEX_PARSE_CACHE"
+_CODEX_PARSE_CACHE_DISABLE_ENV = "AGENTACCT_CODEX_PARSE_CACHE"
 # Cap on retained entries. A machine has a bounded number of codex rollout files
 # (typically a few thousand), so this is only a runaway backstop; it is large
 # enough that the common case never prunes, which keeps the cache warm across a
@@ -6771,7 +6772,7 @@ def codex_parse_cache_scope(
     """Activate the codex rollout parse cache for one scan. Fail-open; the
     disable env var forces the un-memoized path."""
 
-    disable = os.environ.get(_CODEX_PARSE_CACHE_DISABLE_ENV, "").strip().lower()
+    disable = (read_env_alias(_CODEX_PARSE_CACHE_DISABLE_ENV) or "").strip().lower()
     if not enabled or store_dir is None or disable in {"0", "false", "off", "no"}:
         yield None
         return
