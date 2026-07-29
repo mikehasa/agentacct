@@ -1,7 +1,7 @@
 import pytest
 
-from agent_chronicle.cost import CostLedger
-from agent_chronicle.provider_smoke import ProviderSmokeError, build_provider_smoke_spec, run_provider_smoke
+from agentacct.cost import CostLedger
+from agentacct.provider_smoke import ProviderSmokeError, build_provider_smoke_spec, run_provider_smoke
 
 
 class MockResponse:
@@ -21,7 +21,7 @@ def test_provider_smoke_missing_key_does_not_call_network(tmp_path):
         called = True
         raise AssertionError("network should not be called")
 
-    with pytest.raises(ProviderSmokeError, match="Missing AGENT_CHRONICLE_OPENAI_API_KEY"):
+    with pytest.raises(ProviderSmokeError, match="Missing AGENTACCT_OPENAI_API_KEY"):
         run_provider_smoke("openai", max_usd=0.01, store_dir=tmp_path, env={}, http_post=fake_post)
 
     assert called is False
@@ -105,10 +105,10 @@ def test_provider_smoke_openai_mock_records_safe_summary_without_secret(tmp_path
 @pytest.mark.parametrize(
     ("provider", "env_var", "expected_url"),
     [
-        ("openai", "AGENT_CHRONICLE_OPENAI_API_KEY", "https://api.openai.com/v1/chat/completions"),
-        ("anthropic", "AGENT_CHRONICLE_ANTHROPIC_API_KEY", "https://api.anthropic.com/v1/messages"),
-        ("gemini", "AGENT_CHRONICLE_GEMINI_API_KEY", "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"),
-        ("deepseek", "AGENT_CHRONICLE_DEEPSEEK_API_KEY", "https://api.deepseek.com/v1/chat/completions"),
+        ("openai", "AGENTACCT_OPENAI_API_KEY", "https://api.openai.com/v1/chat/completions"),
+        ("anthropic", "AGENTACCT_ANTHROPIC_API_KEY", "https://api.anthropic.com/v1/messages"),
+        ("gemini", "AGENTACCT_GEMINI_API_KEY", "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"),
+        ("deepseek", "AGENTACCT_DEEPSEEK_API_KEY", "https://api.deepseek.com/v1/chat/completions"),
     ],
 )
 def test_provider_smoke_specs_use_expected_endpoints(provider, env_var, expected_url):

@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from agent_chronicle.control_plane import (
+from agentacct.control_plane import (
     ControlEvent,
     ControlPlaneError,
     ControlStore,

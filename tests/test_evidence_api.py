@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from agent_chronicle.api import create_local_api_app
+from agentacct.api import create_local_api_app
 
 
 def test_work_event_http_transport_writes_v1_and_v2(tmp_path) -> None:
@@ -20,7 +20,7 @@ def test_work_event_http_transport_writes_v1_and_v2(tmp_path) -> None:
         "client": "codex",
         "client_session_id": "session-1",
         "summary": "Implemented Evidence v2.",
-        "files": ["src/agent_chronicle/evidence.py", "../private.txt"],
+        "files": ["src/agentacct/evidence.py", "../private.txt"],
     }
     response = client.post("/work-events", json=request)
     retry = client.post("/work-events", json=request)
@@ -31,7 +31,7 @@ def test_work_event_http_transport_writes_v1_and_v2(tmp_path) -> None:
     assert payload["work_event"]["transport"] == "http"
     assert payload["work_event"]["occurred_at"] == 1_783_900_123.5
     assert payload["work_event"]["source_event_id"] == "codex-section-implementation-1"
-    assert payload["work_event"]["files"] == ["src/agent_chronicle/evidence.py"]
+    assert payload["work_event"]["files"] == ["src/agentacct/evidence.py"]
     assert payload["v1_event"]["event_type"] == "section_completed"
     assert payload["v1_event"]["metadata"]["client_event_timestamp"] == 1_783_900_123.5
     assert payload["v1_event"]["metadata"]["source_event_id"] == "codex-section-implementation-1"

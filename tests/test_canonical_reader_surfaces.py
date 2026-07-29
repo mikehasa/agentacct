@@ -30,7 +30,7 @@ from typing import Any
 
 import pytest
 
-from agent_chronicle.canonical_read import (
+from agentacct.canonical_read import (
     CANONICAL_READ_ENV,
     CanonicalReadRuntime,
     CanonicalReadUnavailable,
@@ -183,7 +183,7 @@ def test_task_list_read_serves_imported_tasks_with_honest_nulls(tmp_path):
 
 
 def test_task_list_read_refuses_never_built_projection(tmp_path):
-    from agent_chronicle.canonical.sqlite import CanonicalStore
+    from agentacct.canonical.sqlite import CanonicalStore
 
     store_root = tmp_path / "store-shadow"
     store_root.mkdir()
@@ -219,7 +219,7 @@ def test_task_list_read_refuses_not_current_but_usage_still_serves(tmp_path):
 
 
 def test_task_list_read_stale_projection_is_labeled_not_refused(tmp_path):
-    from agent_chronicle.canonical.sqlite import CanonicalStore
+    from agentacct.canonical.sqlite import CanonicalStore
 
     store_root = _imported_live_store(tmp_path, _work_ledger_events(), name="stale-t")
     store = CanonicalStore.open_live(store_root)
@@ -268,7 +268,7 @@ def test_task_detail_read_refuses_never_built_instead_of_missing(tmp_path):
     """Gate ordering: a store whose rm_task_current was never built must
     refuse — reporting 'no such task' would impersonate an empty store."""
 
-    from agent_chronicle.canonical.sqlite import CanonicalStore
+    from agentacct.canonical.sqlite import CanonicalStore
 
     store_root = tmp_path / "store-shadow"
     store_root.mkdir()
@@ -366,7 +366,7 @@ def test_session_list_read_undated_session_sorts_last_with_honest_nones(tmp_path
 
 
 def test_by_ids_lookups_validate_batches(tmp_path):
-    from agent_chronicle.canonical.sqlite import CanonicalStore
+    from agentacct.canonical.sqlite import CanonicalStore
 
     store_root = _imported_live_store(tmp_path, _work_ledger_events(), name="batch")
     store = CanonicalStore.open_live(store_root, read_only=True)
@@ -480,7 +480,7 @@ def test_tasks_flag_on_store_absent_falls_back_labeled(tmp_path, monkeypatch):
 
 
 def test_tasks_flag_on_never_built_projection_falls_back_labeled(tmp_path, monkeypatch):
-    from agent_chronicle.canonical.sqlite import CanonicalStore
+    from agentacct.canonical.sqlite import CanonicalStore
 
     store_dir = tmp_path / "store"
     _write_ledger(store_dir, _trusted(_work_ledger_events()))
@@ -493,7 +493,7 @@ def test_tasks_flag_on_never_built_projection_falls_back_labeled(tmp_path, monke
 
 
 def test_tasks_payload_build_crash_falls_back_labeled(tmp_path, monkeypatch):
-    import agent_chronicle.api as api_module
+    import agentacct.api as api_module
 
     store_dir = _endpoint_store(tmp_path, _work_ledger_events(), name="tasks-crash")
     monkeypatch.setenv(CANONICAL_READ_ENV, "1")
@@ -612,7 +612,7 @@ def test_sessions_flag_on_store_absent_falls_back_labeled(tmp_path, monkeypatch)
 
 
 def test_sessions_payload_build_crash_falls_back_labeled(tmp_path, monkeypatch):
-    import agent_chronicle.api as api_module
+    import agentacct.api as api_module
 
     store_dir = _endpoint_store(tmp_path, _work_ledger_events(), name="sessions-crash")
     monkeypatch.setenv(CANONICAL_READ_ENV, "1")
@@ -765,7 +765,7 @@ def test_task_detail_payload_crash_is_typed_503_not_a_lying_404(tmp_path, monkey
     namespaces): a payload-build crash must surface as a typed 503 recorded
     on /health — never a 'Task not found' that contradicts the store."""
 
-    import agent_chronicle.api as api_module
+    import agentacct.api as api_module
 
     store_dir = _endpoint_store(tmp_path, _work_ledger_events(), name="detail-crash")
     monkeypatch.setenv(CANONICAL_READ_ENV, "1")
@@ -791,7 +791,7 @@ def test_planned_control_task_serves_v1_labeled_in_canonical_mode(tmp_path, monk
     must keep serving them from v1 WITH the model-gap label — not 404 them
     with a v1-era-namespace explanation."""
 
-    from agent_chronicle.control_plane import ControlStore
+    from agentacct.control_plane import ControlStore
 
     store_dir = _endpoint_store(tmp_path, _work_ledger_events(), name="planned")
     control = ControlStore(store_dir)

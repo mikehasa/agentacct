@@ -1,5 +1,5 @@
-from agent_chronicle.cost import estimate_gemini_generate_content_usage, estimate_model_cost_breakdown_usd, estimate_model_cost_usd, estimate_openai_chat_usage
-from agent_chronicle.proxy import usage_from_provider_response
+from agentacct.cost import estimate_gemini_generate_content_usage, estimate_model_cost_breakdown_usd, estimate_model_cost_usd, estimate_openai_chat_usage
+from agentacct.proxy import usage_from_provider_response
 
 
 def test_openai_compatible_contract_extracts_usage_and_cost():

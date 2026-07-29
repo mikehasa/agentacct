@@ -9,12 +9,12 @@ Origin header and must keep working untouched.
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-from agent_chronicle.api import create_local_api_app
-from agent_chronicle.cli import app as cli_app
-from agent_chronicle.cost import CostLedger, CostPolicy
-from agent_chronicle.localhost_guard import LocalhostGuardMiddleware
-from agent_chronicle.proxy import create_app
-from agent_chronicle.service import SentinelService
+from agentacct.api import create_local_api_app
+from agentacct.cli import app as cli_app
+from agentacct.cost import CostLedger, CostPolicy
+from agentacct.localhost_guard import LocalhostGuardMiddleware
+from agentacct.proxy import create_app
+from agentacct.service import SentinelService
 
 
 def _api_client(tmp_path, **kwargs):
@@ -209,7 +209,7 @@ def test_guard_is_outermost_middleware_on_the_cost_proxy(tmp_path):
 def test_testserver_is_not_in_the_shipped_default_allowlist():
     # A test-only hostname must never ride into a production allowlist; the
     # suite injects it via extra_allowed_hosts instead (autouse conftest fixture).
-    from agent_chronicle.localhost_guard import DEFAULT_ALLOWED_HOSTS
+    from agentacct.localhost_guard import DEFAULT_ALLOWED_HOSTS
 
     assert "testserver" not in DEFAULT_ALLOWED_HOSTS
     assert DEFAULT_ALLOWED_HOSTS == frozenset({"localhost", "127.0.0.1", "::1"})

@@ -22,8 +22,8 @@ from typing import Any
 
 import pytest
 
-import agent_chronicle.api as api
-from agent_chronicle.canonical_read import CANONICAL_READ_ENV
+import agentacct.api as api
+from agentacct.canonical_read import CANONICAL_READ_ENV
 
 from test_canonical_reader import _api_client, _imported_live_store
 from test_canonical_reader_surfaces import _work_ledger_events
@@ -295,7 +295,7 @@ def test_overview_html_flag_on_usage_unavailable_names_usage(tmp_path, monkeypat
     # partial availability: task_list serves, usage read fails -> the composite
     # short-circuits and the banner names usage_days (not a generic "overview").
     monkeypatch.setenv(CANONICAL_READ_ENV, "1")
-    from agent_chronicle.canonical_read import CanonicalReadRuntime, CanonicalReadUnavailable
+    from agentacct.canonical_read import CanonicalReadRuntime, CanonicalReadUnavailable
 
     def _boom(self, **_kw):
         raise CanonicalReadUnavailable("store_refused", "forced usage failure")
@@ -317,7 +317,7 @@ def test_overview_html_flag_on_usage_unavailable_names_usage(tmp_path, monkeypat
 def test_overview_html_flag_on_session_unavailable_names_session(tmp_path, monkeypatch):
     # partial availability: task_list + usage serve, session read fails last.
     monkeypatch.setenv(CANONICAL_READ_ENV, "1")
-    from agent_chronicle.canonical_read import CanonicalReadRuntime, CanonicalReadUnavailable
+    from agentacct.canonical_read import CanonicalReadRuntime, CanonicalReadUnavailable
 
     def _boom(self, **_kw):
         raise CanonicalReadUnavailable("store_refused", "forced session failure")
@@ -341,7 +341,7 @@ def test_overview_html_served_caps_and_truncation_labeled(tmp_path, monkeypatch)
     # the body caption marks "N+" and names the truncation, and the composite
     # source note ORs the truncation into its page-level label.
     import dataclasses
-    from agent_chronicle.canonical_read import CanonicalReadRuntime
+    from agentacct.canonical_read import CanonicalReadRuntime
 
     monkeypatch.setenv(CANONICAL_READ_ENV, "1")
     monkeypatch.setattr(api, "_CANONICAL_OVERVIEW_TASK_ROWS", 1)
@@ -390,7 +390,7 @@ def test_overview_html_served_source_note_shows_usage_staleness(tmp_path, monkey
     # a stale (but current) usage projection must render its pending-write count
     # in the composite source note, not silently read as fresh.
     import dataclasses
-    from agent_chronicle.canonical_read import CanonicalReadRuntime
+    from agentacct.canonical_read import CanonicalReadRuntime
 
     monkeypatch.setenv(CANONICAL_READ_ENV, "1")
     real_usage = CanonicalReadRuntime._usage_day_read
@@ -413,7 +413,7 @@ def test_overview_html_store_divergence_falls_back_labeled(tmp_path, monkeypatch
     # so they observe different store identities, refuse to stamp one store's
     # identity on another's rows -> labeled v1 fallback, accounted to overview.
     import dataclasses
-    from agent_chronicle.canonical_read import CanonicalReadRuntime
+    from agentacct.canonical_read import CanonicalReadRuntime
 
     monkeypatch.setenv(CANONICAL_READ_ENV, "1")
     real_session = CanonicalReadRuntime._session_list_read

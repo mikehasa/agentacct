@@ -23,15 +23,15 @@ from typing import Any
 
 import pytest
 
-from agent_chronicle.activation import RUNTIME_ENV_ALLOWLIST
-from agent_chronicle.canonical_read import (
+from agentacct.activation import RUNTIME_ENV_ALLOWLIST
+from agentacct.canonical_read import (
     CANONICAL_READ_ENV,
     CanonicalReadRuntime,
     CanonicalReadUnavailable,
     canonical_read_enabled,
 )
-from agent_chronicle.canonical_live import CANONICAL_LIVE_ENV, canonical_live_write_enabled
-from agent_chronicle.usage_truth import mark_trusted_local_usage_import_event
+from agentacct.canonical_live import CANONICAL_LIVE_ENV, canonical_live_write_enabled
+from agentacct.usage_truth import mark_trusted_local_usage_import_event
 
 from test_canonical_live_writer import _run_importer, _usage_event
 
@@ -214,7 +214,7 @@ def test_read_unavailable_never_built_projection(tmp_path):
     read model was never rebuilt — an empty rm_usage_day must not
     impersonate "no usage"."""
 
-    from agent_chronicle.canonical.sqlite import CanonicalStore
+    from agentacct.canonical.sqlite import CanonicalStore
 
     store_root = tmp_path / "store-shadow"
     store_root.mkdir()
@@ -253,7 +253,7 @@ def test_usage_day_read_serves_rows_with_fresh_projection(tmp_path):
 
 
 def test_usage_day_read_stale_projection_is_labeled_not_refused(tmp_path):
-    from agent_chronicle.canonical.sqlite import CanonicalStore
+    from agentacct.canonical.sqlite import CanonicalStore
 
     store_root = _imported_live_store(
         tmp_path, [_usage_event(event_id="evt_u1")], name="stale"
@@ -306,7 +306,7 @@ def test_model_probe_distinguishes_unknown_model_from_empty_range(tmp_path):
 
 
 def test_truncation_is_labeled(tmp_path, monkeypatch):
-    import agent_chronicle.canonical_read as canonical_read_module
+    import agentacct.canonical_read as canonical_read_module
 
     events = [
         _usage_event(event_id="evt_u1", session_id="s-1", created_at=1_700_000_000.0),
@@ -326,7 +326,7 @@ def test_truncation_is_labeled(tmp_path, monkeypatch):
 def _api_client(store_dir: Path):
     from starlette.testclient import TestClient
 
-    from agent_chronicle.api import create_local_api_app
+    from agentacct.api import create_local_api_app
 
     return TestClient(create_local_api_app(store_dir=store_dir))
 
@@ -527,7 +527,7 @@ def _rm_row(**overrides: Any) -> dict[str, Any]:
 def _build_cube(rows: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
     from datetime import date
 
-    from agent_chronicle.canonical_day_cube import build_canonical_day_cube
+    from agentacct.canonical_day_cube import build_canonical_day_cube
 
     defaults: dict[str, Any] = {
         "granularity": "daily",
@@ -639,7 +639,7 @@ def test_error_reason_counts_and_drops_cache(tmp_path, monkeypatch):
     'error' fallback, count on the errors counter, and evict the possibly
     poisoned per-thread handle."""
 
-    from agent_chronicle.canonical.sqlite import CanonicalRepository
+    from agentacct.canonical.sqlite import CanonicalRepository
 
     store_root = _imported_live_store(
         tmp_path, [_usage_event(event_id="evt_u1", created_at=1_700_000_000.0)], name="err"
@@ -706,7 +706,7 @@ def test_endpoint_payload_build_failure_falls_back_labeled(tmp_path, monkeypatch
     becomes the labeled v1 fallback (reason 'error'), never an HTTP 500, and
     the crash is visible on /health."""
 
-    import agent_chronicle.api as api_module
+    import agentacct.api as api_module
 
     events = _trusted([_usage_event(event_id="evt_u1", created_at=1_700_000_000.0)])
     store_dir = tmp_path / "store"

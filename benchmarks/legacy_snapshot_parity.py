@@ -20,27 +20,25 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-from agent_chronicle.canonical.legacy_import import import_legacy_snapshot
-from agent_chronicle.canonical.product_parity import (
+from agentacct.canonical.legacy_import import import_legacy_snapshot
+from agentacct.canonical.product_parity import (
     ProductParityError,
     SUPPORTED_LEGACY_MANIFEST_KINDS,
     build_legacy_product_parity_report,
 )
-from agent_chronicle.canonical.safe_scratch import (
+from agentacct.canonical.safe_scratch import (
     AnchoredRunDirectory,
     ScratchSafetyError,
     create_anchored_run_directory,
 )
-from agent_chronicle.canonical.snapshot import (
+from agentacct.canonical.snapshot import (
     SnapshotManifest,
     SnapshotSafetyError,
     VerifiedSnapshot,
 )
-from agent_chronicle.canonical.sqlite import CanonicalStore
-from agent_chronicle.store_resolution import (
-    ENV_STORE_DIR,
-    LEGACY_ENV_STORE_DIR,
-)
+from agentacct.canonical.sqlite import CanonicalStore
+from agentacct.env_compat import env_alias_names
+from agentacct.store_resolution import ENV_STORE_DIR
 
 
 RUNNER_SCHEMA_VERSION = "agent-chronicle.legacy-parity-runner.v3"
@@ -151,7 +149,9 @@ def _configured_live_store_roots() -> tuple[Path, ...]:
         # runner preflight prevents a custom CODEX_HOME from being scanned.
         home / ".codex",
     }
-    for variable in (ENV_STORE_DIR, LEGACY_ENV_STORE_DIR, "CODEX_HOME"):
+    # All recognized store-dir names (new AGENTACCT_* primary + both pre-rename
+    # aliases) fail closed, so a live store configured under ANY name is protected.
+    for variable in (*env_alias_names(ENV_STORE_DIR), "CODEX_HOME"):
         value = (os.environ.get(variable) or "").strip()
         if not value:
             continue

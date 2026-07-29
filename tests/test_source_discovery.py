@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from agent_chronicle.cli import app
-from agent_chronicle.source_discovery import discover_usage_sources
+from agentacct.cli import app
+from agentacct.source_discovery import discover_usage_sources
 
 
 def _make_codex_source(root: Path) -> Path:

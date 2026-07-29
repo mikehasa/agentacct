@@ -56,7 +56,7 @@ The watcher does not wrap or launch your coding agents; it periodically imports 
 
 For Codex, `--limit-sessions` counts recent **root conversation groups**, not flat thread rows. agentacct resolves Codex-recorded parent edges before applying the limit, then returns the selected root and all discovered descendants so internal reviews cannot crowd their root chat out of the scan. An internal workflow label such as `codex-auto-review` is not a billable model: it inherits a model only from its exact recorded parent, with provenance; otherwise the model stays unknown and unpriced. agentacct never borrows a scan-wide model from another task.
 
-Local imports do not read provider API keys, call provider APIs, or upload session data. Imported usage is labeled `client_reported`; estimated costs are labeled `estimated_from_tokens`, not provider billing. Cursor's local path is observation-only and never contributes usage or cost. Unknown models remain unpriced until a trusted catalog entry exists — pricing paths keep a store-local LiteLLM pricing snapshot fresh automatically (7-day TTL; the fetch is a plain GET of LiteLLM's public open-source price table, not telemetry — nothing is sent; disable with `AGENT_CHRONICLE_PRICING_AUTO_REFRESH=0`; details in [usage-truth-table.md](usage-truth-table.md)). Explicit per-client import flags (`--opencode-home`, `--hermes-home`, `--openclaw-home`, `--cursor-home`) are documented in [coding-agent-integrations.md](coding-agent-integrations.md).
+Local imports do not read provider API keys, call provider APIs, or upload session data. Imported usage is labeled `client_reported`; estimated costs are labeled `estimated_from_tokens`, not provider billing. Cursor's local path is observation-only and never contributes usage or cost. Unknown models remain unpriced until a trusted catalog entry exists — pricing paths keep a store-local LiteLLM pricing snapshot fresh automatically (7-day TTL; the fetch is a plain GET of LiteLLM's public open-source price table, not telemetry — nothing is sent; disable with `AGENTACCT_PRICING_AUTO_REFRESH=0`; details in [usage-truth-table.md](usage-truth-table.md)). Explicit per-client import flags (`--opencode-home`, `--hermes-home`, `--openclaw-home`, `--cursor-home`) are documented in [coding-agent-integrations.md](coding-agent-integrations.md).
 
 To see what each integration path can and cannot prove:
 
@@ -184,7 +184,7 @@ agentacct connector paperclip /path/to/paperclip-export.json --dry-run --json
 agentacct connector entire /path/to/git-repository --dry-run --json
 ```
 
-The localhost API accepts OTLP/HTTP JSON at `POST /v1/traces`. Start evidence inspection at `/advanced`; the stable projections remain available at `/work-graph`, `/evidence-matrix`, `/discrepancies`, and `/cost-outcome-basis`. `GET /evidence/events` uses bounded arrival-order cursor pages (`limit`, then `cursor=next_cursor`). Set `AGENT_CHRONICLE_EVIDENCE_V2=0` for a v1-only rollback; existing v2 evidence remains untouched.
+The localhost API accepts OTLP/HTTP JSON at `POST /v1/traces`. Start evidence inspection at `/advanced`; the stable projections remain available at `/work-graph`, `/evidence-matrix`, `/discrepancies`, and `/cost-outcome-basis`. `GET /evidence/events` uses bounded arrival-order cursor pages (`limit`, then `cursor=next_cursor`). Set `AGENTACCT_EVIDENCE_V2=0` for a v1-only rollback; existing v2 evidence remains untouched.
 
 Start the MCP server over stdio:
 
@@ -194,19 +194,19 @@ agentacct mcp serve
 
 Current MCP tools include:
 
-- `sentinel_list_runs`
-- `sentinel_get_report`
-- `sentinel_record_event`
-- `sentinel_attach_client_context`
-- `sentinel_record_section`
-- `sentinel_record_agent_usage_debug`
-- `sentinel_list_events`
-- `sentinel_get_event_summary`
-- `sentinel_record_machine_check`
-- `sentinel_prepare_judge`
-- `sentinel_compute_value`
+- `agentacct_list_runs`
+- `agentacct_get_report`
+- `agentacct_record_event`
+- `agentacct_attach_client_context`
+- `agentacct_record_section`
+- `agentacct_record_agent_usage_debug`
+- `agentacct_list_events`
+- `agentacct_get_event_summary`
+- `agentacct_record_machine_check`
+- `agentacct_prepare_judge`
+- `agentacct_compute_value`
 
-Use local usage import for token/cost truth, and use MCP tools for workflow context. `sentinel_attach_client_context` stores local session/turn/message identifiers, while `sentinel_record_section` stores human-readable task chapters that can later be joined to imported usage. `sentinel_record_agent_usage_debug` stores agent-visible usage snapshots for comparison only; it does not add to agentacct's usage or cost totals.
+Use local usage import for token/cost truth, and use MCP tools for workflow context. `agentacct_attach_client_context` stores local session/turn/message identifiers, while `agentacct_record_section` stores human-readable task chapters that can later be joined to imported usage. `agentacct_record_agent_usage_debug` stores agent-visible usage snapshots for comparison only; it does not add to agentacct's usage or cost totals.
 
 How agents learn to record: the MCP server returns record-your-work instructions in its initialize result, and for Claude Code the SessionStart hook injects the same directive into every new session. `agentacct setup instructions --agent <client> --user` writes a standing instruction block into user-level `~/.claude/CLAUDE.md` / `~/.codex/AGENTS.md` (idempotent markers; `--remove` strips it, `--dry-run` previews). For one machine-wide store and dashboard instead of per-repo installs, follow the "Global install" section of [INSTALL.md](../INSTALL.md); fold older per-project stores in with `agentacct usage merge-store`.
 
@@ -307,7 +307,7 @@ An opt-in provider cost proxy (`agentacct cost proxy --enable-forwarding --max-t
 
 agentacct was formerly Agent Sentinel. Existing installs keep working without re-setup:
 
-- Environment variables: every `AGENT_CHRONICLE_*` variable accepts its pre-rename `AGENT_SENTINEL_*` alias — the old names are accepted indefinitely, the new name wins when both are set, and conflicting store-dir values refuse rather than silently split the ledger. There is no runtime deprecation nag; the old names simply keep working.
+- Environment variables: every `AGENTACCT_*` variable also accepts its pre-rename `AGENT_CHRONICLE_*` and `AGENT_SENTINEL_*` names — the old names are accepted indefinitely, the new name wins when more than one is set, and conflicting store-dir values refuse rather than silently split the ledger. There is no runtime deprecation nag; the old names simply keep working.
 - Binaries: the published package ships only agentacct-branded console scripts — `agentacct` plus the `agentacct-claude` / `agentacct-codex` wrappers. Pre-rename MCP registrations, hook wrappers, and launchd jobs that resolve the old `agent-chronicle` / `agent-sentinel` binary names are still recognized at runtime, but the old console scripts are no longer shipped (they collide with unrelated PyPI packages of those names).
 - Stored data and the `.agent-sentinel/` store directory keep their pre-rename spellings forever; they are data format, not branding.
 - Caveat — foreign PyPI package collision: an unrelated project named `agent-sentinel` (0.5.0) exists on PyPI and also installs a `bin/agent-sentinel` script. Installing both packages into the same environment makes the later install silently overwrite that script (pip prints no warning), and `pip uninstall agent-sentinel` (the foreign package) deletes the alias out from under agentacct — anything resolving the old binary name dies until `pip install --force-reinstall agentacct`. Avoid installing both in one environment; pipx refuses the second install outright because the app names collide.

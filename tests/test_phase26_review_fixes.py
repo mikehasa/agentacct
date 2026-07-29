@@ -24,12 +24,12 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from agent_chronicle.api import _store_scope_and_label, create_local_api_app
-from agent_chronicle.client_usage import _read_codex_rollout_usage
-from agent_chronicle.hooks import derive_claude_code_client_context
-from agent_chronicle.service import SentinelService
-from agent_chronicle.store_resolution import claude_worktree_owner_path_text
-from agent_chronicle.work_ledger import _project_label_info, build_work_ledger
+from agentacct.api import _store_scope_and_label, create_local_api_app
+from agentacct.client_usage import _read_codex_rollout_usage
+from agentacct.hooks import derive_claude_code_client_context
+from agentacct.service import SentinelService
+from agentacct.store_resolution import claude_worktree_owner_path_text
+from agentacct.work_ledger import _project_label_info, build_work_ledger
 
 import json
 

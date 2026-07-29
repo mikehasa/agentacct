@@ -3,10 +3,10 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 
-from agent_chronicle.connector_runtime import import_connector_records
-from agent_chronicle.connectors import OpenLITOTLPConnector, PaperclipSnapshotConnector
-from agent_chronicle.evidence import EvidenceEnvelope
-from agent_chronicle.evidence_runtime import EvidenceRuntime
+from agentacct.connector_runtime import import_connector_records
+from agentacct.connectors import OpenLITOTLPConnector, PaperclipSnapshotConnector
+from agentacct.evidence import EvidenceEnvelope
+from agentacct.evidence_runtime import EvidenceRuntime
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "connectors"

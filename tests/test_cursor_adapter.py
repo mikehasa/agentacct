@@ -11,18 +11,18 @@ import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-import agent_chronicle.client_usage as client_usage
-from agent_chronicle.cli import app
-from agent_chronicle.client_usage import (
+import agentacct.client_usage as client_usage
+from agentacct.cli import app
+from agentacct.client_usage import (
     ClientUsageEvent,
     discover_client_usage_with_diagnostics,
     usage_less_session_observations,
 )
-from agent_chronicle.api import UsageDiscoveryConfig, create_local_api_app
-from agent_chronicle.ingestion_health import IngestionHealthStore, health_scan_results
-from agent_chronicle.service import SentinelService
-from agent_chronicle.source_discovery import discover_usage_sources
-from agent_chronicle.usage_truth import is_local_session_observation_event
+from agentacct.api import UsageDiscoveryConfig, create_local_api_app
+from agentacct.ingestion_health import IngestionHealthStore, health_scan_results
+from agentacct.service import SentinelService
+from agentacct.source_discovery import discover_usage_sources
+from agentacct.usage_truth import is_local_session_observation_event
 from refresh_flash import refresh_flash_qs
 
 

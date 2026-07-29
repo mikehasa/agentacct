@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-import agent_chronicle.evidence_rebuild_activation as activation
-from agent_chronicle.evidence_rebuild_activation import (
+import agentacct.evidence_rebuild_activation as activation
+from agentacct.evidence_rebuild_activation import (
     EvidenceActivationDrift,
     EvidenceActivationError,
     EvidenceActivationLockBusy,

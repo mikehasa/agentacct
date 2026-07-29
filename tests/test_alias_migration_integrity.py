@@ -6,16 +6,16 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-from agent_chronicle.api import UsageDiscoveryConfig, create_local_api_app
-from agent_chronicle.cli import app
-from agent_chronicle.client_usage import (
+from agentacct.api import UsageDiscoveryConfig, create_local_api_app
+from agentacct.cli import app
+from agentacct.client_usage import (
     ClientUsageEvent,
     build_usage_import_write_batches,
     plan_local_usage_import,
     select_usage_import_candidates,
 )
-from agent_chronicle.service import SentinelService
-from agent_chronicle.usage_truth import split_shadowed_legacy_usage_events
+from agentacct.service import SentinelService
+from agentacct.usage_truth import split_shadowed_legacy_usage_events
 from refresh_flash import refresh_flash_qs, run_dashboard_refresh
 
 

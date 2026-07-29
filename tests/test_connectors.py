@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.confidence import COST_PROVIDER_BILLED
-from agent_chronicle.connectors import (
+from agentacct.confidence import COST_PROVIDER_BILLED
+from agentacct.connectors import (
     ConnectorError,
     ConnectorRecord,
     ConnectorRegistry,
@@ -24,12 +24,12 @@ from agent_chronicle.connectors import (
     evaluate_control_signal,
     require_hard_enforcement,
 )
-from agent_chronicle.connectors.entire import ENTIRE_LICENSE, ENTIRE_UPSTREAM_SHA
-from agent_chronicle.connectors.control import validate_supporting_evidence
-from agent_chronicle.connectors.openlit import OPENLIT_LICENSE, OPENLIT_UPSTREAM_SHA
-from agent_chronicle.connectors.paperclip import PAPERCLIP_LICENSE, PAPERCLIP_UPSTREAM_SHA
-from agent_chronicle.evidence import EvidenceEnvelope
-from agent_chronicle.evidence_runtime import EvidenceRuntime
+from agentacct.connectors.entire import ENTIRE_LICENSE, ENTIRE_UPSTREAM_SHA
+from agentacct.connectors.control import validate_supporting_evidence
+from agentacct.connectors.openlit import OPENLIT_LICENSE, OPENLIT_UPSTREAM_SHA
+from agentacct.connectors.paperclip import PAPERCLIP_LICENSE, PAPERCLIP_UPSTREAM_SHA
+from agentacct.evidence import EvidenceEnvelope
+from agentacct.evidence_runtime import EvidenceRuntime
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "connectors"
@@ -139,7 +139,7 @@ def test_connector_record_is_deterministic_and_exposes_evidence_seam() -> None:
     assert payload["privacy"]["raw_content_included"] is False
     assert payload["payload"]["attributes"] == {"count": 1}
 
-    if importlib.util.find_spec("agent_chronicle.evidence") is None:
+    if importlib.util.find_spec("agentacct.evidence") is None:
         with pytest.raises(EvidenceCoreUnavailable):
             record.to_evidence_envelope()
     else:

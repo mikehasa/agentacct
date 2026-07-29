@@ -29,33 +29,34 @@ Requires Python >= 3.11 on macOS or Linux; Windows is supported only via WSL.
 
 ```bash
 pipx install agentacct
-agentacct onboard   # from your repo root
+agentacct onboard   # once per machine (global by default)
 ```
 
 No `pipx` yet? Install it first with `brew install pipx` (macOS) or `python3 -m pip install --user pipx` — or skip pipx entirely and use `uv tool install agentacct`. See [INSTALL.md](INSTALL.md) for a plain-`venv` fallback.
 
-`onboard` detects your local coding-agent logs, sets up the project-local store, runs a first usage sync, and starts the dashboard at `http://127.0.0.1:8765`. Then open a **new** agent session in the project — MCP servers and hooks bind at session start, so the session that ran onboarding cannot become the first recorded Task.
+`onboard` installs agentacct once per machine (global by default, writing zero files into your repo): it detects your local coding-agent logs, sets up a global store, runs a first usage sync, and starts the dashboard at `http://127.0.0.1:8765`. Then open a **new** agent session in any repo — MCP servers and hooks bind at session start, so the session that ran onboarding cannot become the first recorded Task. (Prefer a per-repo install? Run `agentacct onboard --scope project` instead.)
 
-Prefer to let the agent do it? Paste this into the coding agent working in your target repo:
+Prefer to let the agent do it? Paste this into your coding agent:
 
 ```text
-Install and set up agentacct in this repo — a local-first dashboard that reads my
+Install and set up agentacct — a local-first dashboard that reads my
 coding-agent logs read-only and shows honest token usage and cost.
 
 Run `pipx install agentacct`
 (or `pipx install git+https://github.com/mikehasa/agentacct`),
-then `agentacct onboard` from this repo root, then tell me the dashboard URL.
+then `agentacct onboard` (installs once per machine, global by default, zero
+files written into the repo), then tell me the dashboard URL.
 
 Observe-only: never store, request, or echo any API key; all state stays local
-under `.agent-sentinel/`. Don't modify my global client config without showing
-the exact command first.
+on this machine. Don't modify my global client config without showing the exact
+command first.
 ```
 
-The agent then follows [INSTALL.md](INSTALL.md), the canonical runbook: manual per-client setup, a machine-wide global install, and the full per-client capability matrix. `agentacct setup prompt --agent <client>` prints the same prompt.
+The agent then follows [INSTALL.md](INSTALL.md), the canonical runbook: the global install, the manual per-client setup, and the full per-client capability matrix. `agentacct setup prompt --agent <client>` prints the same prompt.
 
 Want to look around before touching your real data? `agentacct demo` runs a safe local walkthrough in a throwaway temporary store — no provider keys, no paid API calls.
 
-The managed runtime is controlled with `agentacct start` / `status` / `stop` / `repair`; all state lives in the project-local `.agent-sentinel/` directory (gitignored; the directory keeps its pre-rename spelling for data compatibility).
+The managed runtime is controlled with `agentacct start` / `status` / `stop` / `repair`; all state lives in the global store (by default `~/.local/state/agentacct/state`; older global stores under `~/.agent-sentinel-global/state` are still recognized). A `--scope project` install keeps its state in the repo's `.agent-sentinel/` directory instead (gitignored; the directory keeps its pre-rename spelling for data compatibility).
 
 ### Uninstall
 
@@ -65,7 +66,7 @@ agentacct uninstall-autostart  # only if you installed autostart
 pipx uninstall agentacct
 ```
 
-Then, per onboarded project: delete the `.agent-sentinel/` directory (that project's local ledger — keep it if you want the history) and remove the agentacct entries onboarding added to the client config (`.mcp.json` / `.claude/settings.local.json`, or `~/.codex/config.toml`). If you installed the standing instruction block, remove it first with `agentacct setup instructions --agent <client> --user --remove`.
+Then remove what onboarding added. For a global install (the default): delete the global store (`~/.local/state/agentacct/state` — keep it if you want the history) and the agentacct entries in your user config (`~/.claude.json`, the merged blocks in `~/.claude/settings.json`, the `~/.claude/hooks/` wrapper, and `~/.codex/config.toml`). For a `--scope project` install: delete that repo's `.agent-sentinel/` directory (that project's local ledger) and the agentacct entries onboarding added to `.mcp.json` / `.claude/settings.local.json` / `~/.codex/config.toml`. If you installed the standing instruction block, remove it first with `agentacct setup instructions --agent <client> --user --remove`.
 
 ## What it is honest about
 
@@ -83,7 +84,7 @@ Interfaces may change while agentacct is alpha.
 agentacct keeps two evidence streams separate and joins them on real client ids instead of guessing:
 
 - **Usage truth** comes from the client's own local session files: imported tokens are labeled `client_reported`, and costs are pricing-table estimates — never provider invoices.
-- **Work meaning** comes from the sections and events the agent records over MCP while it works (`sentinel_record_section`, `sentinel_record_machine_check`), plus machine checks like test runs.
+- **Work meaning** comes from the sections and events the agent records over MCP while it works (`agentacct_record_section`, `agentacct_record_machine_check`), plus machine checks like test runs.
 - **The join** links the two through session/transcript ids and labels every attribution `exact`, `high`, `medium`, or `low`. For Claude Code, an installed hook bridge captures real session/transcript ids at session start and on every tool call; for Codex, the link is evidenced from the client's own session logs at import time.
 
 The per-client join mechanics, confidence-label glossary, daily workflow, MCP tool list, and optional enforcement extras are in [docs/reference.md](docs/reference.md).

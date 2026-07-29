@@ -6,8 +6,8 @@ import json
 import sys
 from pathlib import Path
 
-from agent_chronicle.deep_provider_validation import SUPPORTED_DEEP_PROVIDERS, run_deep_provider_validation
-from agent_chronicle.provider_smoke import ProviderSmokeError
+from agentacct.deep_provider_validation import SUPPORTED_DEEP_PROVIDERS, run_deep_provider_validation
+from agentacct.provider_smoke import ProviderSmokeError
 
 
 def main() -> int:

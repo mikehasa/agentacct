@@ -9,9 +9,9 @@ import pytest
 from click.utils import strip_ansi
 from typer.testing import CliRunner
 
-from agent_chronicle.cli import app
-from agent_chronicle.control_plane import ControlStore
-from agent_chronicle.supervisor import OwnedSupervisor
+from agentacct.cli import app
+from agentacct.control_plane import ControlStore
+from agentacct.supervisor import OwnedSupervisor
 
 
 runner = CliRunner()

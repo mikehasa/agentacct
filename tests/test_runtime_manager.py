@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 import psutil
 
-import agent_chronicle.activation as activation
-from agent_chronicle.activation import (
+import agentacct.activation as activation
+from agentacct.activation import (
     ManagedProcess,
     RuntimeManager,
     RuntimeManagerError,

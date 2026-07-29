@@ -6,7 +6,7 @@ import json
 import sys
 from pathlib import Path
 
-from agent_chronicle.provider_smoke import ProviderSmokeError, run_provider_smoke
+from agentacct.provider_smoke import ProviderSmokeError, run_provider_smoke
 
 
 def main() -> int:

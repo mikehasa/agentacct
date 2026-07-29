@@ -9,11 +9,11 @@ import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-import agent_chronicle.cli as cli_module
-import agent_chronicle.client_usage as client_usage_module
-from agent_chronicle.api import UsageDiscoveryConfig, _task_title, create_local_api_app
-from agent_chronicle.cli import app
-from agent_chronicle.client_usage import (
+import agentacct.cli as cli_module
+import agentacct.client_usage as client_usage_module
+from agentacct.api import UsageDiscoveryConfig, _task_title, create_local_api_app
+from agentacct.cli import app
+from agentacct.client_usage import (
     ClientSessionObservation,
     ClientUsageDiscoveryResult,
     ClientUsageEvent,
@@ -28,12 +28,12 @@ from agent_chronicle.client_usage import (
     plan_local_usage_import,
     usage_less_session_observations,
 )
-from agent_chronicle.pricing_catalog import default_pricing_catalog_snapshot_path
-from agent_chronicle.refreshable_usage import refreshable_usage_source_order
-from agent_chronicle.service import SentinelService
-from agent_chronicle.source_discovery import discover_usage_sources
-from agent_chronicle.store_resolution import ENV_STORE_DIR, LEGACY_ENV_STORE_DIR
-from agent_chronicle.usage_truth import (
+from agentacct.pricing_catalog import default_pricing_catalog_snapshot_path
+from agentacct.refreshable_usage import refreshable_usage_source_order
+from agentacct.service import SentinelService
+from agentacct.source_discovery import discover_usage_sources
+from agentacct.store_resolution import ENV_STORE_DIR, LEGACY_ENV_STORE_DIR
+from agentacct.usage_truth import (
     CODEX_LINEAGE_DELTA_SEMANTICS,
     CODEX_REPLAY_QUARANTINE_STATE,
     is_local_session_observation_event,
@@ -456,7 +456,7 @@ def test_discover_opencode_usage_recomputes_cost_from_tokens_when_stored_zero(tm
 
 
 def test_opencode_model_id_strips_fast_routing_suffix_for_pricing():
-    from agent_chronicle.client_usage import (
+    from agentacct.client_usage import (
         _normalize_opencode_model_id,
         _opencode_model_fields,
     )
@@ -5508,8 +5508,8 @@ def test_usage_import_local_keeps_raced_in_duplicate_new_row_without_duplicating
     # the same identity, and — because default never replaces an existing row —
     # it leaves the raced-in row in place (writing nothing) rather than
     # superseding it with a possibly-staler snapshot.
-    import agent_chronicle.cli as cli_module
-    from agent_chronicle.service import SentinelService
+    import agentacct.cli as cli_module
+    from agentacct.service import SentinelService
 
     claude_home = _make_claude_home(tmp_path)
     store_dir = tmp_path / "sentinel-state"
@@ -5543,8 +5543,8 @@ def test_usage_import_local_text_reports_actual_count_after_raced_new_row(
     tmp_path,
     monkeypatch,
 ):
-    import agent_chronicle.cli as cli_module
-    from agent_chronicle.service import SentinelService
+    import agentacct.cli as cli_module
+    from agentacct.service import SentinelService
 
     claude_home = _make_claude_home(tmp_path)
     store_dir = tmp_path / "sentinel-state"
@@ -5572,8 +5572,8 @@ def test_usage_import_local_guard_abort_reports_only_actual_results(
     tmp_path,
     monkeypatch,
 ):
-    import agent_chronicle.cli as cli_module
-    from agent_chronicle.service import SentinelService
+    import agentacct.cli as cli_module
+    from agentacct.service import SentinelService
 
     claude_home = _make_claude_home(tmp_path)
     _append_claude_model_switch_row(claude_home)
@@ -5637,7 +5637,7 @@ def test_usage_import_local_guard_abort_reports_only_actual_results(
 
 
 def test_usage_import_local_refresh_replaces_grown_session_totals(tmp_path):
-    from agent_chronicle.service import SentinelService
+    from agentacct.service import SentinelService
 
     claude_home = _make_claude_home(tmp_path)
     store_dir = tmp_path / "sentinel-state"
@@ -5721,7 +5721,7 @@ def test_usage_watch_refresh_replaces_grown_session_totals(tmp_path):
 def test_usage_watch_refresh_skips_unchanged_rows_without_reissuing_event_id(tmp_path):
     # D5: a --refresh scan over an idle (unchanged) session must be a no-op —
     # no ledger rewrite and no reissued event_id/created_at on unchanged rows.
-    from agent_chronicle.service import SentinelService
+    from agentacct.service import SentinelService
 
     claude_home = _make_claude_home(tmp_path)
     store_dir = tmp_path / "sentinel-state"
@@ -5746,10 +5746,10 @@ def test_usage_reconcile_failure_is_fail_open_degraded_then_noop_self_heals(
     tmp_path,
     monkeypatch,
 ):
-    from agent_chronicle.ingestion_health import (
+    from agentacct.ingestion_health import (
         EVIDENCE_REFRESHABLE_USAGE_ERROR_CODE,
     )
-    from agent_chronicle.service import SentinelService
+    from agentacct.service import SentinelService
 
     claude_home = _make_claude_home(tmp_path)
     store_dir = tmp_path / "sentinel-state"
@@ -5836,7 +5836,7 @@ def test_usage_import_refresh_preserves_prior_estimate_on_unchanged_session(tmp_
     # D1: a prior --estimate-costs run leaves an estimated_from_tokens cost; a
     # later --refresh WITHOUT --estimate-costs over the unchanged session must
     # NOT strip that estimate (the unchanged row is skipped, so it survives).
-    from agent_chronicle.service import SentinelService
+    from agentacct.service import SentinelService
 
     claude_home = _make_claude_home(tmp_path)
     store_dir = tmp_path / "sentinel-state"
@@ -6109,7 +6109,7 @@ def test_estimate_costs_import_proceeds_when_auto_refresh_fetch_fails(tmp_path, 
     assert payload["pricing_auto_refresh"]["reason"] == "error"
     assert payload["imported_events"] == 1
     assert payload["priced_events"] == 1
-    from agent_chronicle.pricing_catalog import read_pricing_snapshot_metadata
+    from agentacct.pricing_catalog import read_pricing_snapshot_metadata
 
     catalog_path = default_pricing_catalog_snapshot_path(store_dir)
     metadata = read_pricing_snapshot_metadata(catalog_path)

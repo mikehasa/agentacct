@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.canonical.live_paths import (
+from agentacct.canonical.live_paths import (
     LivePathSafetyError,
     reject_live_state_overlap,
 )
@@ -78,3 +78,17 @@ def test_bare_live_component_is_rejected_without_state_suffix(tmp_path: Path) ->
         shaped = tmp_path / "project" / name / "scratch"
         with pytest.raises(LivePathSafetyError, match="may not be inside"):
             reject_live_state_overlap(shaped, label="scratch root")
+
+
+def test_new_global_store_env_override_is_a_protected_live_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The new canonical global store (via its env override) is a live root, so
+    the offline spike can never target it."""
+    gstore = tmp_path / "gstore" / "state"
+    gstore.mkdir(parents=True)
+    monkeypatch.setenv("AGENT_CHRONICLE_GLOBAL_STORE_DIR", str(gstore))
+
+    with pytest.raises(LivePathSafetyError, match="disjoint from every configured live state root"):
+        reject_live_state_overlap(gstore / "candidate", label="--candidate")

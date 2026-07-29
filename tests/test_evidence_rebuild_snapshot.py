@@ -10,10 +10,10 @@ from pathlib import Path
 
 import pytest
 
-import agent_chronicle.evidence_rebuild_snapshot as snapshot_module
-from agent_chronicle.evidence import canonical_digest, canonical_json_bytes
-from agent_chronicle.evidence_rebuild_activation import fingerprint_evidence_tree
-from agent_chronicle.evidence_rebuild_snapshot import (
+import agentacct.evidence_rebuild_snapshot as snapshot_module
+from agentacct.evidence import canonical_digest, canonical_json_bytes
+from agentacct.evidence_rebuild_activation import fingerprint_evidence_tree
+from agentacct.evidence_rebuild_snapshot import (
     SnapshotDriftError,
     SnapshotIntegrityError,
     SnapshotSafetyError,

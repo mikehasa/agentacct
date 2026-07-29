@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_chronicle.task_intelligence import build_task_intelligence
+from agentacct.task_intelligence import build_task_intelligence
 
 
 def _task() -> dict[str, object]:

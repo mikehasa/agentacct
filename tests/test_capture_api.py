@@ -4,7 +4,7 @@ import json
 
 from fastapi.testclient import TestClient
 
-from agent_chronicle.api import create_local_api_app
+from agentacct.api import create_local_api_app
 
 
 def test_capture_api_exposes_capabilities_and_render_only_manifest(tmp_path) -> None:

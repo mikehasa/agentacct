@@ -16,17 +16,17 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from agent_chronicle.api import _store_scope_and_label, create_local_api_app
-from agent_chronicle.client_usage import ClientUsageEvent, discover_codex_usage, discover_hermes_usage
-from agent_chronicle.hooks import (
+from agentacct.api import _store_scope_and_label, create_local_api_app
+from agentacct.client_usage import ClientUsageEvent, discover_codex_usage, discover_hermes_usage
+from agentacct.hooks import (
     derive_claude_code_client_context,
     install_claude_code_hook,
     render_claude_hook_wrapper,
     wrapper_executable_candidates,
 )
-from agent_chronicle.service import SentinelService
-from agent_chronicle.store_resolution import claude_worktree_owner_path_text
-from agent_chronicle.work_ledger import build_work_ledger
+from agentacct.service import SentinelService
+from agentacct.store_resolution import claude_worktree_owner_path_text
+from agentacct.work_ledger import build_work_ledger
 
 WORKTREE_CWD = "/Users/owner/agent-chronicle-github-clean/.claude/worktrees/great-tesla-9cc8ad"
 OWNER_LABEL = "agent-chronicle-github-clean"

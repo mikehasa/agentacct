@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from agent_chronicle.api import create_local_api_app
-from agent_chronicle.control_plane import ControlStore
-from agent_chronicle.control_web import render_control_body
+from agentacct.api import create_local_api_app
+from agentacct.control_plane import ControlStore
+from agentacct.control_web import render_control_body
 
 
 def _csrf(html: str) -> str:

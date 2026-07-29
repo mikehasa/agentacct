@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.agent_smoke import AgentSmokeError, assert_live_agent_smoke_passed, build_live_agent_smoke_spec, run_live_agent_smoke
+from agentacct.agent_smoke import AgentSmokeError, assert_live_agent_smoke_passed, build_live_agent_smoke_spec, run_live_agent_smoke
 
 
 def test_live_agent_smoke_harness_verifies_sentinel_artifacts(tmp_path):

@@ -11,10 +11,15 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.store_resolution import (
+from agentacct.store_resolution import (
+    ENV_GLOBAL_STORE_DIR,
     ENV_STORE_DIR,
     StoreResolutionError,
+    canonical_global_store_dir,
     claude_worktree_owner_dir,
+    is_recognized_global_store,
+    recognized_global_store_dirs,
+    resolve_dashboard_store_dir,
     resolve_store_dir,
     worktree_owner_root,
 )
@@ -206,3 +211,140 @@ def test_env_store_dir_expands_tilde(tmp_path: Path) -> None:
 
     assert resolution.path == Path(os.path.expanduser("~/sentinel-env-store"))
     assert resolution.source == "env"
+
+
+# --- recognize-many global store (default-global / XDG) ----------------------
+
+
+def _make_store(path: Path, *, data: bool = True) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    if data:
+        (path / "events.jsonl").write_text('{"event_id": "x"}\n', encoding="utf-8")
+    return path
+
+
+def test_canonical_global_store_defaults_to_xdg_state(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    assert canonical_global_store_dir(env={}, home=home) == (
+        home / ".local" / "state" / "agentacct" / "state"
+    )
+
+
+def test_canonical_global_store_honors_absolute_xdg_state_home(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    xdg = tmp_path / "xdg-state"
+    assert canonical_global_store_dir(env={"XDG_STATE_HOME": str(xdg)}, home=home) == (
+        xdg / "agentacct" / "state"
+    )
+
+
+def test_canonical_global_store_ignores_relative_xdg_state_home(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    assert canonical_global_store_dir(env={"XDG_STATE_HOME": "rel/state"}, home=home) == (
+        home / ".local" / "state" / "agentacct" / "state"
+    )
+
+
+def test_recognized_global_store_dirs_order_and_dedup(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    override = tmp_path / "override" / "state"
+    dirs = recognized_global_store_dirs(env={ENV_GLOBAL_STORE_DIR: str(override)}, home=home)
+    assert dirs == (
+        override,
+        home / ".local" / "state" / "agentacct" / "state",
+        home / ".agent-sentinel-global" / "state",
+    )
+
+
+def test_recognized_global_store_dirs_skips_relative_override(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    dirs = recognized_global_store_dirs(env={ENV_GLOBAL_STORE_DIR: "rel/state"}, home=home)
+    assert dirs == (
+        home / ".local" / "state" / "agentacct" / "state",
+        home / ".agent-sentinel-global" / "state",
+    )
+
+
+def test_dashboard_new_user_uses_canonical_store(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    canonical = _make_store(home / ".local" / "state" / "agentacct" / "state")
+    resolution = resolve_dashboard_store_dir(None, cwd=tmp_path, env={}, home=home)
+    assert resolution.path == canonical
+    assert resolution.source == "global"
+
+
+def test_dashboard_existing_user_uses_legacy_store(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    legacy = _make_store(home / ".agent-sentinel-global" / "state")
+    resolution = resolve_dashboard_store_dir(None, cwd=tmp_path, env={}, home=home)
+    assert resolution.path == legacy
+    assert resolution.source == "global"
+
+
+def test_dashboard_migrating_user_prefers_populated_legacy_over_empty_canonical(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    _make_store(home / ".local" / "state" / "agentacct" / "state", data=False)
+    legacy = _make_store(home / ".agent-sentinel-global" / "state", data=True)
+    resolution = resolve_dashboard_store_dir(None, cwd=tmp_path, env={}, home=home)
+    # data-first: do not blank the dashboard just because a fresh store dir exists
+    assert resolution.path == legacy
+
+
+def test_dashboard_prefers_canonical_when_both_have_data(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    canonical = _make_store(home / ".local" / "state" / "agentacct" / "state", data=True)
+    _make_store(home / ".agent-sentinel-global" / "state", data=True)
+    resolution = resolve_dashboard_store_dir(None, cwd=tmp_path, env={}, home=home)
+    assert resolution.path == canonical
+
+
+def test_dashboard_operator_override_wins(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    override = _make_store(tmp_path / "ops" / "state", data=True)
+    _make_store(home / ".agent-sentinel-global" / "state", data=True)
+    resolution = resolve_dashboard_store_dir(
+        None, cwd=tmp_path, env={ENV_GLOBAL_STORE_DIR: str(override)}, home=home
+    )
+    assert resolution.path == override
+    assert resolution.source == "global"
+
+
+def test_dashboard_explicit_store_env_still_wins_over_global(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _make_store(home / ".local" / "state" / "agentacct" / "state", data=True)
+    env_store = tmp_path / "env-store"
+    resolution = resolve_dashboard_store_dir(
+        None, cwd=tmp_path, env={ENV_STORE_DIR: str(env_store)}, home=home
+    )
+    assert resolution.path == env_store
+    assert resolution.source == "env"
+
+
+def test_dashboard_falls_through_to_strict_resolver_when_no_global(tmp_path: Path) -> None:
+    home = tmp_path / "home"  # nothing created under home
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    with pytest.raises(StoreResolutionError):
+        resolve_dashboard_store_dir(None, cwd=bare, env={}, home=home)
+
+
+def test_is_recognized_global_store(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    # legacy dot-global family: structural, location-independent
+    assert is_recognized_global_store(
+        tmp_path / "anywhere" / ".agent-sentinel-global" / "state", env={}, home=home
+    )
+    assert is_recognized_global_store(
+        tmp_path / "x" / ".agent-chronicle-global" / "state", env={}, home=home
+    )
+    # new canonical location
+    assert is_recognized_global_store(
+        home / ".local" / "state" / "agentacct" / "state", env={}, home=home
+    )
+    # project store and arbitrary custom stores are NOT machine-wide
+    assert not is_recognized_global_store(
+        tmp_path / "proj" / ".agent-sentinel" / "state", env={}, home=home
+    )
+    assert not is_recognized_global_store(tmp_path / "random" / "state", env={}, home=home)

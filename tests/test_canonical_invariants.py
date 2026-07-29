@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.canonical import (
+from agentacct.canonical import (
     CanonicalStore,
     CostCalculationInput,
     FactInput,
@@ -20,7 +20,7 @@ from agent_chronicle.canonical import (
     WorkClaimInput,
     canonical_hash,
 )
-from agent_chronicle.canonical.types import SQLITE_INT64_MAX, TOKEN_FIELDS
+from agentacct.canonical.types import SQLITE_INT64_MAX, TOKEN_FIELDS
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "canonical" / "v1" / "spike.json"

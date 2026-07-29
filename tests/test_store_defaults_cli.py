@@ -15,17 +15,22 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from agent_chronicle import cli as cli_module
-from agent_chronicle.cli import app
-from agent_chronicle.storage import RunStore
-from agent_chronicle.store_resolution import ENV_STORE_DIR
+from agentacct import cli as cli_module
+from agentacct.cli import app
+from agentacct.storage import RunStore
+from agentacct.store_resolution import ENV_STORE_DIR
 
 runner = CliRunner()
 
 
 def _isolate(monkeypatch, tmp_path: Path) -> tuple[Path, Path]:
     """Bare cwd + fake HOME + no env override: pure resolver behavior."""
+    # Clear every recognized store-dir alias (new primary + both pre-rename
+    # names) so the suite-wide isolation (conftest binds AGENT_CHRONICLE_STORE_DIR)
+    # cannot leak in or trip the three-name conflict-refuse check.
     monkeypatch.delenv(ENV_STORE_DIR, raising=False)
+    monkeypatch.delenv("AGENT_CHRONICLE_STORE_DIR", raising=False)
+    monkeypatch.delenv("AGENT_SENTINEL_STORE_DIR", raising=False)
     fake_home = tmp_path / "home"
     fake_home.mkdir(exist_ok=True)
     monkeypatch.setenv("HOME", str(fake_home))
@@ -282,6 +287,8 @@ def test_mcp_serve_honors_env_store_dir(tmp_path, monkeypatch) -> None:
 
 def test_report_from_claude_worktree_resolves_owner_store_with_notice(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv(ENV_STORE_DIR, raising=False)
+    monkeypatch.delenv("AGENT_CHRONICLE_STORE_DIR", raising=False)
+    monkeypatch.delenv("AGENT_SENTINEL_STORE_DIR", raising=False)
     owner = tmp_path / "owner"
     owner.mkdir()
     assert runner.invoke(app, ["init", "--project-dir", str(owner)]).exit_code == 0

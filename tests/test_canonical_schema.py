@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_chronicle.canonical import APPLICATION_ID, SCHEMA_VERSION, CanonicalStore
+from agentacct.canonical import APPLICATION_ID, SCHEMA_VERSION, CanonicalStore
 
 
 def test_candidate_schema_is_strict_versioned_and_owner_only(tmp_path: Path) -> None:
@@ -741,7 +741,7 @@ def test_registered_migration_upgrades_stamps_and_reopens(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_chronicle.canonical import sqlite as canonical_sqlite
+    from agentacct.canonical import sqlite as canonical_sqlite
 
     database = tmp_path / "candidate.sqlite3"
     CanonicalStore.create(database).close()
@@ -789,7 +789,7 @@ def test_failed_migration_step_rolls_back_and_store_stays_openable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_chronicle.canonical import sqlite as canonical_sqlite
+    from agentacct.canonical import sqlite as canonical_sqlite
 
     database = tmp_path / "candidate.sqlite3"
     CanonicalStore.create(database).close()
@@ -824,7 +824,7 @@ def test_migration_statement_ending_the_transaction_is_refused(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_chronicle.canonical import sqlite as canonical_sqlite
+    from agentacct.canonical import sqlite as canonical_sqlite
 
     database = tmp_path / "candidate.sqlite3"
     CanonicalStore.create(database).close()
@@ -855,7 +855,7 @@ def test_mis_keyed_migration_step_is_refused_before_running(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_chronicle.canonical import sqlite as canonical_sqlite
+    from agentacct.canonical import sqlite as canonical_sqlite
 
     database = tmp_path / "candidate.sqlite3"
     CanonicalStore.create(database).close()
@@ -876,7 +876,7 @@ def test_deleted_intermediate_migration_row_is_refused(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_chronicle.canonical import sqlite as canonical_sqlite
+    from agentacct.canonical import sqlite as canonical_sqlite
 
     database = tmp_path / "candidate.sqlite3"
     CanonicalStore.create(database).close()
@@ -912,7 +912,7 @@ def test_deleted_intermediate_migration_row_is_refused(
 def _downgrade_to_version_two(database: Path, *, birth_checksum: str | None = None) -> None:
     """Rebuild a genuine v2 store: v2 store_metadata DDL, v2 stamps, v2 base row."""
 
-    from agent_chronicle.canonical.sqlite import HISTORICAL_SCHEMA_CHECKSUMS
+    from agentacct.canonical.sqlite import HISTORICAL_SCHEMA_CHECKSUMS
 
     connection = sqlite3.connect(database, isolation_level=None)
     try:
@@ -1002,7 +1002,7 @@ def test_stale_migrator_adopts_concurrently_finished_chain(tmp_path: Path) -> No
     """A racing writable open that lost the migration must adopt the winner's
     committed progress instead of failing on the stamping UNIQUE constraint."""
 
-    from agent_chronicle.canonical import sqlite as canonical_sqlite
+    from agentacct.canonical import sqlite as canonical_sqlite
 
     database = tmp_path / "candidate.sqlite3"
     CanonicalStore.create(database).close()
@@ -1029,7 +1029,7 @@ def test_stale_migrator_adopts_concurrently_finished_chain(tmp_path: Path) -> No
 
 
 def test_migration_lock_timeout_is_diagnosed_not_misfiled(tmp_path: Path) -> None:
-    from agent_chronicle.canonical import sqlite as canonical_sqlite
+    from agentacct.canonical import sqlite as canonical_sqlite
 
     database = tmp_path / "candidate.sqlite3"
     CanonicalStore.create(database).close()
@@ -1055,7 +1055,7 @@ def test_migration_lock_timeout_is_diagnosed_not_misfiled(tmp_path: Path) -> Non
 def _downgrade_to_version_three(database: Path) -> None:
     """Rebuild a genuine v3 store: drop the v4 table, restamp, v3 base row."""
 
-    from agent_chronicle.canonical.sqlite import HISTORICAL_SCHEMA_CHECKSUMS
+    from agentacct.canonical.sqlite import HISTORICAL_SCHEMA_CHECKSUMS
 
     connection = sqlite3.connect(database, isolation_level=None)
     try:

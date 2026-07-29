@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-from agent_chronicle.api import _latest_machine_check_events, _task_product_state
-from agent_chronicle.mechanical_checks import build_mechanical_check_events
-from agent_chronicle.task_intelligence import build_task_intelligence
+from agentacct.api import _latest_machine_check_events, _task_product_state
+from agentacct.mechanical_checks import build_mechanical_check_events
+from agentacct.task_intelligence import build_task_intelligence
 
 
 def _check_envelope(

@@ -5,9 +5,10 @@ Pins the rename's load-bearing promises:
 - DUAL PAIRING FOREVER: historical client logs carry the pre-rename
   ``agent-sentinel`` registration name; log-evidence pairing accepts both the
   new and old server keys (Claude tool_use names and codex namespaces).
-- DUAL MANAGED MARKERS: pre-rename ``agent-sentinel:begin/end`` blocks in user
-  CLAUDE.md/AGENTS.md are recognized, migrated on rewrite, and stripped by
-  ``--remove``; writes always emit the new markers.
+- MANY MANAGED MARKERS: pre-rename ``agent-chronicle:begin/end`` AND
+  ``agent-sentinel:begin/end`` blocks in user CLAUDE.md/AGENTS.md are
+  recognized, migrated on rewrite, and stripped by ``--remove``; writes always
+  emit the new ``agentacct:begin/end`` markers.
 - ENV ALIASES: every AGENT_CHRONICLE_* read accepts the pre-rename
   AGENT_SENTINEL_* name silently; the new name wins; conflicting store-dir
   values refuse (no silent ledger split).
@@ -33,13 +34,13 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-import agent_chronicle
-from agent_chronicle import install_guide
-from agent_chronicle.cli import app
-from agent_chronicle.client_usage import discover_claude_code_usage, discover_codex_usage
-from agent_chronicle.env_compat import env_alias_names, legacy_env_name, read_env_alias
-from agent_chronicle.hooks import CLAUDE_CODE_HOOK_CONTEXT_SCHEMA, _AGENT_CHRONICLE_EXECUTABLE_NAMES
-from agent_chronicle.log_evidence import (
+import agentacct
+from agentacct import install_guide
+from agentacct.cli import app
+from agentacct.client_usage import discover_claude_code_usage, discover_codex_usage
+from agentacct.env_compat import env_alias_names, legacy_env_name, legacy_env_names, read_env_alias
+from agentacct.hooks import CLAUDE_CODE_HOOK_CONTEXT_SCHEMA, _AGENT_CHRONICLE_EXECUTABLE_NAMES
+from agentacct.log_evidence import (
     ACCEPTED_SERVER_KEYS,
     SENTINEL_CREATION_TOOLS,
     SENTINEL_SERVER_KEY,
@@ -48,23 +49,23 @@ from agent_chronicle.log_evidence import (
     classify_codex_function_call,
     codex_namespace_matches_sentinel,
 )
-from agent_chronicle.mcp import TOOLS
-from agent_chronicle.store_resolution import (
+from agentacct.mcp import TOOLS
+from agentacct.store_resolution import (
     ENV_STORE_DIR,
     LEGACY_ENV_STORE_DIR,
     StoreResolutionError,
     resolve_store_dir,
     store_env_dir_value,
 )
-from agent_chronicle.usage_truth import (
+from agentacct.usage_truth import (
     CLI_INSTRUMENTATION_PROVENANCE,
     DIAGNOSTIC_EVENT_SOURCES,
     LOCAL_USAGE_PROVENANCE,
 )
-from agent_chronicle.wrappers import CLAUDE_WRAPPER, build_agent_command
+from agentacct.wrappers import CLAUDE_WRAPPER, build_agent_command
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SRC_ROOT = Path(agent_chronicle.__file__).resolve().parent
+SRC_ROOT = Path(agentacct.__file__).resolve().parent
 
 runner = CliRunner()
 
@@ -96,7 +97,7 @@ def test_codex_namespaces_accept_all_four_forms() -> None:
         assert classify_codex_function_call("sentinel_record_section", namespace) == "accepted"
     # Substring smuggles stay rejected for both generations.
     assert not codex_namespace_matches_sentinel("mcp__not_agent_sentinel_fake")
-    assert not codex_namespace_matches_sentinel("mcp__not_agent_chronicle_fake")
+    assert not codex_namespace_matches_sentinel("mcp__not_agentacct_fake")
     assert classify_codex_function_call("sentinel_record_section", "other") == "rejected"
 
 
@@ -219,6 +220,18 @@ _LEGACY_BLOCK = "\n".join(
     )
 )
 
+# The FORMER-new `agent-chronicle` marker pair is now a recognized-legacy
+# generation too (it shipped before the agentacct rename).
+_LEGACY_CHRONICLE_BLOCK = "\n".join(
+    (
+        install_guide.LEGACY_CHRONICLE_INSTRUCTIONS_BEGIN_MARKER,
+        "## Agent Chronicle — record your work",
+        "",
+        "- old chronicle body line",
+        install_guide.LEGACY_CHRONICLE_INSTRUCTIONS_END_MARKER,
+    )
+)
+
 
 def test_legacy_marker_block_is_recognized_and_migrated_on_rewrite() -> None:
     existing = "# My file\n\n" + _LEGACY_BLOCK + "\n\ntrailing user content\n"
@@ -235,6 +248,32 @@ def test_legacy_marker_block_is_recognized_and_migrated_on_rewrite() -> None:
     assert install_guide.WORKFLOW_INSTRUCTION_HEADING in rendered
     assert "# My file" in rendered
     assert "trailing user content" in rendered
+
+
+def test_legacy_chronicle_marker_block_is_recognized_and_migrated_on_rewrite() -> None:
+    """The former-new `agent-chronicle` block is recognized and migrated to the
+    new `agentacct` markers on rewrite (alongside the `agent-sentinel` pair)."""
+    existing = "# My file\n\n" + _LEGACY_CHRONICLE_BLOCK + "\n\ntrailing user content\n"
+    assert install_guide.instruction_file_has_managed_block(existing)
+
+    rendered = install_guide.render_instruction_file(existing, remove=False)
+
+    # The agent-chronicle block is replaced in place by an agentacct block.
+    assert "agent-chronicle:begin" not in rendered
+    assert "agent-chronicle:end" not in rendered
+    assert "- old chronicle body line" not in rendered
+    assert rendered.count(install_guide.INSTRUCTIONS_BEGIN_MARKER) == 1
+    assert rendered.count(install_guide.INSTRUCTIONS_END_MARKER) == 1
+    assert install_guide.WORKFLOW_INSTRUCTION_HEADING in rendered
+    assert "# My file" in rendered
+    assert "trailing user content" in rendered
+
+    # --remove strips a chronicle block too.
+    stripped = install_guide.render_instruction_file(
+        "before\n\n" + _LEGACY_CHRONICLE_BLOCK + "\n\nafter\n", remove=True
+    )
+    assert "agent-chronicle:begin" not in stripped
+    assert "before" in stripped and "after" in stripped
 
 
 def test_legacy_marker_block_is_stripped_by_remove() -> None:
@@ -277,8 +316,8 @@ def test_legacy_markers_inside_code_fences_stay_user_content() -> None:
 
 def test_new_writes_emit_new_markers() -> None:
     block = install_guide.workflow_instruction_block()
-    assert block.startswith("<!-- agent-chronicle:begin")
-    assert block.endswith("<!-- agent-chronicle:end -->")
+    assert block.startswith("<!-- agentacct:begin")
+    assert block.endswith("<!-- agentacct:end -->")
     assert install_guide.WORKFLOW_INSTRUCTION_HEADING == "## agentacct — record your work"
 
 
@@ -288,43 +327,86 @@ def test_new_writes_emit_new_markers() -> None:
 
 
 def test_read_env_alias_new_wins_and_old_accepted() -> None:
-    assert legacy_env_name("AGENT_CHRONICLE_STORE_DIR") == "AGENT_SENTINEL_STORE_DIR"
-    assert env_alias_names("AGENT_CHRONICLE_OPENAI_API_KEY") == (
+    # AGENTACCT_* is the new PRIMARY; the full chain is
+    # AGENTACCT_* -> AGENT_CHRONICLE_* -> AGENT_SENTINEL_*, newest wins.
+    assert legacy_env_name("AGENTACCT_STORE_DIR") == "AGENT_CHRONICLE_STORE_DIR"
+    assert legacy_env_names("AGENTACCT_STORE_DIR") == (
+        "AGENT_CHRONICLE_STORE_DIR",
+        "AGENT_SENTINEL_STORE_DIR",
+    )
+    assert env_alias_names("AGENTACCT_OPENAI_API_KEY") == (
+        "AGENTACCT_OPENAI_API_KEY",
         "AGENT_CHRONICLE_OPENAI_API_KEY",
         "AGENT_SENTINEL_OPENAI_API_KEY",
     )
-    both = {"AGENT_CHRONICLE_OPENAI_API_KEY": "new", "AGENT_SENTINEL_OPENAI_API_KEY": "old"}
-    assert read_env_alias("AGENT_CHRONICLE_OPENAI_API_KEY", both) == "new"
-    assert read_env_alias("AGENT_CHRONICLE_OPENAI_API_KEY", {"AGENT_SENTINEL_OPENAI_API_KEY": "old"}) == "old"
-    assert read_env_alias("AGENT_CHRONICLE_OPENAI_API_KEY", {}) is None
+    # New primary wins over BOTH pre-rename names.
+    all_three = {
+        "AGENTACCT_OPENAI_API_KEY": "new",
+        "AGENT_CHRONICLE_OPENAI_API_KEY": "mid",
+        "AGENT_SENTINEL_OPENAI_API_KEY": "old",
+    }
+    assert read_env_alias("AGENTACCT_OPENAI_API_KEY", all_three) == "new"
+    # AGENT_CHRONICLE_* wins over AGENT_SENTINEL_* when the primary is unset.
+    assert (
+        read_env_alias(
+            "AGENTACCT_OPENAI_API_KEY",
+            {"AGENT_CHRONICLE_OPENAI_API_KEY": "mid", "AGENT_SENTINEL_OPENAI_API_KEY": "old"},
+        )
+        == "mid"
+    )
+    # BOTH pre-rename names stay accepted on their own, forever.
+    assert read_env_alias("AGENTACCT_OPENAI_API_KEY", {"AGENT_CHRONICLE_OPENAI_API_KEY": "mid"}) == "mid"
+    assert read_env_alias("AGENTACCT_OPENAI_API_KEY", {"AGENT_SENTINEL_OPENAI_API_KEY": "old"}) == "old"
+    assert read_env_alias("AGENTACCT_OPENAI_API_KEY", {}) is None
     # Empty/whitespace values are unset, matching call-site truthiness checks.
-    assert read_env_alias("AGENT_CHRONICLE_OPENAI_API_KEY", {"AGENT_CHRONICLE_OPENAI_API_KEY": " "}) is None
+    assert read_env_alias("AGENTACCT_OPENAI_API_KEY", {"AGENTACCT_OPENAI_API_KEY": " "}) is None
 
 
 def test_store_dir_env_alias_resolves_and_conflicts_refuse(tmp_path) -> None:
-    legacy_only = {LEGACY_ENV_STORE_DIR: str(tmp_path / "state")}
-    resolution = resolve_store_dir(None, env=legacy_only)
-    assert resolution.source == "env"
-    assert resolution.path == tmp_path / "state"
+    # Every recognized store-dir name resolves on its own (source == "env"):
+    # the new AGENTACCT_* primary AND BOTH pre-rename aliases.
+    for name in ("AGENTACCT_STORE_DIR", "AGENT_CHRONICLE_STORE_DIR", "AGENT_SENTINEL_STORE_DIR"):
+        resolution = resolve_store_dir(None, env={name: str(tmp_path / "state")})
+        assert resolution.source == "env", name
+        assert resolution.path == tmp_path / "state", name
 
-    new_wins = {ENV_STORE_DIR: str(tmp_path / "new"), LEGACY_ENV_STORE_DIR: str(tmp_path / "new")}
-    assert resolve_store_dir(None, env=new_wins).path == tmp_path / "new"
+    # No conflict when all names agree; the primary value is returned.
+    agree = {
+        "AGENTACCT_STORE_DIR": str(tmp_path / "new"),
+        "AGENT_CHRONICLE_STORE_DIR": str(tmp_path / "new"),
+        "AGENT_SENTINEL_STORE_DIR": str(tmp_path / "new"),
+    }
+    assert resolve_store_dir(None, env=agree).path == tmp_path / "new"
 
-    conflicting = {ENV_STORE_DIR: str(tmp_path / "a"), LEGACY_ENV_STORE_DIR: str(tmp_path / "b")}
-    try:
-        store_env_dir_value(conflicting)
-    except StoreResolutionError as exc:
-        assert "split the ledger" in str(exc)
-    else:  # pragma: no cover - the refusal is the point
-        raise AssertionError("conflicting store env values must refuse")
+    # ANY two names set to DIFFERENT paths refuses (never silently split), and
+    # the refusal names the conflicting variables.
+    for left, right in (
+        ("AGENTACCT_STORE_DIR", "AGENT_CHRONICLE_STORE_DIR"),
+        ("AGENTACCT_STORE_DIR", "AGENT_SENTINEL_STORE_DIR"),
+        ("AGENT_CHRONICLE_STORE_DIR", "AGENT_SENTINEL_STORE_DIR"),
+    ):
+        conflicting = {left: str(tmp_path / "a"), right: str(tmp_path / "b")}
+        try:
+            store_env_dir_value(conflicting)
+        except StoreResolutionError as exc:
+            assert "split the ledger" in str(exc)
+            assert left in str(exc) and right in str(exc)
+        else:  # pragma: no cover - the refusal is the point
+            raise AssertionError(f"conflicting store env values must refuse: {left} vs {right}")
 
 
 def test_wrapper_binary_env_alias(monkeypatch) -> None:
-    assert CLAUDE_WRAPPER.env_binary == "AGENT_CHRONICLE_CLAUDE_BINARY"
-    monkeypatch.delenv("AGENT_CHRONICLE_CLAUDE_BINARY", raising=False)
+    assert CLAUDE_WRAPPER.env_binary == "AGENTACCT_CLAUDE_BINARY"
+    for name in ("AGENTACCT_CLAUDE_BINARY", "AGENT_CHRONICLE_CLAUDE_BINARY", "AGENT_SENTINEL_CLAUDE_BINARY"):
+        monkeypatch.delenv(name, raising=False)
+    # Oldest pre-rename alias is still honored on its own.
     monkeypatch.setenv("AGENT_SENTINEL_CLAUDE_BINARY", "/old/claude")
     assert build_agent_command(CLAUDE_WRAPPER, ["-p", "hi"]) == ["/old/claude", "-p", "hi"]
-    monkeypatch.setenv("AGENT_CHRONICLE_CLAUDE_BINARY", "/new/claude")
+    # AGENT_CHRONICLE_* wins over AGENT_SENTINEL_*.
+    monkeypatch.setenv("AGENT_CHRONICLE_CLAUDE_BINARY", "/mid/claude")
+    assert build_agent_command(CLAUDE_WRAPPER, [])[0] == "/mid/claude"
+    # New AGENTACCT_* primary wins over both.
+    monkeypatch.setenv("AGENTACCT_CLAUDE_BINARY", "/new/claude")
     assert build_agent_command(CLAUDE_WRAPPER, [])[0] == "/new/claude"
 
 
@@ -378,21 +460,30 @@ def _src(name: str) -> str:
 
 
 def test_frozen_tool_names_and_semantic_kind() -> None:
+    # HARD CUTOVER: the LIVE MCP tool names are now agentacct_* (new name only).
     assert [tool["name"] for tool in TOOLS] == [
-        "sentinel_list_runs",
-        "sentinel_get_report",
-        "sentinel_record_machine_check",
-        "sentinel_record_event",
-        "sentinel_attach_client_context",
-        "sentinel_record_section",
-        "sentinel_record_agent_usage_debug",
-        "sentinel_list_events",
-        "sentinel_get_event_summary",
-        "sentinel_prepare_judge",
-        "sentinel_compute_value",
+        "agentacct_list_runs",
+        "agentacct_get_report",
+        "agentacct_record_machine_check",
+        "agentacct_record_event",
+        "agentacct_attach_client_context",
+        "agentacct_record_section",
+        "agentacct_record_agent_usage_debug",
+        "agentacct_list_events",
+        "agentacct_get_event_summary",
+        "agentacct_prepare_judge",
+        "agentacct_compute_value",
     ]
+    # RECOGNIZE-MANY: the log-evidence creation-tool set (a READ path over
+    # historical transcripts) accepts BOTH the new agentacct_* names AND the
+    # pre-rename sentinel_* names, which historical transcripts carry forever.
     assert SENTINEL_CREATION_TOOLS == frozenset(
         {
+            "agentacct_record_event",
+            "agentacct_attach_client_context",
+            "agentacct_record_section",
+            "agentacct_record_agent_usage_debug",
+            "agentacct_record_machine_check",
             "sentinel_record_event",
             "sentinel_attach_client_context",
             "sentinel_record_section",
@@ -400,6 +491,7 @@ def test_frozen_tool_names_and_semantic_kind() -> None:
             "sentinel_record_machine_check",
         }
     )
+    # sentinel_semantic_kind is STORED metadata (not a tool name) — still frozen.
     assert '"sentinel_semantic_kind": "section"' in _src("mcp.py")
 
 
@@ -408,9 +500,9 @@ def test_frozen_provenance_sources_and_schema_versions() -> None:
     assert CLI_INSTRUMENTATION_PROVENANCE == "agent_sentinel_cli_instrumentation_marker"
     assert DIAGNOSTIC_EVENT_SOURCES == frozenset({"agent-sentinel-mcp-doctor", "agent-sentinel-mcp-workflow-smoke"})
     assert CLAUDE_CODE_HOOK_CONTEXT_SCHEMA == "agent-sentinel.client-context.v1"
-    from agent_chronicle.cli import INSTRUMENTATION_MARKER_SOURCE
-    from agent_chronicle.usage_cube import USAGE_SUMMARY_SCHEMA_VERSION
-    from agent_chronicle.work_ledger import SESSION_ROLLUP_SCHEMA_VERSION
+    from agentacct.cli import INSTRUMENTATION_MARKER_SOURCE
+    from agentacct.usage_cube import USAGE_SUMMARY_SCHEMA_VERSION
+    from agentacct.work_ledger import SESSION_ROLLUP_SCHEMA_VERSION
 
     assert INSTRUMENTATION_MARKER_SOURCE == "agent-sentinel-setup"
     assert USAGE_SUMMARY_SCHEMA_VERSION == "agent-sentinel.usage-summary.v1"
@@ -450,12 +542,12 @@ def test_frozen_metadata_keys_wire_vocab_and_store_dirs() -> None:
     assert '"agent_sentinel_pricing_catalog"' in _src("client_usage.py")
     assert '"agent_sentinel_builtin"' in _src("pricing_catalog.py")
     # Store dirs: fresh init keeps writing the pre-rename names forever.
-    from agent_chronicle.policy import DEFAULT_POLICY_FILE
+    from agentacct.policy import DEFAULT_POLICY_FILE
 
     assert DEFAULT_POLICY_FILE == Path(".agent-sentinel/policy.yaml")
     assert '".agent-sentinel" / "state"' in _src("store_resolution.py")
     assert '"$HOME/.agent-sentinel-global/state"' in install_guide.GLOBAL_INSTALL_BLOCK
-    from agent_chronicle.hooks import (
+    from agentacct.hooks import (
         CLAUDE_HOOK_RELATIVE_PATH,
         CLAUDE_SETTINGS_RELATIVE_PATH,
         LEGACY_CLAUDE_HOOK_RELATIVE_PATH,
@@ -495,12 +587,12 @@ def test_pyproject_name_alias_scripts_and_build_system() -> None:
     assert payload["project"]["name"] == "agentacct"
     scripts = payload["project"]["scripts"]
     # Public primary console command.
-    assert scripts["agentacct"] == "agent_chronicle.cli:app"
+    assert scripts["agentacct"] == "agentacct.cli:app"
     # The published package ships ONLY agentacct-branded scripts. The old
     # "agent-chronicle" / "agent-sentinel" console scripts collide with
     # unrelated PyPI packages, so they are not shipped.
-    assert scripts["agentacct-claude"] == "agent_chronicle.wrappers:sentinel_claude_main"
-    assert scripts["agentacct-codex"] == "agent_chronicle.wrappers:sentinel_codex_main"
+    assert scripts["agentacct-claude"] == "agentacct.wrappers:sentinel_claude_main"
+    assert scripts["agentacct-codex"] == "agentacct.wrappers:sentinel_codex_main"
     assert "agent-chronicle" not in scripts
     assert "agent-sentinel" not in scripts
     build_system = payload["build-system"]

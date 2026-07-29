@@ -14,7 +14,7 @@ import json
 import os
 from pathlib import Path
 
-import agent_chronicle.client_usage as cu
+import agentacct.client_usage as cu
 from tests.test_client_usage import _codex_token_count, _make_codex_home
 
 

@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-import agent_chronicle.canonical.snapshot as snapshot_module
-from agent_chronicle.canonical.snapshot import (
+import agentacct.canonical.snapshot as snapshot_module
+from agentacct.canonical.snapshot import (
     CandidateTargetError,
     ManifestValidationError,
     SnapshotManifest,
