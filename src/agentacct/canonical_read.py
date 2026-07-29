@@ -40,7 +40,7 @@ from typing import Any, Mapping, Sequence
 from .env_compat import read_env_alias
 
 
-CANONICAL_READ_ENV = "AGENT_CHRONICLE_CANONICAL_READ"
+CANONICAL_READ_ENV = "AGENTACCT_CANONICAL_READ"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 
 # rm_usage_day pins usage whose timestamp was absent/unparseable to the

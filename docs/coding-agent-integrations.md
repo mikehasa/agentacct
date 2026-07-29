@@ -30,7 +30,7 @@ For a compact matrix of what each path can prove about usage, cost, and budget e
 
 ## Integration tiers
 
-For reusable per-agent instructions, see [agentacct workflow instructions](agent-chronicle-workflow-instructions.md). A Hermes-compatible skill template is available at [`integrations/hermes/agent-chronicle-workflow/SKILL.md`](../integrations/hermes/agent-chronicle-workflow/SKILL.md).
+For reusable per-agent instructions, see [agentacct workflow instructions](agentacct-workflow-instructions.md). A Hermes-compatible skill template is available at [`integrations/hermes/agentacct-workflow/SKILL.md`](../integrations/hermes/agentacct-workflow/SKILL.md).
 
 ### Tier 1: MCP tools
 

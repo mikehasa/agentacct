@@ -6,7 +6,7 @@ For the shortest no-key demo, run:
 agent-chronicle demo
 ```
 
-That command creates a local Chronicle-owned run, writes report/evidence/value artifacts, and prints follow-up report/dashboard commands. Without `--store-dir` (or `AGENT_CHRONICLE_STORE_DIR`), the demo always runs in a throwaway temporary store and says so — even from inside an initialized project. Pass `--store-dir .agent-sentinel/state` after `init` to keep demo runs. The longer walkthrough below shows the individual primitives behind that flow.
+That command creates a local Chronicle-owned run, writes report/evidence/value artifacts, and prints follow-up report/dashboard commands. Without `--store-dir` (or `AGENTACCT_STORE_DIR`), the demo always runs in a throwaway temporary store and says so — even from inside an initialized project. Pass `--store-dir .agent-sentinel/state` after `init` to keep demo runs. The longer walkthrough below shows the individual primitives behind that flow.
 
 This demo validates Agent Chronicle's current product loop without touching real
 Hermes, Claude Code, Codex, or other existing agent processes.
@@ -95,7 +95,7 @@ agent-chronicle judge prepare "$RUN_ID" \
 This is the only paid step. Use a low-limit test key and a small hard budget.
 
 ```bash
-export AGENT_CHRONICLE_OPENROUTER_API_KEY=<OPENROUTER_API_KEY>
+export AGENTACCT_OPENROUTER_API_KEY=<OPENROUTER_API_KEY>
 
 agent-chronicle judge run "$RUN_ID" \
   --store-dir "$STORE_DIR" \

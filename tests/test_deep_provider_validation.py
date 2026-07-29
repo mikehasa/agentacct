@@ -39,7 +39,7 @@ def test_deep_validation_missing_key_does_not_call_network(tmp_path):
         called = True
         raise AssertionError("network should not be called")
 
-    with pytest.raises(ProviderSmokeError, match="Missing AGENT_CHRONICLE_OPENAI_API_KEY"):
+    with pytest.raises(ProviderSmokeError, match="Missing AGENTACCT_OPENAI_API_KEY"):
         run_deep_provider_validation(["openai"], max_provider_usd=0.01, store_dir=tmp_path, env={}, http_post=fake_post)
 
     assert called is False

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from .env_compat import read_env_alias
 from .evidence import (
     Completeness,
     EvidenceEnvelope,
@@ -37,7 +37,9 @@ from .usage_truth import (
 from .work_events import WORK_EVENT_TRANSPORTS, WorkEvent
 
 
-EVIDENCE_V2_ENV = "AGENT_CHRONICLE_EVIDENCE_V2"
+EVIDENCE_V2_ENV = "AGENTACCT_EVIDENCE_V2"
+# Retained pre-rename symbol (still exported). Recognition of BOTH pre-rename
+# names now flows through read_env_alias (see evidence_v2_enabled).
 EVIDENCE_V2_ENV_LEGACY = "AGENT_SENTINEL_EVIDENCE_V2"
 _FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 _REFRESHABLE_USAGE_SCALAR_KEYS = (
@@ -52,10 +54,11 @@ _REFRESHABLE_USAGE_SCALAR_KEYS = (
 
 
 def evidence_v2_enabled() -> bool:
-    value = os.environ.get(EVIDENCE_V2_ENV)
-    if value is None:
-        value = os.environ.get(EVIDENCE_V2_ENV_LEGACY)
-    return str(value or "1").strip().lower() not in _FALSE_VALUES
+    # New AGENTACCT_* primary, then both pre-rename aliases
+    # (AGENT_CHRONICLE_* / AGENT_SENTINEL_*). Default ENABLED; an explicit
+    # falsey value disables.
+    value = read_env_alias(EVIDENCE_V2_ENV)
+    return str(value if value is not None else "1").strip().lower() not in _FALSE_VALUES
 
 
 @dataclass(frozen=True)

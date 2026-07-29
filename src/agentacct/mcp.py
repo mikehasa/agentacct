@@ -1587,7 +1587,7 @@ def build_initialize_result(params: Any) -> dict[str, Any]:
 # on its own (agentacct's honesty rule).
 DEGRADED_NO_STORE_MESSAGE = (
     "agentacct: no store configured — restart the MCP server with "
-    "--store-dir <abs path> (or set an absolute AGENT_CHRONICLE_STORE_DIR). "
+    "--store-dir <abs path> (or set an absolute AGENTACCT_STORE_DIR). "
     "The server is connected but cannot record work until a store is set; "
     "it will not create or pick a store on its own."
 )
@@ -1598,7 +1598,7 @@ def degraded_store_unwritable_message(store_dir: Path | str | None, error: objec
     return (
         f"agentacct: configured store directory {store_dir} is not usable ({error}). "
         "Restart the MCP server with a writable --store-dir <abs path> "
-        "(or an absolute AGENT_CHRONICLE_STORE_DIR). The server is connected but "
+        "(or an absolute AGENTACCT_STORE_DIR). The server is connected but "
         "cannot record work until a usable store is set."
     )
 

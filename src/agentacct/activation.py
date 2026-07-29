@@ -23,6 +23,8 @@ from typing import Any, Iterator, Mapping, Sequence
 
 import psutil
 
+from .env_compat import read_env_alias
+
 
 RUNTIME_SCHEMA_VERSION = "agent-chronicle.activation-runtime.v1"
 ACTIVATION_SCHEMA_VERSION = "agent-chronicle.activation.v1"
@@ -53,14 +55,21 @@ RUNTIME_ENV_ALLOWLIST = (
     "XDG_DATA_HOME",
     "SSL_CERT_FILE",
     "SSL_CERT_DIR",
+    # New AGENTACCT_* primary names plus both pre-rename aliases: whichever
+    # name the parent set for a feature/path flag passes through to the child.
+    "AGENTACCT_PRICING_CATALOG_PATH",
     "AGENT_CHRONICLE_PRICING_CATALOG_PATH",
     "AGENT_SENTINEL_PRICING_CATALOG_PATH",
+    "AGENTACCT_PRICING_AUTO_REFRESH",
     "AGENT_CHRONICLE_PRICING_AUTO_REFRESH",
     "AGENT_SENTINEL_PRICING_AUTO_REFRESH",
+    "AGENTACCT_EVIDENCE_V2",
     "AGENT_CHRONICLE_EVIDENCE_V2",
     "AGENT_SENTINEL_EVIDENCE_V2",
+    "AGENTACCT_CANONICAL_READ",
     "AGENT_CHRONICLE_CANONICAL_READ",
     "AGENT_SENTINEL_CANONICAL_READ",
+    "AGENTACCT_CANONICAL_LIVE_WRITE",
     "AGENT_CHRONICLE_CANONICAL_LIVE_WRITE",
     "AGENT_SENTINEL_CANONICAL_LIVE_WRITE",
 )
@@ -390,7 +399,7 @@ class RuntimeManager:
             cwd = str(Path(process.cwd()).resolve())
             argv = tuple(process.cmdline())
             executable = str(Path(argv[0]).resolve()) if argv else ""
-            nonce = process.environ().get("AGENT_CHRONICLE_RUNTIME_NONCE")
+            nonce = read_env_alias("AGENTACCT_RUNTIME_NONCE", process.environ())
         except (ProcessLookupError, psutil.NoSuchProcess, psutil.ZombieProcess):
             return False, "not_running"
         except (OSError, psutil.AccessDenied) as exc:
@@ -410,8 +419,14 @@ class RuntimeManager:
         nonce = secrets.token_urlsafe(32)
         log_path = self.runtime_root / f"{role}.log"
         env = {key: os.environ[key] for key in RUNTIME_ENV_ALLOWLIST if key in os.environ}
+        # New AGENTACCT_* primary names, plus both pre-rename aliases so a child
+        # (or user script) that reads an old name keeps working.
+        env["AGENTACCT_RUNTIME_NONCE"] = nonce
         env["AGENT_CHRONICLE_RUNTIME_NONCE"] = nonce
+        env["AGENT_SENTINEL_RUNTIME_NONCE"] = nonce
+        env["AGENTACCT_STORE_DIR"] = str(self.store_dir)
         env["AGENT_CHRONICLE_STORE_DIR"] = str(self.store_dir)
+        env["AGENT_SENTINEL_STORE_DIR"] = str(self.store_dir)
         with log_path.open("ab", buffering=0) as log_handle:
             _owner_only(log_path, 0o600)
             process = subprocess.Popen(
@@ -442,7 +457,7 @@ class RuntimeManager:
                         tuple(observed.cmdline()),
                         os.getpgid(process.pid),
                     )
-                    observed_nonce = observed.environ().get("AGENT_CHRONICLE_RUNTIME_NONCE")
+                    observed_nonce = read_env_alias("AGENTACCT_RUNTIME_NONCE", observed.environ())
                 except (OSError, psutil.AccessDenied):
                     # macOS can transiently deny KERN_PROCARGS2 while the
                     # console-script shebang is execing.  This grants no

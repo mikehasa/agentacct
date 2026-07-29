@@ -68,7 +68,7 @@ The cost proxy is local-only by default and refuses non-local bind hosts. Do not
 API keys should come from environment variables such as:
 
 ```text
-AGENT_CHRONICLE_OPENROUTER_API_KEY
+AGENTACCT_OPENROUTER_API_KEY
 ```
 
 Do not paste real keys into docs, reports, issues, or PR comments.

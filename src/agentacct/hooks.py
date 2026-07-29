@@ -373,8 +373,8 @@ _worktree_owner_root = worktree_owner_root
 def _hook_store_dir_from_event(event: dict[str, Any]) -> Path | None:
     """Locate the project-local store the hook should write to.
 
-    AGENT_CHRONICLE_STORE_DIR (or its pre-rename alias AGENT_SENTINEL_STORE_DIR)
-    comes FIRST, with the exact store_resolution
+    AGENTACCT_STORE_DIR (or its pre-rename aliases AGENT_CHRONICLE_STORE_DIR /
+    AGENT_SENTINEL_STORE_DIR) comes FIRST, with the exact store_resolution
     semantics (absolute path required): every consumer of hook context — the
     MCP server, CLI commands, doctor — resolves env-first, so hook capture
     must publish into the same store or the env split would let one project's
