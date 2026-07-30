@@ -2693,3 +2693,409 @@ def test_refusal_note_with_attach_inherited_ids_does_not_claim_unattributed(tmp_
         )
     )
     assert "stays unattributed" in bare["refused_client_context"]["note"]
+
+
+# --- MCP input-surface hardening ---------------------------------------------
+
+
+def test_section_accepts_title_alias_and_prefers_section_title(tmp_path):
+    """The shipped instruction surfaces told agents to pass `title` and the
+    schema rejected the whole call. The HTTP lane has always called this field
+    `title` and work_events reads `section_title or title`, so MCP was the
+    outlier: accept the alias, but let the canonical name win."""
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    aliased = _tool_payload(
+        _call_tool(
+            server,
+            1,
+            "agentacct_record_section",
+            {"source": "codex", "section_id": "alias", "section_status": "started", "title": "add rate-limit to login"},
+        )
+    )
+    assert aliased["event"]["metadata"]["section_title"] == "add rate-limit to login"
+
+    both = _tool_payload(
+        _call_tool(
+            server,
+            2,
+            "agentacct_record_section",
+            {
+                "source": "codex",
+                "section_id": "alias-both",
+                "section_status": "started",
+                "section_title": "canonical",
+                "title": "alias",
+            },
+        )
+    )
+    assert both["event"]["metadata"]["section_title"] == "canonical"
+
+    # The alias is one specific key, not a hole in the unknown-key guard.
+    still_unknown = _call_tool(
+        server,
+        3,
+        "agentacct_record_section",
+        {"source": "codex", "section_id": "alias-bad", "section_status": "started", "titel": "typo"},
+    )
+    assert still_unknown["error"]["code"] == -32602
+    assert "titel" in still_unknown["error"]["message"]
+
+    # A malformed alias is rejected rather than silently ignored.
+    bad_alias = _call_tool(
+        server,
+        4,
+        "agentacct_record_section",
+        {"source": "codex", "section_id": "alias-long", "section_status": "started", "title": "t" * 161},
+    )
+    assert bad_alias["error"]["code"] == -32602
+    assert "title" in bad_alias["error"]["message"]
+
+
+def test_shipped_instructions_name_the_argument_the_schema_accepts(tmp_path):
+    """Every instruction surface is generated from one constant; the section tool
+    must accept whatever field name that constant tells agents to set."""
+    from agentacct.install_guide import MCP_SERVER_INSTRUCTIONS
+
+    assert "set `section_title`" in MCP_SERVER_INSTRUCTIONS
+    assert "set `title`" not in MCP_SERVER_INSTRUCTIONS
+
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+    tools = server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+    section_props = {tool["name"]: tool for tool in tools["result"]["tools"]}["agentacct_record_section"]["inputSchema"]["properties"]
+    assert "section_title" in section_props
+    assert section_props["title"]["maxLength"] == 160
+    assert "section_title" in section_props["title"]["description"]
+
+
+def test_limit_errors_state_the_limit_and_what_was_received(tmp_path):
+    """Blind shrinking cost five retries in the incident that prompted this:
+    2039 -> 1904 -> 1664 -> 1614 -> 1477 -> 1172 accepted."""
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    long_summary = _call_tool(
+        server,
+        1,
+        "agentacct_record_section",
+        {"source": "codex", "section_id": "limits", "section_status": "started", "summary": "x" * 2039},
+    )
+    message = long_summary["error"]["message"]
+    assert "1200" in message and "2039" in message
+
+    long_file = _call_tool(
+        server,
+        2,
+        "agentacct_record_section",
+        {"source": "codex", "section_id": "limits", "section_status": "started", "files": ["a" * 300]},
+    )
+    file_message = long_file["error"]["message"]
+    assert "files[0]" in file_message
+    assert "240" in file_message and "300" in file_message
+
+    too_many = _call_tool(
+        server,
+        3,
+        "agentacct_record_section",
+        {"source": "codex", "section_id": "limits", "section_status": "started", "files": [f"f{index}.py" for index in range(51)]},
+    )
+    count_message = too_many["error"]["message"]
+    assert "50" in count_message and "51" in count_message
+
+    # An over-long check name used to surface as "metadata must be <= 8192
+    # bytes", blaming a parameter the caller never sent.
+    long_check_name = _call_tool(
+        server,
+        4,
+        "agentacct_record_machine_check",
+        {"source": "codex", "name": "n" * 300, "result": "passed"},
+    )
+    name_message = long_check_name["error"]["message"]
+    assert name_message.startswith("name must be <= 240")
+    assert "300" in name_message
+    assert "metadata" not in name_message
+
+
+def test_metadata_budget_measures_real_utf8_bytes_for_cjk(tmp_path):
+    """The old check json-encoded with ensure_ascii=True, so every CJK character
+    cost 6 bytes: a summary of 1200 CJK chars plus a next_step of 200 measured
+    8432 bytes and was rejected, i.e. about a third of the advertised budget."""
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    accepted = _call_tool(
+        server,
+        1,
+        "agentacct_record_section",
+        {
+            "source": "codex",
+            "section_id": "cjk",
+            "section_status": "checkpoint",
+            "summary": "记" * 1200,
+            "next_step": "步" * 200,
+        },
+    )
+    assert "error" not in accepted
+    assert _tool_payload(accepted)["event"]["metadata"]["summary"] == "记" * 1200
+
+    # Still bounded: genuinely oversized metadata fails, and the message names
+    # the field to shrink instead of a parameter the caller never passed.
+    oversized = _call_tool(
+        server,
+        2,
+        "agentacct_record_section",
+        {
+            "source": "codex",
+            "section_id": "cjk-big",
+            "section_status": "checkpoint",
+            "metadata": {"notes": "记" * 3000},
+        },
+    )
+    message = oversized["error"]["message"]
+    assert "8192" in message
+    assert "notes" in message
+    # 3000 CJK chars * 3 real UTF-8 bytes, plus the JSON envelope.
+    assert "received 9013 bytes" in message
+
+
+def test_files_absolute_under_project_dir_is_normalized_not_rejected(tmp_path):
+    """Roughly 468 sessions hit "files[0] must be project-relative" while the
+    harness instructed absolute paths and no schema published the rule."""
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    accepted = _tool_payload(
+        _call_tool(
+            server,
+            1,
+            "agentacct_record_section",
+            {
+                "source": "codex",
+                "section_id": "paths",
+                "section_status": "started",
+                "project_dir": "/repo/agentacct",
+                "files": ["/repo/agentacct/src/agentacct/mcp.py", "src/./a.py", "src//b.py"],
+            },
+        )
+    )
+    assert accepted["event"]["metadata"]["files"] == ["src/agentacct/mcp.py", "src/a.py", "src/b.py"]
+
+    outside = _call_tool(
+        server,
+        2,
+        "agentacct_record_section",
+        {
+            "source": "codex",
+            "section_id": "paths",
+            "section_status": "started",
+            "project_dir": "/repo/agentacct",
+            "files": ["/etc/passwd"],
+        },
+    )
+    assert outside["error"]["code"] == -32602
+    assert "project-relative" in outside["error"]["message"]
+
+    # A sibling directory sharing the project_dir prefix is NOT inside it.
+    sibling = _call_tool(
+        server,
+        3,
+        "agentacct_record_section",
+        {
+            "source": "codex",
+            "section_id": "paths",
+            "section_status": "started",
+            "project_dir": "/repo/agentacct",
+            "files": ["/repo/agentacct-secrets/key.pem"],
+        },
+    )
+    assert sibling["error"]["code"] == -32602
+
+    # Lexical containment must not be fooled by a traversal back out.
+    escape_via_root = _call_tool(
+        server,
+        4,
+        "agentacct_record_section",
+        {
+            "source": "codex",
+            "section_id": "paths",
+            "section_status": "started",
+            "project_dir": "/repo/agentacct",
+            "files": ["/repo/agentacct/../../etc/passwd"],
+        },
+    )
+    assert escape_via_root["error"]["code"] == -32602
+    assert "escape" in escape_via_root["error"]["message"]
+
+    # A redundant separator is the same POSIX path, and must not rebuild an
+    # absolute-looking value out of the relativized remainder.
+    redundant = _tool_payload(
+        _call_tool(
+            server,
+            90,
+            "agentacct_record_section",
+            {
+                "source": "codex",
+                "section_id": "paths",
+                "section_status": "started",
+                "project_dir": "/repo/agentacct",
+                "files": ["/repo/agentacct//etc/passwd"],
+            },
+        )
+    )
+    assert redundant["event"]["metadata"]["files"] == ["etc/passwd"]
+
+    for index, bad in enumerate(
+        (
+            {"files": ["../outside.py"]},
+            {"files": ["~/secrets.env"]},
+            {"files": ["/repo/agentacct/src/a.py"]},  # absolute, but no project_dir on the call
+            {"files": ["."]},
+        ),
+        start=5,
+    ):
+        response = _call_tool(
+            server,
+            index,
+            "agentacct_record_section",
+            {"source": "codex", "section_id": "paths", "section_status": "started", **bad},
+        )
+        assert response["error"]["code"] == -32602, bad
+
+
+def test_files_rule_is_published_in_every_schema_that_takes_files(tmp_path):
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+    tools = server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+    tool_by_name = {tool["name"]: tool for tool in tools["result"]["tools"]}
+
+    for tool_name in ("agentacct_record_section", "agentacct_record_machine_check"):
+        description = tool_by_name[tool_name]["inputSchema"]["properties"]["files"]["description"]
+        assert "Project-relative" in description
+        assert "forward slashes" in description
+        assert "'..'" in description
+        assert "project_dir" in description
+    assert tool_by_name["agentacct_record_machine_check"]["inputSchema"]["properties"]["name"]["maxLength"] == 240
+
+
+def test_machine_check_normalizes_absolute_files_under_project_dir(tmp_path):
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    payload = _tool_payload(
+        _call_tool(
+            server,
+            1,
+            "agentacct_record_machine_check",
+            {
+                "source": "codex",
+                "section_id": "s1",
+                "result": "passed",
+                "project_dir": "/repo/agentacct",
+                "files": ["/repo/agentacct/tests/test_mcp.py"],
+            },
+        )
+    )
+    assert payload["event"]["metadata"]["files"] == ["tests/test_mcp.py"]
+
+
+def test_mangled_tool_call_is_warned_about_never_repaired(tmp_path):
+    """A mangled tool call absorbs parameters into a narrative value as literal
+    text. Warn and stamp; never reject, never repair — repair would fabricate
+    fields the agent never wrote."""
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    payload = _tool_payload(
+        _call_tool(
+            server,
+            1,
+            "agentacct_record_section",
+            {
+                "source": "codex",
+                "section_id": "mangled",
+                "section_status": "completed",
+                "summary": "Fixed the validator.</summary>\n<files>src/agentacct/mcp.py</files>",
+            },
+        )
+    )
+    metadata = payload["event"]["metadata"]
+    assert metadata["mangled_tool_call_suspected_fields"] == ["files"]
+    # Never repaired: no files were invented from the narrative text.
+    assert "files" not in metadata
+    assert metadata["summary"].endswith("</files>")
+    assert any("</files>" in warning and "did NOT" in warning for warning in payload["warnings"])
+
+    # The same detector guards the other narrative write path.
+    check = _tool_payload(
+        _call_tool(
+            server,
+            2,
+            "agentacct_record_machine_check",
+            {
+                "source": "codex",
+                "section_id": "mangled",
+                "result": "passed",
+                "summary": "Suite green.</summary>\n<command>pytest -q</command>",
+            },
+        )
+    )
+    assert check["event"]["metadata"]["mangled_tool_call_suspected_fields"] == ["command"]
+    assert "command" not in check["event"]["metadata"]
+    assert any("</command>" in warning for warning in check["warnings"])
+
+
+def test_mangle_detector_ignores_prose_that_merely_mentions_fields(tmp_path):
+    """A bare-word detector fires 277 times on "source" and 192 on "files" in the
+    real ledger, and an opening-tag detector has a real false positive on prose
+    about MCP config. Closing tags only, and only for unsupplied properties."""
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    ordinary = _tool_payload(
+        _call_tool(
+            server,
+            1,
+            "agentacct_record_section",
+            {
+                "source": "codex",
+                "section_id": "prose",
+                "section_status": "completed",
+                "summary": "Reviewed the files and the source list; <files> and <summary> tags are discussed in the MCP config docs.",
+                "blocker": "Waiting on the next_step from review.",
+            },
+        )
+    )
+    assert "mangled_tool_call_suspected_fields" not in ordinary["event"]["metadata"]
+    assert not any("mangled tool call" in warning for warning in ordinary["warnings"])
+
+    # A closing tag for an argument the call DID supply is not evidence of a
+    # mangled call — the parameter arrived where it belongs.
+    supplied = _tool_payload(
+        _call_tool(
+            server,
+            2,
+            "agentacct_record_section",
+            {
+                "source": "codex",
+                "section_id": "prose-2",
+                "section_status": "completed",
+                "summary": "Documented the </files> closing tag.",
+                "files": ["docs/mcp.md"],
+            },
+        )
+    )
+    assert "mangled_tool_call_suspected_fields" not in supplied["event"]["metadata"]
+
+
+def test_mangle_marker_is_server_authored_and_cannot_be_forged(tmp_path):
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    payload = _tool_payload(
+        _call_tool(
+            server,
+            1,
+            "agentacct_record_section",
+            {
+                "source": "codex",
+                "section_id": "forge",
+                "section_status": "started",
+                "metadata": {"mangled_tool_call_suspected_fields": ["client_session_id"]},
+            },
+        )
+    )
+    metadata = payload["event"]["metadata"]
+    assert "mangled_tool_call_suspected_fields" not in metadata
+    assert "mangled_tool_call_suspected_fields" in metadata["reserved_context_keys_stripped"]

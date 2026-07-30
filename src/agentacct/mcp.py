@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sys
 import tempfile
 from collections.abc import Sequence
@@ -24,6 +25,25 @@ from .storage import validate_run_id
 WORK_KINDS = {"planning", "implementation", "debugging", "testing", "review", "docs", "refactor", "research", "other", "unknown"}
 EVIDENCE_TYPES = {"test", "build", "lint", "typecheck", "smoke", "benchmark", "browser", "security", "artifact", "other"}
 EVIDENCE_RESULTS = {"passed", "failed", "skipped", "error", "unknown"}
+
+# Metadata byte budget. Deliberately identical to the HTTP (api.py) and CLI
+# (cli.py) write paths: the number is load-bearing for cross-surface symmetry,
+# so raise it in all three or in none.
+METADATA_MAX_BYTES = 8192
+# A machine check's name feeds the check-identity hash and lands in metadata
+# twice, so it needs its OWN limit: without one an over-long name surfaced as
+# "metadata must be <= 8192 bytes", blaming a parameter the caller never sent.
+# Never truncate it — a truncated name forks check identity.
+MACHINE_CHECK_NAME_MAX_LENGTH = 240
+
+# The files rule, published in every schema that takes `files`. It is the single
+# biggest MCP rejection cause: agent harnesses hand out absolute paths, and the
+# rule appeared in no description at all.
+FILES_DESCRIPTION = (
+    "Project-relative paths with forward slashes: no leading '/' or '~', no '.' or '..' segments. "
+    "An absolute path is relativized and accepted ONLY when it lies under the project_dir supplied "
+    "on this same call; otherwise it is rejected rather than guessed at."
+)
 
 # Join keys that stay valid for a whole client session, so sections recorded on
 # the same stdio server may inherit them from agentacct_attach_client_context.
@@ -65,7 +85,7 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "run_id": {"type": "string", "default": "latest"},
-                "name": {"type": "string", "default": "check"},
+                "name": {"type": "string", "default": "check", "maxLength": MACHINE_CHECK_NAME_MAX_LENGTH},
                 "before_exit_code": {"type": ["integer", "null"]},
                 "after_exit_code": {"type": ["integer", "null"]},
                 "before_summary": {"type": ["string", "null"]},
@@ -81,7 +101,7 @@ TOOLS: list[dict[str, Any]] = [
                 "artifact_ref": {"type": ["string", "null"], "maxLength": 240},
                 "artifact_path": {"type": ["string", "null"], "maxLength": 500},
                 "artifact_url": {"type": ["string", "null"], "maxLength": 500},
-                "files": {"type": "array", "items": {"type": "string", "maxLength": 240}, "maxItems": 50, "default": []},
+                "files": {"type": "array", "items": {"type": "string", "maxLength": 240}, "maxItems": 50, "default": [], "description": FILES_DESCRIPTION},
                 "idempotency_key": {"type": ["string", "null"], "maxLength": 240},
                 "client": {"type": ["string", "null"], "maxLength": 80},
                 "client_session_id": {"type": ["string", "null"], "maxLength": 240},
@@ -151,7 +171,16 @@ TOOLS: list[dict[str, Any]] = [
                 "section_id": {"type": "string", "minLength": 1, "maxLength": 120},
                 "section_status": {"type": "string", "enum": ["started", "checkpoint", "completed", "blocked"]},
                 "run_id": {"type": ["string", "null"], "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
-                "section_title": {"type": ["string", "null"], "maxLength": 160},
+                "section_title": {
+                    "type": ["string", "null"],
+                    "maxLength": 160,
+                    "description": "Short human goal for this section. `title` is accepted as an alias; if both are supplied, `section_title` wins.",
+                },
+                "title": {
+                    "type": ["string", "null"],
+                    "maxLength": 160,
+                    "description": "Alias for `section_title` (the HTTP lane names this field `title`). Ignored when `section_title` is also supplied.",
+                },
                 "phase": {"type": ["string", "null"], "maxLength": 80},
                 "kind": {"type": ["string", "null"], "enum": ["planning", "implementation", "debugging", "testing", "review", "docs", "refactor", "research", "other", "unknown", None]},
                 "summary": {"type": ["string", "null"], "maxLength": 1200},
@@ -165,7 +194,7 @@ TOOLS: list[dict[str, Any]] = [
                 "message_id": {"type": ["string", "null"], "maxLength": 240},
                 "request_id": {"type": ["string", "null"], "maxLength": 240},
                 "client_event_timestamp": {"type": ["string", "null"], "maxLength": 80},
-                "files": {"type": "array", "items": {"type": "string", "maxLength": 240}, "maxItems": 50, "default": []},
+                "files": {"type": "array", "items": {"type": "string", "maxLength": 240}, "maxItems": 50, "default": [], "description": FILES_DESCRIPTION},
                 "blocker": {"type": ["string", "null"], "maxLength": 1200},
                 "next_step": {"type": ["string", "null"], "maxLength": 1200},
                 "idempotency_key": {"type": ["string", "null"], "maxLength": 240},
@@ -282,10 +311,24 @@ def _reject_unknown_keys(args: dict[str, Any], allowed: set[str]) -> None:
         raise InvalidParams("unexpected argument(s): " + ", ".join(unknown))
 
 
-def _optional_str(args: dict[str, Any], key: str, default: str) -> str:
+def _limit_error(key: str, *, limit: int, received: int, unit: str = "characters") -> InvalidParams:
+    """The single shape every size/limit rejection in this module uses.
+
+    It always states the limit AND what arrived. Without the received size a
+    caller can only shrink blindly — the real incident behind this helper cost
+    five retries (2039 -> 1904 -> 1664 -> 1614 -> 1477 -> 1172 accepted). The
+    HTTP lane already reports both via pydantic; this matches it. Sizes only:
+    never echo caller content back into an error string.
+    """
+    return InvalidParams(f"{key} must be <= {limit} {unit} (received {received})")
+
+
+def _optional_str(args: dict[str, Any], key: str, default: str, *, max_length: int | None = None) -> str:
     value = args.get(key, default)
     if not isinstance(value, str) or not value:
         raise InvalidParams(f"{key} must be a non-empty string")
+    if max_length is not None and len(value) > max_length:
+        raise _limit_error(key, limit=max_length, received=len(value))
     return value
 
 
@@ -355,7 +398,7 @@ def _optional_limited_str(args: dict[str, Any], key: str, default: str | None = 
     if not isinstance(value, str) or not value:
         raise InvalidParams(f"{key} must be a non-empty string or null")
     if len(value) > max_length:
-        raise InvalidParams(f"{key} must be <= {max_length} characters")
+        raise _limit_error(key, limit=max_length, received=len(value))
     return value
 
 
@@ -389,13 +432,109 @@ def _optional_metadata(args: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
+def _json_utf8_size(value: Any) -> int:
+    """Real UTF-8 byte size of the JSON encoding.
+
+    ``ensure_ascii=False`` is the whole point: with the default, the size check
+    bills every CJK character 6 bytes (\\uXXXX) and every emoji 12, i.e. 2-4x
+    what the text actually costs, so a Chinese-writing agent got roughly a
+    third of the advertised budget. Measured before this fix: 1200 CJK chars =
+    7215 bytes, and 1200 CJK chars of summary plus 200 of next_step = 8432
+    bytes, rejected.
+    """
+    encoded = json.dumps(value, sort_keys=True, allow_nan=False, ensure_ascii=False)
+    try:
+        return len(encoded.encode("utf-8"))
+    except UnicodeEncodeError:
+        # Lone surrogates have no UTF-8 form. Measure the escaped encoding
+        # rather than failing a call on a pathological string; the caller's
+        # rejection, if any, must still be about SIZE.
+        return len(json.dumps(value, sort_keys=True, allow_nan=False).encode("utf-8"))
+
+
+def _metadata_size_error(value: dict[str, Any], size: int) -> InvalidParams:
+    """Size rejection that names the field to shrink.
+
+    The old message named `metadata` — a parameter most callers never passed,
+    since the bulk is usually a validated argument (summary, blocker,
+    next_step) the server merged in. Naming the largest field, with its byte
+    size, is the difference between a fixable error and a guessing game. The
+    key name is caller-controlled, so it is clipped before it reaches the
+    error string.
+    """
+    largest_key = ""
+    largest_size = 0
+    for key, item in value.items():
+        item_size = _json_utf8_size({key: item})
+        if item_size > largest_size:
+            largest_key, largest_size = str(key), item_size
+    detail = f"; largest field is {largest_key[:60]} at {largest_size} bytes" if largest_key else ""
+    return InvalidParams(
+        f"metadata must be <= {METADATA_MAX_BYTES} bytes when JSON encoded (received {size} bytes){detail}"
+    )
+
+
 def _validate_metadata_size(value: dict[str, Any]) -> None:
     try:
-        encoded = json.dumps(value, sort_keys=True, allow_nan=False)
+        size = _json_utf8_size(value)
     except ValueError as exc:
         raise InvalidParams("metadata must be strict JSON") from exc
-    if len(encoded.encode("utf-8")) > 8192:
-        raise InvalidParams("metadata must be <= 8192 bytes when JSON encoded")
+    if size > METADATA_MAX_BYTES:
+        raise _metadata_size_error(value, size)
+
+
+# --- Mangled tool-call detection (WARN ONLY) ---------------------------------
+# When a client's tool-call parser mangles a call, arguments arrive absorbed
+# into another argument's value as literal text ("...done.</files>"). Observed
+# three times in one session, twice AFTER the agent had already diagnosed it.
+# agentacct warns and records the suspicion; it never rejects and never
+# repairs, because repairing would fabricate fields the agent never wrote.
+
+# Server-authored marker (listed in RESERVED_CONTEXT_STRIP_KEYS, so a caller
+# cannot stamp its own events with it).
+MANGLED_TOOL_CALL_METADATA_KEY = "mangled_tool_call_suspected_fields"
+
+# The free-text arguments a mangled parameter can be absorbed into, per tool.
+SECTION_NARRATIVE_KEYS = ("summary", "blocker", "next_step", "section_title", "title")
+MACHINE_CHECK_NARRATIVE_KEYS = ("summary", "before_summary", "after_summary", "resolution_summary", "command")
+
+
+def _tool_property_names(tool_name: str) -> frozenset[str]:
+    for tool in TOOLS:
+        if tool.get("name") == tool_name:
+            return frozenset(tool["inputSchema"].get("properties", {}))
+    return frozenset()
+
+
+def _detect_mangled_tool_call_fields(tool_name: str, args: dict[str, Any], narrative_keys: Sequence[str]) -> list[str]:
+    """This tool's own argument names that appear as CLOSING tags in free text.
+
+    Closing tags only, and only for properties the call did NOT supply. The
+    looser forms were measured against the real ledger and are unusable: a
+    bare-word detector fires 277 times on "source" and 192 on "files" across
+    1955 section events, and an opening-tag detector has a real false positive
+    on legitimate prose about MCP config. The closing-tag form scored 1 true
+    positive and 0 false positives on the same events. It will still fire on
+    meta-work about agentacct itself, which is acceptable for a warning.
+    """
+    missing = _tool_property_names(tool_name) - set(args)
+    if not missing:
+        return []
+    suspected: set[str] = set()
+    for key in narrative_keys:
+        value = args.get(key)
+        if isinstance(value, str):
+            suspected.update(name for name in missing if f"</{name}>" in value)
+    return sorted(suspected)
+
+
+def _mangled_tool_call_warnings(fields: Sequence[str]) -> list[str]:
+    return [
+        f"Possible mangled tool call: a closing </{field}> tag appears inside a free-text argument, but "
+        f"{field} was not supplied as an argument. agentacct recorded your text verbatim and did NOT "
+        f"repair it; re-send with {field} as its own argument if it was meant to be one."
+        for field in fields
+    ]
 
 
 # Context keys whose collision with free-form metadata is treated as an
@@ -414,6 +553,7 @@ RESERVED_CONTEXT_STRIP_KEYS = frozenset(
         "client_session_id",
         "client_transcript_id",
         "parent_client_session_id",
+        MANGLED_TOOL_CALL_METADATA_KEY,
         *RESERVED_CLIENT_CONTEXT_PROVENANCE_KEYS,
     }
 )
@@ -470,27 +610,90 @@ def _optional_limited_str_list(args: dict[str, Any], key: str, *, max_items: int
     if not isinstance(value, list):
         raise InvalidParams(f"{key} must be an array")
     if len(value) > max_items:
-        raise InvalidParams(f"{key} must contain <= {max_items} items")
+        raise _limit_error(key, limit=max_items, received=len(value), unit="items")
     result: list[str] = []
     for index, item in enumerate(value):
         if not isinstance(item, str) or not item:
             raise InvalidParams(f"{key}[{index}] must be a non-empty string")
         if len(item) > max_length:
-            raise InvalidParams(f"{key}[{index}] must be <= {max_length} characters")
+            raise _limit_error(f"{key}[{index}]", limit=max_length, received=len(item))
         result.append(item)
     return result
 
 
-def _optional_project_relative_files(args: dict[str, Any], key: str = "files") -> list[str]:
+_WINDOWS_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:/")
+
+
+def _looks_absolute(path: str) -> bool:
+    """Absolute for validation purposes: a POSIX root, a home shortcut, or a
+    Windows drive letter. The drive-letter case matters because the value has
+    already had backslashes folded to forward slashes, so PurePosixPath alone
+    would read ``C:/repo/a.py`` as a relative path and store it as one."""
+
+    return path.startswith(("/", "~")) or bool(_WINDOWS_DRIVE_PREFIX.match(path))
+
+
+def _relative_to_project_dir(path: str, root: str | None) -> str | None:
+    """``path`` expressed relative to ``root``, or None when containment is not provable.
+
+    Purely lexical: no filesystem access and no symlink resolution. That is the
+    correct boundary here — this decides which STRING lands in the ledger, not
+    which file gets opened, and project_dir routinely names a directory that
+    does not exist on the machine reading the store later. Both values are
+    caller-controlled, so nothing is inferred: a root that is not itself
+    absolute, or a path that is not under it, returns None and the caller
+    rejects. Any ``..`` surviving into the returned value is caught by the
+    escape check at the call site.
+    """
+    if not root or not _looks_absolute(root) or root.startswith("~"):
+        return None
+    prefix = root + "/"
+    if not path.startswith(prefix):
+        return None
+    # lstrip: a redundant separator ("/repo//etc/passwd") is the same POSIX path
+    # as "/repo/etc/passwd", but leaving the leading slash on the remainder
+    # would rebuild an absolute-looking "//etc/passwd" in the ledger.
+    return path[len(prefix) :].lstrip("/")
+
+
+def _optional_project_relative_files(
+    args: dict[str, Any], key: str = "files", *, project_dir: str | None = None
+) -> list[str]:
+    """Validate AND normalize the files list into project-relative POSIX paths.
+
+    Absolute paths are the single biggest MCP rejection cause — agent harnesses
+    instruct absolute paths and the rule was published nowhere — so an absolute
+    path is relativized instead of rejected when it provably lies under the
+    project_dir declared ON THIS CALL. Only the explicit argument counts: an
+    inherited or session-attached project_dir could belong to a different
+    repository, and a path relativized against the wrong root is a silently
+    wrong ledger row, which is worse than a rejection.
+
+    Normalization also closes the gap where ``src/./a.py`` passed the old
+    validator (PurePosixPath drops "." segments before they were inspected) and
+    reached the ledger un-normalized, splitting one file into two rows.
+    """
     files = _optional_limited_str_list(args, key, max_items=50, max_length=240)
+    root = project_dir.replace("\\", "/").rstrip("/") if project_dir else None
+    normalized_files: list[str] = []
     for index, item in enumerate(files):
-        normalized = item.replace("\\", "/")
-        path = PurePosixPath(normalized)
-        if path.is_absolute() or normalized.startswith("~"):
-            raise InvalidParams(f"{key}[{index}] must be project-relative")
-        if any(part in {"", ".", ".."} for part in path.parts):
-            raise InvalidParams(f"{key}[{index}] must be a normalized project-relative path")
-    return files
+        candidate = item.replace("\\", "/")
+        if _looks_absolute(candidate):
+            relative = _relative_to_project_dir(candidate, root)
+            if relative is None:
+                raise InvalidParams(
+                    f"{key}[{index}] must be project-relative: forward slashes, no leading '/' or '~', "
+                    "no '.' or '..' segments. Pass the path relative to the repository root, or supply "
+                    "project_dir on this call so an absolute path under it can be relativized."
+                )
+            candidate = relative
+        parts = PurePosixPath(candidate).parts
+        if ".." in parts:
+            raise InvalidParams(f"{key}[{index}] must not escape the project directory: '..' segments are not allowed")
+        if not parts:
+            raise InvalidParams(f"{key}[{index}] must name a path inside the project, not the project root itself")
+        normalized_files.append("/".join(parts))
+    return normalized_files
 
 
 def _client_context_metadata(args: dict[str, Any], *, require_client: bool, require_session: bool) -> dict[str, Any]:
@@ -853,7 +1056,7 @@ class SentinelMCPServer:
             )
             has_outcome_fields = any(key in arguments for key in {"before_exit_code", "after_exit_code", "before_summary", "after_summary"}) or not has_evidence_fields
             run_id = _optional_str(arguments, "run_id", "latest")
-            check_name = _optional_str(arguments, "name", "check")
+            check_name = _optional_str(arguments, "name", "check", max_length=MACHINE_CHECK_NAME_MAX_LENGTH)
             before_exit_code = _optional_nullable_int(arguments, "before_exit_code")
             after_exit_code = _optional_nullable_int(arguments, "after_exit_code")
             before_summary = _optional_nullable_str(arguments, "before_summary")
@@ -936,6 +1139,10 @@ class SentinelMCPServer:
                         raise InvalidParams(
                             "a blocker resolution requires exit_code=0 or an artifact_ref/artifact_path/artifact_url"
                         )
+                evidence_project_dir = _optional_limited_str(arguments, "project_dir", None, max_length=1000)
+                mangled_fields = _detect_mangled_tool_call_fields(
+                    "agentacct_record_machine_check", arguments, MACHINE_CHECK_NARRATIVE_KEYS
+                )
                 evidence_context = {
                     "sentinel_semantic_kind": "evidence",
                     "evidence_type": _optional_choice(arguments, "evidence_type", EVIDENCE_TYPES, "other"),
@@ -949,7 +1156,7 @@ class SentinelMCPServer:
                     "artifact_ref": _optional_limited_str(arguments, "artifact_ref", None, max_length=240),
                     "artifact_path": _optional_limited_str(arguments, "artifact_path", None, max_length=500),
                     "artifact_url": _optional_limited_str(arguments, "artifact_url", None, max_length=500),
-                    "files": _optional_project_relative_files(arguments),
+                    "files": _optional_project_relative_files(arguments, project_dir=evidence_project_dir),
                     "idempotency_key": _optional_limited_str(arguments, "idempotency_key", None, max_length=240),
                     "client": _optional_limited_str(arguments, "client", None, max_length=80),
                     "client_session_id": _optional_limited_str(arguments, "client_session_id", None, max_length=240),
@@ -957,11 +1164,14 @@ class SentinelMCPServer:
                     # cannot smuggle join ids through free-form metadata.
                     "client_transcript_id": None,
                     "parent_client_session_id": None,
-                    "project_dir": _optional_limited_str(arguments, "project_dir", None, max_length=1000),
+                    "project_dir": evidence_project_dir,
                     "resolves_blocked_event_id": resolves_blocked_event_id,
                     "resolution_scope": resolution_scope,
                     "resolution_summary": resolution_summary,
                     "resolution_objective_basis": resolution_objective_basis,
+                    # Server-authored; listed even when empty so a caller cannot
+                    # stamp the marker through free-form metadata.
+                    MANGLED_TOOL_CALL_METADATA_KEY: mangled_fields or None,
                 }
                 payload["event"] = self.service.record_event(
                     {
@@ -974,6 +1184,9 @@ class SentinelMCPServer:
                     trusted_blocker_resolution=resolution_requested,
                     transport="mcp",
                 )
+                recorded_mangled = payload["event"].get("metadata", {}).get(MANGLED_TOOL_CALL_METADATA_KEY) or []
+                if recorded_mangled:
+                    payload["warnings"] = _mangled_tool_call_warnings(recorded_mangled)
         elif name == "agentacct_record_event":
             allowed = {
                 "source",
@@ -1079,6 +1292,12 @@ class SentinelMCPServer:
                 "section_status",
                 "run_id",
                 "section_title",
+                # `title` is the HTTP lane's name for the same field, and it is
+                # what every shipped instruction surface told agents to pass
+                # until this release. Rendered CLAUDE.md/AGENTS.md files are
+                # written once at onboard and never refreshed, so the alias is
+                # what keeps already-onboarded machines recording at all.
+                "title",
                 "phase",
                 "kind",
                 "summary",
@@ -1100,18 +1319,29 @@ class SentinelMCPServer:
             }
             _reject_unknown_keys(arguments, allowed)
             section_status = _required_choice(arguments, "section_status", {"started", "checkpoint", "completed", "blocked"})
+            # Both spellings are validated even when only one is used, so a
+            # malformed alias is never silently ignored. section_title wins.
+            section_title = _optional_limited_str(arguments, "section_title", None, max_length=160)
+            section_title_alias = _optional_limited_str(arguments, "title", None, max_length=160)
+            section_project_dir = _optional_limited_str(arguments, "project_dir", None, max_length=1000)
+            mangled_fields = _detect_mangled_tool_call_fields(
+                "agentacct_record_section", arguments, SECTION_NARRATIVE_KEYS
+            )
             context = {
                 "sentinel_semantic_kind": "section",
                 "usage_join_strategy": "agent_reported_section_context",
                 "section_id": _required_limited_str(arguments, "section_id", max_length=120),
                 "section_status": section_status,
-                "section_title": _optional_limited_str(arguments, "section_title", None, max_length=160),
+                "section_title": section_title if section_title is not None else section_title_alias,
                 "phase": _optional_limited_str(arguments, "phase", None, max_length=80),
                 "kind": _optional_choice(arguments, "kind", WORK_KINDS, "unknown"),
                 "summary": _optional_limited_str(arguments, "summary", None, max_length=1200),
-                "files": _optional_project_relative_files(arguments),
+                "files": _optional_project_relative_files(arguments, project_dir=section_project_dir),
                 "blocker": _optional_limited_str(arguments, "blocker", None, max_length=1200),
                 "next_step": _optional_limited_str(arguments, "next_step", None, max_length=1200),
+                # Server-authored; listed even when empty so a caller cannot
+                # stamp the marker through free-form metadata.
+                MANGLED_TOOL_CALL_METADATA_KEY: mangled_fields or None,
                 **_client_context_metadata(arguments, require_client=False, require_session=False),
             }
             section_source = _required_limited_str(arguments, "source", max_length=80)
@@ -1212,10 +1442,17 @@ class SentinelMCPServer:
             )
             recorded_metadata = recorded.get("metadata") if isinstance(recorded.get("metadata"), dict) else {}
             join_hint_quality = _context_join_hint_quality(recorded_metadata, run_id=recorded.get("run_id"))
+            # Read the marker back off the PERSISTED event so an idempotent
+            # replay warns exactly like the write that stored it.
+            recorded_mangled = recorded_metadata.get(MANGLED_TOOL_CALL_METADATA_KEY) or []
             payload = {
                 "event": recorded,
                 "join_hint_quality": join_hint_quality,
-                "warnings": [*size_warnings, *_context_join_warnings(join_hint_quality)],
+                "warnings": [
+                    *size_warnings,
+                    *_mangled_tool_call_warnings(recorded_mangled),
+                    *_context_join_warnings(join_hint_quality),
+                ],
             }
             # Describe what was PERSISTED (idempotent replays return the stored
             # event), so payload and store never disagree about inheritance —

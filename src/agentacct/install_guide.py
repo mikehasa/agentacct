@@ -257,7 +257,12 @@ GLOBAL_INSTALL_NOTES = (
 
 # The per-task directive bullets, shared verbatim by every recording surface.
 _RECORDING_CONTRACT_LINES = (
-    "- Open a section with `agentacct_record_section` (`section_status=started`) BEFORE your first other tool call, and again before each meaningful task; set `title` to a short human goal (e.g. \"add rate-limit to login\"). Complete it (`section_status=completed`) or block it (`blocked`) when done.",
+    # `section_title`, not `title`: the MCP tool's own argument name. The old
+    # `title` wording named a parameter agentacct_record_section rejected
+    # outright ("unexpected argument(s): title"), so the instruction shipped a
+    # call that could not succeed. mcp.py now also accepts `title` as an alias,
+    # which is what keeps already-rendered CLAUDE.md/AGENTS.md files working.
+    "- Open a section with `agentacct_record_section` (`section_status=started`) BEFORE your first other tool call, and again before each meaningful task; set `section_title` to a short human goal (e.g. \"add rate-limit to login\"). Complete it (`section_status=completed`) or block it (`blocked`) when done.",
     "- For a long task, send `section_status=checkpoint` updates rather than one giant section.",
     "- After running tests or a build, record the objective result with `agentacct_record_machine_check`.",
     "- Keep MCP/event evidence separate from token/cost claims: MCP events prove what work happened; a token or cost figure is only real if it comes from actual client usage the importer read — never fabricate one.",
