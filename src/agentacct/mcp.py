@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sys
 import tempfile
 from collections.abc import Sequence
@@ -18,12 +19,43 @@ from .hooks import (
 )
 from .install_guide import MCP_SERVER_INSTRUCTIONS
 from .service import RESERVED_CLIENT_CONTEXT_PROVENANCE_KEYS, SentinelService
-from .storage import validate_run_id
+from .storage import METADATA_MAX_BYTES, json_utf8_size, validate_run_id
 
 
 WORK_KINDS = {"planning", "implementation", "debugging", "testing", "review", "docs", "refactor", "research", "other", "unknown"}
 EVIDENCE_TYPES = {"test", "build", "lint", "typecheck", "smoke", "benchmark", "browser", "security", "artifact", "other"}
 EVIDENCE_RESULTS = {"passed", "failed", "skipped", "error", "unknown"}
+
+# A machine check's `name` has no length limit of its own, on purpose. A cap of
+# 240 rejected a 241-4036 character band that recorded fine before it, and a
+# ~300-character name (an agent recording the full pytest invocation it ran) is
+# ordinary. The only ceiling is the shared metadata budget, which is where the
+# name lands. It is never truncated either: `name` feeds the check-identity
+# hash, so a truncated name forks the identity of the check it names.
+#
+# 4036 is measured, not assumed: binary-searching a {source, name, result} call
+# puts the largest accepted `name` at 4036 characters and the first rejection at
+# 4037, identically on this branch and on the 0.5.2 release it branched from.
+# The band is that much narrower than the 8000 first claimed here because `name`
+# lands in the budget TWICE — once as itself, once inside the summary below.
+#
+# Measured caveat: past the budget the size error names the LARGEST metadata
+# field, and for a machine check that is the `summary` the server synthesizes
+# as "<name>: <result>" — 4060 bytes against the name's own 4049 at the 4037
+# boundary. So the blame is one step removed for EVERY over-budget name, not
+# just extreme ones. It is still no worse than the un-named "metadata must be
+# <= 8192 bytes" it replaced; the band that actually regressed is fixed.
+
+# The files rule, published in every schema that takes `files`. It is the single
+# biggest MCP rejection cause: agent harnesses hand out absolute paths, and the
+# rule appeared in no description at all.
+FILES_DESCRIPTION = (
+    "Project-relative paths with forward slashes: no leading '/' or '~', no '..' segments. "
+    "An absolute path is relativized and accepted ONLY when it lies under the project_dir supplied "
+    "on this same call. One that is not is rejected rather than guessed at, except a Windows path "
+    "(C:\\...), which is kept as-is with its separators normalized. An entry naming the project root "
+    "itself ('.') is dropped rather than stored. Neither dropping nor a Windows path fails the call."
+)
 
 # Join keys that stay valid for a whole client session, so sections recorded on
 # the same stdio server may inherit them from agentacct_attach_client_context.
@@ -81,7 +113,7 @@ TOOLS: list[dict[str, Any]] = [
                 "artifact_ref": {"type": ["string", "null"], "maxLength": 240},
                 "artifact_path": {"type": ["string", "null"], "maxLength": 500},
                 "artifact_url": {"type": ["string", "null"], "maxLength": 500},
-                "files": {"type": "array", "items": {"type": "string", "maxLength": 240}, "maxItems": 50, "default": []},
+                "files": {"type": "array", "items": {"type": "string", "maxLength": 240}, "maxItems": 50, "default": [], "description": FILES_DESCRIPTION},
                 "idempotency_key": {"type": ["string", "null"], "maxLength": 240},
                 "client": {"type": ["string", "null"], "maxLength": 80},
                 "client_session_id": {"type": ["string", "null"], "maxLength": 240},
@@ -151,7 +183,16 @@ TOOLS: list[dict[str, Any]] = [
                 "section_id": {"type": "string", "minLength": 1, "maxLength": 120},
                 "section_status": {"type": "string", "enum": ["started", "checkpoint", "completed", "blocked"]},
                 "run_id": {"type": ["string", "null"], "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
-                "section_title": {"type": ["string", "null"], "maxLength": 160},
+                "section_title": {
+                    "type": ["string", "null"],
+                    "maxLength": 160,
+                    "description": "Short human goal for this section. `title` is accepted as an alias; if both are supplied, `section_title` wins.",
+                },
+                "title": {
+                    "type": ["string", "null"],
+                    "maxLength": 160,
+                    "description": "Alias for `section_title` (the HTTP lane names this field `title`). Ignored when `section_title` is also supplied.",
+                },
                 "phase": {"type": ["string", "null"], "maxLength": 80},
                 "kind": {"type": ["string", "null"], "enum": ["planning", "implementation", "debugging", "testing", "review", "docs", "refactor", "research", "other", "unknown", None]},
                 "summary": {"type": ["string", "null"], "maxLength": 1200},
@@ -165,7 +206,7 @@ TOOLS: list[dict[str, Any]] = [
                 "message_id": {"type": ["string", "null"], "maxLength": 240},
                 "request_id": {"type": ["string", "null"], "maxLength": 240},
                 "client_event_timestamp": {"type": ["string", "null"], "maxLength": 80},
-                "files": {"type": "array", "items": {"type": "string", "maxLength": 240}, "maxItems": 50, "default": []},
+                "files": {"type": "array", "items": {"type": "string", "maxLength": 240}, "maxItems": 50, "default": [], "description": FILES_DESCRIPTION},
                 "blocker": {"type": ["string", "null"], "maxLength": 1200},
                 "next_step": {"type": ["string", "null"], "maxLength": 1200},
                 "idempotency_key": {"type": ["string", "null"], "maxLength": 240},
@@ -282,6 +323,18 @@ def _reject_unknown_keys(args: dict[str, Any], allowed: set[str]) -> None:
         raise InvalidParams("unexpected argument(s): " + ", ".join(unknown))
 
 
+def _limit_error(key: str, *, limit: int, received: int, unit: str = "characters") -> InvalidParams:
+    """The single shape every size/limit rejection in this module uses.
+
+    It always states the limit AND what arrived. Without the received size a
+    caller can only shrink blindly — the real incident behind this helper cost
+    five retries (2039 -> 1904 -> 1664 -> 1614 -> 1477 -> 1172 accepted). The
+    HTTP lane already reports both via pydantic; this matches it. Sizes only:
+    never echo caller content back into an error string.
+    """
+    return InvalidParams(f"{key} must be <= {limit} {unit} (received {received})")
+
+
 def _optional_str(args: dict[str, Any], key: str, default: str) -> str:
     value = args.get(key, default)
     if not isinstance(value, str) or not value:
@@ -355,7 +408,7 @@ def _optional_limited_str(args: dict[str, Any], key: str, default: str | None = 
     if not isinstance(value, str) or not value:
         raise InvalidParams(f"{key} must be a non-empty string or null")
     if len(value) > max_length:
-        raise InvalidParams(f"{key} must be <= {max_length} characters")
+        raise _limit_error(key, limit=max_length, received=len(value))
     return value
 
 
@@ -389,13 +442,153 @@ def _optional_metadata(args: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
+def _json_utf8_size(value: Any) -> int:
+    """This lane's strictness applied to the shared measure.
+
+    The measure itself lives in storage.py because all three write surfaces
+    have to reach the same accept/reject decision; ``allow_nan=False`` is the
+    part that is local to MCP and the CLI, whose callers may not send
+    non-standard JSON constants.
+    """
+    return json_utf8_size(value, allow_nan=False)
+
+
+def _metadata_size_error(value: dict[str, Any], size: int) -> InvalidParams:
+    """Size rejection that names the field to shrink.
+
+    The old message named `metadata` — a parameter most callers never passed,
+    since the bulk is usually a validated argument (summary, blocker,
+    next_step, name) the server merged in. Naming the largest field, with its
+    byte size, is the difference between a fixable error and a guessing game,
+    and it is why no argument needs a private length cap on top of this one.
+    The key name is caller-controlled, so it is clipped before it reaches the
+    error string.
+    """
+    largest_key = ""
+    largest_size = 0
+    for key, item in value.items():
+        item_size = _json_utf8_size({key: item})
+        if item_size > largest_size:
+            largest_key, largest_size = str(key), item_size
+    detail = f"; largest field is {largest_key[:60]} at {largest_size} bytes" if largest_key else ""
+    return InvalidParams(
+        f"metadata must be <= {METADATA_MAX_BYTES} bytes when JSON encoded (received {size} bytes){detail}"
+    )
+
+
 def _validate_metadata_size(value: dict[str, Any]) -> None:
     try:
-        encoded = json.dumps(value, sort_keys=True, allow_nan=False)
+        size = _json_utf8_size(value)
     except ValueError as exc:
         raise InvalidParams("metadata must be strict JSON") from exc
-    if len(encoded.encode("utf-8")) > 8192:
-        raise InvalidParams("metadata must be <= 8192 bytes when JSON encoded")
+    if size > METADATA_MAX_BYTES:
+        raise _metadata_size_error(value, size)
+
+
+# --- Mangled tool-call detection (WARN ONLY) ---------------------------------
+# When a client's tool-call parser mangles a call, arguments arrive absorbed
+# into another argument's value as literal text ("...done.</files>"). Observed
+# three times in one session, twice AFTER the agent had already diagnosed it.
+# agentacct warns and records the suspicion; it never rejects and never
+# repairs, because repairing would fabricate fields the agent never wrote.
+
+# Server-authored marker (listed in RESERVED_CONTEXT_STRIP_KEYS, so a caller
+# cannot stamp its own events with it).
+MANGLED_TOOL_CALL_METADATA_KEY = "mangled_tool_call_suspected_fields"
+
+# The free-text arguments a mangled parameter can be absorbed into, per tool.
+SECTION_NARRATIVE_KEYS = ("summary", "blocker", "next_step", "section_title", "title")
+MACHINE_CHECK_NARRATIVE_KEYS = ("summary", "before_summary", "after_summary", "resolution_summary", "command")
+
+# Property names that are NOT eligible to be suspected, however they appear in
+# free text: the ones that are also element names in the HTML or SVG
+# vocabularies, which is what an agent describing web work actually writes.
+# Hand-picking `title` alone was the inconsistency — it excluded one markup
+# name by that reasoning and left `summary` and `metadata`, which are markup
+# names by the same reasoning, armed.
+#
+# Calibrated READ-ONLY against the real 6261-event global ledger, scoped to the
+# 3535 events these two tools write (1956 section, 1579 evidence) and to the
+# narrative values the detector actually reads:
+#
+#   * `</title>`, `</metadata>`, `</source>`: 0 occurrences.
+#   * `</summary>`: 1 occurrence per lane, both inside confirmed mangled calls
+#     that DID supply `summary`, so the detector could not have fired on it.
+#   * `<title>` (opening form): 2 occurrences in ordinary prose — "tooltips =
+#     SVG <title>" and "dashboard <title>". That is the measured evidence that
+#     these names collide with real writing; only the closing form has yet to
+#     turn up in 3535 events.
+#
+# So excluding these four costs zero measured true positives. `source` is in the
+# set on the same footing as the other three: `<source>` is an HTML element name,
+# and it is the property name that collides with real writing most often here —
+# a bare-word detector fires on it in 170 of the 1956 section events, ahead of
+# `files` at 130 and every other property name. Its membership is load-bearing
+# rather than bookkeeping: `source` is required on agentacct_record_section, but
+# agentacct_record_machine_check declares no required properties and reads it as
+# optional, so a machine-check call that omits it leaves `source` genuinely
+# unsupplied and therefore eligible to be suspected.
+MANGLE_DETECTOR_INELIGIBLE_PROPERTIES = frozenset({"title", "summary", "metadata", "source"})
+
+
+def _tool_property_names(tool_name: str) -> frozenset[str]:
+    for tool in TOOLS:
+        if tool.get("name") == tool_name:
+            return frozenset(tool["inputSchema"].get("properties", {}))
+    return frozenset()
+
+
+def _detect_mangled_tool_call_fields(tool_name: str, args: dict[str, Any], narrative_keys: Sequence[str]) -> list[str]:
+    """This tool's own argument names that appear as CLOSING tags in free text.
+
+    Closing tags only, and only for properties the call did NOT supply and that
+    are not in MANGLE_DETECTOR_INELIGIBLE_PROPERTIES. The looser forms were
+    re-measured against the real 6261-event ledger with the CURRENT property
+    set, and are unusable: scoped to the 1956 section events, a bare-word
+    detector fires on "source" in 170 of them and on "files" in 130, and an
+    opening-tag detector fires on `<title>` in 2 events of ordinary prose about
+    SVG tooltips and the dashboard's page title.
+
+    The closing-tag form scores 2 true positives and 0 false positives across
+    all 3535 section+evidence events. Exactly two events contain any closing
+    tag at all, and both are genuine mangled calls that absorbed
+    `</summary><next_step>...</next_step><files>[...]</files><project_dir>...`
+    into the summary; the names that fired are files, next_step and
+    project_dir. (The previous figure here, "1 true positive across 1955
+    section events", undercounted: the second true positive is in the evidence
+    lane, and the bare-word counts it quoted were measured over all 6261
+    events rather than the section subset it credited them to.)
+
+    Two limits, stated because the numbers alone overstate the case. No
+    property name has EVER appeared as a closing tag in real prose, so this
+    ledger licenses no exclusion on its own — the ineligible set above rests on
+    the measured `<title>` prose plus the vocabulary rule that generalizes it.
+    And the corpus is agentacct dogfooding itself: only 51 of the 3535 events
+    mention SVG/HTML/XML at all, so it is weak evidence that the names left
+    armed are safe on markup-heavy prose. `client` is the known gap — it fires
+    on XML prose but is in neither vocabulary and has 0 occurrences here, so
+    nothing measured justifies removing it. The detector will also still fire
+    on meta-work about agentacct itself, which is acceptable for a warning that
+    never rejects and never repairs.
+    """
+    missing = _tool_property_names(tool_name) - set(args) - MANGLE_DETECTOR_INELIGIBLE_PROPERTIES
+    if not missing:
+        return []
+    suspected: set[str] = set()
+    for key in narrative_keys:
+        value = args.get(key)
+        if isinstance(value, str):
+            suspected.update(name for name in missing if f"</{name}>" in value)
+    return sorted(suspected)
+
+
+def _mangled_tool_call_warnings(fields: Sequence[str]) -> list[str]:
+    return [
+        f"Possible mangled tool call: a closing </{field}> tag appears inside a free-text argument, but "
+        f"{field} was not supplied as an argument. agentacct recorded your text verbatim and did NOT "
+        f"repair it; re-send with {field} as its own argument if it was meant to be one."
+        for field in fields
+    ]
 
 
 # Context keys whose collision with free-form metadata is treated as an
@@ -414,6 +607,7 @@ RESERVED_CONTEXT_STRIP_KEYS = frozenset(
         "client_session_id",
         "client_transcript_id",
         "parent_client_session_id",
+        MANGLED_TOOL_CALL_METADATA_KEY,
         *RESERVED_CLIENT_CONTEXT_PROVENANCE_KEYS,
     }
 )
@@ -470,27 +664,153 @@ def _optional_limited_str_list(args: dict[str, Any], key: str, *, max_items: int
     if not isinstance(value, list):
         raise InvalidParams(f"{key} must be an array")
     if len(value) > max_items:
-        raise InvalidParams(f"{key} must contain <= {max_items} items")
+        raise _limit_error(key, limit=max_items, received=len(value), unit="items")
     result: list[str] = []
     for index, item in enumerate(value):
         if not isinstance(item, str) or not item:
             raise InvalidParams(f"{key}[{index}] must be a non-empty string")
         if len(item) > max_length:
-            raise InvalidParams(f"{key}[{index}] must be <= {max_length} characters")
+            raise _limit_error(f"{key}[{index}]", limit=max_length, received=len(item))
         result.append(item)
     return result
 
 
-def _optional_project_relative_files(args: dict[str, Any], key: str = "files") -> list[str]:
+_WINDOWS_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:/")
+
+
+def _looks_absolute(path: str) -> bool:
+    """Absolute for validation purposes: a POSIX root, a home shortcut, or a
+    Windows drive letter. The drive-letter case matters because the value has
+    already had backslashes folded to forward slashes, so PurePosixPath alone
+    would read ``C:/repo/a.py`` as a relative path and store it as one."""
+
+    return path.startswith(("/", "~")) or bool(_WINDOWS_DRIVE_PREFIX.match(path))
+
+
+def _relative_offset_under_project_dir(path: str, root: str | None) -> int | None:
+    """Index in ``path`` where the part relative to ``root`` begins, or None when
+    containment is not provable.
+
+    An offset rather than the substring itself, because the caller holds two
+    index-aligned views of the same value — what arrived, and the
+    backslash-folded copy the containment check reads — and both have to be cut
+    at the same place for the stored path to keep the separators the caller
+    sent. See _optional_project_relative_files for why that matters.
+
+    Purely lexical: no filesystem access and no symlink resolution. That is the
+    correct boundary here — this decides which STRING lands in the ledger, not
+    which file gets opened, and project_dir routinely names a directory that
+    does not exist on the machine reading the store later. Both values are
+    caller-controlled, so nothing is inferred: a root that is not itself
+    absolute, or a path that is not under it, returns None and the caller
+    decides. Any ``..`` surviving past the offset is caught by the escape check
+    at the call site.
+    """
+    if not root or not _looks_absolute(root) or root.startswith("~"):
+        return None
+    if path == root:
+        # The project root named absolutely. The empty remainder is what the
+        # caller sees dropped, so "/repo" and "/repo/" behave alike instead of
+        # one being fatal and the other cosmetic.
+        return len(path)
+    prefix = root + "/"
+    if not path.startswith(prefix):
+        return None
+    # A redundant separator ("/repo//etc/passwd") is the same POSIX path as
+    # "/repo/etc/passwd", but leaving the leading slash on the remainder would
+    # rebuild an absolute-looking "//etc/passwd" in the ledger.
+    offset = len(prefix)
+    while offset < len(path) and path[offset] == "/":
+        offset += 1
+    return offset
+
+
+def _not_project_relative_error(key: str, index: int) -> InvalidParams:
+    return InvalidParams(
+        f"{key}[{index}] must be project-relative: forward slashes, no leading '/' or '~', "
+        "no '..' segments. Pass the path relative to the repository root, or supply "
+        "project_dir on this call so an absolute path under it can be relativized."
+    )
+
+
+def _optional_project_relative_files(
+    args: dict[str, Any], key: str = "files", *, project_dir: str | None = None
+) -> list[str]:
+    """Validate the files list and normalize it into project-relative paths.
+
+    Absolute paths are the single biggest MCP rejection cause — agent harnesses
+    instruct absolute paths and the rule was published nowhere — so an absolute
+    path is relativized instead of rejected when it provably lies under the
+    project_dir declared ON THIS CALL. Only the explicit argument counts: an
+    inherited or session-attached project_dir could belong to a different
+    repository, and a path relativized against the wrong root is a silently
+    wrong ledger row, which is worse than a rejection. The relativized
+    remainder is then put through the SAME check as any other value, so
+    "/repo/~/x" cannot deposit a "~/x" the published rule calls impossible.
+
+    Three rules keep a stored value honest about the file it names:
+
+    * Backslashes are folded for VALIDATION only, and on EVERY branch. On POSIX
+      ``weird\\name.py`` is a legal filename, and folding it into the stored
+      value would merge it with a genuinely different file called
+      ``weird/name.py``. That held for a relative entry but not for a
+      relativized one, so ``/repo/weird\\name.py`` under project_dir="/repo"
+      stored ``weird/name.py`` — the same silent merge, one branch over. Both
+      branches now cut the arrived value and the folded copy at the same index.
+      The exception is a Windows path, where a backslash IS a separator: there
+      the folded copy is the value, so ``C:\\repo\\src\\a.py`` under
+      project_dir="C:\\repo" still stores ``src/a.py`` rather than fragmenting
+      against the same file recorded with forward slashes.
+    * An entry naming the project root itself (".", "./", or an absolute path
+      equal to project_dir) is DROPPED, not rejected. It names no file, so
+      storing it would be a row for a path that does not exist — but failing
+      the whole call, and losing a real section or machine check, over one
+      cosmetic entry is the behaviour this validator exists to stop.
+    * A Windows absolute path that no project_dir on the call can relativize is
+      STORED, not rejected — verbatim but for the separator folding above, so
+      ``C:\\repo\\src\\a.py`` lands as ``C:/repo/src/a.py``. Recognizing drive
+      letters as absolute was right — it stopped ``C:/repo/a.py`` being filed as
+      a relative path — but pairing it with a rejection turned a shape that
+      recorded fine before (measured: the 0.5.2 release stores it, with the
+      backslashes it arrived with) into a whole-call failure, which is exactly
+      the anti-pattern this validator exists to remove. It is the one absolute
+      form with no POSIX reading, so keeping it invents nothing; a POSIX
+      absolute path without a usable project_dir stays a rejection, as it was
+      before this branch. The escape check below still applies, so
+      ``C:\\repo\\..\\x`` is still fatal.
+    """
     files = _optional_limited_str_list(args, key, max_items=50, max_length=240)
+    root = project_dir.replace("\\", "/").rstrip("/") if project_dir else None
+    normalized_files: list[str] = []
     for index, item in enumerate(files):
-        normalized = item.replace("\\", "/")
-        path = PurePosixPath(normalized)
-        if path.is_absolute() or normalized.startswith("~"):
-            raise InvalidParams(f"{key}[{index}] must be project-relative")
-        if any(part in {"", ".", ".."} for part in path.parts):
-            raise InvalidParams(f"{key}[{index}] must be a normalized project-relative path")
-    return files
+        folded = item.replace("\\", "/")
+        # On a Windows path a backslash is a separator, so the folded copy IS
+        # the value; anywhere else it is an ordinary filename character and
+        # folding it would merge two different POSIX files.
+        windows_path = bool(_WINDOWS_DRIVE_PREFIX.match(folded))
+        stored = folded if windows_path else item
+        if _looks_absolute(folded):
+            offset = _relative_offset_under_project_dir(folded, root)
+            if offset is not None:
+                # Cut both index-aligned views at the same place: `folded` is
+                # what the remaining checks read, `stored` is what the ledger
+                # gets, and only the latter keeps the caller's separators.
+                folded, stored = folded[offset:], stored[offset:]
+                if _looks_absolute(folded):
+                    # "/repo/~/x" -> "~/x", "/repo/C:/x" -> "C:/x": still not a
+                    # project-relative path, and the schema says so.
+                    raise _not_project_relative_error(key, index)
+            elif not windows_path:
+                raise _not_project_relative_error(key, index)
+            # else: a Windows absolute path this call cannot relativize. Stored
+            # as sent rather than rejected — see the third rule above.
+        if ".." in PurePosixPath(folded).parts:
+            raise InvalidParams(f"{key}[{index}] must not escape the project directory: '..' segments are not allowed")
+        stored_parts = PurePosixPath(stored).parts
+        if not stored_parts:
+            continue
+        normalized_files.append("/".join(stored_parts))
+    return normalized_files
 
 
 def _client_context_metadata(args: dict[str, Any], *, require_client: bool, require_session: bool) -> dict[str, Any]:
@@ -936,6 +1256,10 @@ class SentinelMCPServer:
                         raise InvalidParams(
                             "a blocker resolution requires exit_code=0 or an artifact_ref/artifact_path/artifact_url"
                         )
+                evidence_project_dir = _optional_limited_str(arguments, "project_dir", None, max_length=1000)
+                mangled_fields = _detect_mangled_tool_call_fields(
+                    "agentacct_record_machine_check", arguments, MACHINE_CHECK_NARRATIVE_KEYS
+                )
                 evidence_context = {
                     "sentinel_semantic_kind": "evidence",
                     "evidence_type": _optional_choice(arguments, "evidence_type", EVIDENCE_TYPES, "other"),
@@ -949,7 +1273,7 @@ class SentinelMCPServer:
                     "artifact_ref": _optional_limited_str(arguments, "artifact_ref", None, max_length=240),
                     "artifact_path": _optional_limited_str(arguments, "artifact_path", None, max_length=500),
                     "artifact_url": _optional_limited_str(arguments, "artifact_url", None, max_length=500),
-                    "files": _optional_project_relative_files(arguments),
+                    "files": _optional_project_relative_files(arguments, project_dir=evidence_project_dir),
                     "idempotency_key": _optional_limited_str(arguments, "idempotency_key", None, max_length=240),
                     "client": _optional_limited_str(arguments, "client", None, max_length=80),
                     "client_session_id": _optional_limited_str(arguments, "client_session_id", None, max_length=240),
@@ -957,11 +1281,14 @@ class SentinelMCPServer:
                     # cannot smuggle join ids through free-form metadata.
                     "client_transcript_id": None,
                     "parent_client_session_id": None,
-                    "project_dir": _optional_limited_str(arguments, "project_dir", None, max_length=1000),
+                    "project_dir": evidence_project_dir,
                     "resolves_blocked_event_id": resolves_blocked_event_id,
                     "resolution_scope": resolution_scope,
                     "resolution_summary": resolution_summary,
                     "resolution_objective_basis": resolution_objective_basis,
+                    # Server-authored; listed even when empty so a caller cannot
+                    # stamp the marker through free-form metadata.
+                    MANGLED_TOOL_CALL_METADATA_KEY: mangled_fields or None,
                 }
                 payload["event"] = self.service.record_event(
                     {
@@ -974,6 +1301,9 @@ class SentinelMCPServer:
                     trusted_blocker_resolution=resolution_requested,
                     transport="mcp",
                 )
+                recorded_mangled = payload["event"].get("metadata", {}).get(MANGLED_TOOL_CALL_METADATA_KEY) or []
+                if recorded_mangled:
+                    payload["warnings"] = _mangled_tool_call_warnings(recorded_mangled)
         elif name == "agentacct_record_event":
             allowed = {
                 "source",
@@ -1079,6 +1409,12 @@ class SentinelMCPServer:
                 "section_status",
                 "run_id",
                 "section_title",
+                # `title` is the HTTP lane's name for the same field, and it is
+                # what every shipped instruction surface told agents to pass
+                # until this release. Rendered CLAUDE.md/AGENTS.md files are
+                # written once at onboard and never refreshed, so the alias is
+                # what keeps already-onboarded machines recording at all.
+                "title",
                 "phase",
                 "kind",
                 "summary",
@@ -1100,18 +1436,29 @@ class SentinelMCPServer:
             }
             _reject_unknown_keys(arguments, allowed)
             section_status = _required_choice(arguments, "section_status", {"started", "checkpoint", "completed", "blocked"})
+            # Both spellings are validated even when only one is used, so a
+            # malformed alias is never silently ignored. section_title wins.
+            section_title = _optional_limited_str(arguments, "section_title", None, max_length=160)
+            section_title_alias = _optional_limited_str(arguments, "title", None, max_length=160)
+            section_project_dir = _optional_limited_str(arguments, "project_dir", None, max_length=1000)
+            mangled_fields = _detect_mangled_tool_call_fields(
+                "agentacct_record_section", arguments, SECTION_NARRATIVE_KEYS
+            )
             context = {
                 "sentinel_semantic_kind": "section",
                 "usage_join_strategy": "agent_reported_section_context",
                 "section_id": _required_limited_str(arguments, "section_id", max_length=120),
                 "section_status": section_status,
-                "section_title": _optional_limited_str(arguments, "section_title", None, max_length=160),
+                "section_title": section_title if section_title is not None else section_title_alias,
                 "phase": _optional_limited_str(arguments, "phase", None, max_length=80),
                 "kind": _optional_choice(arguments, "kind", WORK_KINDS, "unknown"),
                 "summary": _optional_limited_str(arguments, "summary", None, max_length=1200),
-                "files": _optional_project_relative_files(arguments),
+                "files": _optional_project_relative_files(arguments, project_dir=section_project_dir),
                 "blocker": _optional_limited_str(arguments, "blocker", None, max_length=1200),
                 "next_step": _optional_limited_str(arguments, "next_step", None, max_length=1200),
+                # Server-authored; listed even when empty so a caller cannot
+                # stamp the marker through free-form metadata.
+                MANGLED_TOOL_CALL_METADATA_KEY: mangled_fields or None,
                 **_client_context_metadata(arguments, require_client=False, require_session=False),
             }
             section_source = _required_limited_str(arguments, "source", max_length=80)
@@ -1193,7 +1540,7 @@ class SentinelMCPServer:
                     for key in refusal_stamps:
                         context.pop(key, None)
                     metadata = _metadata_with_context(arguments, context)
-                size_warnings.append("Inherited client context was dropped: metadata would exceed 8192 bytes when JSON encoded. Trim metadata or pass join keys explicitly.")
+                size_warnings.append(f"Inherited client context was dropped: metadata would exceed {METADATA_MAX_BYTES} bytes when JSON encoded. Trim metadata or pass join keys explicitly.")
             # Provenance keys are server-authored: whatever this call did not
             # set itself is removed, so callers can never forge inheritance.
             for key in RESERVED_CLIENT_CONTEXT_PROVENANCE_KEYS:
@@ -1212,10 +1559,17 @@ class SentinelMCPServer:
             )
             recorded_metadata = recorded.get("metadata") if isinstance(recorded.get("metadata"), dict) else {}
             join_hint_quality = _context_join_hint_quality(recorded_metadata, run_id=recorded.get("run_id"))
+            # Read the marker back off the PERSISTED event so an idempotent
+            # replay warns exactly like the write that stored it.
+            recorded_mangled = recorded_metadata.get(MANGLED_TOOL_CALL_METADATA_KEY) or []
             payload = {
                 "event": recorded,
                 "join_hint_quality": join_hint_quality,
-                "warnings": [*size_warnings, *_context_join_warnings(join_hint_quality)],
+                "warnings": [
+                    *size_warnings,
+                    *_mangled_tool_call_warnings(recorded_mangled),
+                    *_context_join_warnings(join_hint_quality),
+                ],
             }
             # Describe what was PERSISTED (idempotent replays return the stored
             # event), so payload and store never disagree about inheritance —

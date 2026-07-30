@@ -33,6 +33,37 @@ def validate_run_id(run_id: str) -> str:
     return run_id
 
 
+# The metadata byte budget, shared by all three write surfaces (HTTP api.py,
+# CLI cli.py, MCP mcp.py). It lives here, next to the other cross-surface
+# validation primitive, because a caller must get the same accept/reject
+# decision whichever lane it writes through: the same payload accepted on one
+# and rejected on another is a ledger that disagrees with itself.
+METADATA_MAX_BYTES = 8192
+
+
+def json_utf8_size(value: Any, *, allow_nan: bool = True) -> int:
+    """Real UTF-8 byte size of ``value``'s JSON encoding.
+
+    ``ensure_ascii=False`` is the whole point. With the default, the size is
+    measured against the ``\\uXXXX`` escape form, which overcharges every
+    non-ASCII character against what it actually costs on disk. Measured per
+    character: CJK 6 bytes vs 3 (2x), emoji 12 vs 4 (3x), accented Latin 6 vs 2
+    (3x), ASCII 1 vs 1. So an agent writing Chinese got half the advertised
+    budget — 2000 CJK characters are 6013 real UTF-8 bytes and 12013 escaped.
+
+    ``allow_nan`` is the caller's own strictness, not part of the measurement:
+    the MCP and CLI lanes reject non-standard JSON constants outright and pass
+    False, the HTTP lane never has and passes the default.
+    """
+    try:
+        return len(json.dumps(value, sort_keys=True, allow_nan=allow_nan, ensure_ascii=False).encode("utf-8"))
+    except UnicodeEncodeError:
+        # Lone surrogates survive json.loads but have no UTF-8 form. Fall back
+        # to the escaped encoding rather than failing the call on a
+        # pathological string: any rejection here must still be about SIZE.
+        return len(json.dumps(value, sort_keys=True, allow_nan=allow_nan).encode("utf-8"))
+
+
 @dataclass
 class StoredRun:
     run_id: str

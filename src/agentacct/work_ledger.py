@@ -1534,6 +1534,16 @@ def build_attention_items(work_items: list[dict[str, Any]], usage_reconciliation
     return sorted(items, key=lambda item: severity_rank.get(str(item.get("severity")), 0), reverse=True)
 
 
+# One shared sentence so the attention group and the matching blind spot never
+# drift. It deliberately stops short of blaming the user for all of it: part of
+# "no work context" is recording calls agentacct itself refused, which the
+# Local logs page now counts (see api._refused_recording_html).
+_USAGE_WITHOUT_MCP_CONTEXT_NEXT_STEP = (
+    "Enable MCP context attach at session start and record sections for meaningful work; "
+    "some of this missing context is recording calls agentacct refused, listed under "
+    "\"Recording calls agentacct refused\" in Local logs."
+)
+
 # Canonical, cause-level next steps for grouped attention display. Falls back
 # to the first item's own recommendation for unknown causes.
 _ATTENTION_GROUP_NEXT_STEPS = {
@@ -1541,7 +1551,7 @@ _ATTENTION_GROUP_NEXT_STEPS = {
     "completed_evidenced_work_without_attributed_usage": "Run local usage import and make sure MCP context includes client_session_id.",
     "ambiguous_same_session_attribution": "Attach client_transcript_id or another narrower join key so shared sessions can be disambiguated.",
     "missing_client_session_id": "MCP context is missing client_session_id; attach client context at session start.",
-    "usage_truth_without_mcp_context": "Enable MCP context attach at session start and record sections for meaningful work.",
+    "usage_truth_without_mcp_context": _USAGE_WITHOUT_MCP_CONTEXT_NEXT_STEP,
 }
 
 _ATTENTION_GROUP_TITLES = {
@@ -3402,7 +3412,7 @@ def _ledger_blind_spots(work_items: list[dict[str, Any]], usage_reconciliation: 
                 "cache_read_tokens": _sum_row_key(usage_without_context, "cache_read_tokens"),
                 "cache_creation_tokens": _sum_row_key(usage_without_context, "cache_creation_tokens"),
                 "estimated_cost_usd": _sum_row_cost(usage_without_context),
-                "recommended_next_step": "Enable MCP context attach at session start and record sections for meaningful work.",
+                "recommended_next_step": _USAGE_WITHOUT_MCP_CONTEXT_NEXT_STEP,
             }
         )
 

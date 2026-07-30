@@ -40,7 +40,7 @@ import json
 import math
 import re
 from collections import Counter
-from typing import Any, Callable, Hashable
+from typing import Any, Callable, Hashable, Iterable, Mapping
 
 from .join_rules import namespace_join_compatible
 from .usage_truth import (
@@ -148,6 +148,314 @@ def extract_created_event_id(text: str) -> str | None:
     return event_id
 
 
+# ---------------------------------------------------------------------------
+# Refused recording attempts (read-time, privacy-bounded)
+# ---------------------------------------------------------------------------
+#
+# When the MCP server rejects a recording call it persists NOTHING: no event,
+# no counter, no log line. The client's own transcript is therefore the only
+# record that the attempt happened, and this importer already reads it — the
+# refusal arrives here as the same output text whose created-event shape check
+# failed, and is folded into ``evidenced_outputs_skipped``.
+#
+# ``evidenced_outputs_skipped`` is NOT that number and must never be presented
+# as one. It also counts server-registration-name rejections, wire-shape drift,
+# successful-but-not-created-event payloads, refusals the CLIENT made before
+# the call ever reached agentacct (codex's approval layer, Claude Code's input
+# validator), and failures of the client's own transport that agentacct never
+# saw at all (a timed-out or dropped call). Only the classification below
+# claims "agentacct refused this"; everything else stays an unclassified skip,
+# so the two numbers reconcile by subtraction instead of disagreeing.
+#
+# PRIVACY: the rejection path runs BEFORE the redactor (which only runs on a
+# successful record_event), so the refusal text can carry raw user content —
+# `unexpected argument(s): <agent-chosen key>`, `unknown run_id: <value>`,
+# Claude Code's "You sent (first 200 of N characters) <payload>". Nothing
+# derived here may carry it out: the tool comes from the creation-tool
+# allowlist, the field name from the frozen argument vocabulary below, the
+# reason from the frozen reason vocabulary, and the message itself is never
+# retained, echoed, measured, or hashed.
+
+# The documented tool arguments agentacct's own MCP schemas define. A refusal
+# names a field only when it is one of these; an agent-invented key (which is
+# what most `unexpected argument(s)` refusals carry) reports no field rather
+# than leaking the key. Kept as a literal so this read path never imports the
+# server module and never drifts into echoing whatever a caller sent.
+RECORDING_ARGUMENT_NAMES = frozenset(
+    {
+        "after_exit_code", "after_summary", "artifact_path", "artifact_ref",
+        "artifact_url", "before_exit_code", "before_summary", "blocker",
+        "budget_usd", "cache_creation_input_tokens", "cache_read_input_tokens",
+        "cached_input_tokens", "client", "client_event_timestamp",
+        "client_session_id", "client_transcript_id", "command", "cost_basis",
+        "cost_confidence", "cost_currency", "cost_usd", "estimated_cost_usd",
+        "estimated_input_tokens", "estimated_output_tokens", "event_type",
+        "evidence_type", "exit_code", "files", "idempotency_key",
+        "input_tokens", "items", "kind", "limit", "message_id", "metadata",
+        "model", "name", "next_step", "output_tokens",
+        "parent_client_session_id", "phase", "project_dir", "provider",
+        "reasoning_output_tokens", "reporting_basis", "request_id",
+        "resolution_scope", "resolution_summary", "resolves_blocked_event_id",
+        "result", "rubric", "run_id", "section_id", "section_status",
+        "section_title", "source", "summary", "task_goal", "total_tokens",
+        "turn_id", "turn_index", "usage_confidence", "work_id",
+        "write_package",
+    }
+)
+
+# Bounded reason vocabulary. Every recognised agentacct refusal maps to exactly
+# one of these; an agentacct refusal whose wording is not matched lands in
+# "other" so a server message change shows up as a rising "other" count instead
+# of silently vanishing (or being guessed at).
+REFUSED_RECORDING_REASON_CODES = (
+    "narrative_over_limit",
+    "files_not_project_relative",
+    "unknown_argument",
+    "missing_argument",
+    "invalid_argument",
+    "value_over_limit",
+    "value_under_limit",
+    "metadata_over_size",
+    "incomplete_argument_group",
+    "no_runs",
+    "unknown_run_id",
+    "other",
+)
+
+# The JSON-RPC error codes agentacct's OWN server can answer a tools/call with.
+# Enumerated from mcp.py's dispatch: FileNotFoundError -> -32004, InvalidParams
+# and ValueError (which is also how "Unknown tool" comes back) -> -32602, and
+# every other exception — plus the store-less degraded server, whose whole job
+# is to stay connected and refuse — -> -32000.
+#
+# Every other code on the wire belongs to the CLIENT's transport layer, not to
+# this product: -32001 request timed out, -32603 internal error, -32600/-32700
+# framing, -32601 method not found. A call that never got an answer is not a
+# call agentacct refused, and counting one is the same overstatement the
+# position anchor below exists to prevent. Keyed on the code rather than on the
+# refusal wording so rewording a message in mcp.py cannot change the count.
+AGENTACCT_MCP_ERROR_CODES = frozenset({-32000, -32004, -32602})
+
+# -32000 is the JSON-RPC "implementation-defined server error" code, and the MCP
+# client libraries reuse it for their own ConnectionClosed. agentacct's -32000s
+# are the degraded-store refusal and unexpected server exceptions; the client's
+# is this one fixed string, which no agentacct code path produces. Excluded by
+# the CLIENT's wording — stable, and not prose this repo edits — because the
+# code alone cannot separate the two.
+_TRANSPORT_ERROR_MESSAGES = frozenset({"connection closed"})
+
+# Both wire spellings of a JSON-RPC error from the agentacct MCP server:
+# Claude Code renders "MCP error -32602: <message>", codex renders
+# "Mcp error: -32602: <message>" inside its own "tool call failed for ..."
+# wrapper. The tool-name/namespace allowlist upstream is what proves the
+# error came from THIS server; this pattern only locates the code and message.
+#
+# Matched with .match at the two POSITIONS a real wire refusal can occupy —
+# never .search over the whole output. A successful call's payload routinely
+# quotes an agentacct error verbatim (an after_summary reading "green after
+# fixing MCP error -32602: ..." is real recorded work), and a scan of the whole
+# blob counts that success as a refusal: a number that lies in the one
+# direction this surface exists to be honest about.
+# The digit run is bounded: this reads untrusted transcript text, and int() on
+# a several-thousand-digit run raises on the interpreter's own conversion limit.
+# Every JSON-RPC code is five digits, so nothing real is lost.
+_MCP_ERROR_MESSAGE_RE = re.compile(
+    r"mcp error:?\s*(?P<code>-\d{1,6}):[ \t]*(?P<message>[^\r\n]+)", re.IGNORECASE
+)
+# The line codex's anyhow wrapper puts its cause on: "Caused by:\n    <cause>".
+_CAUSED_BY_LINE = "caused by:"
+# The tag Claude Code puts around a failed tool_result. Written both inline
+# ("<tool_use_error>MCP error ...") and on a line of its own with the message
+# beneath it. Stripped only where it leads the anchored line, so the anchor
+# still holds: nothing but an error is ever wrapped in it, and a payload that
+# merely quotes an error does not carry it.
+_CLAUDE_TOOL_ERROR_TAG = "<tool_use_error>"
+# codex wraps a refusal as: tool call failed for `<server key>/<tool>`. The
+# server segment is matched loosely on purpose — historical rollouts carry
+# whichever registration key was current when they were written — and the tool
+# it yields is still checked against the creation-tool allowlist.
+_CODEX_FAILED_TOOL_RE = re.compile(r"tool call failed for `[^`/\s]*/(?P<tool>[A-Za-z0-9_]+)`")
+# Leading `<field>` or `<field>[<index>]` of a refusal message.
+_REFUSAL_FIELD_RE = re.compile(r"^(?P<field>[a-z][a-z0-9_]*)(?:\[\d+\])?\b")
+_UNEXPECTED_ARGUMENT_PREFIX = "unexpected argument(s):"
+_MISSING_ARGUMENT_PREFIX = "missing required argument:"
+_UNKNOWN_RUN_ID_PREFIX = "unknown run_id:"
+
+
+def _first_carrying_line(lines: list[str]) -> str | None:
+    """First line that carries anything, with the error tag peeled off.
+
+    Blank lines and a bare ``<tool_use_error>`` line carry no content, so
+    neither is the anchor: stopping on one only makes a real refusal invisible.
+    Skipping them widens WHAT is recognised without widening WHERE it is looked
+    for, which is the property the position anchor exists for.
+    """
+
+    for line in lines:
+        stripped = line.strip().removeprefix(_CLAUDE_TOOL_ERROR_TAG).strip()
+        if stripped:
+            return stripped
+    return None
+
+
+def _anchored_mcp_error_message(text: str) -> str | None:
+    """The refusal message when ``text`` IS a wire refusal from agentacct.
+
+    Only two positions count. Claude Code puts the whole tool_result at
+    "MCP error -32602: <message>", so the first line that carries anything
+    holds it. codex wraps the same refusal in its own "tool call failed for
+    ..." error and puts the cause under "Caused by:". Anywhere else the text is
+    payload — quoted, echoed, or narrated by a call that SUCCEEDED — and must
+    not be read as agentacct having refused anything.
+
+    A "Caused by:" that follows nothing is not a wrapper's cause header, so it
+    does not open an anchor; without that check the first line of any text
+    could nominate the second.
+
+    The located error must also carry a code THIS server emits
+    (:data:`AGENTACCT_MCP_ERROR_CODES`). A client-layer failure — a timed-out
+    or dropped call — is rendered in the same place and the same shape, and it
+    is not a refusal: nothing reached agentacct to be refused.
+    """
+
+    lines = text.splitlines()
+    candidates: list[str] = []
+    leading = _first_carrying_line(lines)
+    if leading is not None:
+        candidates.append(leading)
+    for index, line in enumerate(lines):
+        if line.strip().lower() != _CAUSED_BY_LINE:
+            continue
+        if not any(previous.strip() for previous in lines[:index]):
+            continue
+        cause = _first_carrying_line(lines[index + 1:])
+        if cause is not None:
+            candidates.append(cause)
+    for candidate in candidates:
+        match = _MCP_ERROR_MESSAGE_RE.match(candidate)
+        if match is None:
+            continue
+        if int(match.group("code")) not in AGENTACCT_MCP_ERROR_CODES:
+            continue
+        message = match.group("message").strip()
+        if message and message.lower() not in _TRANSPORT_ERROR_MESSAGES:
+            return message
+    return None
+
+
+def _refusal_reason_code(message: str) -> str:
+    """Bounded reason code for one agentacct refusal message.
+
+    Matched on message SHAPE only — no fragment of the message is retained by
+    the caller, and the ordering runs most-specific first so the byte cap on
+    ``metadata`` is not swallowed by the generic "must be <= N" rules.
+
+    Maximum and minimum bounds are separate codes on purpose: mcp.py rejects
+    ``input_tokens=-5`` with "input_tokens must be >= 0", and reporting that
+    under a code whose label reads "above the allowed maximum" would state the
+    opposite of what happened.
+    """
+
+    lowered = message.lower()
+    if lowered.startswith(_UNEXPECTED_ARGUMENT_PREFIX):
+        return "unknown_argument"
+    if lowered.startswith(_MISSING_ARGUMENT_PREFIX):
+        return "missing_argument"
+    if lowered.startswith(_UNKNOWN_RUN_ID_PREFIX):
+        return "unknown_run_id"
+    if lowered == "no runs found":
+        return "no_runs"
+    if "must be project-relative" in lowered or "must be a normalized project-relative path" in lowered:
+        return "files_not_project_relative"
+    if re.search(r"must be <= \d+ bytes when json encoded", lowered):
+        return "metadata_over_size"
+    if re.search(r"must be <= \d+ characters", lowered):
+        return "narrative_over_limit"
+    if re.search(r"must (?:be (?:<=|<) -?\d|contain <= \d)", lowered):
+        return "value_over_limit"
+    if re.search(r"must be (?:a finite number )?(?:>=|>) -?\d", lowered):
+        return "value_under_limit"
+    if "must be supplied together" in lowered or "needs at least one join hint" in lowered:
+        return "incomplete_argument_group"
+    if "must be one of" in lowered or "must be a" in lowered or "must be an" in lowered:
+        return "invalid_argument"
+    if lowered.startswith("a blocker resolution requires"):
+        return "incomplete_argument_group"
+    return "other"
+
+
+def _refusal_field_name(message: str, reason_code: str) -> str | None:
+    """Allowlisted argument name a refusal is about, or None.
+
+    Never returns a token the server does not itself define, so an
+    agent-invented key (or any other caller-supplied text) cannot ride out of
+    the rejection path on this field.
+    """
+
+    if reason_code == "unknown_run_id":
+        return "run_id"
+    if reason_code == "unknown_argument":
+        remainder = message[len(_UNEXPECTED_ARGUMENT_PREFIX):]
+    elif reason_code == "missing_argument":
+        remainder = message[len(_MISSING_ARGUMENT_PREFIX):]
+    else:
+        remainder = message
+    match = _REFUSAL_FIELD_RE.match(remainder.strip())
+    if match is None:
+        return None
+    field = match.group("field")
+    return field if field in RECORDING_ARGUMENT_NAMES else None
+
+
+def classify_refused_recording(text: Any, *, tool: Any = None) -> tuple[str | None, str | None, str] | None:
+    """``(tool, field, reason_code)`` when agentacct itself refused the call.
+
+    Returns None — deliberately, not "other" — when the text is not an
+    agentacct MCP error: a client-side refusal (codex's approval layer, Claude
+    Code's input validator), a client TRANSPORT failure that never reached this
+    server (request timed out, connection closed), a
+    successful-but-not-created-event payload that merely QUOTES an agentacct
+    error, or wire drift. Those are real skips but they are NOT recording
+    attempts this product rejected, and counting them as such would overstate
+    the number the whole surface exists to be honest about. The error is
+    therefore located by position AND required to carry a code this server
+    emits (:func:`_anchored_mcp_error_message`), never found anywhere in the
+    blob and never trusted just for looking like an MCP error.
+
+    ``tool`` is the caller's allowlisted creation-tool name; codex's own
+    "tool call failed for `<server>/<tool>`" wrapper is used as a fallback and
+    is likewise accepted only when it names an allowlisted creation tool.
+    """
+
+    if not isinstance(text, str) or not text:
+        return None
+    message = _anchored_mcp_error_message(text)
+    if not message:
+        return None
+    reason_code = _refusal_reason_code(message)
+    field = _refusal_field_name(message, reason_code)
+    resolved_tool = tool if isinstance(tool, str) and tool in SENTINEL_CREATION_TOOLS else None
+    if resolved_tool is None:
+        wrapper = _CODEX_FAILED_TOOL_RE.search(text)
+        if wrapper is not None and wrapper.group("tool") in SENTINEL_CREATION_TOOLS:
+            resolved_tool = wrapper.group("tool")
+    return resolved_tool, field, reason_code
+
+
+def unwrap_codex_mcp_error(result: Any) -> str | None:
+    """Codex mcp_tool_call_end ``result`` field -> the ``Err`` string.
+
+    The mirror of :func:`unwrap_codex_mcp_result`: that one reads the success
+    branch and returns None for a failure, so the refusal text it discards has
+    to be recovered here. Any other shape returns None.
+    """
+
+    if not isinstance(result, dict):
+        return None
+    err = result.get("Err")
+    return err if isinstance(err, str) and err else None
+
+
 def codex_namespace_matches_sentinel(namespace: Any) -> bool:
     """True when a codex function_call namespace identifies the sentinel server.
 
@@ -194,6 +502,23 @@ def classify_claude_tool_use(name: Any) -> str | None:
     if not separator or tool not in SENTINEL_CREATION_TOOLS:
         return None
     return "accepted" if server in ACCEPTED_SERVER_KEYS else "rejected"
+
+
+def claude_tool_use_creation_tool(name: Any) -> str | None:
+    """Bare creation-tool name of a ``mcp__<server>__<tool>`` block, else None.
+
+    Read-only companion to :func:`classify_claude_tool_use` for callers that
+    already know a block was accepted and now need the tool name itself (the
+    refusal breakdown reports it). Returns only allowlisted names, so nothing
+    caller-supplied can ride out through this.
+    """
+
+    if not isinstance(name, str) or not name.startswith(_CLAUDE_TOOL_PREFIX):
+        return None
+    _server, separator, tool = name.removeprefix(_CLAUDE_TOOL_PREFIX).partition("__")
+    if not separator or tool not in SENTINEL_CREATION_TOOLS:
+        return None
+    return tool
 
 
 def classify_codex_mcp_invocation(server: Any, tool: Any) -> str | None:
@@ -286,11 +611,15 @@ class LogEvidenceAccumulator:
         self.evidenced_event_ids: list[str] = []
         self._seen: set[str] = set()
         self.evidenced_outputs_skipped = 0
+        # (tool, field, reason_code) -> count. Cardinality is bounded by
+        # construction: every component is drawn from a frozen vocabulary, so
+        # no caller-supplied text can grow this map.
+        self._refused: Counter[tuple[str | None, str | None, str]] = Counter()
 
-    def add_output_text(self, text: str | None) -> None:
+    def add_output_text(self, text: str | None, *, tool: str | None = None) -> None:
         event_id = extract_created_event_id(text) if isinstance(text, str) else None
         if event_id is None:
-            self.evidenced_outputs_skipped += 1
+            self.record_skip(text, tool=tool)
             return
         if event_id in self._seen:
             return
@@ -298,23 +627,149 @@ class LogEvidenceAccumulator:
         if len(self.evidenced_event_ids) < self._cap:
             self.evidenced_event_ids.append(event_id)
 
-    def record_skip(self) -> None:
+    def record_skip(self, text: str | None = None, *, tool: str | None = None) -> None:
+        """Count one output that donated no event id.
+
+        ``text`` is the refusal/output text when the caller has it. It is
+        classified and then dropped — only the bounded triple is kept, never
+        the message.
+        """
+
         self.evidenced_outputs_skipped += 1
+        refusal = classify_refused_recording(text, tool=tool)
+        if refusal is not None:
+            self._refused[refusal] += 1
 
     @property
     def evidenced_event_id_total(self) -> int:
         return len(self._seen)
 
     @property
+    def refused_recording_attempt_total(self) -> int:
+        return sum(self._refused.values())
+
+    @property
     def has_evidence(self) -> bool:
         return bool(self._seen) or self.evidenced_outputs_skipped > 0
 
+    def refused_recording_attempts(self) -> list[dict[str, Any]]:
+        """Stable, privacy-bounded ``{tool, field, reason_code, count}`` rows."""
+
+        return refused_recording_rows(self._refused)
+
     def as_usage_fields(self) -> dict[str, Any]:
-        return {
+        fields: dict[str, Any] = {
             "evidenced_event_ids": list(self.evidenced_event_ids),
             "evidenced_event_id_total": self.evidenced_event_id_total,
             "evidenced_outputs_skipped": self.evidenced_outputs_skipped,
         }
+        # Read-time diagnostic only: this rides the in-memory scan candidate so
+        # live surfaces can render it, and is deliberately NOT written into
+        # stored event metadata. Every scan re-derives it from the client logs
+        # still on disk, which is what makes already-recorded refusals visible
+        # retroactively without a migration.
+        if self._refused:
+            fields["refused_recording_attempts"] = self.refused_recording_attempts()
+        return fields
+
+
+def refused_recording_rows(
+    counts: Mapping[tuple[str | None, str | None, str], int] | Counter[tuple[str | None, str | None, str]],
+) -> list[dict[str, Any]]:
+    """``{tool, field, reason_code, count}`` rows, largest first.
+
+    Re-validates every component against the frozen vocabularies, so a row
+    built from an untrusted mapping cannot smuggle caller text into a
+    rendered surface. An unrecognised reason is kept as "other" (never
+    dropped); an unrecognised tool/field becomes None.
+    """
+
+    rows: Counter[tuple[str | None, str | None, str]] = Counter()
+    for key, count in counts.items():
+        if not isinstance(key, tuple) or len(key) != 3:
+            continue
+        tool, field, reason_code = key
+        safe_tool = tool if isinstance(tool, str) and tool in SENTINEL_CREATION_TOOLS else None
+        safe_field = field if isinstance(field, str) and field in RECORDING_ARGUMENT_NAMES else None
+        safe_reason = (
+            reason_code
+            if isinstance(reason_code, str) and reason_code in REFUSED_RECORDING_REASON_CODES
+            else "other"
+        )
+        rows[(safe_tool, safe_field, safe_reason)] += _safe_nonnegative_int(count)
+    return [
+        {"tool": tool, "field": field, "reason_code": reason_code, "count": count}
+        for (tool, field, reason_code), count in sorted(
+            rows.items(),
+            key=lambda item: (-item[1], item[0][2], item[0][0] or "", item[0][1] or ""),
+        )
+        if count > 0
+    ]
+
+
+def _refused_recording_counts(rows: Any) -> Counter[tuple[str | None, str | None, str]]:
+    counts: Counter[tuple[str | None, str | None, str]] = Counter()
+    if not isinstance(rows, (list, tuple)):
+        return counts
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        reason_code = row.get("reason_code")
+        counts[(row.get("tool"), row.get("field"), reason_code if isinstance(reason_code, str) else "other")] += (
+            _safe_nonnegative_int(row.get("count"))
+        )
+    return counts
+
+
+def summarize_refused_recording_attempts(candidates: Iterable[Any]) -> dict[str, Any]:
+    """Scan-wide "agentacct refused this recording call" summary.
+
+    Input is the live client-log scan candidates (usage rows or session
+    observations); each carries the per-session breakdown its own transcript
+    scan derived. Candidates are deduped per (source namespace, client, BASE
+    session id) exactly as :func:`build_log_evidence_index` dedups donors: the
+    same evidence triple rides every per-model lane row of one Claude Code
+    transcript, so summing raw rows would multiply one session's refusals by
+    its model-lane count.
+
+    ``unclassified_outputs_skipped`` is the honest remainder — skipped outputs
+    that are NOT provably agentacct refusals (client-side rejections, wire
+    drift, non-created-event payloads). It is reported rather than folded in,
+    so this summary can never overstate what agentacct itself refused.
+    """
+
+    seen: set[tuple[str, str, str]] = set()
+    counts: Counter[tuple[str | None, str | None, str]] = Counter()
+    outputs_skipped = 0
+    sessions_with_refusals = 0
+    for candidate in candidates:
+        client = str(getattr(candidate, "client", "") or "")
+        session_id = str(getattr(candidate, "client_session_id", "") or "")
+        namespace = str(getattr(candidate, "source_namespace_fingerprint", "") or "")
+        key = (namespace, client, normalized_local_usage_session_id(client, session_id))
+        if key in seen:
+            continue
+        seen.add(key)
+        outputs_skipped += _safe_nonnegative_int(getattr(candidate, "evidenced_outputs_skipped", 0))
+        session_counts = _refused_recording_counts(getattr(candidate, "refused_recording_attempts", ()))
+        if session_counts:
+            sessions_with_refusals += 1
+            counts.update(session_counts)
+    rows = refused_recording_rows(counts)
+    refused_total = sum(int(row["count"]) for row in rows)
+    by_reason: Counter[str] = Counter()
+    for row in rows:
+        by_reason[str(row["reason_code"])] += int(row["count"])
+    return {
+        "sessions_with_refusals": sessions_with_refusals,
+        "refused_attempt_total": refused_total,
+        "by_reason": dict(
+            sorted(by_reason.items(), key=lambda item: (-item[1], item[0]))
+        ),
+        "rows": rows,
+        "outputs_skipped": outputs_skipped,
+        "unclassified_outputs_skipped": max(outputs_skipped - refused_total, 0),
+    }
 
 
 # ---------------------------------------------------------------------------

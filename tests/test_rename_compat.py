@@ -687,6 +687,12 @@ _ALLOWED_OLD_NAME_TOKENS = (
     # ENOENT that reads as a crash). These two forms carry that guidance.
     "mcp remove agent-sentinel",  # `opencode mcp remove agent-sentinel` remediation command
     "agent-sentinel/agent-chronicle",  # prose pairing in the "remove any stale ..." guidance
+    # Frozen refusal wire text: codex wraps every failed MCP call as
+    # "tool call failed for `<server key>/<tool>`", and historical rollouts
+    # carry the pre-rename key in that slot forever. log_evidence's refusal
+    # classifier must keep reading those, so the fixture pinning that behaviour
+    # keeps the observed string.
+    "`agent-sentinel/",
 )
 
 

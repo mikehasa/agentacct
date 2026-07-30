@@ -138,7 +138,7 @@ from .pricing_catalog import (
 from .reports import build_run_report_payload
 from .runner import RunOptions, start_guarded_run
 from .service import SentinelService, SessionObservationConflict
-from .storage import RunStore, validate_run_id
+from .storage import METADATA_MAX_BYTES, RunStore, json_utf8_size, validate_run_id
 from .supervisor import OwnedSupervisor, SupervisorError
 from .source_discovery import discover_usage_sources
 from . import store_merge
@@ -686,11 +686,14 @@ def _parse_metadata_json(value: str | None) -> dict[str, object]:
     if not isinstance(parsed, dict):
         raise typer.BadParameter("--metadata-json must decode to a JSON object")
     try:
-        encoded = json.dumps(parsed, sort_keys=True, allow_nan=False)
+        # Real UTF-8 bytes, measured by the same helper the HTTP and MCP lanes
+        # use: the escaped encoding billed CJK text 2x, so the same payload was
+        # accepted on one surface and rejected on another.
+        size = json_utf8_size(parsed, allow_nan=False)
     except ValueError as exc:
         raise typer.BadParameter(f"--metadata-json must be strict JSON: {exc}") from exc
-    if len(encoded.encode("utf-8")) > 8192:
-        raise typer.BadParameter("--metadata-json must be <= 8192 bytes when JSON encoded")
+    if size > METADATA_MAX_BYTES:
+        raise typer.BadParameter(f"--metadata-json must be <= {METADATA_MAX_BYTES} bytes when JSON encoded")
     return parsed
 
 

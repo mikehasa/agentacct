@@ -26,7 +26,10 @@ from .log_evidence import (
     classify_claude_tool_use,
     classify_codex_function_call,
     classify_codex_mcp_invocation,
+    claude_tool_use_creation_tool,
     extract_created_event_id,
+    refused_recording_rows,
+    unwrap_codex_mcp_error,
     unwrap_codex_mcp_result,
     unwrap_codex_output_text,
 )
@@ -329,6 +332,14 @@ class ClientUsageEvent:
     # and from refreshable truth material.
     source_revision_at: int | None = None
     source_revision_basis: str | None = None
+    # Read-time diagnostic (log_evidence.py): the subset of
+    # ``evidenced_outputs_skipped`` this scan can prove was a recording call
+    # agentacct itself REFUSED, as bounded {tool, field, reason_code, count}
+    # rows. Derived fresh from the client log on every scan and deliberately
+    # never persisted — the transcripts on disk stay the record, so refusals
+    # that predate this field are counted without any backfill. Carries no
+    # message text, value, length, or path.
+    refused_recording_attempts: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if self.client not in USAGE_EVENT_CLIENTS:
@@ -590,6 +601,8 @@ class ClientSessionObservation:
     evidenced_outputs_skipped: int = 0
     source_namespace_fingerprint: str | None = None
     source_parse_complete: bool = True
+    # Same read-time refusal diagnostic as ClientUsageEvent; never persisted.
+    refused_recording_attempts: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def session_identity(self) -> tuple[str, str]:
@@ -1212,6 +1225,9 @@ def _discover_codex_usage_from_home(
                     evidenced_outputs_skipped=_safe_nonnegative_int(
                         evidence_source.get("evidenced_outputs_skipped")
                     ),
+                    refused_recording_attempts=_safe_refused_recording_attempts(
+                        evidence_source.get("refused_recording_attempts")
+                    ),
                     source_parse_complete=parse_complete_by_session.get(
                         row_id,
                         False,
@@ -1349,6 +1365,9 @@ def _discover_codex_usage_from_home(
                 evidenced_event_ids=tuple(_safe_evidenced_ids(usage.get("evidenced_event_ids"))),
                 evidenced_event_id_total=_safe_nonnegative_int(usage.get("evidenced_event_id_total")),
                 evidenced_outputs_skipped=_safe_nonnegative_int(usage.get("evidenced_outputs_skipped")),
+                refused_recording_attempts=_safe_refused_recording_attempts(
+                    usage.get("refused_recording_attempts")
+                ),
                 source_parse_complete=parse_complete_by_session.get(
                     row_id,
                     False,
@@ -1393,6 +1412,29 @@ def _safe_evidenced_ids(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str)]
+
+
+def _safe_refused_recording_attempts(value: Any) -> tuple[Mapping[str, Any], ...]:
+    """Re-validate refusal rows against log_evidence's frozen vocabularies.
+
+    The scan builds these rows itself, but they pass through a plain dict on
+    the way here; re-validating means no path from a client log to a rendered
+    surface can carry a tool, field, or reason agentacct does not define.
+    """
+
+    return tuple(refused_recording_rows(_refused_recording_row_counts(value)))
+
+
+def _refused_recording_row_counts(value: Any) -> dict[tuple[Any, Any, Any], int]:
+    if not isinstance(value, (list, tuple)):
+        return {}
+    counts: dict[tuple[Any, Any, Any], int] = {}
+    for row in value:
+        if not isinstance(row, Mapping):
+            continue
+        key = (row.get("tool"), row.get("field"), row.get("reason_code"))
+        counts[key] = counts.get(key, 0) + _safe_nonnegative_int(row.get("count"))
+    return counts
 
 
 def _initial_claude_discovery_stats() -> dict[str, Any]:
@@ -2161,6 +2203,9 @@ def _discover_claude_code_usage_from_home(
                     evidenced_outputs_skipped=_safe_nonnegative_int(
                         observation_metadata.get("evidenced_outputs_skipped")
                     ),
+                    refused_recording_attempts=_safe_refused_recording_attempts(
+                        observation_metadata.get("refused_recording_attempts")
+                    ),
                     source_parse_complete=observation_parse_complete,
                 )
             )
@@ -2206,6 +2251,9 @@ def _discover_claude_code_usage_from_home(
                     evidenced_event_ids=tuple(_safe_evidenced_ids(usage.get("evidenced_event_ids"))),
                     evidenced_event_id_total=_safe_nonnegative_int(usage.get("evidenced_event_id_total")),
                     evidenced_outputs_skipped=_safe_nonnegative_int(usage.get("evidenced_outputs_skipped")),
+                    refused_recording_attempts=_safe_refused_recording_attempts(
+                        usage.get("refused_recording_attempts")
+                    ),
                     source_parse_complete=selected_cohort_complete and not bool(
                         parse_stats["malformed_transcript_lines"]
                         or parse_stats["invalid_usage_rows"]
@@ -6979,20 +7027,35 @@ def _read_codex_rollout_usage_uncached(
     saw_token_usage_schema_drift = False
     cache_write_tokens_applicable = False
 
-    def _skip_once(call_key: str | None) -> None:
+    def _skip_once(
+        call_key: str | None,
+        text: str | None = None,
+        *,
+        tool: str | None = None,
+    ) -> None:
+        # ``text``/``tool``, when the channel has them, let the accumulator
+        # classify an agentacct refusal into its bounded reason vocabulary.
+        # The dedup below still applies, so one refused call is counted once
+        # even when both codex channels carry it.
         if call_key is None:
-            evidence.record_skip()
+            evidence.record_skip(text, tool=tool)
             return
         if call_key in donated_call_ids or call_key in skip_counted_call_ids:
             return
         skip_counted_call_ids.add(call_key)
-        evidence.record_skip()
+        evidence.record_skip(text, tool=tool)
 
-    def _donate_once(call_key: str, text: str | None) -> None:
+    def _donate_once(
+        call_key: str,
+        text: str | None,
+        *,
+        refusal_text: str | None = None,
+        tool: str | None = None,
+    ) -> None:
         if not isinstance(text, str) or extract_created_event_id(text) is None:
             # Unwrap/shape failure: counted, but the call_id stays available
             # for the other channel's (possibly valid) representation.
-            _skip_once(call_key)
+            _skip_once(call_key, refusal_text if refusal_text is not None else text, tool=tool)
             return
         if call_key in donated_call_ids:
             return
@@ -7073,7 +7136,19 @@ def _read_codex_rollout_usage_uncached(
             elif payload_type == "function_call_output":
                 call_id = payload.get("call_id")
                 if isinstance(call_id, str) and call_id in accepted_calls:
-                    _donate_once(call_id, unwrap_codex_output_text(payload.get("output")))
+                    # No refusal text is passed on this legacy channel: a
+                    # failed call's ``output`` is codex's own plain-text error,
+                    # which unwrap_codex_output_text (JSON/content-block only)
+                    # returns None for. Such a call stays a plain skip and is
+                    # reported in the unclassified remainder rather than
+                    # guessed at from an unverified wire shape — an
+                    # UNDER-count, which is the honest direction for a figure
+                    # that claims "agentacct refused this".
+                    _donate_once(
+                        call_id,
+                        unwrap_codex_output_text(payload.get("output")),
+                        tool=accepted_calls[call_id],
+                    )
                 elif isinstance(call_id, str) and call_id in rejected_calls:
                     _skip_once(call_id)
             elif payload_type == "mcp_tool_call_end":
@@ -7102,7 +7177,15 @@ def _read_codex_rollout_usage_uncached(
                             # shape drift, skipped-but-counted (never guessed).
                             evidence.record_skip()
                         elif verdict == "accepted":
-                            _donate_once(call_key, unwrap_codex_mcp_result(payload.get("result")))
+                            # unwrap_codex_mcp_result reads the Ok branch only,
+                            # so the Err branch is unwrapped separately to keep
+                            # the refusal classifiable.
+                            _donate_once(
+                                call_key,
+                                unwrap_codex_mcp_result(payload.get("result")),
+                                refusal_text=unwrap_codex_mcp_error(payload.get("result")),
+                                tool=str(invocation.get("tool")),
+                            )
                         else:
                             _skip_once(call_key)
             if model is None and payload_type not in _CODEX_MODEL_SCAN_EXCLUDED_PAYLOAD_TYPES:
@@ -7380,7 +7463,14 @@ def _read_claude_project_usages(
                     elif block_type == "tool_result":
                         tool_use_id = block.get("tool_use_id")
                         if isinstance(tool_use_id, str) and tool_use_id in accepted_tool_ids:
-                            evidence.add_output_text(_claude_tool_result_text(block.get("content")))
+                            # A refused call's tool_result carries the server's
+                            # error text here; the accumulator classifies it
+                            # into the bounded refusal vocabulary and keeps no
+                            # part of the message.
+                            evidence.add_output_text(
+                                _claude_tool_result_text(block.get("content")),
+                                tool=claude_tool_use_creation_tool(accepted_tool_ids[tool_use_id]),
+                            )
                         elif isinstance(tool_use_id, str) and tool_use_id in rejected_tool_ids:
                             evidence.record_skip()
             usage_present = "usage" in message
