@@ -86,6 +86,50 @@ def test_superseded_failure_leaves_needs_attention_but_stays_visible(tmp_path: P
     assert "No follow-up action was recorded." not in html
 
 
+def test_a_superseded_finding_can_be_reinstated_to_attention_in_one_click(tmp_path: Path) -> None:
+    store_root = tmp_path / "state"
+    service = SentinelService(store_root)
+    session = "yc-session"
+    project = str(tmp_path / "yc")
+    _section(service, section_id="yc-build", status="started", session=session, title="Ship YC countdown", project_dir=project)
+    _check(service, section_id="yc-build", session=session, result="failed", name="首次应用包构建与严格签名验证", command=_FAIL_CMD, exit_code=1, project=project)
+    _check(service, section_id="yc-build", session=session, result="passed", name="应用包构建与签名验证", command=_PASS_CMD, exit_code=0, project=project)
+    _section(service, section_id="yc-build", status="completed", session=session, title="Ship YC countdown", project_dir=project)
+
+    client = TestClient(create_local_api_app(store_dir=store_root))
+
+    # It starts demoted out of Needs attention, and the card offers a one-click
+    # reinstate (not the two-step "mark reviewed then reopen" dance).
+    assert "<strong>0</strong><span>Open findings</span>" in client.get("/").text
+    assert "Reinstate to attention" in client.get("/").text
+
+    payload = client.get("/tasks").json()
+    episode = next(
+        ep
+        for task in payload["tasks"]
+        for ep in task.get("finding_episodes", [])
+        if ep.get("finding_token")
+    )
+    response = client.post(
+        "/findings/disposition",
+        data={
+            "csrf_token": payload["csrf_token"],
+            "finding_token": episode["finding_token"],
+            "action": "reinstate",
+            "expected_revision": str(episode["revision"]),
+            "note": "",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code in (200, 303)
+
+    # The user's explicit choice now wins over the automatic supersession: the
+    # failure is back in Needs attention as an open finding.
+    html = client.get("/").text
+    assert '<span class="status status-finding">Open finding</span>' in html
+    assert "<strong>1</strong><span>Open findings</span>" in html
+
+
 def test_unconfirmed_failure_stays_open_with_inline_disclosure(tmp_path: Path) -> None:
     store_root = tmp_path / "state"
     service = SentinelService(store_root)

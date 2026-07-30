@@ -461,7 +461,7 @@ class FindingDispositionRequest(BaseModel):
     # Shape validation belongs to the opaque resolver so malformed and stale
     # tokens share one generic 404 instead of exposing token internals.
     finding_token: str = Field(min_length=1, max_length=128, pattern=r"^[^\r\n\x00]+$")
-    action: str = Field(pattern=r"^(?:mark_reviewed|resolve|reopen)$")
+    action: str = Field(pattern=r"^(?:mark_reviewed|resolve|reopen|reinstate)$")
     expected_revision: int = Field(ge=0)
     note: str = Field(default="", max_length=1200, pattern=r"^[^\r\n\x00]*$")
 
@@ -7011,7 +7011,7 @@ def _work_action_html(item: Mapping[str, Any], state: Mapping[str, Any], esc: An
             '<div class="work-feed-finding-head"><strong>Resolved in a later check</strong></div>'
             + "".join(rows)
             + '<p class="work-feed-finding-context">agentacct keeps the failed check in history. '
-            "It is not attention and it is not a verified outcome; reopen it if the later pass was unrelated.</p></div>"
+            "It is not attention and it is not a verified outcome; reinstate it if the later pass was unrelated.</p></div>"
         )
     resolution = (
         item.get("blocker_resolution")
@@ -7816,7 +7816,7 @@ def _finding_episode_controls_html(
         if superseded:
             truth_copy = (
                 "A later same-scope check passed. The failed result stays in history; "
-                "reopen it here if that later pass was unrelated."
+                "reinstate it to attention here if that later pass was unrelated."
             )
         elif state == "reviewed":
             truth_copy = "Reviewed by you; no passing rerun has been recorded."
@@ -7856,6 +7856,18 @@ def _finding_episode_controls_html(
                     + common
                     + hidden("action", "reopen")
                     + '<button class="task-control-button is-danger" type="submit">Reopen</button></form>'
+                )
+            elif superseded:
+                # An automatically superseded finding sits at disposition_state
+                # ``open`` but carries no attention. If the later pass was
+                # unrelated, one reinstate brings it back to Needs attention —
+                # this is the control the "reopen it here" copy promises.
+                forms.append(
+                    '<form method="post" action="/findings/disposition">'
+                    + common
+                    + hidden("action", "reinstate")
+                    + '<button class="task-control-button is-danger" type="submit">'
+                    + "Reinstate to attention</button></form>"
                 )
             controls = '<div class="finding-review-actions">' + "".join(forms) + "</div>"
         elif not chain_valid:

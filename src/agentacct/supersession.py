@@ -16,7 +16,6 @@ measured gate.
 
 from __future__ import annotations
 
-import difflib
 import re
 import unicodedata
 from typing import Any, Mapping
@@ -29,17 +28,25 @@ _FAILED_RESULTS = {"failed", "error"}
 _CHECK_RESULTS = {"passed", "failed", "error"}
 
 # Basis precedence, strongest first. An explicit agent-declared link is the most
-# trustworthy signal; an exact command match beats a shape match beats a name
-# match. When several later passes qualify, the strongest basis wins.
+# trustworthy signal; an exact command match beats a shape match. When several
+# later passes qualify, the strongest basis wins.
+#
+# A name-only basis was deliberately removed: SequenceMatcher on free-text names
+# cannot tell sibling checks apart (a passing "test auth logout flow" would
+# demote a still-failing "test auth login flow" at ratio 0.88 while their
+# commands agree only 0.67, below the shape gate). Demoting a genuinely-open
+# failure out of Needs attention on a name coincidence is the exact dishonesty
+# this module exists to avoid, and the name arm bought only 2 of 34 demotions on
+# the real store. Such pairs now stay "unconfirmed" — visible, with the later
+# pass shown inline — which is the honest treatment for "similar name, unproven
+# same check".
 _BASIS_RANK = {
     "agent_declared": 3,
     "same_command": 2,
     "command_shape": 1,
-    "check_name": 0,
 }
 
 _COMMAND_JACCARD_THRESHOLD = 0.8
-_NAME_RATIO_THRESHOLD = 0.8
 
 _ALNUM_RUN = re.compile(r"[^\W_]+", re.UNICODE)
 
@@ -95,25 +102,9 @@ def _jaccard(left: frozenset[str], right: frozenset[str]) -> float:
     return len(left & right) / len(union) if union else 0.0
 
 
-def _normalized_name(name: str) -> str:
-    """Collapsed-whitespace, NFKC/casefolded name for SequenceMatcher."""
-
-    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", name)).strip().casefold()
-
-
-def _name_ratio(left: str, right: str) -> float:
-    normalized_left = _normalized_name(left)
-    normalized_right = _normalized_name(right)
-    if not normalized_left or not normalized_right:
-        return 0.0
-    return difflib.SequenceMatcher(None, normalized_left, normalized_right).ratio()
-
-
 def _pair_basis(
     failure_command: str | None,
-    failure_name: str | None,
     candidate_command: str | None,
-    candidate_name: str | None,
     *,
     agent_declared: bool,
 ) -> str | None:
@@ -130,12 +121,6 @@ def _pair_basis(
         >= _COMMAND_JACCARD_THRESHOLD
     ):
         return "command_shape"
-    if (
-        failure_name
-        and candidate_name
-        and _name_ratio(failure_name, candidate_name) >= _NAME_RATIO_THRESHOLD
-    ):
-        return "check_name"
     return None
 
 
@@ -175,7 +160,6 @@ def annotate_supersession(
     evidence_events: list[dict[str, Any]],
     *,
     raw_command_by_id: Mapping[str, str | None],
-    raw_name_by_id: Mapping[str, str | None],
 ) -> None:
     """Stamp ``supersession_state`` / ``superseded_by_event_id`` /
     ``supersession_basis`` onto every failed/error evidence event in place.
@@ -196,14 +180,13 @@ def annotate_supersession(
         for failure in ordered:
             if _result(failure) not in _FAILED_RESULTS:
                 continue
-            _stamp_failure(failure, ordered, raw_command_by_id, raw_name_by_id)
+            _stamp_failure(failure, ordered, raw_command_by_id)
 
 
 def _stamp_failure(
     failure: dict[str, Any],
     ordered_group: list[dict[str, Any]],
     raw_command_by_id: Mapping[str, str | None],
-    raw_name_by_id: Mapping[str, str | None],
 ) -> None:
     # Conservative default: a demotion never happens unless the full gate fires.
     failure["supersession_state"] = None
@@ -216,7 +199,6 @@ def _stamp_failure(
     failure_created = _num(failure.get("created_at"))
     failure_id = _text(failure.get("event_id"))
     failure_command = raw_command_by_id.get(failure_id)
-    failure_name = raw_name_by_id.get(failure_id)
 
     # Same-scope is guaranteed by the group; only the time ordering remains.
     later_events = [
@@ -236,9 +218,7 @@ def _stamp_failure(
         )
         return _pair_basis(
             failure_command,
-            failure_name,
             raw_command_by_id.get(candidate_id),
-            raw_name_by_id.get(candidate_id),
             agent_declared=agent_declared,
         )
 

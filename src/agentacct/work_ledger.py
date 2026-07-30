@@ -736,11 +736,10 @@ def build_evidence_events(
     log_evidence_index: dict[str, list[dict[str, Any]]] | None = None,
     log_evidence_counters: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
-    # Keep the raw command/name alongside each projection while the whole cohort
-    # is in hand: supersession similarity needs them, but they are redacted out
-    # of the projection itself, so they never leave this function.
+    # Keep the raw command alongside each projection while the whole cohort is in
+    # hand: supersession similarity needs it, but it is redacted out of the
+    # projection itself, so it never leaves this function.
     raw_command_by_id: dict[str, str | None] = {}
-    raw_name_by_id: dict[str, str | None] = {}
     evidence_events: list[dict[str, Any]] = []
     for event in events:
         if not _is_evidence_event(event):
@@ -751,14 +750,12 @@ def build_evidence_events(
         metadata = _metadata(event)
         event_id = str(projected.get("event_id") or "")
         raw_command_by_id[event_id] = _optional_str(metadata.get("command"))
-        raw_name_by_id[event_id] = _optional_str(metadata.get("name"))
         evidence_events.append(projected)
     evidence_events.extend(_run_report_evidence_events(run_reports or []))
     evidence_events = sorted(evidence_events, key=lambda event: float(event.get("created_at") or 0.0), reverse=True)
     annotate_supersession(
         evidence_events,
         raw_command_by_id=raw_command_by_id,
-        raw_name_by_id=raw_name_by_id,
     )
     index = log_evidence_index if log_evidence_index is not None else build_log_evidence_index(events)
     counters = apply_log_evidence_to_snapshots(evidence_events, index)

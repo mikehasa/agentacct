@@ -80,8 +80,24 @@ def test_edited_command_and_name_supersedes_failure_via_command_shape() -> None:
     failure = projected["fail"]
     assert failure["supersession_state"] == "superseded"
     assert failure["superseded_by_event_id"] == "pass"
-    # command_shape wins over check_name even though both would match.
+    # The edited command still shares enough shape to demote; the name arm was
+    # removed as too loose, so command_shape is what carries the reference case.
     assert failure["supersession_basis"] == "command_shape"
+
+
+def test_name_similarity_alone_never_supersedes() -> None:
+    # Sibling checks: names are 0.88 similar but the commands run different tests
+    # (Jaccard ~0.67, below the shape gate). A passing "logout" check must not
+    # demote a still-failing "login" check out of Needs attention on the name
+    # coincidence alone; it stays a standing finding, shown with the later pass.
+    events = [
+        _raw_check(event_id="fail", created_at=1000.0, result="failed", name="test auth login flow", command="pytest tests/test_login.py", exit_code=1),
+        _raw_check(event_id="pass", created_at=1044.0, result="passed", name="test auth logout flow", command="pytest tests/test_logout.py", exit_code=0),
+    ]
+    projected = _by_id(build_evidence_events(events))
+    failure = projected["fail"]
+    assert failure["supersession_state"] == "unconfirmed"
+    assert failure["supersession_basis"] is None
 
 
 def test_cross_project_pass_never_supersedes() -> None:
