@@ -259,6 +259,28 @@ def test_install_record_is_owner_only_deduped_and_idempotent(tmp_path) -> None:
     assert repeated["clients"] == ["claude-code", "codex"]  # unchanged (codex already in)
 
 
+def test_acquiring_the_lock_retightens_a_loosened_lock_file(tmp_path) -> None:
+    """A pre-existing world-readable lock file is re-tightened on acquisition.
+
+    Significance: ``os.open``'s mode argument applies ONLY when it creates the
+    file, so a lock left group/world-readable by an older run (or a stray
+    ``touch`` under a permissive umask) would keep those bits forever. Every
+    lock acquisition therefore re-chmods, which is the self-heal the original
+    ``_locked()`` bodies performed inline. Without it this test sees 0o644.
+    """
+    store = ActivationStateStore(tmp_path / "state")
+    store.mark_configured(project_dir=tmp_path, clients=["codex"])
+    assert store.lock_path.exists()
+
+    # Simulate the damage: an older run left the lock world-readable.
+    store.lock_path.chmod(0o644)
+
+    # Any operation that takes the lock must repair it.
+    store.mark_configured(project_dir=tmp_path, clients=["claude-code"])
+
+    assert stat.S_IMODE(store.lock_path.stat().st_mode) == 0o600
+
+
 def test_mark_configured_requires_at_least_one_client(tmp_path) -> None:
     """An empty client list is rejected -- the boundary must name a real client.
 
