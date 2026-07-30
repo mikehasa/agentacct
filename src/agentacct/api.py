@@ -10,7 +10,8 @@ import os
 import secrets
 import threading
 import time
-from dataclasses import dataclass, replace
+# ``field`` is aliased: several helpers below use ``field`` as a loop variable.
+from dataclasses import dataclass, field as dataclass_field, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -149,6 +150,7 @@ from .usage_cube import (
     usage_bucket_date,
     week_start,
 )
+from .log_evidence import summarize_refused_recording_attempts
 from .usage_truth import (
     CODEX_REPLAY_QUARANTINE_STATE,
     is_diagnostic_event,
@@ -857,6 +859,11 @@ class DashboardUsageView:
     excluded_saved_records: list[DashboardUsageRecord]
     local_by_client: dict[str, list[DashboardUsageRecord]]
     saved_by_client: dict[str, list[DashboardUsageRecord]]
+    # Recording calls agentacct REFUSED, derived from the same live client-log
+    # scan that produced local_records. Nothing about a refusal is stored, so
+    # this is re-derived on every scan — which is also why refusals that
+    # predate the feature are counted without a backfill.
+    refused_recording: dict[str, Any] = dataclass_field(default_factory=dict)
 
 
 def _safe_float(value: Any) -> float | None:
@@ -1128,6 +1135,10 @@ def _build_usage_view(local_usage_preview: list[ClientUsageEvent], events: list[
         excluded_saved_records=excluded_saved_records,
         local_by_client=_usage_records_by_client(local_records),
         saved_by_client=_usage_records_by_client(saved_records),
+        # Derived from the raw scan candidates (not the records), because the
+        # summary dedups per base session itself: one Claude Code transcript
+        # becomes several per-model records carrying the SAME refusal counts.
+        refused_recording=summarize_refused_recording_attempts(local_usage_preview),
     )
 
 
@@ -1810,6 +1821,97 @@ def _display_count_label(value: Any) -> str:
     if not text or text == "unknown":
         return "Not reported"
     return text
+
+
+# Plain-language names for the frozen refusal reason vocabulary. Anything the
+# vocabulary gains without a label here still renders (as its code), so a new
+# reason can never be silently dropped from the table.
+_REFUSED_RECORDING_REASON_LABELS = {
+    "narrative_over_limit": "Text longer than the field allows",
+    "files_not_project_relative": "File path was not project-relative",
+    "unknown_argument": "Argument agentacct does not accept",
+    "missing_argument": "Required argument was missing",
+    "invalid_argument": "Argument had the wrong type or value",
+    "value_over_limit": "Value above the allowed maximum",
+    "metadata_over_size": "Metadata above the size limit",
+    "incomplete_argument_group": "Arguments that must be sent together were not",
+    "no_runs": "No run existed to attach the record to",
+    "unknown_run_id": "Named run does not exist in this store",
+    "other": "Refused for a reason this build does not name yet",
+}
+
+
+def _refused_recording_reason_label(reason_code: Any) -> str:
+    code = str(reason_code or "other")
+    return _REFUSED_RECORDING_REASON_LABELS.get(code, code)
+
+
+def _refused_recording_field_label(field_name: Any) -> str:
+    """No field means the refusal was about the call, not one argument.
+
+    Deliberately NOT the dashboard's generic "Not reported": nothing is
+    missing here, and an allowlisted-only field is also how an agent-invented
+    argument name is kept out of this page.
+    """
+
+    return str(field_name) if field_name else "Not argument-specific"
+
+
+def _refused_recording_html(summary: Mapping[str, Any], esc: Any) -> str:
+    """Refusals agentacct itself returned, derived live from the client logs.
+
+    Renders ONLY the bounded {tool, field, reason} triple and its count. No
+    message text, no rejected value, no length, no path — the rejection path
+    runs before the redactor, so anything else here would leak user content.
+    """
+
+    total = int(summary.get("refused_attempt_total") or 0)
+    sessions = int(summary.get("sessions_with_refusals") or 0)
+    unclassified = int(summary.get("unclassified_outputs_skipped") or 0)
+    rows = [row for row in (summary.get("rows") or []) if isinstance(row, Mapping)]
+    if not total:
+        body = (
+            '<p class="section-note">No refused recording calls were found in the client logs '
+            "scanned above. Recording calls that agentacct rejects are stored nowhere, so this "
+            "count comes from re-reading the client's own logs on every scan.</p>"
+        )
+    else:
+        table_rows = "".join(
+            "<tr>"
+            f"<td>{esc(_display_count_label(row.get('tool')))}</td>"
+            f"<td>{esc(_refused_recording_field_label(row.get('field')))}</td>"
+            f"<td>{esc(_refused_recording_reason_label(row.get('reason_code')))}</td>"
+            f"<td>{esc(_fmt_int(row.get('count')))}</td>"
+            "</tr>"
+            for row in rows
+        )
+        body = (
+            f'<p class="section-note"><strong>{esc(_fmt_int(total))} recording call(s) across '
+            f"{esc(_fmt_int(sessions))} client session(s) were refused by agentacct.</strong> "
+            "These are attempts an agent made and this product rejected — not work you failed to "
+            "record. Until they are fixed, that work has no context in the ledger, so usage rows "
+            "from those sessions can look unexplained. Only the argument name and the refusal "
+            "reason are shown: the rejected values never leave the client log. This counts the "
+            "sessions in the local scan on this page, so it is a floor rather than an all-time "
+            "total.</p>"
+            f'<div class="table-wrap"><table><thead><tr><th>Tool</th><th>Argument</th>'
+            f"<th>Why agentacct refused it</th><th>Attempts</th></tr></thead>"
+            f"<tbody>{table_rows}</tbody></table></div>"
+        )
+    remainder_note = (
+        f'<p class="section-note">A further {esc(_fmt_int(unclassified))} scanned output(s) '
+        "donated no recorded event but are NOT counted above: they were refused by the client "
+        "before agentacct saw them, or carried a shape this build does not recognise. They stay "
+        "out of the refusal total rather than inflating it.</p>"
+        if unclassified
+        else ""
+    )
+    return f"""
+      <div class="subsection-title">Recording calls agentacct refused</div>
+      <div class="section-header" id="refused-recording-attempts"><h2>Recording calls agentacct refused</h2></div>
+      {body}
+      {remainder_note}
+    """
 
 
 def _display_provider_model(provider: Any, model: Any) -> str:
@@ -11459,6 +11561,10 @@ def _raw_body(
             ("/runs", "agentacct-launched command JSON"),
         ]
     )
+    # Refusals are derived from the same live scan this page already consumes,
+    # so they cover every rejection still on disk — including ones recorded
+    # long before this surface existed.
+    refused_recording_html = _refused_recording_html(usage_view.refused_recording, esc)
 
     return f"""    <section class="section" id="debug">
       <div class="section-header"><h2>Raw Data / Debug</h2></div>
@@ -11473,6 +11579,7 @@ def _raw_body(
       <div class="subsection-title">Debug JSON endpoints</div>
       <p class="section-note">Every GET rebuilds the work ledger from the store — no caching, by design (zero staleness); the measured envelope is fine to roughly 5,000 saved rows, revisit if stores grow beyond that.</p>
       <div class="table-wrap"><table><thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead><tbody>{debug_endpoint_rows}</tbody></table></div>
+      {refused_recording_html}
       <div class="subsection-title">Work Timeline</div>
       <div class="section-header"><h2>Work Timeline</h2><div class="sort-controls">View: {timeline_view_control}</div></div>
       <p class="section-note">Chronological mix of usage, MCP work, evidence, diagnostics, and proxy events. The default Grouped view collapses usage import rows into one entry per agent and day (counts and exact sums only — grouping never allocates usage to work); Everything shows the raw row-level mix.</p>
