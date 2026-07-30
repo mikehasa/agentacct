@@ -192,41 +192,84 @@ def mark_trusted_finding_disposition(event: dict[str, Any]) -> dict[str, Any]:
 # full of digit-carrying words (oauth2, sha256, base64, x509, rfc7519, http2).
 # A digit is emphatically NOT something an English compound cannot contain.
 #
-# The rule below was calibrated against the maintainer's own ledger (26773
-# distinct string values, 8454 of them prose-shaped word compounds) rather than
-# guessed. A candidate span is refused when it is a shell variable reference
-# (`$FOO`), when it is a URL, or when the whole run is a WORD COMPOUND -- words
-# with an optional trailing version number, joined by `-`, `_`, `.`, `/`, `=`
-# or `:`. That single structural refusal is what covers "oauth2-client-
-# credentials", "x509-certificate-validation-chain", "header/credential",
-# "token.rotation.policy" and "scope=read:write" alike. What survives the
-# refusals is then accepted only in a known credential shape: it sits in a
-# real `Authorization:`/`Proxy-Authorization:` header (captured as `keep`, so
-# the header name is put back and only the credential goes), or it is >=16 chars
-# and carries a separator no word compound reaches (`. / + = % : @ | # &`), or
-# it is a separator-free alphanumeric run of >=32 characters (hex and unpadded
-# base64), or it is a UUID. A >=10 digit run also qualifies: dates and version
-# numbers in the real corpus top out at 8 digits (20260713), so ten consecutive
-# digits is not something prose emits.
+# The rule below was calibrated against the maintainer's own ledger rather than
+# guessed. Outside a header a candidate span is refused when it is a shell
+# variable reference (`$FOO`), when it is a URL, or when the whole run is a WORD
+# COMPOUND -- pieces joined by `-`, `_`, `.`, `/`, `=` or `:`, each piece either
+# a word with an optional trailing version number or a bare 1..4 digit number.
+# That single structural refusal is what covers "oauth2-client-credentials",
+# "x509-certificate-validation-chain", "header/credential",
+# "token.rotation.policy", "scope=read:write" and "phase-4.2-work-task-sessions"
+# alike. The bare-numeric piece is load-bearing: without it
+# "Bearer rfc6750/section-2.1" was cut, and RFC 6750 IS the Bearer Token
+# specification, so that is about the likeliest sentence in this ledger to
+# follow the word. Four digits is the ceiling so the >=10-digit branch below
+# still fires. What survives the refusals is then accepted only in a known
+# credential shape: >=16 chars carrying a separator no word compound reaches
+# (`. / + = % : @ | # &`), a separator-free alphanumeric run of >=32 characters
+# (hex and unpadded base64), a UUID, or a run of >=10 digits -- dates and
+# version numbers in the real corpus top out at 8 digits (20260713), so ten
+# consecutive digits is not something prose emits.
 #
-# KNOWN GAPS, stated rather than papered over. Outside a header we do not catch:
-# a credential whose every `-._/=:`-separated piece happens to be letters with a
-# trailing number (a real base64/hex token essentially never is, because those
-# alphabets interleave digits mid-piece, but a short contrived one would slip);
-# a separator-free alphabetic token of 16..31 characters; and anything after a
+# The well-known provider token prefixes are matched BEFORE those refusals
+# rather than after. `ghp_16C7...`, `glpat-...` and `AKIA...` read as word
+# compounds -- short letter prefix, separator, alphanumeric body -- so the prose
+# refusal swallowed them, and they are among the most commonly leaked
+# credentials there are. `AKIA`, `ASIA` and `AIza` are matched case-sensitively
+# inside the otherwise case-insensitive pattern, since only that exact casing is
+# a real token prefix.
+#
+# Inside a real `Authorization:`/`Proxy-Authorization:` header NONE of the prose
+# refusals apply: nobody writes an HTTP header in the middle of a sentence. That
+# branch takes any >=16 character run, which is what makes it the backstop the
+# rest of the rule leans on -- "Authorization: Bearer abcdefgh-ijklmnop-qrstuvwx"
+# is a credential, not prose. The header name is captured as `keep` and put back,
+# so only the credential goes.
+#
+# MEASURED against the maintainer's store: 26773 distinct string values (27401
+# distinct strings counting object keys) and 43213 distinct whitespace tokens.
+# Not one of those strings is touched as it stands. Splicing every one of the
+# 43213 tokens directly after "Bearer " -- deliberately harsher than reality,
+# and the test the previous round ran only on the pre-filtered compound subset
+# -- cuts 6252 of them: 2666 UUID or >=32-character alphanumeric runs and 2640
+# ids carrying an 8+ character hex run, which are opaque-id shapes this rule
+# cannot tell from a credential and cuts on purpose; 774 filesystem paths; 74
+# non-ASCII, digit-led or punctuation-led fragments; and 98 that are genuinely
+# prose-shaped. Alongside that, the 29 credential shapes pinned in
+# tests/test_secret_value_redaction.py are all cut and its 51 prose phrases are
+# all left byte for byte.
+#
+# KNOWN GAPS, stated rather than papered over.
+# Not caught, outside a header: a credential whose every `-._/=:`-separated
+# piece happens to be a word with a trailing number or a bare 1..4 digit number
+# (a real base64/hex token essentially never is, because those alphabets
+# interleave digits mid-piece, but a short contrived one would slip); a
+# separator-free alphabetic token of 16..31 characters; and anything after a
 # literal `$`, so a credential really named `$TOKEN` is left alone deliberately.
 # A field NAMED like a credential still loses its whole value via
 # is_sensitive_metadata_key(), which is the backstop for all of these.
+# Cut although it is prose -- the 98 above: a >=16 character technical
+# identifier joined by a separator the compound recogniser does not accept
+# ("off|shadow|authoritative", "agentacct==0.2.0"), and 16 that are one ordinary
+# long word carrying trailing sentence punctuation, where the trailing `.` or
+# `:` leaves an empty compound piece, so "Bearer instrumentation." is cut. Both
+# want a wider compound recogniser rather than a wider refusal, and are left
+# here as measured rather than rounded away.
 _BEARER_RUN = r"[^\s,;\"'\[\]{}()<>]"
 _BEARER_SEPARATOR = r"[./+=%:@|#&]"
 _BEARER_NOT_SHELL_OR_URL = r"(?!\$)(?![A-Za-z][A-Za-z0-9+.-]*://)"
-# A word with an optional trailing version number, and a run of them joined by
-# the characters English/technical compounds use. The trailing `(?!run)` makes
-# the refusal apply only when the compound covers the WHOLE run, so a credential
-# that merely starts word-like is not let through.
+# A word with an optional trailing version number, or a bare version number, and
+# a run of them joined by the characters English/technical compounds use. The
+# trailing `(?!run)` makes the refusal apply only when the compound covers the
+# WHOLE run, so a credential that merely starts word-like is not let through.
+_BEARER_WORD_PIECE = r"(?:[A-Za-z]{1,32}[0-9]{0,4}|[0-9]{1,4})"
 _BEARER_NOT_WORD_COMPOUND = (
-    r"(?![A-Za-z]{1,32}[0-9]{0,4}(?:[-._/=:][A-Za-z]{1,32}[0-9]{0,4}){0,15}"
+    r"(?![A-Za-z]{1,32}[0-9]{0,4}(?:[-._/=:]" + _BEARER_WORD_PIECE + r"){0,15}"
     r"(?!" + _BEARER_RUN + r"))"
+)
+_BEARER_PROVIDER_TOKEN = (
+    r"(?:gh[pousr]_|github_pat_|glpat-|xox[abprs]-|(?-i:AKIA|ASIA|AIza))"
+    r"[A-Za-z0-9_-]{16,}"
 )
 _BEARER_CREDENTIAL_SHAPE = (
     r"(?:(?=" + _BEARER_RUN + r"*(?:" + _BEARER_SEPARATOR + r"|[0-9]{10}))"
@@ -239,15 +282,15 @@ SECRET_VALUE_PATTERNS = (
         "bearer_token",
         re.compile(
             r"(?:(?P<keep>(?:Proxy-)?Authorization\s*[:=]\s*)Bearer\s+"
-            + _BEARER_NOT_SHELL_OR_URL
-            + _BEARER_NOT_WORD_COMPOUND
             + _BEARER_RUN
             + r"{16,}"
-            r"|\bBearer\s+"
+            r"|\bBearer\s+(?:"
+            + _BEARER_PROVIDER_TOKEN
+            + r"|"
             + _BEARER_NOT_SHELL_OR_URL
             + _BEARER_NOT_WORD_COMPOUND
             + _BEARER_CREDENTIAL_SHAPE
-            + r")",
+            + r"))",
             re.IGNORECASE,
         ),
     ),

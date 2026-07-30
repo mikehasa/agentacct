@@ -126,6 +126,48 @@ CREDENTIAL_CORPUS = (
 )
 
 
+# Prefixed opaque provider tokens. Their own shape -- a short letter prefix, a
+# separator, then an alphanumeric body -- reads as a word compound, so the prose
+# refusal used to swallow them even though these are the most commonly leaked
+# credentials in the world. Fake bodies, built by concatenation like the rest.
+FAKE_PROVIDER_TOKENS = (
+    ("github_personal", "ghp_" + "fakeonly" + "0" * 24 + "AbCd"),
+    ("github_oauth", "gho_" + "fakeonly" + "0" * 24 + "AbCd"),
+    ("github_user_to_server", "ghu_" + "fakeonly" + "0" * 24 + "AbCd"),
+    ("github_server_to_server", "ghs_" + "fakeonly" + "0" * 24 + "AbCd"),
+    ("github_refresh", "ghr_" + "fakeonly" + "0" * 24 + "AbCd"),
+    ("github_fine_grained", "github_pat_" + "fakeonly" + "0" * 24 + "AbCd"),
+    ("gitlab_personal", "glpat-" + "fakeonly" + "0" * 8 + "AbCd"),
+    ("aws_access_key", "AKIA" + "FAKEONLY" + "0" * 8),
+    ("aws_session_key", "ASIA" + "FAKEONLY" + "0" * 8),
+    ("slack_bot", "xoxb-" + "fakeonly" + "0" * 12 + "AbCd"),
+    ("slack_user", "xoxp-" + "fakeonly" + "0" * 12 + "AbCd"),
+    ("google_api", "AIza" + "fakeonly" + "0" * 24 + "AbCd"),
+)
+
+# Prose whose compound carries a BARE NUMERIC piece. RFC 6750 is the Bearer
+# Token specification itself, so the first line here is about the likeliest
+# sentence in an engineering ledger to follow the word "Bearer"; the rest are
+# shapes taken from the maintainer's own store.
+BEARER_NUMERIC_PIECE_PROSE = (
+    "Bearer rfc6750/section-2.1 says the header is required",
+    "Bearer phase-4.2-work-task-sessions rework",
+    "Bearer release/v1.2.3-candidate build",
+    "Bearer canonical-migration-4.3 notes",
+    "Bearer claude-4.5-sonnet-thinking was the model",
+    "Bearer activation.py:49 is where the check lives",
+)
+
+# Runs that are word-shaped but sit inside a real Authorization header, where
+# prose does not occur -- nobody writes an HTTP header in a sentence.
+BEARER_HEADER_WORD_SHAPED = (
+    ("hyphen_joined", "Authorization: Bearer ", "abcdefgh-ijklmnop-qrstuvwx"),
+    ("dot_joined", "Authorization: Bearer ", "abcdefgh.ijklmnop.qrstuvwx"),
+    ("proxy_hyphen_joined", "Proxy-Authorization: Bearer ", "abcdefgh-ijklmnop-qrstuvwx"),
+    ("equals_form", "Authorization=Bearer ", "abcdefgh-ijklmnop-qrstuvwx"),
+)
+
+
 def _session_observation(*, title: str) -> dict:
     return {
         "source": "codex-local-session-observation-import",
@@ -649,6 +691,85 @@ def test_a_repeated_observation_import_is_still_one_revision(tmp_path: Path) -> 
 
     assert first["metadata"]["observation_revision"] == second["metadata"]["observation_revision"]
     assert len(_stored_events(store)) == 1
+
+
+def test_a_prefixed_provider_token_after_a_bare_bearer_is_cut(tmp_path: Path) -> None:
+    """A coverage regression the word-compound refusal introduced.
+
+    `ghp_...`, `glpat-...` and `AKIA...` are a letter prefix joined to an
+    alphanumeric body, which is exactly the shape the prose refusal exists to
+    protect, so they stopped being redacted outside an Authorization header --
+    while remaining the credentials most likely to actually leak.
+    """
+
+    store = tmp_path / "state"
+    service = SentinelService(store)
+
+    for label, token in FAKE_PROVIDER_TOKENS:
+        phrase = f"the job logged Bearer {token} to stdout"
+        recorded = service.record_event(
+            {
+                "source": "test",
+                "event_type": "note",
+                "metadata": {"summary": phrase},
+            }
+        )
+        assert recorded["metadata"]["summary"] == (
+            "the job logged [REDACTED_SECRET] to stdout"
+        ), label
+        assert recorded["metadata"]["value_redaction_applied"] is True, label
+
+    stored = _stored_text(store)
+    for label, token in FAKE_PROVIDER_TOKENS:
+        assert token not in stored, label
+
+
+def test_a_compound_with_a_bare_number_in_it_is_still_prose(tmp_path: Path) -> None:
+    """"Bearer rfc6750/section-2.1" is the Bearer spec, not a Bearer token."""
+
+    store = tmp_path / "state"
+    service = SentinelService(store)
+
+    for phrase in BEARER_NUMERIC_PIECE_PROSE:
+        recorded = service.record_event(
+            {
+                "source": "test",
+                "event_type": "note",
+                "metadata": {"summary": phrase},
+            }
+        )
+        assert recorded["metadata"]["summary"] == phrase, phrase
+        assert "value_redaction_applied" not in recorded["metadata"], phrase
+
+    assert "[REDACTED" not in _stored_text(store)
+
+
+def test_a_word_shaped_run_inside_an_authorization_header_is_a_credential(
+    tmp_path: Path,
+) -> None:
+    """The header branch is the backstop, so the prose refusals stop at it.
+
+    Applying the word-compound refusal inside `Authorization:` left real
+    hyphen- and dot-joined opaque tokens in the ledger verbatim, which is the
+    one place the surrounding text proves the run is a credential.
+    """
+
+    store = tmp_path / "state"
+    service = SentinelService(store)
+
+    for label, header, credential in BEARER_HEADER_WORD_SHAPED:
+        recorded = service.record_event(
+            {
+                "source": "test",
+                "event_type": "note",
+                "metadata": {"summary": f"curl sent {header}{credential}"},
+            }
+        )
+        expected_keep = header[: header.lower().index("bearer")]
+        assert recorded["metadata"]["summary"] == (
+            f"curl sent {expected_keep}[REDACTED_SECRET]"
+        ), label
+        assert credential not in _stored_text(store), label
 
 
 def test_the_observation_allowlist_keeps_server_authored_marker_keys() -> None:
