@@ -97,13 +97,29 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "run_id": {"type": "string", "default": "latest"},
-                "name": {"type": "string", "default": "check"},
+                "name": {
+                    "type": "string",
+                    "default": "check",
+                    "description": (
+                        "Human name of the exact check. Reusing the SAME name (and command) across a "
+                        "re-run is what lets a later passing check supersede an earlier failure of the "
+                        "same check; a different name/command reads as a different check."
+                    ),
+                },
                 "before_exit_code": {"type": ["integer", "null"]},
                 "after_exit_code": {"type": ["integer", "null"]},
                 "before_summary": {"type": ["string", "null"]},
                 "after_summary": {"type": ["string", "null"]},
                 "source": {"type": ["string", "null"], "maxLength": 80},
-                "section_id": {"type": ["string", "null"], "maxLength": 120},
+                "section_id": {
+                    "type": ["string", "null"],
+                    "maxLength": 120,
+                    "description": (
+                        "Identifies the one step this check belongs to; keep it stable across the step's "
+                        "started/checkpoint/completed reports. Do not reuse a section_id as a project id "
+                        "or across unrelated work -- a check only supersedes a failure in the same section."
+                    ),
+                },
                 "work_id": {"type": ["string", "null"], "maxLength": 120},
                 "evidence_type": {"type": ["string", "null"], "enum": ["test", "build", "lint", "typecheck", "smoke", "benchmark", "browser", "security", "artifact", "other", None]},
                 "result": {"type": ["string", "null"], "enum": ["passed", "failed", "skipped", "error", "unknown", None]},
@@ -121,6 +137,16 @@ TOOLS: list[dict[str, Any]] = [
                 "resolves_blocked_event_id": {"type": ["string", "null"], "maxLength": 240},
                 "resolution_scope": {"type": ["string", "null"], "enum": ["full", "partial", None]},
                 "resolution_summary": {"type": ["string", "null"], "maxLength": 1200},
+                "supersedes_check_event_id": {
+                    "type": ["string", "null"],
+                    "maxLength": 240,
+                    "description": (
+                        "Optional, forward-only: on a PASSING check, the event_id of the earlier FAILED "
+                        "check (same source/section/project/type) this run fixes. It only lets the failure "
+                        "be shown as resolved-in-a-later-check; it never mutates section status and is not "
+                        "a blocker resolution."
+                    ),
+                },
             },
             "additionalProperties": False,
         },
@@ -180,7 +206,16 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "source": {"type": "string", "minLength": 1, "maxLength": 80},
-                "section_id": {"type": "string", "minLength": 1, "maxLength": 120},
+                "section_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120,
+                    "description": (
+                        "Stable id for ONE step of work; keep it identical across this step's "
+                        "started/checkpoint/completed reports so its reports and checks group together. "
+                        "Do not reuse it as a project id or across unrelated work."
+                    ),
+                },
                 "section_status": {"type": "string", "enum": ["started", "checkpoint", "completed", "blocked"]},
                 "run_id": {"type": ["string", "null"], "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
                 "section_title": {
@@ -1144,6 +1179,7 @@ class SentinelMCPServer:
                     "resolves_blocked_event_id",
                     "resolution_scope",
                     "resolution_summary",
+                    "supersedes_check_event_id",
                 },
             )
             payload: dict[str, Any] = {}
@@ -1169,6 +1205,7 @@ class SentinelMCPServer:
                     "resolves_blocked_event_id",
                     "resolution_scope",
                     "resolution_summary",
+                    "supersedes_check_event_id",
                 }
             )
             has_outcome_fields = any(key in arguments for key in {"before_exit_code", "after_exit_code", "before_summary", "after_summary"}) or not has_evidence_fields
@@ -1229,6 +1266,18 @@ class SentinelMCPServer:
                     raise InvalidParams(
                         "resolves_blocked_event_id, resolution_scope, and resolution_summary must be supplied together"
                     )
+                # Forward-only agent-declared supersession. Only a PASSING check
+                # may name the earlier failed check it fixes. This never routes
+                # through the blocker-resolution path (which would mutate section
+                # status) -- it is honored solely by the read-time supersession
+                # gate, and only when scope also matches.
+                supersedes_check_event_id = _optional_limited_str(
+                    arguments, "supersedes_check_event_id", None, max_length=240
+                )
+                if supersedes_check_event_id is not None and result != "passed":
+                    raise InvalidParams(
+                        "supersedes_check_event_id requires result=passed (only a passing check may supersede a failure)"
+                    )
                 evidence_exit_code = _optional_nullable_int(arguments, "exit_code")
                 resolution_objective_basis: str | None = None
                 if resolution_requested:
@@ -1286,6 +1335,7 @@ class SentinelMCPServer:
                     "resolution_scope": resolution_scope,
                     "resolution_summary": resolution_summary,
                     "resolution_objective_basis": resolution_objective_basis,
+                    "supersedes_check_event_id": supersedes_check_event_id,
                     # Server-authored; listed even when empty so a caller cannot
                     # stamp the marker through free-form metadata.
                     MANGLED_TOOL_CALL_METADATA_KEY: mangled_fields or None,

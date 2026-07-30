@@ -237,36 +237,63 @@ def reduce_task_outcome(task: Mapping[str, Any]) -> dict[str, Any]:
         if _text(event.get("result")).lower() in {"failed", "error"}
     ]
     if current_failures:
-        episodes = task.get("finding_episodes") if isinstance(task.get("finding_episodes"), list) else []
-        dispositions = {
-            str(episode.get("target_digest")): str(episode.get("disposition_state") or "open")
-            for episode in episodes
-            if isinstance(episode, Mapping) and episode.get("target_digest")
-        }
-        failure_states = [
-            dispositions.get(str(finding_target_digest(event) or ""), "open")
+        # A superseded failure is contradicted by a later same-scope pass. It is
+        # never removed from the check set (so it can never fall through to a
+        # verified outcome and stays reopenable), but it is not a standing
+        # finding. Only non-superseded failures pin the Task as an open finding.
+        standing_failures = [
+            event
             for event in current_failures
+            if _text(event.get("supersession_state")).lower() != "superseded"
         ]
-        attention_state = (
-            "open"
-            if "open" in failure_states
-            else "reviewed"
-            if "reviewed" in failure_states
-            else "resolved"
-        )
-        return {
-            "key": "finding",
-            "finding": max(
-                current_failures,
-                key=lambda event: (
-                    _number(event.get("created_at") or event.get("occurred_at") or event.get("time")),
-                    _integer(event.get("arrival_sequence")),
+        superseded_failures = [
+            event
+            for event in current_failures
+            if _text(event.get("supersession_state")).lower() == "superseded"
+        ]
+        if standing_failures:
+            episodes = task.get("finding_episodes") if isinstance(task.get("finding_episodes"), list) else []
+            dispositions = {
+                str(episode.get("target_digest")): str(episode.get("disposition_state") or "open")
+                for episode in episodes
+                if isinstance(episode, Mapping) and episode.get("target_digest")
+            }
+            failure_states = [
+                dispositions.get(str(finding_target_digest(event) or ""), "open")
+                for event in standing_failures
+            ]
+            attention_state = (
+                "open"
+                if "open" in failure_states
+                else "reviewed"
+                if "reviewed" in failure_states
+                else "resolved"
+            )
+            return {
+                "key": "finding",
+                "finding": max(
+                    standing_failures,
+                    key=lambda event: (
+                        _number(event.get("created_at") or event.get("occurred_at") or event.get("time")),
+                        _integer(event.get("arrival_sequence")),
+                    ),
                 ),
-            ),
+                "verification": None,
+                "latest_checks": checks,
+                "findings": standing_failures,
+                "finding_attention_state": attention_state,
+                "max_work_updated_at": max_work_updated_at,
+            }
+        # Every current failure was superseded by a later same-scope pass: the
+        # Task drops out of "Needs attention" into its own resolved-in-a-later-
+        # check state, still visible and counted, never verified.
+        return {
+            "key": "finding_superseded",
+            "finding": None,
             "verification": None,
             "latest_checks": checks,
-            "findings": current_failures,
-            "finding_attention_state": attention_state,
+            "findings": superseded_failures,
+            "superseded_findings": superseded_failures,
             "max_work_updated_at": max_work_updated_at,
         }
     if statuses and any(status == _RESOLVED_STATUS for status in statuses) and all(
