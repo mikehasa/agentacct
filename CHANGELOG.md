@@ -6,6 +6,28 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Secret redaction no longer destroys the record it was protecting. Any value
+  containing something that looked like a credential was replaced *in its
+  entirety* with `[REDACTED]`, and the detector fired on ordinary words — the
+  api-key pattern matched inside `task-`, `disk-` and `risk-`, and the bearer
+  pattern matched the English phrase "Bearer token". On one real ledger that
+  destroyed 117 project paths, 20 section ids, 5 summaries and 2 idempotency
+  keys; because every casualty collapsed onto the same literal string,
+  unrelated sections merged into one phantom section. Redaction now replaces
+  only the matched span, and every redaction records which field was cut and
+  which pattern class cut it — a repair you cannot see is a bug.
+- Redaction coverage is now broader than before, not narrower. Patterns are
+  split into three independent families — prefixed vendor tokens (GitHub,
+  GitLab, AWS, Google, Slack, Stripe, npm, PyPI, Hugging Face, Linear,
+  DigitalOcean and more, matched anywhere, with or without a `Bearer`),
+  `Authorization`/`Proxy-Authorization` headers including their JSON and
+  `curl -H` serializations, and the genuinely ambiguous bare `Bearer <token>`
+  — so a guard added for one can no longer disable another. The ambiguous
+  family was calibrated against a real ledger rather than guessed: zero false
+  positives across 27k distinct strings. The shapes still missed are named in
+  the module, with the method to re-derive them.
+
 ## [0.5.2] - 2026-07-31
 
 ### Fixed
