@@ -289,32 +289,51 @@ def mark_trusted_finding_disposition(event: dict[str, Any]) -> dict[str, Any]:
 # maintainer can re-derive without the store: every credential shape there is
 # cut and every prose phrase there survives byte for byte.
 #
-# KNOWN GAPS, stated rather than papered over. This list is EXHAUSTIVE for the
-# catalogue: 7 shapes in 11 cases are covered at main and not here, and all 7
-# are named below. Six of the seven are missed only after a BARE "Bearer" and
-# are still cut in all four header serializations; (c) is the exception and a
-# header does not save it. In the three serializations that carry no "Bearer" at
-# all, main keeps all seven too, so none of this is a regression there.
+# KNOWN GAPS, stated rather than papered over -- and NOT claimed to be
+# exhaustive. An earlier version of this paragraph said the list was exhaustive
+# "for the catalogue", which is true only of the catalogue that produced it: a
+# reviewer's independently built 45-shape catalogue immediately found vendor
+# formats this module keeps and main cut (Linear `lin_api_` among them, now
+# added to family 1). That is not a coincidence to be patched away. Family 1 is
+# an ENUMERATION of vendor prefixes, so the set of things it misses is exactly
+# "every vendor not yet listed", which no catalogue can close. Read the list
+# below as the SHAPES of what is missed and why, not as a census. To re-derive
+# it for a given catalogue, extract main's three patterns and diff coverage,
+# scoring on whether the credential is GONE from the output rather than on
+# whether the string changed -- span replacement makes those different
+# questions, and gap (c) is precisely a case where the string changes and the
+# secret stays.
 #
-#  (a) THE SEPARATOR-FREE MISS WINDOW. Outside a header, family 3 misses a run
-#      the word-compound recogniser reads as ONE word: at most 32 letters,
-#      optionally followed by at most 4 digits. Measured: "Bearer " + "a"*32 is
-#      KEPT and "a"*33 is CUT; "Bearer " + "a"*32 + "2024" (36 chars) is KEPT
-#      and "a"*32 + "12345" is CUT.
-#      test_the_separator_free_miss_window_is_where_known_gaps_says_it_is pins
-#      those five strings, so this paragraph cannot drift off the code again.
-#      Four catalogue shapes land in the window: a 20-letter run, a 28-letter
-#      run, and hyphen- and dot-joined 26-char opaque runs. main caught them
-#      only by cutting every run after the word, which is the incident this rule
-#      exists to undo, and a real base64/hex token essentially never lands in
-#      the window because those alphabets interleave digits mid-piece.
+# Where a header does and does not help: (a) and (b) are missed only after a
+# BARE "Bearer" and are still cut in the four header serializations. (c) and (d)
+# are NOT saved by a header -- (c) because the match ends at the first
+# semicolon, (d) because "$TOKEN" is 6 run-characters and family 2's floor is 8.
+# In the serializations that carry no "Bearer" at all, main keeps these shapes
+# too, so none of it is a regression there.
+#
+#  (a) RUNS THE WORD-COMPOUND RECOGNISER READS AS PROSE. Outside a header,
+#      family 3 misses anything the recogniser accepts as a word compound. That
+#      is deliberately NOT length-bounded: a single piece is at most 32 letters
+#      plus at most 4 digits ("Bearer " + "a"*32 is KEPT, "a"*33 is CUT;
+#      "a"*32 + "2024" is KEPT, "a"*32 + "12345" is CUT -- five strings pinned
+#      by test_the_separator_free_miss_window_is_where_known_gaps_says_it_is),
+#      but a COMPOUND of such pieces has no ceiling at all: a 101-character
+#      hyphen-joined run of six 16-letter pieces is kept, because that is
+#      indistinguishable from "x509-certificate-validation-chain-and-so-on".
+#      An earlier version of this paragraph quoted only the single-piece bound
+#      and so understated the window by an unbounded factor.
+#      main caught these only by cutting every run after the word, which is the
+#      incident this rule exists to undo. A real base64/hex token essentially
+#      never lands in the window because those alphabets interleave digits
+#      mid-piece; a token deliberately shaped like prose does, and family 1 or a
+#      header is the only backstop for it.
 #  (b) A CREDENTIAL INSIDE A URL, e.g. "Bearer postgres://user:pw@host/db".
 #      Family 3 refuses anything matching `scheme://`, because ledger prose
 #      quotes URLs constantly. The password inside one is therefore kept after a
 #      bare "Bearer". Deliberate: relaxing it puts every quoted URL at risk.
 #  (c) A `Key=Value;Key=Value` CONNECTION STRING, e.g. the Azure
 #      "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=..." shape.
-#      This is the ONE gap a header does not close, and the reason is span
+#      A header does not close this one, and the reason is span
 #      replacement rather than any refusal: `;` is not a run character, so the
 #      match ends at the first semicolon and only "DefaultEndpointsProtocol=
 #      https" is replaced. The AccountKey survives in ALL FIVE Bearer-carrying
@@ -389,6 +408,9 @@ _PROVIDER_TOKEN_ALTERNATIVES = (
     r"npm_[A-Za-z0-9]{16,}",  # npm access token
     r"shpat_[A-Za-z0-9]{16,}",  # Shopify admin API access token
     r"sq0atp-[A-Za-z0-9_-]{16,}",  # Square access token
+    r"lin_api_[A-Za-z0-9]{16,}",  # Linear API key
+    r"dop_v1_[A-Za-z0-9]{32,}",  # DigitalOcean personal access token
+    r"rk_(?:live|test)_[A-Za-z0-9]{16,}",  # Stripe restricted key, live and test
     r"(?-i:pypi-AgE)[A-Za-z0-9_-]{16,}",  # PyPI upload token (macaroon body)
     r"(?-i:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])",  # AWS access/session key id
     r"(?-i:AIza)[A-Za-z0-9_-]{16,}",  # Google API key

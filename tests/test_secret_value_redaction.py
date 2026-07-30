@@ -207,6 +207,10 @@ FAKE_LATE_PROVIDER_TOKENS = (
     ("pypi_upload", "pypi-AgE" + _FAKE_BODY_32),
     ("shopify_admin", "shpat_" + _FAKE_BODY_24),
     ("square_access", "sq0atp-" + _FAKE_BODY_20),
+    ("linear_api", "lin_api_" + _FAKE_BODY_32),
+    ("digitalocean_pat", "dop_v1_" + _FAKE_BODY_32 + _FAKE_BODY_24),
+    ("stripe_restricted_live", "rk_live_" + _FAKE_BODY_24),
+    ("stripe_restricted_test", "rk_test_" + _FAKE_BODY_24),
 )
 
 # The `pypi-` prefix alone is NOT enough evidence: this is a real value from the
