@@ -19,11 +19,21 @@ figure derived from it:
 
 from __future__ import annotations
 
+import ast
 import json
 import sqlite3
 from pathlib import Path
 
-from agentacct.api import _refused_recording_html
+from fastapi.testclient import TestClient
+
+import agentacct.client_usage as client_usage_module
+import agentacct.log_evidence as log_evidence_module
+from agentacct.api import (
+    _REFUSED_RECORDING_REASON_LABELS,
+    UsageDiscoveryConfig,
+    _refused_recording_html,
+    create_local_api_app,
+)
 from agentacct.client_usage import discover_claude_code_usage, discover_codex_usage
 from agentacct.log_evidence import (
     REFUSED_RECORDING_REASON_CODES,
@@ -233,9 +243,178 @@ def test_client_side_refusals_are_not_counted_as_agentacct_refusals() -> None:
     )
 
 
+def test_a_quoted_agentacct_error_inside_a_payload_is_not_a_refusal() -> None:
+    """Position, not presence: an error is a refusal only where the wire puts it.
+
+    Agents narrate. "green after fixing MCP error -32602: ..." is a SUCCESSFUL
+    recording whose own text quotes an old failure, and a scan of the whole
+    output counts it as a call agentacct refused — the one direction this
+    figure must never lie in.
+    """
+
+    quoted = (
+        "green after fixing MCP error -32602: files[0] must be project-relative"
+        f" on {SECRET_PATH}"
+    )
+    assert classify_refused_recording(quoted, tool="agentacct_record_machine_check") is None
+    assert classify_refused_recording(json.dumps({"outcome": {"summary": quoted}})) is None
+    # A quote sitting mid-payload is not rescued by being on its own line.
+    assert classify_refused_recording(f"pytest passed\n{quoted}\nbuild ok") is None
+    # ...while both real wire positions still classify.
+    assert classify_refused_recording("MCP error -32602: files[0] must be project-relative") is not None
+    assert (
+        classify_refused_recording(
+            "<tool_use_error>MCP error -32602: files[0] must be project-relative"
+        )
+        is not None
+    )
+    assert (
+        classify_refused_recording(
+            "tool call error: tool call failed for `agent-sentinel/sentinel_record_section`"
+            "\n\nCaused by:\n    Mcp error: -32602: files[0] must be project-relative"
+        )
+        is not None
+    )
+
+
+def test_a_successful_call_quoting_an_error_is_not_counted_in_the_scan(tmp_path) -> None:
+    """The same rule, end to end: three successes must count as zero refusals."""
+
+    claude_home = tmp_path / "claude-home"
+    project = claude_home / "projects" / "-work-project"
+    project.mkdir(parents=True)
+    # An outcome-only machine_check response: a real success shape that donates
+    # no created-event id, so it reaches the refusal classifier as a skip.
+    succeeded = json.dumps(
+        {
+            "outcome": {
+                "machine_checks": {
+                    "checks": [
+                        {
+                            "name": "pytest",
+                            "after": {
+                                "exit_code": 0,
+                                "summary": "green after fixing MCP error -32602: files[0] must be"
+                                f" project-relative on {SECRET_PATH}",
+                            },
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    lines = [_claude_usage_line(CLAUDE_SESSION)]
+    for index in range(3):
+        lines.append(
+            _claude_tool_use_line(
+                CLAUDE_SESSION,
+                tool_use_id=f"toolu_{index}",
+                name="mcp__agentacct__agentacct_record_machine_check",
+            )
+        )
+        lines.append(
+            _claude_tool_result_line(CLAUDE_SESSION, tool_use_id=f"toolu_{index}", text=succeeded)
+        )
+    (project / f"{CLAUDE_SESSION}.jsonl").write_text(
+        "\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8"
+    )
+
+    events = discover_claude_code_usage(claude_home=claude_home, limit_sessions=10)
+    summary = summarize_refused_recording_attempts(events)
+
+    assert summary["refused_attempt_total"] == 0
+    assert summary["rows"] == []
+    assert summary["sessions_with_refusals"] == 0
+    # They stay in the generic skip counter, disclosed as the remainder — the
+    # two figures still reconcile, they just no longer accuse a success.
+    assert summary["outputs_skipped"] == 3
+    assert summary["unclassified_outputs_skipped"] == 3
+
+    html = _refused_recording_html(summary, lambda value: str(value))
+    assert "No refused recording calls were found" in html
+    assert "refused by agentacct" not in html
+
+
 def test_agent_invented_argument_names_never_become_a_field() -> None:
     result = classify_refused_recording(f"MCP error -32602: unexpected argument(s): {SECRET_ARG}")
     assert result == (None, None, "unknown_argument")
+
+
+def test_minimum_bound_refusals_are_never_labelled_as_over_the_maximum() -> None:
+    """A label that inverts the refusal is worse than no label at all.
+
+    ``input_tokens=-5`` is rejected with "input_tokens must be >= 0"; reporting
+    that as "Value above the allowed maximum" tells the user to shrink a number
+    they need to raise.
+    """
+
+    cases = [
+        ("input_tokens must be >= 0", "input_tokens", "value_under_limit"),
+        ("turn_index must be >= 0", "turn_index", "value_under_limit"),
+        ("budget_usd must be > 0", "budget_usd", "value_under_limit"),
+        ("cost_usd must be a finite number >= 0", "cost_usd", "value_under_limit"),
+        # The maximum bound keeps its own code, so the two stay distinguishable.
+        ("limit must be <= 200", "limit", "value_over_limit"),
+    ]
+    for message, expected_field, expected_reason in cases:
+        result = classify_refused_recording(f"MCP error -32602: {message}")
+        assert result is not None, message
+        _tool, field, reason = result
+        assert reason in REFUSED_RECORDING_REASON_CODES
+        assert (field, reason) == (expected_field, expected_reason), message
+
+    rows = refused_recording_rows(
+        {("agentacct_record_agent_usage_debug", "input_tokens", "value_under_limit"): 1}
+    )
+    html = _refused_recording_html(
+        {"refused_attempt_total": 1, "sessions_with_refusals": 1, "rows": rows},
+        lambda value: str(value),
+    )
+    assert "Value below the allowed minimum" in html
+    assert "Value above the allowed maximum" not in html
+
+
+def test_every_frozen_reason_code_has_plain_language_copy() -> None:
+    """Guard against the drift that produced the inverted label.
+
+    A code the table has no wording for still renders (as the bare code), so
+    this is not about breakage — it is about the surface never again showing a
+    sentence that describes a different refusal than the one that happened.
+    """
+
+    for reason_code in REFUSED_RECORDING_REASON_CODES:
+        assert reason_code in _REFUSED_RECORDING_REASON_LABELS, reason_code
+
+
+def test_minimum_bound_refusal_names_the_tool_that_was_refused(tmp_path) -> None:
+    """Tool attribution survives this shape on both live client channels."""
+
+    message = "input_tokens must be >= 0"
+    tool = "agentacct_record_agent_usage_debug"
+
+    claude_home = tmp_path / "claude-home"
+    project = claude_home / "projects" / "-work-project"
+    project.mkdir(parents=True)
+    lines = [
+        _claude_usage_line(CLAUDE_SESSION),
+        _claude_tool_use_line(CLAUDE_SESSION, tool_use_id="toolu_a", name=f"mcp__agentacct__{tool}"),
+        _claude_tool_result_line(CLAUDE_SESSION, tool_use_id="toolu_a", text=f"MCP error -32602: {message}"),
+    ]
+    (project / f"{CLAUDE_SESSION}.jsonl").write_text(
+        "\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8"
+    )
+    claude_summary = summarize_refused_recording_attempts(
+        discover_claude_code_usage(claude_home=claude_home, limit_sessions=10)
+    )
+
+    codex_home = _make_codex_home(tmp_path, [_mcp_tool_call_end(tool, "call_a", _mcp_err(tool, message))])
+    codex_summary = summarize_refused_recording_attempts(
+        discover_codex_usage(codex_home=codex_home, limit_sessions=10)
+    )
+
+    expected = [{"tool": tool, "field": "input_tokens", "reason_code": "value_under_limit", "count": 1}]
+    assert claude_summary["rows"] == expected
+    assert codex_summary["rows"] == expected
 
 
 def test_refused_recording_rows_revalidate_untrusted_input() -> None:
@@ -453,6 +632,70 @@ def test_empty_scan_renders_an_honest_zero_state() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The surface itself: the section has to reach the page over HTTP
+# ---------------------------------------------------------------------------
+
+
+def _raw_page(store_root: Path, home: Path) -> str:
+    client = TestClient(
+        create_local_api_app(
+            store_dir=store_root,
+            usage_discovery=UsageDiscoveryConfig.from_home(home),
+        )
+    )
+    response = client.get("/raw", headers={"Accept": "text/html"})
+    assert response.status_code == 200
+    return response.text
+
+
+def test_raw_route_renders_the_refusal_section_with_its_rows(tmp_path) -> None:
+    """Asserted over HTTP, not on the helper.
+
+    Every other test here calls ``_refused_recording_html`` directly, so
+    deleting the one line that injects it into /raw leaves the whole suite
+    green while the feature is gone from the product.
+    """
+
+    home = tmp_path / "home"
+    project = home / ".claude" / "projects" / "-work-project"
+    project.mkdir(parents=True)
+    lines = [
+        _claude_usage_line(CLAUDE_SESSION),
+        _claude_tool_use_line(
+            CLAUDE_SESSION, tool_use_id="toolu_a", name="mcp__agentacct__agentacct_record_section"
+        ),
+        _claude_tool_result_line(
+            CLAUDE_SESSION,
+            tool_use_id="toolu_a",
+            text=f"MCP error -32602: files[0] must be project-relative: {SECRET_PATH}",
+        ),
+    ]
+    (project / f"{CLAUDE_SESSION}.jsonl").write_text(
+        "\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8"
+    )
+
+    page = _raw_page(tmp_path / "state", home)
+
+    assert 'id="refused-recording-attempts"' in page
+    assert "Recording calls agentacct refused" in page
+    assert "1 recording call(s) across 1 client session(s) were refused by agentacct." in page
+    assert "agentacct_record_section" in page
+    assert "File path was not project-relative" in page
+    # The page is a rendering of the same pre-redaction scan, so the privacy
+    # rule has to hold at the route too, not only in the helper.
+    assert SECRET_PATH not in page
+
+
+def test_raw_route_renders_the_refusal_section_on_a_clean_machine(tmp_path) -> None:
+    """No refusals is a state to report, not a reason to drop the section."""
+
+    page = _raw_page(tmp_path / "state", tmp_path / "home")
+
+    assert 'id="refused-recording-attempts"' in page
+    assert "No refused recording calls were found" in page
+
+
+# ---------------------------------------------------------------------------
 # Retroactivity: the whole point
 # ---------------------------------------------------------------------------
 
@@ -487,3 +730,35 @@ def test_refusals_recorded_before_this_feature_existed_are_counted(tmp_path) -> 
     )
     assert summary["refused_attempt_total"] == 2
     assert _rows_by_reason(summary) == {"files_not_project_relative": 1, "no_runs": 1}
+
+
+# ---------------------------------------------------------------------------
+# Module hygiene: the repo runs no linter, so a shadowed import needs a test
+# ---------------------------------------------------------------------------
+
+
+def _rebound_module_level_imports(module) -> list[str]:
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    seen: set[str] = set()
+    rebound: list[str] = []
+    for node in tree.body:
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        for alias in node.names:
+            name = alias.asname or alias.name.split(".")[0]
+            if name in seen:
+                rebound.append(name)
+            seen.add(name)
+    return rebound
+
+
+def test_this_track_imports_no_name_twice() -> None:
+    """A second import of the same name silently replaces the first.
+
+    ``from typing import Mapping`` after ``from collections.abc import Mapping``
+    changes what every annotation in the file means, and no CI job here would
+    notice: the repo has no lint step.
+    """
+
+    for module in (client_usage_module, log_evidence_module):
+        assert _rebound_module_level_imports(module) == [], module.__name__

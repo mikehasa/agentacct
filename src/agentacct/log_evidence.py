@@ -213,6 +213,7 @@ REFUSED_RECORDING_REASON_CODES = (
     "missing_argument",
     "invalid_argument",
     "value_over_limit",
+    "value_under_limit",
     "metadata_over_size",
     "incomplete_argument_group",
     "no_runs",
@@ -225,7 +226,20 @@ REFUSED_RECORDING_REASON_CODES = (
 # "Mcp error: -32602: <message>" inside its own "tool call failed for ..."
 # wrapper. The tool-name/namespace allowlist upstream is what proves the
 # error came from THIS server; this pattern only locates the message.
+#
+# Matched with .match at the two POSITIONS a real wire refusal can occupy —
+# never .search over the whole output. A successful call's payload routinely
+# quotes an agentacct error verbatim (an after_summary reading "green after
+# fixing MCP error -32602: ..." is real recorded work), and a scan of the whole
+# blob counts that success as a refusal: a number that lies in the one
+# direction this surface exists to be honest about.
 _MCP_ERROR_MESSAGE_RE = re.compile(r"mcp error:?\s*-\d+:[ \t]*(?P<message>[^\r\n]+)", re.IGNORECASE)
+# The line codex's anyhow wrapper puts its cause on: "Caused by:\n    <cause>".
+_CAUSED_BY_LINE = "caused by:"
+# The tag Claude Code puts around a failed tool_result. Stripped from the FIRST
+# line only, so the anchor still holds: nothing but an error is ever wrapped in
+# it, and a payload that merely quotes an error does not carry it.
+_CLAUDE_TOOL_ERROR_TAG = "<tool_use_error>"
 # codex wraps a refusal as: tool call failed for `<server key>/<tool>`. The
 # server segment is matched loosely on purpose — historical rollouts carry
 # whichever registration key was current when they were written — and the tool
@@ -238,12 +252,47 @@ _MISSING_ARGUMENT_PREFIX = "missing required argument:"
 _UNKNOWN_RUN_ID_PREFIX = "unknown run_id:"
 
 
+def _anchored_mcp_error_message(text: str) -> str | None:
+    """The refusal message when ``text`` IS a wire refusal, else None.
+
+    Only two positions count. Claude Code puts the whole tool_result at
+    "MCP error -32602: <message>", so the FIRST line carries it. codex wraps
+    the same refusal in its own "tool call failed for ..." error and puts the
+    cause on the line directly after "Caused by:". Anywhere else the text is
+    payload — quoted, echoed, or narrated by a call that SUCCEEDED — and must
+    not be read as agentacct having refused anything.
+    """
+
+    lines = text.splitlines()
+    if not lines:
+        return None
+    candidates = [lines[0].strip().removeprefix(_CLAUDE_TOOL_ERROR_TAG)]
+    candidates.extend(
+        lines[index + 1]
+        for index, line in enumerate(lines[:-1])
+        if line.strip().lower() == _CAUSED_BY_LINE
+    )
+    for candidate in candidates:
+        match = _MCP_ERROR_MESSAGE_RE.match(candidate.strip())
+        if match is None:
+            continue
+        message = match.group("message").strip()
+        if message:
+            return message
+    return None
+
+
 def _refusal_reason_code(message: str) -> str:
     """Bounded reason code for one agentacct refusal message.
 
     Matched on message SHAPE only — no fragment of the message is retained by
     the caller, and the ordering runs most-specific first so the byte cap on
     ``metadata`` is not swallowed by the generic "must be <= N" rules.
+
+    Maximum and minimum bounds are separate codes on purpose: mcp.py rejects
+    ``input_tokens=-5`` with "input_tokens must be >= 0", and reporting that
+    under a code whose label reads "above the allowed maximum" would state the
+    opposite of what happened.
     """
 
     lowered = message.lower()
@@ -261,8 +310,10 @@ def _refusal_reason_code(message: str) -> str:
         return "metadata_over_size"
     if re.search(r"must be <= \d+ characters", lowered):
         return "narrative_over_limit"
-    if re.search(r"must (?:be (?:<=|>=|>|<) \d|contain <= \d)", lowered):
+    if re.search(r"must (?:be (?:<=|<) -?\d|contain <= \d)", lowered):
         return "value_over_limit"
+    if re.search(r"must be (?:a finite number )?(?:>=|>) -?\d", lowered):
+        return "value_under_limit"
     if "must be supplied together" in lowered or "needs at least one join hint" in lowered:
         return "incomplete_argument_group"
     if "must be one of" in lowered or "must be a" in lowered or "must be an" in lowered:
@@ -300,10 +351,12 @@ def classify_refused_recording(text: Any, *, tool: Any = None) -> tuple[str | No
 
     Returns None — deliberately, not "other" — when the text is not an
     agentacct MCP error: a client-side refusal (codex's approval layer, Claude
-    Code's input validator), a successful-but-not-created-event payload, or
-    wire drift. Those are real skips but they are NOT recording attempts this
-    product rejected, and counting them as such would overstate the number the
-    whole surface exists to be honest about.
+    Code's input validator), a successful-but-not-created-event payload that
+    merely QUOTES an agentacct error, or wire drift. Those are real skips but
+    they are NOT recording attempts this product rejected, and counting them as
+    such would overstate the number the whole surface exists to be honest
+    about. The error is therefore located by position
+    (:func:`_anchored_mcp_error_message`), never found anywhere in the blob.
 
     ``tool`` is the caller's allowlisted creation-tool name; codex's own
     "tool call failed for `<server>/<tool>`" wrapper is used as a fallback and
@@ -312,10 +365,7 @@ def classify_refused_recording(text: Any, *, tool: Any = None) -> tuple[str | No
 
     if not isinstance(text, str) or not text:
         return None
-    match = _MCP_ERROR_MESSAGE_RE.search(text)
-    if match is None:
-        return None
-    message = match.group("message").strip()
+    message = _anchored_mcp_error_message(text)
     if not message:
         return None
     reason_code = _refusal_reason_code(message)

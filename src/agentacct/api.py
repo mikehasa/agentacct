@@ -1833,6 +1833,7 @@ _REFUSED_RECORDING_REASON_LABELS = {
     "missing_argument": "Required argument was missing",
     "invalid_argument": "Argument had the wrong type or value",
     "value_over_limit": "Value above the allowed maximum",
+    "value_under_limit": "Value below the allowed minimum",
     "metadata_over_size": "Metadata above the size limit",
     "incomplete_argument_group": "Arguments that must be sent together were not",
     "no_runs": "No run existed to attach the record to",

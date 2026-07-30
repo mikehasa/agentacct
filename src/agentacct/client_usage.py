@@ -16,7 +16,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Literal, Mapping
+from typing import Any, Callable, Literal
 
 from .confidence import COST_BASIS_CLIENT_SESSION, COST_BASIS_PRICING_TABLE, COST_CLIENT_REPORTED, COST_ESTIMATED_FROM_TOKENS, COST_UNKNOWN, USAGE_CLIENT_REPORTED
 from .env_compat import read_env_alias
@@ -7136,9 +7136,14 @@ def _read_codex_rollout_usage_uncached(
             elif payload_type == "function_call_output":
                 call_id = payload.get("call_id")
                 if isinstance(call_id, str) and call_id in accepted_calls:
-                    # This channel's unwrap yields the server's refusal text
-                    # verbatim when the call failed, so no separate error
-                    # unwrap is needed.
+                    # No refusal text is passed on this legacy channel: a
+                    # failed call's ``output`` is codex's own plain-text error,
+                    # which unwrap_codex_output_text (JSON/content-block only)
+                    # returns None for. Such a call stays a plain skip and is
+                    # reported in the unclassified remainder rather than
+                    # guessed at from an unverified wire shape — an
+                    # UNDER-count, which is the honest direction for a figure
+                    # that claims "agentacct refused this".
                     _donate_once(
                         call_id,
                         unwrap_codex_output_text(payload.get("output")),
