@@ -19,30 +19,35 @@ from .hooks import (
 )
 from .install_guide import MCP_SERVER_INSTRUCTIONS
 from .service import RESERVED_CLIENT_CONTEXT_PROVENANCE_KEYS, SentinelService
-from .storage import validate_run_id
+from .storage import METADATA_MAX_BYTES, json_utf8_size, validate_run_id
 
 
 WORK_KINDS = {"planning", "implementation", "debugging", "testing", "review", "docs", "refactor", "research", "other", "unknown"}
 EVIDENCE_TYPES = {"test", "build", "lint", "typecheck", "smoke", "benchmark", "browser", "security", "artifact", "other"}
 EVIDENCE_RESULTS = {"passed", "failed", "skipped", "error", "unknown"}
 
-# Metadata byte budget. Deliberately identical to the HTTP (api.py) and CLI
-# (cli.py) write paths: the number is load-bearing for cross-surface symmetry,
-# so raise it in all three or in none.
-METADATA_MAX_BYTES = 8192
-# A machine check's name feeds the check-identity hash and lands in metadata
-# twice, so it needs its OWN limit: without one an over-long name surfaced as
-# "metadata must be <= 8192 bytes", blaming a parameter the caller never sent.
-# Never truncate it — a truncated name forks check identity.
-MACHINE_CHECK_NAME_MAX_LENGTH = 240
+# A machine check's `name` has no length limit of its own, on purpose. A cap of
+# 240 rejected a 241-8000 character band that recorded fine before it, and a
+# ~300-character name (an agent recording the full pytest invocation it ran) is
+# ordinary. The only ceiling is the shared metadata budget, which is where the
+# name lands. It is never truncated either: `name` feeds the check-identity
+# hash, so a truncated name forks the identity of the check it names.
+#
+# Measured caveat: past the budget the size error names the LARGEST metadata
+# field, and for a machine check that is the `summary` the server synthesizes
+# as "<name>: <result>" — marginally bigger than the name itself. So a name
+# that blows the whole budget is still reported one step removed. That is the
+# 8000+ case only, and it is no worse than the un-named "metadata must be <=
+# 8192 bytes" it replaced; the band that actually regressed is fixed.
 
 # The files rule, published in every schema that takes `files`. It is the single
 # biggest MCP rejection cause: agent harnesses hand out absolute paths, and the
 # rule appeared in no description at all.
 FILES_DESCRIPTION = (
-    "Project-relative paths with forward slashes: no leading '/' or '~', no '.' or '..' segments. "
+    "Project-relative paths with forward slashes: no leading '/' or '~', no '..' segments. "
     "An absolute path is relativized and accepted ONLY when it lies under the project_dir supplied "
-    "on this same call; otherwise it is rejected rather than guessed at."
+    "on this same call; otherwise it is rejected rather than guessed at. An entry naming the project "
+    "root itself ('.') is dropped rather than stored, and never fails the call."
 )
 
 # Join keys that stay valid for a whole client session, so sections recorded on
@@ -85,7 +90,7 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "run_id": {"type": "string", "default": "latest"},
-                "name": {"type": "string", "default": "check", "maxLength": MACHINE_CHECK_NAME_MAX_LENGTH},
+                "name": {"type": "string", "default": "check"},
                 "before_exit_code": {"type": ["integer", "null"]},
                 "after_exit_code": {"type": ["integer", "null"]},
                 "before_summary": {"type": ["string", "null"]},
@@ -323,12 +328,10 @@ def _limit_error(key: str, *, limit: int, received: int, unit: str = "characters
     return InvalidParams(f"{key} must be <= {limit} {unit} (received {received})")
 
 
-def _optional_str(args: dict[str, Any], key: str, default: str, *, max_length: int | None = None) -> str:
+def _optional_str(args: dict[str, Any], key: str, default: str) -> str:
     value = args.get(key, default)
     if not isinstance(value, str) or not value:
         raise InvalidParams(f"{key} must be a non-empty string")
-    if max_length is not None and len(value) > max_length:
-        raise _limit_error(key, limit=max_length, received=len(value))
     return value
 
 
@@ -433,23 +436,14 @@ def _optional_metadata(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _json_utf8_size(value: Any) -> int:
-    """Real UTF-8 byte size of the JSON encoding.
+    """This lane's strictness applied to the shared measure.
 
-    ``ensure_ascii=False`` is the whole point: with the default, the size check
-    bills every CJK character 6 bytes (\\uXXXX) and every emoji 12, i.e. 2-4x
-    what the text actually costs, so a Chinese-writing agent got roughly a
-    third of the advertised budget. Measured before this fix: 1200 CJK chars =
-    7215 bytes, and 1200 CJK chars of summary plus 200 of next_step = 8432
-    bytes, rejected.
+    The measure itself lives in storage.py because all three write surfaces
+    have to reach the same accept/reject decision; ``allow_nan=False`` is the
+    part that is local to MCP and the CLI, whose callers may not send
+    non-standard JSON constants.
     """
-    encoded = json.dumps(value, sort_keys=True, allow_nan=False, ensure_ascii=False)
-    try:
-        return len(encoded.encode("utf-8"))
-    except UnicodeEncodeError:
-        # Lone surrogates have no UTF-8 form. Measure the escaped encoding
-        # rather than failing a call on a pathological string; the caller's
-        # rejection, if any, must still be about SIZE.
-        return len(json.dumps(value, sort_keys=True, allow_nan=False).encode("utf-8"))
+    return json_utf8_size(value, allow_nan=False)
 
 
 def _metadata_size_error(value: dict[str, Any], size: int) -> InvalidParams:
@@ -457,9 +451,10 @@ def _metadata_size_error(value: dict[str, Any], size: int) -> InvalidParams:
 
     The old message named `metadata` — a parameter most callers never passed,
     since the bulk is usually a validated argument (summary, blocker,
-    next_step) the server merged in. Naming the largest field, with its byte
-    size, is the difference between a fixable error and a guessing game. The
-    key name is caller-controlled, so it is clipped before it reaches the
+    next_step, name) the server merged in. Naming the largest field, with its
+    byte size, is the difference between a fixable error and a guessing game,
+    and it is why no argument needs a private length cap on top of this one.
+    The key name is caller-controlled, so it is clipped before it reaches the
     error string.
     """
     largest_key = ""
@@ -498,6 +493,15 @@ MANGLED_TOOL_CALL_METADATA_KEY = "mangled_tool_call_suspected_fields"
 SECTION_NARRATIVE_KEYS = ("summary", "blocker", "next_step", "section_title", "title")
 MACHINE_CHECK_NARRATIVE_KEYS = ("summary", "before_summary", "after_summary", "resolution_summary", "command")
 
+# Property names that are NOT eligible to be suspected, however they appear in
+# free text. `title` is here because it is a plain English word and `</title>`
+# is the most common closing tag in HTML: "the page head has
+# <title>Report</title> in it" is ordinary prose, not a mangled call. It is
+# also the one property added after the detector was calibrated, so leaving it
+# in the candidate set would have raised the false-positive rate above the
+# measured figure without anyone re-measuring.
+MANGLE_DETECTOR_INELIGIBLE_PROPERTIES = frozenset({"title"})
+
 
 def _tool_property_names(tool_name: str) -> frozenset[str]:
     for tool in TOOLS:
@@ -509,15 +513,23 @@ def _tool_property_names(tool_name: str) -> frozenset[str]:
 def _detect_mangled_tool_call_fields(tool_name: str, args: dict[str, Any], narrative_keys: Sequence[str]) -> list[str]:
     """This tool's own argument names that appear as CLOSING tags in free text.
 
-    Closing tags only, and only for properties the call did NOT supply. The
-    looser forms were measured against the real ledger and are unusable: a
-    bare-word detector fires 277 times on "source" and 192 on "files" across
-    1955 section events, and an opening-tag detector has a real false positive
-    on legitimate prose about MCP config. The closing-tag form scored 1 true
-    positive and 0 false positives on the same events. It will still fire on
-    meta-work about agentacct itself, which is acceptable for a warning.
+    Closing tags only, and only for properties the call did NOT supply and that
+    are not in MANGLE_DETECTOR_INELIGIBLE_PROPERTIES. The looser forms were
+    measured against the real ledger and are unusable: a bare-word detector
+    fires 277 times on "source" and 192 on "files" across 1955 section events,
+    and an opening-tag detector has a real false positive on legitimate prose
+    about MCP config. The closing-tag form scored 1 true positive and 0 false
+    positives on the same events.
+
+    Read that calibration for exactly what it is: it was measured on the
+    section property set as it stood BEFORE this change, i.e. without `title`,
+    and it has not been re-measured since. That is the reason `title` is
+    excluded rather than merely noted — the alternative is quoting a
+    false-positive rate for a detector that no longer matches the one measured.
+    The detector will still fire on meta-work about agentacct itself, which is
+    acceptable for a warning that never rejects or repairs.
     """
-    missing = _tool_property_names(tool_name) - set(args)
+    missing = _tool_property_names(tool_name) - set(args) - MANGLE_DETECTOR_INELIGIBLE_PROPERTIES
     if not missing:
         return []
     suspected: set[str] = set()
@@ -647,6 +659,11 @@ def _relative_to_project_dir(path: str, root: str | None) -> str | None:
     """
     if not root or not _looks_absolute(root) or root.startswith("~"):
         return None
+    if path == root:
+        # The project root named absolutely. The empty remainder is what the
+        # caller sees dropped, so "/repo" and "/repo/" behave alike instead of
+        # one being fatal and the other cosmetic.
+        return ""
     prefix = root + "/"
     if not path.startswith(prefix):
         return None
@@ -656,10 +673,18 @@ def _relative_to_project_dir(path: str, root: str | None) -> str | None:
     return path[len(prefix) :].lstrip("/")
 
 
+def _not_project_relative_error(key: str, index: int) -> InvalidParams:
+    return InvalidParams(
+        f"{key}[{index}] must be project-relative: forward slashes, no leading '/' or '~', "
+        "no '..' segments. Pass the path relative to the repository root, or supply "
+        "project_dir on this call so an absolute path under it can be relativized."
+    )
+
+
 def _optional_project_relative_files(
     args: dict[str, Any], key: str = "files", *, project_dir: str | None = None
 ) -> list[str]:
-    """Validate AND normalize the files list into project-relative POSIX paths.
+    """Validate the files list and normalize it into project-relative paths.
 
     Absolute paths are the single biggest MCP rejection cause — agent harnesses
     instruct absolute paths and the rule was published nowhere — so an absolute
@@ -667,32 +692,48 @@ def _optional_project_relative_files(
     project_dir declared ON THIS CALL. Only the explicit argument counts: an
     inherited or session-attached project_dir could belong to a different
     repository, and a path relativized against the wrong root is a silently
-    wrong ledger row, which is worse than a rejection.
+    wrong ledger row, which is worse than a rejection. The relativized
+    remainder is then put through the SAME check as any other value, so
+    "/repo/~/x" cannot deposit a "~/x" the published rule calls impossible.
 
-    Normalization also closes the gap where ``src/./a.py`` passed the old
-    validator (PurePosixPath drops "." segments before they were inspected) and
-    reached the ledger un-normalized, splitting one file into two rows.
+    Two rules keep a stored value honest about the file it names:
+
+    * Backslashes are folded for VALIDATION only. On POSIX ``weird\\name.py``
+      is a legal filename, and folding it into the stored value would merge it
+      with a genuinely different file called ``weird/name.py``. What the caller
+      sent is what gets stored (modulo redundant "." and "/" segments, which
+      denote the same path either way — that normalization is what stops
+      ``src/./a.py`` and ``src/a.py`` becoming two rows for one file).
+    * An entry naming the project root itself (".", "./", or an absolute path
+      equal to project_dir) is DROPPED, not rejected. It names no file, so
+      storing it would be a row for a path that does not exist — but failing
+      the whole call, and losing a real section or machine check, over one
+      cosmetic entry is the behaviour this validator exists to stop.
     """
     files = _optional_limited_str_list(args, key, max_items=50, max_length=240)
     root = project_dir.replace("\\", "/").rstrip("/") if project_dir else None
     normalized_files: list[str] = []
     for index, item in enumerate(files):
-        candidate = item.replace("\\", "/")
-        if _looks_absolute(candidate):
-            relative = _relative_to_project_dir(candidate, root)
+        folded = item.replace("\\", "/")
+        stored = item
+        if _looks_absolute(folded):
+            relative = _relative_to_project_dir(folded, root)
             if relative is None:
-                raise InvalidParams(
-                    f"{key}[{index}] must be project-relative: forward slashes, no leading '/' or '~', "
-                    "no '.' or '..' segments. Pass the path relative to the repository root, or supply "
-                    "project_dir on this call so an absolute path under it can be relativized."
-                )
-            candidate = relative
-        parts = PurePosixPath(candidate).parts
-        if ".." in parts:
+                raise _not_project_relative_error(key, index)
+            # The caller sent an absolute path and asked, by supplying
+            # project_dir, to have it rewritten; here the remainder IS the
+            # value, so both forms move to it.
+            folded = stored = relative
+            if _looks_absolute(folded):
+                # "/repo/~/x" -> "~/x", "/repo/C:/x" -> "C:/x": still not a
+                # project-relative path, and the schema says so.
+                raise _not_project_relative_error(key, index)
+        if ".." in PurePosixPath(folded).parts:
             raise InvalidParams(f"{key}[{index}] must not escape the project directory: '..' segments are not allowed")
-        if not parts:
-            raise InvalidParams(f"{key}[{index}] must name a path inside the project, not the project root itself")
-        normalized_files.append("/".join(parts))
+        stored_parts = PurePosixPath(stored).parts
+        if not stored_parts:
+            continue
+        normalized_files.append("/".join(stored_parts))
     return normalized_files
 
 
@@ -1056,7 +1097,7 @@ class SentinelMCPServer:
             )
             has_outcome_fields = any(key in arguments for key in {"before_exit_code", "after_exit_code", "before_summary", "after_summary"}) or not has_evidence_fields
             run_id = _optional_str(arguments, "run_id", "latest")
-            check_name = _optional_str(arguments, "name", "check", max_length=MACHINE_CHECK_NAME_MAX_LENGTH)
+            check_name = _optional_str(arguments, "name", "check")
             before_exit_code = _optional_nullable_int(arguments, "before_exit_code")
             after_exit_code = _optional_nullable_int(arguments, "after_exit_code")
             before_summary = _optional_nullable_str(arguments, "before_summary")
@@ -1423,7 +1464,7 @@ class SentinelMCPServer:
                     for key in refusal_stamps:
                         context.pop(key, None)
                     metadata = _metadata_with_context(arguments, context)
-                size_warnings.append("Inherited client context was dropped: metadata would exceed 8192 bytes when JSON encoded. Trim metadata or pass join keys explicitly.")
+                size_warnings.append(f"Inherited client context was dropped: metadata would exceed {METADATA_MAX_BYTES} bytes when JSON encoded. Trim metadata or pass join keys explicitly.")
             # Provenance keys are server-authored: whatever this call did not
             # set itself is removed, so callers can never forge inheritance.
             for key in RESERVED_CLIENT_CONTEXT_PROVENANCE_KEYS:

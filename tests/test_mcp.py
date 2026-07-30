@@ -8,7 +8,7 @@ from agentacct.mcp import SentinelMCPServer, read_mcp_message, run_mcp_event_wor
 from agentacct.outcome import apply_judge_result, write_outcome
 from agentacct.reports import build_run_report_payload
 from agentacct.runner import RunOptions, start_guarded_run
-from agentacct.storage import RunStore
+from agentacct.storage import RunStore, json_utf8_size
 from agentacct.work_ledger import build_work_ledger
 
 
@@ -2799,20 +2799,10 @@ def test_limit_errors_state_the_limit_and_what_was_received(tmp_path):
         {"source": "codex", "section_id": "limits", "section_status": "started", "files": [f"f{index}.py" for index in range(51)]},
     )
     count_message = too_many["error"]["message"]
-    assert "50" in count_message and "51" in count_message
-
-    # An over-long check name used to surface as "metadata must be <= 8192
-    # bytes", blaming a parameter the caller never sent.
-    long_check_name = _call_tool(
-        server,
-        4,
-        "agentacct_record_machine_check",
-        {"source": "codex", "name": "n" * 300, "result": "passed"},
-    )
-    name_message = long_check_name["error"]["message"]
-    assert name_message.startswith("name must be <= 240")
-    assert "300" in name_message
-    assert "metadata" not in name_message
+    # Pinned exactly: "50" and "51" both appear in a message that says nothing
+    # useful ("files: 50/51 problem"), so a substring pair does not prove the
+    # limit and the received count were reported as such.
+    assert count_message == "files must be <= 50 items (received 51)"
 
 
 def test_metadata_budget_measures_real_utf8_bytes_for_cjk(tmp_path):
@@ -2946,7 +2936,9 @@ def test_files_absolute_under_project_dir_is_normalized_not_rejected(tmp_path):
             {"files": ["../outside.py"]},
             {"files": ["~/secrets.env"]},
             {"files": ["/repo/agentacct/src/a.py"]},  # absolute, but no project_dir on the call
-            {"files": ["."]},
+            # "." is NOT in this list: it names the project root, is dropped
+            # rather than rejected, and must never fail the call. Covered by
+            # test_files_entry_naming_the_project_root_is_dropped_not_fatal.
         ),
         start=5,
     ):
@@ -2970,7 +2962,10 @@ def test_files_rule_is_published_in_every_schema_that_takes_files(tmp_path):
         assert "forward slashes" in description
         assert "'..'" in description
         assert "project_dir" in description
-    assert tool_by_name["agentacct_record_machine_check"]["inputSchema"]["properties"]["name"]["maxLength"] == 240
+    # A machine check's name carries no private cap: the shared metadata budget
+    # is the only ceiling, and a cap here would reject names the CLI and HTTP
+    # lanes accept. See test_machine_check_name_has_no_private_length_cap.
+    assert "maxLength" not in tool_by_name["agentacct_record_machine_check"]["inputSchema"]["properties"]["name"]
 
 
 def test_machine_check_normalizes_absolute_files_under_project_dir(tmp_path):
@@ -3099,3 +3094,334 @@ def test_mangle_marker_is_server_authored_and_cannot_be_forged(tmp_path):
     metadata = payload["event"]["metadata"]
     assert "mangled_tool_call_suspected_fields" not in metadata
     assert "mangled_tool_call_suspected_fields" in metadata["reserved_context_keys_stripped"]
+
+
+def test_machine_check_name_has_no_private_length_cap(tmp_path):
+    """A 240-character cap turned a 241-8000 band that recorded fine on main
+    into hard rejections. The band is real: an agent recording the full pytest
+    invocation it ran routinely writes a ~300-character name. The only ceiling
+    is the shared metadata budget, whose error now reports a field and a byte
+    count instead of a bare "metadata must be <= 8192 bytes"."""
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    long_name = ".venv/bin/pytest -q " + "tests/test_mcp.py::test_a " * 12
+    assert 240 < len(long_name) < 8000
+    accepted = _tool_payload(
+        _call_tool(
+            server,
+            1,
+            "agentacct_record_machine_check",
+            {"source": "codex", "name": long_name, "result": "passed"},
+        )
+    )
+    # Never truncated: the name feeds the check-identity hash.
+    assert accepted["event"]["metadata"]["name"] == long_name
+
+    # Still bounded, by the shared metadata budget: a name large enough to blow
+    # the whole budget is rejected as a SIZE problem that reports what arrived,
+    # not by a private cap of its own.
+    oversized = _call_tool(
+        server,
+        2,
+        "agentacct_record_machine_check",
+        {"source": "codex", "name": "n" * 9000, "result": "passed"},
+    )
+    message = oversized["error"]["message"]
+    assert message.startswith("metadata must be <= 8192 bytes when JSON encoded (received ")
+    assert "name must be <=" not in message
+    # Measured, not assumed: at this size the largest field is the `summary`
+    # the server synthesizes as "<name>: <result>", so the blame is still
+    # indirect in this extreme case. Recorded here so the next reader sees it.
+    assert "largest field is summary" in message
+
+
+def test_metadata_budget_decision_is_identical_on_all_three_write_surfaces(tmp_path):
+    """Measuring real UTF-8 bytes on MCP alone broke the symmetry the shared
+    budget exists for: 2000 CJK characters are 6013 real bytes but 12013
+    escaped, so MCP accepted a payload the HTTP lane rejected. Same payload,
+    same verdict, whichever lane the agent writes through."""
+    from agentacct.api import EventRecordRequest
+    from agentacct.cli import _parse_metadata_json
+    from agentacct.mcp import _validate_metadata_size
+
+    def verdicts(payload):
+        results = []
+        for attempt in (
+            lambda: _validate_metadata_size(payload),
+            lambda: EventRecordRequest(source="codex", event_type="probe", metadata=payload),
+            lambda: _parse_metadata_json(json.dumps(payload)),
+        ):
+            try:
+                attempt()
+                results.append("accepted")
+            except Exception:
+                results.append("rejected")
+        return results
+
+    under = {"notes": "记" * 2000}
+    assert json_utf8_size(under) == 6013
+    assert len(json.dumps(under, sort_keys=True).encode("utf-8")) == 12013
+    assert verdicts(under) == ["accepted", "accepted", "accepted"]
+
+    over = {"notes": "记" * 3000}
+    assert json_utf8_size(over) == 9013
+    assert verdicts(over) == ["rejected", "rejected", "rejected"]
+
+
+def test_metadata_size_survives_a_lone_surrogate_on_every_surface(tmp_path):
+    """json.loads accepts a lone surrogate but it has no UTF-8 form, so a
+    real-bytes measure raises UnicodeEncodeError mid-validation and fails the
+    call with a crash instead of a verdict."""
+    from agentacct.api import EventRecordRequest
+    from agentacct.mcp import _validate_metadata_size
+
+    lone_surrogate = json.loads('"\\ud800"')
+    assert _validate_metadata_size({"notes": lone_surrogate}) is None
+    assert EventRecordRequest(source="codex", event_type="probe", metadata={"notes": lone_surrogate})
+    assert json_utf8_size({"notes": lone_surrogate}) > 0
+
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+    recorded = _tool_payload(
+        _call_tool(
+            server,
+            1,
+            "agentacct_record_section",
+            {"source": "codex", "section_id": "surrogate", "section_status": "started", "summary": lone_surrogate},
+        )
+    )
+    assert recorded["event"]["metadata"]["summary"] == lone_surrogate
+
+    # Oversized-and-unencodable still fails as SIZE, never as an encoding crash.
+    oversized = _call_tool(
+        server,
+        2,
+        "agentacct_record_section",
+        {
+            "source": "codex",
+            "section_id": "surrogate",
+            "section_status": "started",
+            "metadata": {"notes": lone_surrogate * 3000},
+        },
+    )
+    assert "bytes" in oversized["error"]["message"]
+
+
+def test_files_entry_naming_the_project_root_is_dropped_not_fatal(tmp_path):
+    """A whole-repo section with files=["."] recorded fine on main. Killing the
+    whole record to reject one cosmetic path entry is exactly the behaviour
+    this validator exists to remove."""
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    for msg_id, entry in enumerate((".", "./"), start=1):
+        payload = _tool_payload(
+            _call_tool(
+                server,
+                msg_id,
+                "agentacct_record_section",
+                {"source": "codex", "section_id": "whole-repo", "section_status": "started", "files": [entry]},
+            )
+        )
+        # Accepted, and no row is stored for a value that names no file.
+        assert "error" not in payload, entry
+        assert payload["event"]["metadata"].get("files", []) == [], entry
+
+    mixed = _tool_payload(
+        _call_tool(
+            server,
+            3,
+            "agentacct_record_section",
+            {"source": "codex", "section_id": "whole-repo", "section_status": "started", "files": [".", "src/a.py"]},
+        )
+    )
+    assert mixed["event"]["metadata"]["files"] == ["src/a.py"]
+
+    # An absolute path equal to the declared project root says the same thing,
+    # with or without the trailing slash: one must not be fatal while the other
+    # is cosmetic.
+    for msg_id, entry in enumerate(("/repo/agentacct/", "/repo/agentacct"), start=4):
+        at_root = _tool_payload(
+            _call_tool(
+                server,
+                msg_id,
+                "agentacct_record_machine_check",
+                {
+                    "source": "codex",
+                    "result": "passed",
+                    "project_dir": "/repo/agentacct",
+                    "files": [entry],
+                },
+            )
+        )
+        assert "error" not in at_root, entry
+        assert at_root["event"]["metadata"].get("files", []) == [], entry
+
+
+def test_files_backslash_is_folded_for_validation_but_never_for_storage(tmp_path):
+    """On macOS/Linux `weird\\name.py` is a legal filename. main folded
+    backslashes for VALIDATION and stored the original; storing the folded form
+    silently merges that file with a genuinely different `weird/name.py`."""
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    stored = _tool_payload(
+        _call_tool(
+            server,
+            1,
+            "agentacct_record_section",
+            {
+                "source": "codex",
+                "section_id": "backslash",
+                "section_status": "started",
+                "files": ["weird\\name.py", "weird/name.py"],
+            },
+        )
+    )
+    # Two distinct real paths must stay two distinct rows.
+    assert stored["event"]["metadata"]["files"] == ["weird\\name.py", "weird/name.py"]
+
+    # Folding still happens for validation, so a Windows-style traversal is
+    # caught rather than waved through as one opaque segment.
+    escaped = _call_tool(
+        server,
+        2,
+        "agentacct_record_section",
+        {
+            "source": "codex",
+            "section_id": "backslash",
+            "section_status": "started",
+            "files": ["src\\..\\..\\etc\\passwd"],
+        },
+    )
+    assert escaped["error"]["code"] == -32602
+    assert "escape" in escaped["error"]["message"]
+
+
+def test_relativized_remainder_is_revalidated_against_the_published_rule(tmp_path):
+    """The remainder was only checked for '..', so project_dir="/repo" with
+    files=["/repo/~/x"] stored "~/x" -- a value the schema description this
+    server publishes says is impossible."""
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    for msg_id, entry in enumerate(("/repo/~/x.py", "/repo/C:/x.py"), start=1):
+        response = _call_tool(
+            server,
+            msg_id,
+            "agentacct_record_section",
+            {
+                "source": "codex",
+                "section_id": "remainder",
+                "section_status": "started",
+                "project_dir": "/repo",
+                "files": [entry],
+            },
+        )
+        assert response["error"]["code"] == -32602, entry
+        assert "project-relative" in response["error"]["message"], entry
+
+
+def test_windows_drive_letter_is_absolute_for_validation(tmp_path):
+    """Backslashes are folded before the absolute check, so PurePosixPath alone
+    reads "C:/repo/a.py" as a relative path and stores it as one."""
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    rejected = _call_tool(
+        server,
+        1,
+        "agentacct_record_section",
+        {"source": "codex", "section_id": "drive", "section_status": "started", "files": ["C:\\repo\\a.py"]},
+    )
+    assert rejected["error"]["code"] == -32602
+    assert "project-relative" in rejected["error"]["message"]
+
+    # With the drive-letter root declared on the call it relativizes normally.
+    accepted = _tool_payload(
+        _call_tool(
+            server,
+            2,
+            "agentacct_record_section",
+            {
+                "source": "codex",
+                "section_id": "drive",
+                "section_status": "started",
+                "project_dir": "C:\\repo",
+                "files": ["C:\\repo\\src\\a.py"],
+            },
+        )
+    )
+    assert accepted["event"]["metadata"]["files"] == ["src/a.py"]
+
+
+def test_tilde_project_dir_never_anchors_a_relativization(tmp_path):
+    """"~" is a shell shortcut, not a root: two machines expand it to different
+    directories, so containment under it is not provable and must not be
+    claimed."""
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    response = _call_tool(
+        server,
+        1,
+        "agentacct_record_section",
+        {
+            "source": "codex",
+            "section_id": "tilde",
+            "section_status": "started",
+            "project_dir": "~/repo",
+            "files": ["~/repo/src/a.py"],
+        },
+    )
+    assert response["error"]["code"] == -32602
+    assert "project-relative" in response["error"]["message"]
+
+    # A relative project_dir is equally unusable as an anchor.
+    relative_root = _call_tool(
+        server,
+        2,
+        "agentacct_record_section",
+        {
+            "source": "codex",
+            "section_id": "tilde",
+            "section_status": "started",
+            "project_dir": "repo",
+            "files": ["/repo/src/a.py"],
+        },
+    )
+    assert relative_root["error"]["code"] == -32602
+
+
+def test_mangle_detector_does_not_fire_on_a_closing_title_tag(tmp_path):
+    """Adding `title` as a record_section property widened the detector onto
+    `</title>`, the most common closing tag in HTML prose. The 1-true-positive
+    /0-false-positive calibration was measured WITHOUT `title` in the property
+    set, so leaving it in would quote a rate for a detector nobody measured."""
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    ordinary = _tool_payload(
+        _call_tool(
+            server,
+            1,
+            "agentacct_record_section",
+            {
+                "source": "codex",
+                "section_id": "html",
+                "section_status": "completed",
+                "summary": "The page head has <title>Report</title> in it.",
+            },
+        )
+    )
+    assert "mangled_tool_call_suspected_fields" not in ordinary["event"]["metadata"]
+    assert not [warning for warning in ordinary["warnings"] if "mangled" in warning]
+
+    # The detector is still armed for every other unsupplied property.
+    mangled = _tool_payload(
+        _call_tool(
+            server,
+            2,
+            "agentacct_record_section",
+            {
+                "source": "codex",
+                "section_id": "html",
+                "section_status": "completed",
+                "summary": "The page head has <title>Report</title> in it.</next_step>",
+            },
+        )
+    )
+    assert mangled["event"]["metadata"]["mangled_tool_call_suspected_fields"] == ["next_step"]

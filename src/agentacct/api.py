@@ -118,7 +118,7 @@ from .session_observations import (
     select_session_projection_envelopes,
 )
 from .source_discovery import UsageSourceDiscovery, discover_usage_sources
-from .storage import validate_run_id
+from .storage import METADATA_MAX_BYTES, json_utf8_size, validate_run_id
 from .store_resolution import is_recognized_global_store
 from .supervisor import OwnedSupervisor, SupervisorAlreadyRunning, SupervisorError
 from .task_continuations import ClientSessionRef, ContinuationTaskError, ContinuationTaskStore
@@ -295,9 +295,11 @@ class EventRecordRequest(BaseModel):
     @field_validator("metadata")
     @classmethod
     def validate_metadata_size(cls, value: dict[str, Any]) -> dict[str, Any]:
-        encoded = json.dumps(value, sort_keys=True)
-        if len(encoded.encode("utf-8")) > 8192:
-            raise ValueError("metadata must be <= 8192 bytes when JSON encoded")
+        # Real UTF-8 bytes, measured by the same helper the CLI and MCP lanes
+        # use: the escaped encoding billed CJK text 2x, so the same payload was
+        # accepted on one surface and rejected on another.
+        if json_utf8_size(value) > METADATA_MAX_BYTES:
+            raise ValueError(f"metadata must be <= {METADATA_MAX_BYTES} bytes when JSON encoded")
         return value
 
 
