@@ -151,29 +151,148 @@ def mark_trusted_finding_disposition(event: dict[str, Any]) -> dict[str, Any]:
     return recorded
 
 
+# Secret shapes recognized inside ordinary string VALUES, ordered
+# most-specific-first so the reported pattern class is the precise one.
+#
+# Both anchors are load-bearing. Unanchored, `sk-` matched the middle of
+# ordinary English and ordinary identifiers -- "task-", "disk-", "risk-",
+# "brisk-" all contain "sk-" -- and "Bearer" followed by any non-delimiter run
+# matched the prose phrase "use a Bearer token here". Paired with the old
+# whole-string replacement that silently destroyed real ledger values: a path
+# ending
+# ".../work-task-sessions-4801fa" was stored as a bare placeholder, and
+# unrelated section ids that each tripped the pattern all collapsed onto the
+# same literal string and merged into one phantom section. A quietly wrong
+# record is worse than the leak it was guarding against, so the patterns now
+# require a word boundary before `sk-` and something credential-shaped (rather
+# than an English word) after `Bearer`.
 SECRET_VALUE_PATTERNS = (
-    re.compile(r"Bearer\s+[^\s,;\]}\)]+", re.IGNORECASE),
-    re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
-    re.compile(r"sk-or-v1-[A-Za-z0-9_-]{12,}"),
+    (
+        "bearer_token",
+        re.compile(
+            r"\bBearer\s+(?=[A-Za-z0-9._~+/=-]*[0-9._~+/=-])[A-Za-z0-9._~+/=-]{16,}",
+            re.IGNORECASE,
+        ),
+    ),
+    ("openrouter_api_key", re.compile(r"\bsk-or-v1-[A-Za-z0-9_-]{12,}")),
+    ("api_key", re.compile(r"\bsk-[A-Za-z0-9_-]{12,}")),
+)
+
+# Only the matched span is replaced, so surrounding prose, ids and paths
+# survive. Deliberately distinct from the "[REDACTED]" used for a sensitive key
+# NAME (where dropping the whole value is the right call) so a reader can tell
+# "a secret was cut out of this value" from "this field was a credential", and
+# built from characters no pattern above can match, so redaction is idempotent.
+SECRET_SPAN_PLACEHOLDER = "[REDACTED_SECRET]"
+
+# Server-authored redaction provenance. Written only by the recording paths
+# when a span was actually replaced, and stripped from caller input first so an
+# agent cannot claim a redaction that never happened. It lives in server-owned
+# metadata and never in-band inside the value itself: an in-band marker would
+# just be another string eligible for redaction. The names deliberately avoid
+# the words is_sensitive_metadata_key() treats as credential-ish ("secret",
+# "credential", ...), which would blank the marker's own value.
+VALUE_REDACTION_MARKER_KEY = "value_redaction_applied"
+VALUE_REDACTION_FIELDS_KEY = "value_redaction_fields"
+RESERVED_VALUE_REDACTION_KEYS = (
+    VALUE_REDACTION_MARKER_KEY,
+    VALUE_REDACTION_FIELDS_KEY,
 )
 
 
-def _redact_secrets(value: Any) -> Any:
+def strip_value_redaction_provenance(event: dict[str, Any]) -> dict[str, Any]:
+    metadata = event.get("metadata")
+    if not isinstance(metadata, dict) or not any(key in metadata for key in RESERVED_VALUE_REDACTION_KEYS):
+        return event
+    sanitized = dict(metadata)
+    for key in RESERVED_VALUE_REDACTION_KEYS:
+        sanitized.pop(key, None)
+    sanitized["reserved_value_redaction_provenance_stripped"] = True
+    recorded = dict(event)
+    recorded["metadata"] = sanitized
+    return recorded
+
+
+def _redact_secret_spans(text: str) -> tuple[str, tuple[str, ...]]:
+    """Replace secret-shaped spans in ``text``, keeping everything else verbatim."""
+
+    matched: list[str] = []
+    for pattern_class, pattern in SECRET_VALUE_PATTERNS:
+        text, replacements = pattern.subn(SECRET_SPAN_PLACEHOLDER, text)
+        if replacements:
+            matched.append(pattern_class)
+    return text, tuple(matched)
+
+
+def _redact_secrets(
+    value: Any,
+    *,
+    path: str = "",
+    found: list[dict[str, str]] | None = None,
+) -> Any:
+    """Copy ``value`` redacted, appending ``field``/``pattern_class`` rows to ``found``.
+
+    Sensitive key NAMES still lose the whole value: that is a decision about
+    the field, not a match against its content. Value patterns only take the
+    span they matched.
+    """
+
     if isinstance(value, dict):
         redacted: dict[str, Any] = {}
         for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
             if is_sensitive_metadata_key(key):
                 redacted[key] = "[REDACTED]"
             else:
-                redacted[key] = _redact_secrets(child)
+                redacted[key] = _redact_secrets(child, path=child_path, found=found)
         return redacted
-    if isinstance(value, list):
-        return [_redact_secrets(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_redact_secrets(item) for item in value)
-    if isinstance(value, str) and any(pattern.search(value) for pattern in SECRET_VALUE_PATTERNS):
-        return "[REDACTED]"
+    if isinstance(value, (list, tuple)):
+        items = [
+            _redact_secrets(
+                item,
+                path=f"{path}.{index}" if path else str(index),
+                found=found,
+            )
+            for index, item in enumerate(value)
+        ]
+        return items if isinstance(value, list) else tuple(items)
+    if isinstance(value, str):
+        text, matched = _redact_secret_spans(value)
+        if matched and found is not None:
+            found.extend({"field": path, "pattern_class": name} for name in matched)
+        return text
     return value
+
+
+def _stamp_value_redaction_marker(
+    event: dict[str, Any],
+    redactions: list[dict[str, str]],
+) -> dict[str, Any]:
+    if not redactions:
+        return event
+    detail = sorted(redactions, key=lambda row: (row["field"], row["pattern_class"]))
+    stamped = dict(event)
+    metadata = stamped.get("metadata")
+    if metadata is None or isinstance(metadata, dict):
+        marked = dict(metadata or {})
+        marked[VALUE_REDACTION_MARKER_KEY] = True
+        marked[VALUE_REDACTION_FIELDS_KEY] = detail
+        stamped["metadata"] = marked
+    else:
+        # Off-contract metadata is never rewritten, but the repair still has to
+        # be visible, so the marker lands beside it instead of replacing it.
+        stamped[VALUE_REDACTION_MARKER_KEY] = True
+        stamped[VALUE_REDACTION_FIELDS_KEY] = detail
+    return stamped
+
+
+def redact_event_secrets(event: dict[str, Any]) -> dict[str, Any]:
+    """Redact one event and stamp server-authored provenance for what was cut."""
+
+    sanitized = strip_value_redaction_provenance(event)
+    redactions: list[dict[str, str]] = []
+    redacted = _redact_secrets(sanitized, found=redactions)
+    return _stamp_value_redaction_marker(redacted, redactions)
 
 
 def _safe_nonnegative_int(value: Any) -> int:
@@ -350,8 +469,7 @@ def _normalize_finding_disposition_note(note: str | None, *, action: str) -> str
     if normalized is not None:
         if len(normalized) > 1200 or any(char in normalized for char in "\r\n\x00"):
             raise FindingDispositionConflict("finding disposition note is invalid")
-        redacted = _redact_secrets(normalized)
-        normalized = redacted if isinstance(redacted, str) else "[REDACTED]"
+        normalized, _matched = _redact_secret_spans(normalized)
     if action == "resolve" and not normalized:
         raise FindingDispositionConflict("resolving a finding requires a note")
     return normalized
@@ -475,7 +593,7 @@ class SentinelService:
         return events
 
     def _prepare_recorded_event(self, event: dict[str, Any]) -> dict[str, Any]:
-        recorded = _redact_secrets(dict(event))
+        recorded = redact_event_secrets(dict(event))
         # Server-owned fields are always assigned locally. Caller-provided values
         # must not be able to break sorting or spoof event identity.
         recorded["event_id"] = "evt_" + uuid.uuid4().hex[:12]
@@ -572,7 +690,7 @@ class SentinelService:
         return recorded
 
     def _trusted_session_observation_candidate(self, event: dict[str, Any]) -> dict[str, Any]:
-        candidate = _redact_secrets(dict(event))
+        candidate = redact_event_secrets(dict(event))
         candidate = strip_untrusted_usage_truth_metadata(candidate)
         candidate = strip_untrusted_instrumentation_marker_metadata(candidate)
         candidate = strip_client_context_provenance(candidate)

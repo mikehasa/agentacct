@@ -452,10 +452,11 @@ def test_event_note_redacts_secret_shaped_summary_in_storage_and_output(tmp_path
     record = CliRunner().invoke(app, ["event", "note", f"called {secretish}", "--store-dir", str(store_dir)])
 
     assert record.exit_code == 0, record.output
-    assert "[REDACTED]" in record.output
+    # Only the secret span is replaced now: the surrounding note survives.
+    assert "called [REDACTED_SECRET]" in record.output
     assert secretish not in record.output
     stored = (store_dir / "events.jsonl").read_text(encoding="utf-8")
-    assert "[REDACTED]" in stored
+    assert "called [REDACTED_SECRET]" in stored
     assert secretish not in stored
 
 
