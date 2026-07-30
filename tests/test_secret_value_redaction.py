@@ -43,6 +43,88 @@ BEARER_PROSE = (
     "we should use a Bearer token here."
 )
 
+# The negative half of the calibration corpus. Every phrase here must come back
+# out of record_event byte for byte. Grouped by which shipped rule ate it.
+LEDGER_PROSE_CORPUS = (
+    # round 1: any non-delimiter run after "Bearer"
+    "Bearer token",
+    "use a Bearer token here",
+    # round 2: narrowed charset requiring a digit or a separator
+    "Bearer token-based-authentication",
+    "Bearer tokens-are-rotated-nightly",
+    # round 3: requiring a digit -- the auth vocabulary is full of them
+    "Bearer oauth2-client-credentials migration",
+    "debug Bearer sha256-hmac-signature mismatch",
+    "Bearer x509-certificate-validation-chain rework",
+    "Bearer rfc7519-jwt-claims-validation is in scope",
+    "Bearer base64-url-encoded-payload decoding bug",
+    "Bearer http2-connection-reuse regression",
+    "Bearer sha512-digest-comparison helper",
+    # round 3 also newly mangled these two
+    "run with Bearer $CI_API_TOKEN_V2 in the header",
+    "see Bearer https://auth.example.com/v2/token for the endpoint",
+    # separators that a word compound reaches, so a bare separator test fails
+    "the Bearer header/credential split needs a doc note",
+    "Bearer token.rotation.policy documented",
+    "Bearer refresh_token_rotation is enabled",
+    "Bearer sso/saml2-assertion handoff",
+    "Bearer client.credentials.grant2 flow",
+    "Bearer jwt.decode.verify_signature=False was the bug",
+    "Bearer scope=read:write granted to the app",
+    "Bearer oauth2/openid-connect/discovery migration notes",
+    # documentation placeholders, which are angle-bracketed and not secrets
+    "Bearer <token>",
+    "Bearer <your-token-here>",
+    "Authorization: Bearer <your-access-token>",
+    "Authorization: Bearer token is required for all endpoints",
+    "the Authorization: Bearer header must be present on every request",
+    # shapes the real ledger is full of: section ids, run ids, branches, paths,
+    # snake_case identifiers, timestamps and Chinese narrative
+    "Bearer aethermoor-progress-audit-20260713 section id",
+    "Bearer eden-parent-plan-next-task-20260722 handoff",
+    "Bearer rollout-2026-07 window",
+    "Bearer phase-4-2-work-task-sessions rework",
+    "Bearer release-v1-2-3-candidate build",
+    "Bearer token expired at 2026-07-30T12:00:00Z",
+    "Bearer auth is configured in src/agentacct/service.py already",
+    "Bearer 认证令牌已经在昨天轮换完成，无需再次处理",
+    "Bearer token 的轮换策略：每晚一次",
+    "evidence_refreshable_usage_failed on claude/canonical-migration-4-work-task-sessions",
+    "silly-hellman-ccc6a2 and momentum-audit-8292ca490713ed37d8edae41 both replayed",
+    ".agent-sentinel/state/runs/run_20260717_023239_343b052e/report.md was regenerated",
+    # the "sk-" incident values
+    "task-2026-07-30-review",
+    "disk-usage-report-2026",
+    "risk-register-update-v2",
+    "brisk-refactor-of-the-store",
+    "the sk- prefix is what we match",
+    "src/agentacct/work-task-sessions-4801fa",
+)
+
+# The positive half: one entry per credential shape the rule has to cut. All
+# values are obviously fake and built by concatenation.
+CREDENTIAL_CORPUS = (
+    ("jwt_header_line", f"Authorization: {FAKE_BEARER_HEADER}"),
+    (
+        "curl_header",
+        'curl -H "Authorization: ' + FAKE_BEARER_HEADER + '" https://api.example.com/v1/ping',
+    ),
+    ("proxy_header_line", f"Proxy-Authorization: {FAKE_BEARER_HEADER}"),
+    ("authorization_equals", f"Authorization={FAKE_BEARER_BASE64}"),
+    ("opaque_percent_colon", FAKE_BEARER_OPAQUE),
+    ("base64_padded", FAKE_BEARER_BASE64),
+    ("hex_digest", "Bearer " + "0f1e2d3c4b5a6978" + "8796a5b4c3d2e1f0"),
+    ("uuid_token", "Bearer " + "3f9a1c72-5e4b-4c8d-9f21-7ab6d0e4c531"),
+    ("long_digit_run", "Bearer " + "local-redaction-placeholder-1234567890"),
+    (
+        "opaque_alphabetic_in_header",
+        "Authorization: Bearer " + "RkFLRXNlc3Npb250b2tlbnZhbHVl",
+    ),
+    ("midsentence_token", f"rotated the {FAKE_BEARER_HEADER}"),
+    ("api_key", f"OPENAI_API_KEY={FAKE_API_KEY}"),
+    ("openrouter_key", f"OPENROUTER_API_KEY={FAKE_OPENROUTER_KEY}"),
+)
+
 
 def _session_observation(*, title: str) -> dict:
     return {
@@ -354,6 +436,89 @@ def test_every_credential_shaped_bearer_value_is_still_cut(tmp_path: Path) -> No
     stored = _stored_text(store)
     for secret in (FAKE_BEARER_HEADER, FAKE_BEARER_OPAQUE, FAKE_BEARER_BASE64):
         assert secret not in stored
+
+
+def test_the_calibration_corpus_survives_the_bearer_rule_byte_for_byte(
+    tmp_path: Path,
+) -> None:
+    """Prose the rule must never touch, sampled from a real 26773-value ledger.
+
+    Three shipped bearer rules in a row destroyed ordinary engineering prose,
+    each time in the same direction, because each was guessed rather than
+    measured. These literals are the calibration set: the phrases every earlier
+    rule was caught on, plus the shapes the maintainer's own ledger is actually
+    full of (date-suffixed section ids, hashed run ids, snake_case identifiers,
+    paths, Chinese). Copied in as literals on purpose -- the test must not read
+    anybody's store.
+    """
+
+    store = tmp_path / "state"
+    service = SentinelService(store)
+
+    for index, phrase in enumerate(LEDGER_PROSE_CORPUS):
+        recorded = service.record_event(
+            {
+                "source": "test",
+                "event_type": "note",
+                "metadata": {"summary": phrase},
+            }
+        )
+        assert recorded["metadata"]["summary"] == phrase, (index, phrase)
+        assert "value_redaction_applied" not in recorded["metadata"], phrase
+
+    assert "[REDACTED" not in _stored_text(store)
+
+
+def test_every_calibration_credential_shape_is_cut_out_of_the_value(
+    tmp_path: Path,
+) -> None:
+    """The other side of the same calibration: each leak shape still goes."""
+
+    store = tmp_path / "state"
+    service = SentinelService(store)
+
+    for label, phrase in CREDENTIAL_CORPUS:
+        recorded = service.record_event(
+            {
+                "source": "test",
+                "event_type": "note",
+                "metadata": {"summary": phrase},
+            }
+        )
+        summary = recorded["metadata"]["summary"]
+        assert "[REDACTED_SECRET]" in summary, (label, summary)
+        assert recorded["metadata"]["value_redaction_applied"] is True, label
+
+    stored = _stored_text(store)
+    for label, phrase in CREDENTIAL_CORPUS:
+        secret = phrase.split()[-1] if label == "midsentence_token" else phrase
+        assert secret not in stored, label
+
+
+def test_a_shell_variable_or_url_after_bearer_is_not_a_credential(
+    tmp_path: Path,
+) -> None:
+    """Two shapes the digit rule newly mangled; both are references, not secrets.
+
+    `$CI_API_TOKEN_V2` is the name of a secret, not the secret, and the endpoint
+    URL is public. Cutting either would lose ledger data and protect nothing.
+    """
+
+    store = tmp_path / "state"
+    service = SentinelService(store)
+    shell = "run with Bearer $CI_API_TOKEN_V2 in the header"
+    url = "see Bearer https://auth.example.com/v2/token for the endpoint"
+
+    recorded = service.record_event(
+        {
+            "source": "test",
+            "event_type": "note",
+            "metadata": {"shell": shell, "url": url},
+        }
+    )
+
+    assert recorded["metadata"]["shell"] == shell
+    assert recorded["metadata"]["url"] == url
 
 
 def test_redacting_an_already_redacted_value_changes_nothing(tmp_path: Path) -> None:

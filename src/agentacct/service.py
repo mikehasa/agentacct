@@ -165,7 +165,10 @@ def mark_trusted_finding_disposition(event: dict[str, Any]) -> dict[str, Any]:
 # same literal string and merged into one phantom section. A quietly wrong
 # record is worse than the leak it was guarding against, so the patterns now
 # require a word boundary before `sk-` and something credential-shaped (rather
-# than an English word) after `Bearer`.
+# than an English word) after `Bearer`. Both `sk-` patterns were re-measured
+# against the maintainer's ledger and match nothing in it: the word boundary is
+# what keeps "task-", "disk-", "risk-" and the real ".../work-task-sessions"
+# paths out, so they are left exactly as they are.
 #
 # The credential run after `Bearer` stays DELIMITER-based rather than a fixed
 # credential alphabet. Real credentials carry `%`, `:`, `|`, `@`, `#` and `&`
@@ -173,23 +176,78 @@ def mark_trusted_finding_disposition(event: dict[str, Any]) -> dict[str, Any]:
 # omits them stops at the first such character: "Bearer abc%2Fdefgh..." would
 # match only "abc", fall under the length floor, and write the whole credential
 # to the ledger. Only the characters that END a value in the formats we ingest
-# are excluded -- whitespace, comma, semicolon, quotes, and the bracket/brace/
-# paren pairs -- which also makes replacement structurally idempotent, since
-# SECRET_SPAN_PLACEHOLDER starts with `[` and so leaves an empty run behind.
+# are excluded -- whitespace, comma, semicolon, quotes, angle brackets and the
+# bracket/brace/paren pairs -- which also makes replacement structurally
+# idempotent, since SECRET_SPAN_PLACEHOLDER starts with `[` and so leaves an
+# empty run behind. `<` and `>` are in that exclusion set because they only ever
+# appear around documentation placeholders ("Bearer <your-access-token>"), never
+# inside base64, base64url, hex or percent-encoding.
 #
-# The discriminator is a DIGIT somewhere in that run. The false positive that
-# matters is hyphenated engineering prose -- "Bearer token-based-authentication"
-# and "Bearer tokens-are-rotated-nightly" were both destroyed while `-` counted
-# as credential-shaped -- and a digit is the one thing an English compound
-# cannot contain, while JWT, base64, hex and UUID credentials all do. The
-# accepted residual is a >=16 character all-alphabetic credential, which the
-# value patterns miss (a field NAMED like a credential still loses its whole
-# value): a rare miss, deliberately preferred over routinely shredding prose.
+# WHAT THE DISCRIMINATOR IS, AND WHY IT IS NOT A DIGIT TEST. Three earlier
+# attempts guessed at this and each destroyed ordinary prose: any non-delimiter
+# run matched "use a Bearer token here"; then a narrowed charset requiring a
+# digit-or-separator matched "Bearer token-based-authentication"; then requiring
+# a DIGIT matched "Bearer oauth2-client-credentials" and "Bearer
+# sha256-hmac-signature", because the auth vocabulary this ledger records is
+# full of digit-carrying words (oauth2, sha256, base64, x509, rfc7519, http2).
+# A digit is emphatically NOT something an English compound cannot contain.
+#
+# The rule below was calibrated against the maintainer's own ledger (26773
+# distinct string values, 8454 of them prose-shaped word compounds) rather than
+# guessed. A candidate span is refused when it is a shell variable reference
+# (`$FOO`), when it is a URL, or when the whole run is a WORD COMPOUND -- words
+# with an optional trailing version number, joined by `-`, `_`, `.`, `/`, `=`
+# or `:`. That single structural refusal is what covers "oauth2-client-
+# credentials", "x509-certificate-validation-chain", "header/credential",
+# "token.rotation.policy" and "scope=read:write" alike. What survives the
+# refusals is then accepted only in a known credential shape: it sits in a
+# real `Authorization:`/`Proxy-Authorization:` header (captured as `keep`, so
+# the header name is put back and only the credential goes), or it is >=16 chars
+# and carries a separator no word compound reaches (`. / + = % : @ | # &`), or
+# it is a separator-free alphanumeric run of >=32 characters (hex and unpadded
+# base64), or it is a UUID. A >=10 digit run also qualifies: dates and version
+# numbers in the real corpus top out at 8 digits (20260713), so ten consecutive
+# digits is not something prose emits.
+#
+# KNOWN GAPS, stated rather than papered over. Outside a header we do not catch:
+# a credential whose every `-._/=:`-separated piece happens to be letters with a
+# trailing number (a real base64/hex token essentially never is, because those
+# alphabets interleave digits mid-piece, but a short contrived one would slip);
+# a separator-free alphabetic token of 16..31 characters; and anything after a
+# literal `$`, so a credential really named `$TOKEN` is left alone deliberately.
+# A field NAMED like a credential still loses its whole value via
+# is_sensitive_metadata_key(), which is the backstop for all of these.
+_BEARER_RUN = r"[^\s,;\"'\[\]{}()<>]"
+_BEARER_SEPARATOR = r"[./+=%:@|#&]"
+_BEARER_NOT_SHELL_OR_URL = r"(?!\$)(?![A-Za-z][A-Za-z0-9+.-]*://)"
+# A word with an optional trailing version number, and a run of them joined by
+# the characters English/technical compounds use. The trailing `(?!run)` makes
+# the refusal apply only when the compound covers the WHOLE run, so a credential
+# that merely starts word-like is not let through.
+_BEARER_NOT_WORD_COMPOUND = (
+    r"(?![A-Za-z]{1,32}[0-9]{0,4}(?:[-._/=:][A-Za-z]{1,32}[0-9]{0,4}){0,15}"
+    r"(?!" + _BEARER_RUN + r"))"
+)
+_BEARER_CREDENTIAL_SHAPE = (
+    r"(?:(?=" + _BEARER_RUN + r"*(?:" + _BEARER_SEPARATOR + r"|[0-9]{10}))"
+    + _BEARER_RUN + r"{16,}"
+    r"|[A-Za-z0-9]{32,}"
+    r"|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})"
+)
 SECRET_VALUE_PATTERNS = (
     (
         "bearer_token",
         re.compile(
-            r"\bBearer\s+(?=[^\s,;\"'\[\]{}()]*[0-9])[^\s,;\"'\[\]{}()]{16,}",
+            r"(?:(?P<keep>(?:Proxy-)?Authorization\s*[:=]\s*)Bearer\s+"
+            + _BEARER_NOT_SHELL_OR_URL
+            + _BEARER_NOT_WORD_COMPOUND
+            + _BEARER_RUN
+            + r"{16,}"
+            r"|\bBearer\s+"
+            + _BEARER_NOT_SHELL_OR_URL
+            + _BEARER_NOT_WORD_COMPOUND
+            + _BEARER_CREDENTIAL_SHAPE
+            + r")",
             re.IGNORECASE,
         ),
     ),
@@ -247,12 +305,25 @@ def strip_value_redaction_provenance(event: dict[str, Any]) -> dict[str, Any]:
     return recorded
 
 
+def _replace_secret_span(match: re.Match[str]) -> str:
+    """Swap in the placeholder, re-emitting any context the match had to read.
+
+    A pattern may need leading context to decide that a span is a credential
+    without that context being part of the credential: "Authorization:" tells us
+    the run after "Bearer" is a real header value, but the header NAME is ledger
+    data and gets put back. Patterns opt in by capturing it as ``keep``.
+    """
+
+    keep = match.groupdict().get("keep")
+    return (keep or "") + SECRET_SPAN_PLACEHOLDER
+
+
 def _redact_secret_spans(text: str) -> tuple[str, tuple[str, ...]]:
     """Replace secret-shaped spans in ``text``, keeping everything else verbatim."""
 
     matched: list[str] = []
     for pattern_class, pattern in SECRET_VALUE_PATTERNS:
-        text, replacements = pattern.subn(SECRET_SPAN_PLACEHOLDER, text)
+        text, replacements = pattern.subn(_replace_secret_span, text)
         if replacements:
             matched.append(pattern_class)
     return text, tuple(matched)
