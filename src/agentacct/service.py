@@ -166,11 +166,30 @@ def mark_trusted_finding_disposition(event: dict[str, Any]) -> dict[str, Any]:
 # record is worse than the leak it was guarding against, so the patterns now
 # require a word boundary before `sk-` and something credential-shaped (rather
 # than an English word) after `Bearer`.
+#
+# The credential run after `Bearer` stays DELIMITER-based rather than a fixed
+# credential alphabet. Real credentials carry `%`, `:`, `|`, `@`, `#` and `&`
+# (percent-encoding, basic-auth pairs, vendor prefixes), and a charset that
+# omits them stops at the first such character: "Bearer abc%2Fdefgh..." would
+# match only "abc", fall under the length floor, and write the whole credential
+# to the ledger. Only the characters that END a value in the formats we ingest
+# are excluded -- whitespace, comma, semicolon, quotes, and the bracket/brace/
+# paren pairs -- which also makes replacement structurally idempotent, since
+# SECRET_SPAN_PLACEHOLDER starts with `[` and so leaves an empty run behind.
+#
+# The discriminator is a DIGIT somewhere in that run. The false positive that
+# matters is hyphenated engineering prose -- "Bearer token-based-authentication"
+# and "Bearer tokens-are-rotated-nightly" were both destroyed while `-` counted
+# as credential-shaped -- and a digit is the one thing an English compound
+# cannot contain, while JWT, base64, hex and UUID credentials all do. The
+# accepted residual is a >=16 character all-alphabetic credential, which the
+# value patterns miss (a field NAMED like a credential still loses its whole
+# value): a rare miss, deliberately preferred over routinely shredding prose.
 SECRET_VALUE_PATTERNS = (
     (
         "bearer_token",
         re.compile(
-            r"\bBearer\s+(?=[A-Za-z0-9._~+/=-]*[0-9._~+/=-])[A-Za-z0-9._~+/=-]{16,}",
+            r"\bBearer\s+(?=[^\s,;\"'\[\]{}()]*[0-9])[^\s,;\"'\[\]{}()]{16,}",
             re.IGNORECASE,
         ),
     ),
@@ -182,7 +201,9 @@ SECRET_VALUE_PATTERNS = (
 # survive. Deliberately distinct from the "[REDACTED]" used for a sensitive key
 # NAME (where dropping the whole value is the right call) so a reader can tell
 # "a secret was cut out of this value" from "this field was a credential", and
-# built from characters no pattern above can match, so redaction is idempotent.
+# built from characters no pattern above can match -- the brackets are excluded
+# from the bearer run and there is no `sk-` in it -- so redaction is idempotent
+# and a second pass can never eat its own placeholder.
 SECRET_SPAN_PLACEHOLDER = "[REDACTED_SECRET]"
 
 # Server-authored redaction provenance. Written only by the recording paths
@@ -202,14 +223,27 @@ RESERVED_VALUE_REDACTION_KEYS = (
 
 def strip_value_redaction_provenance(event: dict[str, Any]) -> dict[str, Any]:
     metadata = event.get("metadata")
-    if not isinstance(metadata, dict) or not any(key in metadata for key in RESERVED_VALUE_REDACTION_KEYS):
+    # The stamp lands top-level when metadata is off-contract, so a caller can
+    # plant a forged claim in either home; both are cleared, or "an agent
+    # cannot claim a redaction that never happened" would only hold for one.
+    homes = [event, *([metadata] if isinstance(metadata, dict) else [])]
+    if not any(key in home for home in homes for key in RESERVED_VALUE_REDACTION_KEYS):
         return event
-    sanitized = dict(metadata)
-    for key in RESERVED_VALUE_REDACTION_KEYS:
-        sanitized.pop(key, None)
-    sanitized["reserved_value_redaction_provenance_stripped"] = True
-    recorded = dict(event)
-    recorded["metadata"] = sanitized
+    recorded = {
+        key: value
+        for key, value in event.items()
+        if key not in RESERVED_VALUE_REDACTION_KEYS
+    }
+    if isinstance(metadata, dict):
+        sanitized = {
+            key: value
+            for key, value in metadata.items()
+            if key not in RESERVED_VALUE_REDACTION_KEYS
+        }
+        sanitized["reserved_value_redaction_provenance_stripped"] = True
+        recorded["metadata"] = sanitized
+    else:
+        recorded["reserved_value_redaction_provenance_stripped"] = True
     return recorded
 
 
@@ -293,6 +327,52 @@ def redact_event_secrets(event: dict[str, Any]) -> dict[str, Any]:
     redactions: list[dict[str, str]] = []
     redacted = _redact_secrets(sanitized, found=redactions)
     return _stamp_value_redaction_marker(redacted, redactions)
+
+
+# Top-level fields the server always assigns for itself. A caller-supplied
+# value for one of them is overwritten, so a redaction of it never survives to
+# be read.
+SERVER_ASSIGNED_EVENT_FIELDS = ("event_id", "created_at")
+
+
+def drop_server_assigned_redaction_rows(event: dict[str, Any]) -> dict[str, Any]:
+    """Forget marker rows naming a field the server overwrites anyway.
+
+    An incoming ``event_id`` carrying a secret-shaped span is redacted like any
+    other string, but the server then assigns a fresh id over it. Left alone,
+    the marker would point a reader at an ordinary ``evt_...`` value with no
+    placeholder in it -- a claim the stored row cannot support. The rows go;
+    the marker itself goes too if nothing else was cut.
+    """
+
+    metadata = event.get("metadata")
+    # The marker lives in metadata, or beside it when metadata is off-contract.
+    for in_metadata, container in ((True, metadata), (False, event)):
+        if not isinstance(container, dict):
+            continue
+        detail = container.get(VALUE_REDACTION_FIELDS_KEY)
+        if not isinstance(detail, list):
+            continue
+        kept = [
+            row
+            for row in detail
+            if not (
+                isinstance(row, dict)
+                and row.get("field") in SERVER_ASSIGNED_EVENT_FIELDS
+            )
+        ]
+        if len(kept) == len(detail):
+            return event
+        marked = {
+            key: value
+            for key, value in container.items()
+            if key not in RESERVED_VALUE_REDACTION_KEYS
+        }
+        if kept:
+            marked[VALUE_REDACTION_MARKER_KEY] = True
+            marked[VALUE_REDACTION_FIELDS_KEY] = kept
+        return {**event, "metadata": marked} if in_metadata else marked
+    return event
 
 
 def _safe_nonnegative_int(value: Any) -> int:
@@ -592,13 +672,28 @@ class SentinelService:
                 events.append(event)
         return events
 
-    def _prepare_recorded_event(self, event: dict[str, Any]) -> dict[str, Any]:
-        recorded = redact_event_secrets(dict(event))
+    def _prepare_recorded_event(
+        self,
+        event: dict[str, Any],
+        *,
+        already_redacted: bool = False,
+    ) -> dict[str, Any]:
+        """Assign server-owned identity to one event, redacting it on the way.
+
+        ``already_redacted`` is for the trusted session-observation lane, which
+        redacts and stamps in ``_trusted_session_observation_candidate`` -- it
+        has to, because the allowlist rebuild and the revision digest both run
+        on the redacted content. Re-running the redactor here would strip that
+        server-authored marker as if a caller had forged it, and the row would
+        record a cut with nothing saying so.
+        """
+
+        recorded = dict(event) if already_redacted else redact_event_secrets(dict(event))
         # Server-owned fields are always assigned locally. Caller-provided values
         # must not be able to break sorting or spoof event identity.
         recorded["event_id"] = "evt_" + uuid.uuid4().hex[:12]
         recorded["created_at"] = time.time()
-        return recorded
+        return drop_server_assigned_redaction_rows(recorded)
 
     def _find_idempotent_event(self, event: dict[str, Any], idempotency_key: str) -> dict[str, Any] | None:
         for existing in reversed(self._read_events_file_order()):
@@ -690,7 +785,12 @@ class SentinelService:
         return recorded
 
     def _trusted_session_observation_candidate(self, event: dict[str, Any]) -> dict[str, Any]:
-        candidate = redact_event_secrets(dict(event))
+        # Prune before the allowlist rebuild below: that rebuild is what
+        # computes observation_revision, so a marker row dropped afterwards
+        # would leave the stored digest disagreeing with the stored content
+        # and make every re-import of the same source fact look like a new
+        # revision.
+        candidate = drop_server_assigned_redaction_rows(redact_event_secrets(dict(event)))
         candidate = strip_untrusted_usage_truth_metadata(candidate)
         candidate = strip_untrusted_instrumentation_marker_metadata(candidate)
         candidate = strip_client_context_provenance(candidate)
@@ -750,7 +850,9 @@ class SentinelService:
                     local_session_observation_revision(row) == candidate_revision
                     for row in same_identity
                 ):
-                    conflict_row = self._prepare_recorded_event(candidate)
+                    conflict_row = self._prepare_recorded_event(
+                        candidate, already_redacted=True
+                    )
                     self._write_event_partition_unlocked(
                         [*existing, conflict_row], preserved_unparseable
                     )
@@ -762,7 +864,9 @@ class SentinelService:
             else:
                 authority = selected[0]
                 if authority is candidate:
-                    recorded = self._prepare_recorded_event(candidate)
+                    recorded = self._prepare_recorded_event(
+                        candidate, already_redacted=True
+                    )
                     rewritten = [
                         row
                         for row in existing
@@ -884,7 +988,7 @@ class SentinelService:
                 if len(current_selected) != 1:
                     continue
                 replacements[key] = self._prepare_recorded_event(
-                    current_selected[0]
+                    current_selected[0], already_redacted=True
                 )
             if replacements:
                 kept = [
@@ -1561,7 +1665,9 @@ class SentinelService:
                                 continue
                             seen_revisions.add(revision)
                             conflict_rows.append(
-                                self._prepare_recorded_event(candidate)
+                                self._prepare_recorded_event(
+                                    candidate, already_redacted=True
+                                )
                             )
                     if conflict_rows:
                         self._write_event_partition_unlocked(
@@ -1622,7 +1728,12 @@ class SentinelService:
                     for event in chosen
                 ]
                 recorded = [
-                    self._prepare_recorded_event(event)
+                    # Observation rows arrive already redacted and stamped by
+                    # _trusted_session_observation_candidate; every other lane
+                    # is raw here and gets redacted on the way in.
+                    self._prepare_recorded_event(
+                        event, already_redacted=trusted_session_observation_import
+                    )
                     for event in prepared_events
                 ]
                 self._write_event_partition_unlocked(
