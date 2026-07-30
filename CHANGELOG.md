@@ -6,6 +6,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Local logs now shows the recording calls agentacct refused, with counts and a
+  fixed set of reason codes. A refused call previously left no trace anywhere —
+  no store entry, no counter, no log line — so an agent that failed to record
+  was invisible to you and to the maintainer, while the dashboard told you to
+  record more work. The figure is derived at read time from data already on
+  disk, so it covers refusals that predate this release, and it stores only
+  counts and reason codes, never the offending value or path.
+
+### Changed
+- The "usage without work context" prompt no longer blames you for all of it;
+  it now points at the refused-recording list for the part agentacct caused.
+
 ### Fixed
 - `agentacct_record_section` now accepts `title` as an alias for
   `section_title`. The recording contract agentacct ships to every client told
