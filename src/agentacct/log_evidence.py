@@ -160,11 +160,12 @@ def extract_created_event_id(text: str) -> str | None:
 #
 # ``evidenced_outputs_skipped`` is NOT that number and must never be presented
 # as one. It also counts server-registration-name rejections, wire-shape drift,
-# successful-but-not-created-event payloads, and refusals the CLIENT made
-# before the call ever reached agentacct (codex's approval layer, Claude Code's
-# input validator). Only the classification below claims "agentacct refused
-# this"; everything else stays an unclassified skip, so the two numbers
-# reconcile by subtraction instead of disagreeing.
+# successful-but-not-created-event payloads, refusals the CLIENT made before
+# the call ever reached agentacct (codex's approval layer, Claude Code's input
+# validator), and failures of the client's own transport that agentacct never
+# saw at all (a timed-out or dropped call). Only the classification below
+# claims "agentacct refused this"; everything else stays an unclassified skip,
+# so the two numbers reconcile by subtraction instead of disagreeing.
 #
 # PRIVACY: the rejection path runs BEFORE the redactor (which only runs on a
 # successful record_event), so the refusal text can carry raw user content —
@@ -221,11 +222,33 @@ REFUSED_RECORDING_REASON_CODES = (
     "other",
 )
 
+# The JSON-RPC error codes agentacct's OWN server can answer a tools/call with.
+# Enumerated from mcp.py's dispatch: FileNotFoundError -> -32004, InvalidParams
+# and ValueError (which is also how "Unknown tool" comes back) -> -32602, and
+# every other exception — plus the store-less degraded server, whose whole job
+# is to stay connected and refuse — -> -32000.
+#
+# Every other code on the wire belongs to the CLIENT's transport layer, not to
+# this product: -32001 request timed out, -32603 internal error, -32600/-32700
+# framing, -32601 method not found. A call that never got an answer is not a
+# call agentacct refused, and counting one is the same overstatement the
+# position anchor below exists to prevent. Keyed on the code rather than on the
+# refusal wording so rewording a message in mcp.py cannot change the count.
+AGENTACCT_MCP_ERROR_CODES = frozenset({-32000, -32004, -32602})
+
+# -32000 is the JSON-RPC "implementation-defined server error" code, and the MCP
+# client libraries reuse it for their own ConnectionClosed. agentacct's -32000s
+# are the degraded-store refusal and unexpected server exceptions; the client's
+# is this one fixed string, which no agentacct code path produces. Excluded by
+# the CLIENT's wording — stable, and not prose this repo edits — because the
+# code alone cannot separate the two.
+_TRANSPORT_ERROR_MESSAGES = frozenset({"connection closed"})
+
 # Both wire spellings of a JSON-RPC error from the agentacct MCP server:
 # Claude Code renders "MCP error -32602: <message>", codex renders
 # "Mcp error: -32602: <message>" inside its own "tool call failed for ..."
 # wrapper. The tool-name/namespace allowlist upstream is what proves the
-# error came from THIS server; this pattern only locates the message.
+# error came from THIS server; this pattern only locates the code and message.
 #
 # Matched with .match at the two POSITIONS a real wire refusal can occupy —
 # never .search over the whole output. A successful call's payload routinely
@@ -233,12 +256,19 @@ REFUSED_RECORDING_REASON_CODES = (
 # fixing MCP error -32602: ..." is real recorded work), and a scan of the whole
 # blob counts that success as a refusal: a number that lies in the one
 # direction this surface exists to be honest about.
-_MCP_ERROR_MESSAGE_RE = re.compile(r"mcp error:?\s*-\d+:[ \t]*(?P<message>[^\r\n]+)", re.IGNORECASE)
+# The digit run is bounded: this reads untrusted transcript text, and int() on
+# a several-thousand-digit run raises on the interpreter's own conversion limit.
+# Every JSON-RPC code is five digits, so nothing real is lost.
+_MCP_ERROR_MESSAGE_RE = re.compile(
+    r"mcp error:?\s*(?P<code>-\d{1,6}):[ \t]*(?P<message>[^\r\n]+)", re.IGNORECASE
+)
 # The line codex's anyhow wrapper puts its cause on: "Caused by:\n    <cause>".
 _CAUSED_BY_LINE = "caused by:"
-# The tag Claude Code puts around a failed tool_result. Stripped from the FIRST
-# line only, so the anchor still holds: nothing but an error is ever wrapped in
-# it, and a payload that merely quotes an error does not carry it.
+# The tag Claude Code puts around a failed tool_result. Written both inline
+# ("<tool_use_error>MCP error ...") and on a line of its own with the message
+# beneath it. Stripped only where it leads the anchored line, so the anchor
+# still holds: nothing but an error is ever wrapped in it, and a payload that
+# merely quotes an error does not carry it.
 _CLAUDE_TOOL_ERROR_TAG = "<tool_use_error>"
 # codex wraps a refusal as: tool call failed for `<server key>/<tool>`. The
 # server segment is matched loosely on purpose — historical rollouts carry
@@ -252,32 +282,63 @@ _MISSING_ARGUMENT_PREFIX = "missing required argument:"
 _UNKNOWN_RUN_ID_PREFIX = "unknown run_id:"
 
 
+def _first_carrying_line(lines: list[str]) -> str | None:
+    """First line that carries anything, with the error tag peeled off.
+
+    Blank lines and a bare ``<tool_use_error>`` line carry no content, so
+    neither is the anchor: stopping on one only makes a real refusal invisible.
+    Skipping them widens WHAT is recognised without widening WHERE it is looked
+    for, which is the property the position anchor exists for.
+    """
+
+    for line in lines:
+        stripped = line.strip().removeprefix(_CLAUDE_TOOL_ERROR_TAG).strip()
+        if stripped:
+            return stripped
+    return None
+
+
 def _anchored_mcp_error_message(text: str) -> str | None:
-    """The refusal message when ``text`` IS a wire refusal, else None.
+    """The refusal message when ``text`` IS a wire refusal from agentacct.
 
     Only two positions count. Claude Code puts the whole tool_result at
-    "MCP error -32602: <message>", so the FIRST line carries it. codex wraps
-    the same refusal in its own "tool call failed for ..." error and puts the
-    cause on the line directly after "Caused by:". Anywhere else the text is
+    "MCP error -32602: <message>", so the first line that carries anything
+    holds it. codex wraps the same refusal in its own "tool call failed for
+    ..." error and puts the cause under "Caused by:". Anywhere else the text is
     payload — quoted, echoed, or narrated by a call that SUCCEEDED — and must
     not be read as agentacct having refused anything.
+
+    A "Caused by:" that follows nothing is not a wrapper's cause header, so it
+    does not open an anchor; without that check the first line of any text
+    could nominate the second.
+
+    The located error must also carry a code THIS server emits
+    (:data:`AGENTACCT_MCP_ERROR_CODES`). A client-layer failure — a timed-out
+    or dropped call — is rendered in the same place and the same shape, and it
+    is not a refusal: nothing reached agentacct to be refused.
     """
 
     lines = text.splitlines()
-    if not lines:
-        return None
-    candidates = [lines[0].strip().removeprefix(_CLAUDE_TOOL_ERROR_TAG)]
-    candidates.extend(
-        lines[index + 1]
-        for index, line in enumerate(lines[:-1])
-        if line.strip().lower() == _CAUSED_BY_LINE
-    )
+    candidates: list[str] = []
+    leading = _first_carrying_line(lines)
+    if leading is not None:
+        candidates.append(leading)
+    for index, line in enumerate(lines):
+        if line.strip().lower() != _CAUSED_BY_LINE:
+            continue
+        if not any(previous.strip() for previous in lines[:index]):
+            continue
+        cause = _first_carrying_line(lines[index + 1:])
+        if cause is not None:
+            candidates.append(cause)
     for candidate in candidates:
-        match = _MCP_ERROR_MESSAGE_RE.match(candidate.strip())
+        match = _MCP_ERROR_MESSAGE_RE.match(candidate)
         if match is None:
             continue
+        if int(match.group("code")) not in AGENTACCT_MCP_ERROR_CODES:
+            continue
         message = match.group("message").strip()
-        if message:
+        if message and message.lower() not in _TRANSPORT_ERROR_MESSAGES:
             return message
     return None
 
@@ -351,12 +412,15 @@ def classify_refused_recording(text: Any, *, tool: Any = None) -> tuple[str | No
 
     Returns None — deliberately, not "other" — when the text is not an
     agentacct MCP error: a client-side refusal (codex's approval layer, Claude
-    Code's input validator), a successful-but-not-created-event payload that
-    merely QUOTES an agentacct error, or wire drift. Those are real skips but
-    they are NOT recording attempts this product rejected, and counting them as
-    such would overstate the number the whole surface exists to be honest
-    about. The error is therefore located by position
-    (:func:`_anchored_mcp_error_message`), never found anywhere in the blob.
+    Code's input validator), a client TRANSPORT failure that never reached this
+    server (request timed out, connection closed), a
+    successful-but-not-created-event payload that merely QUOTES an agentacct
+    error, or wire drift. Those are real skips but they are NOT recording
+    attempts this product rejected, and counting them as such would overstate
+    the number the whole surface exists to be honest about. The error is
+    therefore located by position AND required to carry a code this server
+    emits (:func:`_anchored_mcp_error_message`), never found anywhere in the
+    blob and never trusted just for looking like an MCP error.
 
     ``tool`` is the caller's allowlisted creation-tool name; codex's own
     "tool call failed for `<server>/<tool>`" wrapper is used as a fallback and

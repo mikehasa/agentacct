@@ -1902,7 +1902,8 @@ def _refused_recording_html(summary: Mapping[str, Any], esc: Any) -> str:
     remainder_note = (
         f'<p class="section-note">A further {esc(_fmt_int(unclassified))} scanned output(s) '
         "donated no recorded event but are NOT counted above: they were refused by the client "
-        "before agentacct saw them, or carried a shape this build does not recognise. They stay "
+        "before agentacct saw them, failed in the client's transport before reaching it (a "
+        "timed-out or dropped call), or carried a shape this build does not recognise. They stay "
         "out of the refusal total rather than inflating it.</p>"
         if unclassified
         else ""

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -28,6 +29,8 @@ from fastapi.testclient import TestClient
 
 import agentacct.client_usage as client_usage_module
 import agentacct.log_evidence as log_evidence_module
+import agentacct.mcp as mcp_module
+import agentacct.work_ledger as work_ledger_module
 from agentacct.api import (
     _REFUSED_RECORDING_REASON_LABELS,
     UsageDiscoveryConfig,
@@ -36,6 +39,7 @@ from agentacct.api import (
 )
 from agentacct.client_usage import discover_claude_code_usage, discover_codex_usage
 from agentacct.log_evidence import (
+    AGENTACCT_MCP_ERROR_CODES,
     REFUSED_RECORDING_REASON_CODES,
     classify_refused_recording,
     refused_recording_rows,
@@ -333,6 +337,186 @@ def test_a_successful_call_quoting_an_error_is_not_counted_in_the_scan(tmp_path)
     html = _refused_recording_html(summary, lambda value: str(value))
     assert "No refused recording calls were found" in html
     assert "refused by agentacct" not in html
+
+
+def test_a_client_transport_failure_is_not_a_refusal() -> None:
+    """WHOSE error it is, not only where it sits.
+
+    A JSON-RPC error rendered in the anchor position can come from the client's
+    own transport instead of this server: the call timed out, or the connection
+    dropped. Nothing reached agentacct, so nothing was refused — reporting one
+    as "agentacct refused this recording call" is the same overstatement as
+    counting a quoted error, just arriving from the other side of the wire.
+    """
+
+    transport = [
+        "MCP error -32001: Request timed out",
+        "MCP error -32603: Internal error",
+        "MCP error -32000: Connection closed",
+        "MCP error -32601: Method not found",
+        "MCP error -32700: Parse error",
+        "MCP error -32600: Invalid Request",
+        "<tool_use_error>MCP error -32001: Request timed out",
+        "tool call error: tool call failed for `agent-sentinel/sentinel_record_section`"
+        "\n\nCaused by:\n    Mcp error: -32001: Request timed out",
+    ]
+    for text in transport:
+        assert classify_refused_recording(text, tool="agentacct_record_section") is None, text
+
+
+def test_every_error_code_agentacct_itself_returns_still_classifies() -> None:
+    """The mirror of the transport test: the fix must not silence the server.
+
+    mcp.py answers a tools/call with -32602 (InvalidParams and ValueError,
+    which is also how "Unknown tool" comes back), -32004 (FileNotFoundError)
+    and -32000 (any other exception, plus the store-less degraded server that
+    stays connected precisely so it can refuse). All three are agentacct
+    refusing a recording call and all three must be counted.
+    """
+
+    assert AGENTACCT_MCP_ERROR_CODES == {-32000, -32004, -32602}
+    for code in sorted(AGENTACCT_MCP_ERROR_CODES):
+        result = classify_refused_recording(
+            f"MCP error {code}: summary must be <= 1200 characters",
+            tool="agentacct_record_section",
+        )
+        assert result == ("agentacct_record_section", "summary", "narrative_over_limit"), code
+    # The degraded server's own refusal carries no argument, but it is still a
+    # recording call this product turned down.
+    degraded = classify_refused_recording(
+        "MCP error -32000: agentacct is connected but has no usable store; restart the MCP"
+        " server with a writable --store-dir <abs path>",
+        tool="agentacct_record_section",
+    )
+    assert degraded == ("agentacct_record_section", None, "other")
+
+
+def test_the_accepted_code_set_still_matches_what_the_server_emits() -> None:
+    """The set is copied out of mcp.py, so it can drift out of it.
+
+    A code the server starts returning that this list does not know about is a
+    silent under-count; a code it stops returning is dead weight. Read the
+    codes back off ``_error``'s call sites rather than off its wording, which
+    is the whole point of keying on the code.
+
+    ``-32601`` is the one deliberate exclusion: it answers an unknown METHOD,
+    which no recording tool call can produce (an unknown TOOL comes back as a
+    ValueError, so -32602).
+    """
+
+    tree = ast.parse(Path(mcp_module.__file__).read_text(encoding="utf-8"))
+    emitted: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or len(node.args) < 2:
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        if name != "_error":
+            continue
+        code = node.args[1]
+        if isinstance(code, ast.UnaryOp) and isinstance(code.op, ast.USub):
+            emitted.add(-code.operand.value)
+
+    assert emitted, "no _error call sites found — the scan, not the server, is what broke"
+    assert emitted - {-32601} == set(AGENTACCT_MCP_ERROR_CODES)
+
+
+def test_a_transport_failure_and_a_refusal_land_in_different_buckets(tmp_path) -> None:
+    """End to end on the real Claude Code channel, one session, two calls."""
+
+    claude_home = tmp_path / "claude-home"
+    project = claude_home / "projects" / "-work-project"
+    project.mkdir(parents=True)
+    lines = [_claude_usage_line(CLAUDE_SESSION)]
+    for tool_use_id, text in (
+        ("toolu_timeout", "MCP error -32001: Request timed out"),
+        ("toolu_refused", f"MCP error -32602: files[0] must be project-relative: {SECRET_PATH}"),
+    ):
+        lines.append(
+            _claude_tool_use_line(
+                CLAUDE_SESSION,
+                tool_use_id=tool_use_id,
+                name="mcp__agentacct__agentacct_record_section",
+            )
+        )
+        lines.append(_claude_tool_result_line(CLAUDE_SESSION, tool_use_id=tool_use_id, text=text))
+    (project / f"{CLAUDE_SESSION}.jsonl").write_text(
+        "\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8"
+    )
+
+    summary = summarize_refused_recording_attempts(
+        discover_claude_code_usage(claude_home=claude_home, limit_sessions=10)
+    )
+
+    assert summary["outputs_skipped"] == 2
+    assert summary["refused_attempt_total"] == 1
+    assert _rows_by_reason(summary) == {"files_not_project_relative": 1}
+    # The timeout is not dropped — it is disclosed as the remainder, which is
+    # what keeps the two figures reconciling instead of disagreeing.
+    assert summary["unclassified_outputs_skipped"] == 1
+
+
+def test_a_refusal_still_counts_behind_blank_and_wrapper_only_lines() -> None:
+    """The anchor is a position, not a line number.
+
+    Three real shapes put nothing on the first line: a tool_result that opens
+    with a newline, Claude Code's ``<tool_use_error>`` written on a line of its
+    own rather than inline, and codex's cause separated from its "Caused by:"
+    header by a blank line. Each was a silent under-count.
+    """
+
+    message = "summary must be <= 1200 characters"
+    shapes = [
+        f"\nMCP error -32602: {message}",
+        f"<tool_use_error>\nMCP error -32602: {message}\n</tool_use_error>",
+        f"\n\n<tool_use_error>\n  MCP error -32602: {message}",
+        "tool call error: tool call failed for `agent-sentinel/sentinel_record_section`"
+        f"\n\nCaused by:\n\n    Mcp error: -32602: {message}",
+    ]
+    for text in shapes:
+        result = classify_refused_recording(text, tool="agentacct_record_section")
+        assert result == ("agentacct_record_section", "summary", "narrative_over_limit"), text
+
+    # Widening WHAT is recognised must not widen WHERE it is looked for: a
+    # payload that merely quotes an error is still not a refusal.
+    assert (
+        classify_refused_recording(
+            f"\npytest passed\ngreen after fixing MCP error -32602: {message}\nbuild ok",
+            tool="agentacct_record_machine_check",
+        )
+        is None
+    )
+
+
+def test_a_leading_caused_by_line_does_not_anchor_the_line_below_it() -> None:
+    """"Caused by:" is a wrapper's header — it has to wrap something.
+
+    With nothing above it, it is just the first line of some payload, and
+    letting it nominate the second line lets any text opt itself in.
+    """
+
+    assert (
+        classify_refused_recording(
+            "Caused by:\n    Mcp error: -32602: summary must be <= 1200 characters",
+            tool="agentacct_record_section",
+        )
+        is None
+    )
+    assert (
+        classify_refused_recording(
+            "\n\nCaused by:\n    Mcp error: -32602: summary must be <= 1200 characters",
+            tool="agentacct_record_section",
+        )
+        is None
+    )
+    # codex's real shape always has its own wrapper line above the header.
+    assert (
+        classify_refused_recording(
+            "tool call error: tool call failed for `agent-sentinel/sentinel_record_section`"
+            "\n\nCaused by:\n    Mcp error: -32602: summary must be <= 1200 characters"
+        )
+        is not None
+    )
 
 
 def test_agent_invented_argument_names_never_become_a_field() -> None:
@@ -693,6 +877,53 @@ def test_raw_route_renders_the_refusal_section_on_a_clean_machine(tmp_path) -> N
 
     assert 'id="refused-recording-attempts"' in page
     assert "No refused recording calls were found" in page
+
+
+# ---------------------------------------------------------------------------
+# Cross-file copy: the next step points at a section that must exist
+# ---------------------------------------------------------------------------
+
+
+def _string_constants_containing(module, needle: str) -> list[str]:
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    return [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and needle in node.value
+    ]
+
+
+def test_the_next_step_sentence_names_a_section_the_page_really_renders() -> None:
+    """The sentence sends the user somewhere; that somewhere is in another file.
+
+    ``work_ledger`` tells a user with unexplained usage to look under a named
+    heading in Local logs, and ``api`` is what renders that heading. Rewording
+    either alone leaves the ledger directing people at a section that is not
+    there — a next step that cannot be followed is worse than none.
+    """
+
+    sentence = work_ledger_module._USAGE_WITHOUT_MCP_CONTEXT_NEXT_STEP
+    quoted = re.findall(r'"([^"]+)"', sentence)
+    assert quoted, sentence
+    heading = quoted[0]
+
+    # Rendered in both states, so the reader who follows the pointer lands on
+    # the section whether or not they have refusals.
+    esc = lambda value: str(value)  # noqa: E731 - the route's escaper, not under test here
+    assert heading in _refused_recording_html({}, esc)
+    assert heading in _refused_recording_html(
+        {
+            "refused_attempt_total": 1,
+            "sessions_with_refusals": 1,
+            "rows": refused_recording_rows({("agentacct_record_section", "summary", "narrative_over_limit"): 1}),
+        },
+        esc,
+    )
+
+    # One copy of the sentence, so the attention group and the blind spot
+    # cannot be reworded apart from each other.
+    assert work_ledger_module._ATTENTION_GROUP_NEXT_STEPS["usage_truth_without_mcp_context"] is sentence
+    assert len(_string_constants_containing(work_ledger_module, heading)) == 1
 
 
 # ---------------------------------------------------------------------------
