@@ -152,10 +152,16 @@ def _try_chmod(path: Path, mode: int) -> None:
     """Best-effort ``chmod``: apply ``mode`` and ignore ``OSError``.
 
     This is a generic permission setter -- the *intent* (owner-only) lives in
-    the ``OWNER_ONLY_*`` constants each caller passes.  It is allowed to fail
-    silently because every state file and directory is already created
-    owner-only, so this only closes the umask gap on paths that pre-existed; the
-    strict create-time modes keep the data private regardless.
+    the ``OWNER_ONLY_*`` constants each caller passes.  Ignoring ``OSError``
+    keeps a chmod that cannot succeed (exotic filesystem, foreign owner) from
+    breaking an otherwise working install.
+
+    That tolerance is NOT uniformly harmless, so do not "simplify" a call site
+    away on the assumption that it is: most callers create their file or
+    directory with the mode already applied and use this only to re-tighten a
+    pre-existing path, but the spawn log is opened with ``Path.open("ab")`` --
+    i.e. ``0o666 & ~umask`` -- so there this chmod is the ONLY thing keeping
+    child stdout/stderr (store paths, argv, tracebacks) private.
     """
     try:
         path.chmod(mode)
@@ -181,10 +187,11 @@ def _ensure_owner_only_dir(directory: Path) -> None:
 def _write_json_atomically(path: Path, value: Mapping[str, Any]) -> None:
     """Write JSON to ``path`` so a crash mid-write can never leave a partial file.
 
-    Writes a fresh temp file, fsyncs the bytes and the parent directory (so the
-    rename is durable on disk), then atomically moves it into place.  Readers
-    therefore always see either the complete previous value or the complete
-    new value -- never a half-written mixture.
+    Writes a fresh temp file and fsyncs its bytes, atomically moves it into
+    place, and only THEN fsyncs the parent directory -- that last step is what
+    makes the rename itself durable, so the order matters.  Readers therefore
+    always see either the complete previous value or the complete new value --
+    never a half-written mixture.
     """
     _ensure_owner_only_dir(path.parent)
     temporary = path.parent / f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}"
@@ -222,8 +229,12 @@ def _flock_exclusive(lock_path: Path) -> Generator[None, None, None]:
     # A pure lock handle: nothing is read or written, so there is no append or
     # binary mode to reason about.  O_CLOEXEC stops the fd leaking into child
     # processes we spawn (Python's open() sets this by default; os.open does
-    # not).  Mode OWNER_ONLY_FILE is applied at creation, so no separate chmod is needed.
+    # not).  The mode argument applies ONLY when os.open creates the file, so a
+    # lock left group/world-readable by an older run would keep those bits: the
+    # chmod below re-tightens it on every acquisition, exactly as the
+    # pre-extraction `_locked()` bodies did.
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, OWNER_ONLY_FILE)
+    _try_chmod(lock_path, OWNER_ONLY_FILE)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         yield

@@ -42,7 +42,8 @@ The 8 capability lanes every client is rated on:
 
 State -- how real a lane is:
   unavailable        not implemented
-  experimental       implemented, but only tested with synthetic data
+  experimental       implemented, but unproven: evidence is synthetic, or
+                     (see codex.model_attribution, cursor.mcp_semantics) absent
   verified_partial   works, with real evidence but narrow scope
   verified           works, with real evidence
 
@@ -56,8 +57,12 @@ Activation -- how a user turns a lane on:
   none | manual_manifest | manual_profile | opt_in_project | one_command_project
 
 The honesty rule: a "verified*" state requires real, dated evidence, and a
-synthetic fixture can never prove a verified state.  The validator enforces
-this, so the published matrix cannot overclaim.
+synthetic fixture can never prove a verified state.  The validator enforces the
+SHAPE of that claim -- a parseable ISO date plus non-empty, non-traversing
+relative refs -- but it never opens the referenced document, so it cannot tell
+a real citation from a plausible-looking one.  Whether the evidence behind a
+"verified" row actually says what the row claims stays a maintainer's
+responsibility, not a guarantee this module can make.
 """
 
 from __future__ import annotations
