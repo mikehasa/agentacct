@@ -27,18 +27,24 @@ EVIDENCE_TYPES = {"test", "build", "lint", "typecheck", "smoke", "benchmark", "b
 EVIDENCE_RESULTS = {"passed", "failed", "skipped", "error", "unknown"}
 
 # A machine check's `name` has no length limit of its own, on purpose. A cap of
-# 240 rejected a 241-8000 character band that recorded fine before it, and a
+# 240 rejected a 241-4036 character band that recorded fine before it, and a
 # ~300-character name (an agent recording the full pytest invocation it ran) is
 # ordinary. The only ceiling is the shared metadata budget, which is where the
 # name lands. It is never truncated either: `name` feeds the check-identity
 # hash, so a truncated name forks the identity of the check it names.
 #
+# 4036 is measured, not assumed: binary-searching a {source, name, result} call
+# puts the largest accepted `name` at 4036 characters and the first rejection at
+# 4037, identically on this branch and on the 0.5.2 release it branched from.
+# The band is that much narrower than the 8000 first claimed here because `name`
+# lands in the budget TWICE — once as itself, once inside the summary below.
+#
 # Measured caveat: past the budget the size error names the LARGEST metadata
 # field, and for a machine check that is the `summary` the server synthesizes
-# as "<name>: <result>" — marginally bigger than the name itself. So a name
-# that blows the whole budget is still reported one step removed. That is the
-# 8000+ case only, and it is no worse than the un-named "metadata must be <=
-# 8192 bytes" it replaced; the band that actually regressed is fixed.
+# as "<name>: <result>" — 4060 bytes against the name's own 4049 at the 4037
+# boundary. So the blame is one step removed for EVERY over-budget name, not
+# just extreme ones. It is still no worse than the un-named "metadata must be
+# <= 8192 bytes" it replaced; the band that actually regressed is fixed.
 
 # The files rule, published in every schema that takes `files`. It is the single
 # biggest MCP rejection cause: agent harnesses hand out absolute paths, and the
@@ -46,8 +52,9 @@ EVIDENCE_RESULTS = {"passed", "failed", "skipped", "error", "unknown"}
 FILES_DESCRIPTION = (
     "Project-relative paths with forward slashes: no leading '/' or '~', no '..' segments. "
     "An absolute path is relativized and accepted ONLY when it lies under the project_dir supplied "
-    "on this same call; otherwise it is rejected rather than guessed at. An entry naming the project "
-    "root itself ('.') is dropped rather than stored, and never fails the call."
+    "on this same call. One that is not is rejected rather than guessed at, except a Windows path "
+    "(C:\\...), which is kept as-is with its separators normalized. An entry naming the project root "
+    "itself ('.') is dropped rather than stored. Neither dropping nor a Windows path fails the call."
 )
 
 # Join keys that stay valid for a whole client session, so sections recorded on
@@ -494,13 +501,28 @@ SECTION_NARRATIVE_KEYS = ("summary", "blocker", "next_step", "section_title", "t
 MACHINE_CHECK_NARRATIVE_KEYS = ("summary", "before_summary", "after_summary", "resolution_summary", "command")
 
 # Property names that are NOT eligible to be suspected, however they appear in
-# free text. `title` is here because it is a plain English word and `</title>`
-# is the most common closing tag in HTML: "the page head has
-# <title>Report</title> in it" is ordinary prose, not a mangled call. It is
-# also the one property added after the detector was calibrated, so leaving it
-# in the candidate set would have raised the false-positive rate above the
-# measured figure without anyone re-measuring.
-MANGLE_DETECTOR_INELIGIBLE_PROPERTIES = frozenset({"title"})
+# free text: the ones that are also element names in the HTML or SVG
+# vocabularies, which is what an agent describing web work actually writes.
+# Hand-picking `title` alone was the inconsistency — it excluded one markup
+# name by that reasoning and left `summary` and `metadata`, which are markup
+# names by the same reasoning, armed.
+#
+# Calibrated READ-ONLY against the real 6261-event global ledger, scoped to the
+# 3535 events these two tools write (1956 section, 1579 evidence) and to the
+# narrative values the detector actually reads:
+#
+#   * `</title>`, `</metadata>`, `</source>`: 0 occurrences.
+#   * `</summary>`: 1 occurrence per lane, both inside confirmed mangled calls
+#     that DID supply `summary`, so the detector could not have fired on it.
+#   * `<title>` (opening form): 2 occurrences in ordinary prose — "tooltips =
+#     SVG <title>" and "dashboard <title>". That is the measured evidence that
+#     these names collide with real writing; only the closing form has yet to
+#     turn up in 3535 events.
+#
+# So excluding these four costs zero measured true positives. `source` is inert
+# — it is required on both tools, so it is never an unsupplied property — and
+# is listed only to keep the rule complete rather than case-by-case.
+MANGLE_DETECTOR_INELIGIBLE_PROPERTIES = frozenset({"title", "summary", "metadata", "source"})
 
 
 def _tool_property_names(tool_name: str) -> frozenset[str]:
@@ -515,19 +537,33 @@ def _detect_mangled_tool_call_fields(tool_name: str, args: dict[str, Any], narra
 
     Closing tags only, and only for properties the call did NOT supply and that
     are not in MANGLE_DETECTOR_INELIGIBLE_PROPERTIES. The looser forms were
-    measured against the real ledger and are unusable: a bare-word detector
-    fires 277 times on "source" and 192 on "files" across 1955 section events,
-    and an opening-tag detector has a real false positive on legitimate prose
-    about MCP config. The closing-tag form scored 1 true positive and 0 false
-    positives on the same events.
+    re-measured against the real 6261-event ledger with the CURRENT property
+    set, and are unusable: scoped to the 1956 section events, a bare-word
+    detector fires on "source" in 170 of them and on "files" in 130, and an
+    opening-tag detector fires on `<title>` in 2 events of ordinary prose about
+    SVG tooltips and the dashboard's page title.
 
-    Read that calibration for exactly what it is: it was measured on the
-    section property set as it stood BEFORE this change, i.e. without `title`,
-    and it has not been re-measured since. That is the reason `title` is
-    excluded rather than merely noted — the alternative is quoting a
-    false-positive rate for a detector that no longer matches the one measured.
-    The detector will still fire on meta-work about agentacct itself, which is
-    acceptable for a warning that never rejects or repairs.
+    The closing-tag form scores 2 true positives and 0 false positives across
+    all 3535 section+evidence events. Exactly two events contain any closing
+    tag at all, and both are genuine mangled calls that absorbed
+    `</summary><next_step>...</next_step><files>[...]</files><project_dir>...`
+    into the summary; the names that fired are files, next_step and
+    project_dir. (The previous figure here, "1 true positive across 1955
+    section events", undercounted: the second true positive is in the evidence
+    lane, and the bare-word counts it quoted were measured over all 6261
+    events rather than the section subset it credited them to.)
+
+    Two limits, stated because the numbers alone overstate the case. No
+    property name has EVER appeared as a closing tag in real prose, so this
+    ledger licenses no exclusion on its own — the ineligible set above rests on
+    the measured `<title>` prose plus the vocabulary rule that generalizes it.
+    And the corpus is agentacct dogfooding itself: only 51 of the 3535 events
+    mention SVG/HTML/XML at all, so it is weak evidence that the names left
+    armed are safe on markup-heavy prose. `client` is the known gap — it fires
+    on XML prose but is in neither vocabulary and has 0 occurrences here, so
+    nothing measured justifies removing it. The detector will also still fire
+    on meta-work about agentacct itself, which is acceptable for a warning that
+    never rejects and never repairs.
     """
     missing = _tool_property_names(tool_name) - set(args) - MANGLE_DETECTOR_INELIGIBLE_PROPERTIES
     if not missing:
@@ -645,8 +681,15 @@ def _looks_absolute(path: str) -> bool:
     return path.startswith(("/", "~")) or bool(_WINDOWS_DRIVE_PREFIX.match(path))
 
 
-def _relative_to_project_dir(path: str, root: str | None) -> str | None:
-    """``path`` expressed relative to ``root``, or None when containment is not provable.
+def _relative_offset_under_project_dir(path: str, root: str | None) -> int | None:
+    """Index in ``path`` where the part relative to ``root`` begins, or None when
+    containment is not provable.
+
+    An offset rather than the substring itself, because the caller holds two
+    index-aligned views of the same value — what arrived, and the
+    backslash-folded copy the containment check reads — and both have to be cut
+    at the same place for the stored path to keep the separators the caller
+    sent. See _optional_project_relative_files for why that matters.
 
     Purely lexical: no filesystem access and no symlink resolution. That is the
     correct boundary here — this decides which STRING lands in the ledger, not
@@ -654,8 +697,8 @@ def _relative_to_project_dir(path: str, root: str | None) -> str | None:
     does not exist on the machine reading the store later. Both values are
     caller-controlled, so nothing is inferred: a root that is not itself
     absolute, or a path that is not under it, returns None and the caller
-    rejects. Any ``..`` surviving into the returned value is caught by the
-    escape check at the call site.
+    decides. Any ``..`` surviving past the offset is caught by the escape check
+    at the call site.
     """
     if not root or not _looks_absolute(root) or root.startswith("~"):
         return None
@@ -663,14 +706,17 @@ def _relative_to_project_dir(path: str, root: str | None) -> str | None:
         # The project root named absolutely. The empty remainder is what the
         # caller sees dropped, so "/repo" and "/repo/" behave alike instead of
         # one being fatal and the other cosmetic.
-        return ""
+        return len(path)
     prefix = root + "/"
     if not path.startswith(prefix):
         return None
-    # lstrip: a redundant separator ("/repo//etc/passwd") is the same POSIX path
-    # as "/repo/etc/passwd", but leaving the leading slash on the remainder
-    # would rebuild an absolute-looking "//etc/passwd" in the ledger.
-    return path[len(prefix) :].lstrip("/")
+    # A redundant separator ("/repo//etc/passwd") is the same POSIX path as
+    # "/repo/etc/passwd", but leaving the leading slash on the remainder would
+    # rebuild an absolute-looking "//etc/passwd" in the ledger.
+    offset = len(prefix)
+    while offset < len(path) and path[offset] == "/":
+        offset += 1
+    return offset
 
 
 def _not_project_relative_error(key: str, index: int) -> InvalidParams:
@@ -696,38 +742,62 @@ def _optional_project_relative_files(
     remainder is then put through the SAME check as any other value, so
     "/repo/~/x" cannot deposit a "~/x" the published rule calls impossible.
 
-    Two rules keep a stored value honest about the file it names:
+    Three rules keep a stored value honest about the file it names:
 
-    * Backslashes are folded for VALIDATION only. On POSIX ``weird\\name.py``
-      is a legal filename, and folding it into the stored value would merge it
-      with a genuinely different file called ``weird/name.py``. What the caller
-      sent is what gets stored (modulo redundant "." and "/" segments, which
-      denote the same path either way — that normalization is what stops
-      ``src/./a.py`` and ``src/a.py`` becoming two rows for one file).
+    * Backslashes are folded for VALIDATION only, and on EVERY branch. On POSIX
+      ``weird\\name.py`` is a legal filename, and folding it into the stored
+      value would merge it with a genuinely different file called
+      ``weird/name.py``. That held for a relative entry but not for a
+      relativized one, so ``/repo/weird\\name.py`` under project_dir="/repo"
+      stored ``weird/name.py`` — the same silent merge, one branch over. Both
+      branches now cut the arrived value and the folded copy at the same index.
+      The exception is a Windows path, where a backslash IS a separator: there
+      the folded copy is the value, so ``C:\\repo\\src\\a.py`` under
+      project_dir="C:\\repo" still stores ``src/a.py`` rather than fragmenting
+      against the same file recorded with forward slashes.
     * An entry naming the project root itself (".", "./", or an absolute path
       equal to project_dir) is DROPPED, not rejected. It names no file, so
       storing it would be a row for a path that does not exist — but failing
       the whole call, and losing a real section or machine check, over one
       cosmetic entry is the behaviour this validator exists to stop.
+    * A Windows absolute path that no project_dir on the call can relativize is
+      STORED, not rejected — verbatim but for the separator folding above, so
+      ``C:\\repo\\src\\a.py`` lands as ``C:/repo/src/a.py``. Recognizing drive
+      letters as absolute was right — it stopped ``C:/repo/a.py`` being filed as
+      a relative path — but pairing it with a rejection turned a shape that
+      recorded fine before (measured: the 0.5.2 release stores it, with the
+      backslashes it arrived with) into a whole-call failure, which is exactly
+      the anti-pattern this validator exists to remove. It is the one absolute
+      form with no POSIX reading, so keeping it invents nothing; a POSIX
+      absolute path without a usable project_dir stays a rejection, as it was
+      before this branch. The escape check below still applies, so
+      ``C:\\repo\\..\\x`` is still fatal.
     """
     files = _optional_limited_str_list(args, key, max_items=50, max_length=240)
     root = project_dir.replace("\\", "/").rstrip("/") if project_dir else None
     normalized_files: list[str] = []
     for index, item in enumerate(files):
         folded = item.replace("\\", "/")
-        stored = item
+        # On a Windows path a backslash is a separator, so the folded copy IS
+        # the value; anywhere else it is an ordinary filename character and
+        # folding it would merge two different POSIX files.
+        windows_path = bool(_WINDOWS_DRIVE_PREFIX.match(folded))
+        stored = folded if windows_path else item
         if _looks_absolute(folded):
-            relative = _relative_to_project_dir(folded, root)
-            if relative is None:
+            offset = _relative_offset_under_project_dir(folded, root)
+            if offset is not None:
+                # Cut both index-aligned views at the same place: `folded` is
+                # what the remaining checks read, `stored` is what the ledger
+                # gets, and only the latter keeps the caller's separators.
+                folded, stored = folded[offset:], stored[offset:]
+                if _looks_absolute(folded):
+                    # "/repo/~/x" -> "~/x", "/repo/C:/x" -> "C:/x": still not a
+                    # project-relative path, and the schema says so.
+                    raise _not_project_relative_error(key, index)
+            elif not windows_path:
                 raise _not_project_relative_error(key, index)
-            # The caller sent an absolute path and asked, by supplying
-            # project_dir, to have it rewritten; here the remainder IS the
-            # value, so both forms move to it.
-            folded = stored = relative
-            if _looks_absolute(folded):
-                # "/repo/~/x" -> "~/x", "/repo/C:/x" -> "C:/x": still not a
-                # project-relative path, and the schema says so.
-                raise _not_project_relative_error(key, index)
+            # else: a Windows absolute path this call cannot relativize. Stored
+            # as sent rather than rejected — see the third rule above.
         if ".." in PurePosixPath(folded).parts:
             raise InvalidParams(f"{key}[{index}] must not escape the project directory: '..' segments are not allowed")
         stored_parts = PurePosixPath(stored).parts

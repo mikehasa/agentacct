@@ -3097,15 +3097,18 @@ def test_mangle_marker_is_server_authored_and_cannot_be_forged(tmp_path):
 
 
 def test_machine_check_name_has_no_private_length_cap(tmp_path):
-    """A 240-character cap turned a 241-8000 band that recorded fine on main
+    """A 240-character cap turned a 241-4036 band that recorded fine on main
     into hard rejections. The band is real: an agent recording the full pytest
     invocation it ran routinely writes a ~300-character name. The only ceiling
     is the shared metadata budget, whose error now reports a field and a byte
-    count instead of a bare "metadata must be <= 8192 bytes"."""
+    count instead of a bare "metadata must be <= 8192 bytes".
+
+    4036, not the 8000 first claimed: see
+    test_machine_check_name_band_is_the_measured_one for the boundary."""
     server = SentinelMCPServer(store_dir=tmp_path / "state")
 
     long_name = ".venv/bin/pytest -q " + "tests/test_mcp.py::test_a " * 12
-    assert 240 < len(long_name) < 8000
+    assert 240 < len(long_name) <= 4036
     accepted = _tool_payload(
         _call_tool(
             server,
@@ -3133,6 +3136,35 @@ def test_machine_check_name_has_no_private_length_cap(tmp_path):
     # the server synthesizes as "<name>: <result>", so the blame is still
     # indirect in this extreme case. Recorded here so the next reader sees it.
     assert "largest field is summary" in message
+
+
+def test_machine_check_name_band_is_the_measured_one(tmp_path):
+    """The band this validator restored was documented as "241-8000". Binary
+    searching a {source, name, result} call puts the real edge at 4036 accepted
+    / 4037 rejected -- identical on the 0.5.2 release this branched from, so the
+    number was wrong when it was written, not changed by the branch. It is half
+    of 8192 because `name` lands in the budget twice: once as itself, once
+    inside the "<name>: <result>" summary the server synthesizes."""
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    def accepted(msg_id, length):
+        response = _call_tool(
+            server,
+            msg_id,
+            "agentacct_record_machine_check",
+            {"source": "codex", "name": "x" * length, "result": "passed"},
+        )
+        return "error" not in response, response
+
+    ok, response = accepted(1, 4036)
+    assert ok
+    assert response["result"]["content"][0]["text"]
+
+    ok, response = accepted(2, 4037)
+    assert not ok
+    # One character over the edge already blames the synthesized summary, so the
+    # indirection the comment warns about is the normal case, not an extreme.
+    assert "largest field is summary at 4060 bytes" in response["error"]["message"]
 
 
 def test_metadata_budget_decision_is_identical_on_all_three_write_surfaces(tmp_path):
@@ -3320,17 +3352,23 @@ def test_relativized_remainder_is_revalidated_against_the_published_rule(tmp_pat
 
 def test_windows_drive_letter_is_absolute_for_validation(tmp_path):
     """Backslashes are folded before the absolute check, so PurePosixPath alone
-    reads "C:/repo/a.py" as a relative path and stores it as one."""
+    reads "C:/repo/a.py" as a relative path and stores it as one.
+
+    Absolute for validation means it is relativized against a drive-letter root
+    and still escape-checked -- NOT that it is rejected without one. See
+    test_windows_absolute_path_is_never_fatal for why."""
     server = SentinelMCPServer(store_dir=tmp_path / "state")
 
-    rejected = _call_tool(
-        server,
-        1,
-        "agentacct_record_section",
-        {"source": "codex", "section_id": "drive", "section_status": "started", "files": ["C:\\repo\\a.py"]},
+    # Not filed as a relative path, and not rejected either: stored as sent.
+    stored = _tool_payload(
+        _call_tool(
+            server,
+            1,
+            "agentacct_record_section",
+            {"source": "codex", "section_id": "drive", "section_status": "started", "files": ["C:\\repo\\a.py"]},
+        )
     )
-    assert rejected["error"]["code"] == -32602
-    assert "project-relative" in rejected["error"]["message"]
+    assert stored["event"]["metadata"]["files"] == ["C:/repo/a.py"]
 
     # With the drive-letter root declared on the call it relativizes normally.
     accepted = _tool_payload(
@@ -3348,6 +3386,109 @@ def test_windows_drive_letter_is_absolute_for_validation(tmp_path):
         )
     )
     assert accepted["event"]["metadata"]["files"] == ["src/a.py"]
+
+
+def test_windows_absolute_path_is_never_fatal(tmp_path):
+    """Recognizing drive letters as absolute was right; pairing it with a
+    rejection was not. Measured on the 0.5.2 release this branched from, both
+    shapes below RECORD, storing the backslashes they arrived with; on the first
+    cut of this branch both killed the whole call -- over a path-style detail,
+    which is the anti-pattern the validator exists to remove. It is the one
+    absolute form with no POSIX reading, so keeping it invents nothing. The
+    stored value differs from 0.5.2 only in separator: on a Windows path a
+    backslash IS a separator, so it is normalized like any other."""
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    def files_for(args):
+        payload = _tool_payload(
+            _call_tool(
+                server,
+                files_for.msg_id,
+                "agentacct_record_section",
+                {"source": "codex", "section_id": "win", "section_status": "started", **args},
+            )
+        )
+        files_for.msg_id += 1
+        return payload["event"]["metadata"]["files"]
+
+    files_for.msg_id = 1
+
+    # The shape agent harnesses actually hand out on Windows: no project_dir.
+    assert files_for({"files": ["C:\\repo\\src\\a.py"]}) == ["C:/repo/src/a.py"]
+    # And with a project_dir that cannot possibly contain it.
+    assert files_for({"files": ["C:\\repo\\src\\a.py"], "project_dir": "/other"}) == ["C:/repo/src/a.py"]
+
+    # A POSIX absolute path with no usable project_dir stays a rejection: it is
+    # not a regression, it is what the release before this branch also did.
+    posix = _call_tool(
+        server,
+        90,
+        "agentacct_record_section",
+        {"source": "codex", "section_id": "win", "section_status": "started", "files": ["/repo/src/a.py"]},
+    )
+    assert posix["error"]["code"] == -32602
+
+    # Non-fatal is not unchecked: the escape guard still rejects.
+    escaping = _call_tool(
+        server,
+        91,
+        "agentacct_record_section",
+        {"source": "codex", "section_id": "win", "section_status": "started", "files": ["C:\\repo\\..\\..\\secrets"]},
+    )
+    assert escaping["error"]["code"] == -32602
+    assert "escape" in escaping["error"]["message"]
+
+
+def test_backslash_is_preserved_on_the_relativized_branch_too(tmp_path):
+    """On POSIX "weird\\name.py" is a legal filename and a genuinely different
+    file from "weird/name.py". The relative branch kept it; the relativized
+    branch folded it, silently merging the two. Same rule on both branches."""
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    relative = _tool_payload(
+        _call_tool(
+            server,
+            1,
+            "agentacct_record_section",
+            {"source": "codex", "section_id": "bs", "section_status": "started", "files": ["weird\\name.py"]},
+        )
+    )
+    assert relative["event"]["metadata"]["files"] == ["weird\\name.py"]
+
+    relativized = _tool_payload(
+        _call_tool(
+            server,
+            2,
+            "agentacct_record_section",
+            {
+                "source": "codex",
+                "section_id": "bs",
+                "section_status": "started",
+                "project_dir": "/repo",
+                "files": ["/repo/weird\\name.py"],
+            },
+        )
+    )
+    # Same file, same stored value, whichever way the caller spelled the path.
+    assert relativized["event"]["metadata"]["files"] == ["weird\\name.py"]
+
+    # The Windows exception, where a backslash really is a separator: folding is
+    # correct there, so this must NOT fragment against a forward-slash "src/a.py".
+    windows = _tool_payload(
+        _call_tool(
+            server,
+            3,
+            "agentacct_record_section",
+            {
+                "source": "codex",
+                "section_id": "bs",
+                "section_status": "started",
+                "project_dir": "C:\\repo",
+                "files": ["C:\\repo\\src\\a.py"],
+            },
+        )
+    )
+    assert windows["event"]["metadata"]["files"] == ["src/a.py"]
 
 
 def test_tilde_project_dir_never_anchors_a_relativization(tmp_path):
@@ -3425,3 +3566,51 @@ def test_mangle_detector_does_not_fire_on_a_closing_title_tag(tmp_path):
         )
     )
     assert mangled["event"]["metadata"]["mangled_tool_call_suspected_fields"] == ["next_step"]
+
+
+def test_mangle_detector_ineligible_set_is_calibrated_not_hand_picked(tmp_path):
+    """Excluding `title` alone was inconsistent: it removed one HTML/SVG element
+    name on the grounds that agents write about markup, and left `summary` and
+    `metadata` -- element names by the same reasoning -- armed to stamp a
+    server-authored accusation into the stored record of ordinary prose.
+
+    The ineligible set is now every property name in those two vocabularies.
+    Measured READ-ONLY against the real 6261-event ledger, that costs nothing:
+    across the 3535 section+evidence events `</title>`, `</metadata>` and
+    `</source>` never occur, and `</summary>` occurs only inside the two genuine
+    mangled calls, which both supplied `summary` so it could never have fired."""
+    from agentacct.mcp import MANGLE_DETECTOR_INELIGIBLE_PROPERTIES
+
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+
+    def suspected(msg_id, summary):
+        payload = _tool_payload(
+            _call_tool(
+                server,
+                msg_id,
+                "agentacct_record_section",
+                {"source": "codex", "section_id": "svg", "section_status": "completed", "summary": summary},
+            )
+        )
+        metadata = payload["event"]["metadata"]
+        # The stamp in the stored record and the warning to the caller always
+        # agree; other warnings (join hints) are not this test's business.
+        mangle_warnings = [warning for warning in payload["warnings"] if "mangled tool call" in warning]
+        assert bool(mangle_warnings) == ("mangled_tool_call_suspected_fields" in metadata)
+        return metadata.get("mangled_tool_call_suspected_fields")
+
+    # Ordinary prose about markup: accused before, silent now. Each of these is
+    # a real thing an agent writes while doing web work.
+    assert suspected(1, "Stripped the <metadata> block from the exported SVG.</metadata>") is None
+    assert suspected(2, "The <details> disclosure needs its </summary> closing tag.") is None
+    assert suspected(3, "Removed the stale </source> tag from the <picture> element.") is None
+
+    # Still armed on every name that is not a markup element: these are the
+    # names the two real mangled calls in the ledger actually absorbed.
+    assert suspected(4, "Done.</next_step>") == ["next_step"]
+    assert suspected(5, "Done.</files>") == ["files"]
+    assert suspected(6, "Done.</project_dir>") == ["project_dir"]
+
+    # Pinned last, so a regression shows up as the behaviour above rather than
+    # as a bare constant mismatch.
+    assert MANGLE_DETECTOR_INELIGIBLE_PROPERTIES == {"title", "summary", "metadata", "source"}
