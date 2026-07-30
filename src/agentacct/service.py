@@ -167,14 +167,21 @@ def mark_trusted_finding_disposition(event: dict[str, Any]) -> dict[str, Any]:
 #      is not prose. (`sk-` and `sk-or-v1-` belong to this family too; they keep
 #      their own class names because the redaction marker is read downstream.)
 #   2. HEADER CONTEXT -- `Authorization`/`Proxy-Authorization` plus a
-#      credential. No prose refusal: nobody writes an HTTP header mid-sentence.
+#      credential. It carries none of family 3's structural refusals, because
+#      the header name is already most of the evidence; it keeps only a length
+#      floor, and only because the ledger really does contain sentences ABOUT
+#      the header ("Authorization: Bearer token is required for all endpoints").
 #   3. BARE `Bearer <token>` IN PROSE -- the only genuinely ambiguous case, and
 #      the only one that carries the calibrated refusals. It is ALLOWED TO MISS
-#      THINGS, because families 1 and 2 now cover the realistic leak paths: a
-#      token pasted into a log or env line carries its own prefix, and a token
-#      in transit carries its header. Family 3 is the long tail, and buying a
-#      little more of that tail costs ledger prose, which is the trade this
-#      module already got wrong three times.
+#      THINGS, because families 1 and 2 cover the realistic leak paths: a token
+#      in transit carries its header, and a token pasted into a log or env line
+#      carries a vendor prefix IF that vendor is in family 1's list. That last
+#      clause is a real limit, not a formality -- family 1 is an enumeration,
+#      so a prefixed vendor it does not list (and any shape with no prefix at
+#      all: raw hex, base64, a JWT, a UUID) is NOT covered outside a header.
+#      Family 3 is the long tail, and buying a little more of that tail costs
+#      ledger prose, which is the trade this module already got wrong three
+#      times.
 #
 # WHY ANCHORING AND SPAN REPLACEMENT ARE LOAD-BEARING. Unanchored, `sk-` matched
 # the middle of ordinary English and ordinary identifiers -- "task-", "disk-",
@@ -210,38 +217,69 @@ def mark_trusted_finding_disposition(event: dict[str, Any]) -> dict[str, Any]:
 # fires. What survives the refusals is accepted only in a known credential
 # shape: >=16 chars carrying a separator no word compound reaches
 # (`. / + = % : @ | # &`), a separator-free alphanumeric run of >=32 characters
-# (hex and unpadded base64), a UUID, or a run of >=10 digits -- dates and
-# version numbers in the real corpus top out at 8 digits (20260713), so ten
-# consecutive digits is not something prose emits.
+# (hex and unpadded base64), a UUID, or a run of >=10 digits.
 #
-# MEASURED, through these compiled patterns, against the maintainer's store
-# (6261 event lines; 26773 distinct string values, 27401 distinct strings
-# counting object keys, 43213 distinct whitespace tokens over that
-# key-inclusive set).
-#   - Whole-string false positives: ZERO. Not one of the 26773 values is
-#     altered. Also zero at main and at both earlier commits on this branch.
-#   - Splice false positives, every one of the 43213 tokens placed directly
-#     after "Bearer " -- deliberately harsher than reality: 6252 cut. That set
-#     is EXACTLY the set the previous commit cut, element for element: the
-#     restructure added nothing and removed nothing on real data. main cuts all
-#     43213, because main cuts any non-delimiter run after the word.
+# THE >=10-DIGIT BRANCH IS JUSTIFIED BY ITS MEASURED COST, NOT BY A CLAIM ABOUT
+# LONG NUMBERS. An earlier version of this comment said the corpus tops out at
+# 8 digits, and that is simply false: `re.finditer(r"[0-9]+")` over the 27105
+# values finds 131131 digit runs, of which 414 are >=10 digits and the longest
+# is 19 ("dashboard:finding:1964640965260215858fe13ee5214e66:0:mark_reviewed").
+# Standalone numbers are shorter but still exceed 8 -- of the 461 all-digit
+# whitespace tokens the longest are 11 digits (14237112127) -- so no length
+# threshold can be defended by asserting prose never reaches it. What can be
+# defended is the branch's price. It is only a GATE into the >=16-character
+# alternative, after the word-compound refusal has already run, so deleting
+# `|[0-9]{10}` from the lookahead changes the corpus cut sets by: whole-string
+# 0 -> 0, and spliced 6405 -> 6178. The branch is therefore solely responsible
+# for 227 of 43545 spliced tokens, every one of them an opaque agent/session id
+# of the "agent-a6033356814809200" shape -- the class this rule cuts on purpose
+# because it cannot tell it from a credential. Re-derive by rebuilding
+# _BEARER_CREDENTIAL_SHAPE without the digit alternative and diffing the two
+# cut sets over the store.
+#
+# MEASURED, through these compiled patterns, against ONE SNAPSHOT of the
+# maintainer's store (6325 event lines; 27105 distinct string values, 27733
+# distinct strings counting object keys, 43545 distinct whitespace tokens over
+# that key-inclusive set). The store is live and grows, so a re-run will report
+# different totals; the snapshot dimensions are quoted so the ratios below stay
+# checkable.
+#   - Whole-string false positives: ZERO. Not one of the 27105 values is
+#     altered. Also zero at main and at all three earlier commits on this branch.
+#   - Splice false positives, every one of the 43545 tokens placed directly
+#     after "Bearer " -- deliberately harsher than reality: 6405 cut. That set
+#     is EXACTLY the set the two preceding commits on this branch cut, element
+#     for element (6405 at 2df8d1f and at dfd293b, 0 in either direction of the
+#     diff; 6539 one commit earlier at 8e4bfaf): neither the restructure nor
+#     this cleanup added or removed anything on real data. main cuts all 43545,
+#     because main cuts any non-delimiter run after the word.
 #   - Marginal contribution of the two new families on the real corpus: zero
 #     values and zero spliced tokens each. They exist to catch credential
 #     shapes, and they cost nothing in prose.
 #   - Idempotency: re-redacting every string either family touches is a no-op.
 #   - Backtracking: adversarial repetitions of each family's ambiguous shape
 #     (`Bearer a-1.` x N inside a header, `Bearer abcd-abcd-...` x N, `ghp_` x N,
-#     nested `{"Authorization": ` x N) scale linearly to N=16000, worst 20 ms.
-#   - Credential-shape coverage, a 146-case catalogue of real token shapes in
-#     six serializations (bare Bearer, env/log line with no Bearer at all,
-#     header, JSON header, `Authorization=`, curl `-H`): 142 cut here, 128 at
-#     main, 114 at the previous commit. Nothing that any earlier revision cut is
-#     missed here except the four named below.
+#     nested `{"Authorization": ` x N) are LINEAR in N, which is the claim worth
+#     making -- a millisecond figure here would only describe the machine that
+#     produced it. Measured by redacting all four shapes at N = 1000, 2000, 4000,
+#     8000 and 16000 (best of three at each point) and comparing successive
+#     totals: each doubling of N multiplied the time by 2.10, 2.01, 2.05 and
+#     1.90. Re-run that sweep rather than trusting any absolute number; a
+#     superlinear pattern shows up as a ratio that climbs with N, on any
+#     hardware.
+#   - Credential-shape coverage, a 336-case catalogue: 42 real token shapes in
+#     eight serializations (bare Bearer, env export line and `token:` log line
+#     with no Bearer at all, header line, JSON header, `Authorization=`, curl
+#     `-H`, and a URL query parameter). Scored on whether the CREDENTIAL IS
+#     GONE from the output, not on whether the string changed -- span
+#     replacement makes those different questions, and gap (c) below is exactly
+#     a case where the string changes and the secret stays. 274 covered here,
+#     222 at main, 63 cases covered here that main leaves. 11 cases across the
+#     7 shapes named below go the other way.
 #
-# The residue of the 6252 is NOT broken down further. The previous version of
+# The residue of the 6405 is NOT broken down further. The previous version of
 # this comment gave sub-counts that no classifier written from its own prose
 # could reproduce, which is its own kind of dishonesty. One re-derivable number
-# instead: 24 of the 6252 are prose-shaped by the exact test
+# instead: 24 of the 6405 are prose-shaped by the exact test
 # `^[A-Za-z]+(?:[-'][A-Za-z]+)*[.,:;!?]?$` -- ordinary words, mostly carrying
 # trailing sentence punctuation ("Bearer instrumentation." is cut, because the
 # trailing `.` leaves an empty compound piece). The rest are opaque ids, hashes,
@@ -251,23 +289,52 @@ def mark_trusted_finding_disposition(event: dict[str, Any]) -> dict[str, Any]:
 # maintainer can re-derive without the store: every credential shape there is
 # cut and every prose phrase there survives byte for byte.
 #
-# KNOWN GAPS, stated rather than papered over.
-# Outside a header, family 3 misses a run the word-compound recogniser reads as
-# ONE word: at most 32 letters, optionally followed by at most 4 digits.
-# Measured on this pattern: "Bearer " + "a"*32 is KEPT and "a"*33 is CUT;
-# "Bearer " + "a"*32 + "2024" (36 chars) is KEPT and "a"*32 + "12345" is CUT.
-# test_the_separator_free_miss_window_is_where_known_gaps_says_it_is pins those
-# five strings, so this paragraph cannot drift off the code again. Four shapes
-# in the coverage catalogue land in that window and are cut at main but not
-# here: a 20-letter run, a 28-letter run, and hyphen- and dot-joined 26-char
-# opaque runs, each after a BARE "Bearer". main caught them only by cutting
-# every run after the word, which is the incident this rule exists to undo; all
-# four are still cut in every header serialization, and a real base64/hex token
-# essentially never lands in the window because those alphabets interleave
-# digits mid-piece. Also not caught: anything after a literal `$`, so a
-# credential really named `$TOKEN` is left alone deliberately; and any auth
-# scheme other than `Bearer` in family 2 (`Basic`, `Token`), which main did not
-# cut either. A field NAMED like a credential still loses its whole value via
+# KNOWN GAPS, stated rather than papered over. This list is EXHAUSTIVE for the
+# catalogue: 7 shapes in 11 cases are covered at main and not here, and all 7
+# are named below. Six of the seven are missed only after a BARE "Bearer" and
+# are still cut in all four header serializations; (c) is the exception and a
+# header does not save it. In the three serializations that carry no "Bearer" at
+# all, main keeps all seven too, so none of this is a regression there.
+#
+#  (a) THE SEPARATOR-FREE MISS WINDOW. Outside a header, family 3 misses a run
+#      the word-compound recogniser reads as ONE word: at most 32 letters,
+#      optionally followed by at most 4 digits. Measured: "Bearer " + "a"*32 is
+#      KEPT and "a"*33 is CUT; "Bearer " + "a"*32 + "2024" (36 chars) is KEPT
+#      and "a"*32 + "12345" is CUT.
+#      test_the_separator_free_miss_window_is_where_known_gaps_says_it_is pins
+#      those five strings, so this paragraph cannot drift off the code again.
+#      Four catalogue shapes land in the window: a 20-letter run, a 28-letter
+#      run, and hyphen- and dot-joined 26-char opaque runs. main caught them
+#      only by cutting every run after the word, which is the incident this rule
+#      exists to undo, and a real base64/hex token essentially never lands in
+#      the window because those alphabets interleave digits mid-piece.
+#  (b) A CREDENTIAL INSIDE A URL, e.g. "Bearer postgres://user:pw@host/db".
+#      Family 3 refuses anything matching `scheme://`, because ledger prose
+#      quotes URLs constantly. The password inside one is therefore kept after a
+#      bare "Bearer". Deliberate: relaxing it puts every quoted URL at risk.
+#  (c) A `Key=Value;Key=Value` CONNECTION STRING, e.g. the Azure
+#      "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=..." shape.
+#      This is the ONE gap a header does not close, and the reason is span
+#      replacement rather than any refusal: `;` is not a run character, so the
+#      match ends at the first semicolon and only "DefaultEndpointsProtocol=
+#      https" is replaced. The AccountKey survives in ALL FIVE Bearer-carrying
+#      serializations. main destroyed the whole value instead, which is the
+#      behaviour this module deliberately abandoned. Deliberate, but the cost
+#      is real and it is not "still cut in a header" -- for this shape the only
+#      backstop is the key name.
+#  (d) ANYTHING AFTER A LITERAL `$`, so a credential really named `$TOKEN` is
+#      left alone rather than a shell variable reference being destroyed.
+#  (e) INSIDE A HEADER, a credential shorter than 8 run-characters, which is
+#      the price of family 2's floor: it exists so the ledger's own sentences
+#      about the header survive, and the same floor cuts a documentation word
+#      of 8 or more ("credentials" after "Authorization: Bearer" is replaced).
+#      Both directions are wrong somewhere; 8 is where the corpus put the line.
+# Also not caught, and NOT a regression because main did not cut it either: any
+# auth scheme other than `Bearer` in family 2 (`Basic`, `Token`); and any
+# prefixed vendor family 1 does not enumerate, or any prefix-free shape (raw
+# hex, base64, JWT, UUID, a bare 16-digit run), when it appears in an env or log
+# line or a URL query with no `Bearer` and no `Authorization` anywhere near it.
+# A field NAMED like a credential still loses its whole value via
 # is_sensitive_metadata_key(), which is the backstop for all of these.
 # The characters that can appear INSIDE a credential, shared by families 2 and
 # 3: everything except the characters that END a value in the formats we ingest
@@ -286,12 +353,30 @@ _BEARER_RUN = r"[^\s,;\"'\[\]{}()<>]"
 # replaces the whole credential phrase rather than leaving a dangling word.
 #
 # Bodies are the vendor's real alphabet, deliberately NOT a shared permissive
-# one. `hf_`, `r8_` and `tok_` take `[A-Za-z0-9]` with no `_`, which is what
-# keeps them off ordinary snake_case identifiers; `AKIA`/`ASIA` take exactly 16
-# uppercase alphanumerics with a boundary after, which is what keeps them off
-# SCREAMING_CASE words like "ASIAPACIFICREGION". `AKIA`, `ASIA` and `AIza` are
+# one. `hf_`, `r8_`, `tok_`, `npm_`, `shpat_` and `sk_live_`/`sk_test_` take
+# `[A-Za-z0-9]` with no `_`, which is what keeps them off ordinary snake_case
+# identifiers; `AKIA`/`ASIA` take exactly 16 uppercase alphanumerics with a
+# boundary after, which is what keeps them off SCREAMING_CASE words like
+# "ASIAPACIFICREGION". `AKIA`, `ASIA`, `AIza` and the `AgE` of the PyPI body are
 # matched case-sensitively inside the otherwise case-insensitive pattern, since
 # only that exact casing is a real prefix.
+#
+# THE SIX PREFIXES ADDED LAST are the ones whose absence made a nonsense of the
+# family's own promise: `sk_live_`/`sk_test_`, `npm_`, `pypi-`, `shpat_` and
+# `sq0atp-` were kept by BOTH main and this module in an env export line, a
+# `token:` log line and a URL query parameter -- exactly the "carries its own
+# prefix" path family 1 exists to cover. Each is now cut in all three, and each
+# was measured against the store before it was added: 0 matches among the 27105
+# values, so the coverage is bought with no false positives. This puts the
+# module further above main, which is the intended direction.
+#
+# `pypi-` is anchored on the macaroon body, not on the bare prefix, and that is
+# measured rather than assumed: `pypi-[A-Za-z0-9_-]{16,}` cuts the real ledger
+# value "pypi-publish-and-install-smoke", while every PyPI upload token
+# serializes a v2 macaroon whose base64 opens `AgE` ("AgEIcHlwaS5vcmc" for
+# pypi.org, "AgENdGVzdC5weXBpLm9yZw" for test.pypi.org). Requiring `AgE`
+# case-sensitively costs 0 of the 27105 corpus values; the bare-prefix form
+# costs 1.
 _PROVIDER_TOKEN_ALTERNATIVES = (
     r"gh[pousr]_[A-Za-z0-9]{16,}",  # GitHub personal/oauth/user/server/refresh
     r"github_pat_[A-Za-z0-9_]{16,}",  # GitHub fine-grained PAT
@@ -300,6 +385,11 @@ _PROVIDER_TOKEN_ALTERNATIVES = (
     r"hf_[A-Za-z0-9]{16,}",  # Hugging Face
     r"r8_[A-Za-z0-9]{16,}",  # Replicate
     r"tok_[A-Za-z0-9]{16,}",  # vendor "tok_" opaque tokens
+    r"sk_(?:live|test)_[A-Za-z0-9]{16,}",  # Stripe secret key, live and test
+    r"npm_[A-Za-z0-9]{16,}",  # npm access token
+    r"shpat_[A-Za-z0-9]{16,}",  # Shopify admin API access token
+    r"sq0atp-[A-Za-z0-9_-]{16,}",  # Square access token
+    r"(?-i:pypi-AgE)[A-Za-z0-9_-]{16,}",  # PyPI upload token (macaroon body)
     r"(?-i:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])",  # AWS access/session key id
     r"(?-i:AIza)[A-Za-z0-9_-]{16,}",  # Google API key
 )
@@ -318,15 +408,36 @@ _PROVIDER_TOKEN_PATTERN = re.compile(
 # around the separator are what make the JSON form work; without them the `"`
 # between the name and the `:` ended the match and the credential was stored.
 #
-# No prose refusal applies here: nobody writes an HTTP header in the middle of
-# a sentence, so any run of >=16 run-characters after "Bearer" is taken. The
-# header NAME is ledger data, so it is captured as `keep` and put back; only the
-# credential is replaced.
+# The floor is >=8, and it is 8 rather than 16 or 1 for reasons that were both
+# measured. It used to be 16, copied from family 3, and in a header that only
+# kept short credentials: `Authorization: Bearer a1b2c3d4e5f6g7h` (15) was kept
+# while the same header at 16 was cut, and a pure-digit credential was kept at
+# every length 8..15 -- main cut all of those.
+#
+# Removing the floor outright is what the comment above this one used to imply
+# was safe, on the grounds that nobody writes an HTTP header mid-sentence. The
+# ledger's own pinned prose corpus falsifies that: it contains
+# "Authorization: Bearer token is required for all endpoints" and
+# "the Authorization: Bearer header must be present on every request" -- English
+# sentences ABOUT the header, whose runs after the word are "token" (5) and
+# "header" (6). Documentation prose is the exception, so a floor stays, at the
+# smallest value that both clears every run in that corpus and closes the whole
+# 8..15 window: 8. The cost of the residual is stated in KNOWN GAPS (e).
+#
+# Nothing else moves. Whole-string cuts over the 27105 corpus values are 0 with
+# the floor at 16, 8, 4, 2 or 1, and the bare-"Bearer " splice count stays at
+# 6405 at every one of them because this family never fires without a header.
+# What the change buys is header coverage: splicing each of the 43545 corpus
+# tokens after "Authorization: Bearer " cuts 22445 at floor 16, 32709 at 8, and
+# 42634 with no floor at all.
+#
+# The header NAME is ledger data, so it is captured as `keep` and put back; only
+# the credential is replaced.
 _AUTH_HEADER_NAME = r"(?:Proxy-)?Authorization"
 _AUTH_HEADER_ASSIGN = r"[\"']?\s*[:=]\s*[\"']?"
 _AUTHORIZATION_HEADER_PATTERN = re.compile(
     r"(?P<keep>\b" + _AUTH_HEADER_NAME + _AUTH_HEADER_ASSIGN + r")"
-    r"Bearer\s+" + _BEARER_RUN + r"{16,}",
+    r"Bearer\s+" + _BEARER_RUN + r"{8,}",
     re.IGNORECASE,
 )
 

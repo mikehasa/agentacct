@@ -181,6 +181,53 @@ BEARER_HEADER_WORD_SHAPED = (
     ("equals_form", "Authorization=Bearer ", "abcdefgh-ijklmnop-qrstuvwx"),
 )
 
+# Family 2 used to carry a >=16-character floor copied from family 3, so a SHORT
+# credential inside a real header was kept while main cut it. The floor is now 8,
+# and both sides of that boundary are pinned because both are load-bearing: 8..15
+# is the window this closed, and 1..7 stays open on purpose so that the ledger's
+# own sentences ABOUT the header ("Authorization: Bearer token is required...",
+# run "token", 5 characters) survive. LEDGER_PROSE_CORPUS is where those live.
+_SHORT_HEADER_MIXED = "a1b2c3d4e5f6g7h"
+HEADER_CREDENTIALS_AT_OR_ABOVE_FLOOR = tuple(
+    _SHORT_HEADER_MIXED[:length] for length in range(8, 16)
+) + tuple("1" * length for length in range(8, 16))
+HEADER_RUNS_BELOW_FLOOR = tuple(_SHORT_HEADER_MIXED[:length] for length in range(1, 8))
+
+# Vendor prefixes added after the reviewer found family 1's own promise -- "a
+# token pasted into a log or env line carries its own prefix" -- was false for
+# them: BOTH main and this module kept every row below in an env line, a log line
+# and a URL query. Bodies are purely alphabetic (plus the fixed PyPI macaroon
+# opener) so each row is proven by its prefix alone, not by a digit run or a
+# >=32-character alphanumeric run.
+_FAKE_BODY_32 = "FakeOnly" + "AbCdEfGh" + "IjKlMnOp" + "QrStUvWx"
+FAKE_LATE_PROVIDER_TOKENS = (
+    ("stripe_live", "sk_live_" + _FAKE_BODY_24),
+    ("stripe_test", "sk_test_" + _FAKE_BODY_24),
+    ("npm_access", "npm_" + _FAKE_BODY_32),
+    ("pypi_upload", "pypi-AgE" + _FAKE_BODY_32),
+    ("shopify_admin", "shpat_" + _FAKE_BODY_24),
+    ("square_access", "sq0atp-" + _FAKE_BODY_20),
+)
+
+# The `pypi-` prefix alone is NOT enough evidence: this is a real value from the
+# maintainer's store, and `pypi-[A-Za-z0-9_-]{16,}` would destroy it. Anchoring
+# on the macaroon body (`AgE`) is what keeps it.
+PYPI_SHAPED_LEDGER_PROSE = "pypi-publish-and-install-smoke"
+
+# KNOWN GAPS (b): a credential inside a URL is kept after a BARE "Bearer",
+# because the URL refusal that protects the quoted URLs this ledger is full of
+# fires first. A header still catches it.
+URL_EMBEDDED_CREDENTIAL = "postgres://user:s3cr3tpassw0rdvalue@db.example.com:5432/app"
+
+# KNOWN GAPS (c): the one gap a header does NOT close. `;` is not a run
+# character, so the match ends at the first semicolon and the AccountKey after it
+# survives in every serialization.
+CONNECTION_STRING_SECRET = _FAKE_BODY_32
+CONNECTION_STRING = (
+    "DefaultEndpointsProtocol=https;AccountName=acctname;AccountKey="
+    + CONNECTION_STRING_SECRET
+)
+
 
 def _session_observation(*, title: str) -> dict:
     return {
@@ -885,6 +932,227 @@ def test_a_word_shaped_run_inside_an_authorization_header_is_a_credential(
             f"curl sent {expected_keep}[REDACTED_SECRET]"
         ), label
         assert credential not in _stored_text(store), label
+
+
+def test_a_short_credential_inside_a_header_is_still_a_credential(
+    tmp_path: Path,
+) -> None:
+    """Family 2's floor is 8, not the 16 it inherited from family 3.
+
+    At 16 the header branch kept short credentials that main cut:
+    `Authorization: Bearer a1b2c3d4e5f6g7h` (15) was stored verbatim while the
+    same header at 16 was cut, and a pure-digit credential survived at every
+    length 8..15. Those are the strings pinned here.
+    """
+
+    store = tmp_path / "state"
+    service = SentinelService(store)
+
+    for credential in HEADER_CREDENTIALS_AT_OR_ABOVE_FLOOR:
+        recorded = service.record_event(
+            {
+                "source": "test",
+                "event_type": "note",
+                "metadata": {
+                    "header": f"Authorization: Bearer {credential}",
+                    "proxy": f"Proxy-Authorization: Bearer {credential}",
+                    "json_body": '{"Authorization": "Bearer ' + credential + '"}',
+                    "equals_form": f"Authorization=Bearer {credential}",
+                },
+            }
+        )
+        assert recorded["metadata"]["header"] == "Authorization: [REDACTED_SECRET]", credential
+        assert recorded["metadata"]["proxy"] == (
+            "Proxy-Authorization: [REDACTED_SECRET]"
+        ), credential
+        assert recorded["metadata"]["json_body"] == (
+            '{"Authorization": "[REDACTED_SECRET]"}'
+        ), credential
+        assert recorded["metadata"]["equals_form"] == (
+            "Authorization=[REDACTED_SECRET]"
+        ), credential
+        assert recorded["metadata"]["value_redaction_applied"] is True, credential
+
+
+def test_the_header_floor_still_stops_below_eight_characters(tmp_path: Path) -> None:
+    """The other side of the boundary, which is why the floor is not zero.
+
+    The pinned prose corpus contains sentences ABOUT the header whose run after
+    the word is "token" (5) and "header" (6). Removing the floor outright cuts
+    those, so 1..7 stays open deliberately -- and the same runs after a BARE
+    "Bearer", with no header name in front of them, stay open at every length.
+    """
+
+    store = tmp_path / "state"
+    service = SentinelService(store)
+
+    for run in HEADER_RUNS_BELOW_FLOOR:
+        header = f"Authorization: Bearer {run}"
+        bare = f"Bearer {run}"
+        recorded = service.record_event(
+            {
+                "source": "test",
+                "event_type": "note",
+                "metadata": {"header": header, "bare": bare},
+            }
+        )
+        assert recorded["metadata"]["header"] == header, run
+        assert recorded["metadata"]["bare"] == bare, run
+        assert "value_redaction_applied" not in recorded["metadata"], run
+
+    for credential in HEADER_CREDENTIALS_AT_OR_ABOVE_FLOOR:
+        phrase = f"Bearer {credential}"
+        recorded = service.record_event(
+            {
+                "source": "test",
+                "event_type": "note",
+                "metadata": {"summary": phrase},
+            }
+        )
+        assert recorded["metadata"]["summary"] == phrase, credential
+        assert "value_redaction_applied" not in recorded["metadata"], credential
+
+
+def test_the_late_vendor_prefixes_are_cut_with_no_bearer_word_at_all(
+    tmp_path: Path,
+) -> None:
+    """The leak paths family 1 claims to cover, for the vendors it had missed.
+
+    Each of these was kept by BOTH main and the previous revision in an env
+    export line, a `token:` log line and a URL query parameter, which made the
+    family's own "carries its own prefix" promise false for them.
+    """
+
+    store = tmp_path / "state"
+    service = SentinelService(store)
+
+    for label, token in FAKE_LATE_PROVIDER_TOKENS:
+        recorded = service.record_event(
+            {
+                "source": "test",
+                "event_type": "note",
+                "metadata": {
+                    "env_line": f'export SERVICE_TOKEN="{token}"',
+                    "log_line": f"token: {token}",
+                    "url_query": f"https://api.example.com/v1/ping?access_token={token}",
+                },
+            }
+        )
+        assert recorded["metadata"]["env_line"] == (
+            'export SERVICE_TOKEN="[REDACTED_SECRET]"'
+        ), label
+        assert recorded["metadata"]["log_line"] == "token: [REDACTED_SECRET]", label
+        assert recorded["metadata"]["url_query"] == (
+            "https://api.example.com/v1/ping?access_token=[REDACTED_SECRET]"
+        ), label
+        assert {"field": "metadata.env_line", "pattern_class": "provider_token"} in (
+            recorded["metadata"]["value_redaction_fields"]
+        ), label
+
+    stored = _stored_text(store)
+    for label, token in FAKE_LATE_PROVIDER_TOKENS:
+        assert token not in stored, label
+
+
+def test_the_pypi_prefix_is_anchored_on_the_macaroon_not_on_the_word(
+    tmp_path: Path,
+) -> None:
+    """`pypi-` alone is a hyphenated English compound this ledger really writes.
+
+    A bare `pypi-[A-Za-z0-9_-]{16,}` alternative would cut the real store value
+    pinned here, so the alternative requires the `AgE` that opens every PyPI
+    upload token's serialized macaroon.
+    """
+
+    store = tmp_path / "state"
+    service = SentinelService(store)
+
+    recorded = service.record_event(
+        {
+            "source": "test",
+            "event_type": "note",
+            "metadata": {
+                "workflow": f"ran {PYPI_SHAPED_LEDGER_PROSE} on the release tag",
+                "lowercase_lookalike": "pypi-agentacct-publish-and-verify-step",
+            },
+        }
+    )
+
+    assert recorded["metadata"]["workflow"] == (
+        f"ran {PYPI_SHAPED_LEDGER_PROSE} on the release tag"
+    )
+    assert recorded["metadata"]["lowercase_lookalike"] == (
+        "pypi-agentacct-publish-and-verify-step"
+    )
+    assert "value_redaction_applied" not in recorded["metadata"]
+
+
+def test_a_credential_in_a_url_is_kept_after_a_bare_bearer_and_cut_in_a_header(
+    tmp_path: Path,
+) -> None:
+    """Pin KNOWN GAPS (b) on both sides, so neither half can drift.
+
+    Family 3 refuses anything matching `scheme://` because ledger prose quotes
+    URLs constantly, so a password inside one survives a bare "Bearer" that main
+    would have cut. The header serializations are where it is still caught, and
+    that half is what makes the gap acceptable.
+    """
+
+    store = tmp_path / "state"
+    service = SentinelService(store)
+    credential = URL_EMBEDDED_CREDENTIAL
+
+    recorded = service.record_event(
+        {
+            "source": "test",
+            "event_type": "note",
+            "metadata": {
+                "bare": f"Bearer {credential}",
+                "header": f"Authorization: Bearer {credential}",
+                "proxy": f"Proxy-Authorization: Bearer {credential}",
+                "json_body": '{"Authorization": "Bearer ' + credential + '"}',
+                "equals_form": f"Authorization=Bearer {credential}",
+            },
+        }
+    )
+
+    assert recorded["metadata"]["bare"] == f"Bearer {credential}"
+    assert recorded["metadata"]["header"] == "Authorization: [REDACTED_SECRET]"
+    assert recorded["metadata"]["proxy"] == "Proxy-Authorization: [REDACTED_SECRET]"
+    assert recorded["metadata"]["json_body"] == '{"Authorization": "[REDACTED_SECRET]"}'
+    assert recorded["metadata"]["equals_form"] == "Authorization=[REDACTED_SECRET]"
+
+
+def test_a_connection_string_keeps_its_account_key_even_inside_a_header(
+    tmp_path: Path,
+) -> None:
+    """Pin KNOWN GAPS (c), the one gap a header does NOT close.
+
+    `;` is not a run character, so the match ends at the first semicolon and
+    only "DefaultEndpointsProtocol=https" is replaced. The AccountKey after it
+    survives in every serialization, including the header ones. main erased the
+    whole value instead. This test exists so the comment cannot quietly claim
+    the header covers this shape too: it does not, and the honest backstop is
+    is_sensitive_metadata_key() on the field name.
+    """
+
+    store = tmp_path / "state"
+    service = SentinelService(store)
+    phrases = {
+        "bare": f"Bearer {CONNECTION_STRING}",
+        "header": f"Authorization: Bearer {CONNECTION_STRING}",
+        "json_body": '{"Authorization": "Bearer ' + CONNECTION_STRING + '"}',
+        "equals_form": f"Authorization=Bearer {CONNECTION_STRING}",
+    }
+
+    recorded = service.record_event(
+        {"source": "test", "event_type": "note", "metadata": dict(phrases)}
+    )
+
+    assert recorded["metadata"]["bare"] == phrases["bare"]
+    for field in ("header", "json_body", "equals_form"):
+        assert CONNECTION_STRING_SECRET in recorded["metadata"][field], field
+    assert CONNECTION_STRING_SECRET in _stored_text(store)
 
 
 def test_the_observation_allowlist_keeps_server_authored_marker_keys() -> None:
