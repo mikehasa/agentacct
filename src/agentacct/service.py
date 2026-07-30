@@ -151,29 +151,551 @@ def mark_trusted_finding_disposition(event: dict[str, Any]) -> dict[str, Any]:
     return recorded
 
 
+# Secret shapes recognized inside ordinary string VALUES.
+#
+# THREE INDEPENDENT FAMILIES, and the independence is the point. For four
+# rounds one `Bearer`-anchored pattern did three jobs with three different
+# precision requirements, so every guard added for one job silently disabled
+# another: the prose refusal that saved "Bearer oauth2-client-credentials" also
+# swallowed `ghp_...`, and applying it inside `Authorization:` kept a real
+# hyphen-joined token verbatim. Each round fixed one and broke the next. They
+# are now separate compiled patterns that share no refusal, so adding a family,
+# or a prefix to a family, cannot weaken another one.
+#
+#   1. PREFIXED PROVIDER TOKENS -- self-identifying, context-free, matched
+#      anywhere in the value. No prose refusal: a vendor prefix plus a long body
+#      is not prose. (`sk-` and `sk-or-v1-` belong to this family too; they keep
+#      their own class names because the redaction marker is read downstream.)
+#   2. HEADER CONTEXT -- `Authorization`/`Proxy-Authorization` plus a
+#      credential. It carries none of family 3's structural refusals, because
+#      the header name is already most of the evidence; it keeps only a length
+#      floor, and only because the ledger really does contain sentences ABOUT
+#      the header ("Authorization: Bearer token is required for all endpoints").
+#   3. BARE `Bearer <token>` IN PROSE -- the only genuinely ambiguous case, and
+#      the only one that carries the calibrated refusals. It is ALLOWED TO MISS
+#      THINGS, because families 1 and 2 cover the realistic leak paths: a token
+#      in transit carries its header, and a token pasted into a log or env line
+#      carries a vendor prefix IF that vendor is in family 1's list. That last
+#      clause is a real limit, not a formality -- family 1 is an enumeration,
+#      so a prefixed vendor it does not list (and any shape with no prefix at
+#      all: raw hex, base64, a JWT, a UUID) is NOT covered outside a header.
+#      Family 3 is the long tail, and buying a little more of that tail costs
+#      ledger prose, which is the trade this module already got wrong three
+#      times.
+#
+# WHY ANCHORING AND SPAN REPLACEMENT ARE LOAD-BEARING. Unanchored, `sk-` matched
+# the middle of ordinary English and ordinary identifiers -- "task-", "disk-",
+# "risk-", "brisk-" all contain "sk-" -- and "Bearer" followed by any
+# non-delimiter run matched the prose phrase "use a Bearer token here". Paired
+# with the old whole-string replacement that silently destroyed real ledger
+# values: a path ending ".../work-task-sessions-4801fa" was stored as a bare
+# placeholder, and unrelated section ids that each tripped the pattern all
+# collapsed onto the same literal string and merged into one phantom section. A
+# quietly wrong record is worse than the leak it was guarding against.
+#
+# WHAT FAMILY 3'S DISCRIMINATOR IS, AND WHY IT IS NOT A DIGIT TEST. Three
+# earlier attempts guessed and each destroyed ordinary prose: any non-delimiter
+# run matched "use a Bearer token here"; then a narrowed charset requiring a
+# digit-or-separator matched "Bearer token-based-authentication"; then requiring
+# a DIGIT matched "Bearer oauth2-client-credentials" and "Bearer
+# sha256-hmac-signature", because the auth vocabulary this ledger records is
+# full of digit-carrying words (oauth2, sha256, base64, x509, rfc7519, http2).
+# A digit is emphatically NOT something an English compound cannot contain.
+#
+# The surviving rule was calibrated against the maintainer's own ledger rather
+# than guessed. A candidate span is refused when it is a shell variable
+# reference (`$FOO`), when it is a URL, or when the whole run is a WORD COMPOUND
+# -- pieces joined by `-`, `_`, `.`, `/`, `=` or `:`, each piece either a word
+# with an optional trailing version number or a bare 1..4 digit number. That one
+# structural refusal covers "oauth2-client-credentials",
+# "x509-certificate-validation-chain", "header/credential",
+# "token.rotation.policy", "scope=read:write" and "phase-4.2-work-task-sessions"
+# alike. The bare-numeric piece is load-bearing: without it
+# "Bearer rfc6750/section-2.1" was cut, and RFC 6750 IS the Bearer Token
+# specification, so that is about the likeliest sentence in this ledger to
+# follow the word. Four digits is the ceiling so the >=10-digit branch still
+# fires. What survives the refusals is accepted only in a known credential
+# shape: >=16 chars carrying a separator no word compound reaches
+# (`. / + = % : @ | # &`), a separator-free alphanumeric run of >=32 characters
+# (hex and unpadded base64), a UUID, or a run of >=10 digits.
+#
+# THE >=10-DIGIT BRANCH IS JUSTIFIED BY ITS MEASURED COST, NOT BY A CLAIM ABOUT
+# LONG NUMBERS. An earlier version of this comment said the corpus tops out at
+# 8 digits, and that is simply false: `re.finditer(r"[0-9]+")` over the 27105
+# values finds 131131 digit runs, of which 414 are >=10 digits and the longest
+# is 19 ("dashboard:finding:1964640965260215858fe13ee5214e66:0:mark_reviewed").
+# Standalone numbers are shorter but still exceed 8 -- of the 461 all-digit
+# whitespace tokens the longest are 11 digits (14237112127) -- so no length
+# threshold can be defended by asserting prose never reaches it. What can be
+# defended is the branch's price. It is only a GATE into the >=16-character
+# alternative, after the word-compound refusal has already run, so deleting
+# `|[0-9]{10}` from the lookahead changes the corpus cut sets by: whole-string
+# 0 -> 0, and spliced 6405 -> 6178. The branch is therefore solely responsible
+# for 227 of 43545 spliced tokens, every one of them an opaque agent/session id
+# of the "agent-a6033356814809200" shape -- the class this rule cuts on purpose
+# because it cannot tell it from a credential. Re-derive by rebuilding
+# _BEARER_CREDENTIAL_SHAPE without the digit alternative and diffing the two
+# cut sets over the store.
+#
+# MEASURED, through these compiled patterns, against ONE SNAPSHOT of the
+# maintainer's store (6325 event lines; 27105 distinct string values, 27733
+# distinct strings counting object keys, 43545 distinct whitespace tokens over
+# that key-inclusive set). The store is live and grows, so a re-run will report
+# different totals; the snapshot dimensions are quoted so the ratios below stay
+# checkable.
+#   - Whole-string false positives: ZERO. Not one of the 27105 values is
+#     altered. Also zero at main and at all three earlier commits on this branch.
+#   - Splice false positives, every one of the 43545 tokens placed directly
+#     after "Bearer " -- deliberately harsher than reality: 6405 cut. That set
+#     is EXACTLY the set the two preceding commits on this branch cut, element
+#     for element (6405 at 2df8d1f and at dfd293b, 0 in either direction of the
+#     diff; 6539 one commit earlier at 8e4bfaf): neither the restructure nor
+#     this cleanup added or removed anything on real data. main cuts all 43545,
+#     because main cuts any non-delimiter run after the word.
+#   - Marginal contribution of the two new families on the real corpus: zero
+#     values and zero spliced tokens each. They exist to catch credential
+#     shapes, and they cost nothing in prose.
+#   - Idempotency: re-redacting every string either family touches is a no-op.
+#   - Backtracking: adversarial repetitions of each family's ambiguous shape
+#     (`Bearer a-1.` x N inside a header, `Bearer abcd-abcd-...` x N, `ghp_` x N,
+#     nested `{"Authorization": ` x N) are LINEAR in N, which is the claim worth
+#     making -- a millisecond figure here would only describe the machine that
+#     produced it. Measured by redacting all four shapes at N = 1000, 2000, 4000,
+#     8000 and 16000 (best of three at each point) and comparing successive
+#     totals: each doubling of N multiplied the time by 2.10, 2.01, 2.05 and
+#     1.90. Re-run that sweep rather than trusting any absolute number; a
+#     superlinear pattern shows up as a ratio that climbs with N, on any
+#     hardware.
+#   - Credential-shape coverage, a 336-case catalogue: 42 real token shapes in
+#     eight serializations (bare Bearer, env export line and `token:` log line
+#     with no Bearer at all, header line, JSON header, `Authorization=`, curl
+#     `-H`, and a URL query parameter). Scored on whether the CREDENTIAL IS
+#     GONE from the output, not on whether the string changed -- span
+#     replacement makes those different questions, and gap (c) below is exactly
+#     a case where the string changes and the secret stays. 274 covered here,
+#     222 at main, 63 cases covered here that main leaves. 11 cases across the
+#     7 shapes named below go the other way.
+#
+# The residue of the 6405 is NOT broken down further. The previous version of
+# this comment gave sub-counts that no classifier written from its own prose
+# could reproduce, which is its own kind of dishonesty. One re-derivable number
+# instead: 24 of the 6405 are prose-shaped by the exact test
+# `^[A-Za-z]+(?:[-'][A-Za-z]+)*[.,:;!?]?$` -- ordinary words, mostly carrying
+# trailing sentence punctuation ("Bearer instrumentation." is cut, because the
+# trailing `.` leaves an empty compound piece). The rest are opaque ids, hashes,
+# paths and version strings this rule cannot tell from a credential and cuts on
+# purpose. Anything finer should be re-measured, not quoted from here. The
+# pinned corpora in tests/test_secret_value_redaction.py are the part a
+# maintainer can re-derive without the store: every credential shape there is
+# cut and every prose phrase there survives byte for byte.
+#
+# KNOWN GAPS, stated rather than papered over -- and NOT claimed to be
+# exhaustive. An earlier version of this paragraph said the list was exhaustive
+# "for the catalogue", which is true only of the catalogue that produced it: a
+# reviewer's independently built 45-shape catalogue immediately found vendor
+# formats this module keeps and main cut (Linear `lin_api_` among them, now
+# added to family 1). That is not a coincidence to be patched away. Family 1 is
+# an ENUMERATION of vendor prefixes, so the set of things it misses is exactly
+# "every vendor not yet listed", which no catalogue can close. Read the list
+# below as the SHAPES of what is missed and why, not as a census. To re-derive
+# it for a given catalogue, extract main's three patterns and diff coverage,
+# scoring on whether the credential is GONE from the output rather than on
+# whether the string changed -- span replacement makes those different
+# questions, and gap (c) is precisely a case where the string changes and the
+# secret stays.
+#
+# Where a header does and does not help: (a) and (b) are missed only after a
+# BARE "Bearer" and are still cut in the four header serializations. (c) and (d)
+# are NOT saved by a header -- (c) because the match ends at the first
+# semicolon, (d) because "$TOKEN" is 6 run-characters and family 2's floor is 8.
+# In the serializations that carry no "Bearer" at all, main keeps these shapes
+# too, so none of it is a regression there.
+#
+#  (a) RUNS THE WORD-COMPOUND RECOGNISER READS AS PROSE. Outside a header,
+#      family 3 misses anything the recogniser accepts as a word compound. That
+#      is deliberately NOT length-bounded: a single piece is at most 32 letters
+#      plus at most 4 digits ("Bearer " + "a"*32 is KEPT, "a"*33 is CUT;
+#      "a"*32 + "2024" is KEPT, "a"*32 + "12345" is CUT -- five strings pinned
+#      by test_the_separator_free_miss_window_is_where_known_gaps_says_it_is),
+#      but a COMPOUND of such pieces has no ceiling at all: a 101-character
+#      hyphen-joined run of six 16-letter pieces is kept, because that is
+#      indistinguishable from "x509-certificate-validation-chain-and-so-on".
+#      An earlier version of this paragraph quoted only the single-piece bound
+#      and so understated the window by an unbounded factor.
+#      main caught these only by cutting every run after the word, which is the
+#      incident this rule exists to undo. A real base64/hex token essentially
+#      never lands in the window because those alphabets interleave digits
+#      mid-piece; a token deliberately shaped like prose does, and family 1 or a
+#      header is the only backstop for it.
+#  (b) A CREDENTIAL INSIDE A URL, e.g. "Bearer postgres://user:pw@host/db".
+#      Family 3 refuses anything matching `scheme://`, because ledger prose
+#      quotes URLs constantly. The password inside one is therefore kept after a
+#      bare "Bearer". Deliberate: relaxing it puts every quoted URL at risk.
+#  (c) A `Key=Value;Key=Value` CONNECTION STRING, e.g. the Azure
+#      "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=..." shape.
+#      A header does not close this one, and the reason is span
+#      replacement rather than any refusal: `;` is not a run character, so the
+#      match ends at the first semicolon and only "DefaultEndpointsProtocol=
+#      https" is replaced. The AccountKey survives in ALL FIVE Bearer-carrying
+#      serializations. main destroyed the whole value instead, which is the
+#      behaviour this module deliberately abandoned. Deliberate, but the cost
+#      is real and it is not "still cut in a header" -- for this shape the only
+#      backstop is the key name.
+#  (d) ANYTHING AFTER A LITERAL `$`, so a credential really named `$TOKEN` is
+#      left alone rather than a shell variable reference being destroyed.
+#  (e) INSIDE A HEADER, a credential shorter than 8 run-characters, which is
+#      the price of family 2's floor: it exists so the ledger's own sentences
+#      about the header survive, and the same floor cuts a documentation word
+#      of 8 or more ("credentials" after "Authorization: Bearer" is replaced).
+#      Both directions are wrong somewhere; 8 is where the corpus put the line.
+# Also not caught, and NOT a regression because main did not cut it either: any
+# auth scheme other than `Bearer` in family 2 (`Basic`, `Token`); and any
+# prefixed vendor family 1 does not enumerate, or any prefix-free shape (raw
+# hex, base64, JWT, UUID, a bare 16-digit run), when it appears in an env or log
+# line or a URL query with no `Bearer` and no `Authorization` anywhere near it.
+# A field NAMED like a credential still loses its whole value via
+# is_sensitive_metadata_key(), which is the backstop for all of these.
+# The characters that can appear INSIDE a credential, shared by families 2 and
+# 3: everything except the characters that END a value in the formats we ingest
+# -- whitespace, comma, semicolon, quotes, angle brackets and the bracket/brace/
+# paren pairs. Excluding `[` is also what makes replacement structurally
+# idempotent, since SECRET_SPAN_PLACEHOLDER starts with `[`.
+_BEARER_RUN = r"[^\s,;\"'\[\]{}()<>]"
+
+# ---------------------------------------------------------------------------
+# FAMILY 1 -- prefixed provider tokens.
+#
+# Each alternative is a vendor prefix plus a body long enough that the pair is
+# not something prose emits, so the family needs no surrounding context and no
+# prose refusal: it matches ANYWHERE in a value, not only after "Bearer". The
+# optional leading "Bearer " is consumed when it is there so the placeholder
+# replaces the whole credential phrase rather than leaving a dangling word.
+#
+# Bodies are the vendor's real alphabet, deliberately NOT a shared permissive
+# one. `hf_`, `r8_`, `tok_`, `npm_`, `shpat_` and `sk_live_`/`sk_test_` take
+# `[A-Za-z0-9]` with no `_`, which is what keeps them off ordinary snake_case
+# identifiers; `AKIA`/`ASIA` take exactly 16 uppercase alphanumerics with a
+# boundary after, which is what keeps them off SCREAMING_CASE words like
+# "ASIAPACIFICREGION". `AKIA`, `ASIA`, `AIza` and the `AgE` of the PyPI body are
+# matched case-sensitively inside the otherwise case-insensitive pattern, since
+# only that exact casing is a real prefix.
+#
+# THE SIX PREFIXES ADDED LAST are the ones whose absence made a nonsense of the
+# family's own promise: `sk_live_`/`sk_test_`, `npm_`, `pypi-`, `shpat_` and
+# `sq0atp-` were kept by BOTH main and this module in an env export line, a
+# `token:` log line and a URL query parameter -- exactly the "carries its own
+# prefix" path family 1 exists to cover. Each is now cut in all three, and each
+# was measured against the store before it was added: 0 matches among the 27105
+# values, so the coverage is bought with no false positives. This puts the
+# module further above main, which is the intended direction.
+#
+# `pypi-` is anchored on the macaroon body, not on the bare prefix, and that is
+# measured rather than assumed: `pypi-[A-Za-z0-9_-]{16,}` cuts the real ledger
+# value "pypi-publish-and-install-smoke", while every PyPI upload token
+# serializes a v2 macaroon whose base64 opens `AgE` ("AgEIcHlwaS5vcmc" for
+# pypi.org, "AgENdGVzdC5weXBpLm9yZw" for test.pypi.org). Requiring `AgE`
+# case-sensitively costs 0 of the 27105 corpus values; the bare-prefix form
+# costs 1.
+_PROVIDER_TOKEN_ALTERNATIVES = (
+    r"gh[pousr]_[A-Za-z0-9]{16,}",  # GitHub personal/oauth/user/server/refresh
+    r"github_pat_[A-Za-z0-9_]{16,}",  # GitHub fine-grained PAT
+    r"glpat-[A-Za-z0-9_-]{16,}",  # GitLab personal access token
+    r"xox[abprs]-[A-Za-z0-9-]{12,}",  # Slack bot/user/app/refresh tokens
+    r"hf_[A-Za-z0-9]{16,}",  # Hugging Face
+    r"r8_[A-Za-z0-9]{16,}",  # Replicate
+    r"tok_[A-Za-z0-9]{16,}",  # vendor "tok_" opaque tokens
+    r"sk_(?:live|test)_[A-Za-z0-9]{16,}",  # Stripe secret key, live and test
+    r"npm_[A-Za-z0-9]{16,}",  # npm access token
+    r"shpat_[A-Za-z0-9]{16,}",  # Shopify admin API access token
+    r"sq0atp-[A-Za-z0-9_-]{16,}",  # Square access token
+    r"lin_api_[A-Za-z0-9]{16,}",  # Linear API key
+    r"dop_v1_[A-Za-z0-9]{32,}",  # DigitalOcean personal access token
+    r"rk_(?:live|test)_[A-Za-z0-9]{16,}",  # Stripe restricted key, live and test
+    r"(?-i:pypi-AgE)[A-Za-z0-9_-]{16,}",  # PyPI upload token (macaroon body)
+    r"(?-i:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])",  # AWS access/session key id
+    r"(?-i:AIza)[A-Za-z0-9_-]{16,}",  # Google API key
+)
+_PROVIDER_TOKEN_PATTERN = re.compile(
+    r"(?:\bBearer\s+)?\b(?:" + r"|".join(_PROVIDER_TOKEN_ALTERNATIVES) + r")",
+    re.IGNORECASE,
+)
+
+# ---------------------------------------------------------------------------
+# FAMILY 2 -- header context.
+#
+# `Authorization`/`Proxy-Authorization` followed by a credential, in the
+# serializations this ledger actually stores: a bare header line, a `-H
+# "Authorization: ..."` curl argument, an `Authorization=Bearer ...` form, and
+# the JSON-serialized `{"Authorization": "Bearer ..."}`. The optional quotes
+# around the separator are what make the JSON form work; without them the `"`
+# between the name and the `:` ended the match and the credential was stored.
+#
+# The floor is >=8, and it is 8 rather than 16 or 1 for reasons that were both
+# measured. It used to be 16, copied from family 3, and in a header that only
+# kept short credentials: `Authorization: Bearer a1b2c3d4e5f6g7h` (15) was kept
+# while the same header at 16 was cut, and a pure-digit credential was kept at
+# every length 8..15 -- main cut all of those.
+#
+# Removing the floor outright is what the comment above this one used to imply
+# was safe, on the grounds that nobody writes an HTTP header mid-sentence. The
+# ledger's own pinned prose corpus falsifies that: it contains
+# "Authorization: Bearer token is required for all endpoints" and
+# "the Authorization: Bearer header must be present on every request" -- English
+# sentences ABOUT the header, whose runs after the word are "token" (5) and
+# "header" (6). Documentation prose is the exception, so a floor stays, at the
+# smallest value that both clears every run in that corpus and closes the whole
+# 8..15 window: 8. The cost of the residual is stated in KNOWN GAPS (e).
+#
+# Nothing else moves. Whole-string cuts over the 27105 corpus values are 0 with
+# the floor at 16, 8, 4, 2 or 1, and the bare-"Bearer " splice count stays at
+# 6405 at every one of them because this family never fires without a header.
+# What the change buys is header coverage: splicing each of the 43545 corpus
+# tokens after "Authorization: Bearer " cuts 22445 at floor 16, 32709 at 8, and
+# 42634 with no floor at all.
+#
+# The header NAME is ledger data, so it is captured as `keep` and put back; only
+# the credential is replaced.
+_AUTH_HEADER_NAME = r"(?:Proxy-)?Authorization"
+_AUTH_HEADER_ASSIGN = r"[\"']?\s*[:=]\s*[\"']?"
+_AUTHORIZATION_HEADER_PATTERN = re.compile(
+    r"(?P<keep>\b" + _AUTH_HEADER_NAME + _AUTH_HEADER_ASSIGN + r")"
+    r"Bearer\s+" + _BEARER_RUN + r"{8,}",
+    re.IGNORECASE,
+)
+
+# ---------------------------------------------------------------------------
+# FAMILY 3 -- a bare `Bearer <token>` sitting in prose.
+_BEARER_SEPARATOR = r"[./+=%:@|#&]"
+_BEARER_NOT_SHELL_OR_URL = r"(?!\$)(?![A-Za-z][A-Za-z0-9+.-]*://)"
+# A word with an optional trailing version number, or a bare version number, and
+# a run of them joined by the characters English/technical compounds use. The
+# trailing `(?!run)` makes the refusal apply only when the compound covers the
+# WHOLE run, so a credential that merely starts word-like is not let through.
+_BEARER_WORD_PIECE = r"(?:[A-Za-z]{1,32}[0-9]{0,4}|[0-9]{1,4})"
+_BEARER_NOT_WORD_COMPOUND = (
+    r"(?![A-Za-z]{1,32}[0-9]{0,4}(?:[-._/=:]" + _BEARER_WORD_PIECE + r"){0,15}"
+    r"(?!" + _BEARER_RUN + r"))"
+)
+_BEARER_CREDENTIAL_SHAPE = (
+    r"(?:(?=" + _BEARER_RUN + r"*(?:" + _BEARER_SEPARATOR + r"|[0-9]{10}))"
+    + _BEARER_RUN + r"{16,}"
+    r"|[A-Za-z0-9]{32,}"
+    r"|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})"
+)
+_BARE_BEARER_PATTERN = re.compile(
+    r"\bBearer\s+"
+    + _BEARER_NOT_SHELL_OR_URL
+    + _BEARER_NOT_WORD_COMPOUND
+    + _BEARER_CREDENTIAL_SHAPE,
+    re.IGNORECASE,
+)
+
+# Applied in order; each pattern rewrites the text the next one sees. Most
+# specific first. Where two families cover the same credential the order decides
+# which class it is REPORTED as and how much surrounding context the placeholder
+# swallows ("Bearer " and the header name are context, not credential) -- but
+# never whether the credential goes, because each family alone already cuts it.
 SECRET_VALUE_PATTERNS = (
-    re.compile(r"Bearer\s+[^\s,;\]}\)]+", re.IGNORECASE),
-    re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
-    re.compile(r"sk-or-v1-[A-Za-z0-9_-]{12,}"),
+    ("provider_token", _PROVIDER_TOKEN_PATTERN),
+    ("authorization_header", _AUTHORIZATION_HEADER_PATTERN),
+    ("bearer_token", _BARE_BEARER_PATTERN),
+    # Family 1 members too -- self-identifying prefix, no context, no prose
+    # refusal. They keep their own class names because the redaction marker
+    # vocabulary is read downstream, and `sk-or-v1-` must be reported ahead of
+    # its own prefix-subset `sk-`.
+    ("openrouter_api_key", re.compile(r"\bsk-or-v1-[A-Za-z0-9_-]{12,}")),
+    ("api_key", re.compile(r"\bsk-[A-Za-z0-9_-]{12,}")),
+)
+
+# Only the matched span is replaced, so surrounding prose, ids and paths
+# survive. Deliberately distinct from the "[REDACTED]" used for a sensitive key
+# NAME (where dropping the whole value is the right call) so a reader can tell
+# "a secret was cut out of this value" from "this field was a credential", and
+# built from characters no pattern above can match -- the brackets are excluded
+# from the bearer run and there is no `sk-` in it -- so redaction is idempotent
+# and a second pass can never eat its own placeholder.
+SECRET_SPAN_PLACEHOLDER = "[REDACTED_SECRET]"
+
+# Server-authored redaction provenance. Written only by the recording paths
+# when a span was actually replaced, and stripped from caller input first so an
+# agent cannot claim a redaction that never happened. It lives in server-owned
+# metadata and never in-band inside the value itself: an in-band marker would
+# just be another string eligible for redaction. The names deliberately avoid
+# the words is_sensitive_metadata_key() treats as credential-ish ("secret",
+# "credential", ...), which would blank the marker's own value.
+VALUE_REDACTION_MARKER_KEY = "value_redaction_applied"
+VALUE_REDACTION_FIELDS_KEY = "value_redaction_fields"
+RESERVED_VALUE_REDACTION_KEYS = (
+    VALUE_REDACTION_MARKER_KEY,
+    VALUE_REDACTION_FIELDS_KEY,
 )
 
 
-def _redact_secrets(value: Any) -> Any:
+def strip_value_redaction_provenance(event: dict[str, Any]) -> dict[str, Any]:
+    metadata = event.get("metadata")
+    # The stamp lands top-level when metadata is off-contract, so a caller can
+    # plant a forged claim in either home; both are cleared, or "an agent
+    # cannot claim a redaction that never happened" would only hold for one.
+    homes = [event, *([metadata] if isinstance(metadata, dict) else [])]
+    if not any(key in home for home in homes for key in RESERVED_VALUE_REDACTION_KEYS):
+        return event
+    recorded = {
+        key: value
+        for key, value in event.items()
+        if key not in RESERVED_VALUE_REDACTION_KEYS
+    }
+    if isinstance(metadata, dict):
+        sanitized = {
+            key: value
+            for key, value in metadata.items()
+            if key not in RESERVED_VALUE_REDACTION_KEYS
+        }
+        sanitized["reserved_value_redaction_provenance_stripped"] = True
+        recorded["metadata"] = sanitized
+    else:
+        recorded["reserved_value_redaction_provenance_stripped"] = True
+    return recorded
+
+
+def _replace_secret_span(match: re.Match[str]) -> str:
+    """Swap in the placeholder, re-emitting any context the match had to read.
+
+    A pattern may need leading context to decide that a span is a credential
+    without that context being part of the credential: "Authorization:" tells us
+    the run after "Bearer" is a real header value, but the header NAME is ledger
+    data and gets put back. Patterns opt in by capturing it as ``keep``.
+    """
+
+    keep = match.groupdict().get("keep")
+    return (keep or "") + SECRET_SPAN_PLACEHOLDER
+
+
+def _redact_secret_spans(text: str) -> tuple[str, tuple[str, ...]]:
+    """Replace secret-shaped spans in ``text``, keeping everything else verbatim."""
+
+    matched: list[str] = []
+    for pattern_class, pattern in SECRET_VALUE_PATTERNS:
+        text, replacements = pattern.subn(_replace_secret_span, text)
+        if replacements:
+            matched.append(pattern_class)
+    return text, tuple(matched)
+
+
+def _redact_secrets(
+    value: Any,
+    *,
+    path: str = "",
+    found: list[dict[str, str]] | None = None,
+) -> Any:
+    """Copy ``value`` redacted, appending ``field``/``pattern_class`` rows to ``found``.
+
+    Sensitive key NAMES still lose the whole value: that is a decision about
+    the field, not a match against its content. Value patterns only take the
+    span they matched.
+    """
+
     if isinstance(value, dict):
         redacted: dict[str, Any] = {}
         for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
             if is_sensitive_metadata_key(key):
                 redacted[key] = "[REDACTED]"
             else:
-                redacted[key] = _redact_secrets(child)
+                redacted[key] = _redact_secrets(child, path=child_path, found=found)
         return redacted
-    if isinstance(value, list):
-        return [_redact_secrets(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_redact_secrets(item) for item in value)
-    if isinstance(value, str) and any(pattern.search(value) for pattern in SECRET_VALUE_PATTERNS):
-        return "[REDACTED]"
+    if isinstance(value, (list, tuple)):
+        items = [
+            _redact_secrets(
+                item,
+                path=f"{path}.{index}" if path else str(index),
+                found=found,
+            )
+            for index, item in enumerate(value)
+        ]
+        return items if isinstance(value, list) else tuple(items)
+    if isinstance(value, str):
+        text, matched = _redact_secret_spans(value)
+        if matched and found is not None:
+            found.extend({"field": path, "pattern_class": name} for name in matched)
+        return text
     return value
+
+
+def _stamp_value_redaction_marker(
+    event: dict[str, Any],
+    redactions: list[dict[str, str]],
+) -> dict[str, Any]:
+    if not redactions:
+        return event
+    detail = sorted(redactions, key=lambda row: (row["field"], row["pattern_class"]))
+    stamped = dict(event)
+    metadata = stamped.get("metadata")
+    if metadata is None or isinstance(metadata, dict):
+        marked = dict(metadata or {})
+        marked[VALUE_REDACTION_MARKER_KEY] = True
+        marked[VALUE_REDACTION_FIELDS_KEY] = detail
+        stamped["metadata"] = marked
+    else:
+        # Off-contract metadata is never rewritten, but the repair still has to
+        # be visible, so the marker lands beside it instead of replacing it.
+        stamped[VALUE_REDACTION_MARKER_KEY] = True
+        stamped[VALUE_REDACTION_FIELDS_KEY] = detail
+    return stamped
+
+
+def redact_event_secrets(event: dict[str, Any]) -> dict[str, Any]:
+    """Redact one event and stamp server-authored provenance for what was cut."""
+
+    sanitized = strip_value_redaction_provenance(event)
+    redactions: list[dict[str, str]] = []
+    redacted = _redact_secrets(sanitized, found=redactions)
+    return _stamp_value_redaction_marker(redacted, redactions)
+
+
+# Top-level fields the server always assigns for itself. A caller-supplied
+# value for one of them is overwritten, so a redaction of it never survives to
+# be read.
+SERVER_ASSIGNED_EVENT_FIELDS = ("event_id", "created_at")
+
+
+def drop_server_assigned_redaction_rows(event: dict[str, Any]) -> dict[str, Any]:
+    """Forget marker rows naming a field the server overwrites anyway.
+
+    An incoming ``event_id`` carrying a secret-shaped span is redacted like any
+    other string, but the server then assigns a fresh id over it. Left alone,
+    the marker would point a reader at an ordinary ``evt_...`` value with no
+    placeholder in it -- a claim the stored row cannot support. The rows go;
+    the marker itself goes too if nothing else was cut.
+    """
+
+    metadata = event.get("metadata")
+    # The marker lives in metadata, or beside it when metadata is off-contract.
+    for in_metadata, container in ((True, metadata), (False, event)):
+        if not isinstance(container, dict):
+            continue
+        detail = container.get(VALUE_REDACTION_FIELDS_KEY)
+        if not isinstance(detail, list):
+            continue
+        kept = [
+            row
+            for row in detail
+            if not (
+                isinstance(row, dict)
+                and row.get("field") in SERVER_ASSIGNED_EVENT_FIELDS
+            )
+        ]
+        if len(kept) == len(detail):
+            return event
+        marked = {
+            key: value
+            for key, value in container.items()
+            if key not in RESERVED_VALUE_REDACTION_KEYS
+        }
+        if kept:
+            marked[VALUE_REDACTION_MARKER_KEY] = True
+            marked[VALUE_REDACTION_FIELDS_KEY] = kept
+        return {**event, "metadata": marked} if in_metadata else marked
+    return event
 
 
 def _safe_nonnegative_int(value: Any) -> int:
@@ -350,8 +872,7 @@ def _normalize_finding_disposition_note(note: str | None, *, action: str) -> str
     if normalized is not None:
         if len(normalized) > 1200 or any(char in normalized for char in "\r\n\x00"):
             raise FindingDispositionConflict("finding disposition note is invalid")
-        redacted = _redact_secrets(normalized)
-        normalized = redacted if isinstance(redacted, str) else "[REDACTED]"
+        normalized, _matched = _redact_secret_spans(normalized)
     if action == "resolve" and not normalized:
         raise FindingDispositionConflict("resolving a finding requires a note")
     return normalized
@@ -474,13 +995,28 @@ class SentinelService:
                 events.append(event)
         return events
 
-    def _prepare_recorded_event(self, event: dict[str, Any]) -> dict[str, Any]:
-        recorded = _redact_secrets(dict(event))
+    def _prepare_recorded_event(
+        self,
+        event: dict[str, Any],
+        *,
+        already_redacted: bool = False,
+    ) -> dict[str, Any]:
+        """Assign server-owned identity to one event, redacting it on the way.
+
+        ``already_redacted`` is for the trusted session-observation lane, which
+        redacts and stamps in ``_trusted_session_observation_candidate`` -- it
+        has to, because the allowlist rebuild and the revision digest both run
+        on the redacted content. Re-running the redactor here would strip that
+        server-authored marker as if a caller had forged it, and the row would
+        record a cut with nothing saying so.
+        """
+
+        recorded = dict(event) if already_redacted else redact_event_secrets(dict(event))
         # Server-owned fields are always assigned locally. Caller-provided values
         # must not be able to break sorting or spoof event identity.
         recorded["event_id"] = "evt_" + uuid.uuid4().hex[:12]
         recorded["created_at"] = time.time()
-        return recorded
+        return drop_server_assigned_redaction_rows(recorded)
 
     def _find_idempotent_event(self, event: dict[str, Any], idempotency_key: str) -> dict[str, Any] | None:
         for existing in reversed(self._read_events_file_order()):
@@ -572,7 +1108,12 @@ class SentinelService:
         return recorded
 
     def _trusted_session_observation_candidate(self, event: dict[str, Any]) -> dict[str, Any]:
-        candidate = _redact_secrets(dict(event))
+        # Prune before the allowlist rebuild below: that rebuild is what
+        # computes observation_revision, so a marker row dropped afterwards
+        # would leave the stored digest disagreeing with the stored content
+        # and make every re-import of the same source fact look like a new
+        # revision.
+        candidate = drop_server_assigned_redaction_rows(redact_event_secrets(dict(event)))
         candidate = strip_untrusted_usage_truth_metadata(candidate)
         candidate = strip_untrusted_instrumentation_marker_metadata(candidate)
         candidate = strip_client_context_provenance(candidate)
@@ -632,7 +1173,9 @@ class SentinelService:
                     local_session_observation_revision(row) == candidate_revision
                     for row in same_identity
                 ):
-                    conflict_row = self._prepare_recorded_event(candidate)
+                    conflict_row = self._prepare_recorded_event(
+                        candidate, already_redacted=True
+                    )
                     self._write_event_partition_unlocked(
                         [*existing, conflict_row], preserved_unparseable
                     )
@@ -644,7 +1187,9 @@ class SentinelService:
             else:
                 authority = selected[0]
                 if authority is candidate:
-                    recorded = self._prepare_recorded_event(candidate)
+                    recorded = self._prepare_recorded_event(
+                        candidate, already_redacted=True
+                    )
                     rewritten = [
                         row
                         for row in existing
@@ -766,7 +1311,7 @@ class SentinelService:
                 if len(current_selected) != 1:
                     continue
                 replacements[key] = self._prepare_recorded_event(
-                    current_selected[0]
+                    current_selected[0], already_redacted=True
                 )
             if replacements:
                 kept = [
@@ -1443,7 +1988,9 @@ class SentinelService:
                                 continue
                             seen_revisions.add(revision)
                             conflict_rows.append(
-                                self._prepare_recorded_event(candidate)
+                                self._prepare_recorded_event(
+                                    candidate, already_redacted=True
+                                )
                             )
                     if conflict_rows:
                         self._write_event_partition_unlocked(
@@ -1504,7 +2051,12 @@ class SentinelService:
                     for event in chosen
                 ]
                 recorded = [
-                    self._prepare_recorded_event(event)
+                    # Observation rows arrive already redacted and stamped by
+                    # _trusted_session_observation_candidate; every other lane
+                    # is raw here and gets redacted on the way in.
+                    self._prepare_recorded_event(
+                        event, already_redacted=trusted_session_observation_import
+                    )
                     for event in prepared_events
                 ]
                 self._write_event_partition_unlocked(

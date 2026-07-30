@@ -1414,7 +1414,9 @@ def test_local_api_redacts_secret_shaped_string_values(tmp_path):
 
     assert response.status_code == 200
     event = response.json()["event"]
-    assert event["metadata"]["summary"] == "[REDACTED]"
+    # Only the secret span goes; the prose around it is ledger data and stays.
+    assert event["metadata"]["summary"] == "called with [REDACTED_SECRET]"
+    assert event["metadata"]["value_redaction_applied"] is True
     assert secretish not in (tmp_path / "state" / "events.jsonl").read_text(encoding="utf-8")
 
 

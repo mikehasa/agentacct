@@ -411,6 +411,16 @@ _SESSION_OBSERVATION_METADATA_FIELDS = frozenset(
         "evidenced_event_ids",
         "evidenced_event_id_total",
         "evidenced_outputs_skipped",
+        # Server-authored value-redaction provenance (service.py's
+        # RESERVED_VALUE_REDACTION_KEYS; spelled literally here because
+        # service imports this module, not the other way round, and a test
+        # pins the two lists together). An observation title or project path
+        # can carry a credential, and the redaction is applied before this
+        # rebuild -- without these the cut would happen silently, which is
+        # the exact failure the marker exists to prevent. A caller cannot
+        # forge them: redact_event_secrets strips caller copies first.
+        "value_redaction_applied",
+        "value_redaction_fields",
     }
 )
 
