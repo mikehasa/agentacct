@@ -129,20 +129,34 @@ CREDENTIAL_CORPUS = (
 # Prefixed opaque provider tokens. Their own shape -- a short letter prefix, a
 # separator, then an alphanumeric body -- reads as a word compound, so the prose
 # refusal used to swallow them even though these are the most commonly leaked
-# credentials in the world. Fake bodies, built by concatenation like the rest.
+# credentials in the world.
+#
+# Every body here is PURELY ALPHABETIC (uppercase for AWS), which makes each row
+# independently proving: no long digit run, no >=32-character alphanumeric run,
+# no UUID and no `. / + = % : @ | # &` separator, so none of them can reach the
+# generic credential-shape branch, and the word-compound refusal covers all of
+# them. Delete the provider family and all 15 rows fail. The earlier fixtures
+# embedded "0" * 24, so 9 of the 12 passed through the >=10-digit branch and
+# pinned nothing about their own prefix.
+_FAKE_BODY_24 = "FakeOnly" + "AbCdEfGh" + "IjKlMnOp"
+_FAKE_BODY_20 = "FakeOnly" + "AbCdEfGh" + "IjKl"
+_FAKE_BODY_16_UPPER = "FAKEONLY" + "FAKEONLY"
 FAKE_PROVIDER_TOKENS = (
-    ("github_personal", "ghp_" + "fakeonly" + "0" * 24 + "AbCd"),
-    ("github_oauth", "gho_" + "fakeonly" + "0" * 24 + "AbCd"),
-    ("github_user_to_server", "ghu_" + "fakeonly" + "0" * 24 + "AbCd"),
-    ("github_server_to_server", "ghs_" + "fakeonly" + "0" * 24 + "AbCd"),
-    ("github_refresh", "ghr_" + "fakeonly" + "0" * 24 + "AbCd"),
-    ("github_fine_grained", "github_pat_" + "fakeonly" + "0" * 24 + "AbCd"),
-    ("gitlab_personal", "glpat-" + "fakeonly" + "0" * 8 + "AbCd"),
-    ("aws_access_key", "AKIA" + "FAKEONLY" + "0" * 8),
-    ("aws_session_key", "ASIA" + "FAKEONLY" + "0" * 8),
-    ("slack_bot", "xoxb-" + "fakeonly" + "0" * 12 + "AbCd"),
-    ("slack_user", "xoxp-" + "fakeonly" + "0" * 12 + "AbCd"),
-    ("google_api", "AIza" + "fakeonly" + "0" * 24 + "AbCd"),
+    ("github_personal", "ghp_" + _FAKE_BODY_24),
+    ("github_oauth", "gho_" + _FAKE_BODY_24),
+    ("github_user_to_server", "ghu_" + _FAKE_BODY_24),
+    ("github_server_to_server", "ghs_" + _FAKE_BODY_24),
+    ("github_refresh", "ghr_" + _FAKE_BODY_24),
+    ("github_fine_grained", "github_pat_" + _FAKE_BODY_24),
+    ("gitlab_personal", "glpat-" + _FAKE_BODY_20),
+    ("aws_access_key", "AKIA" + _FAKE_BODY_16_UPPER),
+    ("aws_session_key", "ASIA" + _FAKE_BODY_16_UPPER),
+    ("slack_bot", "xoxb-" + _FAKE_BODY_20),
+    ("slack_user", "xoxp-" + _FAKE_BODY_20),
+    ("google_api", "AIza" + _FAKE_BODY_24),
+    ("huggingface", "hf_" + _FAKE_BODY_20),
+    ("replicate", "r8_" + _FAKE_BODY_20),
+    ("vendor_opaque", "tok_" + _FAKE_BODY_20),
 )
 
 # Prose whose compound carries a BARE NUMERIC piece. RFC 6750 is the Bearer
@@ -722,6 +736,107 @@ def test_a_prefixed_provider_token_after_a_bare_bearer_is_cut(tmp_path: Path) ->
     stored = _stored_text(store)
     for label, token in FAKE_PROVIDER_TOKENS:
         assert token not in stored, label
+
+
+def test_a_prefixed_provider_token_is_cut_with_no_bearer_word_at_all(
+    tmp_path: Path,
+) -> None:
+    """Family 1 is context-free: the prefix alone is the evidence.
+
+    While the provider prefixes lived inside the `Bearer`-anchored pattern, a
+    token pasted into an env line, a log line or a shell transcript -- which is
+    how they actually leak -- was stored verbatim.
+    """
+
+    store = tmp_path / "state"
+    service = SentinelService(store)
+
+    for label, token in FAKE_PROVIDER_TOKENS:
+        phrase = f"export PROVIDER_TOKEN={token} && ./deploy.sh"
+        recorded = service.record_event(
+            {
+                "source": "test",
+                "event_type": "note",
+                "metadata": {"summary": phrase},
+            }
+        )
+        assert recorded["metadata"]["summary"] == (
+            "export PROVIDER_TOKEN=[REDACTED_SECRET] && ./deploy.sh"
+        ), label
+        assert recorded["metadata"]["value_redaction_fields"] == [
+            {"field": "metadata.summary", "pattern_class": "provider_token"}
+        ], label
+
+    stored = _stored_text(store)
+    for label, token in FAKE_PROVIDER_TOKENS:
+        assert token not in stored, label
+
+
+def test_a_json_serialized_authorization_header_is_a_credential(
+    tmp_path: Path,
+) -> None:
+    """The serialization this ledger stores most often, and it regressed once.
+
+    `{"Authorization": "Bearer ..."}` puts a quote between the header name and
+    the colon, which ended the header match, so the branch fell through to the
+    prose rule and a hyphen-joined opaque token was kept verbatim.
+    """
+
+    store = tmp_path / "state"
+    service = SentinelService(store)
+    credential = "abcdefgh-ijklmnop-qrstuvwx"
+
+    recorded = service.record_event(
+        {
+            "source": "test",
+            "event_type": "note",
+            "metadata": {
+                "json_body": '{"Authorization": "Bearer ' + credential + '"}',
+                "single_quoted": "{'Proxy-Authorization': 'Bearer " + credential + "'}",
+                "curl_arg": '-H "Authorization: Bearer ' + credential + '"',
+            },
+        }
+    )
+
+    assert recorded["metadata"]["json_body"] == '{"Authorization": "[REDACTED_SECRET]"}'
+    assert recorded["metadata"]["single_quoted"] == (
+        "{'Proxy-Authorization': '[REDACTED_SECRET]'}"
+    )
+    assert recorded["metadata"]["curl_arg"] == '-H "Authorization: [REDACTED_SECRET]"'
+    assert credential not in _stored_text(store)
+
+
+def test_the_separator_free_miss_window_is_where_known_gaps_says_it_is(
+    tmp_path: Path,
+) -> None:
+    """Pin the KNOWN GAPS boundary so the comment cannot drift off the code.
+
+    Outside a header the word-compound refusal reads a run as ONE word when it
+    is at most 32 letters, optionally followed by at most 4 digits. Everything
+    inside that window is kept; the first character past it is cut. The comment
+    quotes these exact strings, so a change to the recogniser fails here.
+    """
+
+    store = tmp_path / "state"
+    service = SentinelService(store)
+    kept = ("a" * 16, "a" * 32, "a" * 32 + "2024")
+    cut = ("a" * 33, "a" * 32 + "12345")
+
+    recorded = service.record_event(
+        {
+            "source": "test",
+            "event_type": "note",
+            "metadata": {
+                **{f"kept_{index}": f"Bearer {run}" for index, run in enumerate(kept)},
+                **{f"cut_{index}": f"Bearer {run}" for index, run in enumerate(cut)},
+            },
+        }
+    )
+
+    for index, run in enumerate(kept):
+        assert recorded["metadata"][f"kept_{index}"] == f"Bearer {run}", run
+    for index, run in enumerate(cut):
+        assert recorded["metadata"][f"cut_{index}"] == "[REDACTED_SECRET]", run
 
 
 def test_a_compound_with_a_bare_number_in_it_is_still_prose(tmp_path: Path) -> None:

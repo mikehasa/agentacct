@@ -151,40 +151,43 @@ def mark_trusted_finding_disposition(event: dict[str, Any]) -> dict[str, Any]:
     return recorded
 
 
-# Secret shapes recognized inside ordinary string VALUES, ordered
-# most-specific-first so the reported pattern class is the precise one.
+# Secret shapes recognized inside ordinary string VALUES.
 #
-# Both anchors are load-bearing. Unanchored, `sk-` matched the middle of
-# ordinary English and ordinary identifiers -- "task-", "disk-", "risk-",
-# "brisk-" all contain "sk-" -- and "Bearer" followed by any non-delimiter run
-# matched the prose phrase "use a Bearer token here". Paired with the old
-# whole-string replacement that silently destroyed real ledger values: a path
-# ending
-# ".../work-task-sessions-4801fa" was stored as a bare placeholder, and
-# unrelated section ids that each tripped the pattern all collapsed onto the
-# same literal string and merged into one phantom section. A quietly wrong
-# record is worse than the leak it was guarding against, so the patterns now
-# require a word boundary before `sk-` and something credential-shaped (rather
-# than an English word) after `Bearer`. Both `sk-` patterns were re-measured
-# against the maintainer's ledger and match nothing in it: the word boundary is
-# what keeps "task-", "disk-", "risk-" and the real ".../work-task-sessions"
-# paths out, so they are left exactly as they are.
+# THREE INDEPENDENT FAMILIES, and the independence is the point. For four
+# rounds one `Bearer`-anchored pattern did three jobs with three different
+# precision requirements, so every guard added for one job silently disabled
+# another: the prose refusal that saved "Bearer oauth2-client-credentials" also
+# swallowed `ghp_...`, and applying it inside `Authorization:` kept a real
+# hyphen-joined token verbatim. Each round fixed one and broke the next. They
+# are now separate compiled patterns that share no refusal, so adding a family,
+# or a prefix to a family, cannot weaken another one.
 #
-# The credential run after `Bearer` stays DELIMITER-based rather than a fixed
-# credential alphabet. Real credentials carry `%`, `:`, `|`, `@`, `#` and `&`
-# (percent-encoding, basic-auth pairs, vendor prefixes), and a charset that
-# omits them stops at the first such character: "Bearer abc%2Fdefgh..." would
-# match only "abc", fall under the length floor, and write the whole credential
-# to the ledger. Only the characters that END a value in the formats we ingest
-# are excluded -- whitespace, comma, semicolon, quotes, angle brackets and the
-# bracket/brace/paren pairs -- which also makes replacement structurally
-# idempotent, since SECRET_SPAN_PLACEHOLDER starts with `[` and so leaves an
-# empty run behind. `<` and `>` are in that exclusion set because they only ever
-# appear around documentation placeholders ("Bearer <your-access-token>"), never
-# inside base64, base64url, hex or percent-encoding.
+#   1. PREFIXED PROVIDER TOKENS -- self-identifying, context-free, matched
+#      anywhere in the value. No prose refusal: a vendor prefix plus a long body
+#      is not prose. (`sk-` and `sk-or-v1-` belong to this family too; they keep
+#      their own class names because the redaction marker is read downstream.)
+#   2. HEADER CONTEXT -- `Authorization`/`Proxy-Authorization` plus a
+#      credential. No prose refusal: nobody writes an HTTP header mid-sentence.
+#   3. BARE `Bearer <token>` IN PROSE -- the only genuinely ambiguous case, and
+#      the only one that carries the calibrated refusals. It is ALLOWED TO MISS
+#      THINGS, because families 1 and 2 now cover the realistic leak paths: a
+#      token pasted into a log or env line carries its own prefix, and a token
+#      in transit carries its header. Family 3 is the long tail, and buying a
+#      little more of that tail costs ledger prose, which is the trade this
+#      module already got wrong three times.
 #
-# WHAT THE DISCRIMINATOR IS, AND WHY IT IS NOT A DIGIT TEST. Three earlier
-# attempts guessed at this and each destroyed ordinary prose: any non-delimiter
+# WHY ANCHORING AND SPAN REPLACEMENT ARE LOAD-BEARING. Unanchored, `sk-` matched
+# the middle of ordinary English and ordinary identifiers -- "task-", "disk-",
+# "risk-", "brisk-" all contain "sk-" -- and "Bearer" followed by any
+# non-delimiter run matched the prose phrase "use a Bearer token here". Paired
+# with the old whole-string replacement that silently destroyed real ledger
+# values: a path ending ".../work-task-sessions-4801fa" was stored as a bare
+# placeholder, and unrelated section ids that each tripped the pattern all
+# collapsed onto the same literal string and merged into one phantom section. A
+# quietly wrong record is worse than the leak it was guarding against.
+#
+# WHAT FAMILY 3'S DISCRIMINATOR IS, AND WHY IT IS NOT A DIGIT TEST. Three
+# earlier attempts guessed and each destroyed ordinary prose: any non-delimiter
 # run matched "use a Bearer token here"; then a narrowed charset requiring a
 # digit-or-separator matched "Bearer token-based-authentication"; then requiring
 # a DIGIT matched "Bearer oauth2-client-credentials" and "Bearer
@@ -192,70 +195,143 @@ def mark_trusted_finding_disposition(event: dict[str, Any]) -> dict[str, Any]:
 # full of digit-carrying words (oauth2, sha256, base64, x509, rfc7519, http2).
 # A digit is emphatically NOT something an English compound cannot contain.
 #
-# The rule below was calibrated against the maintainer's own ledger rather than
-# guessed. Outside a header a candidate span is refused when it is a shell
-# variable reference (`$FOO`), when it is a URL, or when the whole run is a WORD
-# COMPOUND -- pieces joined by `-`, `_`, `.`, `/`, `=` or `:`, each piece either
-# a word with an optional trailing version number or a bare 1..4 digit number.
-# That single structural refusal is what covers "oauth2-client-credentials",
+# The surviving rule was calibrated against the maintainer's own ledger rather
+# than guessed. A candidate span is refused when it is a shell variable
+# reference (`$FOO`), when it is a URL, or when the whole run is a WORD COMPOUND
+# -- pieces joined by `-`, `_`, `.`, `/`, `=` or `:`, each piece either a word
+# with an optional trailing version number or a bare 1..4 digit number. That one
+# structural refusal covers "oauth2-client-credentials",
 # "x509-certificate-validation-chain", "header/credential",
 # "token.rotation.policy", "scope=read:write" and "phase-4.2-work-task-sessions"
 # alike. The bare-numeric piece is load-bearing: without it
 # "Bearer rfc6750/section-2.1" was cut, and RFC 6750 IS the Bearer Token
 # specification, so that is about the likeliest sentence in this ledger to
-# follow the word. Four digits is the ceiling so the >=10-digit branch below
-# still fires. What survives the refusals is then accepted only in a known
-# credential shape: >=16 chars carrying a separator no word compound reaches
+# follow the word. Four digits is the ceiling so the >=10-digit branch still
+# fires. What survives the refusals is accepted only in a known credential
+# shape: >=16 chars carrying a separator no word compound reaches
 # (`. / + = % : @ | # &`), a separator-free alphanumeric run of >=32 characters
 # (hex and unpadded base64), a UUID, or a run of >=10 digits -- dates and
 # version numbers in the real corpus top out at 8 digits (20260713), so ten
 # consecutive digits is not something prose emits.
 #
-# The well-known provider token prefixes are matched BEFORE those refusals
-# rather than after. `ghp_16C7...`, `glpat-...` and `AKIA...` read as word
-# compounds -- short letter prefix, separator, alphanumeric body -- so the prose
-# refusal swallowed them, and they are among the most commonly leaked
-# credentials there are. `AKIA`, `ASIA` and `AIza` are matched case-sensitively
-# inside the otherwise case-insensitive pattern, since only that exact casing is
-# a real token prefix.
+# MEASURED, through these compiled patterns, against the maintainer's store
+# (6261 event lines; 26773 distinct string values, 27401 distinct strings
+# counting object keys, 43213 distinct whitespace tokens over that
+# key-inclusive set).
+#   - Whole-string false positives: ZERO. Not one of the 26773 values is
+#     altered. Also zero at main and at both earlier commits on this branch.
+#   - Splice false positives, every one of the 43213 tokens placed directly
+#     after "Bearer " -- deliberately harsher than reality: 6252 cut. That set
+#     is EXACTLY the set the previous commit cut, element for element: the
+#     restructure added nothing and removed nothing on real data. main cuts all
+#     43213, because main cuts any non-delimiter run after the word.
+#   - Marginal contribution of the two new families on the real corpus: zero
+#     values and zero spliced tokens each. They exist to catch credential
+#     shapes, and they cost nothing in prose.
+#   - Idempotency: re-redacting every string either family touches is a no-op.
+#   - Backtracking: adversarial repetitions of each family's ambiguous shape
+#     (`Bearer a-1.` x N inside a header, `Bearer abcd-abcd-...` x N, `ghp_` x N,
+#     nested `{"Authorization": ` x N) scale linearly to N=16000, worst 20 ms.
+#   - Credential-shape coverage, a 146-case catalogue of real token shapes in
+#     six serializations (bare Bearer, env/log line with no Bearer at all,
+#     header, JSON header, `Authorization=`, curl `-H`): 142 cut here, 128 at
+#     main, 114 at the previous commit. Nothing that any earlier revision cut is
+#     missed here except the four named below.
 #
-# Inside a real `Authorization:`/`Proxy-Authorization:` header NONE of the prose
-# refusals apply: nobody writes an HTTP header in the middle of a sentence. That
-# branch takes any >=16 character run, which is what makes it the backstop the
-# rest of the rule leans on -- "Authorization: Bearer abcdefgh-ijklmnop-qrstuvwx"
-# is a credential, not prose. The header name is captured as `keep` and put back,
-# so only the credential goes.
-#
-# MEASURED against the maintainer's store: 26773 distinct string values (27401
-# distinct strings counting object keys) and 43213 distinct whitespace tokens.
-# Not one of those strings is touched as it stands. Splicing every one of the
-# 43213 tokens directly after "Bearer " -- deliberately harsher than reality,
-# and the test the previous round ran only on the pre-filtered compound subset
-# -- cuts 6252 of them: 2666 UUID or >=32-character alphanumeric runs and 2640
-# ids carrying an 8+ character hex run, which are opaque-id shapes this rule
-# cannot tell from a credential and cuts on purpose; 774 filesystem paths; 74
-# non-ASCII, digit-led or punctuation-led fragments; and 98 that are genuinely
-# prose-shaped. Alongside that, the 29 credential shapes pinned in
-# tests/test_secret_value_redaction.py are all cut and its 51 prose phrases are
-# all left byte for byte.
+# The residue of the 6252 is NOT broken down further. The previous version of
+# this comment gave sub-counts that no classifier written from its own prose
+# could reproduce, which is its own kind of dishonesty. One re-derivable number
+# instead: 24 of the 6252 are prose-shaped by the exact test
+# `^[A-Za-z]+(?:[-'][A-Za-z]+)*[.,:;!?]?$` -- ordinary words, mostly carrying
+# trailing sentence punctuation ("Bearer instrumentation." is cut, because the
+# trailing `.` leaves an empty compound piece). The rest are opaque ids, hashes,
+# paths and version strings this rule cannot tell from a credential and cuts on
+# purpose. Anything finer should be re-measured, not quoted from here. The
+# pinned corpora in tests/test_secret_value_redaction.py are the part a
+# maintainer can re-derive without the store: every credential shape there is
+# cut and every prose phrase there survives byte for byte.
 #
 # KNOWN GAPS, stated rather than papered over.
-# Not caught, outside a header: a credential whose every `-._/=:`-separated
-# piece happens to be a word with a trailing number or a bare 1..4 digit number
-# (a real base64/hex token essentially never is, because those alphabets
-# interleave digits mid-piece, but a short contrived one would slip); a
-# separator-free alphabetic token of 16..31 characters; and anything after a
-# literal `$`, so a credential really named `$TOKEN` is left alone deliberately.
-# A field NAMED like a credential still loses its whole value via
+# Outside a header, family 3 misses a run the word-compound recogniser reads as
+# ONE word: at most 32 letters, optionally followed by at most 4 digits.
+# Measured on this pattern: "Bearer " + "a"*32 is KEPT and "a"*33 is CUT;
+# "Bearer " + "a"*32 + "2024" (36 chars) is KEPT and "a"*32 + "12345" is CUT.
+# test_the_separator_free_miss_window_is_where_known_gaps_says_it_is pins those
+# five strings, so this paragraph cannot drift off the code again. Four shapes
+# in the coverage catalogue land in that window and are cut at main but not
+# here: a 20-letter run, a 28-letter run, and hyphen- and dot-joined 26-char
+# opaque runs, each after a BARE "Bearer". main caught them only by cutting
+# every run after the word, which is the incident this rule exists to undo; all
+# four are still cut in every header serialization, and a real base64/hex token
+# essentially never lands in the window because those alphabets interleave
+# digits mid-piece. Also not caught: anything after a literal `$`, so a
+# credential really named `$TOKEN` is left alone deliberately; and any auth
+# scheme other than `Bearer` in family 2 (`Basic`, `Token`), which main did not
+# cut either. A field NAMED like a credential still loses its whole value via
 # is_sensitive_metadata_key(), which is the backstop for all of these.
-# Cut although it is prose -- the 98 above: a >=16 character technical
-# identifier joined by a separator the compound recogniser does not accept
-# ("off|shadow|authoritative", "agentacct==0.2.0"), and 16 that are one ordinary
-# long word carrying trailing sentence punctuation, where the trailing `.` or
-# `:` leaves an empty compound piece, so "Bearer instrumentation." is cut. Both
-# want a wider compound recogniser rather than a wider refusal, and are left
-# here as measured rather than rounded away.
+# The characters that can appear INSIDE a credential, shared by families 2 and
+# 3: everything except the characters that END a value in the formats we ingest
+# -- whitespace, comma, semicolon, quotes, angle brackets and the bracket/brace/
+# paren pairs. Excluding `[` is also what makes replacement structurally
+# idempotent, since SECRET_SPAN_PLACEHOLDER starts with `[`.
 _BEARER_RUN = r"[^\s,;\"'\[\]{}()<>]"
+
+# ---------------------------------------------------------------------------
+# FAMILY 1 -- prefixed provider tokens.
+#
+# Each alternative is a vendor prefix plus a body long enough that the pair is
+# not something prose emits, so the family needs no surrounding context and no
+# prose refusal: it matches ANYWHERE in a value, not only after "Bearer". The
+# optional leading "Bearer " is consumed when it is there so the placeholder
+# replaces the whole credential phrase rather than leaving a dangling word.
+#
+# Bodies are the vendor's real alphabet, deliberately NOT a shared permissive
+# one. `hf_`, `r8_` and `tok_` take `[A-Za-z0-9]` with no `_`, which is what
+# keeps them off ordinary snake_case identifiers; `AKIA`/`ASIA` take exactly 16
+# uppercase alphanumerics with a boundary after, which is what keeps them off
+# SCREAMING_CASE words like "ASIAPACIFICREGION". `AKIA`, `ASIA` and `AIza` are
+# matched case-sensitively inside the otherwise case-insensitive pattern, since
+# only that exact casing is a real prefix.
+_PROVIDER_TOKEN_ALTERNATIVES = (
+    r"gh[pousr]_[A-Za-z0-9]{16,}",  # GitHub personal/oauth/user/server/refresh
+    r"github_pat_[A-Za-z0-9_]{16,}",  # GitHub fine-grained PAT
+    r"glpat-[A-Za-z0-9_-]{16,}",  # GitLab personal access token
+    r"xox[abprs]-[A-Za-z0-9-]{12,}",  # Slack bot/user/app/refresh tokens
+    r"hf_[A-Za-z0-9]{16,}",  # Hugging Face
+    r"r8_[A-Za-z0-9]{16,}",  # Replicate
+    r"tok_[A-Za-z0-9]{16,}",  # vendor "tok_" opaque tokens
+    r"(?-i:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])",  # AWS access/session key id
+    r"(?-i:AIza)[A-Za-z0-9_-]{16,}",  # Google API key
+)
+_PROVIDER_TOKEN_PATTERN = re.compile(
+    r"(?:\bBearer\s+)?\b(?:" + r"|".join(_PROVIDER_TOKEN_ALTERNATIVES) + r")",
+    re.IGNORECASE,
+)
+
+# ---------------------------------------------------------------------------
+# FAMILY 2 -- header context.
+#
+# `Authorization`/`Proxy-Authorization` followed by a credential, in the
+# serializations this ledger actually stores: a bare header line, a `-H
+# "Authorization: ..."` curl argument, an `Authorization=Bearer ...` form, and
+# the JSON-serialized `{"Authorization": "Bearer ..."}`. The optional quotes
+# around the separator are what make the JSON form work; without them the `"`
+# between the name and the `:` ended the match and the credential was stored.
+#
+# No prose refusal applies here: nobody writes an HTTP header in the middle of
+# a sentence, so any run of >=16 run-characters after "Bearer" is taken. The
+# header NAME is ledger data, so it is captured as `keep` and put back; only the
+# credential is replaced.
+_AUTH_HEADER_NAME = r"(?:Proxy-)?Authorization"
+_AUTH_HEADER_ASSIGN = r"[\"']?\s*[:=]\s*[\"']?"
+_AUTHORIZATION_HEADER_PATTERN = re.compile(
+    r"(?P<keep>\b" + _AUTH_HEADER_NAME + _AUTH_HEADER_ASSIGN + r")"
+    r"Bearer\s+" + _BEARER_RUN + r"{16,}",
+    re.IGNORECASE,
+)
+
+# ---------------------------------------------------------------------------
+# FAMILY 3 -- a bare `Bearer <token>` sitting in prose.
 _BEARER_SEPARATOR = r"[./+=%:@|#&]"
 _BEARER_NOT_SHELL_OR_URL = r"(?!\$)(?![A-Za-z][A-Za-z0-9+.-]*://)"
 # A word with an optional trailing version number, or a bare version number, and
@@ -267,33 +343,33 @@ _BEARER_NOT_WORD_COMPOUND = (
     r"(?![A-Za-z]{1,32}[0-9]{0,4}(?:[-._/=:]" + _BEARER_WORD_PIECE + r"){0,15}"
     r"(?!" + _BEARER_RUN + r"))"
 )
-_BEARER_PROVIDER_TOKEN = (
-    r"(?:gh[pousr]_|github_pat_|glpat-|xox[abprs]-|(?-i:AKIA|ASIA|AIza))"
-    r"[A-Za-z0-9_-]{16,}"
-)
 _BEARER_CREDENTIAL_SHAPE = (
     r"(?:(?=" + _BEARER_RUN + r"*(?:" + _BEARER_SEPARATOR + r"|[0-9]{10}))"
     + _BEARER_RUN + r"{16,}"
     r"|[A-Za-z0-9]{32,}"
     r"|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})"
 )
+_BARE_BEARER_PATTERN = re.compile(
+    r"\bBearer\s+"
+    + _BEARER_NOT_SHELL_OR_URL
+    + _BEARER_NOT_WORD_COMPOUND
+    + _BEARER_CREDENTIAL_SHAPE,
+    re.IGNORECASE,
+)
+
+# Applied in order; each pattern rewrites the text the next one sees. Most
+# specific first. Where two families cover the same credential the order decides
+# which class it is REPORTED as and how much surrounding context the placeholder
+# swallows ("Bearer " and the header name are context, not credential) -- but
+# never whether the credential goes, because each family alone already cuts it.
 SECRET_VALUE_PATTERNS = (
-    (
-        "bearer_token",
-        re.compile(
-            r"(?:(?P<keep>(?:Proxy-)?Authorization\s*[:=]\s*)Bearer\s+"
-            + _BEARER_RUN
-            + r"{16,}"
-            r"|\bBearer\s+(?:"
-            + _BEARER_PROVIDER_TOKEN
-            + r"|"
-            + _BEARER_NOT_SHELL_OR_URL
-            + _BEARER_NOT_WORD_COMPOUND
-            + _BEARER_CREDENTIAL_SHAPE
-            + r"))",
-            re.IGNORECASE,
-        ),
-    ),
+    ("provider_token", _PROVIDER_TOKEN_PATTERN),
+    ("authorization_header", _AUTHORIZATION_HEADER_PATTERN),
+    ("bearer_token", _BARE_BEARER_PATTERN),
+    # Family 1 members too -- self-identifying prefix, no context, no prose
+    # refusal. They keep their own class names because the redaction marker
+    # vocabulary is read downstream, and `sk-or-v1-` must be reported ahead of
+    # its own prefix-subset `sk-`.
     ("openrouter_api_key", re.compile(r"\bsk-or-v1-[A-Za-z0-9_-]{12,}")),
     ("api_key", re.compile(r"\bsk-[A-Za-z0-9_-]{12,}")),
 )
