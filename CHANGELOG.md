@@ -6,6 +6,29 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- `agentacct_record_section` now accepts `title` as an alias for
+  `section_title`. The recording contract agentacct ships to every client told
+  agents to send `title`, which the schema then rejected outright, losing the
+  whole record; the instruction is corrected and the alias keeps
+  already-onboarded machines working without re-running `onboard`.
+- Limit errors now say what was received, not only what is allowed. An agent
+  that overshoots a length limit could previously only shrink blindly and
+  retry.
+- Metadata size is measured in real UTF-8 bytes on every write surface. It was
+  measured against an ASCII-escaped encoding, so each CJK character counted as
+  6 bytes and each emoji as 12 — a Chinese-writing agent was refused at roughly
+  a third of the advertised budget, by an error naming a parameter it had never
+  sent. Size errors now name the field that actually overflowed.
+- `files` entries: the project-relative rule is published in the schema (it was
+  enforced but documented nowhere), and an absolute path that provably lies
+  under the call's own `project_dir` is normalized instead of failing the whole
+  call. This was the single largest cause of refused recordings. Paths that
+  escape the project are still rejected.
+- A tool call mangled in transit — parameters absorbed into a narrative field
+  as literal text — is now flagged with a warning and a marker on the stored
+  record instead of being kept silently. It never rejects and never repairs.
+
 ## [0.5.2] - 2026-07-31
 
 ### Fixed
