@@ -6,6 +6,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-07-31
+
+### Fixed
+- Global `agentacct onboard` no longer strands your history. When an existing
+  populated global store is present, onboarding now reuses that ledger instead
+  of silently pointing your clients at a fresh empty store (the new XDG location
+  is used only on a clean machine). Onboarding also warns about the two surfaces
+  it cannot rewrite for you — an OpenCode registration and a Claude Code hook
+  left on a different store. (#26)
+
+### Changed
+- Readability cleanup of `activation.py` (the first-run readiness funnel) and
+  `agent_capabilities.py` (the client capability matrix): clearer names, added
+  documentation, and more unit coverage — no behavior change to the shipped
+  configuration. Thanks to @FZ2000. (#27, #28)
+- Re-tightened lock-file permissions on every acquisition (an `os.open` created
+  with the right mode does not re-secure a pre-existing loosened file), and
+  corrected several docstrings whose security/durability claims did not match
+  the code. (#29)
+
 ## [0.5.1] - 2026-07-30
 
 ### Changed
@@ -127,7 +147,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/mikehasa/agentacct/releases/tag/v0.5.2
 [0.5.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.5.1
 [0.5.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.5.0
 [0.4.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.4.0
