@@ -1,8 +1,33 @@
 """First-run readiness and a fail-closed local runtime manager.
 
-The manager owns only the dashboard and usage watcher processes it starts.  A
-PID is never ownership proof by itself: every lifecycle action verifies process
-birth time, argv, executable, cwd, store, and a random environment nonce.
+This is agentacct's *first-run* phase -- onboarding a project to its first
+recorded Task -- plus ``RuntimeManager``, the supervisor that keeps the
+dashboard and usage watcher alive.  It is NOT the steady-state daily loop
+(that lives in the work ledger, evidence store, and usage cube):
+
+    install ► onboard ► [ FIRST-RUN GUIDE ] ► STEADY STATE ► stop
+
+The guide is an ordered checklist: the dashboard finds the first need not yet
+met and tells the user the one action to meet it.
+
+    need                       if missing, do
+    a coding-agent source      connect a client              (client_needed)
+    work recording installed   run `agentacct onboard`       (configuration_needed)
+    the runtime running        run `agentacct start`         (runtime_needed)
+    a fresh agent chat         open a new chat -- hooks load at session start
+                                                             (new_session_needed)
+    a real recorded Task       do real work; the guide then steps away (active),
+                               or waits for the first Task (waiting_for_task)
+
+``build_activation_snapshot`` computes which row applies; ``ActivationStateStore``
+remembers when onboarding finished, so a chat from before setup never counts as
+the first Task.
+
+Safety model: a process ID is never proof that a process is ours.  Every
+lifecycle action re-checks the process's birth time, process group,
+executable, working directory, full argv, and a random one-time secret (nonce)
+we injected at start.  If any of those no longer match, agentacct refuses to
+touch the process.
 """
 
 from __future__ import annotations
@@ -13,24 +38,52 @@ import json
 import os
 import secrets
 import signal
+import stat
 import subprocess
 import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Generator, Mapping, Sequence
 
 import psutil
 
 from .env_compat import read_env_alias
 
 
+# --- On-disk layout ---------------------------------------------------------
+# The project store is ``<project>/.agent-sentinel/state`` (the
+# ``.agent-sentinel`` name is frozen from a pre-rename era for data
+# compatibility).  Beneath it, this module owns two separate subdirectories:
+#
+#   <store>/runtime/state.json    the managed-runtime "lease" -- the owned
+#                                 dashboard/watcher processes
+#   <store>/activation/state.json the install boundary -- when agentacct
+#                                 finished configuring this project
+#
+# Each persisted file carries a ``schema_version`` field so a later agentacct
+# can detect (and refuse or migrate) an incompatible record instead of
+# misreading it.  ``schema_version`` is also stamped on the in-memory payloads
+# this module returns to callers.
+
+# Versions the persisted runtime lease file (``<store>/runtime/state.json``)
+# and the ``status()`` payload.  Validated on read by RuntimeState.from_dict.
 RUNTIME_SCHEMA_VERSION = "agent-chronicle.activation-runtime.v1"
+# Versions the first-run readiness payload that build_activation_snapshot
+# returns to the dashboard API.  NOT persisted to a file.
 ACTIVATION_SCHEMA_VERSION = "agent-chronicle.activation.v1"
+# Versions the persisted install-boundary file
+# (``<store>/activation/state.json``).  Validated on read by
+# ActivationStateStore.snapshot.
 ACTIVATION_INSTALL_SCHEMA_VERSION = "agent-chronicle.activation-install.v1"
+
+# Subdirectory and filename for the managed-runtime lease file.
 RUNTIME_DIRNAME = "runtime"
 RUNTIME_STATE_FILENAME = "state.json"
+# Subdirectory and filename for the install-boundary file.  Note this is a
+# distinct file from RUNTIME_STATE_FILENAME even though both are "state.json";
+# they live in different subdirectories.
 ACTIVATION_DIRNAME = "activation"
 ACTIVATION_STATE_FILENAME = "state.json"
 
@@ -83,18 +136,59 @@ class ActivationStateError(RuntimeError):
     """Activation configuration evidence could not be persisted safely."""
 
 
-def _owner_only(path: Path, mode: int) -> None:
+# --- Local-store I/O primitives -------------------------------------------------
+# Generic helpers for persisting small JSON state files inside the project
+# store: owner-only permissions, atomic writes, and exclusive file locking.
+# They are deliberately self-contained so they can later move unchanged into a
+# shared ``_store_io`` module once more stores adopt them.
+
+# Owner-only permission modes: group and others get no access. Built from stdlib
+# stat bits so the meaning is explicit and call sites read as English, not octal.
+OWNER_ONLY_DIRECTORY = stat.S_IRWXU               # owner rwx -- the x bit lets the owner enter/traverse the dir
+OWNER_ONLY_FILE = stat.S_IRUSR | stat.S_IWUSR     # owner rw  -- data files are never executable
+
+
+def _try_chmod(path: Path, mode: int) -> None:
+    """Best-effort ``chmod``: apply ``mode`` and ignore ``OSError``.
+
+    This is a generic permission setter -- the *intent* (owner-only) lives in
+    the ``OWNER_ONLY_*`` constants each caller passes.  It is allowed to fail
+    silently because every state file and directory is already created
+    owner-only, so this only closes the umask gap on paths that pre-existed; the
+    strict create-time modes keep the data private regardless.
+    """
     try:
         path.chmod(mode)
     except OSError:
         pass
 
 
-def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    _owner_only(path.parent, 0o700)
+def _ensure_owner_only_dir(directory: Path) -> None:
+    """Create ``directory`` if needed and force it to owner-only.
+
+    ``Path.mkdir(mode=...)`` only applies its mode when it actually creates the
+    directory; if ``directory`` already exists (perhaps with looser permissions
+    left by an older run or another tool), mkdir leaves its mode untouched.  A
+    create-then-chmod therefore guarantees owner-only in both the fresh and the
+    pre-existing cases.  The chmod is best-effort: it may fail silently (see
+    ``_try_chmod``), which is safe because every file written
+    underneath is itself created owner-only.
+    """
+    directory.mkdir(parents=True, exist_ok=True, mode=OWNER_ONLY_DIRECTORY)
+    _try_chmod(directory, OWNER_ONLY_DIRECTORY)
+
+
+def _write_json_atomically(path: Path, value: Mapping[str, Any]) -> None:
+    """Write JSON to ``path`` so a crash mid-write can never leave a partial file.
+
+    Writes a fresh temp file, fsyncs the bytes and the parent directory (so the
+    rename is durable on disk), then atomically moves it into place.  Readers
+    therefore always see either the complete previous value or the complete
+    new value -- never a half-written mixture.
+    """
+    _ensure_owner_only_dir(path.parent)
     temporary = path.parent / f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}"
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, OWNER_ONLY_FILE)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(value, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -102,7 +196,7 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
-        _owner_only(path, 0o600)
+        _try_chmod(path, OWNER_ONLY_FILE)
         directory_fd = os.open(path.parent, os.O_RDONLY)
         try:
             os.fsync(directory_fd)
@@ -113,6 +207,28 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
             temporary.unlink()
         except FileNotFoundError:
             pass
+
+
+@contextmanager
+def _flock_exclusive(lock_path: Path) -> Generator[None, None, None]:
+    """Hold an exclusive flock on ``lock_path`` for the duration of the block.
+
+    Creates the lock file and its parent dir owner-only, then blocks until an
+    exclusive lock is acquired.  Closing the fd on exit releases the lock; and
+    because flock is tied to the open file description, a crashed process can
+    never leave it held behind.
+    """
+    _ensure_owner_only_dir(lock_path.parent)
+    # A pure lock handle: nothing is read or written, so there is no append or
+    # binary mode to reason about.  O_CLOEXEC stops the fd leaking into child
+    # processes we spawn (Python's open() sets this by default; os.open does
+    # not).  Mode OWNER_ONLY_FILE is applied at creation, so no separate chmod is needed.
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, OWNER_ONLY_FILE)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)  # closing the fd releases the flock
 
 
 class ActivationStateStore:
@@ -130,16 +246,10 @@ class ActivationStateStore:
         self.lock_path = self.root / ".state.lock"
 
     @contextmanager
-    def _locked(self) -> Iterator[None]:
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        _owner_only(self.root, 0o700)
-        with self.lock_path.open("a+b") as handle:
-            _owner_only(self.lock_path, 0o600)
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    def _locked(self) -> Generator[None, None, None]:
+        """Hold an exclusive file lock so two commands can't race on this state."""
+        with _flock_exclusive(self.lock_path):
+            yield
 
     def mark_configured(
         self,
@@ -148,6 +258,12 @@ class ActivationStateStore:
         clients: Sequence[str],
         configured_at: float | None = None,
     ) -> dict[str, Any]:
+        """Record that agentacct finished configuring ``clients`` for ``project_dir``.
+
+        Safe to call repeatedly: if the same project is already recorded, the
+        new clients are merged into the existing list with no duplicates.
+        Requires at least one client.  Returns the resulting activation record.
+        """
         normalized_clients = sorted(
             {
                 str(client).strip().lower()
@@ -182,7 +298,7 @@ class ActivationStateStore:
                     payload["clients"] = sorted(
                         set(normalized_clients) | set(current.get("clients") or ())
                     )
-                _atomic_json(self.state_path, payload)
+                _write_json_atomically(self.state_path, payload)
         except (OSError, TypeError, ValueError) as exc:
             raise ActivationStateError(
                 f"activation configuration evidence could not be written: {type(exc).__name__}"
@@ -190,6 +306,13 @@ class ActivationStateStore:
         return payload
 
     def snapshot(self) -> dict[str, Any] | None:
+        """Return the saved activation record, or ``None`` if none exists yet.
+
+        If the saved file exists but is unreadable or invalid, returns a record
+        carrying an ``issue`` key (``activation_state_corrupt:<Reason>``) instead
+        of trusting bad data -- callers fail closed on the issue rather than
+        guessing at partially-read state.
+        """
         if not self.state_path.exists():
             return None
         try:
@@ -220,6 +343,14 @@ class ActivationStateStore:
 
 @dataclass(frozen=True)
 class ManagedProcess:
+    """The recorded identity of one process agentacct started.
+
+    This is the "fingerprint" used later to prove a still-running PID is the
+    same process we launched -- not merely the same number.  An OS-recycled PID
+    pointing at an unrelated program would fail every field checked by
+    ``RuntimeManager._matches``.
+    """
+
     role: str
     pid: int
     process_group_id: int
@@ -233,6 +364,12 @@ class ManagedProcess:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "ManagedProcess":
+        """Rebuild a ManagedProcess from saved JSON, rejecting anything malformed.
+
+        Only ``dashboard`` and ``watcher`` roles are accepted, and the nonce
+        must be long enough to be unguessable.  Raises ValueError on any
+        problem so callers fail closed rather than trusting a bad record.
+        """
         argv = value.get("argv")
         if not isinstance(argv, list) or not argv or any(not isinstance(item, str) for item in argv):
             raise ValueError("runtime argv is invalid")
@@ -261,6 +398,14 @@ class ManagedProcess:
 
 @dataclass(frozen=True)
 class RuntimeState:
+    """A saved snapshot of a running managed runtime: where it serves and who is in it.
+
+    Holds the store/host/port the dashboard is bound to, plus the tuple of
+    ``ManagedProcess`` identities.  This is what gets persisted to disk so a
+    later ``status`` or ``stop`` command can re-prove ownership of the
+    processes instead of trusting a bare PID.
+    """
+
     store_dir: str
     host: str
     port: int
@@ -270,6 +415,12 @@ class RuntimeState:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "RuntimeState":
+        """Rebuild a RuntimeState from saved JSON with strict validation.
+
+        Rejects the wrong schema version, a non-localhost host, an
+        out-of-range port, duplicate process roles, or any malformed process
+        entry.  Raises ValueError on any problem so callers fail closed.
+        """
         if value.get("schema_version") != RUNTIME_SCHEMA_VERSION:
             raise ValueError("runtime schema mismatch")
         processes = value.get("processes")
@@ -312,7 +463,18 @@ class RuntimeState:
 
 
 class RuntimeManager:
-    """Own the local dashboard and continuous usage watcher."""
+    """Own the local dashboard and the continuous usage watcher.
+
+    This is agentacct's small process supervisor.  ``start`` launches the
+    dashboard and watcher as child processes it can later identify; ``status``
+    reports whether they are honestly running; ``stop`` and ``repair`` wind
+    them down or clean up after a crash.
+
+    It will only ever start, signal, or replace processes it can prove it
+    started (see ``_spawn`` and ``_matches``).  A process whose fingerprint no
+    longer matches is left untouched -- agentacct never signals a process it
+    may have inherited by accident.
+    """
 
     TERM_GRACE_SECONDS = 3.0
     KILL_GRACE_SECONDS = 2.0
@@ -354,23 +516,31 @@ class RuntimeManager:
         self.lock_path = self.runtime_root / ".runtime.lock"
 
     def _project_root(self) -> Path:
+        """Best-effort guess of the project root from the store path.
+
+        The store lives at ``<project>/.agent-sentinel/state`` (that directory
+        name is frozen from a pre-rename era).  This walks one level up from
+        ``state`` to recover the project directory.
+        """
         if self.store_dir.name == "state" and self.store_dir.parent.name == ".agent-sentinel":
             return self.store_dir.parent.parent
         return self.store_dir.parent
 
     @contextmanager
-    def _locked(self) -> Iterator[None]:
-        self.runtime_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        _owner_only(self.runtime_root, 0o700)
-        with self.lock_path.open("a+b") as handle:
-            _owner_only(self.lock_path, 0o600)
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    def _locked(self) -> Generator[None, None, None]:
+        """Hold an exclusive file lock so two commands can't race on this state."""
+        with _flock_exclusive(self.lock_path):
+            yield
 
     def _read(self) -> tuple[RuntimeState | None, str | None]:
+        """Load and validate the saved runtime state.
+
+        Returns ``(state, None)`` on success, ``(None, None)`` if nothing is
+        saved yet, or ``(None, issue)`` if the saved file is corrupt -- where
+        ``issue`` is a stable ``runtime_state_corrupt:<Reason>`` string.  Never
+        returns untrusted data; callers raise or fail closed on a non-None
+        issue.
+        """
         if not self.state_path.exists():
             return None, None
         try:
@@ -385,6 +555,14 @@ class RuntimeManager:
             return None, f"runtime_state_corrupt:{type(exc).__name__}"
 
     def _matches(self, record: ManagedProcess) -> tuple[bool, str]:
+        """Re-prove that a recorded process is still the one we started.
+
+        Returns ``(True, "running")`` only when the live process's birth time,
+        process group, executable, cwd, full argv, AND injected nonce all still
+        match the record.  A bare PID match is not enough -- the OS recycles
+        PIDs, so a same-number process could be an unrelated program.  Any
+        mismatch or unreadable identity returns ``(False, <reason>)``.
+        """
         try:
             process = psutil.Process(record.pid)
             # A killed child can remain in the process table as an unreaped
@@ -405,6 +583,8 @@ class RuntimeManager:
         except (OSError, psutil.AccessDenied) as exc:
             return False, f"identity_unreadable:{type(exc).__name__}"
         if (
+            # Allow ~50ms of clock jitter between the recorded and observed
+            # create_time; a larger delta means a different (recycled) process.
             abs(create_time - record.create_time) > 0.05
             or pgid != record.process_group_id
             or executable != str(Path(record.executable).resolve())
@@ -416,6 +596,16 @@ class RuntimeManager:
         return True, "running"
 
     def _spawn(self, role: str, argv: Sequence[str]) -> ManagedProcess:
+        """Start one child process and capture a stable ownership fingerprint.
+
+        Launches the command with a fresh random nonce injected into its
+        environment, then waits (bounded) until the process's image has
+        settled -- console scripts typically exec through ``/usr/bin/env`` and
+        Python, so the first observed image is transient.  Only returns once
+        the same identity has been seen across several consecutive samples, so
+        the recorded fingerprint is the real long-lived one.  If the handshake
+        does not complete, the child is cleaned up and an error is raised.
+        """
         nonce = secrets.token_urlsafe(32)
         log_path = self.runtime_root / f"{role}.log"
         env = {key: os.environ[key] for key in RUNTIME_ENV_ALLOWLIST if key in os.environ}
@@ -428,7 +618,7 @@ class RuntimeManager:
         env["AGENT_CHRONICLE_STORE_DIR"] = str(self.store_dir)
         env["AGENT_SENTINEL_STORE_DIR"] = str(self.store_dir)
         with log_path.open("ab", buffering=0) as log_handle:
-            _owner_only(log_path, 0o600)
+            _try_chmod(log_path, OWNER_ONLY_FILE)
             process = subprocess.Popen(
                 list(argv),
                 cwd=self.cwd,
@@ -436,6 +626,9 @@ class RuntimeManager:
                 stdin=subprocess.DEVNULL,
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
+                # Detach the child into its own process group so stop() can
+                # later signal the whole tree (child plus any grandchildren) by
+                # group id instead of a single recyclable pid.
                 start_new_session=True,
                 close_fds=True,
             )
@@ -513,6 +706,7 @@ class RuntimeManager:
             raise
 
     def _commands(self) -> dict[str, tuple[str, ...]]:
+        """Build the argv for the watcher and dashboard commands we start."""
         store = str(self.store_dir)
         return {
             "watcher": (
@@ -539,6 +733,16 @@ class RuntimeManager:
         }
 
     def start(self, *, external_watcher_running: bool = False) -> dict[str, Any]:
+        """Start the watcher and dashboard if they are not already live.
+
+        Refuses to proceed if the saved state is corrupt (run ``repair`` first)
+        or if a managed runtime is already running with a different
+        host/port/executable (stop it first).  Already-running owned processes
+        are reused; only the missing ones are started.  After spawning, waits a
+        short settling window and fails -- cleaning up anything it just started
+        -- if a child exits immediately.  Persists the new runtime lease only
+        after that settle check passes.
+        """
         with self._locked():
             state, issue = self._read()
             live_by_role: dict[str, ManagedProcess] = {}
@@ -617,7 +821,7 @@ class RuntimeManager:
                 created_at=state.created_at if state is not None else time.time(),
                 processes=tuple(live_by_role[role] for role in ("watcher", "dashboard") if role in live_by_role),
             )
-            _atomic_json(self.state_path, next_state.to_dict())
+            _write_json_atomically(self.state_path, next_state.to_dict())
         return self.status(external_watcher_running=external_watcher_running)
 
     @classmethod
@@ -684,9 +888,20 @@ class RuntimeManager:
         return "unreachable"
 
     def _dashboard_health(self) -> str:
+        """Probe this manager's own dashboard endpoint (the health of our process)."""
         return self._probe_dashboard_health(self.host, self.port)
 
     def status(self, *, external_watcher_running: bool = False) -> dict[str, Any]:
+        """Report the honest state of the managed runtime.
+
+        Classifies the runtime as ``running`` (dashboard healthy and watcher
+        ready), ``starting`` (dashboard process alive but not healthy yet and
+        within the startup grace), ``degraded`` (processes recorded but not
+        healthy), or ``stopped`` (nothing recorded).  Per-process rows carry
+        the ownership-check result, and any health that cannot be verified is
+        surfaced as an ``issue`` rather than reported as healthy.  Never starts
+        or stops anything.
+        """
         state, issue = self._read()
         processes: list[dict[str, Any]] = []
         if state is not None:
@@ -730,6 +945,7 @@ class RuntimeManager:
             dashboard_age is not None
             and 0 <= dashboard_age <= self.DASHBOARD_STARTING_GRACE_SECONDS
         )
+        # Overall state by priority: running > starting > degraded > stopped.
         overall = (
             "running"
             if dashboard_health == "healthy" and watcher_ready
@@ -782,6 +998,16 @@ class RuntimeManager:
         }
 
     def stop(self) -> dict[str, Any]:
+        """Stop the owned processes, escalating SIGTERM to SIGKILL only when safe.
+
+        Refuses to do anything if the state is corrupt (ownership cannot be
+        proven -- run ``repair``).  For each recorded process it re-proves
+        ownership, sends SIGTERM, waits a grace period, and only then escalates
+        a still-matching survivor to SIGKILL.  A process that no longer matches
+        our proof is never signalled, so an adopted or unrelated process cannot
+        be killed by mistake.  Removes the state file once everything is
+        stopped.
+        """
         with self._locked():
             state, issue = self._read()
             if issue:
@@ -858,6 +1084,16 @@ class RuntimeManager:
         return self.status()
 
     def repair(self) -> dict[str, Any]:
+        """Clean up runtime bookkeeping after a crash or a corrupt state file.
+
+        Three outcomes: (1) corrupt state -- the bad file is renamed aside for
+        forensics and the unusable bookkeeping is cleared (no process is
+        signalled, since a corrupt record cannot authorize a signal); (2)
+        nothing recorded -- nothing to repair; (3) recorded processes -- dead
+        or stale ones are dropped from the record while live ones are kept.  A
+        live process whose ownership proof no longer matches is left untouched
+        and raises, rather than risk signalling the wrong thing.
+        """
         with self._locked():
             state, issue = self._read()
             if issue:
@@ -868,7 +1104,7 @@ class RuntimeManager:
                         f"state.corrupt-{int(time.time())}-{uuid.uuid4().hex[:8]}.json"
                     )
                     self.state_path.replace(archived)
-                    _owner_only(archived, 0o600)
+                    _try_chmod(archived, OWNER_ONLY_FILE)
                 return {"repaired": True, "action": "archived_corrupt_state", **self.status()}
             if state is None:
                 return {"repaired": False, "action": "nothing_to_repair", **self.status()}
@@ -885,7 +1121,7 @@ class RuntimeManager:
                         f"The recorded {record.role} PID is live but ownership proof mismatches. agentacct left it untouched."
                     )
             if live:
-                _atomic_json(
+                _write_json_atomically(
                     self.state_path,
                     RuntimeState(
                         store_dir=state.store_dir,
@@ -910,14 +1146,54 @@ def build_activation_snapshot(
     recording_configured: bool,
     new_session_required: bool = False,
 ) -> dict[str, Any]:
-    """Project first-run state without converting diagnostics into user tasks."""
+    """Project the dashboard's first-run readiness funnel for this project.
 
-    found = [row for row in source_rows if str(row.get("status")) == "found"]
-    tasks = task_projection.get("tasks") if isinstance(task_projection.get("tasks"), list) else []
-    watcher = ingestion_health.get("watcher") if isinstance(ingestion_health.get("watcher"), Mapping) else {}
+    Returns the single next action a user should take; the stage is chosen by
+    strict priority -- the first condition that holds wins (see the module
+    docstring for the user-facing actions and where this sits in the lifecycle).
+    Stages, in priority order with their trigger condition:
+
+      client_needed        no coding-agent source detected (no "found" row in
+                           source_rows).  Nothing downstream is checked.
+      configuration_needed a source is detected but recording_configured is
+                           False; usage is readable, but no semantic work can
+                           be recorded yet.
+      runtime_needed       recording is configured but the dashboard/sync are
+                           not up (runtime_status.state not in running/starting).
+      new_session_needed   everything is running but new_session_required is
+                           True -- the current chat predates setup, and hooks
+                           attach only at session start, so a new chat is needed.
+      active               task_projection has at least one task; onboarding is
+                           complete and the guide steps away.  This is the only
+                           stage where "ready" is True.
+      waiting_for_task     everything is satisfied but no real Task is recorded
+                           yet; the guide waits (demo rows don't count as tasks).
+
+    Inputs:
+      source_rows           detected coding agents (only status == "found" counts)
+      ingestion_health      {"watcher": {"state": ...}} -- is background log-sync running?
+      task_projection       {"tasks": [...]} -- real recorded tasks (may carry "work_items")
+      runtime_status        {"state": ...} -- dashboard process up? (running/starting)
+      recording_configured  are the MCP/hooks that record work installed?
+      new_session_required  must the user open a NEW chat for hooks to attach?
+
+    Diagnostics feed the returned "progress" checklist only; they never become
+    user-facing "tasks".
+    """
+
+    # Normalize inputs (defensive: callers may pass partial dicts). A source
+    # counts only when its status is "found"; everything else degrades safely.
+    found_sources = [
+        row for row in source_rows if isinstance(row, Mapping) and str(row.get("status")) == "found"
+    ]
+    recorded_tasks = task_projection.get("tasks") if isinstance(task_projection.get("tasks"), list) else []
+    watcher_health = ingestion_health.get("watcher") if isinstance(ingestion_health.get("watcher"), Mapping) else {}
     runtime_state = str(runtime_status.get("state") or "stopped")
-    first_task = "captured" if tasks else "waiting"
-    if not found:
+    first_task_state = "captured" if recorded_tasks else "waiting"
+
+    # The funnel: first matching branch wins (strict priority). Each sets the
+    # stage, its headline, and the one action button the dashboard shows.
+    if not found_sources:  # -> client_needed
         primary = {
             "label": "Show known local sources",
             "command": "agentacct usage discover-sources",
@@ -925,7 +1201,7 @@ def build_activation_snapshot(
         }
         stage = "client_needed"
         headline = "Connect a coding-agent source"
-    elif not recording_configured:
+    elif not recording_configured:  # -> configuration_needed
         primary = {
             "label": "Finish project setup",
             "command": "agentacct onboard",
@@ -933,7 +1209,7 @@ def build_activation_snapshot(
         }
         stage = "configuration_needed"
         headline = "agentacct found your agent"
-    elif runtime_state not in {"running", "starting"}:
+    elif runtime_state not in {"running", "starting"}:  # -> runtime_needed
         primary = {
             "label": "Start agentacct",
             "command": "agentacct start",
@@ -941,7 +1217,7 @@ def build_activation_snapshot(
         }
         stage = "runtime_needed"
         headline = "Start continuous capture"
-    elif new_session_required:
+    elif new_session_required:  # -> new_session_needed
         primary = {
             "label": "Open a new agent chat",
             "command": None,
@@ -949,11 +1225,11 @@ def build_activation_snapshot(
         }
         stage = "new_session_needed"
         headline = "agentacct is ready for your next Task"
-    elif tasks:
+    elif recorded_tasks:  # -> active
         primary = {"label": "Open latest Task", "command": None, "reason": "A real saved Task is available."}
         stage = "active"
         headline = "Your first Task is captured"
-    else:
+    else:  # -> waiting_for_task
         primary = {
             "label": "Continue in your agent",
             "command": None,
@@ -963,7 +1239,7 @@ def build_activation_snapshot(
         headline = "Run one real Task in your agent"
 
     semantics_recorded = any(
-        isinstance(task, Mapping) and bool(task.get("work_items")) for task in tasks
+        isinstance(task, Mapping) and bool(task.get("work_items")) for task in recorded_tasks
     )
     return {
         "schema_version": ACTIVATION_SCHEMA_VERSION,
@@ -972,8 +1248,8 @@ def build_activation_snapshot(
         "ready": stage == "active",
         "primary_action": primary,
         "progress": [
-            {"key": "client", "label": "Agent detected", "state": "ready" if found else "needs_action"},
-            {"key": "usage", "label": "Usage source", "state": "ready" if found else "unavailable"},
+            {"key": "client", "label": "Agent detected", "state": "ready" if found_sources else "needs_action"},
+            {"key": "usage", "label": "Usage source", "state": "ready" if found_sources else "unavailable"},
             {
                 "key": "recording",
                 "label": "Work recording",
@@ -982,17 +1258,17 @@ def build_activation_snapshot(
             {
                 "key": "sync",
                 "label": "Continuous sync",
-                "state": "ready" if watcher.get("state") == "running" else "starting" if runtime_state == "starting" else "needs_action",
+                "state": "ready" if watcher_health.get("state") == "running" else "starting" if runtime_state == "starting" else "needs_action",
             },
             {
                 "key": "task",
                 "label": "First real Task",
-                "state": first_task,
-                "detail": "semantic context recorded" if semantics_recorded else "usage/activity only" if tasks else None,
+                "state": first_task_state,
+                "detail": "semantic context recorded" if semantics_recorded else "usage/activity only" if recorded_tasks else None,
             },
         ],
-        "detected_clients": [str(row.get("client")) for row in found if row.get("client")],
-        "task_count": len(tasks),
+        "detected_clients": [str(row.get("client")) for row in found_sources if row.get("client")],
+        "task_count": len(recorded_tasks),
         "runtime": dict(runtime_status),
     }
 
