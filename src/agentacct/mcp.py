@@ -519,9 +519,15 @@ MACHINE_CHECK_NARRATIVE_KEYS = ("summary", "before_summary", "after_summary", "r
 #     these names collide with real writing; only the closing form has yet to
 #     turn up in 3535 events.
 #
-# So excluding these four costs zero measured true positives. `source` is inert
-# — it is required on both tools, so it is never an unsupplied property — and
-# is listed only to keep the rule complete rather than case-by-case.
+# So excluding these four costs zero measured true positives. `source` is in the
+# set on the same footing as the other three: `<source>` is an HTML element name,
+# and it is the property name that collides with real writing most often here —
+# a bare-word detector fires on it in 170 of the 1956 section events, ahead of
+# `files` at 130 and every other property name. Its membership is load-bearing
+# rather than bookkeeping: `source` is required on agentacct_record_section, but
+# agentacct_record_machine_check declares no required properties and reads it as
+# optional, so a machine-check call that omits it leaves `source` genuinely
+# unsupplied and therefore eligible to be suspected.
 MANGLE_DETECTOR_INELIGIBLE_PROPERTIES = frozenset({"title", "summary", "metadata", "source"})
 
 
