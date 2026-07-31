@@ -81,6 +81,57 @@ def test_mirror_heals_after_a_whole_file_rewrite(tmp_path: Path) -> None:
     assert service.event_log.read_events() == served
 
 
+def test_authoritative_mode_writes_to_the_log_and_survives_file_deletion(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "1")
+    store_root = tmp_path / "store"
+    store_root.mkdir()
+    # A pre-existing flat ledger to cut over from (backfilled once on open).
+    _events_file(store_root).write_text(
+        json.dumps({"event_id": "evt_a", "event_type": "note", "created_at": 1.0}) + "\n",
+        encoding="utf-8",
+    )
+
+    service = SentinelService(store_root)
+    assert service._authoritative()
+    assert service.event_log.count() == 1  # backfilled from the flat file
+
+    # A new event goes to the LOG; the flat file is not touched.
+    file_before = _events_file(store_root).read_text(encoding="utf-8")
+    service.record_event(_note("in-auth"))
+    assert _events_file(store_root).read_text(encoding="utf-8") == file_before
+    assert service.event_log.count() == 2
+
+    # The flat file can now be deleted and the store keeps working.
+    _events_file(store_root).unlink()
+    assert len(service.list_all_events()) == 2
+    service.record_event(_note("post-delete"))
+    assert not _events_file(store_root).exists()
+    assert len(service.list_all_events()) == 3
+    assert service.verify_event_log_parity()["authoritative"] is True
+
+
+def test_authoritative_mode_rewrite_operates_on_the_log(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "1")
+    store_root = tmp_path / "store"
+    store_root.mkdir()
+    service = SentinelService(store_root)
+    for i in range(4):
+        service.record_event(_note(f"n{i}"))
+    _events_file(store_root).unlink(missing_ok=True)  # no flat file at all
+
+    # Drive a whole-ledger rewrite (a redaction that drops two rows) through the
+    # same primitives the redaction/replace paths use.
+    with service._events_write_lock():
+        parsed, preserved = service._partition_existing_for_rewrite()
+        assert len(parsed) == 4
+        service._write_event_partition_unlocked([parsed[0], parsed[2]], preserved)
+
+    assert len(service.list_all_events()) == 2
+    assert not _events_file(store_root).exists()
+
+
 def test_a_fresh_service_backfills_the_mirror_from_an_existing_ledger(tmp_path: Path) -> None:
     store_root = tmp_path / "store"
     # Prime a service and write events, then drop the mirror db to simulate a

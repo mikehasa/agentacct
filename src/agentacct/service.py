@@ -21,7 +21,7 @@ from .confidence import normalize_cost_confidence, normalize_usage_confidence
 from .context_bridge import build_usage_context_bridge
 from .evidence import is_sensitive_metadata_key
 from .evidence_runtime import EvidenceRuntime
-from .event_log import RAW_EVENT_LOG_FILENAME, RawEventLog
+from .event_log import RAW_EVENT_LOG_FILENAME, RawEventLog, event_log_authoritative, serialize_event
 from .finding_disposition import (
     FINDING_DISPOSITION_AUTHORITY_SCOPE,
     FINDING_DISPOSITION_CONTRACT_KEY,
@@ -959,14 +959,61 @@ class SentinelService:
         self._init_event_log()
 
     def _init_event_log(self) -> None:
-        """Open and reconcile the SQLite mirror, fail-open."""
+        """Open the SQLite log, fail-open.
+
+        In mirror mode (default) it is reconciled from the authoritative flat
+        file. In authoritative mode the LOG is the authority and must never be
+        reconciled from a stale/absent file — the one exception is a store
+        whose log was never populated (the flag set before cutover), which is
+        backfilled once so it does not start empty.
+        """
 
         try:
             self.event_log = RawEventLog(self.store.root / RAW_EVENT_LOG_FILENAME)
-            self.event_log.reconcile_from_file(self.events_path)
-            self._event_log_synced_signature = self._events_file_signature()
-        except Exception:  # noqa: BLE001 - a mirror problem must never block the store.
+            if not event_log_authoritative():
+                self.event_log.reconcile_from_file(self.events_path)
+                self._event_log_synced_signature = self._events_file_signature()
+            elif self.event_log.count() == 0 and self.events_path.exists():
+                self.event_log.reconcile_from_file(self.events_path)
+        except Exception:  # noqa: BLE001 - a log problem must never block the store.
             self.event_log = None
+
+    def _authoritative(self) -> bool:
+        """True when the SQLite log is the authoritative ledger (file bypassed)."""
+
+        return self.event_log is not None and event_log_authoritative()
+
+    def _ledger_lines(self) -> list[str]:
+        """Non-blank ledger lines in file order, from the authoritative source
+        (the SQLite log in authoritative mode, else the flat file)."""
+
+        if self._authoritative():
+            return self.event_log.read_lines()
+        if not self.events_path.exists():
+            return []
+        return [
+            line
+            for line in self.events_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    def _append_ledger_events(self, events: list[dict[str, Any]], *, fsync: bool = False) -> None:
+        """Append recorded events to the authoritative ledger. The caller holds
+        the write lock and (for the flat file) has ensured a trailing newline."""
+
+        if not events:
+            return
+        lines = [serialize_event(event) for event in events]
+        if self._authoritative():
+            for line in lines:
+                self.event_log.append_line(line)
+            return
+        with self.events_path.open("a", encoding="utf-8") as handle:
+            for line in lines:
+                handle.write(line + "\n")
+            if fsync:
+                handle.flush()
+                os.fsync(handle.fileno())
 
     def _events_file_signature(self) -> tuple[int, int] | None:
         """(mtime_ns, size) of the flat ledger, or None if absent — a cheap
@@ -979,9 +1026,13 @@ class SentinelService:
         return (stat.st_mtime_ns, stat.st_size)
 
     def _sync_event_log(self) -> None:
-        """Refresh the mirror from the flat file if it changed, fail-open."""
+        """Refresh the mirror from the flat file if it changed, fail-open.
 
-        if self.event_log is None:
+        No-op in authoritative mode: there the log IS the authority, so
+        reconciling from a stale/absent flat file would corrupt it.
+        """
+
+        if self.event_log is None or self._authoritative():
             return
         signature = self._events_file_signature()
         if signature == self._event_log_synced_signature:
@@ -1001,10 +1052,21 @@ class SentinelService:
 
         if self.event_log is None:
             return {"available": False, "matches": False, "detail": "event log unavailable"}
+        if self._authoritative():
+            # The log IS the authority; there is nothing to prove it against
+            # (the flat file is stale or deleted).
+            return {
+                "available": True,
+                "authoritative": True,
+                "matches": True,
+                "log_lines": self.event_log.count(),
+                "detail": "authoritative",
+            }
         self._sync_event_log()
         result = self.event_log.verify_against_file(self.events_path)
         return {
             "available": True,
+            "authoritative": False,
             "matches": result.matches,
             "file_lines": result.file_lines,
             "log_lines": result.log_lines,
@@ -1043,12 +1105,8 @@ class SentinelService:
                 fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
     def _read_events_file_order(self, *, run_id: str | None = None) -> list[dict[str, Any]]:
-        if not self.events_path.exists():
-            return []
         events: list[dict[str, Any]] = []
-        for line in self.events_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
+        for line in self._ledger_lines():
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
@@ -1155,12 +1213,10 @@ class SentinelService:
                     recorded = existing
                 else:
                     recorded = self._prepare_recorded_event(event)
-                    with self.events_path.open("a", encoding="utf-8") as handle:
-                        handle.write(json.dumps(recorded, sort_keys=True) + "\n")
+                    self._append_ledger_events([recorded])
             else:
                 recorded = self._prepare_recorded_event(event)
-                with self.events_path.open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(recorded, sort_keys=True) + "\n")
+                self._append_ledger_events([recorded])
         # Never hold the v1 ledger lock while fsyncing/projecting v2. The
         # shadow call is idempotent, local-only, and fail-open by contract.
         self.evidence.shadow_v1_event(recorded, transport=transport)
@@ -1635,10 +1691,7 @@ class SentinelService:
                 )
                 recorded = self._prepare_recorded_event(event)
                 self._ensure_trailing_newline()
-                with self.events_path.open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(recorded, sort_keys=True) + "\n")
-                    handle.flush()
-                    os.fsync(handle.fileno())
+                self._append_ledger_events([recorded], fsync=True)
 
         self.evidence.shadow_v1_event(recorded, transport=transport)
         # Canonical shadow (phase 3.4): finding dispositions are not yet
@@ -1718,13 +1771,9 @@ class SentinelService:
         notice. Blank lines are dropped (they carry nothing).
         """
 
-        if not self.events_path.exists():
-            return [], []
         parsed: list[dict[str, Any]] = []
         unparseable: list[str] = []
-        for line in self.events_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
+        for line in self._ledger_lines():
             try:
                 value = json.loads(line)
             except json.JSONDecodeError:
@@ -1744,8 +1793,17 @@ class SentinelService:
         events: list[dict[str, Any]],
         preserved_unparseable: list[str],
     ) -> None:
-        """Atomically replace the event file while its write lock is held."""
+        """Atomically replace the whole ledger while its write lock is held.
 
+        In authoritative mode the SQLite log IS the ledger, so the rewrite is a
+        single transactional ``replace_all``; otherwise the flat file is
+        replaced atomically via a temp-file rename.
+        """
+
+        lines = [*preserved_unparseable, *(serialize_event(event) for event in events)]
+        if self._authoritative():
+            self.event_log.replace_all(lines)
+            return
         tmp_fd, tmp_name = tempfile.mkstemp(
             prefix=self.events_path.name + ".",
             suffix=".tmp",
@@ -1753,10 +1811,8 @@ class SentinelService:
         )
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as handle:
-                for raw_line in preserved_unparseable:
-                    handle.write(raw_line + "\n")
-                for event in events:
-                    handle.write(json.dumps(event, sort_keys=True) + "\n")
+                for line in lines:
+                    handle.write(line + "\n")
             os.replace(tmp_name, self.events_path)
         except BaseException:
             try:
@@ -2151,9 +2207,12 @@ class SentinelService:
         trailing newline: without this, the first appended event would fuse onto
         that line (``}{``) and BOTH the pre-existing last row and the new row
         would fail to parse on read (silent data loss). Must be called while
-        holding the events write lock.
+        holding the events write lock. No-op in authoritative mode: the SQLite
+        log stores discrete rows, so there is no line-fusing hazard.
         """
 
+        if self._authoritative():
+            return
         if not self.events_path.exists():
             return
         try:
@@ -2203,16 +2262,15 @@ class SentinelService:
             )
             plan["target_events_before"] = len(target_ids)
             self._ensure_trailing_newline()
-            with self.events_path.open("a", encoding="utf-8") as handle:
-                for raw_event in plan["events_to_add"]:
-                    if not isinstance(raw_event, dict):
-                        continue
-                    event = strip_finding_disposition_provenance(raw_event)
-                    event_id = event.get("event_id")
-                    if not isinstance(event_id, str) or not event_id:
-                        continue
-                    handle.write(json.dumps(event, sort_keys=True) + "\n")
-                    appended.append(event)
+            for raw_event in plan["events_to_add"]:
+                if not isinstance(raw_event, dict):
+                    continue
+                event = strip_finding_disposition_provenance(raw_event)
+                event_id = event.get("event_id")
+                if not isinstance(event_id, str) or not event_id:
+                    continue
+                appended.append(event)
+            self._append_ledger_events(appended)
         self.evidence.shadow_v1_events(appended, transport="internal")
         # Canonical shadow (phase 3.3): merged rows keep their foreign
         # event_ids, which the canonical lanes key naturally (facts by
@@ -2243,23 +2301,22 @@ class SentinelService:
             present = self.existing_event_ids()
             seen_in_batch: set[str] = set()
             self._ensure_trailing_newline()
-            with self.events_path.open("a", encoding="utf-8") as handle:
-                for event in events:
-                    if not isinstance(event, dict):
-                        continue
-                    # A dashboard user's attention decision is local-store
-                    # authority. Cross-store event merges preserve the audit
-                    # row but strip that authority unless a future explicit
-                    # migration contract is introduced.
-                    event = strip_finding_disposition_provenance(event)
-                    event_id = event.get("event_id")
-                    if not isinstance(event_id, str) or not event_id:
-                        continue
-                    if event_id in present or event_id in seen_in_batch:
-                        continue
-                    seen_in_batch.add(event_id)
-                    handle.write(json.dumps(event, sort_keys=True) + "\n")
-                    appended.append(event)
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                # A dashboard user's attention decision is local-store
+                # authority. Cross-store event merges preserve the audit
+                # row but strip that authority unless a future explicit
+                # migration contract is introduced.
+                event = strip_finding_disposition_provenance(event)
+                event_id = event.get("event_id")
+                if not isinstance(event_id, str) or not event_id:
+                    continue
+                if event_id in present or event_id in seen_in_batch:
+                    continue
+                seen_in_batch.add(event_id)
+                appended.append(event)
+            self._append_ledger_events(appended)
         self.evidence.shadow_v1_events(appended, transport="internal")
         # Canonical shadow (phase 3.3): same contract as the merge lane.
         for event in appended:

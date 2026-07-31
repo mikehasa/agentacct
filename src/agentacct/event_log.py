@@ -32,7 +32,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
+from .env_compat import read_env_alias
+
 RAW_EVENT_LOG_FILENAME = "events.sqlite3"
+
+# When set, the SQLite log is the AUTHORITATIVE event store: every ledger read
+# and write goes to it and the flat events.jsonl is neither read nor written
+# (and can be deleted). Default OFF — the flat file stays authoritative and the
+# log is a proven mirror. The migration cutover flips this only after parity.
+EVENT_LOG_AUTHORITATIVE_ENV = "AGENTACCT_EVENT_LOG_AUTHORITATIVE"
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+def event_log_authoritative() -> bool:
+    value = read_env_alias(EVENT_LOG_AUTHORITATIVE_ENV)
+    return str(value or "").strip().lower() in _TRUE_VALUES
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS event_lines (
@@ -246,8 +260,10 @@ class RawEventLog:
 
 
 __all__ = [
+    "EVENT_LOG_AUTHORITATIVE_ENV",
     "RAW_EVENT_LOG_FILENAME",
     "ParityResult",
     "RawEventLog",
+    "event_log_authoritative",
     "serialize_event",
 ]
