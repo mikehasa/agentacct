@@ -338,9 +338,35 @@ def _session_observation(record: _EventRecord, *, snapshot: VerifiedSnapshot, so
 
 
 def _is_usage_event(event: Mapping[str, Any]) -> bool:
+    """A usage measurement to import into the canonical store.
+
+    Anchored on the ONE real usage event type, ``model_usage`` — the same
+    type every usage writer emits (client_usage.py, evidence_runtime.py) and
+    the type v1's usage predicates gate on (usage_truth.is_local_usage_import_event).
+    The canonical importer is deliberately broader than v1's *truth* lane: it
+    accepts any ``model_usage`` row, not only the trusted local-session-store
+    import, so a non-local model_usage still lands in the general usage model.
+
+    Two former arms were false-positive generators and are removed:
+
+    * ``"usage" in event_type`` (a substring) pulled in ``agent_usage_debug_reported``
+      — the debug snapshot the MCP contract states is NOT billing truth — and
+      would have imported its tokens as authoritative usage.
+    * ``key in event`` tested token-key PRESENCE, not value; the event envelope
+      ships ``estimated_input_tokens``/``estimated_output_tokens`` set to ``None``
+      on many non-usage types (task_completed, task_started, …), so every one of
+      them matched.
+
+    A pre-taxonomy row with NO ``event_type`` at all still falls back to a real
+    token VALUE (not a merely-present, possibly-None key).
+    """
+
     event_type = str(event.get("event_type") or "").lower()
-    return event_type == "model_usage" or "usage" in event_type or any(
-        key in event for key in ("estimated_input_tokens", "estimated_output_tokens")
+    if event_type:
+        return event_type == "model_usage"
+    return any(
+        event.get(key) is not None
+        for key in ("estimated_input_tokens", "estimated_output_tokens")
     )
 
 
