@@ -10,9 +10,10 @@ from agentacct.api import _task_product_state
 from agentacct.finding_disposition import finding_target_digest
 from agentacct.task_intelligence import build_task_intelligence
 from agentacct.task_outcome import (
-    _STALE_OPEN_STEP_SECONDS,
+    _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS,
     reduce_task_outcome,
     step_verification_counts,
+    task_newest_event_at,
 )
 
 
@@ -286,10 +287,11 @@ def _multi_task(items: list[dict[str, Any]]) -> dict[str, Any]:
 def test_handed_off_step_is_a_clean_terminal_not_in_progress_or_verified() -> None:
     # DECISION 1: a handed_off latest status is terminal. Before the fix
     # reduce_task_outcome had no handed_off branch, so an all-handed_off Task
-    # fell through to "reported" — never a distinct clean-stop terminal.
+    # fell through to "reported" — never a distinct clean-stop terminal. The
+    # explicit handoff is unaffected by the cross-session left-behind rule.
     task = _multi_task([_step("handed_off")])
 
-    outcome = reduce_task_outcome(task, now=_NOW)
+    outcome = reduce_task_outcome(task)
     assert outcome["key"] == "handed_off"
     assert outcome["key"] not in {"in_progress", "verified", "reported", "reported_done", "blocked"}
 
@@ -300,29 +302,73 @@ def test_handed_off_step_is_a_clean_terminal_not_in_progress_or_verified() -> No
     assert "not a completed or verified" in home["why"]
 
 
-def test_all_completed_except_stale_open_step_is_mostly_done_not_in_progress() -> None:
-    # DECISION 3a: a single un-closed, stale step must NOT drag a mostly-finished
-    # Task to plain "in progress". Before the fix ANY active step forced
-    # "in_progress"; now a stale open step on a completed Task reads mostly_done.
-    stale = _NOW - _STALE_OPEN_STEP_SECONDS - 60.0
+def test_completed_task_left_behind_by_later_elsewhere_activity_is_mostly_done() -> None:
+    # DECISION 3a (cross-session): a finished-with-one-open-step Task flips to
+    # "mostly done" ONLY because the user demonstrably kept working ELSEWHERE
+    # afterward — here the store's latest activity postdates this Task's newest
+    # event by more than the buffer. The signal is later activity elsewhere,
+    # never mere silence, and it is deterministic (no wall clock).
     task = _multi_task(
         [
-            _step("completed", updated_at=stale),
-            _step("completed", updated_at=stale),
-            _step("checkpoint", updated_at=stale),
+            _step("completed", updated_at=_NOW),
+            _step("completed", updated_at=_NOW),
+            _step("checkpoint", updated_at=_NOW),
         ]
     )
+    later_elsewhere = (
+        task_newest_event_at(task) + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
+    )
 
-    outcome = reduce_task_outcome(task, now=_NOW)
+    outcome = reduce_task_outcome(task, latest_store_activity_at=later_elsewhere)
     assert outcome["key"] == "mostly_done"
     assert outcome["open_step_count"] == 1
     # The open step stays open in the data; the Task is never called finished.
     assert outcome["key"] not in {"verified", "reported_done", "in_progress"}
 
-    home, _carrier = _task_product_state(task)
+    home, _carrier = _task_product_state(task, latest_store_activity_at=later_elsewhere)
     assert home["key"] == "mostly_done"
     assert "1 step left open" in home["label"]
     assert home["action_required"] is False
+
+
+def test_old_task_with_no_later_activity_anywhere_stays_in_progress() -> None:
+    # OWNER'S KEY CASE: absence of activity is NOT abandonment. A Task the user
+    # has not returned from anywhere stays "in progress" no matter how old —
+    # being away / asleep / out for a day must never look like moving on.
+    task = _multi_task(
+        [
+            _step("completed", updated_at=_NOW),
+            _step("checkpoint", updated_at=_NOW),
+        ]
+    )
+    # The store's latest activity IS this Task itself: nothing later happened
+    # anywhere, so it can never read itself as "left behind".
+    latest = task_newest_event_at(task)
+    assert reduce_task_outcome(task, latest_store_activity_at=latest)["key"] == "in_progress"
+    # And with NO store signal supplied, it must also stay in_progress — nothing
+    # silently flips on missing data.
+    assert reduce_task_outcome(task)["key"] == "in_progress"
+    # The home surface, called without a cross-session reference, is likewise
+    # conservative rather than guessing abandonment from silence.
+    home, _carrier = _task_product_state(task)
+    assert home["key"] == "in_progress"
+
+
+def test_elsewhere_activity_within_buffer_stays_in_progress() -> None:
+    # The buffer must be respected: later activity elsewhere only a couple of
+    # hours after this Task froze is a normal pause, not "left behind".
+    task = _multi_task(
+        [
+            _step("completed", updated_at=_NOW),
+            _step("checkpoint", updated_at=_NOW),
+        ]
+    )
+    only_two_hours_later = task_newest_event_at(task) + 2 * 60 * 60
+    assert only_two_hours_later < task_newest_event_at(task) + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS
+    assert (
+        reduce_task_outcome(task, latest_store_activity_at=only_two_hours_later)["key"]
+        == "in_progress"
+    )
 
 
 def test_all_terminal_steps_do_not_read_in_progress_even_with_handoff() -> None:
@@ -330,43 +376,44 @@ def test_all_terminal_steps_do_not_read_in_progress_even_with_handoff() -> None:
     # not "in progress". A completed + handed_off Task is a clean stop.
     task = _multi_task([_step("completed"), _step("handed_off")])
 
-    outcome = reduce_task_outcome(task, now=_NOW)
+    outcome = reduce_task_outcome(task)
     assert outcome["key"] == "handed_off"
     assert outcome["open_step_count"] == 0
 
 
-def test_genuinely_recent_open_step_still_reads_in_progress() -> None:
-    # Guard against over-correction (DECISION 3a): a fresh open step on a Task
-    # touched within the staleness window stays "in progress".
-    recent = _NOW - 60.0
+def test_genuinely_live_task_reads_in_progress() -> None:
+    # Guard against over-correction (DECISION 3a): a genuinely live Task (recent,
+    # with no >24h-later activity elsewhere) stays "in progress". Here the store
+    # is actively in use but the latest activity is well within the buffer.
     task = _multi_task(
         [
-            _step("completed", updated_at=recent),
-            _step("checkpoint", updated_at=recent),
+            _step("completed", updated_at=_NOW),
+            _step("checkpoint", updated_at=_NOW),
         ]
     )
-
-    outcome = reduce_task_outcome(task, now=_NOW)
+    live_store = task_newest_event_at(task) + 30 * 60  # 30 min later, still live
+    outcome = reduce_task_outcome(task, latest_store_activity_at=live_store)
     assert outcome["key"] == "in_progress"
 
-    home, _carrier = _task_product_state(_multi_task(
-        [
-            # _task_product_state uses the wall clock; a genuinely recent step is
-            # simulated with import-time "now" so the surface still reads live.
-            _step("completed", updated_at=__import__("time").time() - 30.0),
-            _step("checkpoint", updated_at=__import__("time").time() - 30.0),
-        ]
-    ))
+    home, _carrier = _task_product_state(task, latest_store_activity_at=live_store)
     assert home["key"] == "in_progress"
 
 
-def test_stale_open_step_without_any_completed_step_stays_in_progress() -> None:
+def test_open_steps_without_any_completed_step_stay_in_progress() -> None:
     # Conservative: "mostly done" requires at least one completed step. A Task
-    # with only open (stale) steps and nothing finished is not "mostly done".
-    stale = _NOW - _STALE_OPEN_STEP_SECONDS - 60.0
-    task = _multi_task([_step("started", updated_at=stale), _step("checkpoint", updated_at=stale)])
+    # with only open steps and nothing finished is never "mostly done" — even
+    # when the user kept working far elsewhere long afterward.
+    task = _multi_task(
+        [_step("started", updated_at=_NOW), _step("checkpoint", updated_at=_NOW)]
+    )
+    far_later_elsewhere = (
+        task_newest_event_at(task) + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
+    )
 
-    assert reduce_task_outcome(task, now=_NOW)["key"] == "in_progress"
+    assert (
+        reduce_task_outcome(task, latest_store_activity_at=far_later_elsewhere)["key"]
+        == "in_progress"
+    )
 
 
 def test_partial_verification_counts_are_exposed_and_correct() -> None:
@@ -380,7 +427,7 @@ def test_partial_verification_counts_are_exposed_and_correct() -> None:
     reported_step = _step("completed")  # completed, no check, weak evidence
     task = _multi_task([verified_step, strong_step, reported_step])
 
-    outcome = reduce_task_outcome(task, now=_NOW)
+    outcome = reduce_task_outcome(task)
     assert outcome["verified_step_count"] == 2  # passing check + strong evidence
     assert outcome["total_step_count"] == 3
     assert outcome["agent_reported_step_count"] == 1
@@ -398,18 +445,86 @@ def test_partial_verification_counts_are_exposed_and_correct() -> None:
 
 
 def test_no_task_is_labeled_finished_or_verified_without_evidence() -> None:
-    # Honesty guard: neither a handoff nor a stale-partial nor a check-less
+    # Honesty guard: neither a handoff nor a left-behind partial nor a check-less
     # "completed" Task may ever read verified/finished, and a step with no
     # passing check or strong evidence is never counted verified.
-    stale = _NOW - _STALE_OPEN_STEP_SECONDS - 60.0
     handed_off = _multi_task([_step("handed_off"), _step("completed")])
-    mostly_done = _multi_task([_step("completed", updated_at=stale), _step("started", updated_at=stale)])
+    left_behind = _multi_task(
+        [_step("completed", updated_at=_NOW), _step("started", updated_at=_NOW)]
+    )
+    later_elsewhere = (
+        task_newest_event_at(left_behind) + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
+    )
     completed_no_check = _multi_task([_step("completed"), _step("completed")])
 
-    assert reduce_task_outcome(handed_off, now=_NOW)["key"] not in {"verified"}
-    assert reduce_task_outcome(mostly_done, now=_NOW)["key"] not in {"verified", "reported_done"}
+    assert reduce_task_outcome(handed_off)["key"] not in {"verified"}
+    left_behind_outcome = reduce_task_outcome(
+        left_behind, latest_store_activity_at=later_elsewhere
+    )
+    assert left_behind_outcome["key"] == "mostly_done"  # the left-behind partial
+    assert left_behind_outcome["key"] not in {"verified", "reported_done"}
 
-    completed_outcome = reduce_task_outcome(completed_no_check, now=_NOW)
+    completed_outcome = reduce_task_outcome(completed_no_check)
     assert completed_outcome["key"] == "reported"  # not "verified" without a passing check
     assert completed_outcome["verified_step_count"] == 0
     assert completed_outcome["total_step_count"] == 2
+
+
+def test_every_return_path_carries_open_step_count() -> None:
+    # FIX B: the projection shape must be uniform for a future CLI reader. The
+    # blocked and finding early returns used to omit open_step_count; every path
+    # now carries it plus the sibling verification counts.
+    count_keys = {
+        "open_step_count",
+        "verified_step_count",
+        "total_step_count",
+        "agent_reported_step_count",
+    }
+    active = {"started", "checkpoint", "active", "in_progress"}
+
+    blocked = _multi_task(
+        [_step("blocked", updated_at=_NOW), _step("started", updated_at=_NOW)]
+    )
+    finding = _multi_task([_step("completed", updated_at=_NOW)])
+    finding["task_evidence_events"] = [
+        _check("failed", created_at=_NOW, event_id="finding-fail")
+    ]
+    verified = _multi_task([_step("completed", updated_at=_NOW)])
+    verified["task_evidence_events"] = [
+        _check("passed", created_at=_NOW, event_id="verify-pass")
+    ]
+    observed = {
+        "work_items": [],
+        "task_evidence_events": [],
+        "sessions": [{}],
+        "usage": {"rows": 0},
+    }
+    resolved = _multi_task(
+        [_step("resolved", updated_at=_NOW), _step("completed", updated_at=_NOW)]
+    )
+    in_progress = _multi_task(
+        [_step("completed", updated_at=_NOW), _step("started", updated_at=_NOW)]
+    )
+
+    cases = {
+        "blocked": blocked,
+        "finding": finding,
+        "verified": verified,
+        "observed": observed,
+        "resolved": resolved,
+        "in_progress": in_progress,
+    }
+    for label, task in cases.items():
+        outcome = reduce_task_outcome(task)
+        missing = count_keys - set(outcome)
+        assert not missing, f"{label} return path missing {missing}"
+        expected_open = sum(
+            1
+            for item in task["work_items"]
+            if str(item.get("latest_status", "")).lower() in active
+        )
+        assert outcome["open_step_count"] == expected_open, label
+    # Sanity: the branches we specifically fixed reached blocked/finding, not a
+    # fall-through, and still classify as before.
+    assert reduce_task_outcome(blocked)["key"] == "blocked"
+    assert reduce_task_outcome(finding)["key"] == "finding"

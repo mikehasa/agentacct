@@ -130,6 +130,7 @@ from .task_outcome import (
     finding_check_key,
     latest_check_events,
     reduce_task_outcome,
+    task_newest_event_at,
 )
 from .task_projection import build_task_projection
 from .usage_cube import (
@@ -7299,8 +7300,43 @@ def _task_check_events(task: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return sorted(events, key=lambda event: float(event.get("created_at") or 0.0))
 
 
+def _latest_store_activity_at(projection: Mapping[str, Any]) -> float | None:
+    """Deterministic store-wide "newest activity" timestamp for the left-behind rule.
+
+    The max ``task_newest_event_at`` across every Task in the projection (plus any
+    session-unlinked work) — i.e. the latest moment the user did anything anywhere
+    in this store, computed once from stored data (never the wall clock).
+    ``reduce_task_outcome`` compares each Task's own newest event against this to
+    tell "left behind while work continued elsewhere" from merely "paused". Using
+    the same ``task_newest_event_at`` measure guarantees the store's newest Task
+    compares equal to this global latest, so it can never read itself as left
+    behind. Returns None for an empty store, which keeps every Task conservatively
+    ``in_progress``. In a project-scoped view the projection is already narrowed to
+    that project, so "elsewhere" honestly means elsewhere within the scope.
+    """
+
+    candidates: list[float] = []
+    tasks = projection.get("tasks") if isinstance(projection.get("tasks"), list) else []
+    for task in tasks:
+        if isinstance(task, Mapping):
+            candidates.append(task_newest_event_at(task))
+    unresolved = (
+        projection.get("unresolved_work")
+        if isinstance(projection.get("unresolved_work"), list)
+        else []
+    )
+    for entry in unresolved:
+        if isinstance(entry, Mapping) and isinstance(entry.get("item"), Mapping):
+            item = entry["item"]
+            candidates.append(float(item.get("updated_at") or item.get("started_at") or 0.0))
+    positive = [value for value in candidates if value > 0.0]
+    return max(positive) if positive else None
+
+
 def _task_product_state(
     task: Mapping[str, Any],
+    *,
+    latest_store_activity_at: float | None = None,
 ) -> tuple[dict[str, Any], Mapping[str, Any] | None]:
     """Task state may summarize child state, but child titles never become Task titles."""
 
@@ -7309,7 +7345,7 @@ def _task_product_state(
         for item in (task.get("work_items") if isinstance(task.get("work_items"), list) else [])
         if isinstance(item, Mapping)
     ]
-    outcome = reduce_task_outcome(task)
+    outcome = reduce_task_outcome(task, latest_store_activity_at=latest_store_activity_at)
     outcome_key = str(outcome.get("key") or "observed")
     latest_checks = [
         event for event in outcome.get("latest_checks", []) if isinstance(event, Mapping)
@@ -8022,8 +8058,11 @@ def _task_feed_item_html(
     candidate_tasks: list[Mapping[str, Any]],
     csrf_token: str,
     esc: Any,
+    latest_store_activity_at: float | None = None,
 ) -> str:
-    state, state_item = _task_product_state(task)
+    state, state_item = _task_product_state(
+        task, latest_store_activity_at=latest_store_activity_at
+    )
     sessions = task.get("sessions") if isinstance(task.get("sessions"), list) else []
     primary = task.get("primary_root") if isinstance(task.get("primary_root"), Mapping) else {}
     primary_key = (str(primary.get("client") or ""), str(primary.get("client_session_id") or ""))
@@ -10098,10 +10137,17 @@ def _overview_body(
         )
     ]
     session_groups = _overview_root_session_groups(scoped_sessions)
+    # DECISION 3a: the cross-session "left behind" reference. Computed once from the
+    # whole projection (every Task, in scope) so a frozen open Task only reads
+    # "mostly done" when the user demonstrably kept working elsewhere afterward —
+    # never from mere silence. Deterministic from stored data, not the wall clock.
+    latest_store_activity_at = _latest_store_activity_at(projection)
     task_entries: list[dict[str, Any]] = []
     states: list[dict[str, Any]] = []
     for task in tasks:
-        state, _state_item = _task_product_state(task)
+        state, _state_item = _task_product_state(
+            task, latest_store_activity_at=latest_store_activity_at
+        )
         states.append(state)
         task_entries.append(
             {
@@ -10262,6 +10308,7 @@ def _overview_body(
                 candidate_tasks=[candidate for candidate in tasks if candidate is not entry["task"]],
                 csrf_token=data.task_csrf_token,
                 esc=esc,
+                latest_store_activity_at=latest_store_activity_at,
             )
         return _work_group_feed_item_html(
             entry["items"],
@@ -13898,6 +13945,7 @@ def create_local_api_app(
             public_task_id=public_task_id,
             title=title,
             control=_control_for_task(public_task_id, control_projection),
+            latest_store_activity_at=_latest_store_activity_at(projection),
         )
 
     def _task_intelligence_json_payload(public_task_id: str) -> dict[str, Any]:
