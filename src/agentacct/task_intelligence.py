@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .task_outcome import reduce_task_outcome
+from .task_outcome import reduce_task_outcome, step_verification_counts
 
 
 TASK_INTELLIGENCE_SCHEMA_VERSION = "agent-chronicle.task-intelligence.v1"
@@ -83,7 +83,10 @@ def _latest_attempt(control: Mapping[str, Any] | None) -> Mapping[str, Any] | No
 
 
 def _state_axes(
-    task: Mapping[str, Any], control: Mapping[str, Any] | None
+    task: Mapping[str, Any],
+    control: Mapping[str, Any] | None,
+    *,
+    latest_store_activity_at: float | None = None,
 ) -> dict[str, dict[str, str]]:
     items = _items(task)
     attempt = _latest_attempt(control)
@@ -106,11 +109,25 @@ def _state_axes(
     else:
         execution = "observed"
 
-    canonical_outcome = str(reduce_task_outcome(task).get("key") or "observed")
+    canonical_outcome = str(
+        reduce_task_outcome(
+            task, latest_store_activity_at=latest_store_activity_at
+        ).get("key")
+        or "observed"
+    )
     outcome = (
         canonical_outcome
         if canonical_outcome
-        in {"finding", "finding_superseded", "blocked", "verified", "reported", "resolved"}
+        in {
+            "finding",
+            "finding_superseded",
+            "blocked",
+            "verified",
+            "reported",
+            "resolved",
+            "handed_off",
+            "mostly_done",
+        }
         else "unknown"
     )
 
@@ -133,9 +150,14 @@ def _proof_summary(check: Mapping[str, Any]) -> str:
 
 
 def _decision_brief(
-    task: Mapping[str, Any], axes: Mapping[str, Mapping[str, str]]
+    task: Mapping[str, Any],
+    axes: Mapping[str, Mapping[str, str]],
+    *,
+    latest_store_activity_at: float | None = None,
 ) -> dict[str, Any]:
-    canonical = reduce_task_outcome(task)
+    canonical = reduce_task_outcome(
+        task, latest_store_activity_at=latest_store_activity_at
+    )
     finding = canonical.get("finding") if isinstance(canonical.get("finding"), Mapping) else None
     verification = (
         canonical.get("verification") if isinstance(canonical.get("verification"), Mapping) else None
@@ -155,6 +177,8 @@ def _decision_brief(
         "blocked": "The agent recorded a blocker for this Task.",
         "resolved": "A later passed check explicitly reports the exact blocker resolved; this is not a verified completion.",
         "reported": "The agent reported completing work; no linked passing check verifies it yet.",
+        "handed_off": "The work was cleanly handed off (continued elsewhere or in a new session); this is a deliberate stop, not a completed or verified outcome.",
+        "mostly_done": "Recorded steps completed while one or more were left open without a terminal record; this is not a claim the Task is finished.",
         "unknown": "agentacct observed this Task but no outcome was recorded.",
     }[outcome]
     if outcome == "finding" and attention_state == "reviewed":
@@ -433,10 +457,11 @@ def build_task_intelligence(
     title: str,
     control: Mapping[str, Any] | None = None,
     timeline_limit: int = 50,
+    latest_store_activity_at: float | None = None,
 ) -> dict[str, Any]:
     if timeline_limit < 1 or timeline_limit > 200:
         raise ValueError("timeline_limit must be between 1 and 200")
-    axes = _state_axes(task, control)
+    axes = _state_axes(task, control, latest_store_activity_at=latest_store_activity_at)
     timeline, total = _timeline(task, control, limit=timeline_limit)
     usage = task.get("usage") if isinstance(task.get("usage"), Mapping) else {}
     return {
@@ -444,7 +469,12 @@ def build_task_intelligence(
         "task_id": public_task_id,
         "title": title,
         "states": axes,
-        "decision_brief": _decision_brief(task, axes),
+        "decision_brief": _decision_brief(
+            task, axes, latest_store_activity_at=latest_store_activity_at
+        ),
+        # DECISION 3b: partial verification, not all-or-nothing. Surfaces can say
+        # "N of M steps verified" instead of one verified/grey flag for the Task.
+        "verification": step_verification_counts(task),
         "findings": _finding_inventory(task),
         # This is the Task's canonical session aggregate. Work-level usage is
         # never added again.

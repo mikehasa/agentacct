@@ -216,7 +216,11 @@ TOOLS: list[dict[str, Any]] = [
                         "Do not reuse it as a project id or across unrelated work."
                     ),
                 },
-                "section_status": {"type": "string", "enum": ["started", "checkpoint", "completed", "blocked"]},
+                "section_status": {
+                    "type": "string",
+                    "enum": ["started", "checkpoint", "completed", "blocked", "handed_off"],
+                    "description": "started/checkpoint are in-progress; completed, blocked, and handed_off are terminal. Use handed_off (a clean stop) when the user hands the work off or continues in a new session, instead of leaving it started/checkpoint.",
+                },
                 "run_id": {"type": ["string", "null"], "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
                 "section_title": {
                     "type": ["string", "null"],
@@ -1485,7 +1489,7 @@ class SentinelMCPServer:
                 "metadata",
             }
             _reject_unknown_keys(arguments, allowed)
-            section_status = _required_choice(arguments, "section_status", {"started", "checkpoint", "completed", "blocked"})
+            section_status = _required_choice(arguments, "section_status", {"started", "checkpoint", "completed", "blocked", "handed_off"})
             # Both spellings are validated even when only one is used, so a
             # malformed alias is never silently ignored. section_title wins.
             section_title = _optional_limited_str(arguments, "section_title", None, max_length=160)

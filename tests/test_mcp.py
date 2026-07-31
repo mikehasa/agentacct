@@ -502,6 +502,46 @@ def test_mcp_record_section_is_work_item_compatible_and_idempotent(tmp_path):
     assert ledger["work_items"][0]["next_step"] == "Run pytest."
 
 
+def test_mcp_record_section_accepts_handed_off_and_reduces_to_clean_terminal(tmp_path):
+    # DECISION 1 end-to-end: the choice-set validator accepts handed_off, the
+    # ledger preserves it (not coerced to checkpoint), and the Task reduces to
+    # the clean-stop terminal — never in_progress/verified.
+    from agentacct.task_outcome import reduce_task_outcome
+
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+    response = server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "agentacct_record_section",
+                "arguments": {
+                    "source": "codex",
+                    "section_id": "handoff-step",
+                    "section_status": "handed_off",
+                    "section_title": "Continue in a new session",
+                    "client": "codex",
+                    "client_session_id": "codex-session",
+                },
+            },
+        }
+    )
+
+    assert "error" not in response
+    event = _tool_payload(response)["event"]
+    assert event["event_type"] == "section_handed_off"
+    assert event["metadata"]["section_status"] == "handed_off"
+
+    item = build_work_ledger(server.service.list_all_events())["work_items"][0]
+    assert item["latest_status"] == "handed_off"
+
+    task = {"work_items": [item], "task_evidence_events": [], "sessions": [], "usage": {"rows": 0}}
+    outcome = reduce_task_outcome(task)
+    assert outcome["key"] == "handed_off"
+    assert outcome["key"] not in {"in_progress", "verified", "reported"}
+
+
 def test_mcp_record_machine_check_creates_evidence_event_linked_to_section(tmp_path):
     server = SentinelMCPServer(store_dir=tmp_path / "state")
     section = server.handle_message(
@@ -914,7 +954,9 @@ def test_mcp_event_tool_schema_documents_limits(tmp_path):
     assert context_tool["inputSchema"]["properties"]["idempotency_key"]["maxLength"] == 240
     assert context_tool["inputSchema"]["properties"]["turn_index"]["minimum"] == 0
     assert section_tool["inputSchema"]["required"] == ["source", "section_id", "section_status"]
-    assert section_tool["inputSchema"]["properties"]["section_status"]["enum"] == ["started", "checkpoint", "completed", "blocked"]
+    # handed_off is an additive terminal status (DECISION 1): a clean stop when
+    # the user hands work off / continues in a new session.
+    assert section_tool["inputSchema"]["properties"]["section_status"]["enum"] == ["started", "checkpoint", "completed", "blocked", "handed_off"]
     assert section_tool["inputSchema"]["properties"]["kind"]["enum"][:3] == ["planning", "implementation", "debugging"]
     assert section_tool["inputSchema"]["properties"]["files"]["maxItems"] == 50
     assert section_tool["inputSchema"]["properties"]["blocker"]["maxLength"] == 1200

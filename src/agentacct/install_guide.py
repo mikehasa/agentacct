@@ -264,6 +264,7 @@ _RECORDING_CONTRACT_LINES = (
     # which is what keeps already-rendered CLAUDE.md/AGENTS.md files working.
     "- Open a section with `agentacct_record_section` (`section_status=started`) BEFORE your first other tool call, and again before each meaningful task; set `section_title` to a short human goal (e.g. \"add rate-limit to login\"). Complete it (`section_status=completed`) or block it (`blocked`) when done.",
     "- For a long task, send `section_status=checkpoint` updates rather than one giant section.",
+    "- When the user hands the work off or says they are continuing in a new session, record the section as `section_status=handed_off` (a clean stop) — do not leave it `started`/`checkpoint`.",
     "- After running tests or a build, record the objective result with `agentacct_record_machine_check`.",
     "- Keep MCP/event evidence separate from token/cost claims: MCP events prove what work happened; a token or cost figure is only real if it comes from actual client usage the importer read — never fabricate one.",
 )
