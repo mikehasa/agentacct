@@ -157,6 +157,7 @@ def test_adoption_fully_syncs_a_stale_mirror_log_before_freezing(tmp_path: Path,
     # Adopting authoritative must sync the log FULLY from the still-authoritative
     # flat file first — a mirror log that is behind the file must not be frozen
     # (abandoning the file's un-absorbed tail) just because it is non-empty.
+    monkeypatch.delenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", raising=False)  # mirror-mode setup
     store_root = tmp_path / "store"
     store_root.mkdir()
     seeder = SentinelService(store_root)
@@ -176,7 +177,8 @@ def test_adoption_fully_syncs_a_stale_mirror_log_before_freezing(tmp_path: Path,
     assert adopted.event_log.count() == 8
 
 
-def test_a_cutover_store_with_a_lost_marker_self_heals(tmp_path: Path) -> None:
+def test_a_cutover_store_with_a_lost_marker_self_heals(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", raising=False)  # mirror-mode setup
     store_root = tmp_path / "store"
     store_root.mkdir()
     service = SentinelService(store_root)
@@ -195,7 +197,8 @@ def test_a_cutover_store_with_a_lost_marker_self_heals(tmp_path: Path) -> None:
     assert len(healed.list_all_events()) == 6
 
 
-def test_a_cutover_store_missing_its_log_db_fails_loud(tmp_path: Path) -> None:
+def test_a_cutover_store_missing_its_log_db_fails_loud(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", raising=False)  # mirror-mode setup
     store_root = tmp_path / "store"
     store_root.mkdir()
     service = SentinelService(store_root)
