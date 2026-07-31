@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-07-31
+
 ### Added
 - Local logs now shows the recording calls agentacct refused, with counts and a
   fixed set of reason codes. A refused call previously left no trace anywhere —
