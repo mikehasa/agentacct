@@ -4337,7 +4337,13 @@ def event_drop_flat_ledger(
     # The whole cutover holds the write lock so no concurrent append/rewrite can
     # slip between the parity proof and the deletion. The lock FILE is kept.
     with service._events_write_lock():
-        if events_path.exists():
+        already_authoritative = service._authoritative()
+        if not already_authoritative and events_path.exists():
+            # Mirror-mode cutover: the flat file is the authority, so sync the
+            # log from it and prove line-for-line parity before it becomes the
+            # ledger. (An ALREADY-authoritative store's log LEADS the frozen
+            # file — reconciling would wipe the log's post-adoption writes, so
+            # skip it; the file is a stale artifact safe to drop.)
             service.event_log.reconcile_from_file(events_path)
             result = service.event_log.verify_against_file(events_path)
             if not result.matches:
@@ -4357,7 +4363,8 @@ def event_drop_flat_ledger(
                     f"(SQLite log has {payload['log_events']} events). Re-run with --confirm."
                 )
             return
-        service.mark_authoritative()
+        if not already_authoritative:
+            service.mark_authoritative()
         events_path.unlink(missing_ok=True)
     payload = {"deleted": str(events_path), "log_events": service.event_log.count()}
     if json_output:

@@ -153,6 +153,29 @@ def test_env_adoption_persists_a_marker_so_a_no_env_reopen_does_not_wipe(tmp_pat
     assert len(reopened.list_all_events()) == 5  # nothing wiped
 
 
+def test_adoption_fully_syncs_a_stale_mirror_log_before_freezing(tmp_path: Path, monkeypatch) -> None:
+    # Adopting authoritative must sync the log FULLY from the still-authoritative
+    # flat file first — a mirror log that is behind the file must not be frozen
+    # (abandoning the file's un-absorbed tail) just because it is non-empty.
+    store_root = tmp_path / "store"
+    store_root.mkdir()
+    seeder = SentinelService(store_root)
+    for i in range(5):
+        seeder.record_event(_note(f"n{i}"))
+    seeder.list_all_events()  # log synced to 5
+
+    # Append 3 more lines straight to the flat file so the log is stale (5 < 8).
+    with _events_file(store_root).open("a", encoding="utf-8") as handle:
+        for i in range(5, 8):
+            handle.write(json.dumps({"event_id": f"tail{i}", "event_type": "note", "created_at": float(i)}) + "\n")
+
+    monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "1")
+    adopted = SentinelService(store_root)
+    assert adopted._authoritative()
+    assert len(adopted.list_all_events()) == 8  # the stale tail was absorbed, not lost
+    assert adopted.event_log.count() == 8
+
+
 def test_a_cutover_store_with_a_lost_marker_self_heals(tmp_path: Path) -> None:
     store_root = tmp_path / "store"
     store_root.mkdir()

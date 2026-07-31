@@ -1037,16 +1037,22 @@ class SentinelService:
         self._is_authoritative = authoritative
         if authoritative:
             if not marker_exists:
-                # Persist adoption (env) or heal a lost marker on a cut-over
-                # store, so no future no-env open reverts to mirror mode.
+                # ADOPTION transition (env flag, or a healed/lost marker). The
+                # flat file is STILL the authority at this instant, so fully sync
+                # the log from it FIRST — a partially-synced mirror log must not
+                # freeze and abandon the file's un-absorbed tail — then persist
+                # the marker so all future opens read the log. Under the write
+                # lock, and only while the file exists (absent ⇒ the log already
+                # is the sole ledger). Once the marker exists this branch never
+                # runs again, so the log (which then LEADS the frozen file) is
+                # never reconciled back down to the stale file.
+                if flat_exists:
+                    with self._events_write_lock():
+                        self.event_log.reconcile_from_file(self.events_path)
                 try:
                     self.mark_authoritative()
                 except OSError:
                     pass
-            if self.event_log.count() == 0 and flat_exists:
-                with self._events_write_lock():
-                    if self.event_log.count() == 0:
-                        self.event_log.reconcile_from_file(self.events_path)
             return
         # Mirror mode: the flat file is the authority.
         self.event_log.reconcile_from_file(self.events_path)
