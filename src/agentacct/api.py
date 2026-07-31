@@ -462,7 +462,7 @@ class FindingDispositionRequest(BaseModel):
     # Shape validation belongs to the opaque resolver so malformed and stale
     # tokens share one generic 404 instead of exposing token internals.
     finding_token: str = Field(min_length=1, max_length=128, pattern=r"^[^\r\n\x00]+$")
-    action: str = Field(pattern=r"^(?:mark_reviewed|resolve|reopen)$")
+    action: str = Field(pattern=r"^(?:mark_reviewed|resolve|reopen|reinstate)$")
     expected_revision: int = Field(ge=0)
     note: str = Field(default="", max_length=1200, pattern=r"^[^\r\n\x00]*$")
 
@@ -3494,6 +3494,7 @@ _DASHBOARD_STYLE = """    :root {
       .work-feed-item.action-required { background: rgba(248, 113, 113, 0.07); border-color: rgba(248, 113, 113, 0.3); }
       .work-feed-action { background: rgba(251, 146, 60, 0.09); border-color: rgba(251, 146, 60, 0.28); }
       .work-feed-finding { background: rgba(251, 191, 36, 0.09); border-color: rgba(251, 191, 36, 0.28); }
+      .work-feed-finding.work-feed-finding-superseded { background: rgba(134, 239, 172, 0.10); border-color: rgba(134, 239, 172, 0.28); }
     }
     * { box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; color: var(--color-text); background: var(--color-bg); }
@@ -3576,6 +3577,7 @@ _DASHBOARD_STYLE = """    :root {
     .work-overview-stat span { color: #cbd5e1; font-size: var(--font-xs); }
     .work-overview-stat.finding strong { color: #fcd34d; }
     .work-overview-stat.action strong { color: #fca5a5; }
+    .work-overview-stat.superseded strong { color: #86efac; }
     .usage-pulse { align-items: stretch; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 16px; box-shadow: 0 8px 24px rgba(15,23,42,0.05); display: grid; gap: 0; grid-template-columns: minmax(205px, 0.68fr) minmax(0, 1.7fr); margin-bottom: var(--space-6); overflow: hidden; }
     .usage-pulse-copy { background: linear-gradient(155deg, #ecfeff, #f8fafc); border-right: 1px solid var(--color-border); padding: 1.1rem 1.25rem; }
     .usage-pulse-copy h2 { font-size: 1.18rem; }
@@ -3662,6 +3664,10 @@ _DASHBOARD_STYLE = """    :root {
     .work-feed-finding-head span { color: var(--color-text-faint); font-size: var(--font-xs); }
     .work-feed-finding > p { line-height: 1.45; margin-top: var(--space-2); }
     .work-feed-finding-context { color: var(--color-text-muted); font-size: var(--font-note); }
+    .work-feed-finding.work-feed-finding-superseded { background: rgba(134, 239, 172, 0.10); border-color: rgba(134, 239, 172, 0.30); }
+    .work-feed-finding-superseded-row { border-top: 1px solid rgba(148, 163, 184, 0.25); margin-top: var(--space-3); padding-top: var(--space-3); }
+    .work-feed-finding-pass { border-left: 3px solid #86efac; margin-top: var(--space-2); padding-left: var(--space-3); }
+    .work-feed-finding-pass strong { color: #16a34a; font-size: var(--font-xs); text-transform: uppercase; }
     .task-work-preview { background: linear-gradient(145deg, #f8fafc, #f1f5f9); border: 1px solid var(--color-border); border-radius: 10px; display: grid; gap: 0; margin-top: var(--space-5); overflow: hidden; }
     .task-work-preview-head { align-items: center; background: rgba(255,255,255,0.66); border-bottom: 1px solid var(--color-border); display: flex; justify-content: space-between; padding: 0.58rem 0.68rem; }
     .task-work-preview-head strong { color: var(--color-text-secondary); font-size: var(--font-xs); text-transform: uppercase; }
@@ -6211,6 +6217,7 @@ def _latest_actionable_failed_check(item: Mapping[str, Any]) -> Mapping[str, Any
         (observed_at, event)
         for event, observed_at in _latest_machine_check_events(item)
         if str(event.get("result") or "unknown").lower() in {"failed", "error"}
+        and str(event.get("supersession_state") or "") != "superseded"
         and episode_states.get(str(finding_target_digest(event) or ""), "open") == "open"
     ]
     return max(failures, key=lambda entry: entry[0])[1] if failures else None
@@ -6267,6 +6274,17 @@ def _work_product_state(item: Mapping[str, Any]) -> dict[str, Any]:
         for event, _observed_at in latest_check_events
         if str(event.get("result") or "unknown").lower() in {"failed", "error"}
     ]
+    # A superseded failure is contradicted by a later same-scope pass. It stays
+    # in the check set (never removed, so it can never fall through to Verified),
+    # but it is not a standing finding and it never carries attention.
+    superseded_present = any(
+        str(event.get("supersession_state") or "") == "superseded" for event in failed_events
+    )
+    standing_failed_events = [
+        event
+        for event in failed_events
+        if str(event.get("supersession_state") or "") != "superseded"
+    ]
     if failed_events:
         episode_states = {
             str(episode.get("target_digest")): str(episode.get("disposition_state") or "open")
@@ -6279,9 +6297,22 @@ def _work_product_state(item: Mapping[str, Any]) -> dict[str, Any]:
         }
         finding_states = [
             episode_states.get(str(finding_target_digest(event) or ""), "open")
-            for event in failed_events
+            for event in standing_failed_events
         ]
-        if "open" not in finding_states:
+        if "open" in finding_states:
+            return {
+                "key": "open_finding",
+                "label": "Open finding",
+                "css": "status-finding",
+                "action_required": False,
+                "finding_open": True,
+                "rank": 2,
+                "why": (
+                    "An agent-reported check found an issue in the work. agentacct preserves that evidence; "
+                    "it is not a agentacct system failure or an inferred user assignment."
+                ),
+            }
+        if standing_failed_events:
             reviewed = "reviewed" in finding_states
             return {
                 "key": "finding_reviewed" if reviewed else "finding_resolved",
@@ -6297,16 +6328,18 @@ def _work_product_state(item: Mapping[str, Any]) -> dict[str, Any]:
                     else "The dashboard user marked this finding resolved; this is not machine verification."
                 ),
             }
+        # Only superseded failures remain: resolved in a later same-scope check.
         return {
-            "key": "open_finding",
-            "label": "Open finding",
-            "css": "status-finding",
+            "key": "finding_superseded",
+            "label": "Finding · resolved in a later check",
+            "css": "status-missing",
             "action_required": False,
-            "finding_open": True,
+            "finding_open": False,
+            "finding_present": True,
             "rank": 2,
             "why": (
-                "An agent-reported check found an issue in the work. agentacct preserves that evidence; "
-                "it is not a agentacct system failure or an inferred user assignment."
+                "A recorded check failed, but a later same-scope check passed. agentacct keeps the "
+                "failure in history; it is not attention and it is not a verified outcome."
             ),
         }
     if status == "handed_off":
@@ -6331,7 +6364,11 @@ def _work_product_state(item: Mapping[str, Any]) -> dict[str, Any]:
         }
     latest_checks_all_pass = bool(latest_checks) and all(result == "passed" for result, _ in latest_checks)
     projected_checks = isinstance(item.get("current_check_events"), list)
-    if status in {"completed", "passed"} and (
+    # A demoted-but-present failure can never upgrade the item to Verified. This
+    # is redundant with the failed-events branch above returning first, but it is
+    # stated explicitly so a later "just hide the failure" refactor cannot let a
+    # superseded failure silently become the product's strongest claim.
+    if status in {"completed", "passed"} and not superseded_present and (
         latest_checks_all_pass
         or (evidence == "strong" and not latest_checks and not projected_checks)
     ):
@@ -6824,6 +6861,12 @@ def _run_flow_html(*, state_key: str, has_work: bool, esc: Any) -> str:
             "Activity and task recorded; the failed check remains objective evidence, "
             "and its attention state was reviewed without creating a verified outcome."
         )
+    elif state_key == "finding_superseded":
+        classes = ("is-done", "is-done", "is-reported", "")
+        description = (
+            "Activity and task recorded; a failed check was contradicted by a later same-scope pass. "
+            "The failure stays in history and the outcome is not verified."
+        )
     elif state_key == "blocked":
         classes = ("is-done", "is-warning", "", "is-warning")
         description = "Activity recorded; task is blocked before a verified outcome."
@@ -6916,11 +6959,78 @@ def _run_card_html(
     """
 
 
+def _check_event_index(item: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    """Map event_id -> check event across the item's current/evidence checks."""
+
+    index: dict[str, Mapping[str, Any]] = {}
+    for key in ("current_check_events", "evidence_events"):
+        rows = item.get(key)
+        if not isinstance(rows, list):
+            continue
+        for event in rows:
+            if isinstance(event, Mapping) and event.get("event_id"):
+                index.setdefault(str(event.get("event_id")), event)
+    return index
+
+
+def _superseded_pairs(item: Mapping[str, Any]) -> list[tuple[Mapping[str, Any], Mapping[str, Any] | None]]:
+    """Return (failure_event, later_passing_event) for each superseded finding."""
+
+    episodes = item.get("finding_episodes") if isinstance(item.get("finding_episodes"), list) else []
+    index = _check_event_index(item)
+    pairs: list[tuple[Mapping[str, Any], Mapping[str, Any] | None]] = []
+    for episode in episodes:
+        if not isinstance(episode, Mapping):
+            continue
+        if str(episode.get("supersession_state") or "") != "superseded":
+            continue
+        failure = episode.get("failure_event") if isinstance(episode.get("failure_event"), Mapping) else {}
+        passing = index.get(str(episode.get("superseded_by_event_id") or "")) or (
+            index.get(str(failure.get("superseded_by_event_id") or "")) if failure else None
+        )
+        pairs.append((failure, passing))
+    return pairs
+
+
 def _work_action_html(item: Mapping[str, Any], state: Mapping[str, Any], esc: Any) -> str:
     action_parts: list[str] = []
     blocker = str(item.get("blocker") or "").strip()
     next_step = str(item.get("next_step") or "").strip()
     state_key = str(state.get("key") or "")
+    if state_key == "finding_superseded":
+        pairs = _superseded_pairs(item)
+        rows: list[str] = []
+        for failure, passing in pairs:
+            evidence_label = _display_count_label(str(failure.get("evidence_type") or "check"))
+            failure_summary = str(failure.get("summary") or "").strip() or (
+                "An agent-reported check found an issue in the work being reviewed."
+            )
+            failure_time = _fmt_time(failure.get("created_at"))
+            pass_block = ""
+            if isinstance(passing, Mapping):
+                pass_summary = str(passing.get("summary") or "").strip() or "A later same-scope check passed."
+                pass_time = _fmt_time(passing.get("created_at"))
+                pass_block = (
+                    '<div class="work-feed-finding-pass"><strong>Later check passed'
+                    f'{(" · " + esc(pass_time)) if pass_time else ""}</strong>'
+                    f"<p>{esc(pass_summary)}</p></div>"
+                )
+            rows.append(
+                '<div class="work-feed-finding-superseded-row">'
+                '<div class="work-feed-finding-head"><strong>Failed check'
+                f'{(" · " + esc(failure_time)) if failure_time else ""}</strong>'
+                f"<span>{esc(evidence_label)} check</span></div>"
+                f"<p>{esc(failure_summary)}</p>{pass_block}</div>"
+            )
+        # Drop "No follow-up action was recorded." here: a later same-scope pass
+        # is the follow-up. The failed check stays visible above the pass.
+        return (
+            '<div class="work-feed-finding work-feed-finding-superseded">'
+            '<div class="work-feed-finding-head"><strong>Resolved in a later check</strong></div>'
+            + "".join(rows)
+            + '<p class="work-feed-finding-context">agentacct keeps the failed check in history. '
+            "It is not attention and it is not a verified outcome; reinstate it if the later pass was unrelated.</p></div>"
+        )
     resolution = (
         item.get("blocker_resolution")
         if isinstance(item.get("blocker_resolution"), Mapping)
@@ -6951,6 +7061,16 @@ def _work_action_html(item: Mapping[str, Any], state: Mapping[str, Any], esc: An
             "An agent-reported check found an issue in the work being reviewed."
         )
         evidence_label = _display_count_label(str(finding.get("evidence_type") or "check"))
+        # An unconfirmed finding has a later same-scope pass agentacct cannot
+        # prove is the same check. It stays a standing finding, but the later
+        # pass is disclosed inline so the reader sees the ambiguity.
+        unconfirmed_note = ""
+        if str(finding.get("supersession_state") or "") == "unconfirmed":
+            unconfirmed_note = (
+                '<p class="work-feed-finding-context work-feed-finding-unconfirmed">'
+                f"A later {esc(str(finding.get('evidence_type') or 'check'))} check passed; "
+                "agentacct cannot prove it is the same check, so this finding stays open.</p>"
+            )
         return (
             '<div class="work-feed-finding">'
             '<div class="work-feed-finding-head"><strong>Agent finding</strong>'
@@ -6958,7 +7078,8 @@ def _work_action_html(item: Mapping[str, Any], state: Mapping[str, Any], esc: An
             f"<p>{esc(finding_summary)}</p>"
             '<p class="work-feed-finding-context">This finding is about the work being reviewed, '
             "not agentacct health. No follow-up action was recorded. agentacct does not "
-            "guess who should act next.</p></div>"
+            "guess who should act next.</p>"
+            f"{unconfirmed_note}</div>"
         )
     elif next_step and state_key in {"blocked", "in_progress"}:
         label = "Decision needed" if state_key == "blocked" else "Next"
@@ -7403,6 +7524,23 @@ def _task_product_state(
             state,
             check_carrier,
         )
+    if outcome_key == "finding_superseded":
+        return (
+            {
+                "key": "finding_superseded",
+                "label": "Finding · resolved in a later check",
+                "css": "status-missing",
+                "rank": 2,
+                "action_required": False,
+                "finding_open": False,
+                "finding_present": True,
+                "why": (
+                    "A recorded check failed, but a later same-scope check passed. agentacct keeps the "
+                    "failure in history; it is not attention and it is not a verified outcome."
+                ),
+            },
+            check_carrier,
+        )
     if outcome_key == "observed":
         return (
             {
@@ -7744,11 +7882,20 @@ def _finding_episode_controls_html(
             else {}
         )
         state = str(episode.get("disposition_state") or "open")
-        label = {
-            "reviewed": "Reviewed",
-            "resolved": "Marked resolved",
-        }.get(state, "Open finding")
-        css = "status-finding" if state == "open" else "status-missing"
+        # A superseded episode is not attention: a later same-scope pass
+        # contradicted it. It stays visible (and reopenable via the same
+        # controls), but it must never read as an "Open finding".
+        superseded = str(episode.get("supersession_state") or "") == "superseded" and not episode.get(
+            "attention_open"
+        )
+        if superseded:
+            label = "Resolved in a later check"
+        else:
+            label = {
+                "reviewed": "Reviewed",
+                "resolved": "Marked resolved",
+            }.get(state, "Open finding")
+        css = "status-finding" if (state == "open" and not superseded) else "status-missing"
         summary = str(event.get("summary") or "").strip() or "A failed check was recorded."
         evidence_label = _display_count_label(str(event.get("evidence_type") or "check"))
         observed = _fmt_time(event.get("created_at"))
@@ -7756,7 +7903,12 @@ def _finding_episode_controls_html(
         revision = int(episode.get("revision") or 0)
         note = str(disposition.get("note") or "").strip()
         note_html = f'<p><strong>Disposition note:</strong> {esc(note)}</p>' if note else ""
-        if state == "reviewed":
+        if superseded:
+            truth_copy = (
+                "A later same-scope check passed. The failed result stays in history; "
+                "reinstate it to attention here if that later pass was unrelated."
+            )
+        elif state == "reviewed":
             truth_copy = "Reviewed by you; no passing rerun has been recorded."
         elif state == "resolved":
             truth_copy = "Marked resolved by you; this is not machine verification."
@@ -7794,6 +7946,18 @@ def _finding_episode_controls_html(
                     + common
                     + hidden("action", "reopen")
                     + '<button class="task-control-button is-danger" type="submit">Reopen</button></form>'
+                )
+            elif superseded:
+                # An automatically superseded finding sits at disposition_state
+                # ``open`` but carries no attention. If the later pass was
+                # unrelated, one reinstate brings it back to Needs attention —
+                # this is the control the "reopen it here" copy promises.
+                forms.append(
+                    '<form method="post" action="/findings/disposition">'
+                    + common
+                    + hidden("action", "reinstate")
+                    + '<button class="task-control-button is-danger" type="submit">'
+                    + "Reinstate to attention</button></form>"
                 )
             controls = '<div class="finding-review-actions">' + "".join(forms) + "</div>"
         elif not chain_valid:
@@ -8120,6 +8284,10 @@ def _task_feed_item_html(
         or state.get("key") == "resolved"
     ):
         action_html += _work_action_html(state_item, state, esc)
+    elif state.get("key") == "finding_superseded":
+        # Render the superseded failure and its later passing check adjacently
+        # off the Task's own episodes + check events.
+        action_html += _work_action_html(task, state, esc)
     # Inline finding review + resolve/reopen in the visible card body, not the
     # details expander, so the disposition action is one click away.
     action_html += _finding_episode_controls_html(
@@ -8255,7 +8423,11 @@ def _visible_attention_entries(
         and (
             entry["state"].get("action_required")
             or entry["state"].get("finding_open")
-            or entry["state"].get("finding_present")
+            # A superseded finding is present but not attention: it must not pin.
+            or (
+                entry["state"].get("finding_present")
+                and entry["state"].get("key") != "finding_superseded"
+            )
         )
     }
     selected_ids = set(required_ids)
@@ -9463,13 +9635,23 @@ def _apply_finding_dispositions_to_projection(
             seen.add(target_digest)
             disposition = disposition_for_event(event, disposition_projection)
             token = _finding_form_token(form_secret, event)
+            superseded = str(event.get("supersession_state") or "") == "superseded"
+            # A superseded failure carries no attention on its own, but stays
+            # reopenable: once the user has explicitly acted on it (revision > 0),
+            # their disposition wins over the automatic supersession.
+            attention_open = (disposition.state == "open") and (
+                not superseded or int(disposition.revision or 0) > 0
+            )
             episodes.append(
                 {
                     "target_digest": target_digest,
                     "finding_token": token,
                     "objective_state": "current_failure",
                     "disposition_state": disposition.state,
-                    "attention_open": disposition.state == "open",
+                    "attention_open": attention_open,
+                    "supersession_state": str(event.get("supersession_state") or "") or None,
+                    "superseded_by_event_id": event.get("superseded_by_event_id"),
+                    "supersession_basis": event.get("supersession_basis"),
                     "revision": disposition.revision,
                     "failure_event": dict(event),
                     "latest_disposition": disposition.to_dict(),
@@ -9634,6 +9816,12 @@ def _apply_finding_dispositions_to_projection(
     open_count = sum(bool(episode.get("attention_open")) for episode in all_episodes)
     reviewed_count = sum(episode.get("disposition_state") == "reviewed" for episode in all_episodes)
     resolved_count = sum(episode.get("disposition_state") == "resolved" for episode in all_episodes)
+    # A superseded finding gets its own bucket and count -- never folded into
+    # "Open findings", never dropped from history.
+    superseded_count = sum(
+        str(episode.get("supersession_state") or "") == "superseded" and not episode.get("attention_open")
+        for episode in all_episodes
+    )
     summary = projection.get("summary") if isinstance(projection.get("summary"), dict) else {}
     projection["summary"] = {
         **summary,
@@ -9645,6 +9833,7 @@ def _apply_finding_dispositions_to_projection(
         ),
         "unassigned_open_finding_count": len(open_unassigned),
         "total_open_finding_count": open_count,
+        "superseded_finding_count": superseded_count,
         "current_finding_count": len(all_episodes),
         "reviewed_finding_count": reviewed_count,
         "resolved_finding_count": resolved_count,
@@ -10348,6 +10537,18 @@ def _overview_body(
     )
     assigned_finding_count = task_finding_count + unresolved_finding_count
     finding_count = assigned_finding_count + len(unassigned_findings)
+    # A superseded finding is resolved-in-a-later-check: its own tile, never
+    # folded into "Open findings", never counted as needing input.
+    superseded_finding_count = int(
+        (projection.get("summary") or {}).get("superseded_finding_count") or 0
+    )
+    superseded_stat_html = (
+        '<div class="work-overview-stat superseded">'
+        f"<strong>{esc(_fmt_int(superseded_finding_count))}</strong>"
+        "<span>Resolved in later check</span></div>"
+        if superseded_finding_count
+        else ""
+    )
     verified_count = sum(1 for state in states if state.get("key") == "verified")
     if action_count:
         headline = f"{_fmt_int(action_count)} {'task needs' if action_count == 1 else 'tasks need'} input"
@@ -10493,6 +10694,7 @@ def _overview_body(
           <div class="work-overview-stat"><strong>{esc(_fmt_int(in_progress_count))}</strong><span>In progress</span></div>
           <div class="work-overview-stat finding"><strong>{esc(_fmt_int(finding_count))}</strong><span>Open findings</span></div>
           <div class="work-overview-stat action"><strong>{esc(_fmt_int(action_count))}</strong><span>Needs input</span></div>
+          {superseded_stat_html}
         </div>
       </div>
     </section>

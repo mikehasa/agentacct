@@ -24,7 +24,7 @@ FINDING_DISPOSITION_SOURCE = "agent-chronicle-dashboard"
 FINDING_DISPOSITION_AUTHORITY_SCOPE = "finding_attention_only"
 FINDING_TARGET_SCHEMA = "agent-chronicle.finding-target.v1"
 
-FINDING_ACTIONS = {"mark_reviewed", "resolve", "reopen"}
+FINDING_ACTIONS = {"mark_reviewed", "resolve", "reopen", "reinstate"}
 FINDING_STATES = {"open", "reviewed", "resolved"}
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -151,6 +151,15 @@ def disposition_transition(prior_state: str, action: str) -> str | None:
     if action == "resolve" and prior_state in {"open", "reviewed"}:
         return "resolved"
     if action == "reopen" and prior_state in {"reviewed", "resolved"}:
+        return "open"
+    if action == "reinstate" and prior_state == "open":
+        # Reinstate is the dispute path for an automatically superseded finding:
+        # the failure sits at disposition_state ``open`` with no attention (a
+        # later same-scope pass demoted it). The state stays ``open`` but the
+        # bumped revision makes the user's explicit choice win over the automatic
+        # supersession, so the finding returns to Needs attention. It is distinct
+        # from ``reopen`` (which pulls a reviewed/resolved finding back) so the
+        # reopen contract and its state-machine tests are untouched.
         return "open"
     return None
 

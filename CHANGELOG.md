@@ -15,6 +15,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   disk, so it covers refusals that predate this release, and it stores only
   counts and reason codes, never the offending value or path.
 
+- Work now carries honest partial and stopped states instead of collapsing to
+  all-or-nothing. A task no longer reads "in progress" just because one step was
+  left open: if you demonstrably moved on — kept working in other sessions for a
+  day while this one sat untouched — it reads "mostly done"; if you have not been
+  active anywhere since, it stays "in progress" (being away is never treated as
+  abandonment). A new `handed_off` section status lets an agent record a clean
+  stop when you continue in a new session, as a terminal state rather than a live
+  one. Tasks also expose a partial verification count ("3 of 5 steps verified")
+  rather than a single verified/unverified flag.
+
 ### Changed
 - The "usage without work context" prompt no longer blames you for all of it;
   it now points at the refused-recording list for the part agentacct caused.
@@ -61,6 +71,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A tool call mangled in transit — parameters absorbed into a narrative field
   as literal text — is now flagged with a warning and a marker on the stored
   record instead of being kept silently. It never rejects and never repairs.
+- A check that failed and was then fixed no longer shows as a standing,
+  unresolved "Agent finding". The retire-on-rerun logic keyed on the exact
+  command, and fixing a build almost always edits the command, so the passing
+  re-run never superseded the failure. A later same-scope pass now demotes the
+  failure out of Needs attention into a "resolved in a later check" state —
+  still visible, counted on its own, and one-click reinstatable — never hidden
+  and never upgraded to Verified. Findings whose check exited 0 (a check
+  asserting a defect) and passes from another project/session are never demoted.
 
 ## [0.5.2] - 2026-07-31
 

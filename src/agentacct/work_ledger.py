@@ -24,6 +24,7 @@ from .log_evidence import (
     summarize_log_evidence_donor_rows,
 )
 from .store_resolution import claude_worktree_owner_path_text
+from .supersession import annotate_supersession
 from .usage_cube import usage_bucket_date
 from .usage_truth import (
     INSTRUMENTATION_MARKER_EVENT_TYPE,
@@ -737,10 +738,27 @@ def build_evidence_events(
     log_evidence_index: dict[str, list[dict[str, Any]]] | None = None,
     log_evidence_counters: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
-    evidence = [_evidence_event(event) for event in events if _is_evidence_event(event)]
-    evidence_events = [event for event in evidence if event is not None]
+    # Keep the raw command alongside each projection while the whole cohort is in
+    # hand: supersession similarity needs it, but it is redacted out of the
+    # projection itself, so it never leaves this function.
+    raw_command_by_id: dict[str, str | None] = {}
+    evidence_events: list[dict[str, Any]] = []
+    for event in events:
+        if not _is_evidence_event(event):
+            continue
+        projected = _evidence_event(event)
+        if projected is None:
+            continue
+        metadata = _metadata(event)
+        event_id = str(projected.get("event_id") or "")
+        raw_command_by_id[event_id] = _optional_str(metadata.get("command"))
+        evidence_events.append(projected)
     evidence_events.extend(_run_report_evidence_events(run_reports or []))
     evidence_events = sorted(evidence_events, key=lambda event: float(event.get("created_at") or 0.0), reverse=True)
+    annotate_supersession(
+        evidence_events,
+        raw_command_by_id=raw_command_by_id,
+    )
     index = log_evidence_index if log_evidence_index is not None else build_log_evidence_index(events)
     counters = apply_log_evidence_to_snapshots(evidence_events, index)
     if log_evidence_counters is not None:
@@ -1140,6 +1158,15 @@ def apply_blocker_resolutions(
         for item in work_items
         if item.get("work_id")
     }
+    # A resolution may only clear a blocked WORK section, never a failed CHECK
+    # (that would be a privilege escalation). A pointer at a failed check used to
+    # reject as a generic "target_missing"; surface it as its own diagnostic so
+    # the swallow is visible.
+    failed_check_event_ids = {
+        str(event.get("event_id") or "")
+        for event in evidence_events
+        if str(event.get("result") or "").lower() in {"failed", "error"} and event.get("event_id")
+    }
     snapshots_by_event_id: dict[str, list[dict[str, Any]]] = {}
     snapshots_by_work_id: dict[str, list[dict[str, Any]]] = {}
     for snapshot in work_events:
@@ -1174,6 +1201,7 @@ def apply_blocker_resolutions(
             target_candidate_count=len(candidates),
             item=item,
             snapshots_by_work_id=snapshots_by_work_id,
+            target_points_at_failed_check=target_id in failed_check_event_ids,
         )
         attempt_summary = {
             "event_id": evidence.get("event_id"),
@@ -1245,8 +1273,13 @@ def _blocker_resolution_rejection_reason(
     target_candidate_count: int,
     item: dict[str, Any] | None,
     snapshots_by_work_id: dict[str, list[dict[str, Any]]],
+    target_points_at_failed_check: bool = False,
 ) -> str | None:
     if target_candidate_count != 1:
+        if target_candidate_count == 0 and target_points_at_failed_check:
+            # A failed check is not a blocker episode. A later same-scope pass is
+            # the supersession path; a blocker resolution can never clear it.
+            return "target_is_failed_check"
         return "target_missing" if target_candidate_count == 0 else "target_not_unique"
     assert target is not None
     if target.get("status") != "blocked":
@@ -3939,6 +3972,20 @@ def _evidence_event(event: dict[str, Any]) -> dict[str, Any] | None:
         "check_identity": check_identity,
         "check_identity_basis": check_identity_basis,
         "check_identity_stable": check_identity_stable,
+        # Read-time supersession stamps (computed in build_evidence_events once
+        # the whole cohort is known). Defaults keep every failure a standing
+        # finding until the pairwise gate proves a later same-scope pass.
+        "supersession_state": None,
+        "superseded_by_event_id": None,
+        "supersession_basis": None,
+        # Stage 2, forward-only: a later PASSING check may name the exact failed
+        # check it fixes. Validated at write time; honored read-time as the
+        # strongest supersession basis. 0 stored events carry it today.
+        "supersedes_check_event_id": (
+            _optional_str(metadata.get("supersedes_check_event_id"))
+            if result == "passed"
+            else None
+        ),
         "result": result,
         "summary": _optional_str(metadata.get("summary")) or _optional_str(metadata.get("after_summary")) or _optional_str(metadata.get("name")),
         "command": None,
@@ -4308,9 +4355,18 @@ def _evidence_run_context_compatible(
 
 
 def _evidence_status(evidence_events: list[dict[str, Any]], files: Any) -> str:
-    results = {str(event.get("result") or "unknown") for event in evidence_events}
-    if results & {"failed", "error"}:
+    # A superseded failure is historical evidence, not a current failure: a later
+    # same-scope pass contradicted it. It must not read as "failed evidence" on
+    # secondary chips, but demotion is a state stamp, so the event is still here.
+    active_failures = [
+        event
+        for event in evidence_events
+        if str(event.get("result") or "unknown") in {"failed", "error"}
+        and str(event.get("supersession_state") or "") != "superseded"
+    ]
+    if active_failures:
         return "failed"
+    results = {str(event.get("result") or "unknown") for event in evidence_events}
     if "passed" in results:
         return "strong"
     if evidence_events:

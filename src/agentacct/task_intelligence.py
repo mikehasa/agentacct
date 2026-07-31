@@ -118,7 +118,16 @@ def _state_axes(
     outcome = (
         canonical_outcome
         if canonical_outcome
-        in {"finding", "blocked", "verified", "reported", "resolved", "handed_off", "mostly_done"}
+        in {
+            "finding",
+            "finding_superseded",
+            "blocked",
+            "verified",
+            "reported",
+            "resolved",
+            "handed_off",
+            "mostly_done",
+        }
         else "unknown"
     )
 
@@ -161,6 +170,10 @@ def _decision_brief(
     statement = {
         "verified": "Recorded machine evidence verifies the latest outcome.",
         "finding": "A recorded check found an issue in the work being reviewed.",
+        "finding_superseded": (
+            "A recorded check failed, but a later same-scope check passed; the finding "
+            "is kept in history and is not a verified outcome."
+        ),
         "blocked": "The agent recorded a blocker for this Task.",
         "resolved": "A later passed check explicitly reports the exact blocker resolved; this is not a verified completion.",
         "reported": "The agent reported completing work; no linked passing check verifies it yet.",
@@ -174,7 +187,10 @@ def _decision_brief(
         )
     elif outcome == "finding" and attention_state == "resolved":
         statement = "You marked the recorded finding resolved; this is not machine verification."
-    proof_event = verification or finding
+    # A failure is never "strongest proof": only a positive verification can be.
+    # A finding / superseded-finding Task therefore has no positive proof rather
+    # than a failed check masquerading as the strongest evidence.
+    proof_event = verification
     proof = _proof_summary(proof_event) if proof_event is not None else None
     finding_summary = _proof_summary(finding) if finding is not None else None
     return {
