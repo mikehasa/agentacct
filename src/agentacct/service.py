@@ -21,6 +21,7 @@ from .confidence import normalize_cost_confidence, normalize_usage_confidence
 from .context_bridge import build_usage_context_bridge
 from .evidence import is_sensitive_metadata_key
 from .evidence_runtime import EvidenceRuntime
+from .event_log import RAW_EVENT_LOG_FILENAME, RawEventLog
 from .finding_disposition import (
     FINDING_DISPOSITION_AUTHORITY_SCOPE,
     FINDING_DISPOSITION_CONTRACT_KEY,
@@ -949,6 +950,67 @@ class SentinelService:
         self.canonical_read = CanonicalReadRuntime(
             self.store.root, enabled=canonical_read_enabled
         )
+        # SQLite raw event log — the substrate that will replace events.jsonl.
+        # A faithful mirror during the transition: constructed and reconciled
+        # best-effort so a mirror problem never blocks the store, and healed
+        # from the authoritative flat file on every open. See event_log.py.
+        self.event_log: RawEventLog | None = None
+        self._event_log_synced_signature: tuple[int, int] | None = None
+        self._init_event_log()
+
+    def _init_event_log(self) -> None:
+        """Open and reconcile the SQLite mirror, fail-open."""
+
+        try:
+            self.event_log = RawEventLog(self.store.root / RAW_EVENT_LOG_FILENAME)
+            self.event_log.reconcile_from_file(self.events_path)
+            self._event_log_synced_signature = self._events_file_signature()
+        except Exception:  # noqa: BLE001 - a mirror problem must never block the store.
+            self.event_log = None
+
+    def _events_file_signature(self) -> tuple[int, int] | None:
+        """(mtime_ns, size) of the flat ledger, or None if absent — a cheap
+        change stamp so the mirror only re-reconciles when the file moved."""
+
+        try:
+            stat = self.events_path.stat()
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
+    def _sync_event_log(self) -> None:
+        """Refresh the mirror from the flat file if it changed, fail-open."""
+
+        if self.event_log is None:
+            return
+        signature = self._events_file_signature()
+        if signature == self._event_log_synced_signature:
+            return
+        try:
+            self.event_log.reconcile_from_file(self.events_path)
+            self._event_log_synced_signature = signature
+        except Exception:  # noqa: BLE001 - mirror freshness is best-effort.
+            pass
+
+    def verify_event_log_parity(self) -> dict[str, Any]:
+        """Prove the SQLite mirror equals the flat ledger, line for line.
+
+        The owner's step-3 gate for the cutover: safe to run any time; syncs
+        first so a stale-but-healable mirror reports as matching.
+        """
+
+        if self.event_log is None:
+            return {"available": False, "matches": False, "detail": "event log unavailable"}
+        self._sync_event_log()
+        result = self.event_log.verify_against_file(self.events_path)
+        return {
+            "available": True,
+            "matches": result.matches,
+            "file_lines": result.file_lines,
+            "log_lines": result.log_lines,
+            "first_divergence": result.first_divergence,
+            "detail": result.detail,
+        }
 
     @contextmanager
     def _events_write_lock(self) -> Iterator[None]:
@@ -2210,6 +2272,10 @@ class SentinelService:
         return events[:limit]
 
     def list_all_events(self, *, run_id: str | None = None) -> list[dict[str, Any]]:
+        # Keep the SQLite mirror fresh on the common read path (fail-open, and a
+        # no-op when the ledger has not changed). Reads still serve from the
+        # proven flat file until the read cutover.
+        self._sync_event_log()
         return self._read_events_file_order(run_id=run_id)
 
     def reconcile_evidence_refreshable_usage_snapshot(
