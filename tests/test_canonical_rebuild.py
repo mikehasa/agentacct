@@ -17,6 +17,7 @@ import pytest
 
 from agentacct.canonical.rebuild import (
     EVENTS_FILENAME,
+    RebuildError,
     rebuild_live_store_from_events,
 )
 from agentacct.canonical.sqlite import LIVE_STORE_FILENAME
@@ -145,11 +146,62 @@ def test_rebuild_absorbs_new_events_appended_to_the_ledger(tmp_path: Path) -> No
     assert report.session_count == 2
 
 
+def test_rebuild_leaves_no_stale_wal_sidecars_from_a_prior_store(tmp_path: Path) -> None:
+    # A prior live store can leave an uncheckpointed chronicle.sqlite3-wal. A
+    # rebuild replaces only the main file, so the fresh store must not inherit
+    # (or replay) a stale sidecar.
+    store_dir = _write_store_dir(tmp_path, [_usage_event(event_id="u1", session_id="s1")])
+    rebuild_live_store_from_events(store_dir)
+    store = store_dir / LIVE_STORE_FILENAME
+
+    # Simulate a prior store's dirty WAL carrying a sentinel value.
+    connection = sqlite3.connect(store)
+    try:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA wal_autocheckpoint=0")
+        connection.execute("UPDATE store_metadata SET canonical_sequence = 999999 WHERE singleton = 1")
+        connection.commit()
+    finally:
+        connection.close()
+
+    with (store_dir / EVENTS_FILENAME).open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(_usage_event(event_id="u2", session_id="s2"), sort_keys=True) + "\n")
+    report = rebuild_live_store_from_events(store_dir)
+
+    # No stale sidecars, and the sentinel from the dirty WAL did not survive.
+    assert not (store_dir / f"{LIVE_STORE_FILENAME}-wal").exists()
+    assert not (store_dir / f"{LIVE_STORE_FILENAME}-shm").exists()
+    connection = sqlite3.connect(store)
+    try:
+        sequence = connection.execute(
+            "SELECT canonical_sequence FROM store_metadata WHERE singleton = 1"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert sequence != 999999
+    assert report.session_count == 2
+
+
 def test_rebuild_without_a_ledger_raises(tmp_path: Path) -> None:
     store_dir = tmp_path / "empty"
     store_dir.mkdir(mode=0o700)
     with pytest.raises(FileNotFoundError):
         rebuild_live_store_from_events(store_dir)
+
+
+def test_rebuild_refuses_to_install_an_empty_store(tmp_path: Path) -> None:
+    # A ledger whose lines all lack a source_namespace_fingerprint imports
+    # nothing. Rather than stand up a valid-but-empty role='live' store that a
+    # later read-flag flip would serve, rebuild must refuse and leave no store.
+    fingerprintless = {
+        "event_type": "section_started",
+        "metadata": {"client": "claude-code", "client_session_id": "s1"},
+        "created_at": 1_700_000_000.0,
+    }
+    store_dir = _write_store_dir(tmp_path, [fingerprintless])
+    with pytest.raises(RebuildError):
+        rebuild_live_store_from_events(store_dir)
+    assert not (store_dir / LIVE_STORE_FILENAME).exists()
 
 
 def _store_uuid(store_path: Path) -> str:

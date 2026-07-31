@@ -38,6 +38,10 @@ from .sqlite import LIVE_STORE_FILENAME, CanonicalStore
 EVENTS_FILENAME = "events.jsonl"
 
 
+class RebuildError(RuntimeError):
+    """A rebuild refused to produce a store (e.g. nothing importable)."""
+
+
 @dataclass(frozen=True)
 class RebuildReport:
     """What a rebuild produced, for the CLI and callers to report honestly."""
@@ -111,6 +115,13 @@ def _install_live(candidate_path: Path, store_dir: Path) -> Path:
     except BaseException:
         staged.unlink(missing_ok=True)
         raise
+    # The freshly installed store was checkpointed (TRUNCATE) and copied as a
+    # single file, so it owns no WAL. Any -wal/-shm next to the reserved name
+    # can only be STALE sidecars left by a previous store; SQLite validates a
+    # mismatched WAL and does not replay it, but leaving one attached to a new
+    # main file is undefined-adjacent — remove them so the store opens clean.
+    for suffix in ("-wal", "-shm"):
+        Path(f"{target}{suffix}").unlink(missing_ok=True)
     return target
 
 
@@ -141,6 +152,20 @@ def rebuild_live_store_from_events(store_dir: Path | str) -> RebuildReport:
                 scratch_root=scratch,
                 source_file=EVENTS_FILENAME,
             )
+            if int(report.parsed_events) == 0:
+                # Nothing imported (e.g. a truncated ledger, or one carrying only
+                # events without a source_namespace_fingerprint). Standing up an
+                # empty-but-valid role='live' store would let a later read-flag
+                # flip serve a store that silently under-reports. Refuse loudly
+                # instead — the ledger is intact and re-running after a fix
+                # recovers fully. Fail visible, like the read runtime itself.
+                raise RebuildError(
+                    "no importable events found in "
+                    f"{store_dir / EVENTS_FILENAME} "
+                    f"({report.migration_issue_count} lines excluded, e.g. "
+                    "missing source_namespace_fingerprint); refusing to install "
+                    "an empty live store"
+                )
             session_count = int(
                 candidate.connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             )
@@ -165,4 +190,9 @@ def rebuild_live_store_from_events(store_dir: Path | str) -> RebuildReport:
     )
 
 
-__all__ = ["EVENTS_FILENAME", "RebuildReport", "rebuild_live_store_from_events"]
+__all__ = [
+    "EVENTS_FILENAME",
+    "RebuildError",
+    "RebuildReport",
+    "rebuild_live_store_from_events",
+]
