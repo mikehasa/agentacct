@@ -123,6 +123,23 @@ def _pin_canonical_read_flag_off(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _pin_event_log_authoritative_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test at the product default: the SQLite log is authoritative.
+
+    ``AGENTACCT_EVENT_LOG_AUTHORITATIVE`` defaults to ON, so a fresh store is
+    SQLite-only and an existing events.jsonl store auto-adopts the log. Clearing
+    the var (and its pre-rename aliases) insulates the suite from a developer
+    shell that exported ``=0``, which would otherwise silently flip every store
+    back to flat-file mirror mode. Tests that specifically exercise mirror mode
+    opt in with ``monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "0")``.
+    """
+
+    monkeypatch.delenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", raising=False)
+    monkeypatch.delenv("AGENT_CHRONICLE_EVENT_LOG_AUTHORITATIVE", raising=False)
+    monkeypatch.delenv("AGENT_SENTINEL_EVENT_LOG_AUTHORITATIVE", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _allow_test_client_host(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep Starlette TestClient's default ``Host: testserver`` working.
 

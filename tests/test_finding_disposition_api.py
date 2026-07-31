@@ -123,7 +123,7 @@ def test_finding_post_rejects_bad_parser_csrf_and_token_without_writing(
     payload = client.get("/tasks").json()
     episode = _unassigned_episode(payload)
     valid = _form(payload, episode, action="mark_reviewed")
-    events_before = service.events_path.read_bytes()
+    events_before = service.event_log.read_lines()
 
     missing_csrf = dict(valid)
     missing_csrf.pop("csrf_token")
@@ -162,7 +162,7 @@ def test_finding_post_rejects_bad_parser_csrf_and_token_without_writing(
     ).status_code == 422
     assert client.get("/findings/disposition").status_code == 405
 
-    assert service.events_path.read_bytes() == events_before
+    assert service.event_log.read_lines() == events_before
 
 
 def test_resolve_retry_collision_reopen_and_truth_rendering(tmp_path: Path) -> None:

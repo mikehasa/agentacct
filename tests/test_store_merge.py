@@ -34,15 +34,12 @@ runner = CliRunner()
 
 
 def _read(store: Path) -> list[dict]:
-    events_path = store / "events.jsonl"
-    if not events_path.is_file():
+    # Read the authoritative ledger (SQLite log by default; events.jsonl in
+    # mirror mode). Returns parsed event dicts in ledger order, exactly what the
+    # old direct events.jsonl read returned before SQLite became authoritative.
+    if not store.exists():
         return []
-    out = []
-    for line in events_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line:
-            out.append(json.loads(line))
-    return out
+    return SentinelService(store, create=False).list_all_events()
 
 
 def _write_store(store: Path, events: list[dict]) -> None:
@@ -490,6 +487,10 @@ def test_kind_all_skips_older_but_preserves_conflicting_observation(
         watermark=1_700_000_200.0,
         title="Conflicting",
     )
+    # Re-seed via a FRESH source store: the first merge already opened `source`
+    # and adopted [older] into its authoritative log, so rewriting its
+    # events.jsonl (now a frozen backup) would be ignored by the log-backed read.
+    source = tmp_path / "from-conflict" / "state"
     _write_store(source, [conflicting])
     conflict = runner.invoke(
         app,
@@ -1046,10 +1047,13 @@ def test_generic_event_id_cannot_preoccupy_truth_and_remerge_is_idempotent(
 # --- FIX 3 (minor — torn JSONL on append) ------------------------------------
 
 
-def test_append_guards_missing_trailing_newline(tmp_path: Path) -> None:
+def test_append_guards_missing_trailing_newline(tmp_path: Path, monkeypatch) -> None:
     """A target whose last line has NO trailing newline must not tear on append:
     every pre-existing row AND every appended row parses (no `}{`, no dropped
     row)."""
+    # This pins flat-file append mechanics (a hand-seeded events.jsonl with no
+    # trailing newline), which only exist in legacy mirror mode.
+    monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "0")
     store = tmp_path / "target"
     (store / "runs").mkdir(parents=True, exist_ok=True)
     pre_existing = _usage_row("evt_notrailing00", "codex-pre-1")

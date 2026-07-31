@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from agentacct.api import create_local_api_app
+from agentacct.service import SentinelService
 
 
 def test_work_event_http_transport_writes_v1_and_v2(tmp_path) -> None:
@@ -36,8 +37,8 @@ def test_work_event_http_transport_writes_v1_and_v2(tmp_path) -> None:
     assert payload["v1_event"]["metadata"]["client_event_timestamp"] == 1_783_900_123.5
     assert payload["v1_event"]["metadata"]["source_event_id"] == "codex-section-implementation-1"
     assert retry.json()["v1_event"]["event_id"] == payload["v1_event"]["event_id"]
-    assert (store / "events.jsonl").is_file()
-    assert len((store / "events.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+    v1_events = SentinelService(store).list_all_events()
+    assert len(v1_events) == 1
     assert (store / "evidence-v2" / "spool.jsonl").is_file()
 
     evidence = client.get("/evidence/events").json()["evidence"]
@@ -169,7 +170,7 @@ def test_evidence_kill_switch_leaves_v1_endpoint_working(tmp_path, monkeypatch) 
     )
 
     assert response.status_code == 200
-    assert (store / "events.jsonl").is_file()
+    assert SentinelService(store).list_all_events()
     assert not (store / "evidence-v2").exists()
     assert client.get("/evidence/status").json()["enabled"] is False
 

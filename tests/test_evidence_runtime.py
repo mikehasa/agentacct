@@ -146,7 +146,8 @@ def test_disabled_service_keeps_v1_recording_unchanged_and_creates_no_v2_store(t
     )
 
     assert service.list_all_events() == [recorded]
-    assert service.events_path.is_file()
+    assert service.event_log is not None
+    assert len(service.event_log.read_lines()) == 1
     assert not (tmp_path / "evidence-v2").exists()
 
 

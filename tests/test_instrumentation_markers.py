@@ -37,10 +37,9 @@ runner = CliRunner()
 
 
 def _store_events(store_dir: Path) -> list[dict]:
-    events_path = store_dir / "events.jsonl"
-    if not events_path.is_file():
+    if not Path(store_dir).is_dir():
         return []
-    return [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return SentinelService(store_dir).list_all_events()
 
 
 def _store_markers(store_dir: Path) -> list[dict]:

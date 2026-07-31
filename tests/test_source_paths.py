@@ -1411,7 +1411,7 @@ def test_dashboard_binds_unchanged_legacy_row_once_without_reissuing_identity(
         legacy_event,
         trusted_usage_import=True,
     )
-    before_bytes = (store / "events.jsonl").read_bytes()
+    before_bytes = SentinelService(store).event_log.read_lines()
     config = UsageDiscoveryConfig(
         enabled=True,
         codex_home=codex_home,
@@ -1427,7 +1427,7 @@ def test_dashboard_binds_unchanged_legacy_row_once_without_reissuing_identity(
     assert response.status_code == 303
     assert "refreshed=0" in refresh_flash_qs(response)
     assert "source_namespace_adoptions=1" in refresh_flash_qs(response)
-    after_bytes = (store / "events.jsonl").read_bytes()
+    after_bytes = SentinelService(store).event_log.read_lines()
     assert after_bytes != before_bytes
     after = SentinelService(store).list_all_events()[0]
     assert after["event_id"] == saved["event_id"]
@@ -1439,4 +1439,4 @@ def test_dashboard_binds_unchanged_legacy_row_once_without_reissuing_identity(
 
     assert second.status_code == 303
     assert "source_namespace_adoptions=0" in refresh_flash_qs(second)
-    assert (store / "events.jsonl").read_bytes() == after_bytes
+    assert SentinelService(store).event_log.read_lines() == after_bytes

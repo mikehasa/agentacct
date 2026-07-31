@@ -16,6 +16,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from agentacct.api import DASHBOARD_CSP, create_local_api_app
+from agentacct.event_log import RAW_EVENT_LOG_FILENAME, RawEventLog
 from agentacct.service import SentinelService
 from agentacct.task_continuations import (
     CONTINUATION_ACTIONS_FILENAME,
@@ -155,7 +156,7 @@ def test_task_mutations_reject_missing_or_invalid_csrf_without_writing(tmp_path:
     initial = _tasks(client)
     assert initial["summary"]["task_count"] == 2
 
-    events_before = service.events_path.read_bytes()
+    events_before = RawEventLog(store_root / RAW_EVENT_LOG_FILENAME).read_lines()
     actions_path = store_root / CONTINUATION_STORE_DIRNAME / CONTINUATION_ACTIONS_FILENAME
     assert not actions_path.exists()
 
@@ -194,7 +195,7 @@ def test_task_mutations_reject_missing_or_invalid_csrf_without_writing(tmp_path:
     )
     assert duplicate_json_response.status_code == 422
 
-    assert service.events_path.read_bytes() == events_before
+    assert RawEventLog(store_root / RAW_EVENT_LOG_FILENAME).read_lines() == events_before
     assert not actions_path.exists()
     unchanged = _tasks(client)
     assert unchanged["tasks"] == initial["tasks"]

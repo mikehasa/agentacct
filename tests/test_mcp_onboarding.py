@@ -619,22 +619,25 @@ def test_readme_links_coding_agent_integration_guide() -> None:
 
 def test_mcp_doctor_is_read_only_by_default(tmp_path: Path) -> None:
     from agentacct.mcp import SentinelMCPServer
+    from agentacct.event_log import RAW_EVENT_LOG_FILENAME, RawEventLog
 
     server = SentinelMCPServer(store_dir=tmp_path)
     server.call_tool("agentacct_record_event", {"source": "codex", "event_type": "note", "metadata": {"summary": "seed"}})
-    events_path = tmp_path / "events.jsonl"
-    before_bytes = events_path.read_bytes()
+    # SQLite is the authoritative ledger by default: "read-only" means the log is
+    # byte-for-byte unchanged and never receives the doctor's probe event.
+    log = RawEventLog(tmp_path / RAW_EVENT_LOG_FILENAME)
+    before_lines = log.read_lines()
 
     result = runner.invoke(app, ["mcp", "doctor", "--store-dir", str(tmp_path)])
 
     assert result.exit_code == 0, result.output
-    assert events_path.read_bytes() == before_bytes
+    assert log.read_lines() == before_lines
     normalized = " ".join(result.output.split())
     assert "agentacct_record_event" in normalized
     assert "agentacct_list_events" in normalized
     assert "Read-only diagnostics: no events were written." in normalized
     assert "--write-probe" in normalized
-    assert "mcp_doctor_test" not in events_path.read_text(encoding="utf-8")
+    assert not any("mcp_doctor_test" in line for line in log.read_lines())
 
 
 def test_mcp_doctor_read_only_does_not_create_store_dirs(tmp_path: Path) -> None:

@@ -5,6 +5,11 @@ import pytest
 from typer.testing import CliRunner
 
 from agentacct.cli import _exit_if_unsupported_platform, app
+from agentacct.event_log import RAW_EVENT_LOG_FILENAME, RawEventLog
+
+
+def _ledger_text(store_dir):
+    return "\n".join(RawEventLog(Path(store_dir) / RAW_EVENT_LOG_FILENAME).read_lines())
 
 
 def test_win32_platform_fails_fast_with_one_actionable_sentence(capsys):
@@ -242,7 +247,7 @@ def test_event_cli_records_lists_and_redacts_events(tmp_path):
     assert event["estimated_cost_usd"] == 0.00012
     assert event["metadata"]["summary"] == "first event"
     assert event["metadata"]["api_key"] == "[REDACTED]"
-    assert "fake-secret-for-redaction" not in (store_dir / "events.jsonl").read_text(encoding="utf-8")
+    assert "fake-secret-for-redaction" not in _ledger_text(store_dir)
 
     listed = CliRunner().invoke(app, ["event", "list", "--store-dir", str(store_dir), "--json"])
     assert listed.exit_code == 0, listed.output
@@ -258,7 +263,11 @@ def test_event_cli_records_lists_and_redacts_events(tmp_path):
     assert "first event" in human.output
 
 
-def test_event_summary_counts_recent_events_cost_and_tokens(tmp_path):
+def test_event_summary_counts_recent_events_cost_and_tokens(tmp_path, monkeypatch):
+    # Hand-seeds malformed/oversized raw lines directly into events.jsonl to test
+    # summary tolerance of torn flat-file records — flat-file mechanics only present
+    # in legacy mirror mode.
+    monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "0")
     store_dir = tmp_path / "state"
     runner = CliRunner()
 
@@ -455,7 +464,7 @@ def test_event_note_redacts_secret_shaped_summary_in_storage_and_output(tmp_path
     # Only the secret span is replaced now: the surrounding note survives.
     assert "called [REDACTED_SECRET]" in record.output
     assert secretish not in record.output
-    stored = (store_dir / "events.jsonl").read_text(encoding="utf-8")
+    stored = _ledger_text(store_dir)
     assert "called [REDACTED_SECRET]" in stored
     assert secretish not in stored
 

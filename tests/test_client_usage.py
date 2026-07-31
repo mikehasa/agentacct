@@ -4741,7 +4741,7 @@ def test_usage_import_local_persists_zero_token_session_without_usage(tmp_path):
         "usage_confidence",
         "cost_confidence",
     }.intersection(stored[0])
-    ledger_bytes = (store_dir / "events.jsonl").read_bytes()
+    ledger_lines = SentinelService(store_dir).event_log.read_lines()
 
     second = runner.invoke(app, args)
 
@@ -4749,7 +4749,7 @@ def test_usage_import_local_persists_zero_token_session_without_usage(tmp_path):
     second_payload = json.loads(second.output)
     assert second_payload["imported_events"] == 0
     assert second_payload["imported_session_observations"] == 0
-    assert (store_dir / "events.jsonl").read_bytes() == ledger_bytes
+    assert SentinelService(store_dir).event_log.read_lines() == ledger_lines
 
 
 def test_usage_import_local_persists_hermes_zero_token_observation_only(
@@ -5100,7 +5100,10 @@ def test_usage_watch_once_imports_and_exits(tmp_path):
     payload = json.loads(result.output)
     assert payload["imported_events"] == 1
     assert payload["usage_totals"]["cached_input_tokens"] == 108938
-    assert (store_dir / "events.jsonl").exists()
+    assert any(
+        event.get("event_type") == "model_usage"
+        for event in SentinelService(store_dir).list_all_events()
+    )
 
 
 def test_usage_import_local_skips_incompatible_codex_schema(tmp_path):
@@ -5366,7 +5369,7 @@ def test_usage_import_local_model_switch_does_not_double_count(tmp_path):
     assert payload["imported_events"] == 1
     assert payload["migrated_events"] == 0
     assert payload["superseded_legacy_rows"] == 0
-    stored = [json.loads(line) for line in (store_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    stored = SentinelService(store_dir).list_all_events()
     usage_rows = [event for event in stored if event["event_type"] == "model_usage"]
     assert len(usage_rows) == 2
     assert {row["metadata"]["client_session_id"] for row in usage_rows} == {"claude-session"}
@@ -5408,7 +5411,7 @@ def test_usage_import_local_migrates_legacy_model_suffixed_rows(tmp_path):
     assert payload["imported_events"] == 2
     assert payload["migrated_events"] == 2
     assert payload["superseded_legacy_rows"] == 3
-    stored = [json.loads(line) for line in (store_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    stored = SentinelService(store_dir).list_all_events()
     usage_rows = [event for event in stored if event["event_type"] == "model_usage"]
     assert len(usage_rows) == 2
     assert not any(str(event["event_id"]).startswith("evt_legacy_") for event in stored)
@@ -5437,7 +5440,7 @@ def test_usage_import_local_never_refreshes_lane_tagged_rows_but_binds_source_on
     store_dir.mkdir(parents=True)
     stale = _stored_claude_import_row("evt_stale_lane", "claude-session", model="claude-opus-4-8", lane="model:claude-opus-4-8")
     (store_dir / "events.jsonl").write_text(json.dumps(stale) + "\n", encoding="utf-8")
-    before = (store_dir / "events.jsonl").read_bytes()
+    before = SentinelService(store_dir).event_log.read_lines()
 
     result = CliRunner().invoke(app, _claude_import_args(store_dir, claude_home))
 
@@ -5447,9 +5450,9 @@ def test_usage_import_local_never_refreshes_lane_tagged_rows_but_binds_source_on
     assert payload["imported_events"] == 0
     assert payload["migrated_events"] == 0
     assert payload["source_namespace_adoptions"] == 1
-    after = (store_dir / "events.jsonl").read_bytes()
+    after = SentinelService(store_dir).event_log.read_lines()
     assert after != before
-    stored = json.loads(after)
+    stored = SentinelService(store_dir).list_all_events()[0]
     assert stored["event_id"] == "evt_stale_lane"
     assert stored["created_at"] == 1
     assert stored["metadata"]["source_namespace_binding"] == "tofu_explicit_scan_v1"
@@ -5463,7 +5466,7 @@ def test_usage_import_local_skips_untagged_pre_lane_row_but_binds_source_once(tm
     # derived from the row's model so re-import must classify it as refresh.
     stale = _stored_claude_import_row("evt_pre_lane", "claude-session", model="claude-opus-4-8")
     (store_dir / "events.jsonl").write_text(json.dumps(stale) + "\n", encoding="utf-8")
-    before = (store_dir / "events.jsonl").read_bytes()
+    before = SentinelService(store_dir).event_log.read_lines()
 
     result = CliRunner().invoke(app, _claude_import_args(store_dir, claude_home))
 
@@ -5473,9 +5476,9 @@ def test_usage_import_local_skips_untagged_pre_lane_row_but_binds_source_once(tm
     assert payload["imported_events"] == 0
     assert payload["migrated_events"] == 0
     assert payload["source_namespace_adoptions"] == 1
-    after = (store_dir / "events.jsonl").read_bytes()
+    after = SentinelService(store_dir).event_log.read_lines()
     assert after != before
-    stored = json.loads(after)
+    stored = SentinelService(store_dir).list_all_events()[0]
     assert stored["event_id"] == "evt_pre_lane"
     assert stored["created_at"] == 1
     assert stored["metadata"]["source_namespace_binding"] == "tofu_explicit_scan_v1"
@@ -5529,7 +5532,7 @@ def test_usage_import_local_keeps_raced_in_duplicate_new_row_without_duplicating
     assert result.exit_code == 0, result.output
     # The raced-in row already exists, so the never-refresh default writes nothing.
     assert json.loads(result.output)["imported_events"] == 0
-    stored = [json.loads(line) for line in (store_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    stored = SentinelService(store_dir).list_all_events()
     usage_rows = [event for event in stored if event["event_type"] == "model_usage"]
     # Exactly one row (no duplicate), carrying the correct totals.
     assert len(usage_rows) == 1
@@ -5668,7 +5671,7 @@ def test_usage_import_local_refresh_replaces_grown_session_totals(tmp_path):
     assert payload["usage_totals"]["input_tokens"] == 130
     assert payload["usage_totals"]["output_tokens"] == 62
 
-    stored = [json.loads(line) for line in (store_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    stored = SentinelService(store_dir).list_all_events()
     usage_rows = [event for event in stored if event["event_type"] == "model_usage"]
     assert len(usage_rows) == 1
     row = usage_rows[0]
@@ -5711,7 +5714,7 @@ def test_usage_watch_refresh_replaces_grown_session_totals(tmp_path):
     assert payload["refresh"] is True
     assert payload["imported_events"] == 1
     assert payload["refreshed_events"] == 1
-    stored = [json.loads(line) for line in (store_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    stored = SentinelService(store_dir).list_all_events()
     usage_rows = [event for event in stored if event["event_type"] == "model_usage"]
     assert len(usage_rows) == 1
     assert usage_rows[0]["estimated_input_tokens"] == 130
@@ -5729,7 +5732,7 @@ def test_usage_watch_refresh_skips_unchanged_rows_without_reissuing_event_id(tmp
 
     first = runner.invoke(app, _claude_import_args(store_dir, claude_home))
     assert first.exit_code == 0, first.output
-    before_bytes = (store_dir / "events.jsonl").read_bytes()
+    before_lines = SentinelService(store_dir).event_log.read_lines()
     before_ids = [e["event_id"] for e in SentinelService(store_dir).list_all_events() if e["event_type"] == "model_usage"]
 
     refreshed = runner.invoke(app, _claude_import_args(store_dir, claude_home, "--refresh"))
@@ -5737,7 +5740,7 @@ def test_usage_watch_refresh_skips_unchanged_rows_without_reissuing_event_id(tmp
     payload = json.loads(refreshed.output)
     assert payload["imported_events"] == 0
     assert payload["refreshed_events"] == 0
-    assert (store_dir / "events.jsonl").read_bytes() == before_bytes
+    assert SentinelService(store_dir).event_log.read_lines() == before_lines
     after_ids = [e["event_id"] for e in SentinelService(store_dir).list_all_events() if e["event_type"] == "model_usage"]
     assert after_ids == before_ids
 
@@ -5872,11 +5875,7 @@ def test_usage_import_refresh_carries_forward_migration_provenance(tmp_path):
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["refreshed_events"] == 1
-    usage_rows = [
-        json.loads(line)
-        for line in (store_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
-        if json.loads(line)["event_type"] == "model_usage"
-    ]
+    usage_rows = _stored_usage_rows(store_dir)
     assert len(usage_rows) == 1
     row = usage_rows[0]
     assert row["estimated_input_tokens"] == 30  # refreshed to fresh totals
@@ -5905,12 +5904,11 @@ def _codex_import_args(store_dir: Path, codex_home: Path, *extra: str) -> list[s
 
 
 def _stored_usage_rows(store_dir: Path) -> list[dict]:
-    rows = []
-    for line in (store_dir / "events.jsonl").read_text(encoding="utf-8").splitlines():
-        event = json.loads(line)
-        if event.get("event_type") == "model_usage":
-            rows.append(event)
-    return rows
+    return [
+        event
+        for event in SentinelService(store_dir).list_all_events()
+        if event.get("event_type") == "model_usage"
+    ]
 
 
 def _write_gpt56_snapshot(store_dir: Path, *, input_cost: float = 0.000005) -> Path:

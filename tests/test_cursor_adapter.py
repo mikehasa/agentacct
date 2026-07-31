@@ -20,6 +20,7 @@ from agentacct.client_usage import (
 )
 from agentacct.api import UsageDiscoveryConfig, create_local_api_app
 from agentacct.ingestion_health import IngestionHealthStore, health_scan_results
+from agentacct.event_log import RAW_EVENT_LOG_FILENAME, RawEventLog
 from agentacct.service import SentinelService
 from agentacct.source_discovery import discover_usage_sources
 from agentacct.usage_truth import is_local_session_observation_event
@@ -612,13 +613,13 @@ def test_cursor_cli_persists_observation_only_idempotently(tmp_path: Path) -> No
         "usage_confidence",
         "cost_confidence",
     }.intersection(stored[0])
-    ledger = (store / "events.jsonl").read_bytes()
+    ledger = RawEventLog(store / RAW_EVENT_LOG_FILENAME).read_lines()
 
     second = CliRunner().invoke(app, args)
 
     assert second.exit_code == 0, second.output
     assert json.loads(second.output)["imported_session_observations"] == 0
-    assert (store / "events.jsonl").read_bytes() == ledger
+    assert RawEventLog(store / RAW_EVENT_LOG_FILENAME).read_lines() == ledger
 
     human = CliRunner().invoke(app, [arg for arg in args if arg != "--json"])
     assert human.exit_code == 0, human.output

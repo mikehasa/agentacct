@@ -182,7 +182,7 @@ def test_foreign_scoped_member_rejects_the_entire_component_without_writing(
     )
     for candidate in (root, child, foreign_sibling):
         _record_usage(service, candidate)
-    before = service.events_path.read_bytes()
+    before = service.event_log.read_lines()
 
     accepted, adopted, conflicts, adoption_counts = (
         bind_discovered_usage_source_namespaces(
@@ -195,7 +195,7 @@ def test_foreign_scoped_member_rejects_the_entire_component_without_writing(
     assert adopted == []
     assert [candidate.client_session_id for candidate in conflicts] == ["child"]
     assert adoption_counts == {}
-    assert service.events_path.read_bytes() == before
+    assert service.event_log.read_lines() == before
 
 
 def test_conflicting_targets_that_normalize_to_one_claude_key_fail_closed(
@@ -212,7 +212,7 @@ def test_conflicting_targets_that_normalize_to_one_claude_key_fail_closed(
             lane="model:opus",
         ),
     )
-    before = service.events_path.read_bytes()
+    before = service.event_log.read_lines()
 
     outcome = service.bind_local_usage_source_namespaces(
         {
@@ -225,7 +225,7 @@ def test_conflicting_targets_that_normalize_to_one_claude_key_fail_closed(
     assert outcome["bound_rows_by_client"] == {}
     assert outcome["bound_identities"] == set()
     assert outcome["conflict_bases"] == {("claude-code", "session")}
-    assert service.events_path.read_bytes() == before
+    assert service.event_log.read_lines() == before
 
 
 def test_concurrent_conflicting_binders_have_one_winner_and_one_conflict(

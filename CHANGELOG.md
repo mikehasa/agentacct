@@ -7,25 +7,39 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
-- agentacct can now keep its event ledger in SQLite instead of the flat
-  `events.jsonl` file. A new SQLite event log (`events.sqlite3`) mirrors the
-  ledger line-for-line and can be promoted to the sole store so the flat file is
-  deleted entirely — the foundation for a fast local CLI and live view that no
-  longer re-parse a growing text file on every read. Three commands drive it:
-  `agentacct event verify-log` proves the SQLite copy matches the flat file line
-  for line; `agentacct event drop-flat-ledger --confirm` cuts the store over and
-  deletes `events.jsonl`; and `agentacct canonical rebuild-store` (re)builds the
-  SQLite usage index from the ledger. The cutover is durable — a persistent
-  store marker keeps it in effect across restarts with no environment variable,
-  so no later open can revert or wipe it — and it fails loud rather than ever
-  serving an empty or half-migrated store. Off by default: until you cut over,
-  the flat file stays authoritative and the SQLite log is a proven mirror.
+- **agentacct now keeps its event ledger in SQLite by default.** The event log
+  (`events.sqlite3`) is the authoritative store: a fresh install is SQLite-only
+  from its first event, and an existing `events.jsonl` store auto-adopts the log
+  the next time it is opened — reconciling the log from the flat file, then
+  leaving that file behind as a backup. The upgrade is safe even with daemons
+  running: while an older, not-yet-restarted process keeps appending to
+  `events.jsonl`, the new code drains those straggler writes into the log, so a
+  rolling upgrade never splits events between the two ledgers or loses one.
+  Reads and writes no longer re-parse a growing text file on every access, the
+  foundation for a fast local CLI and live view. Three commands give explicit
+  control over the flat file:
+  `agentacct event verify-log` proves the SQLite copy matches a flat file line
+  for line; `agentacct event drop-flat-ledger --confirm` deletes the leftover
+  `events.jsonl` backup once a store has cut over; and `agentacct canonical
+  rebuild-store` (re)builds the SQLite usage index from the ledger. The cutover
+  is durable — a persistent store marker keeps it in effect across restarts with
+  no environment variable, so no later open can revert or wipe it — and it fails
+  loud rather than ever serving an empty or half-migrated store. Set
+  `AGENTACCT_EVENT_LOG_AUTHORITATIVE=0` to opt back into the legacy flat-file
+  mode, where `events.jsonl` stays authoritative and the SQLite log is a proven
+  mirror.
 - `agentacct canonical rebuild-store` rebuilds the canonical SQLite index
   (per-day usage and per-task rollups) directly from your event ledger in about
   a second, so the fast usage/cost read path has a store to serve even on a
   machine that never ran the background writer.
 
 ### Fixed
+- `agentacct mcp doctor` now reports **store writability** for a SQLite-backed
+  store. The writability probe previously ran only when a flat `events.jsonl`
+  existed, so once a store used the SQLite log (now the default) the doctor
+  silently dropped that diagnostic. It now checks the log's writability without
+  writing any bytes, keeping the doctor read-only while restoring the check for
+  every store.
 - The canonical usage importer no longer counts non-usage events as usage. Any
   event whose type merely contained the substring "usage" — most importantly
   `agent_usage_debug_reported`, the debug snapshot that is explicitly *not*

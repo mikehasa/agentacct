@@ -132,3 +132,48 @@ def test_corrupt_and_nonobject_lines_are_mirrored_verbatim(tmp_path: Path) -> No
     assert log.count() == 4
     # Parsed reads skip the corrupt/non-object lines, exactly like the file reader.
     assert log.read_events() == [_event("e0"), _event("e1")]
+
+
+def test_absorb_new_events_unions_by_id_and_never_truncates(tmp_path: Path) -> None:
+    # absorb is the rolling-upgrade drain: it appends events the file has but the
+    # log lacks (by event_id), never removes an event the log already leads with.
+    log = RawEventLog(tmp_path / "events.sqlite3")
+    for event in (_event("a"), _event("b"), _event("c")):
+        log.append_event(event)  # log leads: a, b, c
+
+    ledger = tmp_path / "events.jsonl"
+    # File shares a/b (already in the log) and adds a straggler d; it does NOT
+    # contain c — absorb must NOT drop c just because the file lacks it.
+    _write_ledger(ledger, [_event("a"), _event("b"), _event("d")])
+
+    assert log.absorb_new_events(ledger) == 1  # only d absorbed
+    assert [event["event_id"] for event in log.read_events()] == ["a", "b", "c", "d"]
+    # Idempotent: re-absorbing the same file adds nothing.
+    assert log.absorb_new_events(ledger) == 0
+    assert log.count() == 4
+
+
+def test_absorb_new_events_dedupes_idless_lines_by_content(tmp_path: Path) -> None:
+    log = RawEventLog(tmp_path / "events.sqlite3")
+    ledger = tmp_path / "events.jsonl"
+    # A line with no event_id (corrupt/legacy) must absorb once and not duplicate
+    # on a repeat absorb.
+    ledger.write_text(serialize_event(_event("a")) + "\n" + "{not-json\n", encoding="utf-8")
+    assert log.absorb_new_events(ledger) == 2
+    assert log.absorb_new_events(ledger) == 0  # neither the id'd nor the id-less line re-added
+    assert log.count() == 2
+
+
+def test_absorb_does_not_duplicate_lines_already_in_the_log_via_reconcile(tmp_path: Path) -> None:
+    # A mirror-mode reconcile copies every line into the log WITHOUT recording an
+    # absorbed_flat key. A later authoritative absorb of the same file must not
+    # duplicate them — id-bearing lines are caught by the log's ids, and id-less
+    # (corrupt/legacy) lines by the log's verbatim content.
+    ledger = tmp_path / "events.jsonl"
+    ledger.write_text(serialize_event(_event("a")) + "\n" + "{not-json\n", encoding="utf-8")
+    log = RawEventLog(tmp_path / "events.sqlite3")
+    log.reconcile_from_file(ledger)  # mirror path: both lines in the log, absorbed_flat empty
+    assert log.count() == 2
+
+    assert log.absorb_new_events(ledger) == 0  # the id-less line is NOT re-added
+    assert log.count() == 2

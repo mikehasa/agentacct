@@ -54,8 +54,8 @@ def test_evidence_work_event_preserves_v1_and_adds_v2(tmp_path) -> None:
     assert payload["v1_event"]["event_type"] == "section_completed"
     assert payload["v1_event"]["metadata"]["client_event_timestamp"] == 1_783_900_123.5
     assert json.loads(retry.output)["v1_event"]["event_id"] == payload["v1_event"]["event_id"]
-    assert (store / "events.jsonl").is_file()
-    assert len((store / "events.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+    v1_events = SentinelService(store).list_all_events()
+    assert len(v1_events) == 1
     assert (store / "evidence-v2" / "spool.jsonl").is_file()
 
     listing = runner.invoke(app, ["evidence", "list", "--store-dir", str(store), "--json"])

@@ -206,8 +206,10 @@ Current MCP tools are safe/local:
 - `agentacct_prepare_judge`
 - `agentacct_compute_value`
 
-The event tools continue to write/read `events.jsonl` and shadow normalized
-claims into Evidence v2. Public `sentinel_*` names do not change. Local usage
+The event tools read and write the v1 event ledger — by default the SQLite event
+log (`events.sqlite3`); set `AGENTACCT_EVENT_LOG_AUTHORITATIVE=0` for the legacy
+flat `events.jsonl` — and shadow normalized claims into Evidence v2. Public
+`sentinel_*` names do not change. Local usage
 import remains the token/cost source of truth; MCP remains the highest-value
 source for semantic context and join keys such as client session, parent
 session, turn id, request id, and message id. It is not treated as provider

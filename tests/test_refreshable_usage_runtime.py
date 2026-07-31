@@ -979,7 +979,11 @@ def test_service_refresh_remints_v1_arrival_but_not_evidence_revision(tmp_path: 
     assert refreshable.superseded_revisions == 1
 
 
-def test_service_withholds_complete_deletion_when_v1_has_unparseable_line(tmp_path: Path) -> None:
+def test_service_withholds_complete_deletion_when_v1_has_unparseable_line(tmp_path: Path, monkeypatch) -> None:
+    # Hand-seeds a torn/unparseable raw line into events.jsonl to exercise the
+    # snapshot's parse-completeness gate — flat-file mechanics only present in
+    # legacy mirror mode.
+    monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "0")
     service = SentinelService(tmp_path)
     service.replace_events(
         lambda _event: False,
