@@ -4258,6 +4258,112 @@ def event_summary(
             )
 
 
+@event_app.command("verify-log")
+def event_verify_log(
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Prove the SQLite event log matches events.jsonl, line for line.
+
+    The migration's step-3 gate: run this (in the default mirror mode) before
+    cutting the store over to SQLite. In authoritative mode it just reports that
+    the log is the authority.
+    """
+
+    service = SentinelService(_resolve_cli_store_dir(store_dir).path, create=False)
+    result = service.verify_event_log_parity()
+    if json_output:
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
+    if not result.get("available"):
+        print(f"event log unavailable: {result.get('detail')}", file=sys.stderr)
+        raise typer.Exit(2)
+    if result.get("authoritative"):
+        print(f"SQLite log is authoritative: {result.get('log_lines')} events (events.jsonl bypassed)")
+        return
+    if result.get("matches"):
+        print(f"parity OK: SQLite log == events.jsonl ({result.get('log_lines')} lines)")
+    else:
+        print(
+            f"PARITY MISMATCH: {result.get('detail')} "
+            f"(file={result.get('file_lines')}, log={result.get('log_lines')})",
+            file=sys.stderr,
+        )
+        raise typer.Exit(2)
+
+
+@event_app.command("drop-flat-ledger")
+def event_drop_flat_ledger(
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    confirm: Annotated[bool, typer.Option("--confirm", help="Actually delete (irreversible).")] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Delete events.jsonl once the SQLite log is the sole authority.
+
+    Refuses unless AGENTACCT_EVENT_LOG_AUTHORITATIVE is set in this environment
+    (otherwise reads would fall back to the now-missing file and see an empty
+    store) AND every event in events.jsonl is already present in the SQLite log
+    (so nothing is left behind). Irreversible; the SQLite log becomes the ledger.
+    """
+
+    from .event_log import event_log_authoritative
+
+    resolved = _resolve_cli_store_dir(store_dir).path
+    if not event_log_authoritative():
+        print(
+            "refused: set AGENTACCT_EVENT_LOG_AUTHORITATIVE=1 in the runtime first "
+            "(otherwise the store would read the deleted file and look empty).",
+            file=sys.stderr,
+        )
+        raise typer.Exit(2)
+    service = SentinelService(resolved, create=False)
+    if service.event_log is None:
+        print("refused: the SQLite event log is unavailable.", file=sys.stderr)
+        raise typer.Exit(2)
+    events_path = resolved / "events.jsonl"
+    missing = 0
+    if events_path.exists():
+        log_ids = {
+            event.get("event_id")
+            for event in service.event_log.read_events()
+            if event.get("event_id")
+        }
+        for line in events_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            event_id = event.get("event_id") if isinstance(event, dict) else None
+            if event_id and event_id not in log_ids:
+                missing += 1
+    if missing:
+        print(
+            f"refused: {missing} event(s) in events.jsonl are not in the SQLite log. "
+            "Run once in the default mirror mode to sync, then retry.",
+            file=sys.stderr,
+        )
+        raise typer.Exit(2)
+    if not confirm:
+        payload = {"would_delete": str(events_path), "log_events": service.event_log.count()}
+        if json_output:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(
+                f"would delete {events_path} (SQLite log has {payload['log_events']} events). "
+                "Re-run with --confirm."
+            )
+        return
+    events_path.unlink(missing_ok=True)
+    (resolved / "events.jsonl.lock").unlink(missing_ok=True)
+    payload = {"deleted": str(events_path), "log_events": service.event_log.count()}
+    if json_output:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"deleted {events_path}; the SQLite event log is now the sole ledger.")
+
+
 @event_app.command("list")
 def event_list(
     store_dir: Annotated[
