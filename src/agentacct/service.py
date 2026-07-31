@@ -1379,7 +1379,7 @@ class SentinelService:
         revision, transition, and append are checked under one ledger lock.
         """
 
-        if action not in {"mark_reviewed", "resolve", "reopen"}:
+        if action not in {"mark_reviewed", "resolve", "reopen", "reinstate"}:
             raise FindingDispositionConflict("unsupported finding disposition action")
         if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 0:
             raise FindingDispositionConflict("finding revision must be a non-negative integer")
@@ -1601,7 +1601,7 @@ class SentinelService:
         the finding. Only server-trusted disposition rows participate.
         """
 
-        if action not in {"mark_reviewed", "resolve", "reopen"}:
+        if action not in {"mark_reviewed", "resolve", "reopen", "reinstate"}:
             raise FindingDispositionConflict("unsupported finding disposition action")
         if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 0:
             raise FindingDispositionConflict("finding revision must be a non-negative integer")
