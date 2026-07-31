@@ -8135,6 +8135,74 @@ def canonical_rebuild_read_models(
         )
 
 
+@canonical_app.command("rebuild-store")
+def canonical_rebuild_store(
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help=_STORE_DIR_HELP),
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit the rebuild result as JSON.")
+    ] = False,
+) -> None:
+    """Build a fresh live canonical store (chronicle.sqlite3) from events.jsonl.
+
+    Reads the append-only events.jsonl truth and materializes the SQLite read
+    index — sessions, tasks, and the rm_task_current + rm_usage_day read
+    models — then installs it at the reserved live name so the fast read path
+    can serve it. Any existing store is replaced: the JSONL ledger is the
+    authority and the store is a rebuildable index over it.
+
+    Unlike ``rebuild-read-models`` (which refreshes projections on an EXISTING
+    store), this creates the store from the ledger. It is a local/dev rebuild,
+    NOT the authoritative cutover — that stays ``canonical promote``.
+    """
+
+    from .canonical.rebuild import rebuild_live_store_from_events
+
+    resolved_store_dir = _resolve_cli_store_dir(store_dir).path
+    try:
+        report = rebuild_live_store_from_events(resolved_store_dir)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        raise typer.Exit(2)
+    except Exception as exc:  # noqa: BLE001 - one operator-facing failure shape: stderr + exit 2.
+        print(f"canonical rebuild failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        raise typer.Exit(2)
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "store_path": str(report.store_path),
+                    "parsed_events": report.parsed_events,
+                    "session_count": report.session_count,
+                    "task_count": report.task_count,
+                    "usage_day_count": report.usage_day_count,
+                    "issue_count": report.issue_count,
+                    "canonical_sequence": report.canonical_sequence,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+    print(f"rebuilt canonical store: {report.store_path}")
+    print(
+        f"  sessions={report.session_count} tasks={report.task_count} "
+        f"usage_days={report.usage_day_count}"
+    )
+    print(
+        f"  parsed_events={report.parsed_events} not_imported={report.issue_count} "
+        f"canonical_sequence={report.canonical_sequence}"
+    )
+    if report.issue_count:
+        print(
+            f"  note: {report.issue_count} ledger lines were not imported (e.g. "
+            "events without a source_namespace_fingerprint, such as agentacct's "
+            "own section/check records); usage rows are unaffected."
+        )
+
+
 @usage_app.command("health")
 def usage_health(
     store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
