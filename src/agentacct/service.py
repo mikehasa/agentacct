@@ -972,16 +972,21 @@ class SentinelService:
         self._authoritative_marker_path = self.store.root / AUTHORITATIVE_MARKER_FILENAME
         self.event_log: RawEventLog | None = None
         self._event_log_synced_signature: tuple[int, int] | None = None
+        self._is_authoritative = False
         self._init_event_log()
 
     def _authoritative_intended(self) -> bool:
-        """Whether this store's ledger SHOULD be the SQLite log — a persistent,
-        store-scoped decision (the cutover marker), or the opt-in env flag for
-        pre-cutover adoption. Unlike ``_authoritative`` this does not require the
-        log to have opened, so post-cutover reads can fail LOUD instead of
-        silently serving an empty store when the log is momentarily unavailable.
+        """Whether this store's ledger SHOULD be the SQLite log.
+
+        Durable and cross-process (the cutover marker), plus the opt-in env
+        flag, plus the init-time inference cached in ``_is_authoritative`` (a
+        store with no flat file but a populated log IS authoritative even if its
+        marker was lost). Does NOT require the log to have opened, so a cut-over
+        store whose log is unavailable fails LOUD instead of serving empty.
         """
 
+        if self._is_authoritative:
+            return True
         try:
             if self._authoritative_marker_path.exists():
                 return True
@@ -990,40 +995,62 @@ class SentinelService:
         return event_log_authoritative()
 
     def _init_event_log(self) -> None:
-        """Open the SQLite log.
+        """Open the SQLite log and decide + PERSIST whether it is authoritative.
 
-        In mirror mode (default) it is reconciled from the authoritative flat
-        file. In authoritative mode the LOG is the authority and is never
-        reconciled from a stale/absent file — the one exception is a store whose
-        log was never populated (adopted before cutover), which is backfilled
-        once, UNDER THE WRITE LOCK so two concurrent opens cannot each append the
-        whole file and duplicate it.
+        A store is authoritative if it carries the cutover marker, the opt-in env
+        flag is set, OR it has no flat file but a populated log (a cut-over store
+        whose marker was lost — self-healed here). Whenever authoritative and the
+        marker is missing, it is (re)written so the decision survives every future
+        open in any process; env-only adoption can no longer be silently reverted
+        by a no-env open that would wipe the log.
 
-        Fail-open only in mirror mode. Post-cutover a log-open failure must NOT
-        silently degrade to an empty store (events.jsonl is gone), so it raises.
+        Fail LOUD, never fall back to an empty store: a marker-bearing store whose
+        log DB is missing (its sole ledger deleted), or any authoritative store
+        whose log will not open, raises rather than pretending to be empty.
+
+        In mirror mode the log is reconciled from the authoritative flat file. In
+        authoritative mode the log is never reconciled from a stale/absent file;
+        an as-yet-unpopulated log (env adoption of a store that still has a flat
+        file) is backfilled once, UNDER THE WRITE LOCK with a re-checked count so
+        two concurrent opens cannot each append the whole file and duplicate it.
         """
 
-        authoritative = self._authoritative_intended()
+        marker_exists = self._authoritative_marker_path.exists()
+        log_db_path = self.store.root / RAW_EVENT_LOG_FILENAME
+        db_existed = log_db_path.exists()
+        if marker_exists and not db_existed:
+            raise EventLogUnavailable(
+                "authoritative store is missing its SQLite event log (the sole ledger is gone)"
+            )
         try:
-            self.event_log = RawEventLog(self.store.root / RAW_EVENT_LOG_FILENAME)
+            self.event_log = RawEventLog(log_db_path)
         except Exception:
             self.event_log = None
-            if authoritative:
+            if marker_exists or event_log_authoritative():
                 raise EventLogUnavailable(
                     "the SQLite event log is the authoritative ledger but could not be opened"
                 )
             return
-        try:
-            if not authoritative:
-                self.event_log.reconcile_from_file(self.events_path)
-                self._event_log_synced_signature = self._events_file_signature()
-            elif self.event_log.count() == 0 and self.events_path.exists():
+        flat_exists = self.events_path.exists()
+        log_has_data = self.event_log.count() > 0
+        authoritative = marker_exists or event_log_authoritative() or (not flat_exists and log_has_data)
+        self._is_authoritative = authoritative
+        if authoritative:
+            if not marker_exists:
+                # Persist adoption (env) or heal a lost marker on a cut-over
+                # store, so no future no-env open reverts to mirror mode.
+                try:
+                    self.mark_authoritative()
+                except OSError:
+                    pass
+            if self.event_log.count() == 0 and flat_exists:
                 with self._events_write_lock():
                     if self.event_log.count() == 0:
                         self.event_log.reconcile_from_file(self.events_path)
-        except Exception:  # noqa: BLE001 - reconcile is best-effort; the file stays authoritative in mirror mode.
-            if authoritative:
-                raise
+            return
+        # Mirror mode: the flat file is the authority.
+        self.event_log.reconcile_from_file(self.events_path)
+        self._event_log_synced_signature = self._events_file_signature()
 
     def _authoritative(self) -> bool:
         """True when the SQLite log is the authoritative ledger (file bypassed).

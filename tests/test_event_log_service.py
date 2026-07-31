@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agentacct.service import SentinelService
+import pytest
+
+from agentacct.service import EventLogUnavailable, SentinelService
 
 
 def _events_file(store_root: Path) -> Path:
@@ -130,6 +132,60 @@ def test_authoritative_mode_rewrite_operates_on_the_log(tmp_path: Path, monkeypa
 
     assert len(service.list_all_events()) == 2
     assert not _events_file(store_root).exists()
+
+
+def test_env_adoption_persists_a_marker_so_a_no_env_reopen_does_not_wipe(tmp_path: Path, monkeypatch) -> None:
+    # A store adopted via the env flag must persist a marker, so a later open
+    # WITHOUT the env var stays authoritative and never mirror-reconciles the
+    # log back down to a stale/absent flat file (the re-review's worst defect).
+    store_root = tmp_path / "store"
+    store_root.mkdir()
+    monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "1")
+    adopter = SentinelService(store_root)
+    for i in range(5):
+        adopter.record_event(_note(f"n{i}"))
+    assert len(adopter.list_all_events()) == 5
+    assert (store_root / "events.authoritative").exists()  # env adoption persisted a marker
+
+    monkeypatch.delenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", raising=False)
+    reopened = SentinelService(store_root)
+    assert reopened._authoritative()
+    assert len(reopened.list_all_events()) == 5  # nothing wiped
+
+
+def test_a_cutover_store_with_a_lost_marker_self_heals(tmp_path: Path) -> None:
+    store_root = tmp_path / "store"
+    store_root.mkdir()
+    service = SentinelService(store_root)
+    for i in range(6):
+        service.record_event(_note(f"n{i}"))
+    service.list_all_events()
+    service.mark_authoritative()
+    _events_file(store_root).unlink()          # cut over
+    (store_root / "events.authoritative").unlink()  # marker lost
+
+    # No marker, no flat file, but a populated log → inferred authoritative and
+    # the marker is re-written; the log is preserved, reads are correct.
+    healed = SentinelService(store_root)
+    assert healed._authoritative()
+    assert (store_root / "events.authoritative").exists()
+    assert len(healed.list_all_events()) == 6
+
+
+def test_a_cutover_store_missing_its_log_db_fails_loud(tmp_path: Path) -> None:
+    store_root = tmp_path / "store"
+    store_root.mkdir()
+    service = SentinelService(store_root)
+    for i in range(4):
+        service.record_event(_note(f"n{i}"))
+    service.list_all_events()
+    service.mark_authoritative()
+    _events_file(store_root).unlink()
+    (store_root / "events.sqlite3").unlink()  # the sole ledger DB is gone
+
+    # Must raise, never silently create a fresh empty log and serve an empty store.
+    with pytest.raises(EventLogUnavailable):
+        SentinelService(store_root)
 
 
 def test_a_fresh_service_backfills_the_mirror_from_an_existing_ledger(tmp_path: Path) -> None:
