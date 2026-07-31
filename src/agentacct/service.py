@@ -21,6 +21,13 @@ from .confidence import normalize_cost_confidence, normalize_usage_confidence
 from .context_bridge import build_usage_context_bridge
 from .evidence import is_sensitive_metadata_key
 from .evidence_runtime import EvidenceRuntime
+from .event_log import (
+    AUTHORITATIVE_MARKER_FILENAME,
+    RAW_EVENT_LOG_FILENAME,
+    RawEventLog,
+    event_log_authoritative,
+    serialize_event,
+)
 from .finding_disposition import (
     FINDING_DISPOSITION_AUTHORITY_SCOPE,
     FINDING_DISPOSITION_CONTRACT_KEY,
@@ -79,6 +86,15 @@ RESERVED_CLIENT_CONTEXT_PROVENANCE_KEYS = (
 # work ledger will not treat it as authority to change an active blocker.
 BLOCKER_RESOLUTION_CONTRACT_KEY = "blocker_resolution_contract"
 BLOCKER_RESOLUTION_CONTRACT_VERSION = "server_validated_v1"
+
+
+class EventLogUnavailable(RuntimeError):
+    """The store's ledger is the SQLite event log but it could not be opened.
+
+    Raised instead of silently serving an empty store: after the cutover
+    events.jsonl is gone, so a missing/unreadable log is a hard error, not
+    an empty ledger.
+    """
 
 
 class SessionObservationConflict(ValueError):
@@ -949,6 +965,213 @@ class SentinelService:
         self.canonical_read = CanonicalReadRuntime(
             self.store.root, enabled=canonical_read_enabled
         )
+        # SQLite raw event log — the substrate that will replace events.jsonl.
+        # A faithful mirror during the transition: constructed and reconciled
+        # best-effort so a mirror problem never blocks the store, and healed
+        # from the authoritative flat file on every open. See event_log.py.
+        self._authoritative_marker_path = self.store.root / AUTHORITATIVE_MARKER_FILENAME
+        self.event_log: RawEventLog | None = None
+        self._event_log_synced_signature: tuple[int, int] | None = None
+        self._is_authoritative = False
+        self._init_event_log()
+
+    def _authoritative_intended(self) -> bool:
+        """Whether this store's ledger SHOULD be the SQLite log.
+
+        Durable and cross-process (the cutover marker), plus the opt-in env
+        flag, plus the init-time inference cached in ``_is_authoritative`` (a
+        store with no flat file but a populated log IS authoritative even if its
+        marker was lost). Does NOT require the log to have opened, so a cut-over
+        store whose log is unavailable fails LOUD instead of serving empty.
+        """
+
+        if self._is_authoritative:
+            return True
+        try:
+            if self._authoritative_marker_path.exists():
+                return True
+        except OSError:
+            pass
+        return event_log_authoritative()
+
+    def _init_event_log(self) -> None:
+        """Open the SQLite log and decide + PERSIST whether it is authoritative.
+
+        A store is authoritative if it carries the cutover marker, the opt-in env
+        flag is set, OR it has no flat file but a populated log (a cut-over store
+        whose marker was lost — self-healed here). Whenever authoritative and the
+        marker is missing, it is (re)written so the decision survives every future
+        open in any process; env-only adoption can no longer be silently reverted
+        by a no-env open that would wipe the log.
+
+        Fail LOUD, never fall back to an empty store: a marker-bearing store whose
+        log DB is missing (its sole ledger deleted), or any authoritative store
+        whose log will not open, raises rather than pretending to be empty.
+
+        In mirror mode the log is reconciled from the authoritative flat file. In
+        authoritative mode the log is never reconciled from a stale/absent file;
+        an as-yet-unpopulated log (env adoption of a store that still has a flat
+        file) is backfilled once, UNDER THE WRITE LOCK with a re-checked count so
+        two concurrent opens cannot each append the whole file and duplicate it.
+        """
+
+        marker_exists = self._authoritative_marker_path.exists()
+        log_db_path = self.store.root / RAW_EVENT_LOG_FILENAME
+        db_existed = log_db_path.exists()
+        if marker_exists and not db_existed:
+            raise EventLogUnavailable(
+                "authoritative store is missing its SQLite event log (the sole ledger is gone)"
+            )
+        try:
+            self.event_log = RawEventLog(log_db_path)
+        except Exception:
+            self.event_log = None
+            if marker_exists or event_log_authoritative():
+                raise EventLogUnavailable(
+                    "the SQLite event log is the authoritative ledger but could not be opened"
+                )
+            return
+        flat_exists = self.events_path.exists()
+        log_has_data = self.event_log.count() > 0
+        authoritative = marker_exists or event_log_authoritative() or (not flat_exists and log_has_data)
+        self._is_authoritative = authoritative
+        if authoritative:
+            if not marker_exists:
+                # ADOPTION transition (env flag, or a healed/lost marker). The
+                # flat file is STILL the authority at this instant, so fully sync
+                # the log from it FIRST — a partially-synced mirror log must not
+                # freeze and abandon the file's un-absorbed tail — then persist
+                # the marker so all future opens read the log. Under the write
+                # lock, and only while the file exists (absent ⇒ the log already
+                # is the sole ledger). Once the marker exists this branch never
+                # runs again, so the log (which then LEADS the frozen file) is
+                # never reconciled back down to the stale file.
+                # Reconcile AND mark under one lock hold so they are atomic: a
+                # concurrent mirror append cannot land in events.jsonl in the
+                # gap between the sync and the marker and then be abandoned.
+                with self._events_write_lock():
+                    if flat_exists:
+                        self.event_log.reconcile_from_file(self.events_path)
+                    try:
+                        self.mark_authoritative()
+                    except OSError:
+                        pass
+            return
+        # Mirror mode: the flat file is the authority.
+        self.event_log.reconcile_from_file(self.events_path)
+        self._event_log_synced_signature = self._events_file_signature()
+
+    def _authoritative(self) -> bool:
+        """True when the SQLite log is the authoritative ledger (file bypassed).
+
+        Fails LOUD if the store is cut over but the log is unavailable — every
+        read/write funnels through here, so this one guard stops the whole class
+        of split-brain / empty-store bugs (a write must never resurrect the
+        deleted flat file; a read must never report the store empty).
+        """
+
+        intended = self._authoritative_intended()
+        if intended and self.event_log is None:
+            raise EventLogUnavailable(
+                "the SQLite event log is the authoritative ledger but is unavailable"
+            )
+        return intended and self.event_log is not None
+
+    def mark_authoritative(self) -> None:
+        """Persist that this store's ledger is the SQLite log (the cutover)."""
+
+        self._authoritative_marker_path.write_text("1\n", encoding="utf-8")
+
+    def _ledger_lines(self) -> list[str]:
+        """Non-blank ledger lines in file order, from the authoritative source
+        (the SQLite log in authoritative mode, else the flat file)."""
+
+        if self._authoritative():
+            return self.event_log.read_lines()
+        if not self.events_path.exists():
+            return []
+        return [
+            line
+            for line in self.events_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    def _append_ledger_events(self, events: list[dict[str, Any]], *, fsync: bool = False) -> None:
+        """Append recorded events to the authoritative ledger. The caller holds
+        the write lock and (for the flat file) has ensured a trailing newline."""
+
+        if not events:
+            return
+        lines = [serialize_event(event) for event in events]
+        if self._authoritative():
+            for line in lines:
+                self.event_log.append_line(line)
+            return
+        with self.events_path.open("a", encoding="utf-8") as handle:
+            for line in lines:
+                handle.write(line + "\n")
+            if fsync:
+                handle.flush()
+                os.fsync(handle.fileno())
+
+    def _events_file_signature(self) -> tuple[int, int] | None:
+        """(mtime_ns, size) of the flat ledger, or None if absent — a cheap
+        change stamp so the mirror only re-reconciles when the file moved."""
+
+        try:
+            stat = self.events_path.stat()
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
+    def _sync_event_log(self) -> None:
+        """Refresh the mirror from the flat file if it changed, fail-open.
+
+        No-op in authoritative mode: there the log IS the authority, so
+        reconciling from a stale/absent flat file would corrupt it.
+        """
+
+        if self.event_log is None or self._authoritative():
+            return
+        signature = self._events_file_signature()
+        if signature == self._event_log_synced_signature:
+            return
+        try:
+            self.event_log.reconcile_from_file(self.events_path)
+            self._event_log_synced_signature = signature
+        except Exception:  # noqa: BLE001 - mirror freshness is best-effort.
+            pass
+
+    def verify_event_log_parity(self) -> dict[str, Any]:
+        """Prove the SQLite mirror equals the flat ledger, line for line.
+
+        The owner's step-3 gate for the cutover: safe to run any time; syncs
+        first so a stale-but-healable mirror reports as matching.
+        """
+
+        if self.event_log is None:
+            return {"available": False, "matches": False, "detail": "event log unavailable"}
+        if self._authoritative():
+            # The log IS the authority; there is nothing to prove it against
+            # (the flat file is stale or deleted).
+            return {
+                "available": True,
+                "authoritative": True,
+                "matches": True,
+                "log_lines": self.event_log.count(),
+                "detail": "authoritative",
+            }
+        self._sync_event_log()
+        result = self.event_log.verify_against_file(self.events_path)
+        return {
+            "available": True,
+            "authoritative": False,
+            "matches": result.matches,
+            "file_lines": result.file_lines,
+            "log_lines": result.log_lines,
+            "first_divergence": result.first_divergence,
+            "detail": result.detail,
+        }
 
     @contextmanager
     def _events_write_lock(self) -> Iterator[None]:
@@ -981,12 +1204,8 @@ class SentinelService:
                 fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
     def _read_events_file_order(self, *, run_id: str | None = None) -> list[dict[str, Any]]:
-        if not self.events_path.exists():
-            return []
         events: list[dict[str, Any]] = []
-        for line in self.events_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
+        for line in self._ledger_lines():
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
@@ -1093,12 +1312,10 @@ class SentinelService:
                     recorded = existing
                 else:
                     recorded = self._prepare_recorded_event(event)
-                    with self.events_path.open("a", encoding="utf-8") as handle:
-                        handle.write(json.dumps(recorded, sort_keys=True) + "\n")
+                    self._append_ledger_events([recorded])
             else:
                 recorded = self._prepare_recorded_event(event)
-                with self.events_path.open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(recorded, sort_keys=True) + "\n")
+                self._append_ledger_events([recorded])
         # Never hold the v1 ledger lock while fsyncing/projecting v2. The
         # shadow call is idempotent, local-only, and fail-open by contract.
         self.evidence.shadow_v1_event(recorded, transport=transport)
@@ -1573,10 +1790,7 @@ class SentinelService:
                 )
                 recorded = self._prepare_recorded_event(event)
                 self._ensure_trailing_newline()
-                with self.events_path.open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(recorded, sort_keys=True) + "\n")
-                    handle.flush()
-                    os.fsync(handle.fileno())
+                self._append_ledger_events([recorded], fsync=True)
 
         self.evidence.shadow_v1_event(recorded, transport=transport)
         # Canonical shadow (phase 3.4): finding dispositions are not yet
@@ -1656,13 +1870,9 @@ class SentinelService:
         notice. Blank lines are dropped (they carry nothing).
         """
 
-        if not self.events_path.exists():
-            return [], []
         parsed: list[dict[str, Any]] = []
         unparseable: list[str] = []
-        for line in self.events_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
+        for line in self._ledger_lines():
             try:
                 value = json.loads(line)
             except json.JSONDecodeError:
@@ -1682,8 +1892,17 @@ class SentinelService:
         events: list[dict[str, Any]],
         preserved_unparseable: list[str],
     ) -> None:
-        """Atomically replace the event file while its write lock is held."""
+        """Atomically replace the whole ledger while its write lock is held.
 
+        In authoritative mode the SQLite log IS the ledger, so the rewrite is a
+        single transactional ``replace_all``; otherwise the flat file is
+        replaced atomically via a temp-file rename.
+        """
+
+        lines = [*preserved_unparseable, *(serialize_event(event) for event in events)]
+        if self._authoritative():
+            self.event_log.replace_all(lines)
+            return
         tmp_fd, tmp_name = tempfile.mkstemp(
             prefix=self.events_path.name + ".",
             suffix=".tmp",
@@ -1691,10 +1910,8 @@ class SentinelService:
         )
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as handle:
-                for raw_line in preserved_unparseable:
-                    handle.write(raw_line + "\n")
-                for event in events:
-                    handle.write(json.dumps(event, sort_keys=True) + "\n")
+                for line in lines:
+                    handle.write(line + "\n")
             os.replace(tmp_name, self.events_path)
         except BaseException:
             try:
@@ -2089,9 +2306,12 @@ class SentinelService:
         trailing newline: without this, the first appended event would fuse onto
         that line (``}{``) and BOTH the pre-existing last row and the new row
         would fail to parse on read (silent data loss). Must be called while
-        holding the events write lock.
+        holding the events write lock. No-op in authoritative mode: the SQLite
+        log stores discrete rows, so there is no line-fusing hazard.
         """
 
+        if self._authoritative():
+            return
         if not self.events_path.exists():
             return
         try:
@@ -2141,16 +2361,15 @@ class SentinelService:
             )
             plan["target_events_before"] = len(target_ids)
             self._ensure_trailing_newline()
-            with self.events_path.open("a", encoding="utf-8") as handle:
-                for raw_event in plan["events_to_add"]:
-                    if not isinstance(raw_event, dict):
-                        continue
-                    event = strip_finding_disposition_provenance(raw_event)
-                    event_id = event.get("event_id")
-                    if not isinstance(event_id, str) or not event_id:
-                        continue
-                    handle.write(json.dumps(event, sort_keys=True) + "\n")
-                    appended.append(event)
+            for raw_event in plan["events_to_add"]:
+                if not isinstance(raw_event, dict):
+                    continue
+                event = strip_finding_disposition_provenance(raw_event)
+                event_id = event.get("event_id")
+                if not isinstance(event_id, str) or not event_id:
+                    continue
+                appended.append(event)
+            self._append_ledger_events(appended)
         self.evidence.shadow_v1_events(appended, transport="internal")
         # Canonical shadow (phase 3.3): merged rows keep their foreign
         # event_ids, which the canonical lanes key naturally (facts by
@@ -2181,23 +2400,22 @@ class SentinelService:
             present = self.existing_event_ids()
             seen_in_batch: set[str] = set()
             self._ensure_trailing_newline()
-            with self.events_path.open("a", encoding="utf-8") as handle:
-                for event in events:
-                    if not isinstance(event, dict):
-                        continue
-                    # A dashboard user's attention decision is local-store
-                    # authority. Cross-store event merges preserve the audit
-                    # row but strip that authority unless a future explicit
-                    # migration contract is introduced.
-                    event = strip_finding_disposition_provenance(event)
-                    event_id = event.get("event_id")
-                    if not isinstance(event_id, str) or not event_id:
-                        continue
-                    if event_id in present or event_id in seen_in_batch:
-                        continue
-                    seen_in_batch.add(event_id)
-                    handle.write(json.dumps(event, sort_keys=True) + "\n")
-                    appended.append(event)
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                # A dashboard user's attention decision is local-store
+                # authority. Cross-store event merges preserve the audit
+                # row but strip that authority unless a future explicit
+                # migration contract is introduced.
+                event = strip_finding_disposition_provenance(event)
+                event_id = event.get("event_id")
+                if not isinstance(event_id, str) or not event_id:
+                    continue
+                if event_id in present or event_id in seen_in_batch:
+                    continue
+                seen_in_batch.add(event_id)
+                appended.append(event)
+            self._append_ledger_events(appended)
         self.evidence.shadow_v1_events(appended, transport="internal")
         # Canonical shadow (phase 3.3): same contract as the merge lane.
         for event in appended:
@@ -2210,6 +2428,10 @@ class SentinelService:
         return events[:limit]
 
     def list_all_events(self, *, run_id: str | None = None) -> list[dict[str, Any]]:
+        # Keep the SQLite mirror fresh on the common read path (fail-open, and a
+        # no-op when the ledger has not changed). Reads still serve from the
+        # proven flat file until the read cutover.
+        self._sync_event_log()
         return self._read_events_file_order(run_id=run_id)
 
     def reconcile_evidence_refreshable_usage_snapshot(

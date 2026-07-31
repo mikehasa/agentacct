@@ -239,6 +239,50 @@ def _synthetic_legacy_payload(
     return fixture, b"\n".join(rows) + b"\n"
 
 
+def test_is_usage_event_anchors_on_model_usage_type() -> None:
+    is_usage = legacy_import_module._is_usage_event
+
+    # The one real usage type is caught.
+    assert is_usage({"event_type": "model_usage"}) is True
+
+    # The two former false-positive arms are gone:
+    #  (a) any type whose name merely contains the substring "usage" — most
+    #      importantly agent_usage_debug_reported, the MCP debug snapshot that
+    #      is explicitly NOT billing truth.
+    assert is_usage({"event_type": "agent_usage_debug_reported"}) is False
+    assert is_usage({"event_type": "usage_note"}) is False
+    #  (b) a non-usage event that merely CARRIES the estimated_* token keys with
+    #      None values (the envelope ships them on task_completed, task_started,
+    #      etc.).
+    assert (
+        is_usage(
+            {
+                "event_type": "task_completed",
+                "estimated_input_tokens": None,
+                "estimated_output_tokens": None,
+            }
+        )
+        is False
+    )
+    # Even non-None token values do not override an explicit non-usage type.
+    assert (
+        is_usage(
+            {
+                "event_type": "task_completed",
+                "estimated_input_tokens": 100,
+                "estimated_output_tokens": 50,
+            }
+        )
+        is False
+    )
+
+    # A pre-taxonomy row with NO event_type still falls back to a real token
+    # VALUE (not a merely-present, possibly-None key).
+    assert is_usage({"estimated_input_tokens": 5}) is True
+    assert is_usage({"estimated_input_tokens": None, "estimated_output_tokens": None}) is False
+    assert is_usage({}) is False
+
+
 def test_verified_legacy_import_preserves_missingness_and_surfaces_conflict(
     tmp_path: Path,
 ) -> None:

@@ -3935,7 +3935,28 @@ def mcp_doctor(
                 }
             )
         elif not events_path.is_file():
-            checks.append({"name": "store readability", "status": "ok", "details": "store file absent (created on first recorded event)"})
+            # A store cut over to the SQLite log has no events.jsonl; read its
+            # ledger from events.sqlite3 instead of reporting the store empty.
+            from .event_log import RAW_EVENT_LOG_FILENAME, RawEventLog
+
+            log_path = store_root / RAW_EVENT_LOG_FILENAME
+            if log_path.is_file():
+                try:
+                    events = RawEventLog(log_path).read_events()
+                    store_info["event_count"] = len(events)
+                    checks.append(
+                        {
+                            "name": "store readability",
+                            "status": "ok",
+                            "details": f"{len(events)} event(s) in the SQLite event log (events.jsonl retired)",
+                        }
+                    )
+                except Exception as exc:  # noqa: BLE001 - diagnose, never crash.
+                    checks.append(
+                        {"name": "store readability", "status": "fail", "details": f"events.sqlite3 is not readable: {exc}"}
+                    )
+            else:
+                checks.append({"name": "store readability", "status": "ok", "details": "store file absent (created on first recorded event)"})
         else:
             # A doctor must diagnose a broken store, not crash on it: an
             # unreadable events.jsonl (permissions, I/O error) becomes a
@@ -4256,6 +4277,100 @@ def event_summary(
                 f"total_including_cached={stats.get('total_tokens_including_cached', 0)} "
                 f"estimated_cost={_safe_usd(stats.get('estimated_cost_usd'))}"
             )
+
+
+@event_app.command("verify-log")
+def event_verify_log(
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Prove the SQLite event log matches events.jsonl, line for line.
+
+    The migration's step-3 gate: run this (in the default mirror mode) before
+    cutting the store over to SQLite. In authoritative mode it just reports that
+    the log is the authority.
+    """
+
+    service = SentinelService(_resolve_cli_store_dir(store_dir).path, create=False)
+    result = service.verify_event_log_parity()
+    if json_output:
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
+    if not result.get("available"):
+        print(f"event log unavailable: {result.get('detail')}", file=sys.stderr)
+        raise typer.Exit(2)
+    if result.get("authoritative"):
+        print(f"SQLite log is authoritative: {result.get('log_lines')} events (events.jsonl bypassed)")
+        return
+    if result.get("matches"):
+        print(f"parity OK: SQLite log == events.jsonl ({result.get('log_lines')} lines)")
+    else:
+        print(
+            f"PARITY MISMATCH: {result.get('detail')} "
+            f"(file={result.get('file_lines')}, log={result.get('log_lines')})",
+            file=sys.stderr,
+        )
+        raise typer.Exit(2)
+
+
+@event_app.command("drop-flat-ledger")
+def event_drop_flat_ledger(
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    confirm: Annotated[bool, typer.Option("--confirm", help="Actually delete (irreversible).")] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Cut the store over to the SQLite log and delete events.jsonl.
+
+    Performs the cutover atomically under the events write lock: a final sync +
+    line-for-line parity proof, then a PERSISTENT authoritative marker is
+    written (so every future open reads the log, no env var needed) and
+    events.jsonl is deleted. Refuses if the log is unavailable or parity does
+    not hold. Irreversible; the SQLite log becomes the sole ledger.
+    """
+
+    resolved = _resolve_cli_store_dir(store_dir).path
+    service = SentinelService(resolved, create=False)
+    if service.event_log is None:
+        print("refused: the SQLite event log is unavailable.", file=sys.stderr)
+        raise typer.Exit(2)
+    events_path = resolved / "events.jsonl"
+    # The whole cutover holds the write lock so no concurrent append/rewrite can
+    # slip between the parity proof and the deletion. The lock FILE is kept.
+    with service._events_write_lock():
+        already_authoritative = service._authoritative()
+        if not already_authoritative and events_path.exists():
+            # Mirror-mode cutover: the flat file is the authority, so sync the
+            # log from it and prove line-for-line parity before it becomes the
+            # ledger. (An ALREADY-authoritative store's log LEADS the frozen
+            # file — reconciling would wipe the log's post-adoption writes, so
+            # skip it; the file is a stale artifact safe to drop.)
+            service.event_log.reconcile_from_file(events_path)
+            result = service.event_log.verify_against_file(events_path)
+            if not result.matches:
+                print(
+                    f"refused: SQLite log does not match events.jsonl ({result.detail}); "
+                    "not deleting.",
+                    file=sys.stderr,
+                )
+                raise typer.Exit(2)
+        if not confirm:
+            payload = {"would_delete": str(events_path), "log_events": service.event_log.count()}
+            if json_output:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print(
+                    f"would cut over and delete {events_path} "
+                    f"(SQLite log has {payload['log_events']} events). Re-run with --confirm."
+                )
+            return
+        if not already_authoritative:
+            service.mark_authoritative()
+        events_path.unlink(missing_ok=True)
+    payload = {"deleted": str(events_path), "log_events": service.event_log.count()}
+    if json_output:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"cut over: deleted {events_path}; the SQLite event log is now the sole ledger.")
 
 
 @event_app.command("list")
@@ -8132,6 +8247,74 @@ def canonical_rebuild_read_models(
             f"rebuilt read models: tasks={result['task_count']} "
             f"usage_days={result['usage_day_count']} "
             f"built_through={result['built_through_sequence']}"
+        )
+
+
+@canonical_app.command("rebuild-store")
+def canonical_rebuild_store(
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help=_STORE_DIR_HELP),
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit the rebuild result as JSON.")
+    ] = False,
+) -> None:
+    """Build a fresh live canonical store (chronicle.sqlite3) from events.jsonl.
+
+    Reads the append-only events.jsonl truth and materializes the SQLite read
+    index — sessions, tasks, and the rm_task_current + rm_usage_day read
+    models — then installs it at the reserved live name so the fast read path
+    can serve it. Any existing store is replaced: the JSONL ledger is the
+    authority and the store is a rebuildable index over it.
+
+    Unlike ``rebuild-read-models`` (which refreshes projections on an EXISTING
+    store), this creates the store from the ledger. It is a local/dev rebuild,
+    NOT the authoritative cutover — that stays ``canonical promote``.
+    """
+
+    from .canonical.rebuild import rebuild_live_store_from_events
+
+    resolved_store_dir = _resolve_cli_store_dir(store_dir).path
+    try:
+        report = rebuild_live_store_from_events(resolved_store_dir)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        raise typer.Exit(2)
+    except Exception as exc:  # noqa: BLE001 - one operator-facing failure shape: stderr + exit 2.
+        print(f"canonical rebuild failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        raise typer.Exit(2)
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "store_path": str(report.store_path),
+                    "parsed_events": report.parsed_events,
+                    "session_count": report.session_count,
+                    "task_count": report.task_count,
+                    "usage_day_count": report.usage_day_count,
+                    "issue_count": report.issue_count,
+                    "canonical_sequence": report.canonical_sequence,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+    print(f"rebuilt canonical store: {report.store_path}")
+    print(
+        f"  sessions={report.session_count} tasks={report.task_count} "
+        f"usage_days={report.usage_day_count}"
+    )
+    print(
+        f"  parsed_events={report.parsed_events} not_imported={report.issue_count} "
+        f"canonical_sequence={report.canonical_sequence}"
+    )
+    if report.issue_count:
+        print(
+            f"  note: {report.issue_count} ledger lines were not imported (e.g. "
+            "events without a source_namespace_fingerprint, such as agentacct's "
+            "own section/check records); usage rows are unaffected."
         )
 
 

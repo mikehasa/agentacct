@@ -98,7 +98,16 @@ def test_v1_only_payloads_are_retained_despite_incidental_session_lane():
     # Each carries a client_session_id, so the session lane observes its
     # identity — but the PAYLOAD (evidence/disposition/note/provenance) has no
     # work-claim or usage lane, so it must stay v1's record.
-    for event_type in ("machine_check", "finding_disposition", "note", "client_context_attached"):
+    for event_type in (
+        "machine_check",
+        "finding_disposition",
+        "note",
+        "client_context_attached",
+        # A debug usage snapshot: its event_type contains the substring "usage"
+        # yet it is NOT a usage measurement. The classifier must not put it in
+        # the usage lane (regression guard for the _is_usage_event fix).
+        "agent_usage_debug_reported",
+    ):
         event = _event(
             event_type,
             {"client": "claude-code", "client_session_id": "s1", "sentinel_semantic_kind": "evidence"},

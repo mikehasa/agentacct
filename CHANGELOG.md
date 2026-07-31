@@ -6,6 +6,35 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- agentacct can now keep its event ledger in SQLite instead of the flat
+  `events.jsonl` file. A new SQLite event log (`events.sqlite3`) mirrors the
+  ledger line-for-line and can be promoted to the sole store so the flat file is
+  deleted entirely — the foundation for a fast local CLI and live view that no
+  longer re-parse a growing text file on every read. Three commands drive it:
+  `agentacct event verify-log` proves the SQLite copy matches the flat file line
+  for line; `agentacct event drop-flat-ledger --confirm` cuts the store over and
+  deletes `events.jsonl`; and `agentacct canonical rebuild-store` (re)builds the
+  SQLite usage index from the ledger. The cutover is durable — a persistent
+  store marker keeps it in effect across restarts with no environment variable,
+  so no later open can revert or wipe it — and it fails loud rather than ever
+  serving an empty or half-migrated store. Off by default: until you cut over,
+  the flat file stays authoritative and the SQLite log is a proven mirror.
+- `agentacct canonical rebuild-store` rebuilds the canonical SQLite index
+  (per-day usage and per-task rollups) directly from your event ledger in about
+  a second, so the fast usage/cost read path has a store to serve even on a
+  machine that never ran the background writer.
+
+### Fixed
+- The canonical usage importer no longer counts non-usage events as usage. Any
+  event whose type merely contained the substring "usage" — most importantly
+  `agent_usage_debug_reported`, the debug snapshot that is explicitly *not*
+  billing truth — or that merely carried the estimated-token fields set to empty
+  (ordinary `task_completed`, `task_started`, `machine_check` rows, and more)
+  was imported as a usage measurement. On one real ledger that was 187 non-usage
+  events that would have inflated the SQLite index's token and cost totals.
+  Usage is now anchored on the one real usage event type, `model_usage`.
+
 ## [0.5.3] - 2026-07-31
 
 ### Added

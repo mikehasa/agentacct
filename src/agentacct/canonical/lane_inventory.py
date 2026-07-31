@@ -52,14 +52,13 @@ CANONICAL_LANES = ("work_claim", "session", "usage")
 # allow-list and not a work-claim/usage event is retained in v1 by default.
 PAYLOAD_COMPLETE_SESSION_EVENT_TYPES = frozenset({"session_observed"})
 
-# NOTE (classification quirk, flagged for review, not a retention decision):
-# ``agent_usage_debug_reported`` is claimed by the USAGE lane because
-# ``_is_usage_event`` matches any event type containing the substring "usage".
-# The MCP contract says that debug snapshot is NOT billing truth, so whether it
-# should occupy the usage lane at all (vs. a held/non-additive row, or its own
-# lane) is a usage-classifier correctness question tracked separately — NOT
-# something this inventory silently retains or drops. Recorded here so the next
-# reader sees the same thing the I2 guard test surfaced.
+# ``agent_usage_debug_reported`` used to be mis-claimed by the USAGE lane
+# because ``_is_usage_event`` matched any event type containing the substring
+# "usage". That is fixed: ``_is_usage_event`` now anchors on the ``model_usage``
+# event type, so the debug snapshot — which the MCP contract states is NOT
+# billing truth — no longer occupies the usage lane. Its session identity is
+# still observed, but its payload has no canonical lane, so it is now a plain
+# v1-retained type registered below.
 
 
 def canonical_lanes_for_event(event: Mapping[str, Any]) -> tuple[str, ...]:
@@ -149,6 +148,12 @@ V1_ONLY_RETAINED: dict[str, str] = {
         "a quarantine marker recording that a route was refused and its payload "
         "retained; an operational forensic record, not a modeled fact. Retained "
         "in v1."
+    ),
+    "agent_usage_debug_reported": (
+        "a debug-only usage snapshot the MCP contract explicitly marks as NOT "
+        "billing truth (join evidence only, never added to cost totals). It is "
+        "not a usage measurement and has no canonical payload lane. Retained in "
+        "v1."
     ),
 }
 
