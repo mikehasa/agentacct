@@ -319,6 +319,12 @@ def _store_has_records(path: Path) -> bool:
         events = path / "events.jsonl"
         if events.is_file() and events.stat().st_size > 0:
             return True
+        # A store cut over to the SQLite event log has no events.jsonl; its
+        # ledger is events.sqlite3. Treat that (or the canonical index) as data
+        # so an upgrade does not point the user at a different, empty store.
+        sqlite_log = path / "events.sqlite3"
+        if sqlite_log.is_file() and sqlite_log.stat().st_size > 0:
+            return True
         if (path / "chronicle.sqlite3").is_file():
             return True
     except OSError:

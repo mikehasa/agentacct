@@ -126,17 +126,29 @@ def _install_live(candidate_path: Path, store_dir: Path) -> Path:
 
 
 def rebuild_live_store_from_events(store_dir: Path | str) -> RebuildReport:
-    """Rebuild ``<store_dir>/chronicle.sqlite3`` from ``<store_dir>/events.jsonl``.
+    """Rebuild ``<store_dir>/chronicle.sqlite3`` from the store's event ledger.
 
-    Raises ``FileNotFoundError`` if the ledger is absent. Any existing live
-    store is replaced (the ledger is the authority).
+    The ledger is ``events.jsonl`` (mirror mode) or, once the store has been cut
+    over and the flat file deleted, the SQLite event log ``events.sqlite3``.
+    Raises ``FileNotFoundError`` if neither is present. Any existing live store
+    is replaced (the ledger is the authority).
     """
 
     store_dir = Path(store_dir).expanduser()
     events_path = store_dir / EVENTS_FILENAME
-    if not events_path.is_file():
-        raise FileNotFoundError(f"no events ledger at {events_path}")
-    content = events_path.read_bytes()
+    if events_path.is_file():
+        content = events_path.read_bytes()
+    else:
+        # Cut-over store: reconstruct the ledger bytes from the SQLite event log.
+        from ..event_log import RAW_EVENT_LOG_FILENAME, RawEventLog
+
+        log_path = store_dir / RAW_EVENT_LOG_FILENAME
+        if not log_path.is_file():
+            raise FileNotFoundError(
+                f"no events ledger at {events_path} and no SQLite log at {log_path}"
+            )
+        lines = RawEventLog(log_path).read_lines()
+        content = ("".join(line + "\n" for line in lines)).encode("utf-8")
 
     # Resolve symlink components (e.g. macOS /var -> /private/var): the
     # importer's candidate path is validated to contain no symlink component.

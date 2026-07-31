@@ -29,33 +29,36 @@ def test_verify_log_reports_parity(tmp_path: Path) -> None:
     assert payload["log_lines"] == 3
 
 
-def test_drop_flat_ledger_refuses_without_the_authoritative_flag(tmp_path: Path, monkeypatch) -> None:
+def test_drop_flat_ledger_cutover_survives_reopen_without_env(tmp_path: Path, monkeypatch) -> None:
+    # The blocker fix: the cutover writes a PERSISTENT marker (no env var needed)
+    # so a later open of the store — without AGENTACCT_EVENT_LOG_AUTHORITATIVE —
+    # keeps reading the log and does NOT wipe it or resurrect events.jsonl.
     monkeypatch.delenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", raising=False)
     store_dir = tmp_path / "store"
     store_dir.mkdir()
-    _seed(store_dir, 2)
-    result = CliRunner().invoke(app, ["event", "drop-flat-ledger", "--store-dir", str(store_dir), "--confirm"])
-    assert result.exit_code == 2
-    assert (store_dir / "events.jsonl").exists()  # not deleted
-
-
-def test_drop_flat_ledger_deletes_when_authoritative_and_synced(tmp_path: Path, monkeypatch) -> None:
-    store_dir = tmp_path / "store"
-    store_dir.mkdir()
     _seed(store_dir, 4)
-    monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "1")
 
     # Dry run keeps the file.
     dry = CliRunner().invoke(app, ["event", "drop-flat-ledger", "--store-dir", str(store_dir)])
     assert dry.exit_code == 0, dry.output
     assert (store_dir / "events.jsonl").exists()
 
-    # Confirmed deletion removes the flat file; reads still work from SQLite.
+    # Confirmed cutover: marker written, flat file deleted, lock file KEPT.
     done = CliRunner().invoke(app, ["event", "drop-flat-ledger", "--store-dir", str(store_dir), "--confirm"])
     assert done.exit_code == 0, done.output
     assert not (store_dir / "events.jsonl").exists()
-    assert (store_dir / "events.sqlite3").exists()
+    assert (store_dir / "events.authoritative").exists()
+    assert (store_dir / "events.jsonl.lock").exists()
+
+    # A fresh service with NO env var still sees all 4 events (no wipe) and a
+    # new write goes to the log, not a resurrected flat file.
+    reopened = SentinelService(store_dir)
+    assert reopened._authoritative()
+    assert len(reopened.list_all_events()) == 4
+    reopened.record_event({"event_type": "note", "metadata": {"client": "cc", "client_session_id": "s1"}, "note": "post"})
+    assert len(reopened.list_all_events()) == 5
+    assert not (store_dir / "events.jsonl").exists()
 
     listing = CliRunner().invoke(app, ["event", "list", "--store-dir", str(store_dir), "--json"])
     assert listing.exit_code == 0, listing.output
-    assert len(json.loads(listing.output)["events"]) == 4
+    assert len(json.loads(listing.output)["events"]) == 5

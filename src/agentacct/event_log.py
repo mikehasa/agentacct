@@ -35,6 +35,11 @@ from typing import Any, Iterable, Iterator
 from .env_compat import read_env_alias
 
 RAW_EVENT_LOG_FILENAME = "events.sqlite3"
+# Persistent, store-scoped proof that this store has been cut over: its ledger
+# is the SQLite log and events.jsonl is gone. Written by the cutover so that
+# authoritativeness survives process restarts and does NOT depend on a volatile
+# env var (a mirror-mode open of a cut-over store would otherwise wipe the log).
+AUTHORITATIVE_MARKER_FILENAME = "events.authoritative"
 
 # When set, the SQLite log is the AUTHORITATIVE event store: every ledger read
 # and write goes to it and the flat events.jsonl is neither read nor written
@@ -219,6 +224,15 @@ class RawEventLog:
         parity result, which must always match.
         """
 
+        if not events_path.exists():
+            # No source to reconcile from. If the log already holds data, this
+            # is the authoritative-store-opened-as-mirror hazard: replacing the
+            # log with the empty file would DESTROY the ledger. Refuse — keep
+            # the log intact. A genuinely fresh store has an empty log here.
+            log_lines = self.read_lines()
+            if log_lines:
+                return ParityResult(False, 0, len(log_lines), None, "source_absent_log_preserved")
+            return ParityResult(True, 0, 0, None, "both_empty")
         file_lines = _read_file_lines(events_path)
         log_lines = self.read_lines()
         if log_lines == file_lines:
@@ -260,6 +274,7 @@ class RawEventLog:
 
 
 __all__ = [
+    "AUTHORITATIVE_MARKER_FILENAME",
     "EVENT_LOG_AUTHORITATIVE_ENV",
     "RAW_EVENT_LOG_FILENAME",
     "ParityResult",

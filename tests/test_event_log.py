@@ -83,6 +83,29 @@ def test_replace_all_resets_seq_and_matches(tmp_path: Path) -> None:
     assert log.read_events() == [_event("only")]
 
 
+def test_reconcile_refuses_to_wipe_a_populated_log_when_the_file_is_absent(tmp_path: Path) -> None:
+    # The blocker's second half: a populated log must never be replaced with an
+    # empty file (deleted events.jsonl) — that is destruction, not reconcile.
+    ledger = tmp_path / "events.jsonl"
+    _write_ledger(ledger, [_event("e0"), _event("e1"), _event("e2")])
+    log = RawEventLog(tmp_path / "events.sqlite3")
+    log.reconcile_from_file(ledger)
+    assert log.count() == 3
+
+    ledger.unlink()  # the flat file is gone
+    result = log.reconcile_from_file(ledger)
+    assert not result.matches
+    assert result.detail == "source_absent_log_preserved"
+    assert log.count() == 3  # log preserved, NOT wiped
+
+
+def test_reconcile_on_absent_file_with_empty_log_is_a_clean_noop(tmp_path: Path) -> None:
+    log = RawEventLog(tmp_path / "events.sqlite3")
+    result = log.reconcile_from_file(tmp_path / "does-not-exist.jsonl")
+    assert result.matches
+    assert log.count() == 0
+
+
 def test_verify_against_file_detects_divergence(tmp_path: Path) -> None:
     ledger = tmp_path / "events.jsonl"
     _write_ledger(ledger, [_event("e0"), _event("e1")])

@@ -3935,7 +3935,28 @@ def mcp_doctor(
                 }
             )
         elif not events_path.is_file():
-            checks.append({"name": "store readability", "status": "ok", "details": "store file absent (created on first recorded event)"})
+            # A store cut over to the SQLite log has no events.jsonl; read its
+            # ledger from events.sqlite3 instead of reporting the store empty.
+            from .event_log import RAW_EVENT_LOG_FILENAME, RawEventLog
+
+            log_path = store_root / RAW_EVENT_LOG_FILENAME
+            if log_path.is_file():
+                try:
+                    events = RawEventLog(log_path).read_events()
+                    store_info["event_count"] = len(events)
+                    checks.append(
+                        {
+                            "name": "store readability",
+                            "status": "ok",
+                            "details": f"{len(events)} event(s) in the SQLite event log (events.jsonl retired)",
+                        }
+                    )
+                except Exception as exc:  # noqa: BLE001 - diagnose, never crash.
+                    checks.append(
+                        {"name": "store readability", "status": "fail", "details": f"events.sqlite3 is not readable: {exc}"}
+                    )
+            else:
+                checks.append({"name": "store readability", "status": "ok", "details": "store file absent (created on first recorded event)"})
         else:
             # A doctor must diagnose a broken store, not crash on it: an
             # unreadable events.jsonl (permissions, I/O error) becomes a
@@ -4298,70 +4319,51 @@ def event_drop_flat_ledger(
     confirm: Annotated[bool, typer.Option("--confirm", help="Actually delete (irreversible).")] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
-    """Delete events.jsonl once the SQLite log is the sole authority.
+    """Cut the store over to the SQLite log and delete events.jsonl.
 
-    Refuses unless AGENTACCT_EVENT_LOG_AUTHORITATIVE is set in this environment
-    (otherwise reads would fall back to the now-missing file and see an empty
-    store) AND every event in events.jsonl is already present in the SQLite log
-    (so nothing is left behind). Irreversible; the SQLite log becomes the ledger.
+    Performs the cutover atomically under the events write lock: a final sync +
+    line-for-line parity proof, then a PERSISTENT authoritative marker is
+    written (so every future open reads the log, no env var needed) and
+    events.jsonl is deleted. Refuses if the log is unavailable or parity does
+    not hold. Irreversible; the SQLite log becomes the sole ledger.
     """
 
-    from .event_log import event_log_authoritative
-
     resolved = _resolve_cli_store_dir(store_dir).path
-    if not event_log_authoritative():
-        print(
-            "refused: set AGENTACCT_EVENT_LOG_AUTHORITATIVE=1 in the runtime first "
-            "(otherwise the store would read the deleted file and look empty).",
-            file=sys.stderr,
-        )
-        raise typer.Exit(2)
     service = SentinelService(resolved, create=False)
     if service.event_log is None:
         print("refused: the SQLite event log is unavailable.", file=sys.stderr)
         raise typer.Exit(2)
     events_path = resolved / "events.jsonl"
-    missing = 0
-    if events_path.exists():
-        log_ids = {
-            event.get("event_id")
-            for event in service.event_log.read_events()
-            if event.get("event_id")
-        }
-        for line in events_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            event_id = event.get("event_id") if isinstance(event, dict) else None
-            if event_id and event_id not in log_ids:
-                missing += 1
-    if missing:
-        print(
-            f"refused: {missing} event(s) in events.jsonl are not in the SQLite log. "
-            "Run once in the default mirror mode to sync, then retry.",
-            file=sys.stderr,
-        )
-        raise typer.Exit(2)
-    if not confirm:
-        payload = {"would_delete": str(events_path), "log_events": service.event_log.count()}
-        if json_output:
-            print(json.dumps(payload, indent=2, sort_keys=True))
-        else:
-            print(
-                f"would delete {events_path} (SQLite log has {payload['log_events']} events). "
-                "Re-run with --confirm."
-            )
-        return
-    events_path.unlink(missing_ok=True)
-    (resolved / "events.jsonl.lock").unlink(missing_ok=True)
+    # The whole cutover holds the write lock so no concurrent append/rewrite can
+    # slip between the parity proof and the deletion. The lock FILE is kept.
+    with service._events_write_lock():
+        if events_path.exists():
+            service.event_log.reconcile_from_file(events_path)
+            result = service.event_log.verify_against_file(events_path)
+            if not result.matches:
+                print(
+                    f"refused: SQLite log does not match events.jsonl ({result.detail}); "
+                    "not deleting.",
+                    file=sys.stderr,
+                )
+                raise typer.Exit(2)
+        if not confirm:
+            payload = {"would_delete": str(events_path), "log_events": service.event_log.count()}
+            if json_output:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print(
+                    f"would cut over and delete {events_path} "
+                    f"(SQLite log has {payload['log_events']} events). Re-run with --confirm."
+                )
+            return
+        service.mark_authoritative()
+        events_path.unlink(missing_ok=True)
     payload = {"deleted": str(events_path), "log_events": service.event_log.count()}
     if json_output:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
-        print(f"deleted {events_path}; the SQLite event log is now the sole ledger.")
+        print(f"cut over: deleted {events_path}; the SQLite event log is now the sole ledger.")
 
 
 @event_app.command("list")
