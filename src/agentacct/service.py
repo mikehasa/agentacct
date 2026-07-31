@@ -1046,13 +1046,16 @@ class SentinelService:
                 # is the sole ledger). Once the marker exists this branch never
                 # runs again, so the log (which then LEADS the frozen file) is
                 # never reconciled back down to the stale file.
-                if flat_exists:
-                    with self._events_write_lock():
+                # Reconcile AND mark under one lock hold so they are atomic: a
+                # concurrent mirror append cannot land in events.jsonl in the
+                # gap between the sync and the marker and then be abandoned.
+                with self._events_write_lock():
+                    if flat_exists:
                         self.event_log.reconcile_from_file(self.events_path)
-                try:
-                    self.mark_authoritative()
-                except OSError:
-                    pass
+                    try:
+                        self.mark_authoritative()
+                    except OSError:
+                        pass
             return
         # Mirror mode: the flat file is the authority.
         self.event_log.reconcile_from_file(self.events_path)
