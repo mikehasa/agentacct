@@ -310,6 +310,26 @@ def test_recording_surfaces_share_one_contract_core() -> None:
     assert install_guide._LOAD_IF_DEFERRED_LINE in session_start_text
 
 
+def test_recording_contract_directs_a_handoff_status_on_a_clean_stop() -> None:
+    """DECISION 1: agents must record handed_off (a clean stop) when the user
+    hands off / continues in a new session, rather than stranding the section in
+    started/checkpoint. The directive lives once in the shared contract."""
+    handoff_lines = [
+        line for line in install_guide._RECORDING_CONTRACT_LINES if "handed_off" in line
+    ]
+    assert handoff_lines, "recording contract must direct a handed_off clean stop"
+    line = handoff_lines[0]
+    assert "section_status=handed_off" in line
+    assert "new session" in line
+    # Shared verbatim across every recording surface.
+    for surface in (
+        install_guide.MCP_SERVER_INSTRUCTIONS,
+        "\n".join(install_guide.WORKFLOW_INSTRUCTION_LINES),
+        install_guide.SESSION_START_ADDITIONAL_CONTEXT,
+    ):
+        assert line in surface
+
+
 def test_recording_contract_directs_a_section_before_the_first_tool_call() -> None:
     """Phase 2.10: the contract is explicit about WHEN — open a section BEFORE
     the first other tool call, not vaguely 'at the start of the session'

@@ -41,7 +41,9 @@ from .usage_truth import (
 )
 
 
-WORK_STATUSES = {"started", "checkpoint", "blocked", "completed"}
+# handed_off is an additive terminal status (a clean stop / handoff), never a
+# rename of any frozen token. See task_outcome._HANDED_OFF_STATUS / DECISION 1.
+WORK_STATUSES = {"started", "checkpoint", "blocked", "completed", "handed_off"}
 EVIDENCE_TYPES = {"test", "build", "lint", "typecheck", "smoke", "benchmark", "browser", "security", "artifact", "other"}
 EVIDENCE_RESULTS = {"passed", "failed", "skipped", "error", "unknown"}
 _BLOCKER_RESOLUTION_CONTRACT = "server_validated_v1"

@@ -6308,6 +6308,17 @@ def _work_product_state(item: Mapping[str, Any]) -> dict[str, Any]:
                 "it is not a agentacct system failure or an inferred user assignment."
             ),
         }
+    if status == "handed_off":
+        # DECISION 1: a clean stop / handoff. Terminal, but not a completed or
+        # verified claim and not a blocker/failure.
+        return {
+            "key": "handed_off",
+            "label": "Handed off",
+            "css": "status-missing",
+            "action_required": False,
+            "rank": 3,
+            "why": "The agent recorded a clean handoff (work continued elsewhere or in a new session); this is a deliberate stop, not a completed or verified outcome.",
+        }
     if status in {"started", "checkpoint", "active", "in_progress"}:
         return {
             "key": "in_progress",
@@ -6818,6 +6829,12 @@ def _run_flow_html(*, state_key: str, has_work: bool, esc: Any) -> str:
     elif state_key == "in_progress":
         classes = ("is-done", "is-active", "", "")
         description = "Activity recorded; task remains in progress."
+    elif state_key == "handed_off":
+        classes = ("is-done", "is-done", "", "")
+        description = "Activity and task recorded; work was cleanly handed off before a verified outcome."
+    elif state_key == "mostly_done":
+        classes = ("is-done", "is-done", "", "")
+        description = "Activity and task recorded; most steps finished with some left open, no verified outcome."
     else:
         classes = ("is-done", "is-done", "", "")
         description = "Activity and task report recorded; check and outcome are not established."
@@ -7412,6 +7429,43 @@ def _task_product_state(
                 "rank": 1,
                 "action_required": False,
                 "why": "At least one recorded work step is still in progress.",
+            },
+            state_item,
+        )
+    if outcome_key == "mostly_done":
+        # DECISION 3a: finished steps plus one or more steps left open with no
+        # terminal record, on a Task untouched long enough that the open steps
+        # are not live. Honest partial state — never a claim the Task finished.
+        open_count = int(outcome.get("open_step_count") or 0)
+        return (
+            {
+                "key": "mostly_done",
+                "label": f"Mostly done · {_fmt_int(open_count)} step{'s' if open_count != 1 else ''} left open",
+                "css": "status-needs-import",
+                "rank": 3,
+                "action_required": False,
+                "why": (
+                    "Recorded steps completed, but at least one step was left open without a terminal "
+                    "record and the Task has not been touched recently. agentacct treats the open steps as "
+                    "left open, not active, and does not claim the Task is finished or verified."
+                ),
+            },
+            state_item,
+        )
+    if outcome_key == "handed_off":
+        # DECISION 1: a clean stop / handoff. Terminal, not a completed or
+        # verified claim and not a blocker/failure.
+        return (
+            {
+                "key": "handed_off",
+                "label": "Handed off",
+                "css": "status-missing",
+                "rank": 3,
+                "action_required": False,
+                "why": (
+                    "The work was cleanly handed off (continued elsewhere or in a new session). This is a "
+                    "deliberate stop, not a completed or verified outcome."
+                ),
             },
             state_item,
         )

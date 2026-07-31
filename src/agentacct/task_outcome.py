@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from typing import Any, Mapping
 
 from .finding_disposition import finding_target_digest
@@ -13,6 +14,20 @@ _SUCCESS_STATUSES = {"completed", "passed"}
 _RESOLVED_STATUS = "resolved"
 _BLOCKED_STATUSES = {"blocked", "failed"}
 _ACTIVE_STATUSES = {"started", "checkpoint", "active", "in_progress"}
+# A clean stop: the user handed the work off / continued in a new session. It is
+# terminal (never "open"), but it is NOT a completion or verification claim and
+# NOT a blocker/failure. See DECISION 1.
+_HANDED_OFF_STATUS = "handed_off"
+
+# DECISION 3a staleness threshold. When a Task has finished steps but one or more
+# steps are still `started`/`checkpoint`, we distinguish "genuinely in progress"
+# from "mostly done, some steps left open" by whether the WHOLE Task has gone
+# untouched for longer than this. 12h comfortably exceeds a continuous working
+# session (so live multi-hour work still reads "in progress" — no over-correction)
+# yet is far short of "days", so a Task last touched overnight or longer reads as
+# left-open rather than falsely active. This only ever downgrades "in progress"
+# to an equally honest partial state; it never infers completion.
+_STALE_OPEN_STEP_SECONDS = 12 * 60 * 60
 
 
 def _text(value: Any) -> str:
@@ -36,6 +51,55 @@ def _integer(value: Any) -> int:
 def _items(task: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     rows = task.get("work_items") if isinstance(task.get("work_items"), list) else []
     return [row for row in rows if isinstance(row, Mapping)]
+
+
+def _step_is_verified(item: Mapping[str, Any]) -> bool:
+    """Is this single step verified by the SAME two sources the Work card uses?
+
+    DECISION 3b exposes a partial breakdown; it must not invent a third notion of
+    "verified". A step counts only when it completed AND either its own latest
+    per-identity checks all pass, or (with no checks) its log evidence reached
+    ``strong``. This mirrors ``api._work_product_state`` exactly, kept in the
+    engine so the HTML and a future CLI read the identical count.
+    """
+
+    if _text(item.get("latest_status")).lower() not in _SUCCESS_STATUSES:
+        return False
+    raw = (
+        item.get("current_check_events")
+        if isinstance(item.get("current_check_events"), list)
+        else item.get("evidence_events")
+    )
+    events = [event for event in raw if isinstance(event, Mapping)] if isinstance(raw, list) else []
+    checks = latest_check_events(events, task_scoped=True)
+    latest_all_pass = bool(checks) and all(
+        _text(event.get("result")).lower() == "passed" for event in checks
+    )
+    projected_checks = isinstance(item.get("current_check_events"), list)
+    evidence_strong = _text(item.get("evidence_status")).lower() == "strong"
+    return latest_all_pass or (evidence_strong and not checks and not projected_checks)
+
+
+def step_verification_counts(task: Mapping[str, Any]) -> dict[str, int]:
+    """Per-Task partial verification: verified vs agent-reported-only step counts.
+
+    Exposed so a surface can honestly say "3 of 5 steps verified" instead of a
+    single all-or-nothing verified/grey. ``total_step_count`` is every recorded
+    step; ``verified_step_count`` the subset proven by a passing check or strong
+    evidence; ``agent_reported_step_count`` the remaining terminal-success steps
+    that only have an agent report.
+    """
+
+    items = _items(task)
+    verified = sum(1 for item in items if _step_is_verified(item))
+    success = sum(
+        1 for item in items if _text(item.get("latest_status")).lower() in _SUCCESS_STATUSES
+    )
+    return {
+        "verified_step_count": verified,
+        "total_step_count": len(items),
+        "agent_reported_step_count": max(0, success - verified),
+    }
 
 
 def _check_identity(event: Mapping[str, Any]) -> str:
@@ -199,16 +263,28 @@ def latest_task_checks(task: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return latest_check_events(_all_check_events(task), task_scoped=True)
 
 
-def reduce_task_outcome(task: Mapping[str, Any]) -> dict[str, Any]:
+def reduce_task_outcome(
+    task: Mapping[str, Any], *, now: float | None = None
+) -> dict[str, Any]:
     """Reduce work status and checks into one honest current Task outcome.
 
     A Task-level passing check verifies terminal work only when every current
     work step succeeded and every latest check was recorded at or after the
     newest work update. Older checks cannot prove code changed later.
+
+    ``now`` (seconds) is the DECISION 3a staleness reference; it defaults to the
+    wall clock and is injectable so tests are deterministic.
+
+    NOTE (DECISION 3c): the product strip has a fourth "outcome" stage that this
+    reducer never lights on its own. That stage depends on a run / RunStore /
+    outcome.json that the MCP recording flow never creates (the store's runs/ dir
+    stays empty in MCP-first usage), so it is a dead feature here and belongs to a
+    later model redesign. Deliberately not revived — no behavior change for it.
     """
 
     items = _items(task)
     statuses = [_text(item.get("latest_status")).lower() for item in items]
+    step_counts = step_verification_counts(task)
     max_work_updated_at = max(
         (
             _number(item.get("updated_at") or item.get("started_at"))
@@ -230,6 +306,7 @@ def reduce_task_outcome(task: Mapping[str, Any]) -> dict[str, Any]:
             "verification": None,
             "latest_checks": checks,
             "max_work_updated_at": max_work_updated_at,
+            **step_counts,
         }
     current_failures = [
         event
@@ -268,7 +345,9 @@ def reduce_task_outcome(task: Mapping[str, Any]) -> dict[str, Any]:
             "findings": current_failures,
             "finding_attention_state": attention_state,
             "max_work_updated_at": max_work_updated_at,
+            **step_counts,
         }
+    open_step_count = sum(1 for status in statuses if status in _ACTIVE_STATUSES)
     if statuses and any(status == _RESOLVED_STATUS for status in statuses) and all(
         status in _SUCCESS_STATUSES or status == _RESOLVED_STATUS
         for status in statuses
@@ -276,10 +355,30 @@ def reduce_task_outcome(task: Mapping[str, Any]) -> dict[str, Any]:
         # An explicit blocker resolution is an evidence-backed agent claim,
         # not a completion report and not authoritative verification.
         key = "resolved"
-    elif any(status in _ACTIVE_STATUSES for status in statuses):
-        key = "in_progress"
+    elif open_step_count:
+        # DECISION 3a: one un-closed step must not drag a mostly-finished Task to
+        # plain "in progress". The open step stays open in the DATA — we only
+        # summarise the Task honestly. When at least one step actually completed
+        # AND nothing across the Task has been touched within
+        # ``_STALE_OPEN_STEP_SECONDS``, the open steps were left open (a switched
+        # session / handoff that never recorded a terminal), not actively live.
+        # Conservative on both sides: never claims the Task finished, and a
+        # genuinely recent open step still reads "in progress".
+        reference_now = time.time() if now is None else now
+        has_completed_step = any(status in _SUCCESS_STATUSES for status in statuses)
+        stale = (
+            has_completed_step
+            and max_work_updated_at > 0.0
+            and (reference_now - max_work_updated_at) > _STALE_OPEN_STEP_SECONDS
+        )
+        key = "mostly_done" if stale else "in_progress"
     elif not items:
         key = "observed"
+    elif any(status == _HANDED_OFF_STATUS for status in statuses):
+        # DECISION 1: every step is terminal and at least one was a clean
+        # handoff. A deliberate stop — never a completed/verified claim, never a
+        # blocker/failure.
+        key = "handed_off"
     else:
         all_successful = all(status in _SUCCESS_STATUSES for status in statuses)
         passing_checks = [event for event in checks if _text(event.get("result")).lower() == "passed"]
@@ -315,12 +414,15 @@ def reduce_task_outcome(task: Mapping[str, Any]) -> dict[str, Any]:
         "verification": verification,
         "latest_checks": checks,
         "max_work_updated_at": max_work_updated_at,
+        "open_step_count": open_step_count,
+        **step_counts,
     }
 
 
 __all__ = [
     "evidence_event_key",
     "finding_check_key",
+    "step_verification_counts",
     "latest_check_events",
     "latest_task_checks",
     "reduce_task_outcome",

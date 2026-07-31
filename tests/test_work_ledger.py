@@ -238,6 +238,22 @@ def test_later_completed_snapshot_clears_stale_blocker_and_recovery_step() -> No
     assert item["next_step"] == "Review the published artifact."
 
 
+def test_handed_off_section_status_survives_ingestion_as_a_terminal() -> None:
+    # DECISION 1: handed_off is an accepted terminal work status. Before it was
+    # added to WORK_STATUSES, _work_event coerced the unknown status to
+    # "checkpoint" (an in-progress state), erasing the clean-stop signal.
+    event = _section_event(
+        session="codex-session",
+        section_id="handoff-step",
+        status="handed_off",
+        created_at=40,
+    )
+
+    item = build_work_ledger([event])["work_items"][0]
+
+    assert item["latest_status"] == "handed_off"
+
+
 def test_nonterminal_snapshots_without_copying_text_keep_last_blocker() -> None:
     first = _section_event(
         session="codex-session",

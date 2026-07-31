@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .task_outcome import reduce_task_outcome
+from .task_outcome import reduce_task_outcome, step_verification_counts
 
 
 TASK_INTELLIGENCE_SCHEMA_VERSION = "agent-chronicle.task-intelligence.v1"
@@ -109,7 +109,8 @@ def _state_axes(
     canonical_outcome = str(reduce_task_outcome(task).get("key") or "observed")
     outcome = (
         canonical_outcome
-        if canonical_outcome in {"finding", "blocked", "verified", "reported", "resolved"}
+        if canonical_outcome
+        in {"finding", "blocked", "verified", "reported", "resolved", "handed_off", "mostly_done"}
         else "unknown"
     )
 
@@ -150,6 +151,8 @@ def _decision_brief(
         "blocked": "The agent recorded a blocker for this Task.",
         "resolved": "A later passed check explicitly reports the exact blocker resolved; this is not a verified completion.",
         "reported": "The agent reported completing work; no linked passing check verifies it yet.",
+        "handed_off": "The work was cleanly handed off (continued elsewhere or in a new session); this is a deliberate stop, not a completed or verified outcome.",
+        "mostly_done": "Recorded steps completed while one or more were left open without a terminal record; this is not a claim the Task is finished.",
         "unknown": "agentacct observed this Task but no outcome was recorded.",
     }[outcome]
     if outcome == "finding" and attention_state == "reviewed":
@@ -437,6 +440,9 @@ def build_task_intelligence(
         "title": title,
         "states": axes,
         "decision_brief": _decision_brief(task, axes),
+        # DECISION 3b: partial verification, not all-or-nothing. Surfaces can say
+        # "N of M steps verified" instead of one verified/grey flag for the Task.
+        "verification": step_verification_counts(task),
         "findings": _finding_inventory(task),
         # This is the Task's canonical session aggregate. Work-level usage is
         # never added again.
