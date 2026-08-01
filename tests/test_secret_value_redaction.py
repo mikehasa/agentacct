@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from agentacct.event_log import RAW_EVENT_LOG_FILENAME, RawEventLog
 from agentacct.service import (
     RESERVED_VALUE_REDACTION_KEYS,
     SentinelService,
@@ -256,7 +257,8 @@ def _session_observation(*, title: str) -> dict:
 
 
 def _stored_text(store: Path) -> str:
-    return (store / "events.jsonl").read_text(encoding="utf-8")
+    lines = RawEventLog(store / RAW_EVENT_LOG_FILENAME).read_lines()
+    return "".join(line + "\n" for line in lines)
 
 
 def _stored_events(store: Path) -> list[dict]:

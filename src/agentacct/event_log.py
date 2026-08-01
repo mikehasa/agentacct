@@ -25,6 +25,7 @@ Design contract during the mirror phase:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from contextlib import contextmanager
@@ -41,17 +42,31 @@ RAW_EVENT_LOG_FILENAME = "events.sqlite3"
 # env var (a mirror-mode open of a cut-over store would otherwise wipe the log).
 AUTHORITATIVE_MARKER_FILENAME = "events.authoritative"
 
-# When set, the SQLite log is the AUTHORITATIVE event store: every ledger read
-# and write goes to it and the flat events.jsonl is neither read nor written
-# (and can be deleted). Default OFF — the flat file stays authoritative and the
-# log is a proven mirror. The migration cutover flips this only after parity.
+# The SQLite log is the AUTHORITATIVE event store: every ledger read and write
+# goes to it and the flat events.jsonl is neither read nor written (and can be
+# deleted). Default ON — a fresh store is SQLite-only from the first event, and
+# an existing events.jsonl store auto-adopts the log on open (reconciling the log
+# from the file, then leaving the file behind as a backup). Set
+# AGENTACCT_EVENT_LOG_AUTHORITATIVE=0 (or false/no/off) to opt back into the
+# legacy flat-file mode, where events.jsonl stays authoritative and the log is a
+# proven mirror. That opt-out exists for the mirror-mode/parity tests and for
+# recovering a store on an older runtime.
 EVENT_LOG_AUTHORITATIVE_ENV = "AGENTACCT_EVENT_LOG_AUTHORITATIVE"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
 
 
 def event_log_authoritative() -> bool:
+    """Whether the SQLite event log is the authoritative ledger (the default).
+
+    True unless ``AGENTACCT_EVENT_LOG_AUTHORITATIVE`` is set to an explicit
+    falsey value (``0``/``false``/``no``/``off``). Unset — and any unrecognized
+    value — means authoritative: the flip to SQLite is the product default, and
+    only a deliberate opt-out returns to the flat-file mirror mode.
+    """
+
     value = read_env_alias(EVENT_LOG_AUTHORITATIVE_ENV)
-    return str(value or "").strip().lower() in _TRUE_VALUES
+    return str(value or "").strip().lower() not in _FALSE_VALUES
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS event_lines (
@@ -64,6 +79,11 @@ CREATE TABLE IF NOT EXISTS event_lines (
 );
 CREATE INDEX IF NOT EXISTS idx_event_lines_run ON event_lines(run_id);
 CREATE INDEX IF NOT EXISTS idx_event_lines_event_id ON event_lines(event_id);
+-- Durable record of every flat-file line already drained into the log during a
+-- rolling upgrade (see absorb_new_events). Its keys OUTLIVE a log rewrite that
+-- removes the row, which is what stops a deliberately-removed event from being
+-- resurrected out of the frozen events.jsonl backup on a later absorb.
+CREATE TABLE IF NOT EXISTS absorbed_flat (key TEXT PRIMARY KEY);
 """
 
 
@@ -248,6 +268,95 @@ class RawEventLog:
         else:
             self.replace_all(file_lines)
         return self.verify_against_file(events_path)
+
+    def absorb_new_events(self, events_path: Path) -> int:
+        """Append flat-file events the log has never absorbed; return the count.
+
+        The rolling-upgrade drain. After a store cuts over to the log, a
+        not-yet-restarted OLD mirror-mode process (a 0.5.x daemon that predates
+        the SQLite log) may keep writing to events.jsonl — appending new events,
+        or even rewriting the whole file. Those events must reach the
+        authoritative log or a rolling upgrade would split writes between the two
+        ledgers, but events.jsonl is left INTACT (a read/dry-run of a store must
+        not mutate it, and it stays a backup until the deliberate cutover).
+
+        Idempotence and no-resurrection come from a durable membership set,
+        ``absorbed_flat``, keyed by event_id (``id:<eid>``) or, for a
+        corrupt/legacy line with no id, a content hash (``ln:<sha1>``). On the
+        FIRST sighting of a flat-file event its key is recorded — WHETHER OR NOT
+        it is appended. An event already in the log is not re-appended, but its
+        key is still recorded, because it may have reached the log via a path
+        that does not populate ``absorbed_flat`` (a mirror-mode
+        ``reconcile_from_file``, or a restored older store) — every pre-existing
+        store upgrades through exactly that state. Because ``absorbed_flat``
+        OUTLIVES a log rewrite (redaction / dedup / usage-refresh replace) that
+        deletes the row, an event the log deliberately removed is never
+        re-absorbed from the frozen file. And because membership is by
+        id/content, not by file position, an old process rewriting or reordering
+        events.jsonl cannot smuggle an already-seen event back in or hide a
+        genuinely new one.
+
+        Known limit (union, never truncation): an old process DELETING a row from
+        events.jsonl during the transition is not propagated to the log — the row
+        lingers until the deliberate cutover. Usage accounting dedupes superseded
+        snapshots by session identity, and the window closes when the old
+        processes are restarted, so this does not corrupt totals in practice.
+        """
+
+        if not events_path.exists():
+            return 0
+        file_lines = _read_file_lines(events_path)
+        if not file_lines:
+            return 0
+        with self._connect() as connection:
+            log_ids = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT event_id FROM event_lines WHERE event_id IS NOT NULL"
+                )
+            }
+            absorbed = {str(row[0]) for row in connection.execute("SELECT key FROM absorbed_flat")}
+            log_lines_set: set[str] | None = None  # log's verbatim lines, lazily, for id-less dedup
+            to_add: list[str] = []
+            new_keys: list[str] = []
+            for line in file_lines:
+                event_id, *_ = _extract_columns(line)
+                if event_id is not None:
+                    key = "id:" + event_id
+                    already_in_log = event_id in log_ids
+                else:
+                    key = "ln:" + hashlib.sha1(line.encode("utf-8")).hexdigest()
+                    if log_lines_set is None:
+                        log_lines_set = {
+                            str(row[0]) for row in connection.execute("SELECT line FROM event_lines")
+                        }
+                    already_in_log = line in log_lines_set
+                if key in absorbed:
+                    continue  # already recorded as seen-from-the-flat-file
+                # First sighting of this event from events.jsonl. RECORD its key
+                # unconditionally — even when it is already in the log via a
+                # mirror-mode reconcile or a restore (which do NOT populate
+                # absorbed_flat) — so that if a later rewrite removes the row, a
+                # subsequent absorb cannot resurrect it from the retained backup.
+                # Append to the log only when it is not already present.
+                absorbed.add(key)
+                new_keys.append(key)
+                if not already_in_log:
+                    to_add.append(line)
+                    if event_id is None and log_lines_set is not None:
+                        log_lines_set.add(line)
+            if to_add:
+                connection.executemany(
+                    "INSERT INTO event_lines(event_id, run_id, event_type, created_at, line) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    [(*_extract_columns(line), line) for line in to_add],
+                )
+            if new_keys:
+                connection.executemany(
+                    "INSERT OR IGNORE INTO absorbed_flat(key) VALUES (?)",
+                    [(key,) for key in new_keys],
+                )
+        return len(to_add)
 
     def verify_against_file(self, events_path: Path) -> ParityResult:
         """Compare the log to the flat file line for line — the parity proof."""

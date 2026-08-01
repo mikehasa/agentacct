@@ -94,10 +94,14 @@ def test_concurrent_append_during_replace_is_not_lost(tmp_path: Path) -> None:
     assert sessions == {"replacement-session"}
 
 
-def test_concurrent_replace_events_do_not_corrupt_or_leave_tmp_debris(tmp_path: Path) -> None:
+def test_concurrent_replace_events_do_not_corrupt_or_leave_tmp_debris(tmp_path: Path, monkeypatch) -> None:
     """Two writers looping replace_events (plus one appender) on one store:
     every iteration completes, the final file is valid JSONL, appended
-    sections all survive, and no per-writer temp files are left behind."""
+    sections all survive, and no per-writer temp files are left behind.
+
+    Asserts on the flat file's atomic-rewrite temp-file debris — flat-file
+    mechanics only present in legacy mirror mode."""
+    monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "0")
     store = tmp_path / "state"
     writer_a = SentinelService(store)
     writer_b = SentinelService(store)

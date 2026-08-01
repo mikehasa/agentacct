@@ -992,6 +992,14 @@ class SentinelService:
                 return True
         except OSError:
             pass
+        # The product default makes a store authoritative — but only a store that
+        # actually has a log to be authoritative over. If the log never opened (a
+        # create=False probe of a not-yet-created store), there is nothing to be
+        # authoritative about: report non-authoritative so reads return [] and a
+        # nonexistent store never fails loud. A genuinely cut-over store is caught
+        # above by its marker (and by the fail-loud guard in _init_event_log).
+        if self.event_log is None:
+            return False
         return event_log_authoritative()
 
     def _init_event_log(self) -> None:
@@ -1026,7 +1034,12 @@ class SentinelService:
             self.event_log = RawEventLog(log_db_path)
         except Exception:
             self.event_log = None
-            if marker_exists or event_log_authoritative():
+            # A store that does not exist on disk (a create=False existence probe
+            # of a not-yet-initialized directory) is EMPTY, not a broken
+            # authoritative ledger — its log "failing to open" is only the missing
+            # directory. Fail loud ONLY for a store that truly exists (or bears the
+            # cutover marker) yet cannot open its log.
+            if marker_exists or (self.store.root.exists() and event_log_authoritative()):
                 raise EventLogUnavailable(
                     "the SQLite event log is the authoritative ledger but could not be opened"
                 )
@@ -1036,26 +1049,34 @@ class SentinelService:
         authoritative = marker_exists or event_log_authoritative() or (not flat_exists and log_has_data)
         self._is_authoritative = authoritative
         if authoritative:
-            if not marker_exists:
-                # ADOPTION transition (env flag, or a healed/lost marker). The
-                # flat file is STILL the authority at this instant, so fully sync
-                # the log from it FIRST — a partially-synced mirror log must not
-                # freeze and abandon the file's un-absorbed tail — then persist
-                # the marker so all future opens read the log. Under the write
-                # lock, and only while the file exists (absent ⇒ the log already
-                # is the sole ledger). Once the marker exists this branch never
-                # runs again, so the log (which then LEADS the frozen file) is
-                # never reconciled back down to the stale file.
-                # Reconcile AND mark under one lock hold so they are atomic: a
-                # concurrent mirror append cannot land in events.jsonl in the
-                # gap between the sync and the marker and then be abandoned.
-                with self._events_write_lock():
-                    if flat_exists:
-                        self.event_log.reconcile_from_file(self.events_path)
+            # Absorb whatever the flat file holds into the authoritative log — a
+            # UNION by event_id, never a truncation. This is atomic and unified
+            # across every authoritative open:
+            #   * fresh store — no events.jsonl, nothing to absorb;
+            #   * first adoption — the log is empty, so absorb fills it from the
+            #     file (then the marker is written so future opens read the log);
+            #   * re-open of an adopted store — the frozen backup's ids are all in
+            #     the log already, so absorb is a no-op;
+            #   * ROLLING UPGRADE — a not-yet-restarted OLD (mirror-mode) daemon
+            #     keeps appending to events.jsonl after cutover; absorb drains
+            #     those stragglers into the log so writes never split between the
+            #     two ledgers, and no post-cutover event is stranded.
+            # Under the write lock so a concurrent flat-file append cannot be read
+            # torn, and so absorb + marker are one atomic step.
+            with self._events_write_lock():
+                if self.events_path.exists():
+                    self._absorb_flat_stragglers()
+                if not marker_exists:
                     try:
                         self.mark_authoritative()
                     except OSError:
                         pass
+                # Capture the change stamp UNDER the lock, after absorbing, so a
+                # straggler an old process writes in the release→stat window is
+                # not masked as already-synced and stranded for this process's
+                # whole life (it would then be drained only on a later change or
+                # restart). Mirrors _sync_event_log's in-lock capture.
+                self._event_log_synced_signature = self._events_file_signature()
             return
         # Mirror mode: the flat file is the authority.
         self.event_log.reconcile_from_file(self.events_path)
@@ -1081,6 +1102,25 @@ class SentinelService:
         """Persist that this store's ledger is the SQLite log (the cutover)."""
 
         self._authoritative_marker_path.write_text("1\n", encoding="utf-8")
+
+    def _absorb_flat_stragglers(self) -> None:
+        """Drain events an OLD (mirror-mode) process wrote to events.jsonl into
+        the authoritative log — the rolling-upgrade safety net so writes never
+        split between the two ledgers.
+
+        The caller holds the write lock (serialized with 0.5.x writers, which
+        take the same events.jsonl.lock). events.jsonl is left INTACT — a read or
+        dry-run of a store must not mutate it, and it stays a backup until the
+        deliberate cutover. Re-absorption stays safe via the log's durable
+        ``absorbed_flat`` membership set (see RawEventLog.absorb_new_events): a
+        removed event is never resurrected and a straggler is never duplicated,
+        regardless of how often this runs or whether an old process rewrote the
+        file.
+        """
+
+        if self.event_log is None or not self.events_path.exists():
+            return
+        self.event_log.absorb_new_events(self.events_path)
 
     def _ledger_lines(self) -> list[str]:
         """Non-blank ledger lines in file order, from the authoritative source
@@ -1125,13 +1165,38 @@ class SentinelService:
         return (stat.st_mtime_ns, stat.st_size)
 
     def _sync_event_log(self) -> None:
-        """Refresh the mirror from the flat file if it changed, fail-open.
+        """Keep the log current with the flat file if it changed, fail-open.
 
-        No-op in authoritative mode: there the log IS the authority, so
-        reconciling from a stale/absent flat file would corrupt it.
+        In MIRROR mode the flat file is the authority and the log is reconciled
+        to mirror it exactly. In AUTHORITATIVE mode the log is the authority, so
+        the flat file is never reconciled DOWN — but during a rolling upgrade a
+        not-yet-restarted OLD mirror-mode process may keep appending to
+        events.jsonl after cutover, so we ABSORB (union by event_id, never a
+        truncation) any such straggler writes into the log. Both branches only
+        touch the file when its signature actually changed, so a steady-state
+        store (a frozen backup, or no flat file at all) costs one stat().
         """
 
-        if self.event_log is None or self._authoritative():
+        if self.event_log is None:
+            return
+        if self._authoritative():
+            # Drain any straggler an old mirror-mode process wrote to events.jsonl
+            # since the last check. Only when the file changed (cheap stat), and
+            # the change stamp is captured UNDER the lock — after the absorb — so
+            # a write landing between the absorb and the stamp is not masked and
+            # gets drained on the next check.
+            if not self.events_path.exists():
+                return
+            signature = self._events_file_signature()
+            if signature == self._event_log_synced_signature:
+                return
+            try:
+                with self._events_write_lock():
+                    self._absorb_flat_stragglers()
+                    captured = self._events_file_signature()
+                self._event_log_synced_signature = captured
+            except Exception:  # noqa: BLE001 - straggler drain is best-effort.
+                pass
             return
         signature = self._events_file_signature()
         if signature == self._event_log_synced_signature:

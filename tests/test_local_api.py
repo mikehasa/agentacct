@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 from agentacct.api import UsageDiscoveryConfig, create_local_api_app
 from agentacct.cli import app
 from agentacct.cost import CostLedger, UsageEstimate
+from agentacct.event_log import RAW_EVENT_LOG_FILENAME, RawEventLog
 from agentacct.mcp import SentinelMCPServer
 from agentacct.outcome import apply_judge_result, write_outcome
 from agentacct.pricing_catalog import default_pricing_catalog_snapshot_path
@@ -404,9 +405,10 @@ def test_local_api_records_and_lists_redacted_events(tmp_path):
     listed = client.get("/events")
     assert listed.status_code == 200
     assert listed.json()["events"][0]["event_id"] == event["event_id"]
-    assert "fake-api-key-for-redaction-test" not in (store_root / "events.jsonl").read_text(encoding="utf-8")
-    assert "aws-secret-canary" not in (store_root / "events.jsonl").read_text(encoding="utf-8")
-    assert "client-secret-canary" not in (store_root / "events.jsonl").read_text(encoding="utf-8")
+    ledger_text = "\n".join(RawEventLog(store_root / RAW_EVENT_LOG_FILENAME).read_lines())
+    assert "fake-api-key-for-redaction-test" not in ledger_text
+    assert "aws-secret-canary" not in ledger_text
+    assert "client-secret-canary" not in ledger_text
 
 
 def test_service_redacts_secret_keys_nested_in_tuples(tmp_path):
@@ -427,10 +429,12 @@ def test_service_redacts_secret_keys_nested_in_tuples(tmp_path):
 
     assert recorded["metadata"]["items"][0]["apiToken"] == "[REDACTED]"
     assert recorded["metadata"]["items"][0]["safe"] == "kept"
-    assert "TUPLE_SECRET_CANARY" not in (store / "events.jsonl").read_text(encoding="utf-8")
+    ledger_text = "\n".join(RawEventLog(store / RAW_EVENT_LOG_FILENAME).read_lines())
+    assert "TUPLE_SECRET_CANARY" not in ledger_text
 
 
-def test_local_api_event_summary_counts_without_metadata_leakage(tmp_path):
+def test_local_api_event_summary_counts_without_metadata_leakage(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "0")
     store_root, result = _make_run(tmp_path)
     client = TestClient(create_local_api_app(store_dir=store_root))
     secretish = "bearer-redaction-fixture-local-summary-placeholder-1234567890"
@@ -729,7 +733,7 @@ def test_local_dashboard_refresh_and_save_imports_usage_to_activity_log(tmp_path
     assert "openai / gpt-5-mini" in client.get("/tokens?days=all").text
     assert "Session time" in raw_page.text
 
-    before_duplicate = (store_root / "events.jsonl").read_bytes()
+    before_duplicate = RawEventLog(store_root / RAW_EVENT_LOG_FILENAME).read_lines()
     duplicate = run_dashboard_refresh(client)
 
     assert duplicate.status_code == 303
@@ -738,7 +742,7 @@ def test_local_dashboard_refresh_and_save_imports_usage_to_activity_log(tmp_path
     assert "imported=0" in refresh_flash_qs(duplicate)
     assert "refreshed=0" in refresh_flash_qs(duplicate)
     assert client.get("/events/summary").json()["summary"]["event_count"] == 3
-    assert (store_root / "events.jsonl").read_bytes() == before_duplicate
+    assert RawEventLog(store_root / RAW_EVENT_LOG_FILENAME).read_lines() == before_duplicate
 
 
 def test_refresh_uses_a_clean_url_and_a_one_time_flash_cookie(tmp_path, monkeypatch):
@@ -869,7 +873,7 @@ def test_dashboard_noop_refresh_reconciles_evidence_and_surfaces_failure(
     )
     initial = run_dashboard_refresh(client)
     assert initial.status_code == 303
-    before = (store_root / "events.jsonl").read_bytes()
+    before = RawEventLog(store_root / RAW_EVENT_LOG_FILENAME).read_lines()
     calls: list[tuple[bool, str | None]] = []
 
     def failed_reconcile(_service, *, complete=True, transport="internal"):
@@ -904,7 +908,7 @@ def test_dashboard_noop_refresh_reconciles_evidence_and_surfaces_failure(
     # The surfaced summary must never leak a private/sqlite projection path.
     assert "private" not in flash
     assert "sqlite" not in flash
-    assert (store_root / "events.jsonl").read_bytes() == before
+    assert RawEventLog(store_root / RAW_EVENT_LOG_FILENAME).read_lines() == before
 
     # Loading "/" once consumes the flash cookie and shows the attention banner.
     page = client.get("/")
@@ -1140,8 +1144,7 @@ def _codex_only_dashboard_client(tmp_path, monkeypatch, *, model="gpt-5.6-sol"):
 
 def _stored_usage_rows(store_root):
     rows = []
-    for line in (store_root / "events.jsonl").read_text(encoding="utf-8").splitlines():
-        event = json.loads(line)
+    for event in SentinelService(store_root).list_all_events():
         if event.get("event_type") == "model_usage":
             rows.append(event)
     return rows
@@ -1417,7 +1420,8 @@ def test_local_api_redacts_secret_shaped_string_values(tmp_path):
     # Only the secret span goes; the prose around it is ledger data and stays.
     assert event["metadata"]["summary"] == "called with [REDACTED_SECRET]"
     assert event["metadata"]["value_redaction_applied"] is True
-    assert secretish not in (tmp_path / "state" / "events.jsonl").read_text(encoding="utf-8")
+    ledger_text = "\n".join(RawEventLog(tmp_path / "state" / RAW_EVENT_LOG_FILENAME).read_lines())
+    assert secretish not in ledger_text
 
 
 def test_local_api_validates_event_run_id_and_metadata_size(tmp_path):
@@ -2214,7 +2218,7 @@ def test_dashboard_import_replaces_legacy_alias_rows_once(tmp_path, monkeypatch)
     page = client.get(response.headers["location"])
     assert page.status_code == 200
     assert "replaced legacy per-model session keys" in page.text
-    stored = [json.loads(line) for line in (store_root / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    stored = SentinelService(store_root).list_all_events()
     usage_rows = [event for event in stored if event["event_type"] == "model_usage"]
     assert len(usage_rows) == 2
     assert not any(str(event["event_id"]).startswith("evt_legacy_") for event in stored)
@@ -2253,7 +2257,7 @@ def test_dashboard_import_refreshes_matching_lane_and_appends_new_lane(tmp_path,
 
     assert response.status_code == 303
     assert "migrated=0" in refresh_flash_qs(response)
-    stored = [json.loads(line) for line in (store_root / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    stored = SentinelService(store_root).list_all_events()
     usage_rows = [event for event in stored if event["event_type"] == "model_usage"]
     assert len(usage_rows) == 2
     assert not any(str(event["event_id"]) == "evt_stale_opus" for event in stored)

@@ -146,6 +146,38 @@ def test_rebuild_absorbs_new_events_appended_to_the_ledger(tmp_path: Path) -> No
     assert report.session_count == 2
 
 
+def test_rebuild_reads_the_authoritative_log_not_a_frozen_events_jsonl_backup(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # An adopted store keeps events.jsonl as a FROZEN pre-cutover backup while the
+    # SQLite log keeps growing. rebuild-store must reconstruct from the
+    # authoritative log, not the stale flat file, or every event recorded after
+    # adoption is silently dropped from the rebuilt index.
+    from agentacct.service import SentinelService
+
+    store_dir = tmp_path / "adopted"
+    store_dir.mkdir(mode=0o700)
+    # Seed an existing events.jsonl store in mirror mode, then adopt it by opening
+    # under the authoritative default; the flat file is kept as a frozen backup.
+    monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "0")
+    seeder = SentinelService(store_dir)
+    seeder.append_events_preserving_identity([_usage_event(event_id="u1", session_id="s1")])
+    seeder.list_all_events()
+
+    monkeypatch.delenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", raising=False)  # authoritative default
+    adopted = SentinelService(store_dir)
+    assert adopted._authoritative()
+    # events.jsonl stays a frozen 1-session backup; the second session goes only
+    # to the log.
+    adopted.append_events_preserving_identity([_usage_event(event_id="u2", session_id="s2")])
+    assert len((store_dir / EVENTS_FILENAME).read_text(encoding="utf-8").splitlines()) == 1
+
+    report = rebuild_live_store_from_events(store_dir)
+    # Both sessions present => the rebuild read the authoritative log, not the
+    # frozen 1-session flat backup.
+    assert report.session_count == 2
+
+
 def test_rebuild_leaves_no_stale_wal_sidecars_from_a_prior_store(tmp_path: Path) -> None:
     # A prior live store can leave an uncheckpointed chronicle.sqlite3-wal. A
     # rebuild replaces only the main file, so the fresh store must not inherit

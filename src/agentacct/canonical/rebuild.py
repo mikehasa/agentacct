@@ -136,19 +136,25 @@ def rebuild_live_store_from_events(store_dir: Path | str) -> RebuildReport:
 
     store_dir = Path(store_dir).expanduser()
     events_path = store_dir / EVENTS_FILENAME
-    if events_path.is_file():
-        content = events_path.read_bytes()
-    else:
-        # Cut-over store: reconstruct the ledger bytes from the SQLite event log.
-        from ..event_log import RAW_EVENT_LOG_FILENAME, RawEventLog
+    from ..event_log import AUTHORITATIVE_MARKER_FILENAME, RAW_EVENT_LOG_FILENAME, RawEventLog
 
-        log_path = store_dir / RAW_EVENT_LOG_FILENAME
-        if not log_path.is_file():
-            raise FileNotFoundError(
-                f"no events ledger at {events_path} and no SQLite log at {log_path}"
-            )
+    log_path = store_dir / RAW_EVENT_LOG_FILENAME
+    authoritative = (store_dir / AUTHORITATIVE_MARKER_FILENAME).exists()
+    if log_path.is_file() and (authoritative or not events_path.is_file()):
+        # The SQLite event log is the authoritative ledger — a store that has
+        # been adopted (marker written) or fully cut over (flat file deleted).
+        # Any events.jsonl still present is a FROZEN pre-cutover backup the log
+        # has grown past; reading it would silently drop every event recorded
+        # after adoption. Reconstruct the ledger bytes from the log instead.
         lines = RawEventLog(log_path).read_lines()
         content = ("".join(line + "\n" for line in lines)).encode("utf-8")
+    elif events_path.is_file():
+        # Legacy mirror mode: the flat file is authoritative.
+        content = events_path.read_bytes()
+    else:
+        raise FileNotFoundError(
+            f"no events ledger at {events_path} and no SQLite log at {log_path}"
+        )
 
     # Resolve symlink components (e.g. macOS /var -> /private/var): the
     # importer's candidate path is validated to contain no symlink component.

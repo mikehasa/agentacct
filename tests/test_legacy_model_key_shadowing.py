@@ -166,12 +166,17 @@ def _make_claude_home(root: Path) -> Path:
     return claude_home
 
 
-def test_migration_yields_the_same_totals_the_read_time_rule_reported(tmp_path: Path) -> None:
+def test_migration_yields_the_same_totals_the_read_time_rule_reported(tmp_path: Path, monkeypatch) -> None:
     """Store the legacy pairing exactly as pre-fix imports produced it (stale
     partial base row + suffixed rows matching the transcripts), read totals
     BEFORE any migration, then run the real `usage import-local` migration and
     assert the attributed totals are unchanged and the exclusion counter drops
-    to zero."""
+    to zero.
+
+    Hand-seeds the legacy on-disk pairing by writing raw lines to events.jsonl
+    and reads the exact after-state back from it — flat-file mechanics only
+    present in legacy mirror mode."""
+    monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "0")
     from agentacct.client_usage import discover_claude_code_usage
 
     claude_home = _make_claude_home(tmp_path)

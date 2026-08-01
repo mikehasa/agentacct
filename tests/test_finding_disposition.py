@@ -344,7 +344,10 @@ def test_generic_record_rewrite_and_cross_store_merge_strip_trusted_marker(
     assert appended[0]["metadata"]["reserved_finding_disposition_provenance_stripped"] is True
 
 
-def test_corrupt_trusted_chain_fails_open_and_blocks_new_mutation(tmp_path: Path) -> None:
+def test_corrupt_trusted_chain_fails_open_and_blocks_new_mutation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "0")
     service = SentinelService(tmp_path / "state")
     target = _record_failure(service)
     target_digest = finding_target_digest(target)
@@ -391,8 +394,9 @@ def test_corrupt_trusted_chain_fails_open_and_blocks_new_mutation(tmp_path: Path
 
 
 def test_corrupt_target_digest_invalidates_the_reconstructed_real_episode(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch
 ) -> None:
+    monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "0")
     service = SentinelService(tmp_path / "state")
     target = _record_failure(service)
     target_digest = finding_target_digest(target)
@@ -436,7 +440,10 @@ def test_corrupt_target_digest_invalidates_the_reconstructed_real_episode(
         )
 
 
-def test_unreadable_ledger_line_fails_closed_without_rewrite(tmp_path: Path) -> None:
+def test_unreadable_ledger_line_fails_closed_without_rewrite(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "0")
     service = SentinelService(tmp_path / "state")
     target = _record_failure(service)
     with service.events_path.open("a", encoding="utf-8") as handle:
@@ -454,7 +461,10 @@ def test_unreadable_ledger_line_fails_closed_without_rewrite(tmp_path: Path) -> 
     assert service.events_path.read_bytes() == before
 
 
-def test_persisted_revision_fields_reject_coerced_numbers(tmp_path: Path) -> None:
+def test_persisted_revision_fields_reject_coerced_numbers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "0")
     service = SentinelService(tmp_path / "state")
     target = _record_failure(service)
     target_digest = finding_target_digest(target)

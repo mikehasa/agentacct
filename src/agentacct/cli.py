@@ -3955,6 +3955,20 @@ def mcp_doctor(
                     checks.append(
                         {"name": "store readability", "status": "fail", "details": f"events.sqlite3 is not readable: {exc}"}
                     )
+                # Writability WITHOUT writing bytes: the SQLite log (WAL mode)
+                # needs both the DB file and its directory writable to append.
+                # Pure os.access permission checks keep the doctor read-only,
+                # the same guarantee the events.jsonl append-probe gives — and a
+                # SQLite-authoritative store (the default) must still be told
+                # whether its ledger is writable.
+                if os.access(log_path, os.W_OK) and os.access(store_root, os.W_OK):
+                    checks.append(
+                        {"name": "store writability", "status": "ok", "details": "events.sqlite3 is writable (no bytes were written)"}
+                    )
+                else:
+                    checks.append(
+                        {"name": "store writability", "status": "fail", "details": "events.sqlite3 (or its directory) is not append-writable"}
+                    )
             else:
                 checks.append({"name": "store readability", "status": "ok", "details": "store file absent (created on first recorded event)"})
         else:
@@ -4365,6 +4379,13 @@ def event_drop_flat_ledger(
             return
         if not already_authoritative:
             service.mark_authoritative()
+        elif events_path.exists():
+            # Already authoritative: the log leads the frozen file. An old
+            # mirror-mode process may have written a straggler to events.jsonl
+            # between this service opening and this lock; drain it into the log
+            # before deleting the file, so the cutover never discards an
+            # un-absorbed event (the drain empties the file under this lock).
+            service._absorb_flat_stragglers()
         events_path.unlink(missing_ok=True)
     payload = {"deleted": str(events_path), "log_events": service.event_log.count()}
     if json_output:
