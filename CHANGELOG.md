@@ -33,6 +33,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a second, so the fast usage/cost read path has a store to serve even on a
   machine that never ran the background writer.
 
+### Removed
+- The owner-gated offline **Evidence v2 rebuild subsystem** (`agentacct evidence
+  rebuild` — snapshot / build-candidate / activate / rollback and their modules)
+  is gone. It reconstructed the Evidence v2 store by replaying the v1 ledger from
+  a sealed snapshot, and it read that ledger from `events.jsonl` — an assumption
+  the SQLite-default cutover broke. Evidence v2 itself is unchanged and still
+  self-heals its projection from its own durable spool; only the offline
+  replay-from-flat-ledger DR/activation tooling was retired.
+
 ### Fixed
 - `agentacct mcp doctor` now reports **store writability** for a SQLite-backed
   store. The writability probe previously ran only when a flat `events.jsonl`
