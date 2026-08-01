@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-01
+
 ### Added
 - **agentacct now keeps its event ledger in SQLite by default.** The event log
   (`events.sqlite3`) is the authoritative store: a fresh install is SQLite-only
