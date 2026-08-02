@@ -6143,6 +6143,58 @@ def _local_usage_import_payload(
                     recorded_session_observations.append(recorded_observation)
                     if recorded_observation.get("event_id"):
                         existing_event_ids.add(str(recorded_observation["event_id"]))
+        # Provider rate-limit snapshots (CLI phase B foundation): passively read
+        # the provider-reported usage-limit windows Codex writes to its session
+        # rollout files and the Claude desktop app writes to its plan-usage
+        # history, and record them as rate_limit_observed events. Best-effort and
+        # content-idempotent (record_event dedups an unchanged snapshot via its
+        # idempotency_key), so it is safe on every watch tick and can never fail
+        # the usage import it rides along with.
+        rate_limit_snapshots_recorded = 0
+        if not dry_run:
+            from . import rate_limits as _rate_limits
+
+            _global_scan = _rate_limits.global_limit_scan_enabled()
+            _rl_snapshots: list[Any] = []
+            try:
+                if client in ("all", "codex"):
+                    # Codex honors codex_home directly: an explicit home is a
+                    # hermetic local scan (always allowed); only the default read
+                    # of the real ~/.codex is gated behind the global-scan knob.
+                    if codex_home is not None or _global_scan:
+                        _codex_rl = _rate_limits.read_codex_rate_limits_latest(codex_home)
+                        if _codex_rl is not None:
+                            _rl_snapshots.append(_codex_rl)
+                # The Claude desktop plan-usage file is a fixed machine-global path
+                # (not under claude_home / CLAUDE_CONFIG_DIR). Read it only on a
+                # genuinely default scan: no Claude-home relocation (the param OR
+                # the CLAUDE_CONFIG_DIR env the import itself honors) and the
+                # global-scan knob on. This keeps hermetic/custom scans from ever
+                # reaching into the developer's real machine file.
+                if (
+                    client in ("all", "claude-code")
+                    and claude_home is None
+                    and not os.environ.get("CLAUDE_CONFIG_DIR")
+                    and _global_scan
+                ):
+                    _rl_snapshots.extend(_rate_limits.read_claude_plan_usage_latest())
+            except Exception:  # noqa: BLE001 - a limits read must never break the usage import.
+                _rl_snapshots = []
+            if _rl_snapshots:
+                try:
+                    # Transition-based dedup: record a snapshot only when its
+                    # stream's state changed since the last recorded one, so an
+                    # unchanged limit re-seen every tick is a no-op but a decline
+                    # or reset is recorded with a fresh observation time.
+                    rate_limit_snapshots_recorded = (
+                        _rate_limits.record_snapshots_transitionally(
+                            _rl_snapshots,
+                            existing_events=service.list_all_events(),
+                            record=service.record_event,
+                        )
+                    )
+                except Exception:  # noqa: BLE001 - best-effort; recording must not fail import.
+                    rate_limit_snapshots_recorded = 0
         if dry_run:
             projectable_observation_identities: set[tuple[str, str, str]] = set()
             observation_conflict_identities = 0
@@ -6429,6 +6481,7 @@ def _local_usage_import_payload(
             "sessions_without_usage": len(session_observation_candidates),
             "eligible_session_observations": len(session_observation_candidates),
             "imported_session_observations": len(recorded_session_observations),
+            "rate_limit_snapshots_recorded": rate_limit_snapshots_recorded,
             "resolved_session_observation_conflicts": len(
                 resolved_session_observation_conflicts
             ),
@@ -7846,6 +7899,181 @@ def _select_serve_port(
         if _probe_port_free(host, candidate):
             return candidate
     raise OSError(errno.EADDRINUSE, f"no free port in range {port}-{port + max_offset}")
+
+
+def _rl_bar(used_percent: float, width: int = 20) -> str:
+    pct = max(0.0, min(100.0, float(used_percent)))
+    filled = int(round(pct / 100.0 * width))
+    return "█" * filled + "░" * (width - filled)
+
+
+def _rl_humanize_seconds(seconds: float) -> str:
+    total = int(max(0, seconds))
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, _ = divmod(rem, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m"
+    return "<1m"
+
+
+def _rl_window_label(window: Mapping[str, Any]) -> str:
+    labels = {"5h": "5-hour", "7d": "7-day"}
+    kind = str(window.get("kind") or "")
+    if kind in labels:
+        return labels[kind]
+    minutes = window.get("window_minutes")
+    if isinstance(minutes, (int, float)):
+        return f"{int(minutes)}m"
+    return "window"
+
+
+def _rl_latest_snapshots(
+    service: "SentinelService", *, client: str | None
+) -> list[dict[str, Any]]:
+    """Latest rate_limit_observed event per (client, org, run_id)."""
+
+    from .rate_limits import EVENT_TYPE as _RL_EVENT_TYPE
+
+    latest: dict[tuple[Any, Any, Any], tuple[float, dict[str, Any]]] = {}
+    for event in service.list_all_events():
+        if event.get("event_type") != _RL_EVENT_TYPE:
+            continue
+        metadata = event.get("metadata") or {}
+        event_client = metadata.get("client")
+        if client and event_client != client:
+            continue
+        key = (event_client, metadata.get("org"), event.get("run_id"))
+        captured = metadata.get("captured_at")
+        if not isinstance(captured, (int, float)) or isinstance(captured, bool):
+            created = event.get("created_at")
+            captured = float(created) if isinstance(created, (int, float)) else 0.0
+        ordering = float(captured)
+        current = latest.get(key)
+        if current is None or ordering >= current[0]:
+            latest[key] = (ordering, event)
+    return [
+        event
+        for _key, (_ordering, event) in sorted(
+            latest.items(), key=lambda item: (str(item[0][0]), str(item[0][1]))
+        )
+    ]
+
+
+def _rl_json_entry(event: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = event.get("metadata") or {}
+    return {
+        "client": metadata.get("client"),
+        "plan_type": metadata.get("plan_type"),
+        "org": metadata.get("org"),
+        "captured_at": metadata.get("captured_at"),
+        "windows": metadata.get("windows") or [],
+        "credits": metadata.get("credits"),
+        "reached_type": metadata.get("reached_type"),
+        "source_file": metadata.get("source_file"),
+    }
+
+
+@app.command("limits")
+def limits(
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    client: Annotated[
+        Optional[str],
+        typer.Option(help="Filter to one client: all (default), codex, or claude-code."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Show provider-reported usage limits (5-hour / weekly windows).
+
+    Read passively from local files — no credentials, no API calls. Codex limits
+    come from ~/.codex session files; Claude limits from the Claude desktop app's
+    local plan-usage history (Pro/Max subscriptions only). Populate them by using
+    your agents, or by running ``agentacct usage watch``. Percentages are the
+    provider's own reported utilization; reset times are shown when the provider
+    records them (Codex).
+    """
+
+    # Normalize/validate the client selector the same way the rest of the CLI
+    # does: None/"all" means no filter; only the two clients that emit limits are
+    # valid. (A bare unknown value must error, not silently render "no data".)
+    if client is None or client == "all":
+        effective_client: str | None = None
+    elif client in ("codex", "claude-code"):
+        effective_client = client
+    else:
+        raise typer.BadParameter("--client must be one of: all, codex, claude-code")
+
+    resolved_store_dir = _resolve_cli_store_dir(store_dir).path
+    service = SentinelService(resolved_store_dir, create=False)
+    snapshots = _rl_latest_snapshots(service, client=effective_client)
+
+    if json_output:
+        print(
+            json.dumps(
+                {"limits": [_rl_json_entry(e) for e in snapshots]},
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            )
+        )
+        return
+
+    if not snapshots:
+        console.print("No provider limit data recorded yet.")
+        console.print("  • Codex: run a codex session, or `agentacct usage watch`.")
+        console.print(
+            "  • Claude (desktop app, Pro/Max): use Claude, or `agentacct usage watch`."
+        )
+        return
+
+    now = time.time()
+    console.print(
+        "Provider-reported usage limits — local files, no API. Provider estimates, not billing.\n"
+    )
+    for event in snapshots:
+        metadata = event.get("metadata") or {}
+        event_client = metadata.get("client") or "?"
+        header = str(event_client)
+        plan = metadata.get("plan_type")
+        if plan:
+            header += f"  plan: {plan}"
+        org = metadata.get("org")
+        if org:
+            header += f"  org: {str(org)[:8]}"
+        captured = metadata.get("captured_at")
+        if not isinstance(captured, (int, float)) or isinstance(captured, bool):
+            created = event.get("created_at")
+            captured = created if isinstance(created, (int, float)) else None
+        if isinstance(captured, (int, float)):
+            header += f"  (as of {_rl_humanize_seconds(now - captured)} ago)"
+        console.print(header)
+        windows = metadata.get("windows")
+        for window in windows if isinstance(windows, list) else []:
+            if not isinstance(window, Mapping):
+                continue
+            used = window.get("used_percent")
+            used_value = float(used) if isinstance(used, (int, float)) and not isinstance(used, bool) else 0.0
+            line = f"  {_rl_window_label(window):>7}  {_rl_bar(used_value)}  {used_value:5.1f}%"
+            resets_at = window.get("resets_at")
+            if isinstance(resets_at, (int, float)) and not isinstance(resets_at, bool) and resets_at > 0:
+                delta = resets_at - now
+                line += (
+                    f"  · resets in {_rl_humanize_seconds(delta)}"
+                    if delta > 0
+                    else "  · resets now"
+                )
+            console.print(line)
+        credits = metadata.get("credits")
+        if isinstance(credits, Mapping) and credits.get("has_credits"):
+            console.print(f"  credits: {credits.get('balance')}")
+        reached = metadata.get("reached_type")
+        if reached:
+            console.print(f"  ⚠ limit reached: {reached}")
+        console.print()
 
 
 @app.command("serve")
