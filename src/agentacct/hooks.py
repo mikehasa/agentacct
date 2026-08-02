@@ -966,8 +966,20 @@ def claude_code_settings_example(python_executable: str | None = None, *, hook_p
     # demonstrably record nothing even with the directive delivered. The
     # merge-never-clobber rule applies to "env" exactly as to "hooks": whoever
     # merges this example must preserve the env keys the user already has.
+    # The statusLine is a lightweight, always-fast command (imports only
+    # agentacct.rate_limits) that captures Claude's rate-limit reading for
+    # terminal-CLI users — where the desktop plan-usage file does not exist — and
+    # prints a compact status bar. It runs as a direct command (NOT the hook
+    # wrapper, which dispatches on hook_event_name), so it is `python -m` and the
+    # same string works for project and user-level installs.
+    statusline_command = f"{shlex.quote(python_command)} -m agentacct.statusline_hook"
     return {
         "env": {"ENABLE_TOOL_SEARCH": "auto"},
+        "statusLine": {
+            "type": "command",
+            "command": statusline_command,
+            "padding": 0,
+        },
         "hooks": {
             "PreToolUse": [
                 {
