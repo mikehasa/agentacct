@@ -17,6 +17,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     `token_count` events: used percent, window length, reset time, credits, plan).
   - **Claude Code (desktop app)** from `~/Library/Application Support/Claude/plan-usage-history.json`
     (the desktop app's rolling 5-hour / 7-day utilization series; Pro/Max only).
+  - **Claude Code (terminal CLI)** via a lightweight `statusLine` command
+    (`python -m agentacct.statusline_hook`) that Claude Code feeds its live
+    5-hour / 7-day utilization — the only local surface for CLI-only users, who
+    have no desktop plan-usage file. The hook is tiny and fail-open (it never
+    slows or breaks the status bar); it writes the reading to a spool the usage
+    import ingests, and also prints a compact status bar (model · context% ·
+    5h/7d · cost). `agentacct onboard` installs it into `~/.claude/settings.json`
+    without ever overwriting a status line you already configured.
   Snapshots are captured as a no-cost side effect of `agentacct usage import-local`
   and `agentacct usage watch`, and recorded idempotently — an unchanged limit
   re-observed on every scan is a no-op, so a new event is written only when a

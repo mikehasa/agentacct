@@ -591,6 +591,19 @@ def _merge_claude_settings_from_example(example_path: Path, target: Path) -> tup
         if key not in env:
             changed = True
         env[key] = value
+    # statusLine is an OPTIONAL, cosmetic add-on (the terminal-CLI rate-limit bar),
+    # NOT part of the required record-your-work recipe. So — unlike env/hooks — a
+    # conflict must NEVER be fatal: a user who already runs their own statusLine
+    # (ccusage, powerline, a custom script) keeps it, and env + hooks still merge.
+    # We only install ours when the user has none.
+    desired_statusline = generated.get("statusLine")
+    if isinstance(desired_statusline, dict):
+        current_statusline = current.get("statusLine")
+        if current_statusline is None:
+            current["statusLine"] = desired_statusline
+            changed = True
+        # else: absent-vs-ours already handled; a user's own different statusLine
+        # is left untouched (they can adopt agentacct's manually).
     desired_hooks = generated.get("hooks") if isinstance(generated.get("hooks"), dict) else {}
     for event_name, rows in desired_hooks.items():
         if not isinstance(rows, list):
@@ -6145,11 +6158,13 @@ def _local_usage_import_payload(
                         existing_event_ids.add(str(recorded_observation["event_id"]))
         # Provider rate-limit snapshots (CLI phase B foundation): passively read
         # the provider-reported usage-limit windows Codex writes to its session
-        # rollout files and the Claude desktop app writes to its plan-usage
-        # history, and record them as rate_limit_observed events. Best-effort and
-        # content-idempotent (record_event dedups an unchanged snapshot via its
-        # idempotency_key), so it is safe on every watch tick and can never fail
-        # the usage import it rides along with.
+        # rollout files, the Claude desktop app writes to its plan-usage history,
+        # and the terminal-CLI statusLine hook writes to its spool — and record
+        # them as rate_limit_observed events. Dedup is TRANSITION-based
+        # (record_snapshots_transitionally against each stream's last recorded
+        # snapshot; snapshots carry no idempotency_key), so an unchanged limit is
+        # a no-op but a change/decline/reset is recorded with a fresh time. The
+        # whole block is best-effort and can never fail the usage import.
         rate_limit_snapshots_recorded = 0
         if not dry_run:
             from . import rate_limits as _rate_limits
@@ -6178,6 +6193,18 @@ def _local_usage_import_payload(
                     and _global_scan
                 ):
                     _rl_snapshots.extend(_rate_limits.read_claude_plan_usage_latest())
+                # Terminal-CLI users have no desktop plan-usage file; their limits
+                # arrive via the statusLine spool. Its path follows the Claude
+                # config home (CLAUDE_CONFIG_DIR / ~/.claude), so it stays isolated
+                # under a relocated home — gate only on claude_home + global scan.
+                if (
+                    client in ("all", "claude-code")
+                    and claude_home is None
+                    and _global_scan
+                ):
+                    _statusline_rl = _rate_limits.read_claude_statusline_latest()
+                    if _statusline_rl is not None:
+                        _rl_snapshots.append(_statusline_rl)
             except Exception:  # noqa: BLE001 - a limits read must never break the usage import.
                 _rl_snapshots = []
             if _rl_snapshots:
@@ -7964,10 +7991,17 @@ def _rl_latest_snapshots(
     ]
 
 
+_RL_ORIGIN_LABELS = {
+    "claude_plan_usage": "desktop app",
+    "claude_statusline": "CLI",
+}
+
+
 def _rl_json_entry(event: Mapping[str, Any]) -> dict[str, Any]:
     metadata = event.get("metadata") or {}
     return {
         "client": metadata.get("client"),
+        "origin": metadata.get("origin"),
         "plan_type": metadata.get("plan_type"),
         "org": metadata.get("org"),
         "captured_at": metadata.get("captured_at"),
@@ -7991,10 +8025,11 @@ def limits(
 
     Read passively from local files — no credentials, no API calls. Codex limits
     come from ~/.codex session files; Claude limits from the Claude desktop app's
-    local plan-usage history (Pro/Max subscriptions only). Populate them by using
-    your agents, or by running ``agentacct usage watch``. Percentages are the
-    provider's own reported utilization; reset times are shown when the provider
-    records them (Codex).
+    plan-usage history, or — for terminal-CLI users — a statusLine hook
+    (``agentacct onboard`` installs it). Claude limits are Pro/Max only. Populate
+    them by using your agents, or by running ``agentacct usage watch``. Percentages
+    are the provider's own reported utilization; reset times are shown when the
+    provider records them (Codex and the Claude statusLine).
     """
 
     # Normalize/validate the client selector the same way the rest of the CLI
@@ -8028,6 +8063,10 @@ def limits(
         console.print(
             "  • Claude (desktop app, Pro/Max): use Claude, or `agentacct usage watch`."
         )
+        console.print(
+            "  • Claude (terminal CLI, Pro/Max): `agentacct onboard` installs a "
+            "statusLine that captures limits while you code."
+        )
         return
 
     now = time.time()
@@ -8038,6 +8077,9 @@ def limits(
         metadata = event.get("metadata") or {}
         event_client = metadata.get("client") or "?"
         header = str(event_client)
+        origin_label = _RL_ORIGIN_LABELS.get(str(metadata.get("origin") or ""))
+        if origin_label:
+            header += f" ({origin_label})"
         plan = metadata.get("plan_type")
         if plan:
             header += f"  plan: {plan}"

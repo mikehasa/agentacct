@@ -50,8 +50,22 @@ EVENT_TYPE = "rate_limit_observed"
 
 CODEX_SOURCE = "codex-local-rate-limit"
 CLAUDE_SOURCE = "claude-desktop-plan-usage"
+CLAUDE_STATUSLINE_SOURCE = "claude-code-statusline"
 
 CODEX_RUN_ID = "codex_rate_limit"
+CLAUDE_STATUSLINE_RUN_ID = "claude_statusline"
+
+# Snapshot origins (drive source + run_id so the feeds stay distinct streams).
+ORIGIN_CODEX_SESSION = "codex_session"
+ORIGIN_CLAUDE_PLAN_USAGE = "claude_plan_usage"
+ORIGIN_CLAUDE_STATUSLINE = "claude_statusline"
+
+# The terminal-CLI statusLine spool: a lightweight statusLine command
+# (`python -m agentacct.statusline_hook`) writes the latest Claude rate-limit
+# reading here, and the usage import reads it. Path follows the Claude config
+# home (CLAUDE_CONFIG_DIR, else ~/.claude) so it is naturally isolated when that
+# home is relocated; overridable via env for tests/custom setups.
+STATUSLINE_SPOOL_ENV = "AGENTACCT_STATUSLINE_SPOOL"
 
 # Canonical rolling-window lengths (minutes) used to label windows.
 FIVE_HOUR_MINUTES = 300
@@ -97,10 +111,18 @@ class RateLimitWindow:
 
 @dataclass(frozen=True)
 class RateLimitSnapshot:
-    """A single provider-reported limit observation for one client."""
+    """A single provider-reported limit observation for one client.
+
+    ``origin`` identifies which local source produced it — ``codex_session``,
+    ``claude_plan_usage`` (the Claude desktop app's history file), or
+    ``claude_statusline`` (the terminal-CLI statusLine spool). It drives the
+    recorded event's ``source`` and per-stream ``run_id`` so the three feeds stay
+    distinct streams that never collide.
+    """
 
     client: str  # "codex" | "claude-code"
     windows: tuple[RateLimitWindow, ...]
+    origin: str = "unknown"
     captured_at: float | None = None  # provider sample/event time, epoch seconds
     plan_type: str | None = None
     credits: Mapping[str, Any] | None = None
@@ -225,6 +247,7 @@ def normalize_codex_rate_limits(
     return RateLimitSnapshot(
         client="codex",
         windows=tuple(windows),
+        origin=ORIGIN_CODEX_SESSION,
         captured_at=_epoch_seconds(captured_at),
         plan_type=_str_or_none(rate_limits.get("plan_type")),
         credits=credits,
@@ -281,8 +304,57 @@ def normalize_claude_plan_usage_sample(
     return RateLimitSnapshot(
         client="claude-code",
         windows=tuple(windows),
+        origin=ORIGIN_CLAUDE_PLAN_USAGE,
         captured_at=captured_at,
         org=_str_or_none(sample.get("org")),
+        source_file=source_file,
+    )
+
+
+def normalize_claude_statusline(
+    payload: Any,
+    *,
+    captured_at: float | None = None,
+    source_file: str | None = None,
+) -> RateLimitSnapshot | None:
+    """Turn a Claude Code statusLine payload into a snapshot, or ``None``.
+
+    The statusLine JSON carries ``rate_limits.five_hour`` / ``.seven_day`` with
+    ``used_percentage`` + ``resets_at`` (Pro/Max subscriptions only; absent for
+    API-key auth). Unlike the desktop plan-usage file, this feed HAS reset times.
+    """
+
+    if not isinstance(payload, Mapping):
+        return None
+    rate_limits = payload.get("rate_limits")
+    if not isinstance(rate_limits, Mapping):
+        return None
+    windows: list[RateLimitWindow] = []
+    for key, kind, minutes in (
+        ("five_hour", "5h", FIVE_HOUR_MINUTES),
+        ("seven_day", "7d", SEVEN_DAY_MINUTES),
+    ):
+        window = rate_limits.get(key)
+        if not isinstance(window, Mapping):
+            continue
+        used = _float_or_none(window.get("used_percentage"))
+        if used is None:
+            continue
+        windows.append(
+            RateLimitWindow(
+                kind=kind,
+                used_percent=used,
+                window_minutes=minutes,
+                resets_at=_int_or_none(window.get("resets_at")),
+            )
+        )
+    if not windows:
+        return None
+    return RateLimitSnapshot(
+        client="claude-code",
+        windows=tuple(windows),
+        origin=ORIGIN_CLAUDE_STATUSLINE,
+        captured_at=_epoch_seconds(captured_at),
         source_file=source_file,
     )
 
@@ -295,19 +367,26 @@ def normalize_claude_plan_usage_sample(
 def snapshot_run_id(snapshot: RateLimitSnapshot) -> str:
     """A stable per-stream run_id.
 
-    Codex limits are account-wide, so all codex snapshots share one run_id;
-    Claude's series is per-org. Both are stable across scans so consecutive
-    unchanged snapshots collapse to one recorded event.
+    Codex limits are account-wide, so all codex snapshots share one run_id; the
+    Claude desktop plan-usage series is per-org; the terminal-CLI statusLine feed
+    is its own stream. All are stable across scans so consecutive unchanged
+    snapshots collapse to one recorded event.
     """
 
-    if snapshot.client == "codex":
+    if snapshot.origin == ORIGIN_CODEX_SESSION or snapshot.client == "codex":
         return CODEX_RUN_ID
+    if snapshot.origin == ORIGIN_CLAUDE_STATUSLINE:
+        return CLAUDE_STATUSLINE_RUN_ID
     org = snapshot.org or "unknown"
     return f"claude_plan_usage_{org}"
 
 
-def _snapshot_source(client: str) -> str:
-    return CODEX_SOURCE if client == "codex" else CLAUDE_SOURCE
+def _snapshot_source(snapshot: RateLimitSnapshot) -> str:
+    if snapshot.origin == ORIGIN_CODEX_SESSION or snapshot.client == "codex":
+        return CODEX_SOURCE
+    if snapshot.origin == ORIGIN_CLAUDE_STATUSLINE:
+        return CLAUDE_STATUSLINE_SOURCE
+    return CLAUDE_SOURCE
 
 
 def snapshot_state_signature(snapshot: RateLimitSnapshot) -> str:
@@ -352,6 +431,7 @@ def snapshot_to_event(snapshot: RateLimitSnapshot) -> dict[str, Any]:
 
     metadata: dict[str, Any] = {
         "client": snapshot.client,
+        "origin": snapshot.origin,
         "captured_at": snapshot.captured_at,
         "windows": [w.to_dict() for w in snapshot.windows],
         "plan_type": snapshot.plan_type,
@@ -363,7 +443,7 @@ def snapshot_to_event(snapshot: RateLimitSnapshot) -> dict[str, Any]:
         "state_signature": snapshot_state_signature(snapshot),
     }
     return {
-        "source": _snapshot_source(snapshot.client),
+        "source": _snapshot_source(snapshot),
         "event_type": EVENT_TYPE,
         "run_id": snapshot_run_id(snapshot),
         "provider": None,
@@ -462,6 +542,91 @@ def default_claude_plan_usage_path() -> Path:
         / "Application Support"
         / "Claude"
         / "plan-usage-history.json"
+    )
+
+
+def _claude_config_home() -> Path:
+    """The Claude Code config home: the first CLAUDE_CONFIG_DIR entry, else ~/.claude.
+
+    CLAUDE_CONFIG_DIR is comma-separated for the rest of agentacct (see
+    source_paths), so we split the same way — NOT on os.pathsep — to stay
+    consistent with the home the usage import actually scans.
+    """
+
+    configured = os.environ.get("CLAUDE_CONFIG_DIR")
+    if configured:
+        parts = [p.strip() for p in configured.split(",") if p.strip()]
+        if parts:
+            return Path(parts[0]).expanduser()
+    return Path.home() / ".claude"
+
+
+def default_claude_statusline_spool_path() -> Path:
+    """Where the statusLine hook writes, and the import reads, the latest Claude
+    CLI rate-limit reading. Follows the Claude config home (CLAUDE_CONFIG_DIR else
+    ~/.claude). Writer (the hook, run by Claude with its env) and reader (the
+    usage import) agree only when they see the SAME CLAUDE_CONFIG_DIR; if a user
+    relocates the home for `claude` but not for `agentacct watch`, the CLI feed is
+    simply absent (fails soft), not wrong. Override with AGENTACCT_STATUSLINE_SPOOL."""
+
+    override = os.environ.get(STATUSLINE_SPOOL_ENV)
+    if override:
+        return Path(override).expanduser()
+    return _claude_config_home() / "agentacct" / "statusline-latest.json"
+
+
+def write_claude_statusline_spool(
+    rate_limits: Any,
+    *,
+    captured_at: float,
+    path: Path | str | None = None,
+) -> bool:
+    """Atomically write the latest statusLine rate-limit reading to the spool.
+
+    Best-effort: returns False on any failure (the statusLine command must never
+    fail). Overwrites — the spool holds only the latest reading, ingested by the
+    usage import.
+    """
+
+    target = Path(path).expanduser() if path is not None else default_claude_statusline_spool_path()
+    document = {"v": 1, "captured_at": captured_at, "rate_limits": rate_limits}
+    # A UNIQUE temp name per writer: several Claude Code sessions write this one
+    # spool at ~300ms cadence, so a fixed temp name would let concurrent writers
+    # clobber each other's temp and defeat the os.replace atomicity.
+    tmp = target.with_name(f".{target.name}.tmp-{os.getpid()}-{os.urandom(4).hex()}")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(document), encoding="utf-8")
+        os.replace(tmp, target)
+        return True
+    except (OSError, TypeError, ValueError):
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False
+
+
+def read_claude_statusline_latest(
+    path: Path | str | None = None,
+) -> RateLimitSnapshot | None:
+    """Read the statusLine spool into a snapshot, or ``None`` if absent/malformed."""
+
+    target = Path(path).expanduser() if path is not None else default_claude_statusline_spool_path()
+    try:
+        raw = target.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        document = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(document, Mapping):
+        return None
+    return normalize_claude_statusline(
+        {"rate_limits": document.get("rate_limits")},
+        captured_at=document.get("captured_at"),
+        source_file=str(target),
     )
 
 
@@ -607,23 +772,33 @@ def read_claude_plan_usage_latest(
 
 __all__ = [
     "CLAUDE_SOURCE",
+    "CLAUDE_STATUSLINE_RUN_ID",
+    "CLAUDE_STATUSLINE_SOURCE",
     "CODEX_RUN_ID",
     "CODEX_SOURCE",
     "EVENT_TYPE",
     "FIVE_HOUR_MINUTES",
     "GLOBAL_LIMIT_SCAN_ENV",
+    "ORIGIN_CLAUDE_PLAN_USAGE",
+    "ORIGIN_CLAUDE_STATUSLINE",
+    "ORIGIN_CODEX_SESSION",
     "SEVEN_DAY_MINUTES",
+    "STATUSLINE_SPOOL_ENV",
     "RateLimitSnapshot",
     "RateLimitWindow",
     "default_claude_plan_usage_path",
+    "default_claude_statusline_spool_path",
     "default_codex_sessions_root",
     "global_limit_scan_enabled",
     "normalize_claude_plan_usage_sample",
+    "normalize_claude_statusline",
     "normalize_codex_rate_limits",
     "read_claude_plan_usage_latest",
+    "read_claude_statusline_latest",
     "read_codex_rate_limits_latest",
     "record_snapshots_transitionally",
     "snapshot_run_id",
     "snapshot_state_signature",
     "snapshot_to_event",
+    "write_claude_statusline_spool",
 ]
