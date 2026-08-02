@@ -6,6 +6,24 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **`agentacct limits` — provider-reported usage limits, read from local files.**
+  A new foundation records real rate-limit snapshots as `rate_limit_observed`
+  events and renders them: for each client, the 5-hour and weekly (7-day) windows
+  with the provider's own used-percentage, reset countdown (when the provider
+  reports one), plan, and credits. Data is read **passively from local files —
+  no credentials, no API calls, no CLI scraping**:
+  - **Codex** from `~/.codex/sessions/**/rollout-*.jsonl` (`rate_limits` on
+    `token_count` events: used percent, window length, reset time, credits, plan).
+  - **Claude Code (desktop app)** from `~/Library/Application Support/Claude/plan-usage-history.json`
+    (the desktop app's rolling 5-hour / 7-day utilization series; Pro/Max only).
+  Snapshots are captured as a no-cost side effect of `agentacct usage import-local`
+  and `agentacct usage watch`, and recorded idempotently — an unchanged limit
+  re-observed on every scan is a no-op, so a new event is written only when a
+  percentage, window, or credit value actually changes. `agentacct limits`
+  supports `--json` and `--client`. Reading limits is best-effort and never fails
+  a usage import.
+
 ## [0.6.0] - 2026-08-01
 
 ### Added

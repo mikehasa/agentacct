@@ -155,6 +155,13 @@ V1_ONLY_RETAINED: dict[str, str] = {
         "not a usage measurement and has no canonical payload lane. Retained in "
         "v1."
     ),
+    "rate_limit_observed": (
+        "a provider-reported rate-limit/quota snapshot (5-hour/weekly windows with "
+        "used_percent + reset time, plan, credits) read passively from local Codex "
+        "session files and the Claude desktop plan-usage history. Observational "
+        "telemetry, not a usage measurement and not a work claim; no canonical "
+        "payload lane. Retained in v1."
+    ),
 }
 
 

@@ -140,6 +140,22 @@ def _pin_event_log_authoritative_default(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 @pytest.fixture(autouse=True)
+def _disable_global_provider_limit_scan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the machine-GLOBAL provider-limit file scan off for every test.
+
+    The rate-limit foundation reads global provider files (the real ``~/.codex``
+    when no codex_home is given, and the Claude desktop plan-usage history) as a
+    side effect of a usage import. Hermetic tests must never touch the developer's
+    real machine, so ``AGENTACCT_SCAN_GLOBAL_LIMITS`` is pinned off here (an
+    explicit codex_home is still scanned — that is a local, isolated path). A test
+    that specifically exercises the global scan opts in with
+    ``monkeypatch.setenv("AGENTACCT_SCAN_GLOBAL_LIMITS", "1")``.
+    """
+
+    monkeypatch.setenv("AGENTACCT_SCAN_GLOBAL_LIMITS", "0")
+
+
+@pytest.fixture(autouse=True)
 def _allow_test_client_host(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep Starlette TestClient's default ``Host: testserver`` working.
 
