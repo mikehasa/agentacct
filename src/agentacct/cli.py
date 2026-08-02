@@ -41,6 +41,19 @@ from . import autostart as autostart_mod
 from .autostart import AutostartError
 from .agent_capabilities import agent_capability_manifest
 from .api import UsageDiscoveryConfig, create_local_api_app
+from .usage_snapshot import (
+    NOW_WINDOW_ALIASES,
+    ORIGIN_LABELS,
+    build_usage_snapshot,
+    cost_text,
+    format_tokens,
+    humanize_seconds,
+    latest_limit_events,
+    limit_json_entry,
+    limit_teaser_lines,
+    usage_bar,
+    window_label,
+)
 from .client_usage import (
     SUPPORTED_CLIENTS,
     apply_pricing_estimate_to_event,
@@ -7928,174 +7941,6 @@ def _select_serve_port(
     raise OSError(errno.EADDRINUSE, f"no free port in range {port}-{port + max_offset}")
 
 
-def _rl_bar(used_percent: float, width: int = 20) -> str:
-    pct = max(0.0, min(100.0, float(used_percent)))
-    filled = int(round(pct / 100.0 * width))
-    return "█" * filled + "░" * (width - filled)
-
-
-def _rl_humanize_seconds(seconds: float) -> str:
-    total = int(max(0, seconds))
-    days, rem = divmod(total, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes, _ = divmod(rem, 60)
-    if days:
-        return f"{days}d {hours}h"
-    if hours:
-        return f"{hours}h {minutes}m"
-    if minutes:
-        return f"{minutes}m"
-    return "<1m"
-
-
-def _rl_window_label(window: Mapping[str, Any]) -> str:
-    labels = {"5h": "5-hour", "7d": "7-day"}
-    kind = str(window.get("kind") or "")
-    if kind in labels:
-        return labels[kind]
-    minutes = window.get("window_minutes")
-    if isinstance(minutes, (int, float)):
-        return f"{int(minutes)}m"
-    return "window"
-
-
-def _rl_latest_snapshots(
-    service: "SentinelService",
-    *,
-    client: str | None,
-    events: list[dict[str, Any]] | None = None,
-) -> list[dict[str, Any]]:
-    """Latest rate_limit_observed event per (client, org, run_id).
-
-    Pass ``events`` to reuse an already-loaded event list (avoids a second full
-    ``list_all_events`` scan).
-    """
-
-    from .rate_limits import EVENT_TYPE as _RL_EVENT_TYPE
-
-    source_events = events if events is not None else service.list_all_events()
-    latest: dict[tuple[Any, Any, Any], tuple[float, dict[str, Any]]] = {}
-    for event in source_events:
-        if event.get("event_type") != _RL_EVENT_TYPE:
-            continue
-        metadata = event.get("metadata") or {}
-        event_client = metadata.get("client")
-        if client and event_client != client:
-            continue
-        key = (event_client, metadata.get("org"), event.get("run_id"))
-        captured = metadata.get("captured_at")
-        if not isinstance(captured, (int, float)) or isinstance(captured, bool):
-            created = event.get("created_at")
-            captured = float(created) if isinstance(created, (int, float)) else 0.0
-        ordering = float(captured)
-        current = latest.get(key)
-        if current is None or ordering >= current[0]:
-            latest[key] = (ordering, event)
-    return [
-        event
-        for _key, (_ordering, event) in sorted(
-            latest.items(), key=lambda item: (str(item[0][0]), str(item[0][1]))
-        )
-    ]
-
-
-_RL_ORIGIN_LABELS = {
-    "claude_plan_usage": "desktop app",
-    "claude_statusline": "CLI",
-}
-
-
-def _rl_json_entry(event: Mapping[str, Any]) -> dict[str, Any]:
-    metadata = event.get("metadata") or {}
-    return {
-        "client": metadata.get("client"),
-        "origin": metadata.get("origin"),
-        "plan_type": metadata.get("plan_type"),
-        "org": metadata.get("org"),
-        "captured_at": metadata.get("captured_at"),
-        "windows": metadata.get("windows") or [],
-        "credits": metadata.get("credits"),
-        "reached_type": metadata.get("reached_type"),
-        "source_file": metadata.get("source_file"),
-    }
-
-
-_NOW_WINDOWS: tuple[tuple[str, Optional[int]], ...] = (
-    ("today", 1),
-    ("last 7 days", 7),
-    ("last 30 days", 30),
-    ("all time", None),
-)
-# User --window tokens → the calendar window label above (matches the dashboard's
-# usage summary, which scopes by trailing calendar days).
-_NOW_WINDOW_ALIASES = {
-    "today": "today",
-    "24h": "today",
-    "7d": "last 7 days",
-    "30d": "last 30 days",
-    "all": "all time",
-}
-_NOW_WINDOW_DAYS = {label: days for label, days in _NOW_WINDOWS}
-
-
-def _now_fmt_int(value: Any) -> str:
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return f"{int(value):,}"
-    return "—"
-
-
-def _now_finite(value: Any) -> float | None:
-    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
-        return float(value)
-    return None
-
-
-def _now_cost_text(bucket: Mapping[str, Any]) -> str:
-    """A cost cell. The complete estimate (``$X.XX``) is shown ONLY when the cube
-    vouches for completeness via ``cost_complete`` (every additive row priced and
-    none held) — the mere presence of ``estimated_cost_usd`` does NOT imply
-    completeness, since it is a priced-rows-only sum that ignores unpriced additive
-    rows. Otherwise the priced subtotal is shown as partial (``~$``), or an
-    em-dash when nothing is priced. Non-finite values degrade to em-dash."""
-
-    if bucket.get("cost_complete"):
-        complete = _now_finite(bucket.get("estimated_cost_usd"))
-        if complete is not None:
-            return f"${complete:.2f}"
-    known = _now_finite(bucket.get("known_additive_cost_usd"))
-    if known is not None:
-        return f"~${known:.2f}"
-    return "—"
-
-
-def _now_limit_teaser(
-    service: "SentinelService",
-    *,
-    client: str | None,
-    events: list[dict[str, Any]] | None = None,
-) -> list[str]:
-    """Compact one-line-per-client latest provider limit readings (best-effort)."""
-    try:
-        snapshots = _rl_latest_snapshots(service, client=client, events=events)
-    except Exception:  # noqa: BLE001 - a teaser must never break `now`.
-        return []
-    lines: list[str] = []
-    for event in snapshots:
-        metadata = event.get("metadata") or {}
-        parts: list[str] = []
-        for window in metadata.get("windows") or []:
-            if not isinstance(window, Mapping):
-                continue
-            used = window.get("used_percent")
-            if not isinstance(used, (int, float)) or isinstance(used, bool):
-                continue
-            label = {"5h": "5h", "7d": "7d"}.get(str(window.get("kind") or ""), "win")
-            parts.append(f"{label} {float(used):.0f}%")
-        if parts:
-            lines.append(f"{metadata.get('client') or '?'}: " + " · ".join(parts))
-    return lines
-
-
 @app.command("now")
 def now(
     store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
@@ -8116,12 +7961,7 @@ def now(
     not fully priced shows a partial ``~$`` subtotal. See ``agentacct limits`` for
     provider rate-limit windows.
     """
-    from datetime import date
-
-    from .api import _build_usage_view, _usage_record_time
-    from .usage_cube import build_usage_cube
-
-    if window not in _NOW_WINDOW_ALIASES:
+    if window not in NOW_WINDOW_ALIASES:
         raise typer.BadParameter("--window must be one of: today, 7d, 30d, all")
     # 'all' / omitted → no client filter (matches `limits` and the dashboard).
     effective_client = None if client in (None, "all") else client
@@ -8129,63 +7969,33 @@ def now(
     resolved_store_dir = _resolve_cli_store_dir(store_dir).path
     service = SentinelService(resolved_store_dir, create=False)
     events = service.list_all_events()
-    # _build_usage_view maps events → usage records (model_usage only; session /
-    # diagnostic / work events are filtered out) exactly as the dashboard's usage
-    # summary does; saved+excluded mirrors that path so held rows are counted.
-    view = _build_usage_view([], events)
-    records = [*view.saved_records, *view.excluded_saved_records]
-    if effective_client is not None:
-        records = [r for r in records if getattr(r, "client", None) == effective_client]
 
-    now_epoch = time.time()
-    today = date.today()
-
-    # Delegate windowing to the vetted cube path: build_usage_cube(days=N) scopes
-    # the range to [today-(N-1) .. today] AND routes each row through
-    # usage_bucket_date, so future/absurd timestamps are excluded exactly as the
-    # dashboard's usage summary does (a hand-rolled `>= cutoff` filter would not).
-    def _cube_for_days(days: int | None) -> dict[str, Any]:
-        return build_usage_cube(records, record_time=_usage_record_time, days=days, today=today)
-
-    windows_out: list[dict[str, Any]] = []
-    for label, days in _NOW_WINDOWS:
-        windows_out.append({"window": label, "totals": _cube_for_days(days).get("totals") or {}})
-
-    primary_label = _NOW_WINDOW_ALIASES[window]
-    primary_cube = _cube_for_days(_NOW_WINDOW_DAYS[primary_label])
-
-    # Freshness: newest record with a real (finite, not-future) timestamp, so an
-    # unknown (0.0) or absurd future time can't fake a "<1m ago" / "56 years ago".
-    real_times = [
-        t
-        for r in records
-        if (t := _usage_record_time(r)) is not None
-        and isinstance(t, (int, float))
-        and math.isfinite(float(t))
-        and 0 < t <= now_epoch
-    ]
-    newest = max(real_times) if real_times else None
+    # The shared snapshot layer (usage_snapshot) maps events → usage records
+    # (model_usage only; session / diagnostic / work events excluded) and windows
+    # them via the cube's days=N path — the exact computation `agentacct now`, the
+    # dashboard's usage summary, and the TUI all share, so none can disagree.
+    snapshot = build_usage_snapshot(events, client=effective_client, breakdown_window=window)
 
     def _limits_payload() -> list[dict[str, Any]]:
         try:
             return [
-                _rl_json_entry(e)
-                for e in _rl_latest_snapshots(service, client=effective_client, events=events)
+                limit_json_entry(e)
+                for e in latest_limit_events(events, client=effective_client)
             ]
         except Exception:  # noqa: BLE001 - limits are best-effort; never break `now --json`.
             return []
 
     if json_output:
         payload = {
-            "as_of": newest,
-            "generated_at": now_epoch,
-            "event_count": len(events),
-            "usage_record_count": len(records),
-            "client_filter": effective_client,
-            "windows": windows_out,
-            "breakdown_window": primary_label,
-            "by_client": primary_cube.get("by_client") or [],
-            "by_model": primary_cube.get("by_model") or [],
+            "as_of": snapshot.as_of,
+            "generated_at": snapshot.generated_at,
+            "event_count": snapshot.event_count,
+            "usage_record_count": snapshot.usage_record_count,
+            "client_filter": snapshot.client_filter,
+            "windows": [{"window": w.label, "totals": w.totals} for w in snapshot.windows],
+            "breakdown_window": snapshot.breakdown_window,
+            "by_client": snapshot.by_client,
+            "by_model": snapshot.by_model,
             "limits": _limits_payload(),
         }
         print(json.dumps(payload, indent=2, sort_keys=True, allow_nan=False, default=str))
@@ -8194,16 +8004,17 @@ def now(
     console.print(
         "agentacct now — local event log; costs are token-based estimates, not billing."
     )
-    if newest is not None:
+    if snapshot.as_of is not None:
         console.print(
-            f"as of {_rl_humanize_seconds(now_epoch - newest)} ago · {len(records)} usage records\n"
+            f"as of {humanize_seconds(snapshot.generated_at - snapshot.as_of)} ago · "
+            f"{snapshot.usage_record_count} usage records\n"
         )
-    elif records:
-        console.print(f"{len(records)} usage records · newest timestamp unknown\n")
+    elif snapshot.usage_record_count:
+        console.print(f"{snapshot.usage_record_count} usage records · newest timestamp unknown\n")
     else:
         console.print("")
 
-    if not records:
+    if snapshot.usage_record_count == 0:
         if effective_client is not None:
             console.print(f"No usage recorded for client '{effective_client}'.")
         else:
@@ -8218,20 +8029,20 @@ def now(
     windows_table.add_column("tokens", justify="right")
     windows_table.add_column("est. cost", justify="right")
     windows_table.add_column("sessions", justify="right")
-    for entry in windows_out:
-        totals = entry["totals"]
+    for entry in snapshot.windows:
+        totals = entry.totals
         windows_table.add_row(
-            entry["window"],
-            _now_fmt_int(totals.get("total_tokens_including_cached")),
-            _now_cost_text(totals),
-            _now_fmt_int(totals.get("sessions")),
+            entry.label,
+            format_tokens(totals.get("total_tokens_including_cached")),
+            cost_text(totals),
+            format_tokens(totals.get("sessions")),
         )
     console.print(windows_table)
     console.print("[dim]~ cost = partial (some usage unpriced or held); costs are estimates, not billing.[/dim]")
 
-    by_client = primary_cube.get("by_client") or []
+    by_client = snapshot.by_client
     if by_client:
-        client_table = Table(title=f"by client · {primary_label}")
+        client_table = Table(title=f"by client · {snapshot.breakdown_window}")
         client_table.add_column("client")
         client_table.add_column("tokens", justify="right")
         client_table.add_column("est. cost", justify="right")
@@ -8239,15 +8050,15 @@ def now(
         for row in sorted(by_client, key=lambda r: -(r.get("total_tokens_including_cached") or 0)):
             client_table.add_row(
                 str(row.get("client")),
-                _now_fmt_int(row.get("total_tokens_including_cached")),
-                _now_cost_text(row),
-                _now_fmt_int(row.get("sessions")),
+                format_tokens(row.get("total_tokens_including_cached")),
+                cost_text(row),
+                format_tokens(row.get("sessions")),
             )
         console.print(client_table)
 
-    by_model = primary_cube.get("by_model") or []
+    by_model = snapshot.by_model
     if by_model:
-        model_table = Table(title=f"top models · {primary_label}")
+        model_table = Table(title=f"top models · {snapshot.breakdown_window}")
         model_table.add_column("model")
         model_table.add_column("client")
         model_table.add_column("tokens", justify="right")
@@ -8257,12 +8068,12 @@ def now(
             model_table.add_row(
                 str(row.get("model") or "—"),
                 str(row.get("client") or ""),
-                _now_fmt_int(row.get("total_tokens_including_cached")),
-                _now_cost_text(row),
+                format_tokens(row.get("total_tokens_including_cached")),
+                cost_text(row),
             )
         console.print(model_table)
 
-    teaser = _now_limit_teaser(service, client=effective_client, events=events)
+    teaser = limit_teaser_lines(events, client=effective_client)
     if teaser:
         console.print("\nlimits (provider-reported; run `agentacct limits` for detail):")
         for line in teaser:
@@ -8301,12 +8112,12 @@ def limits(
 
     resolved_store_dir = _resolve_cli_store_dir(store_dir).path
     service = SentinelService(resolved_store_dir, create=False)
-    snapshots = _rl_latest_snapshots(service, client=effective_client)
+    snapshots = latest_limit_events(service.list_all_events(), client=effective_client)
 
     if json_output:
         print(
             json.dumps(
-                {"limits": [_rl_json_entry(e) for e in snapshots]},
+                {"limits": [limit_json_entry(e) for e in snapshots]},
                 indent=2,
                 sort_keys=True,
                 allow_nan=False,
@@ -8334,7 +8145,7 @@ def limits(
         metadata = event.get("metadata") or {}
         event_client = metadata.get("client") or "?"
         header = str(event_client)
-        origin_label = _RL_ORIGIN_LABELS.get(str(metadata.get("origin") or ""))
+        origin_label = ORIGIN_LABELS.get(str(metadata.get("origin") or ""))
         if origin_label:
             header += f" ({origin_label})"
         plan = metadata.get("plan_type")
@@ -8348,7 +8159,7 @@ def limits(
             created = event.get("created_at")
             captured = created if isinstance(created, (int, float)) else None
         if isinstance(captured, (int, float)):
-            header += f"  (as of {_rl_humanize_seconds(now - captured)} ago)"
+            header += f"  (as of {humanize_seconds(now - captured)} ago)"
         console.print(header)
         windows = metadata.get("windows")
         for window in windows if isinstance(windows, list) else []:
@@ -8356,12 +8167,12 @@ def limits(
                 continue
             used = window.get("used_percent")
             used_value = float(used) if isinstance(used, (int, float)) and not isinstance(used, bool) else 0.0
-            line = f"  {_rl_window_label(window):>7}  {_rl_bar(used_value)}  {used_value:5.1f}%"
+            line = f"  {window_label(window):>7}  {usage_bar(used_value)}  {used_value:5.1f}%"
             resets_at = window.get("resets_at")
             if isinstance(resets_at, (int, float)) and not isinstance(resets_at, bool) and resets_at > 0:
                 delta = resets_at - now
                 line += (
-                    f"  · resets in {_rl_humanize_seconds(delta)}"
+                    f"  · resets in {humanize_seconds(delta)}"
                     if delta > 0
                     else "  · resets now"
                 )
@@ -8373,6 +8184,60 @@ def limits(
         if reached:
             console.print(f"  ⚠ limit reached: {reached}")
         console.print()
+
+
+@app.command("tui")
+def tui(
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    window: Annotated[
+        str,
+        typer.Option(help="Initial breakdown window: today, 7d, 30d, or all (cycle with 'w')."),
+    ] = "7d",
+    client: Annotated[
+        Optional[str],
+        typer.Option(help="Filter to one client (e.g. codex, claude-code); 'all' or omit for every client."),
+    ] = None,
+    refresh: Annotated[
+        float,
+        typer.Option(help="Seconds between event-log polls (minimum 1)."),
+    ] = 5.0,
+) -> None:
+    """Live terminal dashboard — usage, cost, and provider rate limits, in place.
+
+    A full-screen view over the same authoritative local event log as
+    ``agentacct now`` / ``agentacct limits`` (no credentials, no API calls). Keys:
+    ``r`` refresh now, ``w`` cycle the breakdown window, ``q`` quit. Needs an
+    interactive terminal.
+    """
+    if window not in NOW_WINDOW_ALIASES:
+        raise typer.BadParameter("--window must be one of: today, 7d, 30d, all")
+    # A full-screen TUI needs a real terminal; in a pipe / CI / captured stdout
+    # there is nothing to drive it, so fail with a clear pointer instead of
+    # hanging or crashing.
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        console.print(
+            "agentacct tui needs an interactive terminal. For scripting, use "
+            "`agentacct now --json` or `agentacct limits --json`."
+        )
+        raise typer.Exit(1)
+    effective_client = None if client in (None, "all") else client
+    resolved_store_dir = _resolve_cli_store_dir(store_dir).path
+
+    try:
+        from .tui import AgentAcctTUI
+    except ImportError:
+        console.print(
+            "The TUI needs the optional 'textual' package. Install it with: "
+            "pip install textual"
+        )
+        raise typer.Exit(1)
+
+    AgentAcctTUI(
+        store_dir=resolved_store_dir,
+        client=effective_client,
+        window_token=window,
+        refresh_seconds=refresh,
+    ).run()
 
 
 @app.command("serve")

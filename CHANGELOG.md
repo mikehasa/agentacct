@@ -39,6 +39,23 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   percentage, window, or credit value actually changes. `agentacct limits`
   supports `--json` and `--client`. Reading limits is best-effort and never fails
   a usage import.
+- **`agentacct tui` — a live terminal dashboard (Textual).** A full-screen,
+  auto-refreshing view over the same authoritative local event log as
+  `agentacct now` / `agentacct limits` (no credentials, no API calls): calendar-window
+  usage & cost (today / 7d / 30d / all), a by-client and top-models breakdown,
+  and provider rate-limit bars with a live reset countdown. Keys: `r` refresh
+  now, `w` cycle the breakdown window, `q` quit. It polls the event log on an
+  interval (`--refresh`, default 5s) and recomputes only when the log actually
+  grew, while a one-second tick keeps the reset countdowns and freshness ticking.
+  Supports `--window` and `--client`; requires an interactive terminal (for
+  scripting, use the `--json` forms of `now` / `limits`). Adds `textual` as a
+  dependency.
+
+### Changed
+- `agentacct now`, `agentacct limits`, and the new `agentacct tui` now share a
+  single internal data layer (`agentacct.usage_snapshot`), so the three surfaces
+  derive usage, cost, and rate-limit readings from one place and can never
+  disagree. No change to `now` / `limits` output.
 
 ## [0.6.0] - 2026-08-01
 
