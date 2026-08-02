@@ -7,6 +7,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`agentacct now` — a current usage & cost snapshot.** One glance at calendar
+  windows (today / last 7 days / last 30 days / all time) with token totals,
+  estimated cost, and session counts, plus a by-client and top-models breakdown
+  for a chosen window (`--window`, default 7d) and a compact provider-limit
+  teaser. Read from the authoritative local event log (no credentials, no API);
+  costs are agentacct's token-based estimates, not provider billing — a window
+  that isn't fully priced is shown as a partial `~$` subtotal rather than a
+  misleading exact figure. Supports `--json` and `--client`.
 - **`agentacct limits` — provider-reported usage limits, read from local files.**
   A new foundation records real rate-limit snapshots as `rate_limit_observed`
   events and renders them: for each client, the 5-hour and weekly (7-day) windows
