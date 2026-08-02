@@ -16,7 +16,7 @@ from agentacct.cli import app as cli_app
 from agentacct.client_usage import ClientUsageEvent
 from agentacct.service import SentinelService
 import agentacct.rate_limits as rl
-from agentacct.tui import AgentAcctTUI
+from agentacct.tui import AgentAcctTUI, SessionsScreen, SessionDetailScreen
 from agentacct.usage_snapshot import (
     ClientLimit,
     LimitWindow,
@@ -341,6 +341,175 @@ def test_events_fingerprint_is_total_and_change_sensitive():
     # still change-sensitive: any value change flips the key.
     changed = [{"event_id": "e1", "created_at": 2.0}, *events[1:]]
     assert _events_fingerprint(changed) != fp
+
+
+def _record_section(service, *, section_id, title, status, client, session_id, created_at, summary=None):
+    service.record_event({
+        "event_id": f"evt_sec_{section_id}_{status}",
+        "created_at": created_at,
+        "source": client,
+        "event_type": f"section_{status}",
+        "run_id": None,
+        "metadata": {
+            "sentinel_semantic_kind": "section",
+            "client": client,
+            "client_session_id": session_id,
+            "client_context_keys_authored": ["client_session_id"],
+            "project_dir": "/tmp/project",
+            "section_id": section_id,
+            "section_status": status,
+            "section_title": title,
+            "summary": summary or "",
+            "kind": "implementation",
+        },
+    })
+
+
+def _record_check(service, *, section_id, client, result, created_at):
+    service.record_event({
+        "event_id": f"evt_chk_{section_id}_{result}",
+        "created_at": created_at,
+        "source": client,
+        "event_type": "machine_check",
+        "metadata": {
+            "sentinel_semantic_kind": "evidence",
+            "section_id": section_id,
+            "evidence_type": "test",
+            "result": result,
+            "summary": "Tests passed.",
+            "command": "pytest",
+            "exit_code": 0,
+            "client": client,
+        },
+    })
+
+
+def test_tui_work_helpers():
+    from agentacct.tui import _work_status_color, _evidence_mark, _humanize_ago, _session_matches
+
+    assert _work_status_color("completed") == "green"
+    assert _work_status_color("handed_off") == "green"
+    assert _work_status_color("started") == "yellow"
+    assert _work_status_color("blocked") == "red"
+    assert _work_status_color("weird") == "dim"
+    assert _evidence_mark("passed")[0] == "✓"
+    assert _evidence_mark("failed")[0] == "✗"
+    assert _evidence_mark("skipped")[0] == "»"
+    now = 1000.0
+    assert _humanize_ago(now - 60, now).endswith("ago")
+    assert _humanize_ago(None, now) == "—"
+    assert _humanize_ago(now + 100, now) == "—"  # future never shows a bogus age
+    assert _session_matches({"client": "codex", "client_session_id": "s1"}, "codex", "s1")
+    assert not _session_matches({"client": "codex", "client_session_id": "s2"}, "codex", "s1")
+
+
+def test_session_detail_render_steps_and_markup_safe():
+    from rich.text import Text
+
+    now = time.time()
+    good = {
+        "title": "Ship it", "latest_status": "completed", "kind": "testing",
+        "updated_at": now - 120, "summary": "done",
+        "evidence_events": [{"result": "passed", "evidence_type": "test", "summary": "all green", "exit_code": 0}],
+    }
+    screen = SessionDetailScreen({})
+    txt = screen._render_steps([good], now)
+    assert "Ship it" in txt and "✓" in txt and "exit 0" in txt
+
+    # markup injection in any data field must yield VALID markup (escaped), never crash.
+    evil = {
+        "title": "pwn[/]", "latest_status": "blocked", "kind": "x[/]", "updated_at": now,
+        "summary": "[/]bad", "blocker": "[/]boom",
+        "evidence_events": [{"result": "failed", "evidence_type": "y[/]", "summary": "[/]z", "exit_code": 1}],
+    }
+    etxt = screen._render_steps([evil], now)
+    Text.from_markup(etxt)  # raises MarkupError if any field were left unescaped
+    assert "pwn" in etxt
+
+    assert "No recorded work steps" in screen._render_steps([], now)
+
+
+def test_sessions_screen_worker_and_detail(tmp_path):
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_usage(service, client="codex", model="gpt-5", session_id="sess-1",
+                  input_tokens=1000, output_tokens=200, updated_at=int(now - 600), estimated_cost_usd=2.0)
+    _record_section(service, section_id="sec1", title="Do the work", status="started",
+                    client="codex", session_id="sess-1", created_at=now - 600)
+    _record_section(service, section_id="sec1", title="Do the work", status="completed",
+                    client="codex", session_id="sess-1", created_at=now - 300, summary="finished")
+    _record_check(service, section_id="sec1", client="codex", result="passed", created_at=now - 290)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("s")  # open the sessions drill-down
+            await app.workers.wait_for_complete()  # let the ledger worker finish
+            await pilot.pause()
+            scr = app.screen
+            assert isinstance(scr, SessionsScreen)
+            table = scr.query_one("#sessions", DataTable)
+            assert table.row_count >= 1
+            entry = next((e for e in scr._by_key.values() if e.get("client_session_id") == "sess-1"), None)
+            assert entry is not None, "seeded session should appear in the rollup"
+
+            app.push_screen(SessionDetailScreen(entry))
+            await pilot.pause()
+            det = app.screen
+            assert isinstance(det, SessionDetailScreen)
+            assert "Do the work" in det._body_text  # the step
+            assert "✓" in det._body_text  # its passing check
+
+    _run(scenario())
+
+
+def test_tui_repeat_s_does_not_stack_sessions(tmp_path):
+    # Regression: the app-level `s` binding stays active on the (non-modal)
+    # sessions screen, so a second `s` must NOT stack a duplicate screen or spawn
+    # a second expensive build worker.
+    SentinelService(tmp_path)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("s")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.press("s")  # `s` again while already on the sessions screen
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert sum(1 for s in app.screen_stack if isinstance(s, SessionsScreen)) == 1
+
+    _run(scenario())
+
+
+def test_sessions_screen_callbacks_guard_unmounted():
+    # Regression: a build worker that finishes after its screen is dismissed calls
+    # _populate/_show_error on an unmounted screen — these must no-op, not raise
+    # NoMatches on query_one.
+    screen = SessionsScreen()  # constructed, never mounted → is_mounted is False
+    assert not screen.is_mounted
+    screen._populate({"session_rollup": {"sessions": []}})  # must not raise
+    screen._show_error("boom")  # must not raise
+
+
+def test_sessions_screen_empty_store(tmp_path):
+    SentinelService(tmp_path)  # empty store → empty (but non-crashing) sessions list
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("s")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            scr = app.screen
+            assert isinstance(scr, SessionsScreen)
+            assert scr.query_one("#sessions", DataTable).row_count == 0
+
+    _run(scenario())
 
 
 def test_tui_command_requires_tty(tmp_path):

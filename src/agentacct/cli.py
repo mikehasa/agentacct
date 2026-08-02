@@ -8206,7 +8206,8 @@ def tui(
 
     A full-screen view over the same authoritative local event log as
     ``agentacct now`` / ``agentacct limits`` (no credentials, no API calls). Keys:
-    ``r`` refresh now, ``w`` cycle the breakdown window, ``q`` quit. Needs an
+    ``r`` refresh now, ``w`` cycle the breakdown window, ``s`` open the sessions
+    drill-down (a session's steps and their check results), ``q`` quit. Needs an
     interactive terminal.
     """
     if window not in NOW_WINDOW_ALIASES:

@@ -48,7 +48,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   interval (`--refresh`, default 5s) and recomputes only when the log actually
   grew, while a one-second tick keeps the reset countdowns and freshness ticking.
   The status line shows a `refreshed HH:MM:SS` stamp so a manual `r` is always
-  visible even when the numbers are unchanged.
+  visible even when the numbers are unchanged. Press `s` for a **sessions
+  drill-down**: a list of sessions (title, project, tokens, cost, step counts)
+  that you select into to see that session's work steps and their machine-check
+  results. The work ledger it reads is expensive, so it is built once on demand
+  in a background thread (never on the refresh timer) and cached until the log
+  changes.
   Supports `--window` and `--client`; requires an interactive terminal (for
   scripting, use the `--json` forms of `now` / `limits`). Adds `textual` as a
   dependency.

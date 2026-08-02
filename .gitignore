@@ -19,3 +19,9 @@ build/
 .hermes/
 *.local.md
 .gstack/
+# Event-store runtime artifacts if a stray run creates a store at the repo root
+# (the real store lives in .agent-sentinel/ or the XDG state dir) — never commit.
+/events.sqlite3*
+/events.jsonl
+/events.jsonl.lock
+/events.authoritative

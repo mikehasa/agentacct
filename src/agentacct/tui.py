@@ -25,9 +25,11 @@ import time
 from pathlib import Path
 
 from rich.markup import escape as _escape
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
 from .service import SentinelService
@@ -42,6 +44,34 @@ from .usage_snapshot import (
 
 # The window tokens the `w` key cycles through (same vocabulary as `now --window`).
 _WINDOW_CYCLE: tuple[str, ...] = ("today", "7d", "30d", "all")
+
+# The sessions drill-down shows the most-recent slice; the full count is always
+# reported so the cap is never silent.
+_SESSIONS_LIMIT = 500
+
+
+def _work_status_color(status: str) -> str:
+    """Green (done) / yellow (in-flight) / red (blocked) / dim (unknown)."""
+
+    if status in ("completed", "resolved", "handed_off"):
+        return "green"
+    if status in ("started", "checkpoint"):
+        return "yellow"
+    if status == "blocked":
+        return "red"
+    return "dim"
+
+
+def _evidence_mark(result: str) -> tuple[str, str]:
+    """(glyph, color) for a machine-check result."""
+
+    if result == "passed":
+        return "✓", "green"
+    if result in ("failed", "error"):
+        return "✗", "red"
+    if result == "skipped":
+        return "»", "yellow"
+    return "•", "dim"
 
 
 def _events_fingerprint(events: list) -> int:
@@ -97,6 +127,7 @@ class AgentAcctTUI(App):
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
         Binding("w", "cycle_window", "Cycle window"),
+        Binding("s", "open_sessions", "Sessions"),
     ]
 
     def __init__(
@@ -116,6 +147,12 @@ class AgentAcctTUI(App):
         self._last_fingerprint: int | None = None
         self._last_refresh_at: float | None = None
         self._error: str | None = None
+        # Work-ledger cache shared across the sessions/detail screens. The ledger
+        # is EXPENSIVE (O(all events), no caching upstream — ~5s on ~8k events),
+        # so it is built once on demand in a worker thread and reused until the
+        # event log changes (fingerprint) or the user forces a refresh.
+        self._work_ledger: dict | None = None
+        self._work_ledger_fp: int | None = None
         # Last composed text for each dynamic panel — a stable hook for headless
         # tests (avoids depending on Rich renderable internals).
         self._status_text: str = ""
@@ -358,5 +395,260 @@ class AgentAcctTUI(App):
         self.window_token = _WINDOW_CYCLE[(index + 1) % len(_WINDOW_CYCLE)]
         self.refresh_data(force=True)
 
+    def action_open_sessions(self) -> None:
+        # Only open the sessions drill-down from the base dashboard. The app-level
+        # `s` binding stays active while a (non-modal) sub-screen is on top, so
+        # without this guard a second `s` would stack a duplicate screen and spawn
+        # a second expensive ledger build.
+        if len(self.screen_stack) > 1:
+            return
+        self.push_screen(SessionsScreen())
 
-__all__ = ["AgentAcctTUI"]
+
+def _humanize_ago(ts: Any, now: float) -> str:
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool) and ts > 0 and ts <= now:
+        return f"{humanize_seconds(now - ts)} ago"
+    return "—"
+
+
+def _session_matches(work_item: dict, client: Any, session_id: Any) -> bool:
+    return work_item.get("client") == client and work_item.get("client_session_id") == session_id
+
+
+def _session_cost_text(usage: dict) -> str:
+    """Cost cell for a session's usage summary, using the shared honesty rule.
+
+    The session summary carries no ``cost_complete`` flag (unlike the cube), so
+    derive it: complete only when some row is priced AND none is unpriced or held.
+    Otherwise :func:`cost_text` shows the priced subtotal as partial (``~$``) or
+    an em-dash. Equivalent to the cube's own completeness test in practice.
+    """
+
+    complete = bool(usage.get("priced_rows")) and not usage.get("unpriced_rows") and not usage.get(
+        "excluded_non_additive_rows"
+    )
+    return cost_text(
+        {
+            "cost_complete": complete,
+            "estimated_cost_usd": usage.get("estimated_cost_usd"),
+            "known_additive_cost_usd": usage.get("estimated_cost_usd"),
+        }
+    )
+
+
+class SessionsScreen(Screen):
+    """A list of sessions (from the work ledger); select one to drill in."""
+
+    BINDINGS = [
+        Binding("escape", "back", "Back"),
+        Binding("r", "refresh", "Rebuild"),
+        Binding("q", "quit", "Quit"),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._by_key: dict[str, dict] = {}
+        self._total_sessions = 0
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        yield Static("", id="sessions-status")
+        yield DataTable(id="sessions", cursor_type="row", zebra_stripes=True)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.title = "agentacct"
+        self.sub_title = "sessions"
+        table = self.query_one("#sessions", DataTable)
+        table.add_columns("session", "client", "project", "activity", "tokens", "est. cost", "steps")
+        self.query_one("#sessions-status", Static).update(
+            "Building the work ledger (one-time, a few seconds)…"
+        )
+        self._load()
+
+    @work(thread=True, exclusive=True)
+    def _load(self, force: bool = False) -> None:
+        from textual.worker import get_current_worker
+
+        worker = get_current_worker()
+        app = self.app
+        try:
+            service = SentinelService(app.store_dir, create=False)
+            events = service.list_all_events()
+            fingerprint = _events_fingerprint(events)
+            if not force and app._work_ledger is not None and fingerprint == app._work_ledger_fp:
+                ledger = app._work_ledger
+            else:
+                from .work_ledger import build_work_ledger
+
+                ledger = build_work_ledger(events)
+                # A thread worker cancelled by `exclusive=True` (a newer `s`/`r`)
+                # cannot be interrupted mid-build, so bail before any side effect —
+                # otherwise this stale result would overwrite the fresher rebuild's
+                # cache and repaint the screen with older data.
+                if worker.is_cancelled:
+                    return
+                app._work_ledger = ledger
+                app._work_ledger_fp = fingerprint
+        except Exception as exc:  # noqa: BLE001 - surface, never crash the screen.
+            if not worker.is_cancelled:
+                app.call_from_thread(self._show_error, str(exc))
+            return
+        if worker.is_cancelled:
+            return
+        app.call_from_thread(self._populate, ledger)
+
+    def _show_error(self, message: str) -> None:
+        if not self.is_mounted:  # a late callback must not touch a dismissed screen
+            return
+        self.query_one("#sessions-status", Static).update(
+            f"[red]could not build the work ledger:[/] {_escape(message)}"
+        )
+
+    def _populate(self, ledger: dict) -> None:
+        if not self.is_mounted:  # screen was dismissed before the build finished
+            return
+        sessions = list((ledger.get("session_rollup") or {}).get("sessions") or [])
+        # Most-recent first; unknown activity sorts last.
+        sessions.sort(key=lambda s: (s.get("last_activity_at") or 0.0), reverse=True)
+        self._total_sessions = len(sessions)
+        shown = sessions[:_SESSIONS_LIMIT]
+
+        table = self.query_one("#sessions", DataTable)
+        table.clear()
+        self._by_key.clear()
+        now = time.time()
+        for index, entry in enumerate(shown):
+            key = str(entry.get("session_key") or index)
+            self._by_key[key] = entry
+            usage = entry.get("usage") or {}
+            counts = (entry.get("work") or {}).get("counts") or {}
+            title = entry.get("client_session_title") or entry.get("client_session_id_short") or "(untitled)"
+            steps = f"{counts.get('total', 0)}✓{counts.get('completed', 0)}"
+            active = counts.get("active", 0)
+            blocked = counts.get("blocked", 0)
+            if active:
+                steps += f" ▶{active}"
+            if blocked:
+                steps += f" ⚠{blocked}"
+            table.add_row(
+                _escape(str(title))[:48],
+                _escape(str(entry.get("client") or "")),
+                _escape(str(entry.get("project") or "—"))[:24],
+                _humanize_ago(entry.get("last_activity_at"), now),
+                format_tokens(usage.get("total_tokens")),
+                _session_cost_text(usage),
+                steps,
+                key=key,
+            )
+        cap = f" (showing most recent {_SESSIONS_LIMIT})" if self._total_sessions > _SESSIONS_LIMIT else ""
+        self.query_one("#sessions-status", Static).update(
+            f"{self._total_sessions} sessions{cap} · Enter to open · r to rebuild · Esc back"
+        )
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        key = event.row_key.value if event.row_key is not None else None
+        entry = self._by_key.get(str(key)) if key is not None else None
+        if entry is not None:
+            self.app.push_screen(SessionDetailScreen(entry))
+
+    def action_refresh(self) -> None:
+        self.query_one("#sessions-status", Static).update("Rebuilding the work ledger…")
+        self._load(force=True)
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+
+class SessionDetailScreen(Screen):
+    """One session's steps (work items) and their machine-check results."""
+
+    BINDINGS = [
+        Binding("escape", "back", "Back"),
+        Binding("backspace", "back", "Back"),
+        Binding("q", "quit", "Quit"),
+    ]
+
+    def __init__(self, entry: dict) -> None:
+        super().__init__()
+        self._entry = entry
+        # Composed text kept for headless tests (Rich renderable internals are
+        # not a stable assertion target).
+        self._header_text = ""
+        self._body_text = ""
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        yield Static("", id="detail-header")
+        with VerticalScroll():
+            yield Static("", id="detail-body")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        entry = self._entry
+        self.title = "agentacct"
+        self.sub_title = "session detail"
+        client = entry.get("client")
+        session_id = entry.get("client_session_id")
+        title = entry.get("client_session_title") or entry.get("client_session_id_short") or "(untitled)"
+        usage = entry.get("usage") or {}
+        now = time.time()
+
+        header = f"[bold]{_escape(str(title))}[/]"
+        header += f"\n{_escape(str(client or ''))} · {_escape(str(entry.get('project') or '—'))}"
+        first, last = entry.get("first_activity_at"), entry.get("last_activity_at")
+        if isinstance(first, (int, float)) and isinstance(last, (int, float)) and first and last:
+            header += f" · {_humanize_ago(last, now)}"
+        header += (
+            f" · {format_tokens(usage.get('total_tokens'))} tokens"
+            f" · {_session_cost_text(usage)}"
+        )
+        self._header_text = header
+        self.query_one("#detail-header", Static).update(header)
+
+        ledger = getattr(self.app, "_work_ledger", None) or {}
+        work_items = [
+            wi for wi in (ledger.get("work_items") or []) if _session_matches(wi, client, session_id)
+        ]
+        self._body_text = self._render_steps(work_items, now)
+        self.query_one("#detail-body", Static).update(self._body_text)
+
+    def _render_steps(self, work_items: list[dict], now: float) -> str:
+        if not work_items:
+            return (
+                "No recorded work steps for this session.\n"
+                "[dim]Steps come from MCP section/check events; a usage-only session has none.[/]"
+            )
+        lines: list[str] = []
+        for wi in work_items:
+            status = str(wi.get("latest_status") or "?")
+            color = _work_status_color(status)
+            title = wi.get("title") or wi.get("section_id") or "(untitled step)"
+            kind = str(wi.get("kind") or "")
+            meta = " · ".join(p for p in (_escape(kind) if kind else "", status, _humanize_ago(wi.get("updated_at"), now)) if p)
+            lines.append(f"[{color}]●[/] [bold]{_escape(str(title))}[/]  [dim]{meta}[/]")
+            summary = wi.get("summary")
+            if summary:
+                lines.append(f"    [dim]{_escape(str(summary))}[/]")
+            for ev in wi.get("evidence_events") or []:
+                if not isinstance(ev, dict):
+                    continue
+                mark, mcolor = _evidence_mark(str(ev.get("result") or ""))
+                etype = _escape(str(ev.get("evidence_type") or "check"))
+                summ = _escape(str(ev.get("summary") or ev.get("result") or ""))
+                cline = f"    [{mcolor}]{mark}[/] {etype}: {summ}"
+                exit_code = ev.get("exit_code")
+                if isinstance(exit_code, int):
+                    cline += f" [dim](exit {exit_code})[/]"
+                lines.append(cline)
+            blocker = wi.get("blocker")
+            if blocker:
+                lines.append(f"    [red]⚠ blocked:[/] {_escape(str(blocker))}")
+            lines.append("")
+        return "\n".join(lines).rstrip("\n")
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+
+__all__ = ["AgentAcctTUI", "SessionsScreen", "SessionDetailScreen"]
