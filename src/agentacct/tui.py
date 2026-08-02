@@ -114,6 +114,7 @@ class AgentAcctTUI(App):
         self.refresh_seconds = max(1.0, float(refresh_seconds))
         self._snapshot: LiveSnapshot | None = None
         self._last_fingerprint: int | None = None
+        self._last_refresh_at: float | None = None
         self._error: str | None = None
         # Last composed text for each dynamic panel — a stable hook for headless
         # tests (avoids depending on Rich renderable internals).
@@ -189,6 +190,10 @@ class AgentAcctTUI(App):
         self._error = None
         self._last_fingerprint = fingerprint
         self._snapshot = snapshot
+        # Stamp the actual rebuild time so the status line gives visible feedback:
+        # `r` forces a rebuild, so the timestamp advances on every manual refresh
+        # even when the underlying numbers are unchanged.
+        self._last_refresh_at = time.time()
         self._render_all()
 
     # -- rendering ----------------------------------------------------------
@@ -218,6 +223,8 @@ class AgentAcctTUI(App):
             usage = self._snapshot.usage
             now = time.time()
             parts: list[str] = []
+            if self._last_refresh_at is not None:
+                parts.append(f"refreshed {time.strftime('%H:%M:%S', time.localtime(self._last_refresh_at))}")
             if usage.as_of is not None:
                 parts.append(f"as of {humanize_seconds(now - usage.as_of)} ago")
             parts.append(f"{usage.usage_record_count} usage records")

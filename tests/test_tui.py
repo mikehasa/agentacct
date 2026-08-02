@@ -302,6 +302,28 @@ def test_tui_survives_markup_in_model_name(tmp_path):
     _run(scenario())
 
 
+def test_tui_refresh_updates_visible_timestamp(tmp_path):
+    # Pressing `r` gives visible feedback even when the data is unchanged: the
+    # status line's "refreshed HH:MM:SS" advances because `r` forces a rebuild.
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_usage(service, client="codex", model="gpt-5", session_id="s1",
+                  input_tokens=100, output_tokens=10, updated_at=int(now - 3600), estimated_cost_usd=0.5)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._last_refresh_at is not None
+            assert "refreshed" in app._status_text
+            before = app._last_refresh_at
+            await pilot.press("r")  # force a rebuild even though nothing changed
+            await pilot.pause()
+            assert app._last_refresh_at >= before
+
+    _run(scenario())
+
+
 def test_events_fingerprint_is_total_and_change_sensitive():
     # Regression: the fingerprint runs on refresh_data's unguarded path, so it must
     # never raise — a corrupted/hand-injected ledger row can round-trip event_id /

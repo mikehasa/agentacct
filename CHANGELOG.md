@@ -47,6 +47,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   now, `w` cycle the breakdown window, `q` quit. It polls the event log on an
   interval (`--refresh`, default 5s) and recomputes only when the log actually
   grew, while a one-second tick keeps the reset countdowns and freshness ticking.
+  The status line shows a `refreshed HH:MM:SS` stamp so a manual `r` is always
+  visible even when the numbers are unchanged.
   Supports `--window` and `--client`; requires an interactive terminal (for
   scripting, use the `--json` forms of `now` / `limits`). Adds `textual` as a
   dependency.
