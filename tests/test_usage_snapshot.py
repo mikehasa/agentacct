@@ -483,3 +483,46 @@ def test_build_usage_page_empty_store(tmp_path):
     assert page.by_model == []
     assert page.usage_record_count == 0
     assert page.as_of is None
+
+
+# ---------------------------------------------------------------------------
+# limit_is_stale + build_usage_page model filter
+# ---------------------------------------------------------------------------
+
+
+def _limit(captured_age_days, windows_minutes, now):
+    wins = [us.LimitWindow(kind="w", label="w", used_percent=50.0, window_minutes=m, resets_at=None)
+            for m in windows_minutes]
+    captured = None if captured_age_days is None else now - captured_age_days * 86400
+    return us.ClientLimit(client="c", origin=None, origin_label=None, plan_type=None, org=None,
+                          captured_at=captured, windows=wins, credits=None, reached_type=None,
+                          source_file=None, raw_event={})
+
+
+def test_limit_is_stale():
+    now = 1_000_000.0
+    # older than the (7d) horizon → stale (e.g. a signed-out account).
+    assert us.limit_is_stale(_limit(8, [300, 10080], now), now) is True
+    # within the week → fresh.
+    assert us.limit_is_stale(_limit(2, [10080], now), now) is False
+    # a 5h-ONLY stream read 6h ago must NOT be hidden: the one-week floor keeps a
+    # live-but-idle account visible rather than implying it signed out.
+    assert us.limit_is_stale(_limit(0.25, [300], now), now) is False
+    # …but a 5h-only stream abandoned for over a week IS stale.
+    assert us.limit_is_stale(_limit(9, [300], now), now) is True
+    # unknown capture time → never stale (can't judge; don't drop a live account).
+    assert us.limit_is_stale(_limit(None, [300], now), now) is False
+    # no usable window length → the week floor: 3d fresh, 9d stale.
+    assert us.limit_is_stale(_limit(3, [], now), now) is False
+    assert us.limit_is_stale(_limit(9, [], now), now) is True
+
+
+def test_build_usage_page_model_filter(tmp_path):
+    service = SentinelService(tmp_path)
+    _record_usage(service, client="codex", model="gpt-5", session_id="a",
+                  input_tokens=100, output_tokens=10, updated_at=int(_NOW - 3600), estimated_cost_usd=1.0)
+    _record_usage(service, client="codex", model="gpt-4", session_id="b",
+                  input_tokens=200, output_tokens=20, updated_at=int(_NOW - 3600), estimated_cost_usd=2.0)
+    page = us.build_usage_page(service.list_all_events(), model="gpt-5", days=30, now=_NOW, today=_TODAY)
+    assert page.model_filter == "gpt-5"
+    assert {m["model"] for m in page.by_model} == {"gpt-5"}  # scoped to the one model
