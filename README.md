@@ -5,23 +5,30 @@
 [![Python](https://img.shields.io/pypi/pyversions/agentacct.svg)](https://pypi.org/project/agentacct/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
-**See what your coding agents actually did — and what it cost — on a dashboard that never leaves your machine.**
+**See what your coding agents actually did — and what it cost — in a live terminal dashboard that never leaves your machine.**
 
-agentacct is local-first Agent Work Intelligence for coding agents. It reads the session logs that Claude Code and Codex already write on your machine, joins them with the work each session records as it goes, and shows the result — tokens, estimated cost, tasks, and evidence — on a local dashboard.
+agentacct is local-first Agent Work Intelligence for coding agents. It reads the session logs that Claude Code and Codex already write on your machine, joins them with the work each session records as it goes, and shows the result — usage, estimated cost, provider limits, and the work itself — in **`agentacct tui`**, a live terminal dashboard. No browser, no server, no account.
 
-**Private by design.** Everything stays on your machine: state is plain local files, the dashboard binds to `127.0.0.1`, and there is no phone-home telemetry, no account, no cloud sync. agentacct never stores or requests a provider API key.
+![agentacct tui — live usage, cost, provider rate-limit bars, and recent sessions with per-session weekly-plan-cost estimates](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-home.png)
 
-![agentacct dashboard: token usage, estimated cost, and per-agent breakdown charts](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/dashboard-overview.png)
+**Private by design.** Everything stays on your machine: state is plain local files, nothing binds a network port, and there is no phone-home telemetry, no account, no cloud sync. agentacct never stores or requests a provider API key.
 
 <sub>Screenshots show a synthetic demo workspace; your dashboard renders your machine's real local data.</sub>
 
 ## What you get
 
-- **Honest usage and cost.** Tokens per agent, model, and day — read from the clients' own local session files and labeled `client_reported`; costs are clearly marked pricing-table estimates, never invoices.
-- **The work, not just the tokens.** Sessions roll up into Tasks with recorded work steps and machine checks: a passing test is `Verified` evidence, an agent's own claim stays labeled `Agent reported`.
-- **Attribution you can trust.** Every join between usage and recorded work carries a confidence label (`exact`/`high`/`medium`/`low`). Missing attribution beats wrong attribution: when agentacct cannot prove a link, it shows the gap instead of a guess.
+Run **`agentacct tui`** for a live, in-terminal view — usage windows, provider rate-limit bars with reset countdowns, and your recent sessions. Press `s` to drill into the sessions, `u` for the usage screen, `q` to quit.
 
-![agentacct dashboard: recent tasks with work steps, checks, and per-task token totals](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/dashboard-tasks.png)
+- **Honest usage and cost.** Tokens per agent, model, and day — read from the clients' own local session files and labeled `client_reported`; costs are clearly marked pricing-table estimates, never invoices.
+- **The work, not just the tokens.** Every session rolls up its recorded work steps and machine checks — a passing test is `Verified` evidence, an agent's own claim stays labeled `Agent reported`. Open a session to see each step, its status (`in progress` / `handed off` / `done` / `blocked`), and its check results with exit codes:
+
+  ![agentacct tui session detail — the per-step work ledger with pass/fail check evidence and a weekly-plan-cost estimate](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-session-detail.png)
+
+- **Attribution you can trust.** Every join between usage and recorded work carries a confidence label (`exact`/`high`/`medium`/`low`). Missing attribution beats wrong attribution: when agentacct cannot prove a link, it shows the gap instead of a guess. Press `s` for the honest per-session roll-up — tokens, cost, and steps, joined to the session that actually ran them:
+
+  ![agentacct tui sessions list — per-session tokens, cost, status, and step counts](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-sessions.png)
+
+- **Plan-cost estimate (beta).** From your own recorded usage-limit history, agentacct estimates what fraction of your **weekly Claude subscription** each task consumed — the `plan` column on the home panel and the `≈ X% of your weekly plan` line on the session detail. Because different models burn the plan at very different rates, it weights per model from a measured baseline and **self-calibrates to your account** as more limit history accrues (works from Codex and the Claude CLI status-line too, not just the desktop app). Always labeled an estimate.
 
 ## Install
 
@@ -30,11 +37,12 @@ Requires Python >= 3.11 on macOS or Linux; Windows is supported only via WSL.
 ```bash
 pipx install agentacct
 agentacct onboard   # once per machine (global by default)
+agentacct tui       # the live terminal dashboard
 ```
 
 No `pipx` yet? Install it first with `brew install pipx` (macOS) or `python3 -m pip install --user pipx` — or skip pipx entirely and use `uv tool install agentacct`. See [INSTALL.md](INSTALL.md) for a plain-`venv` fallback.
 
-`onboard` installs agentacct once per machine (global by default, writing zero files into your repo): it detects your local coding-agent logs, sets up a global store, runs a first usage sync, and starts the dashboard at `http://127.0.0.1:8765`. Then open a **new** agent session in any repo — MCP servers and hooks bind at session start, so the session that ran onboarding cannot become the first recorded Task. (Prefer a per-repo install? Run `agentacct onboard --scope project` instead.)
+`onboard` installs agentacct once per machine (global by default, writing zero files into your repo): it detects your local coding-agent logs, sets up a global store, and runs a first usage sync. Then run **`agentacct tui`** for the live terminal dashboard (onboarding also starts an optional browser dashboard at `http://127.0.0.1:8765`). Open a **new** agent session in any repo — MCP servers and hooks bind at session start, so the session that ran onboarding cannot become the first recorded Task. (Prefer a per-repo install? Run `agentacct onboard --scope project` instead.)
 
 Prefer to let the agent do it? Paste this into your coding agent:
 
