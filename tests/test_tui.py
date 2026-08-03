@@ -1250,3 +1250,32 @@ def test_recent_panel_renders_plan_column(tmp_path):
             assert str(recent.get_row_at(1)[4]) == "—"        # codex not in the map → no estimate
 
     _run(scenario())
+
+
+def test_sessions_list_renders_plan_column(tmp_path):
+    SentinelService(tmp_path)
+    fake = {"session_rollup": {"sessions": [
+        {"client": "claude-code", "client_session_id": "cs1", "session_key": "cc::cs1",
+         "rollup_group_key": "cc::cs1", "client_session_title": "C",
+         "usage": {"total_tokens": 100}, "work": {"counts": {}}},
+        {"client": "codex", "client_session_id": "cx1", "session_key": "cx::cx1",
+         "rollup_group_key": "cx::cx1", "client_session_title": "X",
+         "usage": {"total_tokens": 100}, "work": {"counts": {}}},
+    ]}}
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("s")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            scr = app.screen
+            scr._populate(fake, {"cs1": 2.7})  # only claude in the calibrated map
+            table = scr.query_one("#sessions", DataTable)
+            # columns: session,client,project,activity,status,tokens,est.cost,PLAN(7),steps,sub
+            by_client = {str(table.get_row_at(i)[1]): table.get_row_at(i) for i in range(table.row_count)}
+            assert str(by_client["claude-code"][7]) == "≈2.7%"
+            assert str(by_client["codex"][7]) == "—"  # not in the map → honest —
+
+    _run(scenario())

@@ -901,7 +901,7 @@ class SessionsScreen(Screen):
         self.sub_title = "sessions"
         table = self.query_one("#sessions", DataTable)
         table.add_columns(
-            "session", "client", "project", "activity", "status", "tokens", "est. cost", "steps", "⋔ sub"
+            "session", "client", "project", "activity", "status", "tokens", "est. cost", "plan", "steps", "⋔ sub"
         )
         self._set_loading(True, "Building the work ledger (one-time, a few seconds)…")
         self._load()
@@ -944,7 +944,13 @@ class SessionsScreen(Screen):
             return
         if worker.is_cancelled:
             return
-        app.call_from_thread(self._populate, ledger)
+        # Per-session weekly-plan % (calibrated clients only) — computed on the worker
+        # thread and cached on the app, shared with the home panel / detail view.
+        try:
+            _confidence, pcts = app._ensure_plan_cache(events)
+        except Exception:  # noqa: BLE001 - the plan column is best-effort.
+            pcts = {}
+        app.call_from_thread(self._populate, ledger, pcts)
 
     def _show_error(self, message: str) -> None:
         if not self.is_mounted:  # a late callback must not touch a dismissed screen
@@ -954,9 +960,10 @@ class SessionsScreen(Screen):
             f"[red]could not build the work ledger:[/] {_escape(message)}"
         )
 
-    def _populate(self, ledger: dict) -> None:
+    def _populate(self, ledger: dict, pcts: dict[str, float] | None = None) -> None:
         if not self.is_mounted:  # screen was dismissed before the build finished
             return
+        pcts = pcts or {}
         sessions = list((ledger.get("session_rollup") or {}).get("sessions") or [])
         self._total_sessions = len(sessions)
 
@@ -992,6 +999,7 @@ class SessionsScreen(Screen):
                 _session_badge(entry),
                 format_tokens(usage.get("total_tokens")),
                 _session_cost_text(usage),
+                _plan_pct_cell(entry, pcts),
                 steps,
                 str(n_children) if n_children else "",
                 key=key,
