@@ -1118,3 +1118,76 @@ def test_usage_screen_model_filter_dropped_when_absent_in_range(tmp_path):
             assert scr._model_filter is None  # dropped, not stranded on an empty page
 
     _run(scenario())
+
+
+def test_session_detail_shows_plan_estimate(tmp_path):
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_usage(service, client="claude-code", model="claude-opus-4-8", session_id="cs1",
+                  input_tokens=100_000_000, output_tokens=0, updated_at=int(now - 3600), estimated_cost_usd=50.0)
+    entry = {"client": "claude-code", "client_session_id": "cs1", "client_session_title": "Big",
+             "usage": {"total_tokens": 100_000_000}, "work": {"items": []}}
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.push_screen(SessionDetailScreen(entry))
+            await pilot.pause()
+            det = app.screen
+            # 100M Opus 4.8 × baseline ≈ 1.3% → the estimate line renders.
+            assert "weekly Claude plan" in det._header_text
+            assert app._plan_cache is not None  # cached on the app for reuse
+
+    _run(scenario())
+
+
+def test_session_detail_no_plan_estimate_for_non_claude(tmp_path):
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_usage(service, client="codex", model="gpt-5", session_id="cx1",
+                  input_tokens=1_000_000, output_tokens=0, updated_at=int(now - 3600), estimated_cost_usd=1.0)
+    entry = {"client": "codex", "client_session_id": "cx1", "client_session_title": "Codex",
+             "usage": {"total_tokens": 1_000_000}, "work": {"items": []}}
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.push_screen(SessionDetailScreen(entry))
+            await pilot.pause()
+            det = app.screen
+            assert "weekly Claude plan" not in det._header_text  # claude-plan-specific
+
+    _run(scenario())
+
+
+def test_plan_pct_cell_helper():
+    from agentacct.tui import _plan_pct_cell
+    cc = {"client": "claude-code", "client_session_id": "s1"}
+    assert _plan_pct_cell(cc, {"s1": 2.5}) == "≈2.5%"
+    assert _plan_pct_cell(cc, {"s1": 0.04}) == "≈<0.1%"   # tiny but non-zero
+    assert _plan_pct_cell(cc, {"s1": 0.0}) == "—"          # zero → no estimate
+    assert _plan_pct_cell(cc, {}) == "—"                    # missing → no estimate
+    assert _plan_pct_cell({"client": "codex", "client_session_id": "s1"}, {"s1": 2.5}) == "—"  # non-claude
+
+
+def test_recent_panel_renders_plan_column(tmp_path):
+    SentinelService(tmp_path)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            claude = {"client": "claude-code", "client_session_id": "cs1",
+                      "client_session_title": "C", "usage": {"total_tokens": 100}, "work": {"items": []}}
+            codex = {"client": "codex", "client_session_id": "cx1",
+                     "client_session_title": "X", "usage": {"total_tokens": 100}, "work": {"items": []}}
+            app._populate_recent([claude, codex], {"cs1": 1.3})
+            recent = app.query_one("#recent", DataTable)
+            assert recent.row_count == 2
+            # columns: session, client, status, tokens, PLAN(4), activity
+            assert str(recent.get_row_at(0)[4]) == "≈1.3%"   # claude with an estimate
+            assert str(recent.get_row_at(1)[4]) == "—"        # codex → no plan estimate
+
+    _run(scenario())
