@@ -318,11 +318,17 @@ class AgentAcctTUI(App):
     #limits-body { padding: 0 0 1 0; }
     #recent-status { color: $text-muted; padding: 0 0 1 0; }
     #recent { height: auto; }
-    #usage-status { color: $text-muted; padding: 0 0 1 0; }
+    /* Filter / status bars read as a raised control strip in full-strength text,
+       so the active range + filters are legible at a glance (not squint-grey). */
+    #usage-status, #sessions-status {
+        color: $text;
+        background: $boost;
+        padding: 0 1;
+        margin: 0 0 1 0;
+    }
     #usage-scroll { padding: 0 1; }
     #usage-limits { padding: 0 0 1 0; }
     #usage-periods, #usage-models { height: auto; }
-    #sessions-status { color: $text-muted; padding: 0 0 1 0; }
     #sessions-loading { height: auto; }
     #detail-header { padding: 0 1 1 1; }
     #detail-scroll { padding: 0 1; }
@@ -1009,7 +1015,8 @@ class SessionsScreen(Screen):
         cap = f" (showing most recent {_SESSIONS_LIMIT})" if self._total_top > _SESSIONS_LIMIT else ""
         foldnote = f" · {folded} subagent sessions folded" if folded else ""
         self.query_one("#sessions-status", Static).update(
-            f"{self._total_top} sessions{cap}{foldnote} · Enter to open · r rebuild · Esc back"
+            f"[b]{self._total_top} sessions[/]{cap}{foldnote}"
+            f"      [dim]Enter open · r rebuild · Esc back[/]"
         )
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -1339,15 +1346,23 @@ class UsageScreen(Screen):
 
     def _render_page(self, page: UsagePage, label: str, limits: list[ClientLimit]) -> None:
         now = time.time()
-        parts = [f"range: {label}", f"{page.granularity}"]
-        if page.as_of is not None and page.as_of <= now:
-            parts.append(f"as of {humanize_seconds(now - page.as_of)} ago")
-        parts.append(f"{page.usage_record_count} usage records")
-        parts.append(f"client: {_escape(str(page.client_filter)) if page.client_filter else 'all'}")
+        # A legible filter bar: the view STATE (range, granularity, active filters)
+        # is emphasized — an on filter shows as a reverse-video chip so it's obvious
+        # what's scoped — while the key hints and meta sit in a dim tier. (Whole
+        # label:value segments are wrapped so plain-substring tests still match.)
+        state: list[str] = [f"[b]range: {label}[/]", f"[dim]{page.granularity}[/]"]
+        if page.client_filter:
+            state.append(f"[reverse] client: {_escape(str(page.client_filter))} [/]")
+        else:
+            state.append("[dim]client: all[/]")
         if page.model_filter:
-            parts.append(f"model: {_escape(str(page.model_filter))}")
-        parts.append("c client · m model · d range · r · Esc")
-        self._status_text = "  ·  ".join(parts)
+            state.append(f"[reverse] model: {_escape(str(page.model_filter))} [/]")
+        meta: list[str] = []
+        if page.as_of is not None and page.as_of <= now:
+            meta.append(f"as of {humanize_seconds(now - page.as_of)} ago")
+        meta.append(f"{page.usage_record_count} usage records")
+        hint = "[dim]" + "  ·  ".join([*meta, "c client · m model · d range · r · Esc"]) + "[/]"
+        self._status_text = "  ·  ".join(state) + "      " + hint
         self.query_one("#usage-status", Static).update(self._status_text)
 
         # Plan limits (shared renderer with the home panel; stale streams hidden).
