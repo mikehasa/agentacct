@@ -7,6 +7,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`agentacct tui` — provider limits on the usage screen, client/model filters,
+  and stale-account hiding.** The usage screen (press `u`) now also shows the
+  provider plan-limit bars (5h / 7d used %, reset countdown), and `c` / `m` scope
+  the whole page — time series, by-model table, and limits — to one client /
+  provider or one model. A signed-out or cancelled account, whose last plan reading
+  stays frozen forever, is now hidden once it has not updated in over a week (the
+  hidden count is disclosed) instead of lingering on the panel with a misleading
+  full bar.
 - **`agentacct tui` — session status badges, a dedicated usage screen, and a
   recent-sessions panel.** Every session now carries an at-a-glance status badge
   (`▶ in progress` / `⏸ handed off` / `✓ done` / `⚠ blocked`), derived from its

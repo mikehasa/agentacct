@@ -981,3 +981,140 @@ def test_home_body_is_scrollable(tmp_path):
             assert app.query_one("#recent") is not None
 
     _run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# provider-limit staleness + usage-screen limits & filters
+# ---------------------------------------------------------------------------
+
+
+def _claude_limit(org, captured_age, used=40.0):
+    from agentacct.usage_snapshot import ClientLimit, LimitWindow
+    return ClientLimit(
+        client="claude-code", origin="claude_plan_usage", origin_label="desktop app",
+        plan_type=None, org=org, captured_at=time.time() - captured_age,
+        windows=[LimitWindow(kind="7d", label="7-day", used_percent=used, window_minutes=10080, resets_at=None)],
+        credits=None, reached_type=None, source_file=None, raw_event={},
+    )
+
+
+def test_format_limit_lines_and_panel_text():
+    from agentacct.tui import _format_limit_lines, _limits_panel_text
+    from rich.text import Text
+
+    now = time.time()
+    dead = _claude_limit("deadorg", 8 * 86400, used=100.0)  # 8d old → stale
+    live = _claude_limit("liveorg", 600, used=35.0)          # 10m old → fresh
+
+    text, hidden = _format_limit_lines([dead, live], now)
+    assert hidden == 1
+    assert "liveorg" in text and "deadorg" not in text  # the dead account is dropped
+    Text.from_markup(text)  # valid markup
+
+    panel = _limits_panel_text([dead, live], now)
+    assert "1 stale reading(s) hidden" in panel  # hiding is disclosed, never silent
+    # all-stale → explicit note, still valid markup.
+    all_stale = _limits_panel_text([dead], now)
+    assert "No active provider limit readings" in all_stale
+    Text.from_markup(all_stale)
+    # no data at all → the record-data hint.
+    assert "No provider limit data recorded yet" in _limits_panel_text([], now)
+
+
+def test_home_render_limits_hides_stale(tmp_path):
+    SentinelService(tmp_path)
+    from agentacct.usage_snapshot import UsageSnapshot, LiveSnapshot
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            now = time.time()
+            app._snapshot = LiveSnapshot(
+                usage=UsageSnapshot(
+                    as_of=None, generated_at=now, event_count=0, usage_record_count=0,
+                    client_filter=None, windows=[], breakdown_window="last 7 days",
+                    by_client=[], by_model=[],
+                ),
+                limits=[_claude_limit("deadorg", 8 * 86400, used=100.0),
+                        _claude_limit("liveorg", 600, used=35.0)],
+            )
+            app._render_limits()
+            assert "liveorg" in app._limits_text and "deadorg" not in app._limits_text
+            assert "1 stale reading(s) hidden" in app._limits_text
+
+    _run(scenario())
+
+
+def test_usage_screen_limits_and_filters(tmp_path):
+    from agentacct.tui import UsageScreen
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_usage(service, client="codex", model="gpt-5", session_id="c1",
+                  input_tokens=1000, output_tokens=100, updated_at=int(now - 3600), estimated_cost_usd=1.0)
+    _record_usage(service, client="claude-code", model="claude-opus-4-8", session_id="a1",
+                  input_tokens=500, output_tokens=50, updated_at=int(now - 3600), estimated_cost_usd=0.5)
+    _record_usage(service, client="claude-code", model="claude-fable-5", session_id="a2",
+                  input_tokens=300, output_tokens=30, updated_at=int(now - 3600), estimated_cost_usd=0.4)
+    _seed_codex_limit(service, used=52.0, resets_at=int(now + 7200), captured=now - 60)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("u")
+            await pilot.pause()
+            scr = app.screen
+            assert isinstance(scr, UsageScreen)
+            # the fresh codex limit renders in the usage-screen Plan limits section.
+            assert "codex" in scr._limits_text
+            assert set(scr._available_clients) >= {"claude-code", "codex"}
+            assert "client: all" in scr._status_text
+            # `c` scopes to a client; `m` then scopes to one of that client's models.
+            await pilot.press("c")
+            await pilot.pause()
+            assert scr._client_filter in ("claude-code", "codex")
+            await pilot.press("m")
+            await pilot.pause()
+            assert scr._model_filter is not None
+            assert scr.query_one("#usage-models", DataTable).row_count == 1
+
+    _run(scenario())
+
+
+def test_usage_screen_model_filter_dropped_when_absent_in_range(tmp_path):
+    # Regression (review): cycling the range must not strand the model filter on a
+    # model with no usage in the new range (empty page + stale "model: X" status).
+    from agentacct.tui import UsageScreen
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    # fable only 40d ago (present in 90d/all, absent in 7d/30d); opus is recent.
+    _record_usage(service, client="claude-code", model="claude-fable-5", session_id="f1",
+                  input_tokens=100, output_tokens=10, updated_at=int(now - 40 * 86400), estimated_cost_usd=0.5)
+    _record_usage(service, client="claude-code", model="claude-opus-4-8", session_id="o1",
+                  input_tokens=100, output_tokens=10, updated_at=int(now - 3600), estimated_cost_usd=0.5)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.push_screen(UsageScreen(range_index=2))  # 90d, where fable exists
+            await pilot.pause()
+            scr = app.screen
+            scr._client_filter = "claude-code"
+            scr._model_filter = "claude-fable-5"
+            scr._rebuild()
+            await pilot.pause()
+            assert scr._model_filter == "claude-fable-5"
+            assert "claude-fable-5" in scr._available_models
+            # 90d → all (fable still present) → 7d (fable absent → filter dropped).
+            scr.action_cycle_range()  # all
+            await pilot.pause()
+            scr.action_cycle_range()  # 7d
+            await pilot.pause()
+            assert "claude-fable-5" not in scr._available_models
+            assert scr._model_filter is None  # dropped, not stranded on an empty page
+
+    _run(scenario())

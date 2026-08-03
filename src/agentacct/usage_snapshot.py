@@ -303,6 +303,7 @@ class UsagePage:
     generated_at: float
     usage_record_count: int
     client_filter: Optional[str]
+    model_filter: Optional[str]
     totals: dict[str, Any]
     by_period: list[dict[str, Any]]
     by_model: list[dict[str, Any]]
@@ -447,6 +448,7 @@ def build_usage_page(
     events: list[dict[str, Any]],
     *,
     client: str | None = None,
+    model: str | None = None,
     days: int | None = 30,
     granularity: str | None = None,
     now: float | None = None,
@@ -454,12 +456,13 @@ def build_usage_page(
 ) -> UsagePage:
     """Build the dedicated usage screen's data for a trailing ``days`` range.
 
-    ``days=None`` = all time. ``granularity`` defaults to the cube's own rule
-    (daily for 7/30-day ranges, weekly for 90/all) via ``resolve_granularity`` so
-    a long range collapses to readable weekly buckets instead of hundreds of days.
-    Reuses the exact ``now`` data path (``usage_records`` → ``build_usage_cube``)
-    so the page can never disagree with the overview. ``now`` / ``today`` are
-    injectable for tests.
+    ``days=None`` = all time. ``client`` / ``model`` scope the whole page to one
+    platform / one model (``None`` = every one). ``granularity`` defaults to the
+    cube's own rule (daily for 7/30-day ranges, weekly for 90/all) via
+    ``resolve_granularity`` so a long range collapses to readable weekly buckets
+    instead of hundreds of days. Reuses the exact ``now`` data path
+    (``usage_records`` → ``build_usage_cube``) so the page can never disagree with
+    the overview. ``now`` / ``today`` are injectable for tests.
     """
 
     from .api import _usage_record_time
@@ -472,7 +475,7 @@ def build_usage_page(
     gran = granularity or resolve_granularity(days_choice, "auto")
 
     cube = build_usage_cube(
-        records, record_time=_usage_record_time, days=days, granularity=gran, today=day
+        records, record_time=_usage_record_time, model=model, days=days, granularity=gran, today=day
     )
 
     # Freshness: newest record with a real (finite, not-future) timestamp — the
@@ -495,6 +498,7 @@ def build_usage_page(
         generated_at=now_epoch,
         usage_record_count=len(records),
         client_filter=client,
+        model_filter=model,
         totals=cube.get("totals") or {},
         by_period=cube.get("by_period") or [],
         by_model=cube.get("by_model") or [],
@@ -552,6 +556,41 @@ def build_client_limits(
     return results
 
 
+#: A limit stream is only hidden once it has not updated in over this long — a
+#: genuinely abandoned account, not one that is merely idle. Floors the staleness
+#: horizon so a stream reporting only a short (e.g. 5-hour) window is not dropped
+#: after a few hours of inactivity.
+STALE_HORIZON_SECONDS = 7 * 86400.0
+
+
+def limit_is_stale(limit: "ClientLimit", now: float) -> bool:
+    """Whether a provider-limit stream is stale — abandoned rather than merely idle.
+
+    A signed-out or cancelled account keeps a frozen last reading forever (the
+    desktop plan-usage file retains its old samples and the event log never expires
+    a ``rate_limit_observed``), so its bar would misleadingly claim e.g. "5h 100%"
+    weeks later. The TUI hides a stream once its newest reading is older than the
+    longest window it reports — but never below a one-week floor
+    (:data:`STALE_HORIZON_SECONDS`). The floor matters: a stream can legitimately
+    carry only a short window (a 5-hour-only Codex/statusline reading, or a Claude
+    sample missing its 7-day field), and a live-but-idle account must NOT be hidden
+    (and implied signed-out) after a few hours past that window. The desktop app
+    keeps sampling every few minutes while an account is signed in, so only a truly
+    abandoned stream — no update in over a week — ages past the floor. An unknown
+    capture time (``captured_at`` None) is treated as fresh; hiding on missing data
+    would drop a live account."""
+
+    if limit.captured_at is None:
+        return False
+    longest = 0.0
+    for window in limit.windows:
+        minutes = window.window_minutes
+        if isinstance(minutes, (int, float)) and not isinstance(minutes, bool) and minutes > 0:
+            longest = max(longest, float(minutes) * 60.0)
+    threshold = max(longest, STALE_HORIZON_SECONDS)
+    return (now - limit.captured_at) > threshold
+
+
 def build_live_snapshot(
     events: list[dict[str, Any]],
     *,
@@ -597,5 +636,6 @@ __all__ = [
     "build_usage_snapshot",
     "build_usage_page",
     "build_client_limits",
+    "limit_is_stale",
     "build_live_snapshot",
 ]

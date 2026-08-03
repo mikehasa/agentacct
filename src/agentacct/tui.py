@@ -36,14 +36,17 @@ from textual.widgets import Collapsible, DataTable, Footer, Header, LoadingIndic
 from .service import SentinelService
 from .subagent_roles import read_roles_for_children
 from .usage_snapshot import (
+    ClientLimit,
     LiveSnapshot,
     UsagePage,
+    build_client_limits,
     build_live_snapshot,
     build_usage_page,
     cost_text,
     finite,
     format_tokens,
     humanize_seconds,
+    limit_is_stale,
     ratio_bar,
     usage_bar,
 )
@@ -119,6 +122,72 @@ def _limit_color(used_percent: float) -> str:
     if used_percent < 90:
         return "yellow"
     return "red"
+
+
+def _format_limit_lines(limits: list[ClientLimit], now: float) -> tuple[str, int]:
+    """(Rich-markup text, hidden-stale count) for a set of provider-limit readings.
+
+    Shared by the home Provider-limits panel and the usage screen so they render
+    identically. Stale streams (a signed-out / cancelled account frozen older than
+    its longest window) are dropped so the panel isn't cluttered with a meaningless
+    frozen bar — the count is returned so the hiding is disclosed, never silent.
+    Every provider-derived value is escaped: a stray ``[/]`` in e.g. ``plan_type``
+    would otherwise raise a MarkupError and take down the whole live view.
+    """
+
+    fresh = [limit for limit in limits if not limit_is_stale(limit, now)]
+    hidden = len(limits) - len(fresh)
+    lines: list[str] = []
+    for limit in fresh:
+        header = f"[bold]{_escape(limit.client)}[/]"
+        if limit.origin_label:
+            header += f" [dim]({_escape(limit.origin_label)})[/]"
+        if limit.plan_type:
+            header += f"  plan: {_escape(str(limit.plan_type))}"
+        if limit.org:
+            header += f"  org: {_escape(str(limit.org)[:8])}"
+        if limit.captured_at is not None:
+            header += f"  [dim](as of {humanize_seconds(now - limit.captured_at)} ago)[/]"
+        lines.append(header)
+        for window in limit.windows:
+            used = window.used_percent
+            bar_value = used if used is not None else 0.0
+            color = _limit_color(bar_value)
+            bar = f"[{color}]{usage_bar(bar_value)}[/]"
+            pct = f"{used:5.1f}%" if used is not None else "   — "
+            line = f"  {window.label:>7}  {bar}  {pct}"
+            resets_at = window.resets_at
+            if isinstance(resets_at, (int, float)) and not isinstance(resets_at, bool) and resets_at > 0:
+                delta = resets_at - now
+                line += f"  · resets in {humanize_seconds(delta)}" if delta > 0 else "  · resets now"
+            lines.append(line)
+        if isinstance(limit.credits, dict) and limit.credits.get("has_credits"):
+            lines.append(f"  credits: {_escape(str(limit.credits.get('balance')))}")
+        if limit.reached_type:
+            lines.append(f"  [red]⚠ limit reached: {_escape(str(limit.reached_type))}[/]")
+        lines.append("")
+    return "\n".join(lines).rstrip("\n"), hidden
+
+
+def _limits_panel_text(limits: list[ClientLimit], now: float) -> str:
+    """The full Provider-limits panel text (fresh readings + a disclosed stale
+    count), or an explicit empty/all-stale note. One implementation for the home
+    panel and the usage screen."""
+
+    if not limits:
+        return (
+            "No provider limit data recorded yet — use your agents, or run "
+            "`agentacct usage watch`."
+        )
+    text, hidden = _format_limit_lines(limits, now)
+    stale_note = (
+        f"[dim]{hidden} stale reading(s) hidden (e.g. a signed-out account).[/]"
+        if hidden
+        else ""
+    )
+    if not text:  # everything was stale
+        return f"[dim]No active provider limit readings.[/]  {stale_note}".rstrip()
+    return f"{text}\n\n{stale_note}" if stale_note else text
 
 
 def _session_status(entry: dict) -> tuple[str, str, str]:
@@ -229,6 +298,7 @@ class AgentAcctTUI(App):
     #recent { height: auto; }
     #usage-status { color: $text-muted; padding: 0 0 1 0; }
     #usage-scroll { padding: 0 1; }
+    #usage-limits { padding: 0 0 1 0; }
     #usage-periods, #usage-models { height: auto; }
     #sessions-status { color: $text-muted; padding: 0 0 1 0; }
     #sessions-loading { height: auto; }
@@ -625,50 +695,9 @@ class AgentAcctTUI(App):
             self._limits_text = ""
             body.update("")
             return
-        limits = self._snapshot.limits
-        if not limits:
-            self._limits_text = (
-                "No provider limit data recorded yet — use your agents, or run "
-                "`agentacct usage watch`."
-            )
-            body.update(self._limits_text)
-            return
-        now = time.time()
-        lines: list[str] = []
-        for limit in limits:
-            # Every value below is provider-derived and rendered as Rich markup,
-            # so escape it — a stray '[/]' in e.g. plan_type would otherwise raise
-            # a MarkupError and take down the whole live view.
-            header = f"[bold]{_escape(limit.client)}[/]"
-            if limit.origin_label:
-                header += f" [dim]({_escape(limit.origin_label)})[/]"
-            if limit.plan_type:
-                header += f"  plan: {_escape(str(limit.plan_type))}"
-            if limit.org:
-                header += f"  org: {_escape(str(limit.org)[:8])}"
-            if limit.captured_at is not None:
-                header += f"  [dim](as of {humanize_seconds(now - limit.captured_at)} ago)[/]"
-            lines.append(header)
-            for window in limit.windows:
-                used = window.used_percent
-                bar_value = used if used is not None else 0.0
-                color = _limit_color(bar_value)
-                bar = f"[{color}]{usage_bar(bar_value)}[/]"
-                pct = f"{used:5.1f}%" if used is not None else "   — "
-                line = f"  {window.label:>7}  {bar}  {pct}"
-                resets_at = window.resets_at
-                if isinstance(resets_at, (int, float)) and not isinstance(resets_at, bool) and resets_at > 0:
-                    delta = resets_at - now
-                    line += (
-                        f"  · resets in {humanize_seconds(delta)}" if delta > 0 else "  · resets now"
-                    )
-                lines.append(line)
-            if isinstance(limit.credits, dict) and limit.credits.get("has_credits"):
-                lines.append(f"  credits: {_escape(str(limit.credits.get('balance')))}")
-            if limit.reached_type:
-                lines.append(f"  [red]⚠ limit reached: {_escape(str(limit.reached_type))}[/]")
-            lines.append("")
-        self._limits_text = "\n".join(lines).rstrip("\n")
+        # Shared with the usage screen; hides stale (signed-out/cancelled) streams
+        # and discloses the count.
+        self._limits_text = _limits_panel_text(self._snapshot.limits, time.time())
         body.update(self._limits_text)
 
     def _tick_countdowns(self) -> None:
@@ -1098,6 +1127,8 @@ class UsageScreen(Screen):
         Binding("escape", "back", "Back"),
         Binding("backspace", "back", "Back"),
         Binding("d", "cycle_range", "Range"),
+        Binding("c", "cycle_client", "Client"),
+        Binding("m", "cycle_model", "Model"),
         Binding("r", "refresh", "Refresh"),
         Binding("q", "quit", "Quit"),
     ]
@@ -1106,14 +1137,24 @@ class UsageScreen(Screen):
         super().__init__()
         self._range_index = range_index % len(_USAGE_RANGE_CYCLE)
         self._page: UsagePage | None = None
+        # Filters (None = all). Client scopes the whole page + limits; model scopes
+        # the time series + by-model table. The cycle vocabularies are recomputed on
+        # each rebuild from the unfiltered / client-scoped views.
+        self._client_filter: str | None = None
+        self._model_filter: str | None = None
+        self._available_clients: list[str] = []
+        self._available_models: list[str] = []
         # Composed text kept for headless tests.
         self._status_text = ""
         self._periods_text = ""
+        self._limits_text = ""
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Static("", id="usage-status")
         with VerticalScroll(id="usage-scroll"):
+            yield Static("Plan limits", classes="section-title")
+            yield Static("", id="usage-limits")
             yield Static("Usage over time", classes="section-title")
             yield DataTable(id="usage-periods", cursor_type="none", zebra_stripes=True)
             yield Static("By model", classes="section-title")
@@ -1123,6 +1164,8 @@ class UsageScreen(Screen):
     def on_mount(self) -> None:
         self.title = "agentacct"
         self.sub_title = "usage"
+        # Inherit the app-level --client filter as the starting scope.
+        self._client_filter = getattr(self.app, "client", None)
         self.query_one("#usage-periods", DataTable).add_columns(
             "period", "tokens", "est. cost", "sessions", ""
         )
@@ -1133,10 +1176,30 @@ class UsageScreen(Screen):
 
     def _rebuild(self) -> None:
         days, label = _USAGE_RANGE_CYCLE[self._range_index]
+        cf, mf = self._client_filter, self._model_filter
         try:
-            service = SentinelService(self.app.store_dir, create=False)
-            events = service.list_all_events()
-            page = build_usage_page(events, client=getattr(self.app, "client", None), days=days)
+            events = SentinelService(self.app.store_dir, create=False).list_all_events()
+            # Client vocabulary from the unfiltered view; model vocabulary from the
+            # current client scope (model-unfiltered) — so cycling never collapses
+            # the option list to the single value currently selected. Reuse builds
+            # where the filters make them identical (the screen is on-demand, not on
+            # a timer, so a couple of cube builds are fine).
+            unfiltered = build_usage_page(events, days=days)
+            self._available_clients = sorted(
+                {str(m.get("client")) for m in unfiltered.by_model if m.get("client")}
+            )
+            scoped = unfiltered if cf is None else build_usage_page(events, client=cf, days=days)
+            self._available_models = sorted(
+                {str(m.get("model")) for m in scoped.by_model if m.get("model")}
+            )
+            # A range (or client) change can strand the model filter on a model with
+            # no usage in the new scope; drop it so the view never renders an empty
+            # page while the status line still claims a now-absent model filter.
+            if mf is not None and mf not in self._available_models:
+                mf = None
+                self._model_filter = None
+            page = scoped if mf is None else build_usage_page(events, client=cf, model=mf, days=days)
+            limits = build_client_limits(events, client=cf)
         except Exception as exc:  # noqa: BLE001 - surface, never crash the screen.
             self._status_text = f"error: {exc}"
             try:
@@ -1148,24 +1211,29 @@ class UsageScreen(Screen):
             return
         self._page = page
         try:
-            self._render_page(page, label)
+            self._render_page(page, label, limits)
         except Exception as exc:  # noqa: BLE001 - a render error degrades to a note.
             try:
                 self.query_one("#usage-status", Static).update(f"render error: {_escape(str(exc))}")
             except Exception:  # noqa: BLE001
                 pass
 
-    def _render_page(self, page: UsagePage, label: str) -> None:
+    def _render_page(self, page: UsagePage, label: str, limits: list[ClientLimit]) -> None:
         now = time.time()
         parts = [f"range: {label}", f"{page.granularity}"]
         if page.as_of is not None and page.as_of <= now:
             parts.append(f"as of {humanize_seconds(now - page.as_of)} ago")
         parts.append(f"{page.usage_record_count} usage records")
-        if page.client_filter:
-            parts.append(f"client: {_escape(str(page.client_filter))}")
-        parts.append("d range · r refresh · Esc back")
+        parts.append(f"client: {_escape(str(page.client_filter)) if page.client_filter else 'all'}")
+        if page.model_filter:
+            parts.append(f"model: {_escape(str(page.model_filter))}")
+        parts.append("c client · m model · d range · r · Esc")
         self._status_text = "  ·  ".join(parts)
         self.query_one("#usage-status", Static).update(self._status_text)
+
+        # Plan limits (shared renderer with the home panel; stale streams hidden).
+        self._limits_text = _limits_panel_text(limits, now)
+        self.query_one("#usage-limits", Static).update(self._limits_text)
 
         # Periods newest-first for a monitor (latest on top, no scroll needed); the
         # "unknown" bucket (bad-timestamp rows, all-time only) always sorts last so
@@ -1206,6 +1274,26 @@ class UsageScreen(Screen):
 
     def action_cycle_range(self) -> None:
         self._range_index = (self._range_index + 1) % len(_USAGE_RANGE_CYCLE)
+        self._rebuild()
+
+    def action_cycle_client(self) -> None:
+        options: list[str | None] = [None, *self._available_clients]
+        try:
+            index = options.index(self._client_filter)
+        except ValueError:
+            index = 0
+        self._client_filter = options[(index + 1) % len(options)]
+        # Models are client-scoped, so a client change invalidates the model filter.
+        self._model_filter = None
+        self._rebuild()
+
+    def action_cycle_model(self) -> None:
+        options: list[str | None] = [None, *self._available_models]
+        try:
+            index = options.index(self._model_filter)
+        except ValueError:
+            index = 0
+        self._model_filter = options[(index + 1) % len(options)]
         self._rebuild()
 
     def action_refresh(self) -> None:
