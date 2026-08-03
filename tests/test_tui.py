@@ -86,6 +86,38 @@ def _seed_codex_limit(service: SentinelService, *, used: float, resets_at: int, 
     )
 
 
+def _record_7d(service: SentinelService, *, captured: float, pct: float, client: str = "claude-code", index: int = 0) -> None:
+    service.record_event({
+        "event_id": f"evt_rl_{client}_{index}",
+        "created_at": captured,
+        "source": client,
+        "event_type": "rate_limit_observed",
+        "metadata": {
+            "client": client,
+            "captured_at": captured,
+            "windows": [{"kind": "7d", "window_minutes": 10080, "used_percent": pct}],
+        },
+    })
+
+
+def _seed_calibrated_claude(service: SentinelService, *, now: float) -> None:
+    """Recent history where the account's weekly-% moves exactly as the baseline
+    predicts (fitted scale ~1.0, trusted) so claude-code calibrates: 4 clean hourly
+    intervals of 100M Opus tokens, all within the recency window."""
+    from agentacct.plan_cost import BASELINE_MODEL_WEIGHTS
+
+    move = 100.0 * BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]  # 100M Opus → baseline move
+    base = now - 6 * 3600
+    pct = 0.0
+    _record_7d(service, captured=base, pct=pct, index=0)
+    for i in range(4):
+        _record_usage(service, client="claude-code", model="claude-opus-4-8", session_id=f"s{i}",
+                      input_tokens=100_000_000, output_tokens=0, updated_at=int(base + i * 3600 + 1800),
+                      estimated_cost_usd=1.0)
+        pct += move
+        _record_7d(service, captured=base + (i + 1) * 3600, pct=pct, index=i + 1)
+
+
 def test_tui_mounts_and_populates(tmp_path):
     service = SentinelService(tmp_path)
     now = time.time()
@@ -1120,9 +1152,32 @@ def test_usage_screen_model_filter_dropped_when_absent_in_range(tmp_path):
     _run(scenario())
 
 
-def test_session_detail_shows_plan_estimate(tmp_path):
+def test_session_detail_shows_calibrated_plan_estimate(tmp_path):
     service = SentinelService(tmp_path)
     now = time.time()
+    _seed_calibrated_claude(service, now=now)  # calibrates claude-code (scale ~1.0)
+    entry = {"client": "claude-code", "client_session_id": "s0", "client_session_title": "Big",
+             "usage": {"total_tokens": 100_000_000}, "work": {"items": []}}
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.push_screen(SessionDetailScreen(entry))
+            await pilot.pause()
+            det = app.screen
+            # Calibrated from the account's own history → a real % + the calibrated note.
+            assert "of your weekly plan" in det._header_text
+            assert "calibrated to your usage" in det._header_text
+            assert app._plan_cache is not None  # cached on the app for reuse
+
+    _run(scenario())
+
+
+def test_session_detail_uncalibrated_shows_honest_line(tmp_path):
+    service = SentinelService(tmp_path)
+    now = time.time()
+    # Usage but NO limit history → baseline → we must NOT fabricate a %.
     _record_usage(service, client="claude-code", model="claude-opus-4-8", session_id="cs1",
                   input_tokens=100_000_000, output_tokens=0, updated_at=int(now - 3600), estimated_cost_usd=50.0)
     entry = {"client": "claude-code", "client_session_id": "cs1", "client_session_title": "Big",
@@ -1135,19 +1190,18 @@ def test_session_detail_shows_plan_estimate(tmp_path):
             app.push_screen(SessionDetailScreen(entry))
             await pilot.pause()
             det = app.screen
-            # 100M Opus 4.8 × baseline ≈ 1.3% → the estimate line renders.
-            assert "weekly Claude plan" in det._header_text
-            assert app._plan_cache is not None  # cached on the app for reuse
+            assert "calibrating from your own usage" in det._header_text
+            assert "% of your weekly plan" not in det._header_text  # no fabricated number
 
     _run(scenario())
 
 
-def test_session_detail_no_plan_estimate_for_non_claude(tmp_path):
+def test_session_detail_no_plan_line_for_non_plan_client(tmp_path):
     service = SentinelService(tmp_path)
     now = time.time()
-    _record_usage(service, client="codex", model="gpt-5", session_id="cx1",
+    _record_usage(service, client="opencode", model="gpt-5", session_id="oc1",
                   input_tokens=1_000_000, output_tokens=0, updated_at=int(now - 3600), estimated_cost_usd=1.0)
-    entry = {"client": "codex", "client_session_id": "cx1", "client_session_title": "Codex",
+    entry = {"client": "opencode", "client_session_id": "oc1", "client_session_title": "OC",
              "usage": {"total_tokens": 1_000_000}, "work": {"items": []}}
 
     async def scenario():
@@ -1157,7 +1211,7 @@ def test_session_detail_no_plan_estimate_for_non_claude(tmp_path):
             app.push_screen(SessionDetailScreen(entry))
             await pilot.pause()
             det = app.screen
-            assert "weekly Claude plan" not in det._header_text  # claude-plan-specific
+            assert "weekly plan" not in det._header_text  # non-plan client → no line at all
 
     _run(scenario())
 
@@ -1168,8 +1222,13 @@ def test_plan_pct_cell_helper():
     assert _plan_pct_cell(cc, {"s1": 2.5}) == "≈2.5%"
     assert _plan_pct_cell(cc, {"s1": 0.04}) == "≈<0.1%"   # tiny but non-zero
     assert _plan_pct_cell(cc, {"s1": 0.0}) == "—"          # zero → no estimate
-    assert _plan_pct_cell(cc, {}) == "—"                    # missing → no estimate
-    assert _plan_pct_cell({"client": "codex", "client_session_id": "s1"}, {"s1": 2.5}) == "—"  # non-claude
+    assert _plan_pct_cell(cc, {}) == "—"                    # missing (uncalibrated) → no estimate
+    # codex is a plan-bearing client now: a calibrated value renders.
+    cx = {"client": "codex", "client_session_id": "s1"}
+    assert _plan_pct_cell(cx, {"s1": 2.5}) == "≈2.5%"
+    # a non-plan client never shows a number, even with a value in the map.
+    oc = {"client": "opencode", "client_session_id": "s1"}
+    assert _plan_pct_cell(oc, {"s1": 2.5}) == "—"
 
 
 def test_recent_panel_renders_plan_column(tmp_path):
@@ -1187,7 +1246,7 @@ def test_recent_panel_renders_plan_column(tmp_path):
             recent = app.query_one("#recent", DataTable)
             assert recent.row_count == 2
             # columns: session, client, status, tokens, PLAN(4), activity
-            assert str(recent.get_row_at(0)[4]) == "≈1.3%"   # claude with an estimate
-            assert str(recent.get_row_at(1)[4]) == "—"        # codex → no plan estimate
+            assert str(recent.get_row_at(0)[4]) == "≈1.3%"   # claude, in the calibrated map
+            assert str(recent.get_row_at(1)[4]) == "—"        # codex not in the map → no estimate
 
     _run(scenario())

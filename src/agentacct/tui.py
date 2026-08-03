@@ -230,13 +230,21 @@ def _session_badge(entry: dict) -> str:
     return f"[{color}]{glyph} {label}[/]"
 
 
+# Clients that have a weekly subscription plan agentacct can estimate against.
+_PLAN_CLIENTS = ("claude-code", "codex")
+
+
 def _plan_pct_cell(entry: dict, pcts: dict) -> str:
-    """A compact ``≈X%`` weekly-Claude-plan cell for a session row, or ``—``.
+    """A compact ``≈X%`` weekly-plan cell for a session row, or ``—``.
 
-    Claude-plan-specific (other clients show ``—``); the estimate comes from the
-    pre-computed per-session map so a list renders many rows cheaply."""
+    A value appears ONLY for a plan-bearing client (see ``_PLAN_CLIENTS``) whose
+    estimate is CALIBRATED from the user's own recorded limit history: the
+    pre-computed ``pcts`` map contains only calibrated clients' sessions, so a
+    session absent from it — an uncalibrated client, a non-plan client, or a
+    zero-token session — shows ``—`` rather than a number from a shipped equation.
+    The nuance (calibrating vs. no plan) is spelled out in the session detail."""
 
-    if str(entry.get("client") or "") != "claude-code":
+    if str(entry.get("client") or "") not in _PLAN_CLIENTS:
         return "—"
     pct = (pcts or {}).get(str(entry.get("client_session_id")))
     if not (isinstance(pct, (int, float)) and not isinstance(pct, bool) and pct > 0):
@@ -535,7 +543,7 @@ class AgentAcctTUI(App):
         # Estimate each session's share of the weekly plan (claude-code) — computed
         # here on the worker thread (off the UI loop) and cached by fingerprint.
         try:
-            _weights, _records, pcts = self._ensure_plan_cache(events)
+            _confidence, pcts = self._ensure_plan_cache(events)
         except Exception:  # noqa: BLE001 - the plan column is best-effort.
             pcts = {}
         if worker.is_cancelled:
@@ -543,12 +551,20 @@ class AgentAcctTUI(App):
         self.call_from_thread(self._populate_recent, top, pcts)
 
     def _ensure_plan_cache(self, events: list) -> tuple:
-        """Compute + cache (weights, records, per-session plan %) keyed on the event
-        fingerprint. Shared by the recent panel and the session detail so the
+        """Compute + cache per-client plan calibration, keyed on the event fingerprint.
+
+        Returns ``(confidence_by_client, pcts)``. ``pcts`` maps ``session_id -> % of
+        the weekly plan`` and contains ONLY sessions of clients whose estimate is
+        CALIBRATED from the user's own recorded limit history — a baseline
+        (uncalibrated) client is deliberately excluded so the UI shows an honest
+        'calibrating' note instead of a number derived from a shipped equation.
+        ``confidence_by_client`` carries every plan-bearing client's status so the
+        detail view can distinguish 'calibrating' from 'no plan'.
+
+        Shared by the recent panel, the sessions list, and the session detail so the
         expensive usage view + calibration run at most once per event change and a
         stale scale can't survive an import. Stored as one tuple so a concurrent
-        writer (the recent worker vs a detail open) can never observe a torn pair;
-        the last writer wins and the tuple is always internally consistent."""
+        writer can never observe a torn value; the last writer wins."""
 
         fingerprint = _events_fingerprint(events)
         cache = self._plan_cache
@@ -556,12 +572,20 @@ class AgentAcctTUI(App):
             from .plan_cost import calibrate_plan_weights, session_plan_pcts
             from .usage_snapshot import usage_records
 
-            records = usage_records(events, client="claude-code")
-            weights = calibrate_plan_weights(events, client="claude-code", records=records)
-            pcts = session_plan_pcts(records, weights, client="claude-code")
-            cache = (fingerprint, weights, records, pcts)
+            confidence: dict[str, str] = {}
+            pcts: dict[str, float] = {}
+            for client in _PLAN_CLIENTS:
+                records = usage_records(events, client=client)
+                weights = calibrate_plan_weights(events, client=client, records=records)
+                confidence[client] = weights.confidence
+                # Only surface a number when it is grounded in THIS account's own
+                # limit history. Providers change how many tokens a plan grants, so a
+                # shipped universal equation would be a guess — we withhold it.
+                if weights.confidence == "calibrated":
+                    pcts.update(session_plan_pcts(records, weights, client=client))
+            cache = (fingerprint, confidence, pcts)
             self._plan_cache = cache  # single atomic assignment
-        return cache[1], cache[2], cache[3]
+        return cache[1], cache[2]
 
     def _recent_error(self, message: str) -> None:
         self._recent_loading = False
@@ -1081,28 +1105,33 @@ class SessionDetailScreen(Screen):
         return header
 
     def _plan_estimate(self, entry: dict) -> str | None:
-        """A one-line 'estimated % of the weekly Claude plan' for this session.
+        """A one-line weekly-plan share for this session — a number only when honest.
 
-        Claude-plan-specific (skipped for other clients). Fail-soft: any read/build
-        problem yields no line rather than crashing the detail. The per-account
-        weights are computed once and cached on the app; only the session's own
-        per-model tokens are gathered per open.
+        For a plan-bearing client (claude-code, codex) the number is shown ONLY when
+        the estimate is CALIBRATED from the user's own recorded limit history; while
+        that history is still too thin (or too much of the account's usage happens
+        outside the tracked client, e.g. the Claude desktop app / web), we show an
+        honest 'calibrating' note rather than a figure from a shipped equation.
+        Non-plan clients get no line. Fail-soft: any read/build problem yields no line
+        rather than crashing the detail.
         """
 
-        if str(entry.get("client") or "") != "claude-code":
+        client = str(entry.get("client") or "")
+        if client not in _PLAN_CLIENTS:
             return None
         try:
             app = self.app
             events = SentinelService(app.store_dir, create=False).list_all_events()
-            # Shared, fingerprint-cached weights + per-session % (built once per event
-            # change, off the UI thread by the recent-panel worker when it ran first).
-            weights, _records, pcts = app._ensure_plan_cache(events)
-            pct = pcts.get(str(entry.get("client_session_id")))
-            if not (isinstance(pct, (int, float)) and pct > 0):
-                return None
-            shown = f"{pct:.1f}%" if pct >= 0.1 else "<0.1%"
-            note = "estimate" if getattr(weights, "confidence", "") == "calibrated" else "rough estimate"
-            return f"≈ {shown} of your weekly Claude plan · {note}"
+            # Shared, fingerprint-cached confidence + per-session % (built once per
+            # event change, off the UI thread by the recent-panel worker when it ran
+            # first). pcts contains only calibrated clients' sessions.
+            confidence, pcts = app._ensure_plan_cache(events)
+            if confidence.get(client) == "calibrated":
+                pct = pcts.get(str(entry.get("client_session_id")), 0.0)
+                shown = f"{pct:.1f}%" if pct >= 0.1 else "<0.1%"
+                return f"≈ {shown} of your weekly plan · estimate, calibrated to your usage"
+            # Uncalibrated: no fabricated number — say what agentacct is doing instead.
+            return "weekly plan: calibrating from your own usage — not enough limit history yet"
         except Exception:  # noqa: BLE001 - the estimate is best-effort; never crash the detail.
             return None
 
