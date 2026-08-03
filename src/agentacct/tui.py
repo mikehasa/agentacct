@@ -21,6 +21,7 @@ The whole thing is headless-testable with Textual's ``App.run_test()`` — see
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -46,6 +47,18 @@ from .usage_snapshot import (
 
 # The window tokens the `w` key cycles through (same vocabulary as `now --window`).
 _WINDOW_CYCLE: tuple[str, ...] = ("today", "7d", "30d", "all")
+
+# The TUI freshens the store from the client session files on launch/refresh (like
+# the HTML dashboard's Refresh) so the in-flight session shows real usage. Pinned
+# off in tests so they never scan the developer's real ~/.claude / ~/.codex.
+_AUTO_IMPORT_ENV = "AGENTACCT_TUI_AUTO_IMPORT"
+
+
+def _auto_import_enabled() -> bool:
+    value = os.environ.get(_AUTO_IMPORT_ENV)
+    if value is None:
+        return True
+    return value.strip().lower() not in ("0", "false", "no", "off")
 
 # The sessions drill-down shows the most-recent slice; the full count is always
 # reported so the cap is never silent.
@@ -160,6 +173,7 @@ class AgentAcctTUI(App):
         # A manual `r` flashes the refreshed-stamp until this time, so a fast
         # (often no-op) main-page refresh gives visible feedback.
         self._flash_until: float = 0.0
+        self._importing: bool = False
         self._error: str | None = None
         # Work-ledger cache shared across the sessions/detail screens. The ledger
         # is EXPENSIVE (O(all events), no caching upstream — ~5s on ~8k events),
@@ -200,9 +214,52 @@ class AgentAcctTUI(App):
         self.query_one("#windows", DataTable).add_columns("window", "tokens", "est. cost", "sessions")
         self.query_one("#byclient", DataTable).add_columns("client", "tokens", "est. cost", "sessions")
         self.query_one("#bymodel", DataTable).add_columns("model", "client", "tokens", "est. cost")
-        self.refresh_data(force=True)
+        self.refresh_data(force=True)  # show the stored view instantly
+        self._start_import()  # then freshen it from the client logs in the background
         self.set_interval(self.refresh_seconds, self.refresh_data)
         self.set_interval(1.0, self._tick_countdowns)
+
+    # -- usage import (store freshness) -------------------------------------
+
+    def _start_import(self) -> None:
+        """Kick a background usage import so the in-flight session shows real usage.
+
+        Off (env-gated) → no-op, so the auto-refresh timer never triggers a scan
+        and tests never read the developer's real client logs.
+
+        Never launches a second import while one is in flight: the importer mutates
+        a PROCESS-GLOBAL pricing catalog (env + cache) and restores it on exit, so
+        two overlapping imports would corrupt each other's pricing and persist
+        mis-priced rows. `exclusive=True` on the worker cannot prevent this (a
+        running thread can't be cancelled mid-call), so we gate here. ``_importing``
+        is only ever mutated on the main thread (here and in ``_on_import_done``),
+        so the guard is race-free without a lock.
+        """
+
+        if self._importing or not _auto_import_enabled():
+            return
+        self._importing = True
+        self._render_status()
+        self._import_usage()
+
+    @work(thread=True, exclusive=True, group="import")
+    def _import_usage(self) -> None:
+        from textual.worker import get_current_worker
+
+        worker = get_current_worker()
+        try:
+            from .cli import _local_usage_import_payload
+
+            _local_usage_import_payload(store_dir=self.store_dir, client="all", estimate_costs=True)
+        except Exception:  # noqa: BLE001 - freshness is best-effort; never crash the UI.
+            pass
+        if worker.is_cancelled:
+            return
+        self.call_from_thread(self._on_import_done)
+
+    def _on_import_done(self) -> None:
+        self._importing = False
+        self.refresh_data(force=True)
 
     # -- data ---------------------------------------------------------------
 
@@ -290,6 +347,8 @@ class AgentAcctTUI(App):
             if self.client:
                 parts.append(f"client: {_escape(self.client)}")
             parts.append(f"store: {store}")
+            if self._importing:
+                parts.append("[yellow]⟳ importing usage…[/]")
             text = "  ·  ".join(parts)
         self._status_text = text
         self.query_one("#status", Static).update(text)
@@ -409,6 +468,7 @@ class AgentAcctTUI(App):
         # Flash the refreshed-stamp so a fast (often unchanged) refresh is visible.
         self._flash_until = time.time() + 1.2
         self.refresh_data(force=True)
+        self._start_import()  # also re-scan the client logs for fresh usage
 
     def action_cycle_window(self) -> None:
         try:

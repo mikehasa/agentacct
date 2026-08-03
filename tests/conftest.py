@@ -172,6 +172,20 @@ def _disable_global_subagent_role_scan(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _disable_tui_auto_import(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the TUI's launch/refresh usage import off for every test.
+
+    The TUI freshens the store from the client session files (~/.claude, ~/.codex,
+    …) on launch/`r` — a hermetic test must never scan the developer's real logs.
+    A test exercising the import opts in with
+    ``monkeypatch.setenv("AGENTACCT_TUI_AUTO_IMPORT", "1")`` and monkeypatches the
+    importer so it writes only to its tmp store.
+    """
+
+    monkeypatch.setenv("AGENTACCT_TUI_AUTO_IMPORT", "0")
+
+
+@pytest.fixture(autouse=True)
 def _allow_test_client_host(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep Starlette TestClient's default ``Host: testserver`` working.
 

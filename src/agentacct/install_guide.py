@@ -262,7 +262,7 @@ _RECORDING_CONTRACT_LINES = (
     # outright ("unexpected argument(s): title"), so the instruction shipped a
     # call that could not succeed. mcp.py now also accepts `title` as an alias,
     # which is what keeps already-rendered CLAUDE.md/AGENTS.md files working.
-    "- Open a section with `agentacct_record_section` (`section_status=started`) BEFORE your first other tool call, and again before each meaningful task; set `section_title` to a short human goal (e.g. \"add rate-limit to login\"). Complete it (`section_status=completed`) or block it (`blocked`) when done.",
+    "- Open a section with `agentacct_record_section` BEFORE your first other tool call, and again before each meaningful task. REQUIRED args: `source` (your client name, e.g. \"codex\" or \"claude-code\"), a stable `section_id` (reuse the SAME id across this section's started/checkpoint/completed calls), and `section_status`; also set `section_title` to a short human goal. Start with `section_status=started`; finish with `completed` (or `blocked`). Example: agentacct_record_section(source=\"codex\", section_id=\"add-rate-limit\", section_status=\"started\", section_title=\"add rate-limit to login\").",
     "- For a long task, send `section_status=checkpoint` updates rather than one giant section.",
     "- When the user hands the work off or says they are continuing in a new session, record the section as `section_status=handed_off` (a clean stop) — do not leave it `started`/`checkpoint`.",
     "- After running tests or a build, record the objective result with `agentacct_record_machine_check`.",
