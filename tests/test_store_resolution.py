@@ -20,6 +20,7 @@ from agentacct.store_resolution import (
     is_recognized_global_store,
     recognized_global_store_dirs,
     resolve_dashboard_store_dir,
+    resolve_read_store_dir,
     resolve_store_dir,
     worktree_owner_root,
 )
@@ -328,6 +329,83 @@ def test_dashboard_falls_through_to_strict_resolver_when_no_global(tmp_path: Pat
     bare.mkdir()
     with pytest.raises(StoreResolutionError):
         resolve_dashboard_store_dir(None, cwd=bare, env={}, home=home)
+
+
+# --- read-command resolver (tui / now / limits): project-first, then global ---
+
+
+def test_read_resolver_project_store_wins_over_global(tmp_path: Path) -> None:
+    # A project install running from inside its own repo keeps using the project
+    # store — the read resolver is project-first (unlike the global-first dashboard).
+    home = tmp_path / "home"
+    _make_store(home / ".local" / "state" / "agentacct" / "state", data=True)
+    project = _make_project(tmp_path / "project", state=True)
+    (project / ".git").mkdir()
+    resolution = resolve_read_store_dir(None, cwd=project, env={}, home=home)
+    assert resolution.source == "project"
+    assert resolution.path == project / ".agent-sentinel" / "state"
+
+
+def test_read_resolver_falls_back_to_global_when_no_project(tmp_path: Path) -> None:
+    # The owner's fix: `agentacct tui` from an arbitrary dir with no project store
+    # uses the machine-wide store instead of erroring.
+    home = tmp_path / "home"
+    canonical = _make_store(home / ".local" / "state" / "agentacct" / "state", data=True)
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    resolution = resolve_read_store_dir(None, cwd=bare, env={}, home=home)
+    assert resolution.source == "global"
+    assert resolution.path == canonical
+
+
+def test_read_resolver_prefers_global_with_records(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _make_store(home / ".local" / "state" / "agentacct" / "state", data=False)
+    legacy = _make_store(home / ".agent-sentinel-global" / "state", data=True)
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    resolution = resolve_read_store_dir(None, cwd=bare, env={}, home=home)
+    assert resolution.path == legacy
+
+
+def test_read_resolver_explicit_flag_wins(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _make_store(home / ".local" / "state" / "agentacct" / "state", data=True)
+    flag_store = tmp_path / "flag-store"
+    resolution = resolve_read_store_dir(flag_store, cwd=tmp_path, env={}, home=home)
+    assert resolution.source == "flag"
+    assert resolution.path == flag_store
+
+
+def test_read_resolver_env_wins(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _make_store(home / ".local" / "state" / "agentacct" / "state", data=True)
+    env_store = tmp_path / "env-store"
+    resolution = resolve_read_store_dir(
+        None, cwd=tmp_path, env={ENV_STORE_DIR: str(env_store)}, home=home
+    )
+    assert resolution.source == "env"
+    assert resolution.path == env_store
+
+
+def test_read_resolver_errors_when_no_project_and_no_global(tmp_path: Path) -> None:
+    # No project store on the walk-up AND no global store either: the actionable
+    # "No agentacct store found" error is preserved rather than swallowed.
+    home = tmp_path / "home"  # nothing created under home
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    with pytest.raises(StoreResolutionError):
+        resolve_read_store_dir(None, cwd=bare, env={}, home=home)
+
+
+def test_read_resolver_is_pure_never_creates_dirs(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _make_store(home / ".local" / "state" / "agentacct" / "state", data=True)
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    before = _tree_snapshot(tmp_path)
+    resolve_read_store_dir(None, cwd=bare, env={}, home=home)
+    assert _tree_snapshot(tmp_path) == before
 
 
 def test_is_recognized_global_store(tmp_path: Path) -> None:

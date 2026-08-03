@@ -422,3 +422,48 @@ def resolve_dashboard_store_dir(
         )
 
     return resolve_store_dir(None, cwd=cwd, env=environment)
+
+
+def resolve_read_store_dir(
+    explicit: Path | str | None = None,
+    *,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> StoreResolution:
+    """Resolve the store for a read-only display command (``tui`` / ``now`` / ``limits``).
+
+    Project-first, then global. An explicit ``--store-dir`` or ``AGENTACCT_STORE_DIR``
+    wins (the shared resolver's precedence and validation), then a project store found
+    on the walk-up. ONLY when neither is present — the common case for a global-by-
+    default install run from an arbitrary directory — does it fall back to the machine-
+    wide store (preferring one that already holds records) so ``agentacct tui`` just
+    works from anywhere instead of erroring with "No agentacct store found".
+
+    This is deliberately narrower than :func:`resolve_dashboard_store_dir`, which
+    prefers the global store even when a project store exists: a project install that
+    runs ``tui`` from inside its own repo still sees its project store. When there is
+    no project store AND no global store either, the shared resolver's actionable error
+    is preserved. Pure: never creates state; only stats candidates for existence.
+    """
+
+    environment: Mapping[str, str] = os.environ if env is None else env
+    try:
+        return resolve_store_dir(explicit, cwd=cwd, env=environment)
+    except StoreResolutionError:
+        # Reached only when there is no --store-dir / env override and the walk-up
+        # found no project store (resolve_store_dir raises solely in that case). For a
+        # global install that is exactly when the machine-wide store is the intended
+        # target, so fall back to it rather than force a --store-dir on every command.
+        candidates = recognized_global_store_dirs(env=environment, home=home)
+        existing = [path for path in candidates if path.is_dir()]
+        if existing:
+            with_records = [path for path in existing if _store_has_records(path)]
+            chosen = with_records[0] if with_records else existing[0]
+            return StoreResolution(
+                path=chosen,
+                source="global",
+                project_root=None,
+                worktree_remapped=False,
+            )
+        raise
