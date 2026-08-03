@@ -187,18 +187,28 @@ app = typer.Typer(
 )
 
 
-def _version_callback(value: bool) -> None:
-    """Print the installed agentacct version and exit (eager --version option)."""
-    if not value:
-        return
+def _package_version() -> str:
+    """The installed agentacct version, or ``0.0.0+source`` for a bare checkout.
+
+    An editable install freezes this at install time, so a version bump is
+    observable only after ``uv tool install --force``/reinstall — which is exactly
+    when the integration re-sync should refresh the client configs.
+    """
+
     from importlib.metadata import PackageNotFoundError
     from importlib.metadata import version as _dist_version
 
     try:
-        resolved = _dist_version("agentacct")
+        return _dist_version("agentacct")
     except PackageNotFoundError:  # source checkout without installed dist metadata
-        resolved = "0.0.0+source"
-    print(f"agentacct {resolved}")
+        return "0.0.0+source"
+
+
+def _version_callback(value: bool) -> None:
+    """Print the installed agentacct version and exit (eager --version option)."""
+    if not value:
+        return
+    print(f"agentacct {_package_version()}")
     raise typer.Exit()
 
 
@@ -1468,6 +1478,103 @@ def _warn_global_store_mismatches(store_dir: Path, command: str) -> None:
         pass
 
 
+def _resync_integration(
+    store_dir: Path, clients, command: str, *, assume_yes: bool = True
+) -> tuple[list[str], list[str]]:
+    """Re-run the idempotent onboard writers for already-configured clients so their
+    MCP config / hooks / instructions match the installed agentacct version.
+
+    Reuses the exact per-client onboard helpers (which preserve user customizations
+    — the settings merge is gated by ``assume_yes``, the MCP write is a
+    key-preserving upsert, instructions replace only the managed block, and a user's
+    own statusLine is never touched). Best-effort per client: a failure for one
+    never aborts the caller (e.g. ``start``).
+
+    Returns ``(resynced, errored)``. A writer that RAISES (a real, possibly
+    transient failure — locked/corrupt config, disk, permissions) lands in
+    ``errored`` so the caller can leave the version stamp stale and retry next
+    start. A writer that merely returns ``False`` (a steady-state SKIP, e.g. a
+    user's custom pre-rename block agentacct refuses to touch) is neither resynced
+    nor errored, so the stamp still advances and we don't loop forever.
+    """
+
+    client_set = {str(c).strip().lower() for c in clients}
+    resynced: list[str] = []
+    errored: list[str] = []
+    if "claude-code" in client_set:
+        try:
+            if _onboard_global_claude(store_dir, command, assume_yes=assume_yes):
+                resynced.append("claude-code")
+        except Exception:  # noqa: BLE001 - re-sync must never break the caller.
+            errored.append("claude-code")
+    if "codex" in client_set:
+        try:
+            if _onboard_global_codex(store_dir, command):
+                resynced.append("codex")
+        except Exception:  # noqa: BLE001
+            errored.append("codex")
+    return resynced, errored
+
+
+def _resync_integration_if_stale(store_dir: Path, *, force: bool = False) -> dict[str, Any]:
+    """Re-sync client integrations when the install version changed (or ``force``).
+
+    Reads the activation record; if its stamped agentacct version differs from the
+    installed one (or ``force``), re-runs the idempotent writers for the recorded
+    clients and re-stamps. A cheap no-op when already current — safe to call on
+    every ``start`` so a client's MCP/instructions/hooks never drift behind an
+    agentacct upgrade. Never raises: a re-sync problem must not stop the runtime."""
+
+    try:
+        store = ActivationStateStore(store_dir)
+        snap = store.snapshot()
+    except Exception:  # noqa: BLE001
+        return {"status": "unavailable"}
+    if not isinstance(snap, Mapping) or snap.get("issue"):
+        return {"status": "no-activation"}
+    clients = [str(c) for c in (snap.get("clients") or []) if str(c).strip()]
+    if not clients:
+        return {"status": "no-clients"}
+    # Only global installs are re-synced here: `_onboard_global_*` write USER-scope
+    # config (~/.claude, ~/.codex), which is correct only when the record is the
+    # global one (project_dir == home, as _onboard_global stamps it). Re-running
+    # them for a project-scoped install would write the wrong (user) scope, so skip.
+    try:
+        is_global = str(Path(snap.get("project_dir") or "").expanduser().resolve()) == str(
+            Path.home().resolve()
+        )
+    except Exception:  # noqa: BLE001
+        is_global = False
+    if not is_global:
+        return {"status": "project-scope-skipped"}
+    current = _package_version()
+    stamped = snap.get("agentacct_version")
+    if not force and stamped == current:
+        return {"status": "current", "version": current}
+    try:
+        command = _resolve_absolute_mcp_command()
+    except Exception:  # noqa: BLE001
+        return {"status": "unavailable"}
+    resynced, errored = _resync_integration(store_dir, clients, command, assume_yes=True)
+    # Advance the version stamp ONLY when no client's writer raised. A raised
+    # writer stays stale so the next start retries it (fixing a transient failure);
+    # a client that merely returned False (steady-state skip) is not "errored", so
+    # a legitimately-unwritable install still advances and never loops every start.
+    if not errored:
+        try:
+            project_dir = snap.get("project_dir") or str(Path.home())
+            store.mark_configured(project_dir=project_dir, clients=clients, agentacct_version=current)
+        except Exception:  # noqa: BLE001 - writers ran; a stamp failure just retries next start.
+            pass
+    return {
+        "status": "partial" if errored else "resynced",
+        "from": stamped,
+        "to": current,
+        "clients": resynced,
+        "errored": errored,
+    }
+
+
 def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, assume_yes: bool) -> None:
     """Install agentacct ONCE, machine-wide: user-scope MCP + hooks + instructions
     against one global store, writing ZERO files into any repo."""
@@ -1539,7 +1646,8 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
     if recording_clients:
         try:
             ActivationStateStore(store_dir).mark_configured(
-                project_dir=Path.home(), clients=recording_clients
+                project_dir=Path.home(), clients=recording_clients,
+                agentacct_version=_package_version(),
             )
         except ActivationStateError as exc:
             console.print(f"Onboarding stopped safely: {exc}")
@@ -1782,6 +1890,7 @@ def onboard(
             ActivationStateStore(store_dir).mark_configured(
                 project_dir=project_dir,
                 clients=recording_clients,
+                agentacct_version=_package_version(),
             )
         except ActivationStateError as exc:
             console.print(f"Onboarding stopped safely: {exc}")
@@ -1898,6 +2007,66 @@ def _supervise_foreground(
     return ticks
 
 
+def _resync_client_integration_on_start(store_dir: Path) -> None:
+    """Version-gated integration re-sync invoked from `start` — quiet unless it
+    actually refreshed something, and never fatal to the runtime."""
+
+    try:
+        result = _resync_integration_if_stale(store_dir)
+    except Exception:  # noqa: BLE001
+        return
+    resynced = result.get("clients") or []
+    errored = result.get("errored") or []
+    if resynced:
+        console.print(
+            f"Re-synced client integration for agentacct {result.get('to')} "
+            f"(installed version changed): {', '.join(resynced)}"
+        )
+    if errored:
+        console.print(
+            f"Could not re-sync {', '.join(errored)} for agentacct {result.get('to')} "
+            "— will retry on next start; run `agentacct sync` or check that client's config."
+        )
+
+
+@app.command("sync")
+def sync_integration(
+    store_dir: Annotated[Optional[Path], typer.Option(help=_DASHBOARD_STORE_DIR_HELP)] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Re-sync client integrations (MCP config, hooks, instructions) to the installed
+    agentacct version.
+
+    Runs automatically on `start` when the version changes; run it yourself to force
+    a refresh (e.g. after an upgrade). Idempotent and non-clobbering: it re-writes
+    only agentacct's own config/instructions/hooks and never touches your own
+    settings (a custom statusLine is left alone).
+    """
+
+    resolved = _resolve_dashboard_cli_store_dir(store_dir).path
+    result = _resync_integration_if_stale(resolved, force=True)
+    if json_output:
+        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+        return
+    status = result.get("status")
+    if status == "no-activation":
+        console.print("No activation record found — run `agentacct onboard` first.")
+    elif status == "no-clients":
+        console.print("No configured clients to re-sync.")
+    elif status == "project-scope-skipped":
+        console.print("Project-scoped install — re-sync only runs for global installs. Re-run `agentacct onboard` in the project instead.")
+    elif status == "unavailable":
+        console.print("Could not read the activation record; nothing re-synced.")
+    elif status in ("resynced", "partial"):
+        clients = ", ".join(result.get("clients") or []) or "(none)"
+        console.print(f"Re-synced client integration to agentacct {result.get('to')}: {clients}")
+        errored = result.get("errored") or []
+        if errored:
+            console.print(f"Could not re-sync: {', '.join(errored)} — check that client's config and retry.")
+    else:
+        console.print(f"Integration re-sync: {status}")
+
+
 @app.command("start")
 def runtime_start(
     store_dir: Annotated[Optional[Path], typer.Option(help=_DASHBOARD_STORE_DIR_HELP)] = None,
@@ -1922,6 +2091,7 @@ def runtime_start(
         _runtime_start_foreground(store_dir, host=host, port=port, json_output=json_output)
         return
     resolved = _resolve_dashboard_cli_store_dir(store_dir).path
+    _resync_client_integration_on_start(resolved)
     _health, external_watcher_running = _runtime_ingestion_health(resolved)
     try:
         payload = _managed_runtime(resolved, host=host, port=port).start(
@@ -1947,6 +2117,7 @@ def _runtime_start_foreground(
     """Ensure the runtime is up, then supervise it in the foreground."""
 
     resolved = _resolve_dashboard_cli_store_dir(store_dir).path
+    _resync_client_integration_on_start(resolved)
     manager = _managed_runtime(resolved, host=host, port=port)
 
     def _ensure() -> dict[str, Any]:

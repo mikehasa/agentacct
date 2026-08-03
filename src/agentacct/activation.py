@@ -271,12 +271,18 @@ class ActivationStateStore:
         project_dir: Path | str,
         clients: Sequence[str],
         configured_at: float | None = None,
+        agentacct_version: str | None = None,
     ) -> dict[str, Any]:
         """Record that agentacct finished configuring ``clients`` for ``project_dir``.
 
         Safe to call repeatedly: if the same project is already recorded, the
         new clients are merged into the existing list with no duplicates.
         Requires at least one client.  Returns the resulting activation record.
+
+        ``agentacct_version`` stamps the agentacct version that wrote the
+        integration, so a later run can detect a stale install and re-sync the
+        client configs. A version change is NOT a no-op even when the clients are
+        unchanged — it rewrites the record so the stamp advances.
         """
         normalized_clients = sorted(
             {
@@ -293,6 +299,7 @@ class ActivationStateStore:
             "configured_at": float(time.time() if configured_at is None else configured_at),
             "project_dir": resolved_project,
             "clients": normalized_clients,
+            "agentacct_version": agentacct_version,
         }
         try:
             with self._locked():
@@ -302,6 +309,7 @@ class ActivationStateStore:
                     and not current.get("issue")
                     and current.get("project_dir") == resolved_project
                     and set(normalized_clients).issubset(set(current.get("clients") or ()))
+                    and current.get("agentacct_version") == agentacct_version
                 ):
                     return dict(current)
                 if (
@@ -342,11 +350,15 @@ class ActivationStateStore:
                 raise ValueError("activation state fields are invalid")
             if any(not isinstance(client, str) or not client for client in clients):
                 raise ValueError("activation clients are invalid")
+            raw_version = value.get("agentacct_version")
             return {
                 "schema_version": ACTIVATION_INSTALL_SCHEMA_VERSION,
                 "configured_at": configured_at,
                 "project_dir": project_dir,
                 "clients": list(clients),
+                # The agentacct version that wrote this integration (None for
+                # records written before version stamping). Drives the re-sync.
+                "agentacct_version": raw_version if isinstance(raw_version, str) else None,
             }
         except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError, OverflowError) as exc:
             return {
