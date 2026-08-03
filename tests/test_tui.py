@@ -612,6 +612,91 @@ def test_sessions_screen_empty_store(tmp_path):
     _run(scenario())
 
 
+def test_tui_auto_imports_usage_on_launch(tmp_path, monkeypatch):
+    # #1/#3: the TUI freshens the store from the client logs on launch, so the
+    # in-flight session's usage shows even if it wasn't imported yet. Stub the
+    # importer so it writes into the tmp store (no real client-log scan).
+    import agentacct.cli as cli_mod
+
+    monkeypatch.setenv("AGENTACCT_TUI_AUTO_IMPORT", "1")  # opt in (conftest pins off)
+    SentinelService(tmp_path)  # empty store initially
+    now = time.time()
+
+    def fake_import(*, store_dir, client, estimate_costs=False, **kwargs):
+        _record_usage(SentinelService(store_dir), client="claude-code", model="claude-opus-4-8",
+                      session_id="live-1", input_tokens=1000, output_tokens=200,
+                      updated_at=int(now - 60), estimated_cost_usd=3.0)
+        return {}
+
+    monkeypatch.setattr(cli_mod, "_local_usage_import_payload", fake_import)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()  # let the import worker finish
+            await pilot.pause()
+            assert app._snapshot is not None
+            assert app._snapshot.usage.usage_record_count >= 1  # imported usage now shows
+
+    _run(scenario())
+
+
+def test_tui_serializes_concurrent_imports(tmp_path, monkeypatch):
+    # Regression: pressing r during the launch import must NOT start a second,
+    # overlapping import — overlapping imports corrupt the process-global pricing
+    # catalog (env + cache restored on exit) and persist mis-priced rows.
+    import threading
+    import agentacct.cli as cli_mod
+
+    monkeypatch.setenv("AGENTACCT_TUI_AUTO_IMPORT", "1")
+    SentinelService(tmp_path)
+    gate = threading.Event()
+    calls = {"n": 0}
+
+    def blocking_import(*, store_dir, client, estimate_costs=False, **kwargs):
+        calls["n"] += 1
+        gate.wait(timeout=5)  # hold this import "in flight"
+        return {}
+
+    monkeypatch.setattr(cli_mod, "_local_usage_import_payload", blocking_import)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()  # on_mount launches import #1 (blocks in the worker)
+            for _ in range(3):
+                await pilot.press("r")  # must be skipped while import #1 is in flight
+                await pilot.pause()
+            assert app._importing is True  # still in flight
+            assert calls["n"] <= 1  # no second (overlapping) import launched
+            gate.set()  # release import #1
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert calls["n"] == 1  # exactly the launch import ran
+
+    _run(scenario())
+
+
+def test_tui_auto_import_gated_off_by_default(tmp_path, monkeypatch):
+    # With the gate off (the conftest default), launch must NOT call the importer
+    # (so tests never scan real client logs).
+    import agentacct.cli as cli_mod
+
+    called = {"n": 0}
+    monkeypatch.setattr(cli_mod, "_local_usage_import_payload", lambda **kw: called.__setitem__("n", called["n"] + 1))
+    SentinelService(tmp_path)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+    _run(scenario())
+    assert called["n"] == 0
+
+
 def test_tui_command_requires_tty(tmp_path):
     # Under CliRunner stdout is not a TTY, so the command must fail fast with a
     # clear pointer instead of launching a blocking full-screen app.

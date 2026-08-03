@@ -7,6 +7,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`agentacct tui` freshens usage on launch and refresh.** The TUI now imports
+  usage from the client session logs in the background when it opens and on `r`
+  (the same scan the HTML dashboard did on Refresh), so the session you're in —
+  and a session you just started — show real token usage instead of zero. Runs
+  off the refresh timer, in a worker, and only when enabled (so it never scans on
+  every tick).
 - **`agentacct tui` sessions drill-down — folded subagents, roles, and a
   restructured detail.** The sessions list now shows only top-level sessions —
   child/subagent sessions are folded under their parent (a `⋔ sub` count column),
@@ -74,6 +80,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   single internal data layer (`agentacct.usage_snapshot`), so the three surfaces
   derive usage, cost, and rate-limit readings from one place and can never
   disagree. No change to `now` / `limits` output.
+
+### Fixed
+- **`agentacct_record_section` guidance now states its required arguments.** The
+  onboarding/instruction prose named `section_title` / `section_status` but not
+  that `source` and a stable `section_id` are also required, so some agents (e.g.
+  Codex) omitted them and the call failed. The shared instruction line — used by
+  the live MCP server instructions, the Claude Code SessionStart context, and the
+  on-disk `CLAUDE.md` / `AGENTS.md` — now lists all required args with a concrete
+  example.
 
 ## [0.6.0] - 2026-08-01
 
