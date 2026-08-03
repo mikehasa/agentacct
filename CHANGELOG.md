@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-04
+
 ### Added
 - **`agentacct tui` — "≈ X% of your weekly Claude plan" per session.** The home
   **Recent sessions** panel (and the session detail) now estimate what fraction of
@@ -401,7 +403,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.7.0
+[0.6.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.6.0
+[0.5.3]: https://github.com/mikehasa/agentacct/releases/tag/v0.5.3
 [0.5.2]: https://github.com/mikehasa/agentacct/releases/tag/v0.5.2
 [0.5.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.5.1
 [0.5.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.5.0
