@@ -230,6 +230,20 @@ def _session_badge(entry: dict) -> str:
     return f"[{color}]{glyph} {label}[/]"
 
 
+def _plan_pct_cell(entry: dict, pcts: dict) -> str:
+    """A compact ``≈X%`` weekly-Claude-plan cell for a session row, or ``—``.
+
+    Claude-plan-specific (other clients show ``—``); the estimate comes from the
+    pre-computed per-session map so a list renders many rows cheaply."""
+
+    if str(entry.get("client") or "") != "claude-code":
+        return "—"
+    pct = (pcts or {}).get(str(entry.get("client_session_id")))
+    if not (isinstance(pct, (int, float)) and not isinstance(pct, bool) and pct > 0):
+        return "—"
+    return f"≈{pct:.1f}%" if pct >= 0.1 else "≈<0.1%"
+
+
 def _fold_sessions(sessions: list[dict]) -> tuple[list[dict], dict[str, list[dict]]]:
     """Fold every subagent DESCENDANT under its top-most root session.
 
@@ -356,6 +370,12 @@ class AgentAcctTUI(App):
         # non-coalescing lineages would let them stale-clobber / tear each other.
         self._recent_ledger: dict | None = None
         self._recent_ledger_fp: int | None = None
+        # Per-account weekly-plan estimate cache as a SINGLE tuple
+        # (fingerprint, weights, records, per-session pcts) so the recent-panel worker
+        # thread and the main-thread detail can never tear a multi-field write — one
+        # atomic assignment, keyed on the event-log content so it self-heals on change
+        # and never goes stale after an import.
+        self._plan_cache: Any = None
         # Folded child (subagent) sessions, keyed by the parent's session_key;
         # written ONLY by the sessions screen (its sole owner), read by the detail
         # screen. The home panel does not publish here (its table is non-interactive).
@@ -397,7 +417,9 @@ class AgentAcctTUI(App):
         self.query_one("#windows", DataTable).add_columns("window", "tokens", "est. cost", "sessions")
         self.query_one("#byclient", DataTable).add_columns("client", "tokens", "est. cost", "sessions")
         self.query_one("#bymodel", DataTable).add_columns("model", "client", "tokens", "est. cost")
-        self.query_one("#recent", DataTable).add_columns("session", "client", "status", "tokens", "activity")
+        self.query_one("#recent", DataTable).add_columns(
+            "session", "client", "status", "tokens", "plan", "activity"
+        )
         self.refresh_data(force=True)  # show the stored view instantly
         self._start_import()  # then freshen it from the client logs in the background
         self._start_recent()  # and fill the recent-sessions panel from the ledger
@@ -510,7 +532,36 @@ class AgentAcctTUI(App):
         # shared `_children_by_parent` would let a background home refresh disagree
         # with what SessionsScreen (its sole writer) is showing.
         top, _children = _fold_sessions(sessions)
-        self.call_from_thread(self._populate_recent, top)
+        # Estimate each session's share of the weekly plan (claude-code) — computed
+        # here on the worker thread (off the UI loop) and cached by fingerprint.
+        try:
+            _weights, _records, pcts = self._ensure_plan_cache(events)
+        except Exception:  # noqa: BLE001 - the plan column is best-effort.
+            pcts = {}
+        if worker.is_cancelled:
+            return
+        self.call_from_thread(self._populate_recent, top, pcts)
+
+    def _ensure_plan_cache(self, events: list) -> tuple:
+        """Compute + cache (weights, records, per-session plan %) keyed on the event
+        fingerprint. Shared by the recent panel and the session detail so the
+        expensive usage view + calibration run at most once per event change and a
+        stale scale can't survive an import. Stored as one tuple so a concurrent
+        writer (the recent worker vs a detail open) can never observe a torn pair;
+        the last writer wins and the tuple is always internally consistent."""
+
+        fingerprint = _events_fingerprint(events)
+        cache = self._plan_cache
+        if cache is None or cache[0] != fingerprint:
+            from .plan_cost import calibrate_plan_weights, session_plan_pcts
+            from .usage_snapshot import usage_records
+
+            records = usage_records(events, client="claude-code")
+            weights = calibrate_plan_weights(events, client="claude-code", records=records)
+            pcts = session_plan_pcts(records, weights, client="claude-code")
+            cache = (fingerprint, weights, records, pcts)
+            self._plan_cache = cache  # single atomic assignment
+        return cache[1], cache[2], cache[3]
 
     def _recent_error(self, message: str) -> None:
         self._recent_loading = False
@@ -522,8 +573,9 @@ class AgentAcctTUI(App):
         except Exception:  # noqa: BLE001 - last resort.
             pass
 
-    def _populate_recent(self, top: list[dict]) -> None:
+    def _populate_recent(self, top: list[dict], pcts: dict[str, float] | None = None) -> None:
         self._recent_loading = False
+        pcts = pcts or {}
         try:
             table = self.query_one("#recent", DataTable)
         except Exception:  # noqa: BLE001 - app tearing down.
@@ -542,6 +594,7 @@ class AgentAcctTUI(App):
                 _escape(str(entry.get("client") or "")),
                 _session_badge(entry),  # fixed-vocab colored badge (safe markup)
                 format_tokens(usage.get("total_tokens")),
+                _plan_pct_cell(entry, pcts),
                 _humanize_ago(entry.get("last_activity_at"), now),
             )
         note = f"{len(top)} sessions · press s for all" if top else "no sessions yet"
@@ -1021,8 +1074,37 @@ class SessionDetailScreen(Screen):
         if isinstance(last, (int, float)) and last:
             header += f" · {_humanize_ago(last, now)}"
         header += f" · {format_tokens(usage.get('total_tokens'))} tokens · {_session_cost_text(usage)}"
+        plan_line = self._plan_estimate(entry)
+        if plan_line:
+            header += f"\n[dim]{plan_line}[/]"
         self._header_text = header
         return header
+
+    def _plan_estimate(self, entry: dict) -> str | None:
+        """A one-line 'estimated % of the weekly Claude plan' for this session.
+
+        Claude-plan-specific (skipped for other clients). Fail-soft: any read/build
+        problem yields no line rather than crashing the detail. The per-account
+        weights are computed once and cached on the app; only the session's own
+        per-model tokens are gathered per open.
+        """
+
+        if str(entry.get("client") or "") != "claude-code":
+            return None
+        try:
+            app = self.app
+            events = SentinelService(app.store_dir, create=False).list_all_events()
+            # Shared, fingerprint-cached weights + per-session % (built once per event
+            # change, off the UI thread by the recent-panel worker when it ran first).
+            weights, _records, pcts = app._ensure_plan_cache(events)
+            pct = pcts.get(str(entry.get("client_session_id")))
+            if not (isinstance(pct, (int, float)) and pct > 0):
+                return None
+            shown = f"{pct:.1f}%" if pct >= 0.1 else "<0.1%"
+            note = "estimate" if getattr(weights, "confidence", "") == "calibrated" else "rough estimate"
+            return f"≈ {shown} of your weekly Claude plan · {note}"
+        except Exception:  # noqa: BLE001 - the estimate is best-effort; never crash the detail.
+            return None
 
     def _step_render(self, wi: dict, now: float) -> tuple[str, str]:
         status = str(wi.get("latest_status") or "?")

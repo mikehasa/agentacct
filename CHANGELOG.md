@@ -7,6 +7,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`agentacct tui` — "≈ X% of your weekly Claude plan" per session.** The home
+  **Recent sessions** panel (and the session detail) now estimate what fraction of
+  your weekly Claude subscription each task consumed — a `plan` column at a glance. The weekly meter is a per-week-reset cumulative, so a session's share is
+  its own weighted usage over the weekly capacity — and because models burn the plan
+  at very different rates per dollar, the estimate uses a **measured per-model weight
+  table** (shipped, so every user gets a reasonable number out of the box) scaled by a
+  **per-account factor** that self-calibrates from your own recorded 7-day usage
+  history (from any source — desktop plan-usage, Codex rollouts, or the Claude CLI
+  statusLine hook — so CLI-only users are covered). Always labeled a (rough) estimate,
+  it only claims a calibrated scale when the fit is trustworthy, and it sharpens as
+  more limit history accrues.
 - **`agentacct tui` — provider limits on the usage screen, client/model filters,
   and stale-account hiding.** The usage screen (press `u`) now also shows the
   provider plan-limit bars (5h / 7d used %, reset countdown), and `c` / `m` scope
