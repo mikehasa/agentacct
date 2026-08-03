@@ -28,7 +28,7 @@ Run **`agentacct tui`** for a live, in-terminal view — usage windows, provider
 
   ![agentacct tui sessions list — per-session tokens, cost, status, and step counts](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-sessions.png)
 
-- **Plan-cost estimate (beta).** From your own recorded usage-limit history, agentacct estimates what fraction of your **weekly Claude subscription** each task consumed — the `plan` column on the home panel and the `≈ X% of your weekly plan` line on the session detail. Because different models burn the plan at very different rates, it weights per model from a measured baseline and **self-calibrates to your account** as more limit history accrues (works from Codex and the Claude CLI status-line too, not just the desktop app). Always labeled an estimate.
+- **What a task cost your plan (beta).** agentacct estimates what fraction of your **weekly Claude plan** each task consumed — a `plan` column on the home panel *and* the sessions list, and an `≈ X% of your weekly plan` line on the session detail. This is the number the raw token count can't give you: different models burn the plan at very different rates, so agentacct learns the rate **from your own recorded limit history** and shows a figure only once it can calibrate to your account — until then it says it's still calibrating, rather than showing a guess. Always labeled an estimate.
 
 ## Install
 
