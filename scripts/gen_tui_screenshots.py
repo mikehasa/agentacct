@@ -4,9 +4,11 @@
 Builds a throwaway store of invented sessions — recorded work steps, machine-check
 evidence, usage, and a calibrated weekly-plan series — renders the home / sessions /
 detail / usage screens headlessly (Textual `save_screenshot`), and converts the SVGs
-to PNGs with headless Chrome. The environment is isolated (HOME points at an empty
-temp dir, global scans off) so the TUI's on-launch usage import can NEVER pick up
-this machine's real client logs: every pixel is synthetic.
+to PNGs with headless Chrome. The environment is isolated so no real data can leak
+into a committed image: the TUI's on-launch usage import is DISABLED outright
+(`AGENTACCT_TUI_AUTO_IMPORT=0` — build_store() supplies every row the screens need),
+and, as defense in depth, HOME plus every client-home / XDG override are pointed away
+from this machine. Every pixel is synthetic.
 
     python scripts/gen_tui_screenshots.py            # writes docs/assets/tui-*.png
     python scripts/gen_tui_screenshots.py /tmp/out   # writes elsewhere
@@ -35,8 +37,15 @@ _FAKE_HOME = "/tmp/agentacct-demo-home"
 shutil.rmtree(_FAKE_HOME, ignore_errors=True)
 os.environ["HOME"] = _FAKE_HOME
 os.environ["CLAUDE_CONFIG_DIR"] = str(Path(_FAKE_HOME) / ".claude")
+# The surest guard: turn the TUI's on-launch usage import OFF entirely, so no client
+# log is ever scanned. build_store() below provides everything the screens render.
+os.environ["AGENTACCT_TUI_AUTO_IMPORT"] = "0"
 os.environ["AGENTACCT_SCAN_GLOBAL_LIMITS"] = "0"
-for _var in ("XDG_STATE_HOME", "XDG_CONFIG_HOME", "AGENTACCT_STORE_DIR", "AGENTACCT_GLOBAL_STORE_DIR"):
+# Defense in depth: drop every client-home / XDG override that would otherwise resolve
+# a client's logs AHEAD of the (empty) fake HOME.
+for _var in ("XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "AGENTACCT_STORE_DIR",
+             "AGENTACCT_GLOBAL_STORE_DIR", "CODEX_HOME", "OPENCODE_DATA_DIR", "HERMES_HOME",
+             "OPENCLAW_DIR", "CURSOR_HOME"):
     os.environ.pop(_var, None)
 
 import asyncio  # noqa: E402

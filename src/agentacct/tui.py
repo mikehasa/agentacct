@@ -1146,7 +1146,10 @@ class SessionDetailScreen(Screen):
                 shown = f"{pct:.1f}%" if pct >= 0.1 else "<0.1%"
                 return f"≈ {shown} of your weekly plan · estimate, calibrated to your usage"
             # Uncalibrated: no fabricated number — say what agentacct is doing instead.
-            return "weekly plan: calibrating from your own usage — not enough limit history yet"
+            # Covers BOTH baseline causes (too little limit history, and a meter that
+            # moves mostly from usage outside the tracked client) without misstating
+            # which one — the shared truth is there isn't enough tracked signal yet.
+            return "weekly plan: calibrating from your own usage — not enough recorded through this client yet"
         except Exception:  # noqa: BLE001 - the estimate is best-effort; never crash the detail.
             return None
 

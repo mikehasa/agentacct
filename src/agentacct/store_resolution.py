@@ -448,13 +448,21 @@ def resolve_read_store_dir(
     """
 
     environment: Mapping[str, str] = os.environ if env is None else env
-    try:
+    # An explicit --store-dir or an AGENTACCT_STORE_DIR override must behave EXACTLY
+    # as the strict resolver — including its absolute-path and conflicting-alias
+    # guards — so a MISCONFIGURED override (a relative value, or two aliases at
+    # different paths) surfaces its error instead of being swallowed into a silent
+    # global-store read. The fallback below is only for the "no override at all AND
+    # no project store on the walk-up" case. (store_env_dir_value itself raises on
+    # conflicting aliases; that propagates here, which is exactly what we want.)
+    if explicit is not None or store_env_dir_value(environment):
         return resolve_store_dir(explicit, cwd=cwd, env=environment)
+    try:
+        return resolve_store_dir(None, cwd=cwd, env=environment)
     except StoreResolutionError:
-        # Reached only when there is no --store-dir / env override and the walk-up
-        # found no project store (resolve_store_dir raises solely in that case). For a
-        # global install that is exactly when the machine-wide store is the intended
-        # target, so fall back to it rather than force a --store-dir on every command.
+        # No override and no project store on the walk-up: for a global install that
+        # is exactly when the machine-wide store is the intended target, so fall back
+        # to it rather than force a --store-dir on every read command.
         candidates = recognized_global_store_dirs(env=environment, home=home)
         existing = [path for path in candidates if path.is_dir()]
         if existing:

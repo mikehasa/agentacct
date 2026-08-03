@@ -408,6 +408,16 @@ def test_read_resolver_is_pure_never_creates_dirs(tmp_path: Path) -> None:
     assert _tree_snapshot(tmp_path) == before
 
 
+def test_read_resolver_relative_env_errors_not_global(tmp_path: Path) -> None:
+    # A MISCONFIGURED override (relative AGENTACCT_STORE_DIR) must surface its error,
+    # NOT be swallowed into a silent global-store read — even though a global store
+    # exists. (Regression: the fallback used to catch this and return source=global.)
+    home = tmp_path / "home"
+    _make_store(home / ".local" / "state" / "agentacct" / "state", data=True)
+    with pytest.raises(StoreResolutionError):
+        resolve_read_store_dir(None, cwd=tmp_path, env={ENV_STORE_DIR: "rel/path"}, home=home)
+
+
 def test_is_recognized_global_store(tmp_path: Path) -> None:
     home = tmp_path / "home"
     # legacy dot-global family: structural, location-independent
