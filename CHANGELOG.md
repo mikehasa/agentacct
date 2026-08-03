@@ -7,6 +7,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`agentacct tui` — session status badges, a dedicated usage screen, and a
+  recent-sessions panel.** Every session now carries an at-a-glance status badge
+  (`▶ in progress` / `⏸ handed off` / `✓ done` / `⚠ blocked`), derived from its
+  recorded steps so a cleanly handed-off run reads as handed-off rather than
+  still-active — shown in the sessions list, the session-detail header, and a new
+  **Recent sessions** panel on the home screen (the five most-recently-active
+  sessions, filled in the background so the usage/limits view still paints
+  instantly). A new usage screen (press `u`) shows a per-day (or per-week for long
+  ranges) token & cost time series with in-terminal bars plus a by-model
+  breakdown; `d` cycles the range (7d / 30d / 90d / all). All from the same
+  authoritative local event log the rest of the TUI reads — no credentials, no
+  API calls.
 - **Client integrations re-sync themselves after an upgrade (`agentacct sync`).**
   Onboarding wrote a client's MCP config, hooks, and instructions once; a later
   agentacct upgrade left them stale (the source of the outdated-`record_section`

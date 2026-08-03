@@ -119,6 +119,19 @@ def usage_bar(used_percent: float, width: int = 20) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
+def ratio_bar(value: Any, max_value: Any, width: int = 20) -> str:
+    """A unicode fill bar for ``value`` scaled to ``max_value`` (the row's share
+    of the busiest bucket). An empty / non-positive max yields an all-empty bar so
+    a zero-usage window never draws a full bar. Non-finite inputs degrade to 0."""
+
+    numerator = finite(value) or 0.0
+    denominator = finite(max_value) or 0.0
+    if denominator <= 0.0 or numerator <= 0.0:
+        return "░" * width
+    filled = int(round(max(0.0, min(1.0, numerator / denominator)) * width))
+    return "█" * filled + "░" * (width - filled)
+
+
 def humanize_seconds(seconds: float) -> str:
     """A compact ``2d 3h`` / ``4h 5m`` / ``6m`` / ``<1m`` duration string."""
 
@@ -274,6 +287,28 @@ class UsageSnapshot:
 
 
 @dataclass(frozen=True)
+class UsagePage:
+    """The dedicated usage screen's data: a period time series + model detail.
+
+    ``by_period`` / ``by_model`` / ``totals`` are the raw cube buckets for the
+    selected trailing-``range_days`` range (``None`` = all time), at the resolved
+    ``granularity`` (daily for short ranges, weekly for long ones). Kept as plain
+    dicts — the same shape the HTML dashboard's Theme A cluster rendered — so the
+    screen renders straight from the cube with no re-derivation.
+    """
+
+    range_days: Optional[int]
+    granularity: str
+    as_of: Optional[float]
+    generated_at: float
+    usage_record_count: int
+    client_filter: Optional[str]
+    totals: dict[str, Any]
+    by_period: list[dict[str, Any]]
+    by_model: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
 class LimitWindow:
     """One provider rate-limit window, normalized for display."""
 
@@ -408,6 +443,64 @@ def build_usage_snapshot(
     )
 
 
+def build_usage_page(
+    events: list[dict[str, Any]],
+    *,
+    client: str | None = None,
+    days: int | None = 30,
+    granularity: str | None = None,
+    now: float | None = None,
+    today: date | None = None,
+) -> UsagePage:
+    """Build the dedicated usage screen's data for a trailing ``days`` range.
+
+    ``days=None`` = all time. ``granularity`` defaults to the cube's own rule
+    (daily for 7/30-day ranges, weekly for 90/all) via ``resolve_granularity`` so
+    a long range collapses to readable weekly buckets instead of hundreds of days.
+    Reuses the exact ``now`` data path (``usage_records`` → ``build_usage_cube``)
+    so the page can never disagree with the overview. ``now`` / ``today`` are
+    injectable for tests.
+    """
+
+    from .api import _usage_record_time
+    from .usage_cube import build_usage_cube, resolve_granularity
+
+    records = usage_records(events, client=client)
+    now_epoch = now if now is not None else time.time()
+    day = today or date.today()
+    days_choice = "all" if days is None else str(days)
+    gran = granularity or resolve_granularity(days_choice, "auto")
+
+    cube = build_usage_cube(
+        records, record_time=_usage_record_time, days=days, granularity=gran, today=day
+    )
+
+    # Freshness: newest record with a real (finite, not-future) timestamp — the
+    # same honest "as of" rule the overview uses (an unknown 0.0 or an absurd
+    # future time can't fake a "<1m ago").
+    real_times = [
+        t
+        for r in records
+        if (t := _usage_record_time(r)) is not None
+        and isinstance(t, (int, float))
+        and math.isfinite(float(t))
+        and 0 < t <= now_epoch
+    ]
+    as_of = max(real_times) if real_times else None
+
+    return UsagePage(
+        range_days=days,
+        granularity=gran,
+        as_of=as_of,
+        generated_at=now_epoch,
+        usage_record_count=len(records),
+        client_filter=client,
+        totals=cube.get("totals") or {},
+        by_period=cube.get("by_period") or [],
+        by_model=cube.get("by_model") or [],
+    )
+
+
 def build_client_limits(
     events: list[dict[str, Any]], *, client: str | None = None
 ) -> list[ClientLimit]:
@@ -488,6 +581,7 @@ __all__ = [
     "format_tokens",
     "cost_text",
     "usage_bar",
+    "ratio_bar",
     "humanize_seconds",
     "window_label",
     "latest_limit_events",
@@ -495,11 +589,13 @@ __all__ = [
     "limit_teaser_lines",
     "UsageWindow",
     "UsageSnapshot",
+    "UsagePage",
     "LimitWindow",
     "ClientLimit",
     "LiveSnapshot",
     "usage_records",
     "build_usage_snapshot",
+    "build_usage_page",
     "build_client_limits",
     "build_live_snapshot",
 ]

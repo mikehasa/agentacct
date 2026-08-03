@@ -708,3 +708,276 @@ def test_tui_command_requires_tty(tmp_path):
 def test_tui_command_invalid_window(tmp_path):
     result = CliRunner().invoke(cli_app, ["tui", "--store-dir", str(tmp_path), "--window", "5m"])
     assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# #4 session status badge + shared folding helper
+# ---------------------------------------------------------------------------
+
+
+def test_session_status_and_badge_helpers():
+    from agentacct.tui import _session_status, _session_badge
+    from rich.text import Text
+
+    # No recorded steps → no badge (usage-only session).
+    assert _session_status({}) == ("·", "—", "dim")
+    assert _session_status({"work": {"items": []}}) == ("·", "—", "dim")
+    # Precedence: blocked > handed-off > in-progress > done.
+    assert _session_status({"work": {"items": [{"latest_status": "resolved"}]}})[1] == "done"
+    assert _session_status({"work": {"items": [{"latest_status": "completed"}]}})[1] == "done"
+    assert _session_status(
+        {"work": {"items": [{"latest_status": "handed_off"}, {"latest_status": "completed"}]}}
+    )[1] == "handed off"
+    # A hand-off outranks a stray still-open step: a real handed-off session often
+    # leaves one section `started` that was never closed, and must still read
+    # "handed off", not "in progress".
+    assert _session_status(
+        {"work": {"items": [{"latest_status": "started"}, {"latest_status": "handed_off"}]}}
+    )[1] == "handed off"
+    # Regression for the exact live shape (one stray `started` amid handed_off +
+    # completed) that used to misread as "in progress".
+    assert _session_status(
+        {"work": {"items": [
+            {"latest_status": "handed_off"}, {"latest_status": "completed"},
+            {"latest_status": "started"}, {"latest_status": "completed"},
+        ]}}
+    )[1] == "handed off"
+    # blocked still dominates everything (an alarm worth surfacing).
+    assert _session_status(
+        {"work": {"items": [{"latest_status": "blocked"}, {"latest_status": "handed_off"}]}}
+    )[1] == "blocked"
+    # a genuinely active session (open step, no hand-off) still reads in progress.
+    assert _session_status(
+        {"work": {"items": [{"latest_status": "started"}, {"latest_status": "completed"}]}}
+    )[1] == "in progress"
+    # The badge is valid Rich markup for every state (fixed vocab, never data).
+    for st in ("blocked", "started", "handed_off", "completed"):
+        Text.from_markup(_session_badge({"work": {"items": [{"latest_status": st}]}}))
+    Text.from_markup(_session_badge({}))
+
+
+def test_fold_sessions_helper_multilevel_and_cycle_safe():
+    from agentacct.tui import _fold_sessions
+
+    def s(csid, group, last=0.0):
+        return {
+            "client": "cc", "client_session_id": csid, "session_key": f"cc::{csid}",
+            "rollup_group_key": f"cc::{group}", "last_activity_at": last,
+        }
+
+    # R root, C child of R, G grandchild (parent C) → both fold under R (top-most);
+    # A<->B is a mutual cycle → neither folds, so nothing vanishes.
+    sessions = [s("R", "R", 3), s("C", "R", 2), s("G", "C", 1), s("A", "B"), s("B", "A")]
+    top, children = _fold_sessions(sessions)
+    top_keys = {t["session_key"] for t in top}
+    assert "cc::R" in top_keys and "cc::A" in top_keys and "cc::B" in top_keys
+    assert "cc::C" not in top_keys and "cc::G" not in top_keys
+    assert {c["client_session_id"] for c in children["cc::R"]} == {"C", "G"}
+    assert top[0]["session_key"] == "cc::R"  # sorted newest-first
+
+
+def test_sessions_screen_status_column(tmp_path):
+    SentinelService(tmp_path)  # empty store → the worker builds an empty ledger fast
+    fake = {"session_rollup": {"sessions": [
+        {"client": "cc", "client_session_id": "P", "session_key": "cc::P", "rollup_group_key": "cc::P",
+         "client_session_title": "Parent", "usage": {"total_tokens": 100},
+         "work": {"items": [{"latest_status": "blocked"}], "counts": {"total": 1, "blocked": 1}}},
+    ]}}
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("s")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            scr = app.screen
+            scr._populate(fake)
+            table = scr.query_one("#sessions", DataTable)
+            assert table.row_count == 1
+            # status is the 5th column (session, client, project, activity, STATUS, …).
+            assert "blocked" in str(table.get_row_at(0)[4])
+
+    _run(scenario())
+
+
+def test_session_detail_header_shows_status_badge():
+    from rich.text import Text
+
+    now = time.time()
+    entry = {
+        "client_session_title": "Big task", "client": "codex", "project": "/p",
+        "last_activity_at": now - 60, "usage": {"total_tokens": 1234},
+        "work": {"items": [{"latest_status": "handed_off"}]},
+    }
+    header = SessionDetailScreen(entry)._render_header(entry, now)
+    assert "handed off" in header
+    Text.from_markup(header)  # valid markup
+
+    # A usage-only session (no steps) shows no badge on the title line.
+    entry2 = {"client_session_title": "solo", "client": "codex", "usage": {}, "work": {"items": []}}
+    header2 = SessionDetailScreen(entry2)._render_header(entry2, now)
+    assert "—" not in header2.split("\n")[0]
+    Text.from_markup(header2)
+
+
+# ---------------------------------------------------------------------------
+# #5 usage screen
+# ---------------------------------------------------------------------------
+
+
+def test_usage_screen_renders_and_cycles_range(tmp_path):
+    from agentacct.tui import UsageScreen
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_usage(service, client="codex", model="gpt-5", session_id="s1",
+                  input_tokens=1000, output_tokens=200, updated_at=int(now - 3600), estimated_cost_usd=1.0)
+    _record_usage(service, client="claude-code", model="claude-opus-4-8", session_id="s2",
+                  input_tokens=500, output_tokens=50, updated_at=int(now - 2 * 86400), estimated_cost_usd=0.5)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("u")
+            await pilot.pause()
+            scr = app.screen
+            assert isinstance(scr, UsageScreen)
+            assert scr.query_one("#usage-periods", DataTable).row_count > 0
+            assert scr.query_one("#usage-models", DataTable).row_count >= 2
+            assert "range: 30d" in scr._status_text and "daily" in scr._status_text
+            # `d` cycles 30d → 90d, which flips the granularity to weekly.
+            await pilot.press("d")
+            await pilot.pause()
+            assert "range: 90d" in scr._status_text and "weekly" in scr._status_text
+
+    _run(scenario())
+
+
+def test_usage_screen_empty_store(tmp_path):
+    from agentacct.tui import UsageScreen
+
+    SentinelService(tmp_path)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.push_screen(UsageScreen())
+            await pilot.pause()
+            scr = app.screen
+            assert isinstance(scr, UsageScreen)
+            assert scr.query_one("#usage-periods", DataTable).row_count == 0
+            assert scr.query_one("#usage-models", DataTable).row_count == 0
+
+    _run(scenario())
+
+
+def test_usage_screen_repeat_u_does_not_stack(tmp_path):
+    from agentacct.tui import UsageScreen
+
+    SentinelService(tmp_path)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("u")
+            await pilot.pause()
+            await pilot.press("u")  # app-level `u` stays active under the sub-screen
+            await pilot.pause()
+            assert sum(1 for s in app.screen_stack if isinstance(s, UsageScreen)) == 1
+
+    _run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# #6 recent-sessions panel on home
+# ---------------------------------------------------------------------------
+
+
+def test_recent_panel_populates_on_home(tmp_path):
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_section(service, section_id="sec1", title="Ship the thing", status="started",
+                    client="codex", session_id="s1", created_at=now - 200, summary="wip")
+    _record_section(service, section_id="sec1", title="Ship the thing", status="handed_off",
+                    client="codex", session_id="s1", created_at=now - 100, summary="handed off")
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()  # the recent-sessions ledger worker
+            await pilot.pause()
+            recent = app.query_one("#recent", DataTable)
+            assert recent.row_count >= 1
+            # the status column (index 2) reflects the handed-off section.
+            assert "handed off" in str(recent.get_row_at(0)[2])
+            assert "press s for all" in app._recent_text
+
+    _run(scenario())
+
+
+def test_recent_panel_empty_store(tmp_path):
+    SentinelService(tmp_path)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert app.query_one("#recent", DataTable).row_count == 0
+            assert app._recent_text == "no sessions yet"
+
+    _run(scenario())
+
+
+def test_recent_panel_uses_private_cache_not_shared(tmp_path):
+    # Regression (adversarial review): the home recent panel must NOT write the
+    # SessionsScreen shared cache. Its build lineage (group="recent", App node) and
+    # SessionsScreen._load (default group, Screen node) cannot coalesce via
+    # exclusive=, so sharing _work_ledger / _children_by_parent would let the two
+    # stale-clobber / tear each other. The panel keeps a private _recent_ledger.
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_section(service, section_id="sec1", title="t", status="completed",
+                    client="codex", session_id="s1", created_at=now - 100)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert app.query_one("#recent", DataTable).row_count >= 1
+            # the panel populated its PRIVATE cache…
+            assert app._recent_ledger is not None
+            # …and left the SessionsScreen shared cache untouched (sole-writer).
+            assert app._work_ledger is None
+            assert app._work_ledger_fp is None
+            assert app._children_by_parent == {}
+
+    _run(scenario())
+
+
+def test_home_body_is_scrollable(tmp_path):
+    # Regression: the home body must be a VerticalScroll so the provider-limits and
+    # recent-sessions panels below the fold are reachable on a short terminal
+    # (they were clipped when #body was a plain, non-scrolling Vertical).
+    from textual.containers import VerticalScroll
+
+    SentinelService(tmp_path)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert isinstance(app.query_one("#body"), VerticalScroll)
+            # the limits + recent panels are inside it and mounted.
+            assert app.query_one("#limits-body") is not None
+            assert app.query_one("#recent") is not None
+
+    _run(scenario())

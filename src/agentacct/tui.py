@@ -37,11 +37,14 @@ from .service import SentinelService
 from .subagent_roles import read_roles_for_children
 from .usage_snapshot import (
     LiveSnapshot,
+    UsagePage,
     build_live_snapshot,
+    build_usage_page,
     cost_text,
     finite,
     format_tokens,
     humanize_seconds,
+    ratio_bar,
     usage_bar,
 )
 
@@ -118,6 +121,89 @@ def _limit_color(used_percent: float) -> str:
     return "red"
 
 
+def _session_status(entry: dict) -> tuple[str, str, str]:
+    """(glyph, label, color) for a session's overall state.
+
+    Derived from the session's work items' ``latest_status`` — NOT
+    ``work['counts']``, because that bucket folds ``handed_off`` (and
+    ``started`` / ``checkpoint``) into ``active`` (see work_ledger
+    ``_session_work_summary``), so a cleanly handed-off session would otherwise
+    misread as still in progress.
+
+    Precedence: blocked > handed-off > in-progress > done. A hand-off is a
+    *session-level* clean stop (the agent handed the work to another session), so
+    it deliberately outranks a still-open step: a real session commonly leaves one
+    stray section ``started`` that was never closed, and that must not make an
+    already-handed-off run read as "in progress". (The rollup's work items carry
+    no timestamps, so we can't order by "latest step"; this precedence encodes the
+    same intent — a hand-off closes the in-progress gap.) A usage-only session
+    with no recorded steps shows no badge.
+    """
+
+    work = entry.get("work") or {}
+    items = work.get("items") or []
+    statuses = [str(item.get("latest_status") or "") for item in items if isinstance(item, dict)]
+    if any(s == "blocked" for s in statuses):
+        return ("⚠", "blocked", "red")
+    if any(s == "handed_off" for s in statuses):
+        return ("⏸", "handed off", "cyan")
+    if any(s in ("started", "checkpoint") for s in statuses):
+        return ("▶", "in progress", "yellow")
+    if any(s in ("completed", "resolved") for s in statuses):
+        return ("✓", "done", "green")
+    return ("·", "—", "dim")
+
+
+def _session_badge(entry: dict) -> str:
+    """A short colored status badge cell for a session (safe fixed-vocab markup)."""
+
+    glyph, label, color = _session_status(entry)
+    return f"[{color}]{glyph} {label}[/]"
+
+
+def _fold_sessions(sessions: list[dict]) -> tuple[list[dict], dict[str, list[dict]]]:
+    """Fold every subagent DESCENDANT under its top-most root session.
+
+    Returns ``(top_level_sessions_newest_first, children_by_parent_session_key)``.
+    A run and all its (and its children's) subagents collapse to one top-level
+    row. Grouping follows the ledger's own ``rollup_group_key`` ("{client}::{parent}"
+    for a child, else the session's own key), which already applies the parent
+    source-namespace compatibility gate — the TUI never contradicts the ledger.
+    The walk carries a visited-set so a parent cycle resolves to ``None`` (every
+    session on it stays top-level, nothing can vanish) and an orphan chain (parent
+    absent) stops at the top-most present ancestor.
+    """
+
+    by_session_key = {str(s.get("session_key")): s for s in sessions}
+
+    def _resolve_top(start: str) -> str | None:
+        seen: set[str] = set()
+        cur = start
+        while True:
+            node = by_session_key.get(cur)
+            if node is None:
+                return cur
+            group = str(node.get("rollup_group_key") or cur)
+            if group == cur or group not in by_session_key:
+                return cur  # a root, or the top-most present ancestor
+            if group in seen:
+                return None  # cycle → keep this session top-level
+            seen.add(cur)
+            cur = group
+
+    children_by_parent: dict[str, list[dict]] = {}
+    top: list[dict] = []
+    for entry in sessions:
+        sk = str(entry.get("session_key"))
+        root = _resolve_top(sk)
+        if root is not None and root != sk:
+            children_by_parent.setdefault(root, []).append(entry)
+        else:
+            top.append(entry)
+    top.sort(key=lambda s: (s.get("last_activity_at") or 0.0), reverse=True)
+    return top, children_by_parent
+
+
 class AgentAcctTUI(App):
     """Live usage / cost / limits dashboard."""
 
@@ -131,11 +217,19 @@ class AgentAcctTUI(App):
         color: $text-muted;
         padding: 0 0 1 0;
     }
+    /* The home body scrolls: on a short terminal the limits + recent-sessions
+       panels below the fold would otherwise be clipped and unreachable. */
+    #body { height: 1fr; }
     #windows { height: auto; }
-    #breakdowns { height: auto; }
+    #breakdowns { height: auto; padding: 1 0 0 0; }
     #byclient, #bymodel { height: auto; width: 1fr; }
     #bymodel { margin: 0 0 0 2; }
     #limits-body { padding: 0 0 1 0; }
+    #recent-status { color: $text-muted; padding: 0 0 1 0; }
+    #recent { height: auto; }
+    #usage-status { color: $text-muted; padding: 0 0 1 0; }
+    #usage-scroll { padding: 0 1; }
+    #usage-periods, #usage-models { height: auto; }
     #sessions-status { color: $text-muted; padding: 0 0 1 0; }
     #sessions-loading { height: auto; }
     #detail-header { padding: 0 1 1 1; }
@@ -147,6 +241,7 @@ class AgentAcctTUI(App):
         Binding("r", "refresh", "Refresh"),
         Binding("w", "cycle_window", "Cycle window"),
         Binding("s", "open_sessions", "Sessions"),
+        Binding("u", "open_usage", "Usage"),
     ]
 
     def __init__(
@@ -174,6 +269,10 @@ class AgentAcctTUI(App):
         # (often no-op) main-page refresh gives visible feedback.
         self._flash_until: float = 0.0
         self._importing: bool = False
+        # Recent-sessions panel (home) build guard — mutated on the main thread
+        # only (kicker + populate/error callbacks), so it needs no lock. Prevents
+        # re-kicking the home ledger build while one is already in flight.
+        self._recent_loading: bool = False
         self._error: str | None = None
         # Work-ledger cache shared across the sessions/detail screens. The ledger
         # is EXPENSIVE (O(all events), no caching upstream — ~5s on ~8k events),
@@ -181,22 +280,38 @@ class AgentAcctTUI(App):
         # event log changes (fingerprint) or the user forces a refresh.
         self._work_ledger: dict | None = None
         self._work_ledger_fp: int | None = None
+        # The home recent-sessions panel keeps its OWN ledger cache (see
+        # _load_recent), deliberately separate from _work_ledger above: its worker
+        # runs on a different node+group, so sharing one cache across the two
+        # non-coalescing lineages would let them stale-clobber / tear each other.
+        self._recent_ledger: dict | None = None
+        self._recent_ledger_fp: int | None = None
         # Folded child (subagent) sessions, keyed by the parent's session_key;
-        # populated by the sessions screen, read by the detail screen.
+        # written ONLY by the sessions screen (its sole owner), read by the detail
+        # screen. The home panel does not publish here (its table is non-interactive).
         self._children_by_parent: dict[str, list[dict]] = {}
         # Last composed text for each dynamic panel — a stable hook for headless
         # tests (avoids depending on Rich renderable internals).
         self._status_text: str = ""
         self._limits_text: str = ""
+        self._recent_text: str = ""
 
     # -- lifecycle ----------------------------------------------------------
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Static("", id="status")
-        with Vertical(id="body"):
+        # Scrollable so nothing below the fold is unreachable; the two panels the
+        # user most wants at a glance — provider limits ("how much left") and the
+        # recent sessions — sit above the by-client / by-model detail breakdown.
+        with VerticalScroll(id="body"):
             yield Static("Usage windows", classes="section-title")
             yield DataTable(id="windows", cursor_type="none", zebra_stripes=True)
+            yield Static("Provider limits", classes="section-title")
+            yield Static("", id="limits-body")
+            yield Static("Recent sessions", classes="section-title")
+            yield Static("", id="recent-status")
+            yield DataTable(id="recent", cursor_type="none")
             with Horizontal(id="breakdowns"):
                 with Vertical():
                     yield Static("", id="byclient-title", classes="section-title")
@@ -204,8 +319,6 @@ class AgentAcctTUI(App):
                 with Vertical():
                     yield Static("", id="bymodel-title", classes="section-title")
                     yield DataTable(id="bymodel", cursor_type="none")
-            yield Static("Provider limits", classes="section-title")
-            yield Static("", id="limits-body")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -214,8 +327,10 @@ class AgentAcctTUI(App):
         self.query_one("#windows", DataTable).add_columns("window", "tokens", "est. cost", "sessions")
         self.query_one("#byclient", DataTable).add_columns("client", "tokens", "est. cost", "sessions")
         self.query_one("#bymodel", DataTable).add_columns("model", "client", "tokens", "est. cost")
+        self.query_one("#recent", DataTable).add_columns("session", "client", "status", "tokens", "activity")
         self.refresh_data(force=True)  # show the stored view instantly
         self._start_import()  # then freshen it from the client logs in the background
+        self._start_recent()  # and fill the recent-sessions panel from the ledger
         self.set_interval(self.refresh_seconds, self.refresh_data)
         self.set_interval(1.0, self._tick_countdowns)
 
@@ -260,6 +375,111 @@ class AgentAcctTUI(App):
     def _on_import_done(self) -> None:
         self._importing = False
         self.refresh_data(force=True)
+        # Fresh usage just landed → rebuild the recent-sessions panel from it
+        # (force supersedes any still-running pre-import build via the recent
+        # lineage's exclusive group; the cancelled build's is_cancelled guard
+        # drops it before it can write the panel's private cache).
+        self._start_recent(force=True)
+
+    # -- recent sessions (home panel) ---------------------------------------
+
+    def _start_recent(self, force: bool = False) -> None:
+        """Kick the background ledger build that fills the home recent-sessions
+        panel. Coalesced: no second build starts while one is in flight unless
+        ``force`` supersedes it (a manual refresh or fresh post-import usage)."""
+
+        if self._recent_loading and not force:
+            return
+        self._recent_loading = True
+        try:
+            self.query_one("#recent-status", Static).update("loading recent sessions…")
+        except Exception:  # noqa: BLE001 - cosmetic only.
+            pass
+        self._load_recent(force=force)
+
+    @work(thread=True, exclusive=True, group="recent")
+    def _load_recent(self, force: bool = False) -> None:
+        from textual.worker import get_current_worker
+
+        worker = get_current_worker()
+        try:
+            service = SentinelService(self.store_dir, create=False)
+            events = service.list_all_events()
+            fingerprint = _events_fingerprint(events)
+            # The home panel keeps its OWN ledger cache, deliberately separate from
+            # the SessionsScreen `_work_ledger` shared cache. That screen's worker
+            # runs on a different node+group, so `exclusive=` cannot coalesce or
+            # cancel across the two — sharing one cache would let this lineage
+            # stale-clobber the other's (and tear the two-field pair). Decoupling
+            # keeps SessionsScreen the SOLE writer of the shared cache (its prior,
+            # reviewed design); the only cost is building the ledger once for the
+            # panel and again if the user opens `s` (both off the refresh timer).
+            if not force and self._recent_ledger is not None and fingerprint == self._recent_ledger_fp:
+                ledger = self._recent_ledger
+            else:
+                from .work_ledger import build_work_ledger
+
+                ledger = build_work_ledger(events)
+                # A build cancelled by a newer `r`/import can't be interrupted
+                # mid-flight; bail before any side effect so a stale result never
+                # overwrites the fresher rebuild's cache. Only this (exclusive)
+                # lineage writes these fields, so at most one writer is ever live.
+                if worker.is_cancelled:
+                    return
+                self._recent_ledger = ledger
+                self._recent_ledger_fp = fingerprint
+        except Exception as exc:  # noqa: BLE001 - the panel degrades, never crashes the app.
+            if not worker.is_cancelled:
+                self.call_from_thread(self._recent_error, str(exc))
+            return
+        if worker.is_cancelled:
+            return
+        sessions = list((ledger.get("session_rollup") or {}).get("sessions") or [])
+        # Only the top-level list is needed here; the fold's children index is NOT
+        # published — the recent table is non-interactive, and overwriting the
+        # shared `_children_by_parent` would let a background home refresh disagree
+        # with what SessionsScreen (its sole writer) is showing.
+        top, _children = _fold_sessions(sessions)
+        self.call_from_thread(self._populate_recent, top)
+
+    def _recent_error(self, message: str) -> None:
+        self._recent_loading = False
+        self._recent_text = f"could not load sessions: {message}"
+        try:
+            self.query_one("#recent-status", Static).update(
+                f"[red]could not load sessions:[/] {_escape(message)}"
+            )
+        except Exception:  # noqa: BLE001 - last resort.
+            pass
+
+    def _populate_recent(self, top: list[dict]) -> None:
+        self._recent_loading = False
+        try:
+            table = self.query_one("#recent", DataTable)
+        except Exception:  # noqa: BLE001 - app tearing down.
+            return
+        table.clear()
+        now = time.time()
+        for entry in top[:5]:
+            usage = entry.get("usage") or {}
+            title = (
+                entry.get("client_session_title")
+                or entry.get("client_session_id_short")
+                or "(untitled)"
+            )
+            table.add_row(
+                _escape(str(title))[:40],
+                _escape(str(entry.get("client") or "")),
+                _session_badge(entry),  # fixed-vocab colored badge (safe markup)
+                format_tokens(usage.get("total_tokens")),
+                _humanize_ago(entry.get("last_activity_at"), now),
+            )
+        note = f"{len(top)} sessions · press s for all" if top else "no sessions yet"
+        self._recent_text = note
+        try:
+            self.query_one("#recent-status", Static).update(note)
+        except Exception:  # noqa: BLE001 - cosmetic only.
+            pass
 
     # -- data ---------------------------------------------------------------
 
@@ -469,6 +689,11 @@ class AgentAcctTUI(App):
         self._flash_until = time.time() + 1.2
         self.refresh_data(force=True)
         self._start_import()  # also re-scan the client logs for fresh usage
+        # Rebuild the recent panel now. When an import is enabled it also rebuilds
+        # on completion (fresh usage), so only force a build here when there is no
+        # import to trigger it — avoids a redundant double build on every `r`.
+        if not _auto_import_enabled():
+            self._start_recent(force=True)
 
     def action_cycle_window(self) -> None:
         try:
@@ -486,6 +711,14 @@ class AgentAcctTUI(App):
         if len(self.screen_stack) > 1:
             return
         self.push_screen(SessionsScreen())
+
+    def action_open_usage(self) -> None:
+        # Same guard as the sessions drill-down: the app-level `u` binding stays
+        # active while a (non-modal) sub-screen is on top, so without this a second
+        # `u` would stack a duplicate usage screen.
+        if len(self.screen_stack) > 1:
+            return
+        self.push_screen(UsageScreen())
 
 
 def _humanize_ago(ts: Any, now: float) -> str:
@@ -561,7 +794,9 @@ class SessionsScreen(Screen):
         self.title = "agentacct"
         self.sub_title = "sessions"
         table = self.query_one("#sessions", DataTable)
-        table.add_columns("session", "client", "project", "activity", "tokens", "est. cost", "steps", "⋔ sub")
+        table.add_columns(
+            "session", "client", "project", "activity", "status", "tokens", "est. cost", "steps", "⋔ sub"
+        )
         self._set_loading(True, "Building the work ledger (one-time, a few seconds)…")
         self._load()
 
@@ -620,42 +855,10 @@ class SessionsScreen(Screen):
         self._total_sessions = len(sessions)
 
         # Fold every subagent DESCENDANT under its top-most root session, so a run
-        # and all its (and its children's) subagents collapse to one row. Grouping
-        # follows the ledger's own rollup_group_key ("{client}::{parent}" for a
-        # child, else the session's own key), which already applies the parent
-        # source-namespace compatibility gate — the TUI never contradicts the
-        # ledger. The walk carries a visited-set: a parent cycle resolves to None
-        # so every session on it stays top-level (nothing can vanish), and an
-        # orphan chain (parent absent) stops at the top-most present ancestor.
-        by_session_key = {str(s.get("session_key")): s for s in sessions}
-
-        def _resolve_top(start: str) -> str | None:
-            seen: set[str] = set()
-            cur = start
-            while True:
-                node = by_session_key.get(cur)
-                if node is None:
-                    return cur
-                group = str(node.get("rollup_group_key") or cur)
-                if group == cur or group not in by_session_key:
-                    return cur  # a root, or the top-most present ancestor
-                if group in seen:
-                    return None  # cycle → keep this session top-level
-                seen.add(cur)
-                cur = group
-
-        children_by_parent: dict[str, list[dict]] = {}
-        top: list[dict] = []
-        for entry in sessions:
-            sk = str(entry.get("session_key"))
-            root = _resolve_top(sk)
-            if root is not None and root != sk:
-                children_by_parent.setdefault(root, []).append(entry)
-            else:
-                top.append(entry)
+        # and all its (and its children's) subagents collapse to one row (shared
+        # with the home recent-sessions panel via _fold_sessions).
+        top, children_by_parent = _fold_sessions(sessions)
         self.app._children_by_parent = children_by_parent
-
-        top.sort(key=lambda s: (s.get("last_activity_at") or 0.0), reverse=True)
         self._total_top = len(top)
         shown = top[:_SESSIONS_LIMIT]
 
@@ -680,6 +883,7 @@ class SessionsScreen(Screen):
                 _escape(str(entry.get("client") or "")),
                 _escape(str(entry.get("project") or "—"))[:24],
                 _humanize_ago(entry.get("last_activity_at"), now),
+                _session_badge(entry),
                 format_tokens(usage.get("total_tokens")),
                 _session_cost_text(usage),
                 steps,
@@ -780,6 +984,9 @@ class SessionDetailScreen(Screen):
         title = entry.get("client_session_title") or entry.get("client_session_id_short") or "(untitled)"
         usage = entry.get("usage") or {}
         header = f"[bold]{_escape(str(title))}[/]"
+        glyph, label, color = _session_status(entry)
+        if label != "—":  # a usage-only session (no recorded steps) shows no badge
+            header += f"  [{color}]{glyph} {label}[/]"
         header += f"\n{_escape(str(entry.get('client') or ''))} · {_escape(str(entry.get('project') or '—'))}"
         last = entry.get("last_activity_at")
         if isinstance(last, (int, float)) and last:
@@ -871,4 +1078,141 @@ class SessionDetailScreen(Screen):
         self.app.pop_screen()
 
 
-__all__ = ["AgentAcctTUI", "SessionsScreen", "SessionDetailScreen"]
+# The trailing ranges the usage screen's `d` key cycles: (days, label). None =
+# all time. Granularity is auto (daily for short ranges, weekly for 90/all).
+_USAGE_RANGE_CYCLE: tuple[tuple[int | None, str], ...] = (
+    (7, "7d"),
+    (30, "30d"),
+    (90, "90d"),
+    (None, "all"),
+)
+# How many (client, model) rows the by-model detail lists.
+_USAGE_MODELS_LIMIT = 20
+
+
+class UsageScreen(Screen):
+    """A dedicated usage view: a per-period token/cost time series (with text
+    bars) plus a by-model detail table, over the same cube the overview uses."""
+
+    BINDINGS = [
+        Binding("escape", "back", "Back"),
+        Binding("backspace", "back", "Back"),
+        Binding("d", "cycle_range", "Range"),
+        Binding("r", "refresh", "Refresh"),
+        Binding("q", "quit", "Quit"),
+    ]
+
+    def __init__(self, *, range_index: int = 1) -> None:  # default → 30d
+        super().__init__()
+        self._range_index = range_index % len(_USAGE_RANGE_CYCLE)
+        self._page: UsagePage | None = None
+        # Composed text kept for headless tests.
+        self._status_text = ""
+        self._periods_text = ""
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        yield Static("", id="usage-status")
+        with VerticalScroll(id="usage-scroll"):
+            yield Static("Usage over time", classes="section-title")
+            yield DataTable(id="usage-periods", cursor_type="none", zebra_stripes=True)
+            yield Static("By model", classes="section-title")
+            yield DataTable(id="usage-models", cursor_type="none")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.title = "agentacct"
+        self.sub_title = "usage"
+        self.query_one("#usage-periods", DataTable).add_columns(
+            "period", "tokens", "est. cost", "sessions", ""
+        )
+        self.query_one("#usage-models", DataTable).add_columns(
+            "model", "client", "tokens", "est. cost", "sessions"
+        )
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        days, label = _USAGE_RANGE_CYCLE[self._range_index]
+        try:
+            service = SentinelService(self.app.store_dir, create=False)
+            events = service.list_all_events()
+            page = build_usage_page(events, client=getattr(self.app, "client", None), days=days)
+        except Exception as exc:  # noqa: BLE001 - surface, never crash the screen.
+            self._status_text = f"error: {exc}"
+            try:
+                self.query_one("#usage-status", Static).update(
+                    f"[red]could not build usage:[/] {_escape(str(exc))}"
+                )
+            except Exception:  # noqa: BLE001 - last resort.
+                pass
+            return
+        self._page = page
+        try:
+            self._render_page(page, label)
+        except Exception as exc:  # noqa: BLE001 - a render error degrades to a note.
+            try:
+                self.query_one("#usage-status", Static).update(f"render error: {_escape(str(exc))}")
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _render_page(self, page: UsagePage, label: str) -> None:
+        now = time.time()
+        parts = [f"range: {label}", f"{page.granularity}"]
+        if page.as_of is not None and page.as_of <= now:
+            parts.append(f"as of {humanize_seconds(now - page.as_of)} ago")
+        parts.append(f"{page.usage_record_count} usage records")
+        if page.client_filter:
+            parts.append(f"client: {_escape(str(page.client_filter))}")
+        parts.append("d range · r refresh · Esc back")
+        self._status_text = "  ·  ".join(parts)
+        self.query_one("#usage-status", Static).update(self._status_text)
+
+        # Periods newest-first for a monitor (latest on top, no scroll needed); the
+        # "unknown" bucket (bad-timestamp rows, all-time only) always sorts last so
+        # it never masquerades as the most recent period. Bars scale to the busiest
+        # period in view — the share-of-peak signal a TUI can draw without a chart.
+        periods = list(page.by_period)
+        dated = [p for p in periods if p.get("period") != "unknown"]
+        unknown = [p for p in periods if p.get("period") == "unknown"]
+        ordered = list(reversed(dated)) + unknown
+        peak = max((int(p.get("total_tokens_including_cached") or 0) for p in ordered), default=0)
+
+        table = self.query_one("#usage-periods", DataTable)
+        table.clear()
+        text_rows: list[str] = []
+        for period in ordered:
+            tokens = int(period.get("total_tokens_including_cached") or 0)
+            bar = ratio_bar(tokens, peak)
+            table.add_row(
+                _escape(str(period.get("period"))),
+                format_tokens(tokens),
+                cost_text(period),
+                format_tokens(period.get("sessions")),
+                bar,
+            )
+            text_rows.append(f"{period.get('period')} {tokens} {bar}")
+        self._periods_text = "\n".join(text_rows)
+
+        models = self.query_one("#usage-models", DataTable)
+        models.clear()
+        for model in page.by_model[:_USAGE_MODELS_LIMIT]:
+            models.add_row(
+                _escape(str(model.get("model") or "—")),
+                _escape(str(model.get("client") or "")),
+                format_tokens(model.get("total_tokens_including_cached")),
+                cost_text(model),
+                format_tokens(model.get("sessions")),
+            )
+
+    def action_cycle_range(self) -> None:
+        self._range_index = (self._range_index + 1) % len(_USAGE_RANGE_CYCLE)
+        self._rebuild()
+
+    def action_refresh(self) -> None:
+        self._rebuild()
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+
+__all__ = ["AgentAcctTUI", "SessionsScreen", "SessionDetailScreen", "UsageScreen"]

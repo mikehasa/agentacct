@@ -413,3 +413,73 @@ def test_build_live_snapshot_bundles_usage_and_limits(tmp_path):
     assert live.usage.usage_record_count == 1
     assert [c.client for c in live.limits] == ["codex"]
     assert live.limits[0].windows[0].used_percent == 52.0
+
+
+# ---------------------------------------------------------------------------
+# ratio_bar + build_usage_page (the dedicated usage screen's data path)
+# ---------------------------------------------------------------------------
+
+
+def test_ratio_bar():
+    assert us.ratio_bar(0, 0) == "░" * 20  # zero max → empty, never a full bar
+    assert us.ratio_bar(10, 10) == "█" * 20
+    assert us.ratio_bar(5, 10, width=10) == "█" * 5 + "░" * 5
+    assert us.ratio_bar(-3, 10) == "░" * 20  # non-positive value → empty
+    assert us.ratio_bar(10, 0) == "░" * 20  # zero denominator → empty
+    assert us.ratio_bar(20, 10) == "█" * 20  # value > max clamps to full
+    # non-finite inputs must never reach the arithmetic (would raise/overflow).
+    assert us.ratio_bar(float("inf"), 10) == "░" * 20
+    assert us.ratio_bar(5, float("nan")) == "░" * 20
+
+
+def test_build_usage_page_periods_models_and_granularity(tmp_path):
+    service = SentinelService(tmp_path)
+    _seed_windows_store(service)  # today / 3d / 20d / 200d / future rows
+    events = service.list_all_events()
+
+    page = us.build_usage_page(events, days=30, now=_NOW, today=_TODAY)
+    assert page.range_days == 30
+    assert page.granularity == "daily"
+    # 30 daily buckets, gap-filled (a gap is information), newest day present.
+    assert len(page.by_period) == 30
+    periods = {p["period"]: p for p in page.by_period}
+    assert _TODAY.isoformat() in periods
+    assert int(periods[_TODAY.isoformat()]["total_tokens_including_cached"]) > 0
+    # by_model has the two in-range models (claude-opus within 7d, gpt-5 at 20d).
+    models = {m["model"] for m in page.by_model}
+    assert {"claude-opus-4-8", "gpt-5"} <= models
+    assert int(page.totals["total_tokens_including_cached"]) > 0
+    # freshness: newest real (not-future) row → finite, not the future row.
+    assert page.as_of is not None and page.as_of <= _NOW
+    assert page.usage_record_count == 5
+
+
+def test_build_usage_page_weekly_for_long_ranges(tmp_path):
+    service = SentinelService(tmp_path)
+    _seed_windows_store(service)
+    events = service.list_all_events()
+    assert us.build_usage_page(events, days=7, now=_NOW, today=_TODAY).granularity == "daily"
+    assert us.build_usage_page(events, days=90, now=_NOW, today=_TODAY).granularity == "weekly"
+    # all time (days=None) also collapses to weekly buckets.
+    assert us.build_usage_page(events, days=None, now=_NOW, today=_TODAY).granularity == "weekly"
+
+
+def test_build_usage_page_client_filter(tmp_path):
+    service = SentinelService(tmp_path)
+    _seed_windows_store(service)
+    events = service.list_all_events()
+    page = us.build_usage_page(events, client="codex", days=None, now=_NOW, today=_TODAY)
+    assert page.client_filter == "codex"
+    # only codex rows counted → no claude model in the detail.
+    assert all(m["client"] == "codex" for m in page.by_model)
+
+
+def test_build_usage_page_empty_store(tmp_path):
+    service = SentinelService(tmp_path)
+    page = us.build_usage_page(service.list_all_events(), days=30, now=_NOW, today=_TODAY)
+    # a truly empty result stays empty (the screen renders an explicit empty
+    # state instead of a wall of zero rows).
+    assert page.by_period == []
+    assert page.by_model == []
+    assert page.usage_record_count == 0
+    assert page.as_of is None

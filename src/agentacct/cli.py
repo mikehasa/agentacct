@@ -8378,8 +8378,9 @@ def tui(
     A full-screen view over the same authoritative local event log as
     ``agentacct now`` / ``agentacct limits`` (no credentials, no API calls). Keys:
     ``r`` refresh now, ``w`` cycle the breakdown window, ``s`` open the sessions
-    drill-down (a session's steps and their check results), ``q`` quit. Needs an
-    interactive terminal.
+    drill-down (a session's steps and their check results), ``u`` open the usage
+    screen (a per-day/-week token & cost time series with by-model detail), ``q``
+    quit. Needs an interactive terminal.
     """
     if window not in NOW_WINDOW_ALIASES:
         raise typer.BadParameter("--window must be one of: today, 7d, 30d, all")
