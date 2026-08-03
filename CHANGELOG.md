@@ -7,6 +7,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Client integrations re-sync themselves after an upgrade (`agentacct sync`).**
+  Onboarding wrote a client's MCP config, hooks, and instructions once; a later
+  agentacct upgrade left them stale (the source of the outdated-`record_section`
+  guidance). The activation record now stamps the agentacct version that wrote the
+  integration, and `agentacct start` re-syncs the recorded clients when that stamp
+  is behind the installed version — re-running the same idempotent onboard writers,
+  so it never clobbers your own settings (a custom statusLine is left alone). A new
+  `agentacct sync` forces the refresh on demand. This keeps a machine's MCP /
+  instructions / hooks current with the installed version instead of drifting.
 - **`agentacct tui` freshens usage on launch and refresh.** The TUI now imports
   usage from the client session logs in the background when it opens and on `r`
   (the same scan the HTML dashboard did on Refresh), so the session you're in —
