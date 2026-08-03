@@ -722,18 +722,34 @@ def test_session_status_and_badge_helpers():
     # No recorded steps → no badge (usage-only session).
     assert _session_status({}) == ("·", "—", "dim")
     assert _session_status({"work": {"items": []}}) == ("·", "—", "dim")
-    # Precedence: blocked > in-progress > handed-off > done.
+    # Precedence: blocked > handed-off > in-progress > done.
     assert _session_status({"work": {"items": [{"latest_status": "resolved"}]}})[1] == "done"
     assert _session_status({"work": {"items": [{"latest_status": "completed"}]}})[1] == "done"
     assert _session_status(
         {"work": {"items": [{"latest_status": "handed_off"}, {"latest_status": "completed"}]}}
     )[1] == "handed off"
+    # A hand-off outranks a stray still-open step: a real handed-off session often
+    # leaves one section `started` that was never closed, and must still read
+    # "handed off", not "in progress".
     assert _session_status(
         {"work": {"items": [{"latest_status": "started"}, {"latest_status": "handed_off"}]}}
-    )[1] == "in progress"
+    )[1] == "handed off"
+    # Regression for the exact live shape (one stray `started` amid handed_off +
+    # completed) that used to misread as "in progress".
     assert _session_status(
-        {"work": {"items": [{"latest_status": "blocked"}, {"latest_status": "started"}]}}
+        {"work": {"items": [
+            {"latest_status": "handed_off"}, {"latest_status": "completed"},
+            {"latest_status": "started"}, {"latest_status": "completed"},
+        ]}}
+    )[1] == "handed off"
+    # blocked still dominates everything (an alarm worth surfacing).
+    assert _session_status(
+        {"work": {"items": [{"latest_status": "blocked"}, {"latest_status": "handed_off"}]}}
     )[1] == "blocked"
+    # a genuinely active session (open step, no hand-off) still reads in progress.
+    assert _session_status(
+        {"work": {"items": [{"latest_status": "started"}, {"latest_status": "completed"}]}}
+    )[1] == "in progress"
     # The badge is valid Rich markup for every state (fixed vocab, never data).
     for st in ("blocked", "started", "handed_off", "completed"):
         Text.from_markup(_session_badge({"work": {"items": [{"latest_status": st}]}}))
@@ -943,5 +959,25 @@ def test_recent_panel_uses_private_cache_not_shared(tmp_path):
             assert app._work_ledger is None
             assert app._work_ledger_fp is None
             assert app._children_by_parent == {}
+
+    _run(scenario())
+
+
+def test_home_body_is_scrollable(tmp_path):
+    # Regression: the home body must be a VerticalScroll so the provider-limits and
+    # recent-sessions panels below the fold are reachable on a short terminal
+    # (they were clipped when #body was a plain, non-scrolling Vertical).
+    from textual.containers import VerticalScroll
+
+    SentinelService(tmp_path)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert isinstance(app.query_one("#body"), VerticalScroll)
+            # the limits + recent panels are inside it and mounted.
+            assert app.query_one("#limits-body") is not None
+            assert app.query_one("#recent") is not None
 
     _run(scenario())

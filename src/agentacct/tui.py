@@ -128,9 +128,16 @@ def _session_status(entry: dict) -> tuple[str, str, str]:
     ``work['counts']``, because that bucket folds ``handed_off`` (and
     ``started`` / ``checkpoint``) into ``active`` (see work_ledger
     ``_session_work_summary``), so a cleanly handed-off session would otherwise
-    misread as still in progress. Precedence: any blocked step dominates, then any
-    open step (in progress), then a clean hand-off, then done; a usage-only
-    session with no recorded steps shows no badge.
+    misread as still in progress.
+
+    Precedence: blocked > handed-off > in-progress > done. A hand-off is a
+    *session-level* clean stop (the agent handed the work to another session), so
+    it deliberately outranks a still-open step: a real session commonly leaves one
+    stray section ``started`` that was never closed, and that must not make an
+    already-handed-off run read as "in progress". (The rollup's work items carry
+    no timestamps, so we can't order by "latest step"; this precedence encodes the
+    same intent — a hand-off closes the in-progress gap.) A usage-only session
+    with no recorded steps shows no badge.
     """
 
     work = entry.get("work") or {}
@@ -138,10 +145,10 @@ def _session_status(entry: dict) -> tuple[str, str, str]:
     statuses = [str(item.get("latest_status") or "") for item in items if isinstance(item, dict)]
     if any(s == "blocked" for s in statuses):
         return ("⚠", "blocked", "red")
-    if any(s in ("started", "checkpoint") for s in statuses):
-        return ("▶", "in progress", "yellow")
     if any(s == "handed_off" for s in statuses):
         return ("⏸", "handed off", "cyan")
+    if any(s in ("started", "checkpoint") for s in statuses):
+        return ("▶", "in progress", "yellow")
     if any(s in ("completed", "resolved") for s in statuses):
         return ("✓", "done", "green")
     return ("·", "—", "dim")
@@ -210,8 +217,11 @@ class AgentAcctTUI(App):
         color: $text-muted;
         padding: 0 0 1 0;
     }
+    /* The home body scrolls: on a short terminal the limits + recent-sessions
+       panels below the fold would otherwise be clipped and unreachable. */
+    #body { height: 1fr; }
     #windows { height: auto; }
-    #breakdowns { height: auto; }
+    #breakdowns { height: auto; padding: 1 0 0 0; }
     #byclient, #bymodel { height: auto; width: 1fr; }
     #bymodel { margin: 0 0 0 2; }
     #limits-body { padding: 0 0 1 0; }
@@ -291,9 +301,17 @@ class AgentAcctTUI(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Static("", id="status")
-        with Vertical(id="body"):
+        # Scrollable so nothing below the fold is unreachable; the two panels the
+        # user most wants at a glance — provider limits ("how much left") and the
+        # recent sessions — sit above the by-client / by-model detail breakdown.
+        with VerticalScroll(id="body"):
             yield Static("Usage windows", classes="section-title")
             yield DataTable(id="windows", cursor_type="none", zebra_stripes=True)
+            yield Static("Provider limits", classes="section-title")
+            yield Static("", id="limits-body")
+            yield Static("Recent sessions", classes="section-title")
+            yield Static("", id="recent-status")
+            yield DataTable(id="recent", cursor_type="none")
             with Horizontal(id="breakdowns"):
                 with Vertical():
                     yield Static("", id="byclient-title", classes="section-title")
@@ -301,11 +319,6 @@ class AgentAcctTUI(App):
                 with Vertical():
                     yield Static("", id="bymodel-title", classes="section-title")
                     yield DataTable(id="bymodel", cursor_type="none")
-            yield Static("Provider limits", classes="section-title")
-            yield Static("", id="limits-body")
-            yield Static("Recent sessions", classes="section-title")
-            yield Static("", id="recent-status")
-            yield DataTable(id="recent", cursor_type="none")
         yield Footer()
 
     def on_mount(self) -> None:
