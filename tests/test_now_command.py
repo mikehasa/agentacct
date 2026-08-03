@@ -135,16 +135,18 @@ def test_now_human_render_smoke(tmp_path):
 
 
 def test_now_cost_text_uses_cost_complete():
-    from agentacct.cli import _now_cost_text
+    # The cost cell logic now lives in the shared snapshot layer that `now`,
+    # `limits`, and the TUI all consume.
+    from agentacct.usage_snapshot import cost_text
 
     # complete → plain $; the presence of estimated_cost_usd alone is NOT enough.
-    assert _now_cost_text({"cost_complete": True, "estimated_cost_usd": 4.0, "known_additive_cost_usd": 4.0}) == "$4.00"
+    assert cost_text({"cost_complete": True, "estimated_cost_usd": 4.0, "known_additive_cost_usd": 4.0}) == "$4.00"
     # priced subtotal present but NOT complete (unpriced rows) → partial with ~.
-    assert _now_cost_text({"cost_complete": False, "estimated_cost_usd": 4.0, "known_additive_cost_usd": 4.0}) == "~$4.00"
+    assert cost_text({"cost_complete": False, "estimated_cost_usd": 4.0, "known_additive_cost_usd": 4.0}) == "~$4.00"
     # nothing priced → em-dash
-    assert _now_cost_text({"cost_complete": False, "estimated_cost_usd": None, "known_additive_cost_usd": None}) == "—"
+    assert cost_text({"cost_complete": False, "estimated_cost_usd": None, "known_additive_cost_usd": None}) == "—"
     # non-finite degrades to em-dash (no $nan)
-    assert _now_cost_text({"cost_complete": True, "estimated_cost_usd": float("nan"), "known_additive_cost_usd": float("inf")}) == "—"
+    assert cost_text({"cost_complete": True, "estimated_cost_usd": float("nan"), "known_additive_cost_usd": float("inf")}) == "—"
 
 
 def test_now_client_all_is_no_filter(tmp_path):
