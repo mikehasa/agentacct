@@ -30,13 +30,15 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header, Static
+from textual.widgets import Collapsible, DataTable, Footer, Header, LoadingIndicator, Static
 
 from .service import SentinelService
+from .subagent_roles import read_roles_for_children
 from .usage_snapshot import (
     LiveSnapshot,
     build_live_snapshot,
     cost_text,
+    finite,
     format_tokens,
     humanize_seconds,
     usage_bar,
@@ -121,6 +123,10 @@ class AgentAcctTUI(App):
     #byclient, #bymodel { height: auto; width: 1fr; }
     #bymodel { margin: 0 0 0 2; }
     #limits-body { padding: 0 0 1 0; }
+    #sessions-status { color: $text-muted; padding: 0 0 1 0; }
+    #sessions-loading { height: auto; }
+    #detail-header { padding: 0 1 1 1; }
+    #detail-scroll { padding: 0 1; }
     """
 
     BINDINGS = [
@@ -137,15 +143,23 @@ class AgentAcctTUI(App):
         client: str | None = None,
         window_token: str = "7d",
         refresh_seconds: float = 5.0,
+        subagent_projects_root: Path | str | None = None,
     ) -> None:
         super().__init__()
         self.store_dir = Path(store_dir)
         self.client = client
         self.window_token = window_token
         self.refresh_seconds = max(1.0, float(refresh_seconds))
+        # Where to read Claude subagent transcripts for child-session roles; None
+        # → the reader's default (~/.claude, gated by AGENTACCT_SCAN_SUBAGENT_ROLES).
+        # Tests point this at a tmp dir.
+        self.subagent_projects_root = subagent_projects_root
         self._snapshot: LiveSnapshot | None = None
         self._last_fingerprint: int | None = None
         self._last_refresh_at: float | None = None
+        # A manual `r` flashes the refreshed-stamp until this time, so a fast
+        # (often no-op) main-page refresh gives visible feedback.
+        self._flash_until: float = 0.0
         self._error: str | None = None
         # Work-ledger cache shared across the sessions/detail screens. The ledger
         # is EXPENSIVE (O(all events), no caching upstream — ~5s on ~8k events),
@@ -153,6 +167,9 @@ class AgentAcctTUI(App):
         # event log changes (fingerprint) or the user forces a refresh.
         self._work_ledger: dict | None = None
         self._work_ledger_fp: int | None = None
+        # Folded child (subagent) sessions, keyed by the parent's session_key;
+        # populated by the sessions screen, read by the detail screen.
+        self._children_by_parent: dict[str, list[dict]] = {}
         # Last composed text for each dynamic panel — a stable hook for headless
         # tests (avoids depending on Rich renderable internals).
         self._status_text: str = ""
@@ -261,7 +278,11 @@ class AgentAcctTUI(App):
             now = time.time()
             parts: list[str] = []
             if self._last_refresh_at is not None:
-                parts.append(f"refreshed {time.strftime('%H:%M:%S', time.localtime(self._last_refresh_at))}")
+                stamp = time.strftime("%H:%M:%S", time.localtime(self._last_refresh_at))
+                if now < self._flash_until:  # highlighted badge for ~1.2s after `r`
+                    parts.append(f"[black on green] ⟳ refreshed {stamp} [/]")
+                else:
+                    parts.append(f"refreshed {stamp}")
             if usage.as_of is not None:
                 parts.append(f"as of {humanize_seconds(now - usage.as_of)} ago")
             parts.append(f"{usage.usage_record_count} usage records")
@@ -385,6 +406,8 @@ class AgentAcctTUI(App):
     # -- actions ------------------------------------------------------------
 
     def action_refresh(self) -> None:
+        # Flash the refreshed-stamp so a fast (often unchanged) refresh is visible.
+        self._flash_until = time.time() + 1.2
         self.refresh_data(force=True)
 
     def action_cycle_window(self) -> None:
@@ -436,8 +459,24 @@ def _session_cost_text(usage: dict) -> str:
     )
 
 
+def _status_glyph(status: str) -> str:
+    if status in ("completed", "resolved", "handed_off"):
+        return "✓"
+    if status == "blocked":
+        return "⚠"
+    if status in ("started", "checkpoint"):
+        return "▶"
+    return "●"
+
+
+def _first_line(text: str, limit: int = 72) -> str:
+    line = str(text).strip().splitlines()[0] if str(text).strip() else ""
+    return line[:limit] + ("…" if len(line) > limit else "")
+
+
 class SessionsScreen(Screen):
-    """A list of sessions (from the work ledger); select one to drill in."""
+    """A list of TOP-LEVEL sessions (child/subagent sessions are folded into their
+    parent's detail); select one to drill in."""
 
     BINDINGS = [
         Binding("escape", "back", "Back"),
@@ -448,11 +487,13 @@ class SessionsScreen(Screen):
     def __init__(self) -> None:
         super().__init__()
         self._by_key: dict[str, dict] = {}
+        self._total_top = 0
         self._total_sessions = 0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Static("", id="sessions-status")
+        yield LoadingIndicator(id="sessions-loading")
         yield DataTable(id="sessions", cursor_type="row", zebra_stripes=True)
         yield Footer()
 
@@ -460,11 +501,17 @@ class SessionsScreen(Screen):
         self.title = "agentacct"
         self.sub_title = "sessions"
         table = self.query_one("#sessions", DataTable)
-        table.add_columns("session", "client", "project", "activity", "tokens", "est. cost", "steps")
-        self.query_one("#sessions-status", Static).update(
-            "Building the work ledger (one-time, a few seconds)…"
-        )
+        table.add_columns("session", "client", "project", "activity", "tokens", "est. cost", "steps", "⋔ sub")
+        self._set_loading(True, "Building the work ledger (one-time, a few seconds)…")
         self._load()
+
+    def _set_loading(self, loading: bool, message: str | None = None) -> None:
+        try:
+            self.query_one("#sessions-loading", LoadingIndicator).display = loading
+        except Exception:  # noqa: BLE001 - cosmetic only
+            pass
+        if message is not None:
+            self.query_one("#sessions-status", Static).update(message)
 
     @work(thread=True, exclusive=True)
     def _load(self, force: bool = False) -> None:
@@ -501,6 +548,7 @@ class SessionsScreen(Screen):
     def _show_error(self, message: str) -> None:
         if not self.is_mounted:  # a late callback must not touch a dismissed screen
             return
+        self._set_loading(False)
         self.query_one("#sessions-status", Static).update(
             f"[red]could not build the work ledger:[/] {_escape(message)}"
         )
@@ -509,10 +557,47 @@ class SessionsScreen(Screen):
         if not self.is_mounted:  # screen was dismissed before the build finished
             return
         sessions = list((ledger.get("session_rollup") or {}).get("sessions") or [])
-        # Most-recent first; unknown activity sorts last.
-        sessions.sort(key=lambda s: (s.get("last_activity_at") or 0.0), reverse=True)
         self._total_sessions = len(sessions)
-        shown = sessions[:_SESSIONS_LIMIT]
+
+        # Fold every subagent DESCENDANT under its top-most root session, so a run
+        # and all its (and its children's) subagents collapse to one row. Grouping
+        # follows the ledger's own rollup_group_key ("{client}::{parent}" for a
+        # child, else the session's own key), which already applies the parent
+        # source-namespace compatibility gate — the TUI never contradicts the
+        # ledger. The walk carries a visited-set: a parent cycle resolves to None
+        # so every session on it stays top-level (nothing can vanish), and an
+        # orphan chain (parent absent) stops at the top-most present ancestor.
+        by_session_key = {str(s.get("session_key")): s for s in sessions}
+
+        def _resolve_top(start: str) -> str | None:
+            seen: set[str] = set()
+            cur = start
+            while True:
+                node = by_session_key.get(cur)
+                if node is None:
+                    return cur
+                group = str(node.get("rollup_group_key") or cur)
+                if group == cur or group not in by_session_key:
+                    return cur  # a root, or the top-most present ancestor
+                if group in seen:
+                    return None  # cycle → keep this session top-level
+                seen.add(cur)
+                cur = group
+
+        children_by_parent: dict[str, list[dict]] = {}
+        top: list[dict] = []
+        for entry in sessions:
+            sk = str(entry.get("session_key"))
+            root = _resolve_top(sk)
+            if root is not None and root != sk:
+                children_by_parent.setdefault(root, []).append(entry)
+            else:
+                top.append(entry)
+        self.app._children_by_parent = children_by_parent
+
+        top.sort(key=lambda s: (s.get("last_activity_at") or 0.0), reverse=True)
+        self._total_top = len(top)
+        shown = top[:_SESSIONS_LIMIT]
 
         table = self.query_one("#sessions", DataTable)
         table.clear()
@@ -525,12 +610,11 @@ class SessionsScreen(Screen):
             counts = (entry.get("work") or {}).get("counts") or {}
             title = entry.get("client_session_title") or entry.get("client_session_id_short") or "(untitled)"
             steps = f"{counts.get('total', 0)}✓{counts.get('completed', 0)}"
-            active = counts.get("active", 0)
-            blocked = counts.get("blocked", 0)
-            if active:
-                steps += f" ▶{active}"
-            if blocked:
-                steps += f" ⚠{blocked}"
+            if counts.get("active", 0):
+                steps += f" ▶{counts.get('active', 0)}"
+            if counts.get("blocked", 0):
+                steps += f" ⚠{counts.get('blocked', 0)}"
+            n_children = len(children_by_parent.get(str(entry.get("session_key")), []))
             table.add_row(
                 _escape(str(title))[:48],
                 _escape(str(entry.get("client") or "")),
@@ -539,11 +623,15 @@ class SessionsScreen(Screen):
                 format_tokens(usage.get("total_tokens")),
                 _session_cost_text(usage),
                 steps,
+                str(n_children) if n_children else "",
                 key=key,
             )
-        cap = f" (showing most recent {_SESSIONS_LIMIT})" if self._total_sessions > _SESSIONS_LIMIT else ""
+        self._set_loading(False)
+        folded = self._total_sessions - self._total_top
+        cap = f" (showing most recent {_SESSIONS_LIMIT})" if self._total_top > _SESSIONS_LIMIT else ""
+        foldnote = f" · {folded} subagent sessions folded" if folded else ""
         self.query_one("#sessions-status", Static).update(
-            f"{self._total_sessions} sessions{cap} · Enter to open · r to rebuild · Esc back"
+            f"{self._total_top} sessions{cap}{foldnote} · Enter to open · r rebuild · Esc back"
         )
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -553,15 +641,19 @@ class SessionsScreen(Screen):
             self.app.push_screen(SessionDetailScreen(entry))
 
     def action_refresh(self) -> None:
-        self.query_one("#sessions-status", Static).update("Rebuilding the work ledger…")
+        self._set_loading(True, "Rebuilding the work ledger…")
         self._load(force=True)
 
     def action_back(self) -> None:
         self.app.pop_screen()
 
 
+# How many child sessions to render (with role lookups) in a parent's detail.
+_DETAIL_CHILDREN_LIMIT = 25
+
+
 class SessionDetailScreen(Screen):
-    """One session's steps (work items) and their machine-check results."""
+    """One session's steps (work items) + check results + its subagents."""
 
     BINDINGS = [
         Binding("escape", "back", "Back"),
@@ -572,80 +664,148 @@ class SessionDetailScreen(Screen):
     def __init__(self, entry: dict) -> None:
         super().__init__()
         self._entry = entry
-        # Composed text kept for headless tests (Rich renderable internals are
-        # not a stable assertion target).
+        # Composed text kept for headless tests (Rich renderable internals are not
+        # a stable assertion target).
         self._header_text = ""
         self._body_text = ""
+        self._subagents_text = ""
 
     def compose(self) -> ComposeResult:
+        entry = self._entry
+        now = time.time()
         yield Header(show_clock=True)
-        yield Static("", id="detail-header")
-        with VerticalScroll():
-            yield Static("", id="detail-body")
+        yield Static(self._render_header(entry, now), id="detail-header")
+        with VerticalScroll(id="detail-scroll"):
+            steps = self._steps()
+            if not steps:
+                yield Static(
+                    "[dim]No recorded work steps — steps come from MCP section/check "
+                    "events; a usage-only session has none.[/]",
+                    id="detail-nosteps",
+                )
+            for wi in steps:
+                title_line, content = self._step_render(wi, now)
+                self._body_text += title_line + "\n" + content + "\n"
+                yield Collapsible(Static(content), title=title_line, collapsed=True)
+            children = self._children()
+            if children:
+                subtitle, content = self._subagents_render(
+                    entry, children, now, getattr(self.app, "subagent_projects_root", None)
+                )
+                self._subagents_text = content
+                yield Collapsible(Static(content), title=subtitle, collapsed=True, id="subagents")
         yield Footer()
 
     def on_mount(self) -> None:
-        entry = self._entry
         self.title = "agentacct"
         self.sub_title = "session detail"
-        client = entry.get("client")
-        session_id = entry.get("client_session_id")
+
+    # -- data ---------------------------------------------------------------
+
+    def _steps(self) -> list[dict]:
+        ledger = getattr(self.app, "_work_ledger", None) or {}
+        client = self._entry.get("client")
+        sid = self._entry.get("client_session_id")
+        return [wi for wi in (ledger.get("work_items") or []) if _session_matches(wi, client, sid)]
+
+    def _children(self) -> list[dict]:
+        index = getattr(self.app, "_children_by_parent", {}) or {}
+        kids = list(index.get(str(self._entry.get("session_key")), []))
+        kids.sort(key=lambda s: ((s.get("usage") or {}).get("total_tokens") or 0), reverse=True)
+        return kids
+
+    # -- rendering ----------------------------------------------------------
+
+    def _render_header(self, entry: dict, now: float) -> str:
         title = entry.get("client_session_title") or entry.get("client_session_id_short") or "(untitled)"
         usage = entry.get("usage") or {}
-        now = time.time()
-
         header = f"[bold]{_escape(str(title))}[/]"
-        header += f"\n{_escape(str(client or ''))} · {_escape(str(entry.get('project') or '—'))}"
-        first, last = entry.get("first_activity_at"), entry.get("last_activity_at")
-        if isinstance(first, (int, float)) and isinstance(last, (int, float)) and first and last:
+        header += f"\n{_escape(str(entry.get('client') or ''))} · {_escape(str(entry.get('project') or '—'))}"
+        last = entry.get("last_activity_at")
+        if isinstance(last, (int, float)) and last:
             header += f" · {_humanize_ago(last, now)}"
-        header += (
-            f" · {format_tokens(usage.get('total_tokens'))} tokens"
-            f" · {_session_cost_text(usage)}"
-        )
+        header += f" · {format_tokens(usage.get('total_tokens'))} tokens · {_session_cost_text(usage)}"
         self._header_text = header
-        self.query_one("#detail-header", Static).update(header)
+        return header
 
-        ledger = getattr(self.app, "_work_ledger", None) or {}
-        work_items = [
-            wi for wi in (ledger.get("work_items") or []) if _session_matches(wi, client, session_id)
-        ]
-        self._body_text = self._render_steps(work_items, now)
-        self.query_one("#detail-body", Static).update(self._body_text)
+    def _step_render(self, wi: dict, now: float) -> tuple[str, str]:
+        status = str(wi.get("latest_status") or "?")
+        title = wi.get("title") or wi.get("section_id") or "(untitled step)"
+        kind = str(wi.get("kind") or "")
+        checks = [e for e in (wi.get("evidence_events") or []) if isinstance(e, dict)]
+        # Collapsible title is plain (escaped) — no color, so it can't break markup.
+        parts = [status, kind, _humanize_ago(wi.get("updated_at"), now)]
+        if checks:
+            parts.append(f"{len(checks)} checks")
+        title_line = f"{_status_glyph(status)} {_escape(str(title))}  — {_escape(' · '.join(p for p in parts if p))}"
 
-    def _render_steps(self, work_items: list[dict], now: float) -> str:
-        if not work_items:
-            return (
-                "No recorded work steps for this session.\n"
-                "[dim]Steps come from MCP section/check events; a usage-only session has none.[/]"
-            )
         lines: list[str] = []
-        for wi in work_items:
-            status = str(wi.get("latest_status") or "?")
-            color = _work_status_color(status)
-            title = wi.get("title") or wi.get("section_id") or "(untitled step)"
-            kind = str(wi.get("kind") or "")
-            meta = " · ".join(p for p in (_escape(kind) if kind else "", status, _humanize_ago(wi.get("updated_at"), now)) if p)
-            lines.append(f"[{color}]●[/] [bold]{_escape(str(title))}[/]  [dim]{meta}[/]")
-            summary = wi.get("summary")
-            if summary:
-                lines.append(f"    [dim]{_escape(str(summary))}[/]")
-            for ev in wi.get("evidence_events") or []:
-                if not isinstance(ev, dict):
-                    continue
-                mark, mcolor = _evidence_mark(str(ev.get("result") or ""))
-                etype = _escape(str(ev.get("evidence_type") or "check"))
-                summ = _escape(str(ev.get("summary") or ev.get("result") or ""))
-                cline = f"    [{mcolor}]{mark}[/] {etype}: {summ}"
-                exit_code = ev.get("exit_code")
-                if isinstance(exit_code, int):
-                    cline += f" [dim](exit {exit_code})[/]"
-                lines.append(cline)
-            blocker = wi.get("blocker")
-            if blocker:
-                lines.append(f"    [red]⚠ blocked:[/] {_escape(str(blocker))}")
-            lines.append("")
-        return "\n".join(lines).rstrip("\n")
+        summary = wi.get("summary")
+        if summary:
+            lines.append(f"[dim]{_escape(str(summary))}[/]")
+        for ev in checks:
+            mark, mcolor = _evidence_mark(str(ev.get("result") or ""))
+            etype = _escape(str(ev.get("evidence_type") or "check"))
+            summ = _escape(str(ev.get("summary") or ev.get("result") or ""))
+            cline = f"[{mcolor}]{mark}[/] {etype}: {summ}"
+            exit_code = ev.get("exit_code")
+            if isinstance(exit_code, int):
+                cline += f" [dim](exit {exit_code})[/]"
+            lines.append(cline)
+        blocker = wi.get("blocker")
+        if blocker:
+            lines.append(f"[red]⚠ blocked:[/] {_escape(str(blocker))}")
+        return title_line, ("\n".join(lines) if lines else "[dim](no summary or checks)[/]")
+
+    def _subagents_render(
+        self, entry: dict, children: list[dict], now: float, projects_root=None
+    ) -> tuple[str, str]:
+        # Aggregate over the folded set actually listed (all descendants), so the
+        # subtitle count and totals are self-consistent — the ledger's
+        # related.children_usage counts only DIRECT children and would disagree.
+        total = len(children)
+        agg_tokens = sum(int((c.get("usage") or {}).get("total_tokens") or 0) for c in children)
+        agg_cost = 0.0
+        any_cost = False
+        for c in children:
+            value = finite((c.get("usage") or {}).get("estimated_cost_usd"))
+            if value is not None:
+                agg_cost += value
+                any_cost = True
+        subtitle = f"⋔ Subagents ({total}) — {format_tokens(agg_tokens)} tok"
+        if any_cost:
+            subtitle += f" · ~${agg_cost:.2f}"
+
+        shown = children[:_DETAIL_CHILDREN_LIMIT]
+        child_ids = [str(c.get("client_session_id")) for c in shown]
+        roles = read_roles_for_children(
+            str(entry.get("client_session_id")), child_ids, projects_root=projects_root
+        )
+
+        lines: list[str] = []
+        for child in shown:
+            cid = str(child.get("client_session_id"))
+            usage = child.get("usage") or {}
+            counts = (child.get("work") or {}).get("counts") or {}
+            role = roles.get(cid)
+            role_type = (role.agent_type if role and role.agent_type else child.get("session_kind") or "subagent")
+            models = child.get("observed_models") or []
+            model = _escape(str(models[0])) if models else ""
+            head = f"[bold]{_escape(str(role_type))}[/]"
+            if role and role.task:
+                head += f" [dim]{_escape(_first_line(role.task))}[/]"
+            meta = " · ".join(
+                p for p in (
+                    f"{format_tokens(usage.get('total_tokens'))} tok",
+                    _session_cost_text(usage),
+                    model,
+                    (f"{counts.get('total', 0)} steps" if counts.get("total") else ""),
+                ) if p
+            )
+            lines.append(f"{head}\n    [dim]{meta}[/]")
+        if total > len(shown):
+            lines.append(f"[dim]… and {total - len(shown)} more (by token volume)[/]")
+        return subtitle, "\n".join(lines)
 
     def action_back(self) -> None:
         self.app.pop_screen()
