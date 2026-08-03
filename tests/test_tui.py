@@ -403,7 +403,7 @@ def test_tui_work_helpers():
     assert not _session_matches({"client": "codex", "client_session_id": "s2"}, "codex", "s1")
 
 
-def test_session_detail_render_steps_and_markup_safe():
+def test_session_detail_step_render_and_markup_safe():
     from rich.text import Text
 
     now = time.time()
@@ -413,8 +413,11 @@ def test_session_detail_render_steps_and_markup_safe():
         "evidence_events": [{"result": "passed", "evidence_type": "test", "summary": "all green", "exit_code": 0}],
     }
     screen = SessionDetailScreen({})
-    txt = screen._render_steps([good], now)
-    assert "Ship it" in txt and "✓" in txt and "exit 0" in txt
+    title_line, content = screen._step_render(good, now)
+    assert "Ship it" in title_line and "✓" in title_line  # status glyph in the collapsible title
+    assert "all green" in content and "exit 0" in content
+    Text.from_markup(title_line)  # valid markup
+    Text.from_markup(content)
 
     # markup injection in any data field must yield VALID markup (escaped), never crash.
     evil = {
@@ -422,11 +425,108 @@ def test_session_detail_render_steps_and_markup_safe():
         "summary": "[/]bad", "blocker": "[/]boom",
         "evidence_events": [{"result": "failed", "evidence_type": "y[/]", "summary": "[/]z", "exit_code": 1}],
     }
-    etxt = screen._render_steps([evil], now)
-    Text.from_markup(etxt)  # raises MarkupError if any field were left unescaped
-    assert "pwn" in etxt
+    t2, c2 = screen._step_render(evil, now)
+    Text.from_markup(t2)  # raises MarkupError if a field were left unescaped
+    Text.from_markup(c2)
+    assert "pwn" in t2 and "boom" in c2
 
-    assert "No recorded work steps" in screen._render_steps([], now)
+
+def test_sessions_screen_folds_children(tmp_path):
+    # Child sessions (related.parent present) must be folded out of the top-level
+    # list and indexed under their parent for the detail.
+    SentinelService(tmp_path)  # empty store so the worker builds an empty ledger fast
+
+    # Folding keys on the ledger's authoritative rollup_group_key (a child's ==
+    # "{client}::{parent}"; a root's == its own session_key).
+    fake_ledger = {"session_rollup": {"sessions": [
+        {"client": "cc", "client_session_id": "P", "session_key": "cc::P", "rollup_group_key": "cc::P",
+         "client_session_title": "Parent",
+         "usage": {"total_tokens": 100}, "work": {"counts": {"total": 1, "completed": 1}}},
+        {"client": "cc", "client_session_id": "P:agent-1", "session_key": "cc::P:agent-1", "rollup_group_key": "cc::P",
+         "session_kind": "child",
+         "usage": {"total_tokens": 9000}, "work": {"counts": {}}},
+    ]}}
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("s")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            scr = app.screen
+            scr._populate(fake_ledger)  # inject a parent+child ledger
+            table = scr.query_one("#sessions", DataTable)
+            assert table.row_count == 1  # only the parent is top-level
+            assert "cc::P" in app._children_by_parent  # keyed by parent session_key
+            assert len(app._children_by_parent["cc::P"]) == 1
+
+    _run(scenario())
+
+
+def test_sessions_screen_folding_multilevel_and_cycle_safe(tmp_path):
+    # Multi-level folding (grandchildren fold under their top-most root too) +
+    # cycle safety (a mutual parent cycle folds neither side, so nothing vanishes).
+    SentinelService(tmp_path)
+
+    def s(csid, group):
+        return {"client": "cc", "client_session_id": csid, "session_key": f"cc::{csid}",
+                "rollup_group_key": f"cc::{group}", "usage": {}, "work": {"counts": {}}}
+
+    fake = {"session_rollup": {"sessions": [
+        s("R", "R"),        # root
+        s("C", "R"),        # child of root R      → folds under R
+        s("G", "C"),        # grandchild (parent C) → also folds under R (top-most)
+        s("A", "B"),        # cycle A<->B
+        s("B", "A"),
+    ]}}
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("s")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            scr = app.screen
+            scr._populate(fake)
+            top = set(scr._by_key.keys())
+            assert scr.query_one("#sessions", DataTable).row_count == 3  # R, A, B
+            assert "cc::R" in top
+            assert "cc::C" not in top and "cc::G" not in top  # both fold under root R
+            assert "cc::A" in top and "cc::B" in top  # cycle: neither vanishes
+            assert {c["client_session_id"] for c in app._children_by_parent.get("cc::R", [])} == {"C", "G"}
+
+    _run(scenario())
+
+
+def test_subagents_render_reads_roles(tmp_path):
+    # 3b: the detail's Subagents section reads each child's role/task on the fly
+    # from its transcript on disk.
+    import json as _json
+
+    root = tmp_path / "projects"
+    directory = root / "proj" / "P" / "subagents"
+    directory.mkdir(parents=True)
+    (directory / "agent-1.jsonl").write_text(
+        _json.dumps({"attributionAgent": "Explore", "type": "assistant"}) + "\n"
+        + _json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "Map the data layer"}]}}) + "\n",
+        encoding="utf-8",
+    )
+    entry = {"client": "cc", "client_session_id": "P",
+             "related": {"children_usage": {"total_tokens": 9000, "estimated_cost_usd": 2.0, "priced_rows": 1}}}
+    children = [{
+        "client_session_id": "P:agent-1", "session_kind": "child",
+        "usage": {"total_tokens": 9000, "estimated_cost_usd": 2.0, "priced_rows": 1},
+        "observed_models": ["claude-fable-5"], "work": {"counts": {"total": 0}},
+    }]
+    screen = SessionDetailScreen(entry)
+    subtitle, content = screen._subagents_render(entry, children, time.time(), projects_root=root)
+    assert "Subagents (1)" in subtitle
+    assert "9,000 tok" in subtitle  # aggregated child usage
+    assert "Explore" in content  # role type from the transcript
+    assert "Map the data layer" in content  # task from the transcript
+    assert "9,000 tok" in content
 
 
 def test_sessions_screen_worker_and_detail(tmp_path):

@@ -7,6 +7,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`agentacct tui` sessions drill-down — folded subagents, roles, and a
+  restructured detail.** The sessions list now shows only top-level sessions —
+  child/subagent sessions are folded under their parent (a `⋔ sub` count column),
+  so a run with dozens of subagents is one row instead of dozens. Opening a
+  session shows a **Subagents** section listing each child with its role and task,
+  read on the fly from the child's local transcript (`attributionAgent` +
+  the Task prompt) — no credentials, no re-import. The session detail is
+  restructured from a wall of text into a header panel plus one collapsible per
+  step (status + title collapsed; expand for the summary and colored check
+  results). Refresh feedback is clearer: the sessions rebuild shows a loading
+  indicator, and a manual `r` on the dashboard flashes the refreshed-stamp.
 - **`agentacct now` — a current usage & cost snapshot.** One glance at calendar
   windows (today / last 7 days / last 30 days / all time) with token totals,
   estimated cost, and session counts, plus a by-client and top-models breakdown

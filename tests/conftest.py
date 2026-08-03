@@ -156,6 +156,22 @@ def _disable_global_provider_limit_scan(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 @pytest.fixture(autouse=True)
+def _disable_global_subagent_role_scan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the machine-GLOBAL subagent-role transcript scan off for every test.
+
+    The TUI reads Claude subagent transcripts (``~/.claude/projects/.../subagents``)
+    to show a child session's role/task. Hermetic tests must never read the
+    developer's real machine, so ``AGENTACCT_SCAN_SUBAGENT_ROLES`` is pinned off
+    (a test that needs roles passes an explicit ``projects_root`` / sets
+    ``AGENTACCT_CLAUDE_PROJECTS_ROOT`` at a tmp dir). Also clear any real root
+    override that might leak in from the environment.
+    """
+
+    monkeypatch.setenv("AGENTACCT_SCAN_SUBAGENT_ROLES", "0")
+    monkeypatch.delenv("AGENTACCT_CLAUDE_PROJECTS_ROOT", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _allow_test_client_host(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep Starlette TestClient's default ``Host: testserver`` working.
 
