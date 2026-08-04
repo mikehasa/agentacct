@@ -260,31 +260,38 @@ def to_png() -> None:
             print(f"  (no Chrome found) convert by hand: <chrome> --headless=new "
                   f"--screenshot={OUT / (name + '.png')} --window-size=1482,1030 {OUT / (name + '.svg')}")
         return
-    # A THROWAWAY profile + a real HOME + first-run flags: without them Chrome tries
-    # to set up a profile under the isolated demo HOME and hangs.
-    profile = tempfile.mkdtemp(prefix="agentacct-chrome-")
+    # A real HOME + first-run flags: without them Chrome tries to set up a profile
+    # under the isolated demo HOME and hangs.
     env = {**os.environ, "HOME": _REAL_HOME}
-    try:
-        for name in SHOTS:
-            svg, png = OUT / f"{name}.svg", OUT / f"{name}.png"
-            # Drop the remote (CDN) web-font src so Chrome renders offline with the
-            # local mono instead of blocking ~20s per shot on a network fetch.
-            svg.write_text(
-                re.sub(r'\s*url\("https?://[^"]*"\)\s*format\([^)]*\),?', "", svg.read_text(encoding="utf-8")),
-                encoding="utf-8",
-            )
+    for name in SHOTS:
+        svg, png = OUT / f"{name}.svg", OUT / f"{name}.png"
+        # Drop the remote (CDN) web-font src so Chrome renders offline with the
+        # local mono instead of blocking ~20s per shot on a network fetch.
+        svg.write_text(
+            re.sub(r'\s*url\("https?://[^"]*"\)\s*format\([^)]*\),?', "", svg.read_text(encoding="utf-8")),
+            encoding="utf-8",
+        )
+        # A FRESH throwaway profile PER shot: a shared --user-data-dir makes a later
+        # invocation contend on the previous run's profile lock and time out (this
+        # reliably killed the last 1-2 shots). Retry once on any failure.
+        for attempt in (1, 2):
+            profile = tempfile.mkdtemp(prefix="agentacct-chrome-")
             try:
                 subprocess.run(
                     [chrome, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
                      "--no-default-browser-check", f"--user-data-dir={profile}", "--hide-scrollbars",
                      "--force-device-scale-factor=1", f"--screenshot={png}",
                      "--window-size=1482,1030", svg.as_uri()],
-                    check=False, capture_output=True, timeout=60, env=env,
+                    check=False, capture_output=True, timeout=90, env=env,
                 )
             except subprocess.TimeoutExpired:
-                print(f"  WARNING: Chrome timed out on {name}.svg")
-    finally:
-        shutil.rmtree(profile, ignore_errors=True)
+                pass
+            finally:
+                shutil.rmtree(profile, ignore_errors=True)
+            if png.exists() and png.stat().st_size > 0:
+                break
+            if attempt == 2:
+                print(f"  WARNING: Chrome failed on {name}.svg after 2 attempts")
     for name in SHOTS:  # SVGs are intermediate; keep only the PNGs
         (OUT / f"{name}.svg").unlink(missing_ok=True)
 

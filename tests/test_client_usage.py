@@ -3240,6 +3240,67 @@ def test_claude_in_place_append_between_identity_and_usage_reads_fails_closed(
     ]
 
 
+def test_transcript_changed_mid_read_keeps_siblings_and_does_not_undercount_replay(
+    tmp_path,
+    monkeypatch,
+):
+    # A parent transcript rewritten mid-read raises changed_during_scan and is
+    # skipped — but (a) other clean sessions still import (the cohort is no longer
+    # withheld for a transient race), and (b) dedup is transactional so the parent
+    # commits NO keys before raising: a sidechain child replaying the parent's rows
+    # is COUNTED, not silently deduped to zero (issue #53 follow-up).
+    claude_home = _make_claude_home(tmp_path)  # a clean "claude-session" session
+    project = claude_home / "projects" / "-tmp-project"
+
+    def _u(session_id: str, msg_id: str, out: int) -> str:
+        return json.dumps({
+            "type": "assistant", "sessionId": session_id,
+            "timestamp": "2026-08-01T00:00:00Z",
+            "message": {"id": msg_id, "role": "assistant", "model": "claude-opus-4-8",
+                        "usage": {"input_tokens": 100, "output_tokens": out}},
+        }) + "\n"
+
+    parent = project / "run.jsonl"          # root: stem "run" == sessionId "run"
+    child = project / "agent-sub.jsonl"     # child of "run" (stem != sessionId), replays m1
+    parent.write_text(_u("run", "m1", 200), encoding="utf-8")
+    child.write_text(_u("run", "m1", 200), encoding="utf-8")
+    os.utime(parent, (500, 500))
+    os.utime(child, (450, 450))
+
+    # Append to the PARENT during its usage read (after it has staged m1) so the
+    # END-fingerprint check fails -> changed_during_scan. _claude_usage_dedupe_key
+    # is invoked per usage row inside the read loop.
+    original = client_usage_module._claude_usage_dedupe_key
+    state = {"done": False}
+
+    def mutate(path, obj, message, usage):
+        if path == parent and not state["done"]:
+            with parent.open("a", encoding="utf-8") as fh:
+                fh.write(_u("run", "extra", 1))
+            state["done"] = True
+        return original(path, obj, message, usage)
+
+    monkeypatch.setattr(client_usage_module, "_claude_usage_dedupe_key", mutate)
+
+    result = discover_client_usage_with_diagnostics(
+        client="claude-code", claude_home=claude_home, limit_sessions=200,
+    )
+
+    by_id = {str(e.client_session_id): e for e in result.events}
+    # The clean pre-existing session still imports; nothing is withheld.
+    assert "claude-session" in by_id
+    assert all(e.source_parse_complete for e in result.events)
+    # The racing parent was skipped, so the "run" lineage's usage is the child's
+    # replay — COUNTED (200 out), not deduped to zero by a ghost key.
+    run_events = [e for e in result.events if str(e.client_session_id).startswith("run")]
+    assert run_events, "the child's replay must be imported, not lost to a ghost dedup key"
+    assert sum(e.output_tokens for e in run_events) == 200
+    assert (
+        "claude_transcript_changed_during_scan"
+        in result.diagnostics["claude-code"]["error_codes"]
+    )
+
+
 def test_claude_source_namespace_stays_bound_to_held_root_during_retarget(
     tmp_path,
     monkeypatch,
