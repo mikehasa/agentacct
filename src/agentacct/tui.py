@@ -331,6 +331,14 @@ _AGENTACCT_THEME = Theme(
     success="#9ece6a",
     warning="#e0af68",
     error="#f7768e",
+    # The row cursor (sessions list) defaulted to the full-strength primary blue,
+    # which reads as a harsh bright bar. Use a calmer muted blue: clearly "selected"
+    # without glaring. The blurred (unfocused) cursor keeps its translucent tint.
+    variables={
+        "block-cursor-background": "#2e3c64",
+        "block-cursor-foreground": "#c0caf5",
+        "block-cursor-text-style": "bold",
+    },
 )
 
 _BRAND = "#e0af68"   # amber (accent)
@@ -908,31 +916,50 @@ class AgentAcctTUI(App):
         Written to a ``snapshots/`` dir under the store — NOT the cwd — so pressing
         ``p`` from inside a project repo can never litter the working tree.
         """
+        saved: str | None = None
         try:
             snap_dir = self.store_dir / "snapshots"
             snap_dir.mkdir(parents=True, exist_ok=True)
-            path = self.save_screenshot(path=str(snap_dir))
+            saved = self.save_screenshot(path=str(snap_dir))
         except Exception as exc:  # noqa: BLE001 - a snapshot must never crash the UI.
             self.notify(f"Could not save the snapshot: {exc}", severity="error", timeout=6)
-            return
-        self.notify(f"Saved a shareable snapshot →\n{path}", title="◆ agentacct", timeout=6)
+        finally:
+            # save_screenshot() renders a full frame to an OFFSCREEN console, and
+            # Textual's full render clears the LIVE compositor's dirty regions as a
+            # side effect (Compositor.render_full_update). The next incremental
+            # frame then leaves stale/unpainted cells on the real terminal — a
+            # "white bar" on light terminals. Force one full repaint to restore it.
+            self.screen.refresh(repaint=True, layout=True)
+        if saved is not None:
+            self.notify(
+                f"Saved a shareable snapshot →\n{saved}", title="◆ agentacct", timeout=6
+            )
 
     def action_open_sessions(self) -> None:
-        # Only open the sessions drill-down from the base dashboard. The app-level
-        # `s` binding stays active while a (non-modal) sub-screen is on top, so
-        # without this guard a second `s` would stack a duplicate screen and spawn
-        # a second expensive ledger build.
-        if len(self.screen_stack) > 1:
-            return
-        self.push_screen(SessionsScreen())
+        self._show_top_level(SessionsScreen)
 
     def action_open_usage(self) -> None:
-        # Same guard as the sessions drill-down: the app-level `u` binding stays
-        # active while a (non-modal) sub-screen is on top, so without this a second
-        # `u` would stack a duplicate usage screen.
-        if len(self.screen_stack) > 1:
+        self._show_top_level(UsageScreen)
+
+    def _show_top_level(self, screen_cls: type[Screen]) -> None:
+        # The app-level `s`/`u` bindings stay active on every screen, so a top-level
+        # view must be reachable from ANY screen — not only the base dashboard. The
+        # old guard just returned when a sub-screen was on top, which is why `u` did
+        # nothing on the sessions screen (you had to Esc home first). Rules, in order:
+        #   - already showing it → no-op;
+        #   - already in the stack under a drill-down → pop back down to it (never
+        #     stack a duplicate + a second expensive ledger build);
+        #   - otherwise swap the current sub-screen for it, or push from the base.
+        if isinstance(self.screen, screen_cls):
             return
-        self.push_screen(UsageScreen())
+        if any(isinstance(scr, screen_cls) for scr in self.screen_stack):
+            while not isinstance(self.screen, screen_cls):
+                self.pop_screen()
+            return
+        if len(self.screen_stack) > 1:
+            self.switch_screen(screen_cls())
+        else:
+            self.push_screen(screen_cls())
 
 
 def _humanize_ago(ts: Any, now: float) -> str:
