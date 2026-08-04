@@ -2128,7 +2128,12 @@ def _discover_claude_code_usage_from_home(
             record_error("claude_transcript_unsafe_path")
             continue
         except _ClaudeTranscriptChangedDuringScanError:
-            selected_cohort_complete = False
+            # A transcript rewritten mid-read (a live session appending to it during
+            # a manual import) is a transient race: the file is skipped and re-read
+            # cleanly next scan. Dedup is transactional (this file staged nothing
+            # into the shared map before raising), so skipping it cannot under-count
+            # a sibling — no need to withhold the whole cohort. read_failed and
+            # unsafe_path stay conservative (a genuine read/security failure).
             record_error("claude_transcript_changed_during_scan")
             continue
         except OSError:
@@ -7397,6 +7402,13 @@ def _read_claude_project_usages(
     saw_valid_object = False
     malformed_lines = 0
     invalid_usage_rows = 0
+    # Cross-file replay dedup is TRANSACTIONAL: this file's dedup keys are staged
+    # locally and merged into the shared ``seen_usage_outputs`` only after the
+    # end-fingerprint check confirms the file was not rewritten mid-read. So a file
+    # that raises (e.g. changed_during_scan) leaves NO ghost keys behind to
+    # suppress a sibling's replayed rows. Within a file, lookups check the stage
+    # first so same-file replays still dedup exactly as before.
+    staged_usage_outputs: dict[str, int] = {}
     file_fd, file_stat = _open_claude_transcript_fd(
         path,
         projects_root=projects_root or path.parent,
@@ -7528,7 +7540,12 @@ def _read_claude_project_usages(
             totals["raw_usage_rows"] += 1
             usage_key = _claude_usage_dedupe_key(path, obj, message, usage)
             if usage_key and seen_usage_outputs is not None:
-                previous_output = seen_usage_outputs.get(usage_key)
+                # Dedup against prior files (committed, shared) AND this file's own
+                # earlier rows (staged), but WRITE only to the stage — the shared
+                # dict is updated after a clean end-fingerprint (see below).
+                previous_output = staged_usage_outputs.get(usage_key)
+                if previous_output is None:
+                    previous_output = seen_usage_outputs.get(usage_key)
                 if previous_output is not None:
                     totals["deduplicated_usage_rows"] += 1
                     output_tokens = max(0, output_tokens - previous_output)
@@ -7537,7 +7554,7 @@ def _read_claude_project_usages(
                     input_tokens = 0
                     cache_creation_input_tokens = 0
                     cache_read_input_tokens = 0
-                seen_usage_outputs[usage_key] = max(previous_output or 0, _safe_nonnegative_int(usage.get("output_tokens")))
+                staged_usage_outputs[usage_key] = max(previous_output or 0, _safe_nonnegative_int(usage.get("output_tokens")))
             timestamp = _timestamp_seconds(obj.get("timestamp") or message.get("timestamp"))
             if timestamp is not None:
                 totals["started_at"] = min(totals["started_at"] or timestamp, timestamp)
@@ -7560,6 +7577,11 @@ def _read_claude_project_usages(
         raise _ClaudeTranscriptChangedDuringScanError(
             "claude transcript changed during usage read"
         )
+    # The file read cleanly (no mid-read rewrite) — commit its staged dedup keys
+    # into the shared map so later files in the cohort dedup replays against them.
+    if seen_usage_outputs is not None:
+        for _key, _output in staged_usage_outputs.items():
+            seen_usage_outputs[_key] = max(seen_usage_outputs.get(_key, 0), _output)
     if saw_nonempty_line and not saw_valid_object and _parse_stats is not None:
         _parse_stats["unparseable_transcripts"] = (
             _safe_nonnegative_int(_parse_stats.get("unparseable_transcripts")) + 1
