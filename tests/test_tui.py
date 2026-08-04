@@ -1281,17 +1281,24 @@ def test_sessions_list_renders_plan_column(tmp_path):
     _run(scenario())
 
 
-def test_screenshot_action_saves_svg(tmp_path, monkeypatch):
-    # `p` from any screen saves a shareable SVG snapshot to the cwd (the share feature).
+def test_screenshot_action_saves_svg(tmp_path):
+    # `p` saves a shareable SVG under the store's snapshots/ dir (NOT the cwd, so it
+    # can't litter a repo) — and it must work from a sub-screen too, where the
+    # screen-level `p` binding bubbles up to the app-level action.
     SentinelService(tmp_path)
-    monkeypatch.chdir(tmp_path)
 
     async def scenario():
         app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("p")
+            await pilot.press("p")  # home
+            await pilot.pause()
+            await pilot.press("s")  # into the sessions screen
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.press("p")  # sub-screen snapshot (bubbles to the app)
             await pilot.pause()
 
     _run(scenario())
-    assert list(tmp_path.glob("*.svg")), "pressing p should save an SVG snapshot"
+    snaps = list((tmp_path / "snapshots").glob("*.svg"))
+    assert len(snaps) >= 2, "p should save a snapshot from the home AND a sub-screen"

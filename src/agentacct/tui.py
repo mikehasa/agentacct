@@ -869,9 +869,14 @@ class AgentAcctTUI(App):
         One key from anywhere in the TUI — a lightweight way to share what your
         agents did (usage, cost, the work). The SVG renders in any browser or on
         GitHub. Screen bindings for ``p`` bubble up to this app-level action.
+
+        Written to a ``snapshots/`` dir under the store — NOT the cwd — so pressing
+        ``p`` from inside a project repo can never litter the working tree.
         """
         try:
-            path = self.save_screenshot()
+            snap_dir = self.store_dir / "snapshots"
+            snap_dir.mkdir(parents=True, exist_ok=True)
+            path = self.save_screenshot(path=str(snap_dir))
         except Exception as exc:  # noqa: BLE001 - a snapshot must never crash the UI.
             self.notify(f"Could not save the snapshot: {exc}", severity="error", timeout=6)
             return
