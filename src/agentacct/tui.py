@@ -233,24 +233,44 @@ def _session_badge(entry: dict) -> str:
 
 # Clients that have a weekly subscription plan agentacct can estimate against.
 _PLAN_CLIENTS = ("claude-code", "codex")
+# Of those, the ones whose meter can actually calibrate to a per-session weekly %
+# — i.e. a clean weekly-reset cumulative meter. codex's 7-day meter is rolling and
+# opaque (it never yields a stable weekly-reset %), so it never reaches a number and
+# must NOT be shown as "calibrating" (that would promise a value that never arrives).
+_CALIBRATABLE_CLIENTS = ("claude-code",)
 
 
-def _plan_pct_cell(entry: dict, pcts: dict) -> str:
-    """A compact ``≈X%`` weekly-plan cell for a session row, or ``—``.
+#: Shown in the plan column while a plan-bearing client's estimate is still
+#: calibrating — deliberately distinct from ``—`` so the column doesn't read as
+#: "there is no weekly-plan %". Kept dim so it never competes with real numbers.
+_PLAN_CALIBRATING_CELL = "[dim]⋯[/]"
 
-    A value appears ONLY for a plan-bearing client (see ``_PLAN_CLIENTS``) whose
-    estimate is CALIBRATED from the user's own recorded limit history: the
-    pre-computed ``pcts`` map contains only calibrated clients' sessions, so a
-    session absent from it — an uncalibrated client, a non-plan client, or a
-    zero-token session — shows ``—`` rather than a number from a shipped equation.
-    The nuance (calibrating vs. no plan) is spelled out in the session detail."""
 
-    if str(entry.get("client") or "") not in _PLAN_CLIENTS:
+def _plan_pct_cell(
+    entry: dict, pcts: dict, confidence_by_client: dict | None = None
+) -> str:
+    """The weekly-plan cell for a session row: ``≈X%``, ``⋯`` (calibrating), or ``—``.
+
+    ``≈X%`` appears for a plan-bearing client (see ``_PLAN_CLIENTS``) whose estimate is
+    CALIBRATED from the user's own recorded limit history (the pre-computed ``pcts`` map
+    holds only calibrated clients' sessions). A plan-bearing client that is NOT calibrated
+    yet — but only if its meter can actually calibrate (see ``_CALIBRATABLE_CLIENTS``) —
+    shows ``⋯``, an honest "calibrating from your own usage" rather than a number from a
+    shipped equation, so the column is not misread as "no weekly plan". A non-plan
+    client, a client whose meter never calibrates (codex), or a zero-token session of an
+    already-calibrated client, shows ``—``. The full nuance is in the session detail."""
+
+    client = str(entry.get("client") or "")
+    if client not in _PLAN_CLIENTS:
         return "—"
     pct = (pcts or {}).get(str(entry.get("client_session_id")))
-    if not (isinstance(pct, (int, float)) and not isinstance(pct, bool) and pct > 0):
-        return "—"
-    return f"≈{pct:.1f}%" if pct >= 0.1 else "≈<0.1%"
+    if isinstance(pct, (int, float)) and not isinstance(pct, bool) and pct > 0:
+        return f"≈{pct:.1f}%" if pct >= 0.1 else "≈<0.1%"
+    # A calibratable client with no number yet is warming up → say so, don't dash.
+    # A non-calibratable plan client (codex) never reaches a number, so it stays "—".
+    if client in _CALIBRATABLE_CLIENTS and (confidence_by_client or {}).get(client) == "baseline":
+        return _PLAN_CALIBRATING_CELL
+    return "—"
 
 
 def _fold_sessions(sessions: list[dict]) -> tuple[list[dict], dict[str, list[dict]]]:
@@ -602,7 +622,7 @@ class AgentAcctTUI(App):
             pcts = {}
         if worker.is_cancelled:
             return
-        self.call_from_thread(self._populate_recent, top, pcts)
+        self.call_from_thread(self._populate_recent, top, pcts, _confidence)
 
     def _ensure_plan_cache(self, events: list) -> tuple:
         """Compute + cache per-client plan calibration, keyed on the event fingerprint.
@@ -651,7 +671,12 @@ class AgentAcctTUI(App):
         except Exception:  # noqa: BLE001 - last resort.
             pass
 
-    def _populate_recent(self, top: list[dict], pcts: dict[str, float] | None = None) -> None:
+    def _populate_recent(
+        self,
+        top: list[dict],
+        pcts: dict[str, float] | None = None,
+        confidence: dict[str, str] | None = None,
+    ) -> None:
         self._recent_loading = False
         pcts = pcts or {}
         try:
@@ -660,6 +685,7 @@ class AgentAcctTUI(App):
             return
         table.clear()
         now = time.time()
+        calibrating = False
         for entry in top[:5]:
             usage = entry.get("usage") or {}
             title = (
@@ -667,15 +693,24 @@ class AgentAcctTUI(App):
                 or entry.get("client_session_id_short")
                 or "(untitled)"
             )
+            plan_cell = _plan_pct_cell(entry, pcts, confidence)
+            calibrating = calibrating or plan_cell == _PLAN_CALIBRATING_CELL
             table.add_row(
                 _escape(str(title))[:40],
                 _escape(str(entry.get("client") or "")),
                 _session_badge(entry),  # fixed-vocab colored badge (safe markup)
                 format_tokens(usage.get("total_tokens")),
-                _plan_pct_cell(entry, pcts),
+                plan_cell,
                 _humanize_ago(entry.get("last_activity_at"), now),
             )
-        note = f"{len(top)} sessions · press s for all" if top else "no sessions yet"
+        if not top:
+            note = "no sessions yet"
+        else:
+            note = f"{len(top)} sessions · press s for all"
+            if calibrating:
+                # Only while a shown row is still calibrating: name the ⋯ so it
+                # reads as "warming up", never as a missing/absent value.
+                note += "  ·  [dim]⋯ plan calibrating[/]"
         self._recent_text = note
         try:
             self.query_one("#recent-status", Static).update(note)
@@ -1023,8 +1058,8 @@ class SessionsScreen(Screen):
         try:
             _confidence, pcts = app._ensure_plan_cache(events)
         except Exception:  # noqa: BLE001 - the plan column is best-effort.
-            pcts = {}
-        app.call_from_thread(self._populate, ledger, pcts)
+            pcts, _confidence = {}, {}
+        app.call_from_thread(self._populate, ledger, pcts, _confidence)
 
     def _show_error(self, message: str) -> None:
         if not self.is_mounted:  # a late callback must not touch a dismissed screen
@@ -1034,10 +1069,16 @@ class SessionsScreen(Screen):
             f"[red]could not build the work ledger:[/] {_escape(message)}"
         )
 
-    def _populate(self, ledger: dict, pcts: dict[str, float] | None = None) -> None:
+    def _populate(
+        self,
+        ledger: dict,
+        pcts: dict[str, float] | None = None,
+        confidence: dict[str, str] | None = None,
+    ) -> None:
         if not self.is_mounted:  # screen was dismissed before the build finished
             return
         pcts = pcts or {}
+        calibrating = False
         sessions = list((ledger.get("session_rollup") or {}).get("sessions") or [])
         self._total_sessions = len(sessions)
 
@@ -1065,6 +1106,8 @@ class SessionsScreen(Screen):
             if counts.get("blocked", 0):
                 steps += f" ⚠{counts.get('blocked', 0)}"
             n_children = len(children_by_parent.get(str(entry.get("session_key")), []))
+            plan_cell = _plan_pct_cell(entry, pcts, confidence)
+            calibrating = calibrating or plan_cell == _PLAN_CALIBRATING_CELL
             table.add_row(
                 _escape(str(title))[:48],
                 _escape(str(entry.get("client") or "")),
@@ -1073,7 +1116,7 @@ class SessionsScreen(Screen):
                 _session_badge(entry),
                 format_tokens(usage.get("total_tokens")),
                 _session_cost_text(usage),
-                _plan_pct_cell(entry, pcts),
+                plan_cell,
                 steps,
                 str(n_children) if n_children else "",
                 key=key,
@@ -1082,8 +1125,9 @@ class SessionsScreen(Screen):
         folded = self._total_sessions - self._total_top
         cap = f" (showing most recent {_SESSIONS_LIMIT})" if self._total_top > _SESSIONS_LIMIT else ""
         foldnote = f" · {folded} subagent sessions folded" if folded else ""
+        cal_note = "  ·  [dim]⋯ plan calibrating[/]" if calibrating else ""
         self.query_one("#sessions-status", Static).update(
-            f"[b]{self._total_top} sessions[/]{cap}{foldnote}"
+            f"[b]{self._total_top} sessions[/]{cap}{foldnote}{cal_note}"
             f"      [dim]Enter open · r rebuild · Esc back[/]"
         )
 
