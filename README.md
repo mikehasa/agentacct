@@ -17,7 +17,7 @@ agentacct is local-first Agent Work Intelligence for coding agents. It reads the
 
 ## What you get
 
-Run **`agentacct tui`** for a live, in-terminal view — usage windows, provider rate-limit bars with reset countdowns, and your recent sessions. Press `s` to drill into the sessions, `u` for the usage screen, `q` to quit.
+Run **`agentacct tui`** for a live, in-terminal view — usage windows, provider rate-limit bars with reset countdowns, and your recent sessions. Press `s` to drill into the sessions, `u` for the usage screen, `p` to save a shareable snapshot of the current view (an SVG that renders anywhere), `q` to quit.
 
 - **Honest usage and cost.** Tokens per agent, model, and day — read from the clients' own local session files and labeled `client_reported`; costs are clearly marked pricing-table estimates, never invoices.
 - **The work, not just the tokens.** Every session rolls up its recorded work steps and machine checks — a passing test is `Verified` evidence, an agent's own claim stays labeled `Agent reported`. Open a session to see each step, its status (`in progress` / `handed off` / `done` / `blocked`), and its check results with exit codes:

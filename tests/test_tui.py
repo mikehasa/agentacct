@@ -1279,3 +1279,19 @@ def test_sessions_list_renders_plan_column(tmp_path):
             assert str(by_client["codex"][7]) == "—"  # not in the map → honest —
 
     _run(scenario())
+
+
+def test_screenshot_action_saves_svg(tmp_path, monkeypatch):
+    # `p` from any screen saves a shareable SVG snapshot to the cwd (the share feature).
+    SentinelService(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("p")
+            await pilot.pause()
+
+    _run(scenario())
+    assert list(tmp_path.glob("*.svg")), "pressing p should save an SVG snapshot"

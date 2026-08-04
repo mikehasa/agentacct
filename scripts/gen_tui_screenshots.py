@@ -125,14 +125,20 @@ def build_store():
     # Calibrated weekly-plan series: hourly Opus intervals that move the meter exactly
     # as the baseline predicts (scale ~1.0 -> calibrated), one per named session so
     # each shows a real plan %.
-    base = NOW - 6 * 3600
     sessions = [
         ("cc-login", "Add rate-limit to the login endpoint", 250_000_000, 190.0, "completed", "acme-web"),
         ("cc-auth", "Refactor the auth session store", 120_000_000, 92.0, "checkpoint", "acme-web"),
         ("cc-sqlite", "Migrate the event log to SQLite", 300_000_000, 228.0, "handed_off", "agentacct"),
         ("cc-pay", "Fix the flaky payment test", 90_000_000, 70.0, "blocked", "billing-svc"),
         ("cc-report", "Add the weekly usage report", 60_000_000, 46.0, "completed", "agentacct"),
+        ("cc-search", "Add full-text search to the docs", 180_000_000, 137.0, "completed", "acme-web"),
+        ("cc-webhook", "Wire the Stripe webhook handler", 140_000_000, 106.0, "checkpoint", "billing-svc"),
+        ("cc-cache", "Cache the dashboard queries", 75_000_000, 57.0, "completed", "acme-web"),
+        ("cc-migrate", "Backfill the users table", 210_000_000, 160.0, "handed_off", "agentacct"),
+        ("cc-onboard", "Rework the onboarding flow", 95_000_000, 72.0, "blocked", "acme-web"),
+        ("cc-metrics", "Emit OTLP metrics from the API", 130_000_000, 99.0, "completed", "billing-svc"),
     ]
+    base = NOW - (len(sessions) + 1) * 3600
     pct = 0.0
     _limit7d(svc, captured=base, pct=pct, index=0)
     svc.record_event({  # a 5h reading so the limits panel shows both windows
@@ -148,18 +154,41 @@ def build_store():
         _usage(svc, client="claude-code", model=OPUS, session=sid, title=title, tokens=tokens, at=mid, cost=cost, project=project)
         pct += OPUS_W * (tokens / 1_000_000.0)
         _limit7d(svc, captured=base + (i + 1) * 3600, pct=pct, index=i + 1)
+        if sid == "cc-login":
+            continue  # richer, dedicated steps for the detail screenshot are added below
         _section(svc, session=sid, title="Plan & write the tests", section_id=f"{sid}-plan",
                  status="completed", at=mid - 300, project=project, kind="planning",
                  summary="Scoped the change and the tests to add.")
         _section(svc, session=sid, title=title, section_id=f"{sid}-impl", status=status, at=mid, project=project,
                  summary="Implemented the change." if status != "blocked" else "Started, then hit a blocker on staging.",
                  blocker="staging DB credentials unavailable" if status == "blocked" else None)
-    _check(svc, session="cc-login", section_id="cc-login-impl", result="passed", at=base + 1 * 3600 - 60,
-           summary="42 passed", command="pytest tests/test_login.py -q", exit_code=0)
+    # machine checks across a few sessions
     _check(svc, session="cc-report", section_id="cc-report-impl", result="passed", at=base + 5 * 3600 - 60,
            summary="18 passed", command="pytest tests/test_report.py -q", exit_code=0)
     _check(svc, session="cc-pay", section_id="cc-pay-impl", result="failed", at=base + 4 * 3600 - 60,
            summary="1 failed, 7 passed", command="pytest tests/test_payment.py -q", exit_code=1)
+    _check(svc, session="cc-search", section_id="cc-search-impl", result="passed", at=base + 6 * 3600 - 60,
+           summary="9 passed", command="pytest tests/test_search.py -q", exit_code=0)
+    # cc-login (the DETAIL screenshot): a fuller, chronological TDD story with red->green
+    # check evidence, so the detail shows several steps and honest pass/fail marks.
+    _section(svc, session="cc-login", title="Design the token-bucket limiter", section_id="cc-login-design",
+             status="completed", at=base + 200, project="acme-web", kind="planning",
+             summary="Chose a Redis token bucket — 100 req/min per IP, burst 20.")
+    _section(svc, session="cc-login", title="Write the failing tests", section_id="cc-login-tests",
+             status="completed", at=base + 600, project="acme-web", kind="testing",
+             summary="Added 12 cases: under limit, at limit, burst, reset.")
+    _section(svc, session="cc-login", title="Add the limiter middleware", section_id="cc-login-impl",
+             status="completed", at=base + 1200, project="acme-web",
+             summary="Implemented the middleware; the 12 tests now pass.")
+    _section(svc, session="cc-login", title="Code review + docs", section_id="cc-login-review",
+             status="completed", at=base + 1700, project="acme-web", kind="review",
+             summary="Addressed review comments; documented the limits in the API guide.")
+    _check(svc, session="cc-login", section_id="cc-login-tests", result="failed", at=base + 700,
+           summary="12 failed (red)", command="pytest tests/test_ratelimit.py -q", exit_code=1)
+    _check(svc, session="cc-login", section_id="cc-login-impl", result="passed", at=base + 1300,
+           summary="12 passed", command="pytest tests/test_ratelimit.py -q", exit_code=0)
+    _check(svc, session="cc-login", section_id="cc-login-review", result="passed", at=base + 1750,
+           summary="ruff clean", command="ruff check src/", exit_code=0, name="lint")
 
     # a codex session — no plan estimate (honest '-'), shows tokens/cost + a step
     _usage(svc, client="codex", model="gpt-5.6-sol", session="cx-perf", title="Investigate the perf regression",
@@ -180,7 +209,7 @@ def build_store():
 async def shoot():
     build_store()
     app = AgentAcctTUI(store_dir=STORE, refresh_seconds=3600)
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(150, 44)) as pilot:
         await pilot.pause()
         await app.workers.wait_for_complete()
         await pilot.pause()

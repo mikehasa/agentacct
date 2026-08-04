@@ -31,7 +31,8 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Collapsible, DataTable, Footer, Header, LoadingIndicator, Static
+from textual.theme import Theme
+from textual.widgets import Collapsible, DataTable, Footer, LoadingIndicator, Static
 
 from .service import SentinelService
 from .subagent_roles import read_roles_for_children
@@ -295,10 +296,54 @@ def _fold_sessions(sessions: list[dict]) -> tuple[list[dict], dict[str, list[dic
     return top, children_by_parent
 
 
+# A cohesive dark palette (Tokyo-Night-inspired) so every screen shares one modern,
+# high-contrast look instead of the terminal's default colors.
+_AGENTACCT_THEME = Theme(
+    name="agentacct",
+    dark=True,
+    primary="#7aa2f7",     # blue — nav bar accent rule, interactive
+    secondary="#bb9af7",   # purple
+    accent="#e0af68",      # amber — brand + section headers
+    foreground="#c0caf5",
+    background="#16161e",
+    surface="#1a1b26",
+    panel="#232433",
+    success="#9ece6a",
+    warning="#e0af68",
+    error="#f7768e",
+)
+
+_BRAND = "#e0af68"   # amber (accent)
+_BLUE = "#7aa2f7"    # primary
+
+
+def _navbar(context: str = "") -> Static:
+    """A prominent top bar — the amber brand mark on the left, the current screen as
+    context on the right — as a plain docked Static (styled by the app's ``#navbar``
+    rule). NOTE: a custom widget SUBCLASS with its own DEFAULT_CSS hangs Textual's
+    layout solver in this app, but a plain Static holding a Rich grid lays out fine."""
+
+    brand = f"[b {_BRAND}]◆ agentacct[/]   [dim]agent usage · cost · work[/]"
+    if context:
+        brand += f"      [b {_BLUE}]{_escape(context)}[/]"
+    return Static(brand, id="navbar")
+
+
 class AgentAcctTUI(App):
     """Live usage / cost / limits dashboard."""
 
     CSS = """
+    Screen { background: $background; }
+    /* Nav bar: a raised strip under an accent rule. A custom widget subclass
+       hangs Textual's layout here, so it's a plain #navbar Static (see _navbar). */
+    #navbar {
+        dock: top;
+        height: 3;
+        padding: 0 2;
+        background: $panel;
+        border-bottom: tall $primary;
+        content-align: left middle;
+    }
     .section-title {
         text-style: bold;
         color: $accent;
@@ -340,6 +385,7 @@ class AgentAcctTUI(App):
         Binding("w", "cycle_window", "Cycle window"),
         Binding("s", "open_sessions", "Sessions"),
         Binding("u", "open_usage", "Usage"),
+        Binding("p", "screenshot", "Snapshot"),
     ]
 
     def __init__(
@@ -403,7 +449,7 @@ class AgentAcctTUI(App):
     # -- lifecycle ----------------------------------------------------------
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield _navbar("live dashboard")
         yield Static("", id="status")
         # Scrollable so nothing below the fold is unreachable; the two panels the
         # user most wants at a glance — provider limits ("how much left") and the
@@ -426,6 +472,8 @@ class AgentAcctTUI(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        self.register_theme(_AGENTACCT_THEME)
+        self.theme = "agentacct"
         self.title = "agentacct"
         self.sub_title = "live usage · cost · limits"
         self.query_one("#windows", DataTable).add_columns("window", "tokens", "est. cost", "sessions")
@@ -815,6 +863,20 @@ class AgentAcctTUI(App):
         self.window_token = _WINDOW_CYCLE[(index + 1) % len(_WINDOW_CYCLE)]
         self.refresh_data(force=True)
 
+    def action_screenshot(self) -> None:
+        """Save a shareable SVG snapshot of the CURRENT screen and toast the path.
+
+        One key from anywhere in the TUI — a lightweight way to share what your
+        agents did (usage, cost, the work). The SVG renders in any browser or on
+        GitHub. Screen bindings for ``p`` bubble up to this app-level action.
+        """
+        try:
+            path = self.save_screenshot()
+        except Exception as exc:  # noqa: BLE001 - a snapshot must never crash the UI.
+            self.notify(f"Could not save the snapshot: {exc}", severity="error", timeout=6)
+            return
+        self.notify(f"Saved a shareable snapshot →\n{path}", title="◆ agentacct", timeout=6)
+
     def action_open_sessions(self) -> None:
         # Only open the sessions drill-down from the base dashboard. The app-level
         # `s` binding stays active while a (non-modal) sub-screen is on top, so
@@ -887,6 +949,7 @@ class SessionsScreen(Screen):
         Binding("escape", "back", "Back"),
         Binding("r", "refresh", "Rebuild"),
         Binding("q", "quit", "Quit"),
+        Binding("p", "screenshot", "Snapshot"),
     ]
 
     def __init__(self) -> None:
@@ -896,7 +959,7 @@ class SessionsScreen(Screen):
         self._total_sessions = 0
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield _navbar("sessions")
         yield Static("", id="sessions-status")
         yield LoadingIndicator(id="sessions-loading")
         yield DataTable(id="sessions", cursor_type="row", zebra_stripes=True)
@@ -1044,6 +1107,7 @@ class SessionDetailScreen(Screen):
         Binding("escape", "back", "Back"),
         Binding("backspace", "back", "Back"),
         Binding("q", "quit", "Quit"),
+        Binding("p", "screenshot", "Snapshot"),
     ]
 
     def __init__(self, entry: dict) -> None:
@@ -1058,7 +1122,7 @@ class SessionDetailScreen(Screen):
     def compose(self) -> ComposeResult:
         entry = self._entry
         now = time.time()
-        yield Header(show_clock=True)
+        yield _navbar("session detail")
         yield Static(self._render_header(entry, now), id="detail-header")
         with VerticalScroll(id="detail-scroll"):
             steps = self._steps()
@@ -1260,6 +1324,7 @@ class UsageScreen(Screen):
         Binding("m", "cycle_model", "Model"),
         Binding("r", "refresh", "Refresh"),
         Binding("q", "quit", "Quit"),
+        Binding("p", "screenshot", "Snapshot"),
     ]
 
     def __init__(self, *, range_index: int = 1) -> None:  # default → 30d
@@ -1279,7 +1344,7 @@ class UsageScreen(Screen):
         self._limits_text = ""
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield _navbar("usage")
         yield Static("", id="usage-status")
         with VerticalScroll(id="usage-scroll"):
             yield Static("Plan limits", classes="section-title")
