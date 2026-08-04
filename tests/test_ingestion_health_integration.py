@@ -23,7 +23,6 @@ from agentacct.ingestion_health import (
     IngestionHealthStore,
 )
 from agentacct.service import SentinelService
-from agentacct.usage_truth import is_local_session_observation_event
 from refresh_flash import refresh_flash_qs, run_dashboard_refresh
 
 
@@ -344,11 +343,12 @@ def test_claude_structural_recovery_is_source_specific_and_retries_fail_closed(
             for event in current_ledger
             if event not in ledger_before_failure
         ]
-        assert len(added) == 1
-        assert is_local_session_observation_event(added[0])
-        assert added[0]["metadata"]["client_session_id"] == "claude-session"
-        assert "estimated_input_tokens" not in added[0]
-        assert "estimated_output_tokens" not in added[0]
+        # issue #53: the unresolved late-child no longer withholds the readable
+        # session's usage, so that usage stays imported from the clean scan
+        # (unchanged here) and no fallback usage-unavailable observation is
+        # written. The structural failure is still surfaced via degraded health
+        # (asserted above); nothing new is written and late-child never imports.
+        assert added == []
         assert all(
             event.get("metadata", {}).get("client_session_id") != "late-child"
             for event in current_ledger

@@ -2021,7 +2021,6 @@ def _discover_claude_code_usage_from_home(
 
     path_entries: list[tuple[Path, float]] = []
     fingerprints: dict[Path, _ClaudeFileFingerprint] = {}
-    source_identity_complete = True
     for path in transcript_paths:
         try:
             mtime, fingerprint = _claude_transcript_stat(
@@ -2039,10 +2038,8 @@ def _discover_claude_code_usage_from_home(
             path_entries.append((path, mtime))
             fingerprints[path] = fingerprint
         except _ClaudeTranscriptUnsafePathError:
-            source_identity_complete = False
             record_error("claude_transcript_unsafe_path")
         except OSError:
-            source_identity_complete = False
             record_error("claude_transcript_stat_failed")
 
     identity_entries: list[tuple[Path, float, str, int, bool]] = []
@@ -2055,17 +2052,14 @@ def _discover_claude_code_usage_from_home(
                 expected_fingerprint=fingerprints[path],
             )
         except _ClaudeTranscriptUnsafePathError:
-            source_identity_complete = False
             record_error("claude_transcript_unsafe_path")
             identity_entries.append((path, mtime, f"unsafe:{path}", 0, False))
             continue
         except _ClaudeTranscriptChangedDuringScanError:
-            source_identity_complete = False
             record_error("claude_transcript_changed_during_scan")
             identity_entries.append((path, mtime, f"changed:{path}", 0, False))
             continue
         except OSError:
-            source_identity_complete = False
             record_error("claude_transcript_read_failed")
             # An unreadable identity cannot safely enter selection: its real
             # root could otherwise be split from a selected parent/child
@@ -2073,7 +2067,6 @@ def _discover_claude_code_usage_from_home(
             identity_entries.append((path, mtime, f"unreadable:{path}", 0, False))
             continue
         if not identity_scan_complete:
-            source_identity_complete = False
             record_error("claude_transcript_identity_scan_truncated")
             # Never fall back to ``path.stem`` for a budget-unresolved file.
             # A late child identity would become a fake root, rotate through
@@ -2099,7 +2092,15 @@ def _discover_claude_code_usage_from_home(
     observations: list[ClientSessionObservation] = []
     seen_usage_outputs: dict[str, int] = {}
     parsed_transcript_files = 0
-    selected_cohort_complete = source_identity_complete
+    # issue #53: the identity failures above (stat/read/unsafe/scan-truncated)
+    # are on files that are EXCLUDED from selection and are already reported via
+    # diagnostics (error_count, error_codes, unresolved_identity_files). They must
+    # NOT retroactively withhold the cleanly-parsed rows of unrelated SELECTED
+    # sessions — otherwise one stray unreadable/non-transcript file (e.g. an
+    # unrecognized workflow journal, or a transient stat failure) silently zeroes
+    # the whole source's import. Cohort completeness reflects only the selected
+    # files actually parsed below.
+    selected_cohort_complete = True
     _claude_total_files = len(entries)
     for _claude_index, (path, mtime, _root_session_id, _parent_sort_key, identity_readable) in enumerate(entries):
         if _claude_index % _PROGRESS_EMIT_STRIDE == 0 or _claude_index + 1 == _claude_total_files:
