@@ -1229,6 +1229,19 @@ def test_plan_pct_cell_helper():
     # a non-plan client never shows a number, even with a value in the map.
     oc = {"client": "opencode", "client_session_id": "s1"}
     assert _plan_pct_cell(oc, {"s1": 2.5}) == "—"
+    # Calibrating: a plan-bearing client not calibrated yet shows a distinct '⋯'
+    # (not a bare '—'), so the column is not misread as "there is no weekly plan".
+    from agentacct.tui import _PLAN_CALIBRATING_CELL
+    assert _plan_pct_cell(cc, {}, {"claude-code": "baseline"}) == _PLAN_CALIBRATING_CELL
+    # codex is a plan client, but its rolling meter never calibrates — so an
+    # uncalibrated codex cell stays '—', not a false "calibrating" promise.
+    assert _plan_pct_cell(cx, {}, {"codex": "baseline"}) == "—"
+    # A calibrated client with a zero-token session still shows '—', not '⋯'.
+    assert _plan_pct_cell(cc, {}, {"claude-code": "calibrated"}) == "—"
+    # A non-plan client never shows the calibrating marker.
+    assert _plan_pct_cell(oc, {}, {"opencode": "baseline"}) == "—"
+    # Backward-compatible: without confidence info, an uncalibrated cell is '—'.
+    assert _plan_pct_cell(cc, {}) == "—"
 
 
 def test_recent_panel_renders_plan_column(tmp_path):
