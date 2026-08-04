@@ -2932,11 +2932,14 @@ def test_claude_workflow_journal_mutation_after_validation_fails_closed(
     assert [event.client_session_id for event in result.events] == [
         "claude-session"
     ]
-    assert result.events[0].source_parse_complete is False
+    # issue #53 follow-up: the journal change is still detected and flagged
+    # (error_codes below), but a changed workflow journal — which carries no
+    # usage — no longer withholds the real session's usage.
+    assert result.events[0].source_parse_complete is True
     assert result.diagnostics["claude-code"]["error_codes"] == [
         "claude_transcript_changed_during_scan"
     ]
-    assert plan_local_usage_import(result.events, []).new_candidates == []
+    assert plan_local_usage_import(result.events, []).new_candidates == result.events
 
 
 def test_claude_projects_root_symlink_is_rejected_as_unsafe(tmp_path):
