@@ -3031,10 +3031,12 @@ def test_claude_non_regular_jsonl_is_rejected_without_blocking(tmp_path):
         limit_sessions=10,
     )
 
+    # issue #53: the FIFO is still rejected (unsafe path, surfaced in
+    # error_codes) but no longer blocks the readable sibling's usage.
     assert [event.client_session_id for event in result.events] == [
         "claude-session"
     ]
-    assert result.events[0].source_parse_complete is False
+    assert result.events[0].source_parse_complete is True
     assert result.diagnostics["claude-code"]["error_codes"] == [
         "claude_transcript_unsafe_path"
     ]
@@ -3070,18 +3072,21 @@ def test_unknown_truncated_claude_identity_is_non_writable_and_does_not_consume_
         limit_sessions=1,
     )
 
+    # issue #53: the truncated file is still excluded (non-writable, does not
+    # consume the limit slot) and surfaced in error_codes, but the readable
+    # session now imports instead of being withheld along with it.
     assert [event.client_session_id for event in result.events] == ["claude-session"]
-    assert result.events[0].source_parse_complete is False
+    assert result.events[0].source_parse_complete is True
     diagnostic = result.diagnostics["claude-code"]
     assert diagnostic["selected_root_groups"] == 1
     assert diagnostic["error_codes"] == [
         "claude_transcript_identity_scan_truncated"
     ]
     plan = plan_local_usage_import(result.events, [])
-    assert plan.new_candidates == []
+    assert plan.new_candidates == result.events
     assert plan.refresh_candidates == []
     assert plan.migration_candidates == []
-    assert plan.incomplete_source_candidates == result.events
+    assert plan.incomplete_source_candidates == []
 
 
 def test_claude_descendant_file_symlink_is_rejected_without_importing_foreign_data(
@@ -3114,8 +3119,10 @@ def test_claude_descendant_file_symlink_is_rejected_without_importing_foreign_da
         limit_sessions=10,
     )
 
+    # issue #53: the symlinked foreign file is still excluded (unsafe path) and
+    # its data never enters an event; the readable sibling now imports normally.
     assert [event.client_session_id for event in result.events] == ["claude-session"]
-    assert result.events[0].source_parse_complete is False
+    assert result.events[0].source_parse_complete is True
     assert result.diagnostics["claude-code"]["error_codes"] == [
         "claude_transcript_unsafe_path"
     ]
@@ -3125,7 +3132,7 @@ def test_claude_descendant_file_symlink_is_rejected_without_importing_foreign_da
     )
     assert "FOREIGN PRIVATE TITLE" not in serialized
     assert "/foreign/private/project" not in serialized
-    assert plan_local_usage_import(result.events, []).new_candidates == []
+    assert plan_local_usage_import(result.events, []).new_candidates == result.events
 
 
 def test_claude_transcript_replacement_between_identity_and_usage_reads_fails_closed(
@@ -3366,7 +3373,10 @@ def test_discover_client_usage_with_diagnostics_isolates_unreadable_claude_trans
     assert diagnostic["returned_rows"] == 1
     assert diagnostic["error_count"] == 1
     assert diagnostic["error_codes"] == ["claude_transcript_read_failed"]
-    assert result.events[0].source_parse_complete is False
+    # issue #53: the readable transcript's usage is retained (see this test's
+    # own contract above: a bad sibling is visible in diagnostics WITHOUT
+    # discarding the readable transcript's usage).
+    assert result.events[0].source_parse_complete is True
     assert str(tmp_path) not in json.dumps(diagnostic)
 
 

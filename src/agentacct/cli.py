@@ -6465,6 +6465,16 @@ def _local_usage_import_payload(
             )
         )
         plan = plan_local_usage_import(candidates, service.list_all_events())
+        # issue #53: sessions whose usage DID parse but were withheld from import
+        # as incomplete (a selected transcript could not be fully read this scan).
+        # Captured here — before any later plan reassignment — so the CLI can fail
+        # loudly instead of reporting a silent $0 for a measurement gap.
+        withheld_incomplete_session_count = len(
+            {
+                (candidate.client, candidate.client_session_id)
+                for candidate in plan.incomplete_source_candidates
+            }
+        )
         refresh_candidates_before_reprice = list(plan.refresh_candidates)
         refreshed_candidate_count = len(plan.refresh_candidates)
         # Unknown→priced reprice (refresh + estimate-costs only): stored rows
@@ -6744,6 +6754,7 @@ def _local_usage_import_payload(
             },
             "source_diagnostics": import_diagnostics,
             "importable_sessions": len(import_candidates),
+            "withheld_incomplete_sessions": withheld_incomplete_session_count,
             "imported_events": len(recorded),
             "refreshed_events": (
                 refreshed_candidate_count if dry_run and refresh else actual_refresh_count if refresh else 0
@@ -7020,9 +7031,28 @@ def usage_import_local(
         refresh=refresh,
     )
     if json_output:
+        # Machine consumers detect a measurement gap via the payload's
+        # withheld_incomplete_sessions field; keep stdout clean + exit 0.
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
     _print_usage_import_payload(payload, store_dir=resolved_store_dir, estimate_costs=estimate_costs)
+    # issue #53: a Claude-side pipeline failure used to report a silent $0 with
+    # exit 0. If usage parsed but was withheld as incomplete, say so loudly on
+    # stderr and exit non-zero so the gap is never read as "nothing was spent".
+    # Human CLI surface only; --json returns above, and the watch daemon, TUI,
+    # onboard, and dashboard callers use the payload directly and are unaffected.
+    withheld = int(payload.get("withheld_incomplete_sessions", 0) or 0)
+    if withheld:
+        print(
+            f"WARNING: {withheld} session(s) had usage that could not be fully read "
+            "this scan and was withheld from this import — a measurement gap, not $0 "
+            "spent (any session imported on an earlier scan keeps its prior totals). "
+            "Re-run the import; if it persists, please report it at "
+            "https://github.com/mikehasa/agentacct/issues.",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise typer.Exit(3)
 
 
 @usage_app.command("watch")
