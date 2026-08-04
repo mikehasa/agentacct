@@ -887,6 +887,65 @@ def test_usage_screen_renders_and_cycles_range(tmp_path):
     _run(scenario())
 
 
+def test_top_level_nav_works_from_any_screen(tmp_path):
+    # Regression: the app-level `s`/`u` bindings stay active on sub-screens, but the
+    # actions used to no-op there — so `u` did nothing on the sessions screen (you
+    # had to Esc home first). They must switch between top-level views from anywhere,
+    # without stacking duplicates.
+    from agentacct.tui import SessionsScreen, UsageScreen
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_usage(service, client="claude-code", model="claude-opus-4-8", session_id="s1",
+                  input_tokens=500, output_tokens=50, updated_at=int(now - 3600), estimated_cost_usd=0.5)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
+            assert isinstance(app.screen, SessionsScreen)
+            # The bug: `u` on the sessions screen did nothing. It must switch to usage.
+            await pilot.press("u")
+            await pilot.pause()
+            assert isinstance(app.screen, UsageScreen)
+            assert len(app.screen_stack) == 2  # swapped, not stacked
+            # And back, again without going home first.
+            await pilot.press("s")
+            await pilot.pause()
+            assert isinstance(app.screen, SessionsScreen)
+            assert len(app.screen_stack) == 2
+            # Pressing the current screen's own key is a harmless no-op.
+            await pilot.press("s")
+            await pilot.pause()
+            assert isinstance(app.screen, SessionsScreen)
+            assert len(app.screen_stack) == 2
+
+    _run(scenario())
+
+
+def test_snapshot_key_writes_file_and_app_survives(tmp_path):
+    # `p` saves an SVG under <store>/snapshots/ and must leave the live app intact
+    # (export_screenshot clears the compositor's dirty regions; the action forces a
+    # repaint so the terminal isn't left with stale/blank cells).
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_usage(service, client="claude-code", model="claude-opus-4-8", session_id="s1",
+                  input_tokens=500, output_tokens=50, updated_at=int(now - 3600), estimated_cost_usd=0.5)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("p")
+            await pilot.pause()
+            assert app.is_running
+            assert list((tmp_path / "snapshots").glob("*.svg"))
+
+    _run(scenario())
+
+
 def test_usage_screen_empty_store(tmp_path):
     from agentacct.tui import UsageScreen
 
