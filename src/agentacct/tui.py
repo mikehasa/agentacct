@@ -31,7 +31,8 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Collapsible, DataTable, Footer, Header, LoadingIndicator, Static
+from textual.theme import Theme
+from textual.widgets import Collapsible, DataTable, Footer, LoadingIndicator, Static
 
 from .service import SentinelService
 from .subagent_roles import read_roles_for_children
@@ -230,13 +231,21 @@ def _session_badge(entry: dict) -> str:
     return f"[{color}]{glyph} {label}[/]"
 
 
+# Clients that have a weekly subscription plan agentacct can estimate against.
+_PLAN_CLIENTS = ("claude-code", "codex")
+
+
 def _plan_pct_cell(entry: dict, pcts: dict) -> str:
-    """A compact ``≈X%`` weekly-Claude-plan cell for a session row, or ``—``.
+    """A compact ``≈X%`` weekly-plan cell for a session row, or ``—``.
 
-    Claude-plan-specific (other clients show ``—``); the estimate comes from the
-    pre-computed per-session map so a list renders many rows cheaply."""
+    A value appears ONLY for a plan-bearing client (see ``_PLAN_CLIENTS``) whose
+    estimate is CALIBRATED from the user's own recorded limit history: the
+    pre-computed ``pcts`` map contains only calibrated clients' sessions, so a
+    session absent from it — an uncalibrated client, a non-plan client, or a
+    zero-token session — shows ``—`` rather than a number from a shipped equation.
+    The nuance (calibrating vs. no plan) is spelled out in the session detail."""
 
-    if str(entry.get("client") or "") != "claude-code":
+    if str(entry.get("client") or "") not in _PLAN_CLIENTS:
         return "—"
     pct = (pcts or {}).get(str(entry.get("client_session_id")))
     if not (isinstance(pct, (int, float)) and not isinstance(pct, bool) and pct > 0):
@@ -287,10 +296,54 @@ def _fold_sessions(sessions: list[dict]) -> tuple[list[dict], dict[str, list[dic
     return top, children_by_parent
 
 
+# A cohesive dark palette (Tokyo-Night-inspired) so every screen shares one modern,
+# high-contrast look instead of the terminal's default colors.
+_AGENTACCT_THEME = Theme(
+    name="agentacct",
+    dark=True,
+    primary="#7aa2f7",     # blue — nav bar accent rule, interactive
+    secondary="#bb9af7",   # purple
+    accent="#e0af68",      # amber — brand + section headers
+    foreground="#c0caf5",
+    background="#16161e",
+    surface="#1a1b26",
+    panel="#232433",
+    success="#9ece6a",
+    warning="#e0af68",
+    error="#f7768e",
+)
+
+_BRAND = "#e0af68"   # amber (accent)
+_BLUE = "#7aa2f7"    # primary
+
+
+def _navbar(context: str = "") -> Static:
+    """A prominent top bar — the amber brand mark on the left, the current screen as
+    context on the right — as a plain docked Static (styled by the app's ``#navbar``
+    rule). NOTE: a custom widget SUBCLASS with its own DEFAULT_CSS hangs Textual's
+    layout solver in this app, but a plain Static holding a Rich grid lays out fine."""
+
+    brand = f"[b {_BRAND}]◆ agentacct[/]   [dim]agent usage · cost · work[/]"
+    if context:
+        brand += f"      [b {_BLUE}]{_escape(context)}[/]"
+    return Static(brand, id="navbar")
+
+
 class AgentAcctTUI(App):
     """Live usage / cost / limits dashboard."""
 
     CSS = """
+    Screen { background: $background; }
+    /* Nav bar: a raised strip under an accent rule. A custom widget subclass
+       hangs Textual's layout here, so it's a plain #navbar Static (see _navbar). */
+    #navbar {
+        dock: top;
+        height: 3;
+        padding: 0 2;
+        background: $panel;
+        border-bottom: tall $primary;
+        content-align: left middle;
+    }
     .section-title {
         text-style: bold;
         color: $accent;
@@ -310,11 +363,17 @@ class AgentAcctTUI(App):
     #limits-body { padding: 0 0 1 0; }
     #recent-status { color: $text-muted; padding: 0 0 1 0; }
     #recent { height: auto; }
-    #usage-status { color: $text-muted; padding: 0 0 1 0; }
+    /* Filter / status bars read as a raised control strip in full-strength text,
+       so the active range + filters are legible at a glance (not squint-grey). */
+    #usage-status, #sessions-status {
+        color: $text;
+        background: $boost;
+        padding: 0 1;
+        margin: 0 0 1 0;
+    }
     #usage-scroll { padding: 0 1; }
     #usage-limits { padding: 0 0 1 0; }
     #usage-periods, #usage-models { height: auto; }
-    #sessions-status { color: $text-muted; padding: 0 0 1 0; }
     #sessions-loading { height: auto; }
     #detail-header { padding: 0 1 1 1; }
     #detail-scroll { padding: 0 1; }
@@ -326,6 +385,7 @@ class AgentAcctTUI(App):
         Binding("w", "cycle_window", "Cycle window"),
         Binding("s", "open_sessions", "Sessions"),
         Binding("u", "open_usage", "Usage"),
+        Binding("p", "screenshot", "Snapshot"),
     ]
 
     def __init__(
@@ -389,7 +449,7 @@ class AgentAcctTUI(App):
     # -- lifecycle ----------------------------------------------------------
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield _navbar("live dashboard")
         yield Static("", id="status")
         # Scrollable so nothing below the fold is unreachable; the two panels the
         # user most wants at a glance — provider limits ("how much left") and the
@@ -412,6 +472,8 @@ class AgentAcctTUI(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        self.register_theme(_AGENTACCT_THEME)
+        self.theme = "agentacct"
         self.title = "agentacct"
         self.sub_title = "live usage · cost · limits"
         self.query_one("#windows", DataTable).add_columns("window", "tokens", "est. cost", "sessions")
@@ -535,7 +597,7 @@ class AgentAcctTUI(App):
         # Estimate each session's share of the weekly plan (claude-code) — computed
         # here on the worker thread (off the UI loop) and cached by fingerprint.
         try:
-            _weights, _records, pcts = self._ensure_plan_cache(events)
+            _confidence, pcts = self._ensure_plan_cache(events)
         except Exception:  # noqa: BLE001 - the plan column is best-effort.
             pcts = {}
         if worker.is_cancelled:
@@ -543,12 +605,20 @@ class AgentAcctTUI(App):
         self.call_from_thread(self._populate_recent, top, pcts)
 
     def _ensure_plan_cache(self, events: list) -> tuple:
-        """Compute + cache (weights, records, per-session plan %) keyed on the event
-        fingerprint. Shared by the recent panel and the session detail so the
+        """Compute + cache per-client plan calibration, keyed on the event fingerprint.
+
+        Returns ``(confidence_by_client, pcts)``. ``pcts`` maps ``session_id -> % of
+        the weekly plan`` and contains ONLY sessions of clients whose estimate is
+        CALIBRATED from the user's own recorded limit history — a baseline
+        (uncalibrated) client is deliberately excluded so the UI shows an honest
+        'calibrating' note instead of a number derived from a shipped equation.
+        ``confidence_by_client`` carries every plan-bearing client's status so the
+        detail view can distinguish 'calibrating' from 'no plan'.
+
+        Shared by the recent panel, the sessions list, and the session detail so the
         expensive usage view + calibration run at most once per event change and a
         stale scale can't survive an import. Stored as one tuple so a concurrent
-        writer (the recent worker vs a detail open) can never observe a torn pair;
-        the last writer wins and the tuple is always internally consistent."""
+        writer can never observe a torn value; the last writer wins."""
 
         fingerprint = _events_fingerprint(events)
         cache = self._plan_cache
@@ -556,12 +626,20 @@ class AgentAcctTUI(App):
             from .plan_cost import calibrate_plan_weights, session_plan_pcts
             from .usage_snapshot import usage_records
 
-            records = usage_records(events, client="claude-code")
-            weights = calibrate_plan_weights(events, client="claude-code", records=records)
-            pcts = session_plan_pcts(records, weights, client="claude-code")
-            cache = (fingerprint, weights, records, pcts)
+            confidence: dict[str, str] = {}
+            pcts: dict[str, float] = {}
+            for client in _PLAN_CLIENTS:
+                records = usage_records(events, client=client)
+                weights = calibrate_plan_weights(events, client=client, records=records)
+                confidence[client] = weights.confidence
+                # Only surface a number when it is grounded in THIS account's own
+                # limit history. Providers change how many tokens a plan grants, so a
+                # shipped universal equation would be a guess — we withhold it.
+                if weights.confidence == "calibrated":
+                    pcts.update(session_plan_pcts(records, weights, client=client))
+            cache = (fingerprint, confidence, pcts)
             self._plan_cache = cache  # single atomic assignment
-        return cache[1], cache[2], cache[3]
+        return cache[1], cache[2]
 
     def _recent_error(self, message: str) -> None:
         self._recent_loading = False
@@ -785,6 +863,25 @@ class AgentAcctTUI(App):
         self.window_token = _WINDOW_CYCLE[(index + 1) % len(_WINDOW_CYCLE)]
         self.refresh_data(force=True)
 
+    def action_screenshot(self) -> None:
+        """Save a shareable SVG snapshot of the CURRENT screen and toast the path.
+
+        One key from anywhere in the TUI — a lightweight way to share what your
+        agents did (usage, cost, the work). The SVG renders in any browser or on
+        GitHub. Screen bindings for ``p`` bubble up to this app-level action.
+
+        Written to a ``snapshots/`` dir under the store — NOT the cwd — so pressing
+        ``p`` from inside a project repo can never litter the working tree.
+        """
+        try:
+            snap_dir = self.store_dir / "snapshots"
+            snap_dir.mkdir(parents=True, exist_ok=True)
+            path = self.save_screenshot(path=str(snap_dir))
+        except Exception as exc:  # noqa: BLE001 - a snapshot must never crash the UI.
+            self.notify(f"Could not save the snapshot: {exc}", severity="error", timeout=6)
+            return
+        self.notify(f"Saved a shareable snapshot →\n{path}", title="◆ agentacct", timeout=6)
+
     def action_open_sessions(self) -> None:
         # Only open the sessions drill-down from the base dashboard. The app-level
         # `s` binding stays active while a (non-modal) sub-screen is on top, so
@@ -857,6 +954,7 @@ class SessionsScreen(Screen):
         Binding("escape", "back", "Back"),
         Binding("r", "refresh", "Rebuild"),
         Binding("q", "quit", "Quit"),
+        Binding("p", "screenshot", "Snapshot"),
     ]
 
     def __init__(self) -> None:
@@ -866,7 +964,7 @@ class SessionsScreen(Screen):
         self._total_sessions = 0
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield _navbar("sessions")
         yield Static("", id="sessions-status")
         yield LoadingIndicator(id="sessions-loading")
         yield DataTable(id="sessions", cursor_type="row", zebra_stripes=True)
@@ -877,7 +975,7 @@ class SessionsScreen(Screen):
         self.sub_title = "sessions"
         table = self.query_one("#sessions", DataTable)
         table.add_columns(
-            "session", "client", "project", "activity", "status", "tokens", "est. cost", "steps", "⋔ sub"
+            "session", "client", "project", "activity", "status", "tokens", "est. cost", "plan", "steps", "⋔ sub"
         )
         self._set_loading(True, "Building the work ledger (one-time, a few seconds)…")
         self._load()
@@ -920,7 +1018,13 @@ class SessionsScreen(Screen):
             return
         if worker.is_cancelled:
             return
-        app.call_from_thread(self._populate, ledger)
+        # Per-session weekly-plan % (calibrated clients only) — computed on the worker
+        # thread and cached on the app, shared with the home panel / detail view.
+        try:
+            _confidence, pcts = app._ensure_plan_cache(events)
+        except Exception:  # noqa: BLE001 - the plan column is best-effort.
+            pcts = {}
+        app.call_from_thread(self._populate, ledger, pcts)
 
     def _show_error(self, message: str) -> None:
         if not self.is_mounted:  # a late callback must not touch a dismissed screen
@@ -930,9 +1034,10 @@ class SessionsScreen(Screen):
             f"[red]could not build the work ledger:[/] {_escape(message)}"
         )
 
-    def _populate(self, ledger: dict) -> None:
+    def _populate(self, ledger: dict, pcts: dict[str, float] | None = None) -> None:
         if not self.is_mounted:  # screen was dismissed before the build finished
             return
+        pcts = pcts or {}
         sessions = list((ledger.get("session_rollup") or {}).get("sessions") or [])
         self._total_sessions = len(sessions)
 
@@ -968,6 +1073,7 @@ class SessionsScreen(Screen):
                 _session_badge(entry),
                 format_tokens(usage.get("total_tokens")),
                 _session_cost_text(usage),
+                _plan_pct_cell(entry, pcts),
                 steps,
                 str(n_children) if n_children else "",
                 key=key,
@@ -977,7 +1083,8 @@ class SessionsScreen(Screen):
         cap = f" (showing most recent {_SESSIONS_LIMIT})" if self._total_top > _SESSIONS_LIMIT else ""
         foldnote = f" · {folded} subagent sessions folded" if folded else ""
         self.query_one("#sessions-status", Static).update(
-            f"{self._total_top} sessions{cap}{foldnote} · Enter to open · r rebuild · Esc back"
+            f"[b]{self._total_top} sessions[/]{cap}{foldnote}"
+            f"      [dim]Enter open · r rebuild · Esc back[/]"
         )
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -1005,6 +1112,7 @@ class SessionDetailScreen(Screen):
         Binding("escape", "back", "Back"),
         Binding("backspace", "back", "Back"),
         Binding("q", "quit", "Quit"),
+        Binding("p", "screenshot", "Snapshot"),
     ]
 
     def __init__(self, entry: dict) -> None:
@@ -1019,7 +1127,7 @@ class SessionDetailScreen(Screen):
     def compose(self) -> ComposeResult:
         entry = self._entry
         now = time.time()
-        yield Header(show_clock=True)
+        yield _navbar("session detail")
         yield Static(self._render_header(entry, now), id="detail-header")
         with VerticalScroll(id="detail-scroll"):
             steps = self._steps()
@@ -1081,28 +1189,36 @@ class SessionDetailScreen(Screen):
         return header
 
     def _plan_estimate(self, entry: dict) -> str | None:
-        """A one-line 'estimated % of the weekly Claude plan' for this session.
+        """A one-line weekly-plan share for this session — a number only when honest.
 
-        Claude-plan-specific (skipped for other clients). Fail-soft: any read/build
-        problem yields no line rather than crashing the detail. The per-account
-        weights are computed once and cached on the app; only the session's own
-        per-model tokens are gathered per open.
+        For a plan-bearing client (claude-code, codex) the number is shown ONLY when
+        the estimate is CALIBRATED from the user's own recorded limit history; while
+        that history is still too thin (or too much of the account's usage happens
+        outside the tracked client, e.g. the Claude desktop app / web), we show an
+        honest 'calibrating' note rather than a figure from a shipped equation.
+        Non-plan clients get no line. Fail-soft: any read/build problem yields no line
+        rather than crashing the detail.
         """
 
-        if str(entry.get("client") or "") != "claude-code":
+        client = str(entry.get("client") or "")
+        if client not in _PLAN_CLIENTS:
             return None
         try:
             app = self.app
             events = SentinelService(app.store_dir, create=False).list_all_events()
-            # Shared, fingerprint-cached weights + per-session % (built once per event
-            # change, off the UI thread by the recent-panel worker when it ran first).
-            weights, _records, pcts = app._ensure_plan_cache(events)
-            pct = pcts.get(str(entry.get("client_session_id")))
-            if not (isinstance(pct, (int, float)) and pct > 0):
-                return None
-            shown = f"{pct:.1f}%" if pct >= 0.1 else "<0.1%"
-            note = "estimate" if getattr(weights, "confidence", "") == "calibrated" else "rough estimate"
-            return f"≈ {shown} of your weekly Claude plan · {note}"
+            # Shared, fingerprint-cached confidence + per-session % (built once per
+            # event change, off the UI thread by the recent-panel worker when it ran
+            # first). pcts contains only calibrated clients' sessions.
+            confidence, pcts = app._ensure_plan_cache(events)
+            if confidence.get(client) == "calibrated":
+                pct = pcts.get(str(entry.get("client_session_id")), 0.0)
+                shown = f"{pct:.1f}%" if pct >= 0.1 else "<0.1%"
+                return f"≈ {shown} of your weekly plan · estimate, calibrated to your usage"
+            # Uncalibrated: no fabricated number — say what agentacct is doing instead.
+            # Covers BOTH baseline causes (too little limit history, and a meter that
+            # moves mostly from usage outside the tracked client) without misstating
+            # which one — the shared truth is there isn't enough tracked signal yet.
+            return "weekly plan: calibrating from your own usage — not enough recorded through this client yet"
         except Exception:  # noqa: BLE001 - the estimate is best-effort; never crash the detail.
             return None
 
@@ -1213,6 +1329,7 @@ class UsageScreen(Screen):
         Binding("m", "cycle_model", "Model"),
         Binding("r", "refresh", "Refresh"),
         Binding("q", "quit", "Quit"),
+        Binding("p", "screenshot", "Snapshot"),
     ]
 
     def __init__(self, *, range_index: int = 1) -> None:  # default → 30d
@@ -1232,7 +1349,7 @@ class UsageScreen(Screen):
         self._limits_text = ""
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield _navbar("usage")
         yield Static("", id="usage-status")
         with VerticalScroll(id="usage-scroll"):
             yield Static("Plan limits", classes="section-title")
@@ -1302,15 +1419,23 @@ class UsageScreen(Screen):
 
     def _render_page(self, page: UsagePage, label: str, limits: list[ClientLimit]) -> None:
         now = time.time()
-        parts = [f"range: {label}", f"{page.granularity}"]
-        if page.as_of is not None and page.as_of <= now:
-            parts.append(f"as of {humanize_seconds(now - page.as_of)} ago")
-        parts.append(f"{page.usage_record_count} usage records")
-        parts.append(f"client: {_escape(str(page.client_filter)) if page.client_filter else 'all'}")
+        # A legible filter bar: the view STATE (range, granularity, active filters)
+        # is emphasized — an on filter shows as a reverse-video chip so it's obvious
+        # what's scoped — while the key hints and meta sit in a dim tier. (Whole
+        # label:value segments are wrapped so plain-substring tests still match.)
+        state: list[str] = [f"[b]range: {label}[/]", f"[dim]{page.granularity}[/]"]
+        if page.client_filter:
+            state.append(f"[reverse] client: {_escape(str(page.client_filter))} [/]")
+        else:
+            state.append("[dim]client: all[/]")
         if page.model_filter:
-            parts.append(f"model: {_escape(str(page.model_filter))}")
-        parts.append("c client · m model · d range · r · Esc")
-        self._status_text = "  ·  ".join(parts)
+            state.append(f"[reverse] model: {_escape(str(page.model_filter))} [/]")
+        meta: list[str] = []
+        if page.as_of is not None and page.as_of <= now:
+            meta.append(f"as of {humanize_seconds(now - page.as_of)} ago")
+        meta.append(f"{page.usage_record_count} usage records")
+        hint = "[dim]" + "  ·  ".join([*meta, "c client · m model · d range · r · Esc"]) + "[/]"
+        self._status_text = "  ·  ".join(state) + "      " + hint
         self.query_one("#usage-status", Static).update(self._status_text)
 
         # Plan limits (shared renderer with the home panel; stale streams hidden).

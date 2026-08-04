@@ -6,6 +6,37 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-04
+
+### Added
+- **`agentacct tui` just opens for a global install.** The read commands (`tui`,
+  `now`, `limits`) now fall back to the machine-wide store when run from a directory
+  with no project store, so a global-by-default install no longer needs
+  `--store-dir`. Project installs still see their project store; an explicit
+  `--store-dir` / `AGENTACCT_STORE_DIR` still wins (and a misconfigured one still
+  errors rather than silently reading the global store).
+- **A cohesive look and a real nav bar.** The TUI ships a cohesive dark theme and a
+  prominent top nav bar (the brand + the current screen) under an accent rule,
+  replacing the thin default header — so usage, cost, and work read as one designed
+  dashboard.
+- **One-key shareable snapshot.** Press `p` from any screen to save a shareable SVG
+  of the current view (it renders in any browser or on GitHub) — a quick way to share
+  what your agents did. Snapshots are written under the store, never the cwd.
+- **The weekly-plan `plan` column on the sessions list.** The full sessions list
+  (press `s`) now carries the same weekly-plan % column as the home panel.
+
+### Changed
+- **The weekly-plan estimate is shown only when it is honest.** A per-session
+  "% of weekly plan" now appears **only when it is calibrated from your own recorded
+  limit history**; otherwise the detail shows a "calibrating from your own usage"
+  note and the list/home cell shows `—`, instead of a number derived from a shipped
+  universal baseline. Providers change how many tokens a plan grants and a single
+  shipped equation is a black box, so the figure is grounded in your account or
+  withheld. Generalized to every plan-bearing client.
+- Refreshed the README screenshots and led the plan-cost section with the unique
+  advantage — what fraction of your weekly plan a task consumed — and added
+  `scripts/gen_tui_screenshots.py` to regenerate them from synthetic demo data.
+
 ## [0.7.0] - 2026-08-04
 
 ### Added
@@ -403,7 +434,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.8.0
 [0.7.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.7.0
 [0.6.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.6.0
 [0.5.3]: https://github.com/mikehasa/agentacct/releases/tag/v0.5.3

@@ -17,7 +17,7 @@ agentacct is local-first Agent Work Intelligence for coding agents. It reads the
 
 ## What you get
 
-Run **`agentacct tui`** for a live, in-terminal view — usage windows, provider rate-limit bars with reset countdowns, and your recent sessions. Press `s` to drill into the sessions, `u` for the usage screen, `q` to quit.
+Run **`agentacct tui`** for a live, in-terminal view — usage windows, provider rate-limit bars with reset countdowns, and your recent sessions. Press `s` to drill into the sessions, `u` for the usage screen, `p` to save a shareable snapshot of the current view (an SVG that renders anywhere), `q` to quit.
 
 - **Honest usage and cost.** Tokens per agent, model, and day — read from the clients' own local session files and labeled `client_reported`; costs are clearly marked pricing-table estimates, never invoices.
 - **The work, not just the tokens.** Every session rolls up its recorded work steps and machine checks — a passing test is `Verified` evidence, an agent's own claim stays labeled `Agent reported`. Open a session to see each step, its status (`in progress` / `handed off` / `done` / `blocked`), and its check results with exit codes:
@@ -28,7 +28,7 @@ Run **`agentacct tui`** for a live, in-terminal view — usage windows, provider
 
   ![agentacct tui sessions list — per-session tokens, cost, status, and step counts](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-sessions.png)
 
-- **Plan-cost estimate (beta).** From your own recorded usage-limit history, agentacct estimates what fraction of your **weekly Claude subscription** each task consumed — the `plan` column on the home panel and the `≈ X% of your weekly plan` line on the session detail. Because different models burn the plan at very different rates, it weights per model from a measured baseline and **self-calibrates to your account** as more limit history accrues (works from Codex and the Claude CLI status-line too, not just the desktop app). Always labeled an estimate.
+- **What a task cost your plan (beta).** agentacct estimates what fraction of your **weekly Claude plan** each task consumed — a `plan` column on the home panel *and* the sessions list, and an `≈ X% of your weekly plan` line on the session detail. This is the number the raw token count can't give you: different models burn the plan at very different rates, so agentacct learns the rate **from your own recorded limit history** and shows a figure only once it can calibrate to your account — until then it says it's still calibrating, rather than showing a guess. Always labeled an estimate.
 
 ## Install
 

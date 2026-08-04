@@ -165,6 +165,7 @@ from .store_resolution import (
     onboard_global_store_dir,
     claude_worktree_owner_dir,
     resolve_dashboard_store_dir,
+    resolve_read_store_dir,
     resolve_store_dir,
     store_env_dir_value,
 )
@@ -410,6 +411,25 @@ def _resolve_cli_store_dir(store_dir: Path | str | None) -> StoreResolution:
     """
     try:
         resolution = resolve_store_dir(store_dir)
+    except StoreResolutionError as exc:
+        print(str(exc), file=sys.stderr)
+        raise typer.Exit(2) from exc
+    if resolution.worktree_remapped:
+        print(f"Claude worktree detected; using the owning project store: {resolution.path}", file=sys.stderr)
+    return resolution
+
+
+def _resolve_read_cli_store_dir(store_dir: Path | str | None) -> StoreResolution:
+    """Resolve the store for a read-only display command (tui / now / limits).
+
+    Like :func:`_resolve_cli_store_dir` but project-first-then-global: with no
+    ``--store-dir`` / env override and no project store on the walk-up, it falls back
+    to the machine-wide store so a global-by-default install's ``agentacct tui`` just
+    works from any directory instead of exiting 2. The friendly worktree notice and
+    the actionable no-store error (when there is no global store either) are kept.
+    """
+    try:
+        resolution = resolve_read_store_dir(store_dir)
     except StoreResolutionError as exc:
         print(str(exc), file=sys.stderr)
         raise typer.Exit(2) from exc
@@ -8137,7 +8157,7 @@ def now(
     # 'all' / omitted → no client filter (matches `limits` and the dashboard).
     effective_client = None if client in (None, "all") else client
 
-    resolved_store_dir = _resolve_cli_store_dir(store_dir).path
+    resolved_store_dir = _resolve_read_cli_store_dir(store_dir).path
     service = SentinelService(resolved_store_dir, create=False)
     events = service.list_all_events()
 
@@ -8281,7 +8301,7 @@ def limits(
     else:
         raise typer.BadParameter("--client must be one of: all, codex, claude-code")
 
-    resolved_store_dir = _resolve_cli_store_dir(store_dir).path
+    resolved_store_dir = _resolve_read_cli_store_dir(store_dir).path
     service = SentinelService(resolved_store_dir, create=False)
     snapshots = latest_limit_events(service.list_all_events(), client=effective_client)
 
@@ -8394,7 +8414,7 @@ def tui(
         )
         raise typer.Exit(1)
     effective_client = None if client in (None, "all") else client
-    resolved_store_dir = _resolve_cli_store_dir(store_dir).path
+    resolved_store_dir = _resolve_read_cli_store_dir(store_dir).path
 
     try:
         from .tui import AgentAcctTUI
