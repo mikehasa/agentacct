@@ -2277,7 +2277,9 @@ def _discover_claude_code_usage_from_home(
             record_error("claude_transcript_read_failed")
             continue
         if observed_fingerprint != expected_fingerprint:
-            selected_cohort_complete = False
+            # Same transient mid-scan race, on a workflow journal. Journals carry
+            # no usage rows, so a changed journal never justified withholding the
+            # real sessions around it (issue #53 follow-up).
             record_error("claude_transcript_changed_during_scan")
     if not selected_cohort_complete:
         events = [replace(event, source_parse_complete=False) for event in events]
