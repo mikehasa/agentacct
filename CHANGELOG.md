@@ -6,6 +6,37 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-05
+
+### Fixed
+- **Claude Code import no longer silently reports `$0.00` at real-world volume.**
+  One unreadable or non-transcript file in a large `~/.claude` tree used to flip the
+  whole source's usage to "incomplete" and discard it — a confident zero instead of a
+  measurement. Import completeness is now per-file: an unresolvable file is excluded
+  and surfaced in the diagnostics without withholding the cleanly-parsed sessions
+  around it, and `usage import-local` now warns and exits non-zero when it parses
+  usage it then withholds instead of reporting a silent `$0`. (Reported by @Evaack, #53.)
+- **A file rewritten mid-scan no longer withholds the sessions around it.** A workflow
+  journal, or a transcript being appended to during a manual import, is now skipped on
+  its own instead of zeroing the whole cohort. Cross-file replay dedup was made
+  transactional, so a mid-write file can never leave stray keys that undercount a
+  replaying sidechain sibling.
+- **`agentacct tui`: the `s`/`u` navigation keys work from every screen.** Pressing
+  `u` (usage) or `s` (sessions) from a sub-screen now switches views instead of doing
+  nothing — you no longer have to `Esc` back to the home dashboard first.
+- **`agentacct tui`: saving a snapshot with `p` no longer smears the live screen.** The
+  snapshot export cleared the renderer's dirty regions as a side effect, leaving
+  stale/blank cells on some terminals; the screen is now fully repainted afterward.
+
+### Changed
+- **`agentacct tui`: the weekly-plan column shows a "calibrating" marker while it warms
+  up.** A plan-bearing client whose estimate is still calibrating from your own recorded
+  limit history now shows a dim `⋯` (with a "calibrating" note) instead of the same bare
+  `—` as a client with no plan — so a fresh install no longer reads as "there is no
+  weekly-plan %". Codex, whose meter never yields a weekly-reset %, stays `—`.
+- **`agentacct tui`: the sessions row cursor is a calmer muted blue** instead of the
+  full-strength primary blue that read as a harsh bright bar.
+
 ## [0.8.0] - 2026-08-04
 
 ### Added
@@ -434,7 +465,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.8.1
 [0.8.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.8.0
 [0.7.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.7.0
 [0.6.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.6.0
