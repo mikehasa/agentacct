@@ -338,7 +338,245 @@ def remove_discovery_file(store_dir: Path | str, *, pid: int | None = None) -> b
 # ---------------------------------------------------------------------------
 
 
-def _recent_sessions(events: list[dict[str, Any]], *, now: float) -> list[dict[str, Any]]:
+def fold_namespace_compatible(
+    child_ns: str | None, parent_ns: str | None, expected_parent_ns: str | None
+) -> bool:
+    """The same source-home compatibility rule the ledger's parent join uses
+    (``work_ledger._session_source_parent_compatible``): a child folds into a
+    parent only when both live in the same recorded source home. A mismatch is
+    a cross-home session-id collision — folding would hand one identity's
+    consumption to another identity's row (adversarial-review finding; the
+    ledger refuses the join, and every fold surface must agree with it)."""
+
+    if child_ns is None and parent_ns is None:
+        return expected_parent_ns is None
+    if child_ns is None or parent_ns is None or child_ns != parent_ns:
+        return False
+    return expected_parent_ns is None or expected_parent_ns == parent_ns
+
+
+def resolve_fold_top(
+    step: dict[tuple[str, str], tuple[str, str] | None], key: tuple[str, str]
+) -> tuple[str, str]:
+    """The topmost fold target for ``key`` over a single-step fold map.
+
+    Rows normally nest one level; the walk guards hostile chains rather than
+    trusting that. A parent CYCLE (corrupt/hostile client metadata — the
+    ledger guards direct self-parents but not mutual loops) is broken
+    deterministically: every member resolves to the cycle's minimum key, so
+    exactly one member is a root and every share still lands on a visible row
+    (round-2 adversarial finding: an unbroken cycle dropped all members and
+    their shares from the roots page).
+    """
+
+    seen: list[tuple[str, str]] = [key]
+    seen_set = {key}
+    current = key
+    while True:
+        parent = step.get(current)
+        if parent is None:
+            return current
+        if parent in seen_set:
+            return min(seen[seen.index(parent):])
+        seen.append(parent)
+        seen_set.add(parent)
+        current = parent
+
+
+# Marker value: a session whose own rows disagree about their source home. Folds
+# into or out of such a session are always refused — the ledger quarantines
+# mixed-source rows the same way (unique-or-quarantine), and any "pick one"
+# rule would make the fold decision depend on event ORDER (round-3
+# adversarial finding: last-non-null-wins flipped folds under reordering).
+_NS_CONFLICT = object()
+
+
+def child_root_plan_fold(
+    events: list[dict[str, Any]],
+) -> dict[tuple[str, str], tuple[str, str]]:
+    """Single-step fold map ``(client, child_session_id) -> (client, parent)``.
+
+    The key space matches :func:`agentacct.plan_cost.session_plan_pcts` (the
+    usage view's normalized session ids), so a per-session plan share can be
+    re-attributed from a child to the root whose row actually shows it. Roots
+    and unfoldable rows are absent — a lookup falls through to identity;
+    resolve chains with :func:`resolve_fold_top`.
+
+    This is the events-only mirror of the ledger's parent join, matched rule
+    by rule so the two /v1 surfaces agree (round-3 adversarial findings):
+
+    * parent ids join RAW (no ``':'`` splitting of a metadata parent id — the
+      rollup joins raw ids; a ``'R:lane'`` parent that is itself a legacy
+      child lane reaches ``R`` through its OWN fold step, gates applied at
+      every hop);
+    * the parent must EXIST on this surface — visible via its own usage or
+      section events. A ghost parent refuses the fold (the child stands as
+      its own row); a sections-only orchestrator counts as existing, exactly
+      as it holds a rollup entry on the sessions lane;
+    * namespaces are unique-or-refuse per session (never "last one wins"),
+      then gated by :func:`fold_namespace_compatible` — same-home evidence or
+      no fold. A session whose rows mix source homes refuses every fold
+      touching it, deterministically, in any event order;
+    * conflicting parent CLAIMS for one child (different rows naming
+      different parents) refuse the fold rather than pick one.
+
+    The ``':'`` suffix fallback applies only to a session with no parent
+    metadata at all (legacy child lanes; not client-gated — acceptable while
+    only claude-code carries plan shares). Residual known divergences, all
+    conservative and sum-preserving: a parent visible ONLY through mechanical
+    observations (no usage, no sections) exists on the sessions lane but not
+    here, and a parent POINTER carried only by observation rows is invisible
+    to this events-only pass.
+    """
+
+    from .client_usage import is_local_usage_import_event
+    from .usage_truth import normalized_local_usage_session_id
+
+    ns_values: dict[tuple[str, str], set[str]] = {}
+    # Sessions with at least one usage row carrying NO fingerprint. Explicit
+    # alongside missing is identity ambiguity, same as two different values —
+    # the ledger quarantines "source_namespace_missing_vs_explicit" sessions
+    # (the upgrade-boundary store state), and treating the explicit value as
+    # the session's home here folded what the sessions lane quarantines
+    # (round-4 adversarial finding).
+    ns_missing: set[tuple[str, str]] = set()
+    universe: set[tuple[str, str]] = set()
+    # child_key -> {(parent_key, expected_parent_ns)}. Metadata claims and
+    # ':'-shape claims are collected separately: the shape claim applies only
+    # to a session with NO metadata parent claim at all (per-session, not
+    # per-event — a bare row next to a recorded pointer must not manufacture
+    # a second, conflicting claim; round-5 adversarial finding).
+    claims: dict[tuple[str, str], set[tuple[tuple[str, str], str | None]]] = {}
+    shape_claims: dict[tuple[str, str], set[tuple[tuple[str, str], str | None]]] = {}
+    for event in events:
+        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        event_type = str(event.get("event_type") or "")
+        if event_type.startswith("section_"):
+            client = str(metadata.get("client") or event.get("source") or "")
+            session_id = str(metadata.get("client_session_id") or "")
+            if client and session_id:
+                universe.add((client, normalized_local_usage_session_id(metadata.get("client"), session_id)))
+            continue
+        if not is_local_usage_import_event(event):
+            continue
+        client = str(metadata.get("client") or event.get("source") or "")
+        raw_session = str(metadata.get("client_session_id") or event.get("run_id") or "")
+        if not client or not raw_session:
+            continue
+        child_id = normalized_local_usage_session_id(metadata.get("client"), raw_session)
+        child_key = (client, child_id)
+        universe.add(child_key)
+        own_ns = metadata.get("source_namespace_fingerprint")
+        if own_ns:
+            ns_values.setdefault(child_key, set()).add(str(own_ns))
+        else:
+            ns_missing.add(child_key)
+
+        kind = str(metadata.get("client_session_kind") or "root")
+        parent = str(metadata.get("parent_client_session_id") or "")
+        expected_parent_ns = metadata.get("parent_source_namespace_fingerprint")
+        expected_parent_ns = str(expected_parent_ns) if expected_parent_ns else None
+        if kind != "root" and parent:
+            folded_raw = parent
+            target = claims
+        elif ":" in raw_session:
+            folded_raw = raw_session.split(":", 1)[0]
+            expected_parent_ns = None  # legacy lanes carry no parent-home claim
+            target = shape_claims
+        else:
+            continue
+        parent_key = (client, normalized_local_usage_session_id(metadata.get("client"), folded_raw))
+        if parent_key != child_key:
+            target.setdefault(child_key, set()).add((parent_key, expected_parent_ns))
+
+    def _session_ns(key: tuple[str, str]) -> Any:
+        values = ns_values.get(key)
+        if not values:
+            return None  # no fingerprints at all: a pre-fingerprint session
+        if len(values) > 1 or key in ns_missing:
+            return _NS_CONFLICT  # mixed homes, or explicit-vs-missing ambiguity
+        return next(iter(values))
+
+    for child_key, child_shape_claims in shape_claims.items():
+        if child_key not in claims:
+            claims[child_key] = child_shape_claims
+
+    mapping: dict[tuple[str, str], tuple[str, str]] = {}
+    for child_key, child_claims in claims.items():
+        parent_keys = {parent_key for parent_key, _expected in child_claims}
+        if len(parent_keys) != 1:
+            continue  # conflicting lineage claims — refuse rather than pick one
+        parent_key = next(iter(parent_keys))
+        if parent_key not in universe:
+            continue  # ghost parent — the child stands as its own row
+        child_ns = _session_ns(child_key)
+        parent_ns = _session_ns(parent_key)
+        if child_ns is _NS_CONFLICT or parent_ns is _NS_CONFLICT:
+            continue
+        if all(
+            fold_namespace_compatible(child_ns, parent_ns, expected)
+            for _parent, expected in child_claims
+        ):
+            mapping[child_key] = parent_key
+    return mapping
+
+
+def fold_plan_pcts_to_roots(
+    session_pcts: dict[tuple[str, str], float],
+    fold_map: dict[tuple[str, str], tuple[str, str]],
+) -> dict[tuple[str, str], float]:
+    """Re-attribute descendant plan shares onto their topmost roots (sum-preserving).
+
+    A surface that HIDES child sessions must carry their share on the root row
+    it does show — otherwise a workflow-heavy session understates exactly when
+    it matters most. The total across keys is unchanged; a descendant key
+    vanishes into its root's sum (chains and cycles via
+    :func:`resolve_fold_top`).
+    """
+
+    folded: dict[tuple[str, str], float] = {}
+    for key, pct in session_pcts.items():
+        root_key = resolve_fold_top(fold_map, key)
+        folded[root_key] = folded.get(root_key, 0.0) + pct
+    return folded
+
+
+def plan_status_and_session_pcts(
+    events: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[tuple[str, str], float]]:
+    """Per-client plan payload entries + calibrated per-session plan shares.
+
+    The calibrated-or-nothing honesty rule is baked in: ``session_pcts`` holds
+    ONLY clients whose estimate is grounded in this account's own recorded
+    limit history, keyed ``(client, session_id)`` so one client's number can
+    never attach to another client's row. Keys are the usage view's normalized
+    session ids, UNFOLDED — apply :func:`fold_plan_pcts_to_roots` on a surface
+    that hides child sessions. Shared by the glance and the /v1 sessions lane
+    so the two can never disagree.
+    """
+
+    from .plan_cost import calibrate_plan_weights, plan_status_entry, session_plan_pcts
+
+    from .usage_snapshot import usage_records
+
+    plan: list[dict[str, Any]] = []
+    session_pcts: dict[tuple[str, str], float] = {}
+    for client in PLAN_CLIENTS:
+        records = usage_records(events, client=client)
+        weights = calibrate_plan_weights(events, client=client, records=records)
+        plan.append(plan_status_entry(weights))
+        if weights.confidence == "calibrated":
+            for session_id, pct in session_plan_pcts(records, weights, client=client).items():
+                session_pcts[(client, session_id)] = pct
+    return plan, session_pcts
+
+
+def _recent_sessions(
+    events: list[dict[str, Any]],
+    *,
+    now: float,
+    fold_map: dict[tuple[str, str], tuple[str, str]] | None = None,
+) -> list[dict[str, Any]]:
     """Recent sessions from the section + usage event streams, newest first.
 
     ``status`` is the TUI-parity reduction over each session's PER-SECTION
@@ -351,14 +589,19 @@ def _recent_sessions(events: list[dict[str, Any]], *, now: float) -> list[dict[s
 
     Usage imports advance ``last_activity_at`` (a session burning tokens right
     now stays "recent" even when its last section is hours old) and create
-    status-less rows for clients that never record sections. Deliberately
-    ledger-free: one pass over the already-loaded list; timestamps are
-    hostile-tolerant (never raise).
+    status-less rows for clients that never record sections. Child usage
+    activity folds into the root row through the SAME fold map the plan
+    shares use (``fold_map``, built by :func:`child_root_plan_fold` when not
+    passed) — one fold decision, every use, so a hidden child's activity and
+    its plan share can never land on different rows. Deliberately ledger-free;
+    timestamps are hostile-tolerant (never raise).
     """
 
     from .client_usage import is_local_usage_import_event
     from .usage_truth import normalized_local_usage_session_id
     from .usage_view import _session_activity_time
+
+    fold = child_root_plan_fold(events) if fold_map is None else fold_map
 
     # (client, session) -> {section_id: (created_at, status)} — latest per section.
     sections: dict[tuple[str, str], dict[str, tuple[float, str]]] = {}
@@ -400,20 +643,15 @@ def _recent_sessions(events: list[dict[str, Any]], *, now: float) -> list[dict[s
             if not client or not raw_session:
                 continue
             # Child sessions (subagents, workflow agents, replay lanes) FOLD
-            # into their root: a glance list full of a root's own children is
-            # noise, and every child's plan share is attributed to the root
-            # anyway. Kind/parent metadata is authoritative; the ':' suffix
-            # check is the defensive fallback for legacy child lanes.
-            kind = str(metadata.get("client_session_kind") or "root")
-            parent = str(metadata.get("parent_client_session_id") or "")
-            if kind != "root" and parent:
-                raw_session = parent
-            if ":" in raw_session:
-                raw_session = raw_session.split(":", 1)[0]
-            # The same id normalization the usage view applies, so these keys
-            # join with section session ids and plan_pct session ids.
+            # into their root through the shared fold map — the same decision
+            # that re-attributes their plan share (fold_plan_pcts_to_roots),
+            # including its refusals (cross-home mismatch, ghost parent).
+            # Normalization first: the map's key space is the usage view's
+            # normalized ids, which is also what joins section session ids
+            # and plan_pct session ids.
             session_id = normalized_local_usage_session_id(metadata.get("client"), raw_session)
-            _touch((client, session_id), _session_activity_time(event))
+            key = resolve_fold_top(fold, (client, session_id))
+            _touch(key, _session_activity_time(event))
 
     def _reduce_status(statuses: set[str]) -> str | None:
         if "blocked" in statuses:
@@ -461,8 +699,7 @@ def build_glance_snapshot(
     importing this module stays cheap for CLI cold starts and tests.
     """
 
-    from .plan_cost import calibrate_plan_weights, session_plan_pcts
-    from .usage_snapshot import build_live_snapshot, limit_is_stale, usage_records
+    from .usage_snapshot import build_live_snapshot, limit_is_stale
 
     moment = time.time() if now is None else float(now)
     live = build_live_snapshot(events, now=moment)
@@ -478,27 +715,24 @@ def build_glance_snapshot(
         entry["stale"] = limit_is_stale(limit, moment)
         limits.append(entry)
 
-    # Plan calibration per plan-bearing client — the calibrated-or-nothing
-    # honesty rule: per-session percentages exist ONLY when the estimate is
-    # grounded in this account's own recorded limit history. Keyed by
-    # (client, session_id) so one client's number can never attach to another
-    # client's row.
-    plan: list[dict[str, Any]] = []
-    session_pcts: dict[tuple[str, str], float] = {}
-    for client in PLAN_CLIENTS:
-        records = usage_records(events, client=client)
-        weights = calibrate_plan_weights(events, client=client, records=records)
-        plan.append({"client": client, "confidence": weights.confidence})
-        if weights.confidence == "calibrated":
-            for session_id, pct in session_plan_pcts(records, weights, client=client).items():
-                session_pcts[(client, session_id)] = pct
+    # Plan calibration per plan-bearing client (calibrated-or-nothing; see
+    # plan_status_and_session_pcts). The recents list HIDES child sessions
+    # (they fold into their root row), so each root's plan_pct must carry its
+    # children's share too — an unfolded join understates a workflow-heavy
+    # root exactly when it matters most. A child that still appears as its own
+    # row (it records sections but its usage folded away) shows None rather
+    # than a share its root's row already includes. ONE fold map drives both
+    # the activity fold and the share fold, so they can never disagree.
+    plan, session_pcts = plan_status_and_session_pcts(events)
+    fold_map = child_root_plan_fold(events)
+    folded_pcts = fold_plan_pcts_to_roots(session_pcts, fold_map)
 
-    recent_sessions = _recent_sessions(events, now=moment)
+    recent_sessions = _recent_sessions(events, now=moment, fold_map=fold_map)
     for row in recent_sessions:
         # The raw estimate, never rounded here: round(pct, 2) can claim an
         # exact 0 for a nonzero share. Shells format like the TUI does —
         # "≈{pct:.1f}%" with a "<0.1%" band — the payload carries the float.
-        row["plan_pct"] = session_pcts.get((row["client"], row["session_id"]))
+        row["plan_pct"] = folded_pcts.get((row["client"], row["session_id"]))
 
     return {
         "schema": GLANCE_SCHEMA_VERSION,

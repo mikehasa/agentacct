@@ -85,6 +85,7 @@ def _record_child_usage(
     session_id: str,
     parent_session_id: str,
     updated_at: float,
+    namespace: str | None = None,
 ) -> None:
     event = ClientUsageEvent(
         client=client,
@@ -108,7 +109,7 @@ def _record_child_usage(
         updated_at=updated_at,
         turn_count=1,
         usage_row_lane="model:claude-opus-4-8",
-        source_namespace_fingerprint=f"sha256:{client}",
+        source_namespace_fingerprint=namespace or f"sha256:{client}",
         input_tokens_reported=True,
         output_tokens_reported=True,
         reasoning_output_tokens_reported=True,
@@ -217,7 +218,7 @@ def test_read_discovery_file_never_raises(tmp_path):
 def test_v1_routes_fail_closed_without_configured_token(tmp_path):
     SentinelService(tmp_path)
     client = TestClient(create_local_api_app(store_dir=tmp_path))
-    for route in ("/v1/glance", "/v1/version"):
+    for route in ("/v1/glance", "/v1/version", "/v1/sessions"):
         response = client.get(route, headers={"Authorization": "Bearer anything"})
         assert response.status_code == 503, route
 
@@ -580,6 +581,108 @@ def test_recent_session_plan_pct_is_gated_by_client(tmp_path):
     # the lookup key carries the client.
     assert rows[("claude-code", shared_session)]["plan_pct"] is None
     assert rows[("codex", shared_session)]["plan_pct"] is None
+
+
+def test_glance_plan_entries_carry_three_state_and_basis(tmp_path):
+    """Additive plan fields: the payload itself says which clients can ever
+    calibrate (codex: never), so no shell hard-codes that knowledge again."""
+
+    service = SentinelService(tmp_path)
+    _record_usage(service, client="claude-code", model="claude-opus-4-8", session_id="s1",
+                  input_tokens=100, output_tokens=0, updated_at=time.time() - 60)
+
+    api_client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    payload = api_client.get("/v1/glance", headers={"Authorization": f"Bearer {TOKEN}"}).json()
+    plan = {entry["client"]: entry for entry in payload["plan"]}
+    assert plan["claude-code"]["confidence"] == "baseline"  # the original key survives
+    assert plan["claude-code"]["calibration_state"] == "calibrating"
+    assert plan["claude-code"]["calibratable"] is True
+    assert plan["codex"]["calibration_state"] == "never"
+    assert plan["codex"]["calibratable"] is False
+    assert plan["claude-code"]["basis"]
+
+
+def test_folded_root_plan_pct_includes_child_shares(tmp_path):
+    """The recents list HIDES child sessions, so the root row's plan_pct must
+    carry their share — an unfolded join understates a workflow-heavy root
+    exactly when it matters most (the #65 fold moved only the activity key)."""
+
+    from agentacct import plan_cost as pc
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    opus = pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
+    # Calibration history: observed movement == baseline prediction → scale ~1.
+    move = 100.0 * opus
+    t0 = now - 5 * 3600
+    pct = 10.0
+    _record_7d_limit(service, captured=t0, pct=pct, index=0)
+    for i in range(4):
+        _record_usage(service, client="claude-code", model="claude-opus-4-8",
+                      session_id=f"cal-{i}", input_tokens=100_000_000, output_tokens=0,
+                      updated_at=t0 + i * 3600 + 1800)
+        pct += move
+        _record_7d_limit(service, captured=t0 + (i + 1) * 3600, pct=pct, index=i + 1)
+
+    _record_usage(service, client="claude-code", model="claude-opus-4-8", session_id="root-a",
+                  input_tokens=10_000_000, output_tokens=0, updated_at=now - 600)
+    _record_child_usage(service, client="claude-code",
+                        session_id="11111111-aaaa-bbbb-cccc-222222222222",
+                        parent_session_id="root-a", updated_at=now - 60)
+
+    api_client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    payload = api_client.get("/v1/glance", headers={"Authorization": f"Bearer {TOKEN}"}).json()
+    plan = {entry["client"]: entry for entry in payload["plan"]}
+    assert plan["claude-code"]["confidence"] == "calibrated"
+    scale = plan["claude-code"]["scale"]
+    rows = {row["session_id"]: row for row in payload["recent_sessions"]}
+    assert "root-a" in rows
+    # own 10 Mtok + child 20 tokens (≈0), both at the calibrated opus weight.
+    expected = (10.0 + 20 / 1_000_000) * opus * scale
+    assert abs(rows["root-a"]["plan_pct"] - expected) < 1e-6
+
+
+def test_glance_refuses_cross_home_child_fold(tmp_path):
+    """A child from a DIFFERENT source home must not fold its activity or its
+    plan share into a same-id root — the glance applies the ledger's own
+    namespace refusal (round-2 adversarial finding: the glance kept folding
+    what the sessions lane refused, so the two surfaces showed different
+    money for the same root)."""
+
+    from agentacct import plan_cost as pc
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    opus = pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
+    move = 100.0 * opus
+    t0 = now - 5 * 3600
+    pct = 10.0
+    _record_7d_limit(service, captured=t0, pct=pct, index=0)
+    for i in range(4):
+        _record_usage(service, client="claude-code", model="claude-opus-4-8",
+                      session_id=f"cal-{i}", input_tokens=100_000_000, output_tokens=0,
+                      updated_at=t0 + i * 3600 + 1800)
+        pct += move
+        _record_7d_limit(service, captured=t0 + (i + 1) * 3600, pct=pct, index=i + 1)
+
+    _record_usage(service, client="claude-code", model="claude-opus-4-8", session_id="root-a",
+                  input_tokens=10_000_000, output_tokens=0, updated_at=now - 600)
+    _record_child_usage(service, client="claude-code",
+                        session_id="55555555-aaaa-bbbb-cccc-666666666666",
+                        parent_session_id="root-a", updated_at=now - 60,
+                        namespace="sha256:other-home")
+
+    api_client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    payload = api_client.get("/v1/glance", headers={"Authorization": f"Bearer {TOKEN}"}).json()
+    plan = {entry["client"]: entry for entry in payload["plan"]}
+    assert plan["claude-code"]["confidence"] == "calibrated"
+    scale = plan["claude-code"]["scale"]
+    rows = {row["session_id"]: row for row in payload["recent_sessions"]}
+    # The root keeps only its OWN share; the foreign child stands as its own
+    # row with its own share — nothing misattributed, nothing hidden.
+    assert abs(rows["root-a"]["plan_pct"] - 10.0 * opus * scale) < 1e-9
+    foreign = rows["55555555-aaaa-bbbb-cccc-666666666666"]
+    assert foreign["plan_pct"] is not None and foreign["plan_pct"] > 0
 
 
 def test_non_ascii_bearer_token_yields_401_not_500(tmp_path):

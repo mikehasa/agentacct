@@ -116,6 +116,17 @@ struct LimitWindow: Decodable {
 struct PlanEntry: Decodable {
     let client: String
     let confidence: String
+    /// Three-state display semantic from the daemon: "calibrated",
+    /// "calibrating" (can calibrate, warming up), or "never" (this client's
+    /// meter cannot yield a weekly plan % — codex). Optional so a pre-field
+    /// daemon still decodes; absent means "don't claim calibrating".
+    let calibrationState: String?
+
+    enum CodingKeys: String, CodingKey {
+        case client
+        case confidence
+        case calibrationState = "calibration_state"
+    }
 }
 
 struct RecentSession: Decodable {

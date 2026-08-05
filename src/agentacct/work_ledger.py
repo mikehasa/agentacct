@@ -4733,3 +4733,54 @@ def _provider_model_label(provider: Any, model: Any) -> str:
     if provider_text and model_text:
         return f"{provider_text}/{model_text}"
     return provider_text or model_text or "unknown model"
+
+
+class WorkLedgerCache:
+    """Fingerprint + TTL cache for the derived work ledger (API-serving path).
+
+    Every ledger-backed route used to rebuild the ENTIRE ledger from the full
+    event list on every request — a multi-second build under any polling
+    client. Same pattern as ``glance.GlanceCache``: the events fingerprint
+    catches every event-list change (append, supersede, namespace bind);
+    ``max_age_seconds`` bounds the staleness of the ledger's SECONDARY inputs
+    (run reports, cost events, mechanical session observations), which the
+    fingerprint deliberately does not cover — hashing three more stores per
+    request would cost more than it saves, and a bounded lag on those lanes is
+    acceptable where a wrong total would not be.
+
+    Concurrency posture (same as GlanceCache): the cached value is one atomic
+    tuple assignment, so a reader never observes a torn triple; two racing
+    rebuilds waste one build and the last writer wins. A rebuild racing an
+    import can briefly win with a slightly older event list — one poll may
+    regress and self-heals on the next; it never fabricates a number.
+    """
+
+    def __init__(self, max_age_seconds: float = 30.0) -> None:
+        from threading import Lock
+
+        self._lock = Lock()
+        # (fingerprint, built_at, ledger) — always assigned as one tuple.
+        self._cached: tuple[int, float, dict[str, Any]] | None = None
+        self.max_age_seconds = float(max_age_seconds)
+
+    def _fresh(self, cached: tuple[int, float, dict[str, Any]] | None, fingerprint: int, moment: float) -> bool:
+        return (
+            cached is not None
+            and cached[0] == fingerprint
+            and (moment - cached[1]) < self.max_age_seconds
+        )
+
+    def ledger(self, fingerprint: int, builder: Any, *, now: float | None = None) -> dict[str, Any]:
+        import time as _time
+
+        moment = _time.time() if now is None else float(now)
+        cached = self._cached
+        if self._fresh(cached, fingerprint, moment):
+            return cached[2]
+        with self._lock:
+            cached = self._cached
+            if self._fresh(cached, fingerprint, moment):
+                return cached[2]
+            ledger = builder()
+            self._cached = (fingerprint, moment, ledger)
+            return ledger
