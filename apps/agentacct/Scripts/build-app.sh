@@ -1,8 +1,12 @@
 #!/bin/bash
 # Build agentacct.app from the SwiftPM executable (no Xcode project needed).
-# Output: apps/AgentacctBar/.build/AgentacctBar.app — unsigned; drag it to
-# /Applications or run it in place. LSUIElement makes it menu-bar-only.
+# Output: apps/agentacct/.build/agentacct.app — unsigned; run in place, or
+# pass --install to copy it to /Applications and relaunch (so Spotlight and
+# login items always point at the newest build). LSUIElement = menu-bar-only.
 set -euo pipefail
+
+INSTALL=false
+if [[ "${1:-}" == "--install" ]]; then INSTALL=true; fi
 
 cd "$(dirname "$0")/.."
 swift build -c release
@@ -31,3 +35,13 @@ PLIST
 
 echo "built: $PWD/$APP"
 echo "run:   open $PWD/$APP"
+
+if $INSTALL; then
+    # The Swift app only (the python daemon is a separate process and is
+    # never touched here). ditto preserves the bundle; relaunch so the menu
+    # bar runs the newest build.
+    killall agentacct 2>/dev/null || true
+    ditto --rsrc "$APP" /Applications/agentacct.app
+    open /Applications/agentacct.app
+    echo "installed: /Applications/agentacct.app (relaunched)"
+fi

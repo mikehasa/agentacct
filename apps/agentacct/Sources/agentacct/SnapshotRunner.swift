@@ -24,24 +24,37 @@ enum SnapshotRunner {
                 let selection = AppSelection()
                 selection.sessionId = dashboard.sessions.first?.id
 
-                for pane in MainPane.allCases {
-                    selection.pane = pane
-                    let window = MainWindow()
+                // Light AND dark of every surface: the theme is adaptive, so
+                // a design pass must see both. SnapshotScheme pins the Theme
+                // tokens; the environment pins the system styles.
+                for scheme in [ColorScheme.light, ColorScheme.dark] {
+                    SnapshotScheme.override = scheme
+                    let suffix = scheme == .dark ? "dark" : "light"
+
+                    for pane in MainPane.allCases {
+                        selection.pane = pane
+                        let window = MainWindow()
+                            .environmentObject(glance)
+                            .environmentObject(dashboard)
+                            .environmentObject(selection)
+                            .frame(width: 1120, height: 680)
+                            .environment(\.colorScheme, scheme)
+                        try render(
+                            window,
+                            to: out.appendingPathComponent("window-\(pane.rawValue.lowercased())-\(suffix).png")
+                        )
+                    }
+
+                    let menu = MenuContent()
                         .environmentObject(glance)
                         .environmentObject(dashboard)
                         .environmentObject(selection)
-                        .frame(width: 1120, height: 680)
-                    try render(window, to: out.appendingPathComponent("window-\(pane.rawValue.lowercased()).png"))
+                        .background(scheme == .dark ? Color(white: 0.13) : Color(white: 0.97))
+                        .frame(width: 360)
+                        .environment(\.colorScheme, scheme)
+                    try render(menu, to: out.appendingPathComponent("menu-\(suffix).png"))
                 }
-
-                let menu = MenuContent()
-                    .environmentObject(glance)
-                    .environmentObject(dashboard)
-                    .environmentObject(selection)
-                    .background(.regularMaterial)
-                    .frame(width: 360)
-                    .preferredColorScheme(.dark)
-                try render(menu, to: out.appendingPathComponent("menu.png"))
+                SnapshotScheme.override = nil
                 print("snapshots written to \(out.path)")
             } catch {
                 FileHandle.standardError.write(Data("snapshot failed: \(error)\n".utf8))
