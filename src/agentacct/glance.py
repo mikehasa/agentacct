@@ -441,8 +441,13 @@ def child_root_plan_fold(
     # (round-4 adversarial finding).
     ns_missing: set[tuple[str, str]] = set()
     universe: set[tuple[str, str]] = set()
-    # child_key -> {(parent_key, expected_parent_ns)}
+    # child_key -> {(parent_key, expected_parent_ns)}. Metadata claims and
+    # ':'-shape claims are collected separately: the shape claim applies only
+    # to a session with NO metadata parent claim at all (per-session, not
+    # per-event — a bare row next to a recorded pointer must not manufacture
+    # a second, conflicting claim; round-5 adversarial finding).
     claims: dict[tuple[str, str], set[tuple[tuple[str, str], str | None]]] = {}
+    shape_claims: dict[tuple[str, str], set[tuple[tuple[str, str], str | None]]] = {}
     for event in events:
         metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
         event_type = str(event.get("event_type") or "")
@@ -473,14 +478,16 @@ def child_root_plan_fold(
         expected_parent_ns = str(expected_parent_ns) if expected_parent_ns else None
         if kind != "root" and parent:
             folded_raw = parent
+            target = claims
         elif ":" in raw_session:
             folded_raw = raw_session.split(":", 1)[0]
             expected_parent_ns = None  # legacy lanes carry no parent-home claim
+            target = shape_claims
         else:
             continue
         parent_key = (client, normalized_local_usage_session_id(metadata.get("client"), folded_raw))
         if parent_key != child_key:
-            claims.setdefault(child_key, set()).add((parent_key, expected_parent_ns))
+            target.setdefault(child_key, set()).add((parent_key, expected_parent_ns))
 
     def _session_ns(key: tuple[str, str]) -> Any:
         values = ns_values.get(key)
@@ -489,6 +496,10 @@ def child_root_plan_fold(
         if len(values) > 1 or key in ns_missing:
             return _NS_CONFLICT  # mixed homes, or explicit-vs-missing ambiguity
         return next(iter(values))
+
+    for child_key, child_shape_claims in shape_claims.items():
+        if child_key not in claims:
+            claims[child_key] = child_shape_claims
 
     mapping: dict[tuple[str, str], tuple[str, str]] = {}
     for child_key, child_claims in claims.items():
