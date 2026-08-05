@@ -213,7 +213,7 @@ def calibrate_plan_weights(
     ``events`` still supplies the 7-day series regardless.
     """
 
-    from .api import _usage_record_time
+    from .usage_view import _usage_record_time
     import time as _time
 
     now_epoch = now if now is not None else _time.time()

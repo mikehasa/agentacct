@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agentacct.api import DashboardUsageRecord, _usage_record_time
+from agentacct.usage_view import DashboardUsageRecord, _usage_record_time
 from agentacct.task_projection import build_task_projection
 from agentacct.usage_cube import build_usage_cube
 from agentacct.work_ledger import build_work_ledger
