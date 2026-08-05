@@ -1998,6 +1998,14 @@ class SentinelService:
         legacy lanes are updated in one locked parse and one atomic rewrite.
         A previously bound or internally inconsistent base fails closed.
 
+        NOTE for cache authors: because this path rewrites rows WITHOUT
+        minting a new event_id/created_at, ``glance.events_fingerprint`` (the
+        change key behind the glance API cache and every TUI cache) folds the
+        rewritten namespace fields into its hash. If this method ever starts
+        rewriting MORE read-path-relevant fields in place, extend that
+        fingerprint alongside — otherwise live views serve stale totals until
+        an unrelated event lands.
+
         Deliberately NOT shadowed to the canonical store (nor to Evidence
         v2): canonical source identity is immutable, so rewriting historical
         rows' namespaces cannot be expressed there — rows written after the

@@ -100,21 +100,23 @@ def _record_section(
     status: str,
     title: str,
     created_at: float,
+    section_id: str | None = None,
 ) -> None:
     # The identity-preserving append: record_event re-stamps created_at at
     # receive time (correct in production — a section's created_at IS its
     # activity time), so backdating a section for the recency-window test needs
     # the verbatim merge path.
+    resolved_section = section_id or f"sec-{session_id}"
     service.append_events_preserving_identity([
         {
-            "event_id": f"evt_sec_{client}_{session_id}_{status}_{int(created_at)}",
+            "event_id": f"evt_sec_{client}_{session_id}_{resolved_section}_{status}_{int(created_at)}",
             "created_at": created_at,
             "source": client,
             "event_type": f"section_{status}",
             "metadata": {
                 "client": client,
                 "client_session_id": session_id,
-                "section_id": f"sec-{session_id}",
+                "section_id": resolved_section,
                 "section_status": status,
                 "section_title": title,
             },
@@ -305,6 +307,195 @@ def test_glance_cache_rebuilds_only_on_event_change(tmp_path, monkeypatch):
     third = api_client.get("/v1/glance", headers=headers).json()
     assert calls["count"] == 2  # new event -> rebuild
     assert third["usage"]["usage_record_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# review-finding regressions (adversarial review of 7042c1d)
+# ---------------------------------------------------------------------------
+
+
+def test_glance_cache_expires_by_age_even_when_events_are_unchanged(tmp_path, monkeypatch):
+    """The HIGH finding: 'today'/stale/recency are clock-derived, so an
+    unchanged event list must still rebuild after the TTL (midnight boundary)."""
+
+    from agentacct.glance import GlanceCache
+
+    calls = {"count": 0}
+    real_build = glance_module.build_glance_snapshot
+
+    def _counting_build(*args, **kwargs):
+        calls["count"] += 1
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(glance_module, "build_glance_snapshot", _counting_build)
+    cache = GlanceCache(max_age_seconds=60.0)
+    t0 = time.time()
+    cache.snapshot([], store_dir=tmp_path, version="0.9.0", now=t0)
+    cache.snapshot([], store_dir=tmp_path, version="0.9.0", now=t0 + 30)
+    assert calls["count"] == 1  # young cache, unchanged events -> hit
+    cache.snapshot([], store_dir=tmp_path, version="0.9.0", now=t0 + 61)
+    assert calls["count"] == 2  # TTL crossed -> rebuild despite identical events
+
+
+def test_events_fingerprint_sees_the_namespace_bind_rewrite():
+    """The MEDIUM finding: the TOFU bind rewrites namespace metadata in place
+    (event_id and created_at preserved) and flips additivity — the fingerprint
+    must change with those fields or live views serve stale totals."""
+
+    base = [{
+        "event_id": "evt_1",
+        "created_at": 111.0,
+        "metadata": {"client": "codex", "client_session_id": "s1"},
+    }]
+    bound = [{
+        "event_id": "evt_1",
+        "created_at": 111.0,
+        "metadata": {
+            "client": "codex",
+            "client_session_id": "s1",
+            "source_namespace_fingerprint": "sha256:" + "a" * 64,
+            "source_namespace_binding": "tofu",
+        },
+    }]
+    assert glance_module.events_fingerprint(base) != glance_module.events_fingerprint(bound)
+    # Still total on hostile metadata shapes.
+    hostile = [{"event_id": ["x"], "created_at": {"y": 1}, "metadata": "not-a-dict"}]
+    glance_module.events_fingerprint(hostile)  # must not raise
+
+
+def test_recent_session_status_uses_per_section_precedence(tmp_path):
+    """The MEDIUM finding: a later completed section must not erase a still-open
+    or blocked one — the glance must agree with the TUI badge."""
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    # Session A: section one started, section two started, section one completed
+    # -> still in progress (section two is open).
+    _record_section(service, client="claude-code", session_id="sess-a", status="started", title="t", created_at=now - 300, section_id="sec-1")
+    _record_section(service, client="claude-code", session_id="sess-a", status="started", title="t", created_at=now - 250, section_id="sec-2")
+    _record_section(service, client="claude-code", session_id="sess-a", status="completed", title="t", created_at=now - 200, section_id="sec-1")
+    # Session B: a blocked section followed by a later completed one -> blocked wins.
+    _record_section(service, client="codex", session_id="sess-b", status="blocked", title="stuck", created_at=now - 400, section_id="sec-1")
+    _record_section(service, client="codex", session_id="sess-b", status="completed", title="done bit", created_at=now - 100, section_id="sec-2")
+
+    api_client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    payload = api_client.get("/v1/glance", headers={"Authorization": f"Bearer {TOKEN}"}).json()
+    statuses = {row["session_id"]: row["status"] for row in payload["recent_sessions"]}
+    assert statuses["sess-a"] == "in_progress"
+    assert statuses["sess-b"] == "blocked"
+
+
+def test_usage_only_sessions_appear_and_stay_recent(tmp_path):
+    """The LOW finding: usage activity counts toward recency — a session
+    burning tokens now must appear even without any section events."""
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_usage(
+        service,
+        client="codex",
+        model="gpt-5",
+        session_id="sess-usage-only",
+        input_tokens=100,
+        output_tokens=100,
+        updated_at=now - 120,
+    )
+    # A session whose last SECTION is ancient but whose usage is fresh stays listed.
+    _record_section(service, client="claude-code", session_id="sess-mixed", status="started", title="old section", created_at=now - 7 * 3600)
+    _record_usage(
+        service,
+        client="claude-code",
+        model="claude-opus-4-8",
+        session_id="sess-mixed",
+        input_tokens=10,
+        output_tokens=10,
+        updated_at=now - 60,
+    )
+
+    api_client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    payload = api_client.get("/v1/glance", headers={"Authorization": f"Bearer {TOKEN}"}).json()
+    rows = {row["session_id"]: row for row in payload["recent_sessions"]}
+    assert "sess-usage-only" in rows
+    assert rows["sess-usage-only"]["status"] is None and rows["sess-usage-only"]["title"] is None
+    assert "sess-mixed" in rows  # fresh usage keeps it recent despite the old section
+    assert rows["sess-mixed"]["status"] == "in_progress"
+
+
+def _dead_pid() -> int:
+    pid = 4_100_000  # above default pid ranges on macOS and Linux
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return pid
+        except PermissionError:
+            pass
+        pid -= 1
+
+
+def test_claim_respects_a_live_owner_and_takes_over_a_dead_one(tmp_path):
+    """The lifecycle MEDIUM finding: a second server must not clobber a LIVE
+    owner's slot (and later delete it), but a stale file from a crashed owner
+    is taken over."""
+
+    from agentacct.glance import claim_discovery_file
+
+    store = tmp_path / "store"
+    store.mkdir()
+    # pid 1 (launchd/init) is alive and not ours -> the slot is owned.
+    write_discovery_file(store, host="127.0.0.1", port=9001, token="owner-token", version="0.9.0", pid=1)
+    assert claim_discovery_file(store, host="127.0.0.1", port=9002, token="mine", version="0.9.0") is None
+    kept = read_discovery_file(store)
+    assert kept is not None and kept["pid"] == 1 and kept["token"] == "owner-token"
+    # And the pid-gated removal from the non-owner leaves the live slot alone.
+    assert remove_discovery_file(store) is False
+    assert read_discovery_file(store) is not None
+
+    # A dead owner is stale: the claim takes the slot over.
+    write_discovery_file(store, host="127.0.0.1", port=9003, token="stale", version="0.9.0", pid=_dead_pid())
+    claimed = claim_discovery_file(store, host="127.0.0.1", port=9004, token="fresh", version="0.9.0")
+    assert claimed is not None
+    taken = read_discovery_file(store)
+    assert taken is not None and taken["pid"] == os.getpid() and taken["token"] == "fresh"
+
+
+def test_serve_declines_publishing_when_a_live_owner_holds_the_slot(tmp_path, monkeypatch):
+    store = tmp_path / "store"
+    SentinelService(store)
+    write_discovery_file(store, host="127.0.0.1", port=9001, token="owner-token", version="0.9.0", pid=1)
+
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: None)
+    result = CliRunner().invoke(cli_app, ["serve", "--store-dir", str(store)])
+    assert result.exit_code == 0, result.output
+    assert "unpublished" in result.output
+    kept = read_discovery_file(store)
+    assert kept is not None and kept["pid"] == 1 and kept["token"] == "owner-token"
+
+
+def test_recent_session_plan_pct_is_gated_by_client(tmp_path):
+    """The LOW finding: the pct lookup is keyed (client, session_id) — one
+    client's calibrated number can never attach to another client's row."""
+
+    import agentacct.plan_cost as plan_cost_module
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    shared_session = "11111111-2222-3333-4444-555555555555"
+    _record_usage(service, client="claude-code", model="claude-opus-4-8", session_id=shared_session,
+                  input_tokens=100, output_tokens=100, updated_at=now - 120)
+    _record_section(service, client="claude-code", session_id=shared_session, status="started", title="a", created_at=now - 110)
+    _record_section(service, client="codex", session_id=shared_session, status="started", title="b", created_at=now - 100)
+
+    api_client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    payload = api_client.get("/v1/glance", headers={"Authorization": f"Bearer {TOKEN}"}).json()
+    rows = {(row["client"], row["session_id"]): row for row in payload["recent_sessions"]}
+    # Neither client is calibrated in this store, so both must be None — and
+    # structurally the codex row can never receive a claude-code pct because
+    # the lookup key carries the client.
+    assert rows[("claude-code", shared_session)]["plan_pct"] is None
+    assert rows[("codex", shared_session)]["plan_pct"] is None
 
 
 # ---------------------------------------------------------------------------

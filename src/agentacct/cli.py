@@ -8525,22 +8525,30 @@ def serve(
         "and imports only summarized usage rows. Use `agentacct api serve` for an API server with local usage discovery disabled."
     )
     # Native-shell handshake: a per-boot bearer token published through the
-    # 0600 discovery file next to the store. Written AFTER the bind port is
-    # chosen so readers always see the real port; removed on shutdown (pid-
-    # gated so a dying old server never deletes a fresh server's file).
+    # 0600 discovery file next to the store. Claimed AFTER the bind port is
+    # chosen so readers always see the real port; first-alive-writer-wins (a
+    # second serve against the same store leaves a live owner's slot alone);
+    # removed on shutdown behind a pid gate + lock so a dying old server never
+    # deletes a fresh server's file.
     import secrets as _secrets
 
-    from .glance import discovery_file_path, remove_discovery_file, write_discovery_file
+    from .glance import claim_discovery_file, remove_discovery_file
 
     v1_token = _secrets.token_urlsafe(32)
-    write_discovery_file(
+    discovery_path = claim_discovery_file(
         effective_store_dir,
         host=host,
         port=bound_port,
         token=v1_token,
         version=_usage_importer_version(),
     )
-    console.print(f"Native-shell API (/v1): discovery file {discovery_file_path(effective_store_dir)}")
+    if discovery_path is not None:
+        console.print(f"Native-shell API (/v1): discovery file {discovery_path}")
+    else:
+        console.print(
+            "Native-shell API (/v1): another agentacct server already publishes the discovery "
+            "file for this store; this instance serves /v1 unpublished."
+        )
     try:
         uvicorn.run(
             create_local_api_app(
