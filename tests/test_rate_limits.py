@@ -289,6 +289,34 @@ def test_read_codex_latest_ignores_rewritten_outer_timestamp(tmp_path):
     assert snap.plan_type == "pro"
 
 
+def test_read_codex_latest_ignores_nondefault_bucket_last_line(tmp_path):
+    """The account meter is the DEFAULT bucket, even when a file's last
+    rate_limits line is a non-default bucket. A rollout interleaves lines from
+    every bucket the session touched; if the last billable turn ran on a
+    model-specific / Spark bucket, returning that line would mislabel a distinct
+    quota as 'the codex plan' (adversarial-review finding)."""
+    home = tmp_path / "codex"
+    d = home / "sessions" / "2026" / "07" / "29"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / "rollout-mixed.jsonl"
+    lines = [
+        # default bucket at 61% earlier in the file...
+        {"timestamp": "2026-07-29T09:00:00.000Z", "payload": {"type": "token_count",
+            "info": {"total_token_usage": {"total_tokens": 1}},
+            "rate_limits": {"limit_id": "codex", "secondary": {"used_percent": 61.0, "window_minutes": 10080, "resets_at": 5}, "plan_type": "pro"}}},
+        # ...then a Spark bucket line is chronologically LAST.
+        {"timestamp": "2026-07-29T09:05:00.000Z", "payload": {"type": "token_count",
+            "info": {"total_token_usage": {"total_tokens": 1}},
+            "rate_limits": {"limit_id": "codex_bengalfox", "limit_name": "GPT-5.3-Codex-Spark", "secondary": {"used_percent": 4.0, "window_minutes": 10080, "resets_at": 9}}}},
+    ]
+    f.write_text("\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8")
+    snap = rl.read_codex_rate_limits_latest(home)
+    assert snap is not None
+    assert snap.limit_id == "codex"  # the default account bucket, not Spark
+    assert snap.windows[0].used_percent == 61.0
+    assert rl.snapshot_run_id(snap) == rl.CODEX_RUN_ID  # single account stream
+
+
 def test_read_codex_rate_limits_missing_root(tmp_path):
     assert rl.read_codex_rate_limits_latest(tmp_path / "no-codex") is None
 

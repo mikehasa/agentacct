@@ -389,13 +389,13 @@ def snapshot_run_id(snapshot: RateLimitSnapshot) -> str:
     """
 
     if snapshot.origin == ORIGIN_CODEX_SESSION or snapshot.client == "codex":
-        limit_id = snapshot.limit_id
-        # "codex" is the default account-wide bucket — keep its legacy stream id
-        # so this fix does not fork the existing healthy series. Only non-default
+        # The default account-wide bucket keeps its legacy stream id so this fix
+        # does not fork the existing healthy series (case-insensitive, so a
+        # "Codex" casing variant does not orphan it). Only genuinely non-default
         # buckets branch into their own stream.
-        if limit_id and limit_id != "codex":
-            return f"{CODEX_RUN_ID}:{limit_id}"
-        return CODEX_RUN_ID
+        if _is_default_codex_bucket(snapshot):
+            return CODEX_RUN_ID
+        return f"{CODEX_RUN_ID}:{snapshot.limit_id}"
     if snapshot.origin == ORIGIN_CLAUDE_STATUSLINE:
         return CLAUDE_STATUSLINE_RUN_ID
     org = snapshot.org or "unknown"
@@ -664,8 +664,31 @@ def _codex_session_id_from_path(path: Path) -> str | None:
     return stem or None
 
 
+def _is_default_codex_bucket(snapshot: RateLimitSnapshot) -> bool:
+    """Whether a snapshot is the default account-wide Codex bucket.
+
+    ``limit_id`` absent or ``"codex"`` (case-insensitive) is the default plan
+    meter; any other id is a distinct quota bucket (model-specific / Spark /
+    premium). The match is case-insensitive so a provider casing variant
+    (``"Codex"``) is not wrongly forked into its own stream, orphaning the
+    legacy default series (adversarial-review finding).
+    """
+
+    limit_id = snapshot.limit_id
+    return limit_id is None or limit_id.strip().lower() == "codex"
+
+
 def _read_codex_file_latest_rate_limits(path: Path) -> RateLimitSnapshot | None:
-    """Latest ``rate_limits`` snapshot in one rollout file (chronological), or None."""
+    """The file's latest DEFAULT-bucket ``rate_limits`` snapshot, or None.
+
+    Deliberately keeps the last snapshot whose ``limit_id`` is the default
+    account bucket, NOT the last snapshot of any bucket. A rollout interleaves
+    lines from every bucket the session touched, so the chronologically-last
+    line can be a non-default bucket (e.g. a Spark turn); returning that as the
+    account-wide meter would mislabel a model-specific quota as "the codex plan"
+    (adversarial-review finding). Non-default buckets are recorded on their own
+    streams elsewhere; this reader feeds the single account meter.
+    """
 
     latest: RateLimitSnapshot | None = None
     try:
@@ -695,8 +718,8 @@ def _read_codex_file_latest_rate_limits(path: Path) -> RateLimitSnapshot | None:
                     )
                 except Exception:  # noqa: BLE001 - one poison line must not abort the file/scan.
                     continue
-                if snapshot is not None:
-                    latest = snapshot  # file is chronological; keep the last
+                if snapshot is not None and _is_default_codex_bucket(snapshot):
+                    latest = snapshot  # file is chronological; keep the last default-bucket line
     except OSError:
         return None
     return latest
@@ -718,11 +741,14 @@ def read_codex_rate_limits_latest(
     behaviour) could therefore surface a stale, replayed snapshot as "latest".
 
     Filesystem mtime is not rewritten by replay: the active session's file is
-    the most-recently-modified, and its LAST chronological ``rate_limits`` line
-    is the genuine current state (replayed payloads sit in the copied prefix,
-    never after the live turns). So we walk files newest-mtime first and return
-    the first that yields a snapshot. Returns ``None`` if no rollout carries
-    rate limits.
+    the most-recently-modified, and its LAST chronological DEFAULT-bucket
+    ``rate_limits`` line is the genuine current account meter (replayed payloads
+    sit in the copied prefix, never after the live turns). So we walk files
+    newest-mtime first and return the first that yields a default-bucket
+    snapshot. Only the DEFAULT account bucket feeds this account meter — a file
+    whose last line is a non-default bucket (a Spark/model-specific turn) does
+    not mislabel that bucket as the account plan. Returns ``None`` if no rollout
+    carries a default-bucket rate-limit line.
     """
 
     rollouts: list[Path] = []
@@ -740,7 +766,9 @@ def read_codex_rate_limits_latest(
         except OSError:
             return 0.0
 
-    rollouts.sort(key=_mtime, reverse=True)
+    # Secondary key (path) makes an exact-mtime tie deterministic instead of
+    # depending on filesystem iteration order (adversarial-review finding).
+    rollouts.sort(key=lambda p: (_mtime(p), str(p)), reverse=True)
     for path in rollouts[: max(1, max_files)]:
         try:
             snapshot = _read_codex_file_latest_rate_limits(path)
