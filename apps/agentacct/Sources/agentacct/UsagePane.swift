@@ -30,16 +30,27 @@ struct UsagePane: View {
     var body: some View {
         ScrollBox {
             VStack(alignment: .leading, spacing: Space.l) {
-                HStack {
+                HStack(spacing: 10) {
                     SectionCaption(tone: Theme.textMuted, text: "Usage · last \(dashboard.usageDays) days")
                     Spacer()
+                    // One range control for the whole pane: it drives the daily
+                    // bars AND the per-model breakdown depth. The today/7d
+                    // headline windows stay fixed regardless.
+                    Picker("", selection: Binding(get: { dashboard.usageDays },
+                                                  set: { days in Task { await dashboard.setUsageDays(days) } })) {
+                        Text("7d").tag(7)
+                        Text("30d").tag(30)
+                        Text("90d").tag(90)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 130)
                     Picker("", selection: Binding(get: { mode }, set: { chosenMode = $0 })) {
                         ForEach(UsageMode.allCases) { mode in
                             Text(mode.rawValue).tag(mode)
                         }
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 140)
+                    .frame(width: 110)
                 }
                 if mode == .plan {
                     planView
@@ -114,7 +125,16 @@ struct UsagePane: View {
     private func modelShares(_ shares: [V1PlanModelShare]) -> some View {
         let maxPct = shares.compactMap(\.pct).max() ?? 1
         return VStack(alignment: .leading, spacing: Space.s) {
-            SectionCaption(tone: Theme.textMuted, text: "Which model eats the plan")
+            HStack(spacing: 6) {
+                SectionCaption(tone: Theme.textMuted, text: "Which model eats the plan")
+                Spacer()
+                // Disclose that these are estimates AND the window they sum over,
+                // so a 30/90-day breakdown reading >100% of a weekly plan is
+                // clearly a multi-week accumulation, not a broken number.
+                Text("estimated · last \(dashboard.usageDays)d")
+                    .font(Type.tiny)
+                    .foregroundStyle(Theme.textFaint)
+            }
             Card(padding: 6) {
                 VStack(spacing: 0) {
                     ForEach(Array(shares.enumerated()), id: \.element.id) { index, share in
@@ -164,11 +184,8 @@ struct UsagePane: View {
                 }
             }
             if let periods = usage.byPeriod, periods.count > 1 {
-                DailyChart(
-                    periods: periods,
-                    selectedDays: dashboard.usageDays,
-                    onSelectDays: { days in Task { await dashboard.setUsageDays(days) } }
-                )
+                // Range lives in the pane header now; the chart shows no picker.
+                DailyChart(periods: periods)
             }
             bucketSection(title: "By agent", buckets: usage.byClient) { bucket in
                 (bucket.client ?? "?", Theme.clientColor(bucket.client))
@@ -239,6 +256,8 @@ struct PlanDailyChart: View {
     let days: [V1PlanDay]
     var tint: Color
 
+    @State private var hovered: V1PlanDay?
+
     private var maxPct: Double {
         max(days.map(\.pct).max() ?? 0.0001, 0.0001)
     }
@@ -252,9 +271,19 @@ struct PlanDailyChart: View {
                             .fill(day.pct > 0 ? AnyShapeStyle(tint.gradient) : AnyShapeStyle(Theme.border.opacity(0.5)))
                             .frame(height: day.pct > 0 ? max(2, 110 * day.pct / maxPct) : 1.5)
                             .frame(maxWidth: .infinity, alignment: .bottom)
+                            .contentShape(Rectangle())
+                            .opacity(hovered == nil || hovered?.id == day.id ? 1 : 0.55)
+                            .onHover { inside in
+                                if inside { hovered = day } else if hovered?.id == day.id { hovered = nil }
+                            }
                     }
                 }
                 .frame(height: 112, alignment: .bottom)
+                .overlay(alignment: .topLeading) {
+                    if let hovered {
+                        PlanDayTooltip(day: hovered)
+                    }
+                }
                 HStack {
                     Text(shortDate(days.first?.date))
                     Spacer()
@@ -271,6 +300,29 @@ struct PlanDailyChart: View {
     private func shortDate(_ iso: String?) -> String {
         guard let iso, iso.count >= 10 else { return "" }
         return String(iso.dropFirst(5))  // YYYY-MM-DD -> MM-DD
+    }
+}
+
+/// Hover card for the plan-share chart: one day's date + estimated plan %.
+struct PlanDayTooltip: View {
+    let day: V1PlanDay
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(day.date.count >= 10 ? String(day.date.dropFirst(5)) : day.date)
+                .font(Type.tiny.weight(.semibold))
+                .foregroundStyle(Theme.text)
+            Text(Fmt.planPct(day.pct) ?? "≈0%")
+                .font(Type.tiny.monospacedDigit())
+                .foregroundStyle(Theme.accent)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .strokeBorder(Theme.border, lineWidth: 1))
+        .padding(4)
+        .fixedSize()
     }
 }
 
