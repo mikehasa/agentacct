@@ -383,7 +383,7 @@ def resolve_fold_top(
         current = parent
 
 
-# Sentinel: a session whose own rows disagree about their source home. Folds
+# Marker value: a session whose own rows disagree about their source home. Folds
 # into or out of such a session are always refused — the ledger quarantines
 # mixed-source rows the same way (unique-or-quarantine), and any "pick one"
 # rule would make the fold decision depend on event ORDER (round-3
