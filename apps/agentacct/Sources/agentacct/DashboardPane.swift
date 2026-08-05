@@ -77,15 +77,16 @@ struct DashboardPane: View {
             guard case .connected(let snapshot) = glance.phase else { return [:] }
             return Dictionary(uniqueKeysWithValues: snapshot.glance.usage.windows.map { ($0.label, $0.totals) })
         }()
-        let todayPlan = dashboard.planClients
-            .compactMap { client -> Double? in
-                guard client.calibrationState == "calibrated" else { return nil }
-                return client.windowPcts?["today"] ?? nil
-            }
-            .reduce(nil as Double?) { partial, pct in (partial ?? 0) + pct }
+        // ONE client's share, never a sum: percentages of different plans have
+        // different denominators, so a cross-client total is meaningless
+        // (review finding — latent while only claude-code can calibrate).
+        let todayClient = dashboard.planClients.first {
+            $0.calibrationState == "calibrated" && ($0.windowPcts?["today"] ?? nil) != nil
+        }
+        let todayPlan = todayClient.flatMap { $0.windowPcts?["today"] ?? nil }
         return HStack(spacing: Space.s) {
             PanelTile(
-                label: "today · tracked plan",
+                label: todayClient.map { "today · tracked plan · \($0.client)" } ?? "today · tracked plan",
                 value: Fmt.planPct(todayPlan) ?? "—",
                 detail: todayPlan == nil ? "calibration pending" : "attributed estimate",
                 accent: Theme.accent

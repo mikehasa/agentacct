@@ -31,8 +31,12 @@ final class DashboardStore: ObservableObject {
         isRefreshing = true
         defer { isRefreshing = false }
         do {
+            // Preserve the paginated depth across auto-refreshes: replacing a
+            // Load-more'd list with page 1 collapsed the walk and blanked an
+            // open detail mid-read (review finding).
+            let limit = max(pageSize, min(sessions.count, 500))
             let payload: V1SessionsPayload = try await client.getAuthed(
-                "/v1/sessions?limit=\(pageSize)&offset=0"
+                "/v1/sessions?limit=\(limit)&offset=0"
             )
             let plan: V1PlanPayload = try await client.getAuthed("/v1/plan?days=30")
             let summary: UsageSummary = try await client.getLocal("/usage/summary?days=30")
@@ -75,7 +79,10 @@ final class DashboardStore: ObservableObject {
     }
 
     /// The deep view for one session. 404 (session aged out / unknown) is a
-    /// first-class message, never a silent empty screen.
+    /// first-class message, never a silent empty screen. A CANCELLED fetch
+    /// (the user clicked another row) writes nothing: its error used to land
+    /// after the new row's fetch had already started and masked the freshly
+    /// loaded steps (review finding).
     func fetchDetail(client clientName: String, sessionId: String) async {
         detail = nil
         detailError = nil
@@ -85,10 +92,18 @@ final class DashboardStore: ObservableObject {
             let payload: V1SessionDetail = try await client.getAuthed(
                 "/v1/session?client=\(encodedClient)&session_id=\(encodedSession)"
             )
+            guard !Task.isCancelled else { return }
             detail = payload
+            detailError = nil
+        } catch is CancellationError {
+            return
+        } catch let error as URLError where error.code == .cancelled {
+            return
         } catch GlanceClientError.http(404) {
+            guard !Task.isCancelled else { return }
             detailError = "this session is not in the store (it may have been recorded elsewhere)"
         } catch {
+            guard !Task.isCancelled else { return }
             detailError = "detail fetch failed: \(error.localizedDescription)"
         }
     }

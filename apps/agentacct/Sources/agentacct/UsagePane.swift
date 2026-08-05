@@ -7,7 +7,11 @@ import SwiftUI
 
 struct UsagePane: View {
     @EnvironmentObject var dashboard: DashboardStore
-    @State private var mode: UsageMode = .plan
+    // nil = no explicit user choice: the default follows the DATA (plan view
+    // when a calibrated client exists) and re-evaluates as /v1/plan loads —
+    // pinning a default in onAppear froze the pane on $ when it rendered
+    // before the first plan response (review finding).
+    @State private var chosenMode: UsageMode?
 
     enum UsageMode: String, CaseIterable, Identifiable {
         case plan = "plan %"
@@ -19,13 +23,17 @@ struct UsagePane: View {
         dashboard.planClients.filter { $0.calibrationState == "calibrated" }
     }
 
+    private var mode: UsageMode {
+        chosenMode ?? (calibratedClients.isEmpty ? .dollars : .plan)
+    }
+
     var body: some View {
         ScrollBox {
             VStack(alignment: .leading, spacing: Space.l) {
                 HStack {
                     SectionCaption(tone: Theme.textMuted, text: "Usage · last 30 days")
                     Spacer()
-                    Picker("", selection: $mode) {
+                    Picker("", selection: Binding(get: { mode }, set: { chosenMode = $0 })) {
                         ForEach(UsageMode.allCases) { mode in
                             Text(mode.rawValue).tag(mode)
                         }
@@ -40,9 +48,6 @@ struct UsagePane: View {
                 }
             }
             .padding(Space.l)
-        }
-        .onAppear {
-            if calibratedClients.isEmpty { mode = .dollars }
         }
     }
 

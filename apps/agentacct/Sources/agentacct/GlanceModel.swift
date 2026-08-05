@@ -149,12 +149,9 @@ struct RecentSession: Decodable {
 
     /// TUI-parity plan share formatting: one decimal with the approximation
     /// marker, a "<0.1%" band instead of a fake exact zero, nothing when the
-    /// estimate is withheld (uncalibrated).
-    var planPctText: String? {
-        guard let pct = planPct else { return nil }
-        if pct > 0 && pct < 0.1 { return "≈<0.1%" }
-        return String(format: "≈%.1f%%", pct)
-    }
+    /// estimate is withheld (uncalibrated). One shared rule with the window
+    /// (Fmt.planPct) so the two surfaces can never disagree on a zero share.
+    var planPctText: String? { Fmt.planPct(planPct) }
 
     var statusGlyph: String {
         switch status {

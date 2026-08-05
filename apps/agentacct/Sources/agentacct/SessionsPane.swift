@@ -81,8 +81,7 @@ struct SessionsPane: View {
 
     @ViewBuilder
     private var detail: some View {
-        if let id = selection.sessionId,
-           let row = dashboard.sessions.first(where: { $0.id == id }) {
+        if let id = selection.sessionId, let row = selectedRow(id) {
             SessionDetail(row: row)
                 .id(row.id)  // re-fetch when the selection changes
         } else {
@@ -96,6 +95,14 @@ struct SessionsPane: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    /// The selected row from the list — or from the loaded detail when a
+    /// refresh dropped it off the current page (an open detail must never
+    /// blank mid-read; review finding).
+    private func selectedRow(_ id: String) -> V1SessionRow? {
+        dashboard.sessions.first { $0.id == id }
+            ?? (dashboard.detail?.session.id == id ? dashboard.detail?.session : nil)
     }
 }
 
@@ -247,9 +254,17 @@ struct SessionDetail: View {
         return "own \(own)"
     }
 
+    /// The store-global detail, only when it belongs to THIS row — a stale
+    /// payload from the previously selected row must never flash under the
+    /// new header (review finding).
+    private var loadedDetail: V1SessionDetail? {
+        guard let detail = dashboard.detail, detail.session.id == row.id else { return nil }
+        return detail
+    }
+
     @ViewBuilder
     private var planBlock: some View {
-        if let basis = dashboard.detail?.plan?.basis {
+        if let basis = loadedDetail?.plan?.basis {
             Text("plan estimate: \(basis)")
                 .font(Type.tiny)
                 .foregroundStyle(Theme.textFaint)
@@ -264,7 +279,7 @@ struct SessionDetail: View {
             Text(error)
                 .font(Type.small)
                 .foregroundStyle(Theme.orange)
-        } else if let detail = dashboard.detail {
+        } else if let detail = loadedDetail {
             if !detail.steps.isEmpty {
                 VStack(alignment: .leading, spacing: Space.s) {
                     SectionCaption(tone: Theme.textMuted, text: "Steps · \(detail.steps.count)")
@@ -289,7 +304,7 @@ struct SessionDetail: View {
 
     @ViewBuilder
     private var descendantsSection: some View {
-        if let descendants = dashboard.detail?.descendants, !descendants.isEmpty {
+        if let descendants = loadedDetail?.descendants, !descendants.isEmpty {
             VStack(alignment: .leading, spacing: Space.s) {
                 SectionCaption(tone: Theme.textMuted, text: "Subagent sessions · \(descendants.count)")
                 Card(padding: 4) {
