@@ -8,18 +8,31 @@ show "usage · cost · plan · active sessions" at a glance. Design contract:
   and the TUI render), and plan calibration from :mod:`agentacct.plan_cost`
   with the same calibrated-or-nothing honesty rule. The glance never invents a
   number another surface would not show.
-* **Cheap under polling** — the payload is rebuilt only when the event list
-  actually changes (``events_fingerprint``); a poll that finds nothing new is a
-  dictionary lookup. The expensive work-ledger build is deliberately NOT used
-  here: active sessions are derived from the section event stream directly.
+* **Cheap under polling** — the payload is rebuilt when the event list changes
+  (``events_fingerprint``) or when the cached build is older than the cache
+  TTL; a poll that hits the cache is a dictionary lookup. The TTL exists
+  because the payload is calendar/time-dependent (the "today" window, the
+  recency cutoff, ``limits[].stale``) — an unchanged event list must still
+  refresh across midnight. The expensive work-ledger build is deliberately NOT
+  used here: recent sessions derive from the section + usage event streams in
+  one pass.
 * **Additive-only schema** — consumers pin ``schema`` and ignore unknown keys;
-  existing keys are never renamed or removed within v1.
+  existing keys are never renamed or removed within v1. Freshness must be
+  judged from the HTTP response itself: ``generated_at`` is the BUILD time and
+  may lag wall clock by up to the cache TTL.
 
 The discovery-file helpers let a native shell find and authenticate to the
-server without configuration: ``agentacct serve`` binds 127.0.0.1, then writes
+server without configuration: ``agentacct serve`` binds 127.0.0.1, then claims
 ``<store>/local-api.json`` (0600) with the actual port and a per-boot bearer
-token — the Tailscale "sameuserproof" / Syncthing api-key pattern. Readers
-treat the file as the only source of truth and re-read it on auth failure.
+token — the Tailscale "sameuserproof" / Syncthing api-key pattern.
+
+Reader contract for the discovery file: first-alive-writer-wins (a second
+server against the same store leaves a live owner's file alone and simply
+stays unpublished); a crash/SIGKILL/closed terminal can leave a stale file
+whose ``pid`` is dead — readers treat a failed connect exactly like a missing
+file (disconnected state), and the next server start takes the stale slot
+over. The token is per-boot, so a stale token is worthless. Re-read the file
+whenever auth fails (401): the server restarted with a fresh token.
 """
 
 from __future__ import annotations
@@ -28,22 +41,38 @@ import json
 import math
 import os
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Iterator
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX platform: no flock available
+    fcntl = None  # type: ignore[assignment]
 
 GLANCE_SCHEMA_VERSION = "agentacct.glance.v1"
 DISCOVERY_SCHEMA_VERSION = "agentacct.local-api-discovery.v1"
 DISCOVERY_FILENAME = "local-api.json"
+DISCOVERY_LOCK_FILENAME = "local-api.lock"
 
 # A session counts as "recent" in the glance when its latest section/usage
 # activity is at most this old. Bounded list, newest first.
 ACTIVE_SESSION_WINDOW_SECONDS = 6 * 3600
 ACTIVE_SESSION_LIMIT = 8
 
+# Rebuild a cached payload after this many seconds even when the event list is
+# unchanged: the "today" window, the recency cutoff, and limits[].stale are all
+# clock-derived, so a fingerprint-only cache would serve yesterday's "today"
+# after midnight on an idle store (adversarial-review HIGH finding).
+GLANCE_CACHE_MAX_AGE_SECONDS = 60.0
+
 # Clients whose usage can be expressed as a share of a provider plan. Mirrors
 # the TUI's plan column (tui._PLAN_CLIENTS); keep the two in sync.
 PLAN_CLIENTS = ("claude-code", "codex")
+
+# Section statuses that mean "someone is (or should be) still working".
+_OPEN_SECTION_STATUSES = frozenset({"started", "checkpoint"})
 
 
 def events_fingerprint(events: list) -> int:
@@ -56,13 +85,43 @@ def events_fingerprint(events: list) -> int:
     identity + observation time makes any append, removal, or in-place supersede
     (which records a new event id) change the key and trigger a rebuild.
 
+    One write path rewrites events WITHOUT minting a new id or timestamp:
+    ``service.bind_local_usage_source_namespaces`` (the TOFU bind) mutates only
+    the source-namespace metadata fields in place — and those fields flip
+    ``local_usage_additivity``, i.e. the totals. The key therefore folds those
+    fields in as well; a fingerprint blind to them kept serving pre-bind totals
+    until an unrelated event landed (adversarial-review MEDIUM finding). Any
+    NEW in-place rewrite path must extend this key the same way.
+
     The values are stringified so the key is TOTAL: a corrupted/hand-injected
-    ledger row can round-trip ``event_id`` / ``created_at`` as a JSON list or
-    object (unhashable), and this function runs on unguarded refresh paths —
-    it must never raise. (The TUI aliases this same function.)
+    ledger row can round-trip any of these fields as a JSON list or object
+    (unhashable), and this function runs on unguarded refresh paths — it must
+    never raise. (The TUI aliases this same function for all its caches.)
     """
 
-    return hash(tuple((str(event.get("event_id")), str(event.get("created_at"))) for event in events))
+    parts = []
+    for event in events:
+        metadata = event.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        parts.append(
+            (
+                str(event.get("event_id")),
+                str(event.get("created_at")),
+                str(metadata.get("source_namespace_fingerprint")),
+                str(metadata.get("parent_source_namespace_fingerprint")),
+                str(metadata.get("source_namespace_binding")),
+            )
+        )
+    return hash(tuple(parts))
+
+
+def _safe_timestamp(value: Any) -> float:
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return 0.0
+    return number if math.isfinite(number) and number > 0 else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +133,46 @@ def discovery_file_path(store_dir: Path | str) -> Path:
     return Path(store_dir).expanduser() / DISCOVERY_FILENAME
 
 
+@contextmanager
+def _discovery_lock(store_dir: Path | str) -> Iterator[None]:
+    """Serialize claim/remove against each other (closes the read-then-unlink
+    TOCTOU a bare pid gate leaves open). flock on a sibling lock file; on a
+    platform without fcntl the helpers degrade to the unlocked pid gate."""
+
+    lock_path = Path(store_dir).expanduser() / DISCOVERY_LOCK_FILENAME
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_path, "a+", encoding="utf-8")
+    try:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def _pid_alive(pid: Any) -> bool:
+    """Best-effort liveness: signal-0 probe. PermissionError means the pid
+    exists (another user's process) and counts as alive."""
+
+    try:
+        number = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if number <= 0:
+        return False
+    try:
+        os.kill(number, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def write_discovery_file(
     store_dir: Path | str,
     *,
@@ -83,13 +182,13 @@ def write_discovery_file(
     version: str,
     pid: int | None = None,
 ) -> Path:
-    """Atomically write the 0600 discovery file next to the store.
+    """Atomically write the 0600 discovery file next to the store (unconditional).
 
-    Written by ``agentacct serve`` after the bind port is chosen and before the
-    server loop starts. Single-slot by design: one dashboard server per store
-    owns the file; a restart overwrites it (fresh token every boot). The 0600
-    mode is enforced via ``os.fchmod`` (umask-proof) and survives the atomic
-    rename, so the token is never world-readable, not even transiently.
+    Prefer :func:`claim_discovery_file`, which refuses to clobber a LIVE
+    owner's file. This raw writer stays lock-free so the claim path can call
+    it while holding the discovery lock. The 0600 mode is enforced via
+    ``os.fchmod`` (umask-proof) and survives the atomic rename, so the token
+    is never world-readable, not even transiently.
     """
 
     path = discovery_file_path(store_dir)
@@ -121,12 +220,42 @@ def write_discovery_file(
     return path
 
 
+def claim_discovery_file(
+    store_dir: Path | str,
+    *,
+    host: str,
+    port: int,
+    token: str,
+    version: str,
+    pid: int | None = None,
+) -> Path | None:
+    """Publish the discovery file unless another LIVE server already owns it.
+
+    First-alive-writer-wins: a second server against the same store must not
+    clobber the managed daemon's slot and then delete it on exit, stranding a
+    healthy daemon undiscoverable (adversarial-review MEDIUM finding). A file
+    whose owner pid is dead (crash, SIGKILL, closed terminal) is stale and is
+    taken over. Returns the path when this process now owns the slot, or
+    ``None`` when a different live pid holds it — the caller keeps serving
+    /v1 with its own token, just unpublished.
+    """
+
+    owner = int(pid if pid is not None else os.getpid())
+    with _discovery_lock(store_dir):
+        existing = read_discovery_file(store_dir)
+        if existing is not None and existing.get("pid") != owner and _pid_alive(existing.get("pid")):
+            return None
+        return write_discovery_file(store_dir, host=host, port=port, token=token, version=version, pid=owner)
+
+
 def read_discovery_file(store_dir: Path | str) -> dict[str, Any] | None:
     """The parsed discovery payload, or ``None`` when absent/unreadable/foreign.
 
     Never raises: a missing server, a half-written file, or a future schema all
     read as "no discoverable server" — callers fall back to their disconnected
-    state exactly as they would for a dead port.
+    state exactly as they would for a dead port. Liveness is deliberately NOT
+    checked here (see the module docstring's reader contract): a stale file and
+    a dead port produce the same disconnected UX.
     """
 
     path = discovery_file_path(store_dir)
@@ -145,20 +274,22 @@ def remove_discovery_file(store_dir: Path | str, *, pid: int | None = None) -> b
     """Remove the discovery file iff it belongs to ``pid`` (default: this process).
 
     The pid gate keeps a dying old server from deleting the file a newly
-    restarted server just wrote (start-during-shutdown overlap). Returns True
-    only when this call actually unlinked the current owner's file.
+    restarted server just wrote; the read-and-unlink runs under the discovery
+    lock so a concurrent claim cannot land between the check and the unlink.
+    Returns True only when this call actually unlinked the owner's file.
     """
 
     owner = int(pid if pid is not None else os.getpid())
     path = discovery_file_path(store_dir)
-    payload = read_discovery_file(store_dir)
-    if payload is None or payload.get("pid") != owner:
-        return False
-    try:
-        path.unlink()
-    except OSError:
-        return False
-    return True
+    with _discovery_lock(store_dir):
+        payload = read_discovery_file(store_dir)
+        if payload is None or payload.get("pid") != owner:
+            return False
+        try:
+            path.unlink()
+        except OSError:
+            return False
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -166,46 +297,101 @@ def remove_discovery_file(store_dir: Path | str, *, pid: int | None = None) -> b
 # ---------------------------------------------------------------------------
 
 
-def _section_status_and_title(events: list[dict[str, Any]], *, now: float) -> list[dict[str, Any]]:
-    """Recent sessions from the section event stream, newest activity first.
+def _recent_sessions(events: list[dict[str, Any]], *, now: float) -> list[dict[str, Any]]:
+    """Recent sessions from the section + usage event streams, newest first.
 
-    Deliberately ledger-free: the full work-ledger build is too heavy to run on
-    a poll cadence, while the latest section event per (client, session) is a
-    single pass over the already-loaded list. A session with sections shows its
-    latest section title/status; a session that only imported usage shows just
-    activity time. Timestamps are hostile-tolerant (never raise).
+    ``status`` is the TUI-parity reduction over each session's PER-SECTION
+    latest status — blocked > handed_off > in-progress > completed — because a
+    real session commonly leaves one stray open section, and a "latest event
+    wins" rule would let a later completed section erase a still-open or
+    blocked one. A finished-looking label on unfinished work is exactly the
+    dishonesty class this product exists to fix, so the menu bar must agree
+    with the TUI badge here.
+
+    Usage imports advance ``last_activity_at`` (a session burning tokens right
+    now stays "recent" even when its last section is hours old) and create
+    status-less rows for clients that never record sections. Deliberately
+    ledger-free: one pass over the already-loaded list; timestamps are
+    hostile-tolerant (never raise).
     """
 
-    def _safe_time(value: Any) -> float:
-        try:
-            number = float(value)
-        except (OverflowError, TypeError, ValueError):
-            return 0.0
-        return number if math.isfinite(number) and number > 0 else 0.0
+    from .client_usage import is_local_usage_import_event
+    from .usage_truth import normalized_local_usage_session_id
+    from .usage_view import _session_activity_time
 
-    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    # (client, session) -> {section_id: (created_at, status)} — latest per section.
+    sections: dict[tuple[str, str], dict[str, tuple[float, str]]] = {}
+    # (client, session) -> (created_at, title) — latest titled section event.
+    titles: dict[tuple[str, str], tuple[float, str]] = {}
+    # (client, session) -> newest activity timestamp across sections + usage.
+    activity: dict[tuple[str, str], float] = {}
+
+    def _touch(key: tuple[str, str], timestamp: float) -> None:
+        if timestamp > activity.get(key, 0.0):
+            activity[key] = timestamp
+
     for event in events:
-        event_type = str(event.get("event_type") or "")
-        if not event_type.startswith("section_"):
-            continue
         metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
-        client = str(metadata.get("client") or event.get("source") or "")
-        session_id = str(metadata.get("client_session_id") or "")
-        if not client or not session_id:
+        event_type = str(event.get("event_type") or "")
+        if event_type.startswith("section_"):
+            client = str(metadata.get("client") or event.get("source") or "")
+            session_id = str(metadata.get("client_session_id") or "")
+            if not client or not session_id:
+                continue
+            created = _safe_timestamp(event.get("created_at"))
+            key = (client, session_id)
+            status = str(metadata.get("section_status") or "") or None
+            if status:
+                per_section = sections.setdefault(key, {})
+                section_id = str(metadata.get("section_id") or "")
+                prior = per_section.get(section_id)
+                if prior is None or created >= prior[0]:
+                    per_section[section_id] = (created, status)
+            title = str(metadata.get("section_title") or "")
+            if title:
+                prior_title = titles.get(key)
+                if prior_title is None or created >= prior_title[0]:
+                    titles[key] = (created, title)
+            _touch(key, created)
+        elif is_local_usage_import_event(event):
+            client = str(metadata.get("client") or event.get("source") or "")
+            raw_session = str(metadata.get("client_session_id") or event.get("run_id") or "")
+            if not client or not raw_session:
+                continue
+            # The same id normalization the usage view applies, so these keys
+            # join with section session ids and plan_pct session ids.
+            session_id = normalized_local_usage_session_id(metadata.get("client"), raw_session)
+            _touch((client, session_id), _session_activity_time(event))
+
+    def _reduce_status(statuses: set[str]) -> str | None:
+        if "blocked" in statuses:
+            return "blocked"
+        if "handed_off" in statuses:
+            return "handed_off"
+        if statuses & _OPEN_SECTION_STATUSES:
+            return "in_progress"
+        if "completed" in statuses:
+            return "completed"
+        return None
+
+    cutoff = now - ACTIVE_SESSION_WINDOW_SECONDS
+    rows: list[dict[str, Any]] = []
+    for key, last_activity_at in activity.items():
+        if last_activity_at < cutoff:
             continue
-        created = _safe_time(event.get("created_at"))
-        key = (client, session_id)
-        current = latest.get(key)
-        if current is None or created >= current["last_activity_at"]:
-            latest[key] = {
+        client, session_id = key
+        per_section = sections.get(key) or {}
+        statuses = {status for (_created, status) in per_section.values()}
+        title_entry = titles.get(key)
+        rows.append(
+            {
                 "client": client,
                 "session_id": session_id,
-                "title": str(metadata.get("section_title") or "") or None,
-                "status": str(metadata.get("section_status") or "") or None,
-                "last_activity_at": created,
+                "title": title_entry[1] if title_entry else None,
+                "status": _reduce_status(statuses),
+                "last_activity_at": last_activity_at,
             }
-    cutoff = now - ACTIVE_SESSION_WINDOW_SECONDS
-    rows = [row for row in latest.values() if row["last_activity_at"] >= cutoff]
+        )
     rows.sort(key=lambda row: row["last_activity_at"], reverse=True)
     return rows[:ACTIVE_SESSION_LIMIT]
 
@@ -242,20 +428,25 @@ def build_glance_snapshot(
 
     # Plan calibration per plan-bearing client — the calibrated-or-nothing
     # honesty rule: per-session percentages exist ONLY when the estimate is
-    # grounded in this account's own recorded limit history.
+    # grounded in this account's own recorded limit history. Keyed by
+    # (client, session_id) so one client's number can never attach to another
+    # client's row.
     plan: list[dict[str, Any]] = []
-    session_pcts: dict[str, float] = {}
+    session_pcts: dict[tuple[str, str], float] = {}
     for client in PLAN_CLIENTS:
         records = usage_records(events, client=client)
         weights = calibrate_plan_weights(events, client=client, records=records)
         plan.append({"client": client, "confidence": weights.confidence})
         if weights.confidence == "calibrated":
-            session_pcts.update(session_plan_pcts(records, weights, client=client))
+            for session_id, pct in session_plan_pcts(records, weights, client=client).items():
+                session_pcts[(client, session_id)] = pct
 
-    recent_sessions = _section_status_and_title(events, now=moment)
+    recent_sessions = _recent_sessions(events, now=moment)
     for row in recent_sessions:
-        pct = session_pcts.get(row["session_id"])
-        row["plan_pct"] = round(pct, 2) if pct is not None else None
+        # The raw estimate, never rounded here: round(pct, 2) can claim an
+        # exact 0 for a nonzero share. Shells format like the TUI does —
+        # "≈{pct:.1f}%" with a "<0.1%" band — the payload carries the float.
+        row["plan_pct"] = session_pcts.get((row["client"], row["session_id"]))
 
     return {
         "schema": GLANCE_SCHEMA_VERSION,
@@ -276,17 +467,35 @@ def build_glance_snapshot(
 
 
 class GlanceCache:
-    """Fingerprint-keyed cache so polling never recomputes an unchanged payload.
+    """Fingerprint + TTL cache so polling stays cheap without going stale.
+
+    Two invalidation triggers, both required: the fingerprint catches every
+    event-list change, and ``max_age_seconds`` catches CLOCK drift — the
+    "today" window crossing midnight, the recency cutoff, and limits[].stale
+    all move with wall time on an unchanged event list, so a fingerprint-only
+    cache served yesterday's "today" every morning (adversarial-review HIGH
+    finding).
 
     Thread-tolerant under FastAPI's threadpool: the cached value is one atomic
-    tuple assignment, so a concurrent reader can never observe a torn pair; two
-    racing rebuilds waste one build and the last writer wins (same pattern as
-    the TUI's plan cache).
+    tuple assignment, so a concurrent reader can never observe a torn triple;
+    two racing rebuilds waste one build and the last writer wins (same pattern
+    as the TUI's plan cache). A rebuild racing an import can briefly win with a
+    slightly older event list — one poll may regress and self-heals on the
+    next; it never fabricates a number.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_age_seconds: float = GLANCE_CACHE_MAX_AGE_SECONDS) -> None:
         self._lock = Lock()
-        self._cached: tuple[int, dict[str, Any]] | None = None
+        # (fingerprint, built_at, payload) — always assigned as one tuple.
+        self._cached: tuple[int, float, dict[str, Any]] | None = None
+        self.max_age_seconds = float(max_age_seconds)
+
+    def _fresh(self, cached: tuple[int, float, dict[str, Any]] | None, fingerprint: int, moment: float) -> bool:
+        return (
+            cached is not None
+            and cached[0] == fingerprint
+            and (moment - cached[1]) < self.max_age_seconds
+        )
 
     def snapshot(
         self,
@@ -296,14 +505,15 @@ class GlanceCache:
         version: str,
         now: float | None = None,
     ) -> dict[str, Any]:
+        moment = time.time() if now is None else float(now)
         fingerprint = events_fingerprint(events)
         cached = self._cached
-        if cached is not None and cached[0] == fingerprint:
-            return cached[1]
+        if self._fresh(cached, fingerprint, moment):
+            return cached[2]  # type: ignore[index]
         with self._lock:
             cached = self._cached
-            if cached is not None and cached[0] == fingerprint:
-                return cached[1]
+            if self._fresh(cached, fingerprint, moment):
+                return cached[2]  # type: ignore[index]
             payload = build_glance_snapshot(events, store_dir=store_dir, version=version, now=now)
-            self._cached = (fingerprint, payload)
+            self._cached = (fingerprint, moment, payload)
             return payload
