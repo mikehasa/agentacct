@@ -130,6 +130,13 @@ class RateLimitSnapshot:
     org: str | None = None
     source_session_id: str | None = None
     source_file: str | None = None
+    # Codex quota-bucket identity. Different ``limit_id`` values are DIFFERENT
+    # quota buckets (default account bucket vs model-specific / Spark / rare
+    # buckets) and must never be merged into one time series — see
+    # ``snapshot_run_id``. ``limit_name`` is a mutable display label, kept for
+    # provenance but never used as identity.
+    limit_id: str | None = None
+    limit_name: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +261,10 @@ def normalize_codex_rate_limits(
         reached_type=_str_or_none(rate_limits.get("rate_limit_reached_type")),
         source_session_id=session_id,
         source_file=source_file,
+        # limit_id / limit_name live at the rate_limits top level (not per
+        # window); preserve them so buckets stay distinct streams.
+        limit_id=_str_or_none(rate_limits.get("limit_id")),
+        limit_name=_str_or_none(rate_limits.get("limit_name")),
     )
 
 
@@ -367,13 +378,23 @@ def normalize_claude_statusline(
 def snapshot_run_id(snapshot: RateLimitSnapshot) -> str:
     """A stable per-stream run_id.
 
-    Codex limits are account-wide, so all codex snapshots share one run_id; the
-    Claude desktop plan-usage series is per-org; the terminal-CLI statusLine feed
-    is its own stream. All are stable across scans so consecutive unchanged
-    snapshots collapse to one recorded event.
+    Codex quota buckets are keyed by ``limit_id``: the default account bucket
+    keeps the legacy ``CODEX_RUN_ID`` stream, but any OTHER ``limit_id``
+    (model-specific / Spark / rare buckets) gets its own stream so a bucket with
+    a different quota can never contaminate the default series' transition
+    history (adversarial-review finding: two buckets sharing a window duration
+    were merged into one meter). The Claude desktop plan-usage series is
+    per-org; the terminal-CLI statusLine feed is its own stream. All are stable
+    across scans so consecutive unchanged snapshots collapse to one event.
     """
 
     if snapshot.origin == ORIGIN_CODEX_SESSION or snapshot.client == "codex":
+        limit_id = snapshot.limit_id
+        # "codex" is the default account-wide bucket — keep its legacy stream id
+        # so this fix does not fork the existing healthy series. Only non-default
+        # buckets branch into their own stream.
+        if limit_id and limit_id != "codex":
+            return f"{CODEX_RUN_ID}:{limit_id}"
         return CODEX_RUN_ID
     if snapshot.origin == ORIGIN_CLAUDE_STATUSLINE:
         return CLAUDE_STATUSLINE_RUN_ID
@@ -440,6 +461,11 @@ def snapshot_to_event(snapshot: RateLimitSnapshot) -> dict[str, Any]:
         "org": snapshot.org,
         "source_client_session_id": snapshot.source_session_id,
         "source_file": snapshot.source_file,
+        # Bucket identity, persisted so a future per-epoch calibrator can keep
+        # buckets distinct (§7.2 recording foundation). limit_id is identity;
+        # limit_name is a mutable display label kept only for provenance.
+        "limit_id": snapshot.limit_id,
+        "limit_name": snapshot.limit_name,
         "state_signature": snapshot_state_signature(snapshot),
     }
     return {
@@ -683,10 +709,20 @@ def read_codex_rate_limits_latest(
 ) -> RateLimitSnapshot | None:
     """The freshest account-wide Codex limit snapshot from recent session files.
 
-    Scans the ``max_files`` most-recently-modified rollout files across every
-    resolved codex root (the active session's file carries the newest limits) and
-    returns the snapshot with the latest ``captured_at``. Returns ``None`` if no
-    rollout carries rate limits.
+    Selection is by **file modification time**, not the rollout's outer
+    ``timestamp``. The outer timestamp is untrustworthy for freshness: a
+    fork/replay copies history into a NEW file and the recorder stamps each
+    copied ``TokenCount`` with a fresh ``now_utc()``, so a replayed OLD limit
+    payload can carry a numerically LARGER outer timestamp than the genuine
+    current one. Picking the global max over that timestamp (the previous
+    behaviour) could therefore surface a stale, replayed snapshot as "latest".
+
+    Filesystem mtime is not rewritten by replay: the active session's file is
+    the most-recently-modified, and its LAST chronological ``rate_limits`` line
+    is the genuine current state (replayed payloads sit in the copied prefix,
+    never after the live turns). So we walk files newest-mtime first and return
+    the first that yields a snapshot. Returns ``None`` if no rollout carries
+    rate limits.
     """
 
     rollouts: list[Path] = []
@@ -705,20 +741,14 @@ def read_codex_rate_limits_latest(
             return 0.0
 
     rollouts.sort(key=_mtime, reverse=True)
-    best: RateLimitSnapshot | None = None
-    best_key = float("-inf")
     for path in rollouts[: max(1, max_files)]:
         try:
             snapshot = _read_codex_file_latest_rate_limits(path)
         except Exception:  # noqa: BLE001 - fail soft per the module contract.
             continue
-        if snapshot is None:
-            continue
-        key = snapshot.captured_at if snapshot.captured_at is not None else 0.0
-        if key > best_key:
-            best = snapshot
-            best_key = key
-    return best
+        if snapshot is not None:
+            return snapshot
+    return None
 
 
 def read_claude_plan_usage_latest(
