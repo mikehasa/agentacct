@@ -27,6 +27,10 @@ final class DashboardStore: ObservableObject {
     /// its own fixed windows.
     @Published private(set) var usageDays = 30
 
+    /// Monotonic token so rapid range switches can't land out of order and a
+    /// failed fetch can't leave the old data labeled with the new range.
+    private var usageDaysGeneration = 0
+
     private let client = GlanceClient()
     private let pageSize = 60
 
@@ -117,14 +121,20 @@ final class DashboardStore: ObservableObject {
         planStatuses.first { $0.client == clientName }
     }
 
-    /// Switch the cost-chart range and refetch just the usage cube.
+    /// Switch the cost-chart range and refetch just the usage cube. The range
+    /// label only flips once the matching payload has landed, and only the
+    /// newest in-flight switch is allowed to write.
     func setUsageDays(_ days: Int) async {
         guard days != usageDays else { return }
-        usageDays = days
+        usageDaysGeneration += 1
+        let generation = usageDaysGeneration
         do {
             let summary: UsageSummary = try await client.getLocal("/usage/summary?days=\(days)")
+            guard generation == usageDaysGeneration else { return }
+            usageDays = days
             usage = summary
         } catch {
+            guard generation == usageDaysGeneration else { return }
             errorText = "usage range fetch failed: \(error.localizedDescription)"
         }
     }

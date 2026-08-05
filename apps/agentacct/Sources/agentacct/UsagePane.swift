@@ -372,7 +372,11 @@ struct DailyChart: View {
                     .frame(height: 112, alignment: .bottom)
                     .overlay(alignment: .topLeading) {
                         if let hovered {
-                            DayTooltip(period: hovered, clients: visibleClients)
+                            // Cost has no per-client breakdown, so a day cost is
+                            // only honest when nothing is hidden; otherwise the
+                            // header would out-total the rows it sits above.
+                            DayTooltip(period: hovered, clients: visibleClients,
+                                       dayCostText: hidden.isEmpty ? hovered.costText : nil)
                         }
                     }
                     HStack {
@@ -390,10 +394,18 @@ struct DailyChart: View {
     }
 }
 
-/// The hover card: one day's totals and per-client split.
+/// The hover card: one day's totals and per-client split. The header total is
+/// summed over the VISIBLE clients so it always equals the stacked bar and the
+/// rows below it; the day cost is only shown when the caller vouches it covers
+/// the same (unfiltered) set.
 struct DayTooltip: View {
     let period: PeriodBucket
     let clients: [String]
+    var dayCostText: String? = nil
+
+    private var visibleFresh: Int {
+        clients.reduce(0) { $0 + (period.byClient?[$1]?.freshTokens ?? 0) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -401,12 +413,14 @@ struct DayTooltip: View {
                 Text(period.shortLabel)
                     .font(Type.tiny.weight(.semibold))
                     .foregroundStyle(Theme.text)
-                Text(period.freshTokens.map(UsageTotals.compact) ?? "—")
+                Text(UsageTotals.compact(visibleFresh))
                     .font(Type.tiny.monospacedDigit())
                     .foregroundStyle(Theme.textMuted)
-                Text(period.costText)
-                    .font(Type.tiny.monospacedDigit())
-                    .foregroundStyle(Theme.textMuted)
+                if let dayCostText {
+                    Text(dayCostText)
+                        .font(Type.tiny.monospacedDigit())
+                        .foregroundStyle(Theme.textMuted)
+                }
             }
             ForEach(clients, id: \.self) { client in
                 if let slice = period.byClient?[client], let fresh = slice.freshTokens, fresh > 0 {

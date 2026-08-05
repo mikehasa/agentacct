@@ -508,7 +508,10 @@ struct SessionDetail: View {
                 }
                 if let attributed = join.attributedWork, !attributed.isEmpty {
                     VStack(alignment: .leading, spacing: 3) {
-                        ForEach(attributed) { work in
+                        // Position-keyed: a malformed row with no work_id/section_id
+                        // must keep stable identity across renders (an id that
+                        // minted a fresh UUID each access churned the list).
+                        ForEach(Array(attributed.enumerated()), id: \.offset) { _, work in
                             HStack(spacing: 6) {
                                 Image(systemName: "arrow.right")
                                     .font(.system(size: 8))
