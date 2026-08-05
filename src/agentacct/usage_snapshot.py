@@ -7,7 +7,7 @@ authoritative local event log, with no credentials or API calls.
 
 Data paths (factored out of the CLI commands verbatim, so behavior is unchanged):
 
-* **usage/cost** — ``_build_usage_view([], events)`` (:mod:`agentacct.api`) maps
+* **usage/cost** — ``_build_usage_view([], events)`` (:mod:`agentacct.usage_view`) maps
   events to usage records (``model_usage`` only; session / diagnostic / work
   events are excluded), then :func:`agentacct.usage_cube.build_usage_cube` with
   ``days=N`` scopes each calendar window. Expressing a window as ``days=N``
@@ -23,7 +23,7 @@ Data paths (factored out of the CLI commands verbatim, so behavior is unchanged)
   The provider-reported windows carry ``used_percent`` + ``resets_at`` and drive
   the live bars and reset countdown.
 
-The heavy imports (:mod:`agentacct.api`, :mod:`agentacct.usage_cube`,
+The heavy imports (:mod:`agentacct.usage_view`, :mod:`agentacct.usage_cube`,
 :mod:`agentacct.rate_limits`) are deferred into the functions that need them so
 importing this module stays cheap for the CLI's cold start.
 """
@@ -362,7 +362,7 @@ def usage_records(events: list[dict[str, Any]], *, client: str | None = None) ->
     needs so held usage is still counted toward availability.
     """
 
-    from .api import _build_usage_view
+    from .usage_view import _build_usage_view
 
     view = _build_usage_view([], events)
     records = [*view.saved_records, *view.excluded_saved_records]
@@ -398,7 +398,7 @@ def build_usage_snapshot(
     surface a clear error. ``now`` / ``today`` are injectable for tests.
     """
 
-    from .api import _usage_record_time
+    from .usage_view import _usage_record_time
     from .usage_cube import build_usage_cube
 
     if breakdown_window not in NOW_WINDOW_ALIASES:
@@ -465,7 +465,7 @@ def build_usage_page(
     the overview. ``now`` / ``today`` are injectable for tests.
     """
 
-    from .api import _usage_record_time
+    from .usage_view import _usage_record_time
     from .usage_cube import build_usage_cube, resolve_granularity
 
     records = usage_records(events, client=client)

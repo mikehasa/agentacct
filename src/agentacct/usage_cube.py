@@ -4,7 +4,7 @@ Aggregates SAVED usage rows by client, by (client, provider, model), and by
 local-day / ISO-week period, with a date-range filter. The caller feeds it the
 same ``DashboardUsageRecord`` intake every dashboard surface shares (trusted
 local import rows only — diagnostic events and shadowed legacy rows can never
-enter), plus the ONE canonical row-timestamp rule (``api._usage_record_time``)
+enter), plus the ONE canonical row-timestamp rule (``usage_view._usage_record_time``)
 as ``record_time``; nothing here re-derives identity, trust, or time semantics.
 
 Pure functions: no store access, no live scan, and no clock access unless the

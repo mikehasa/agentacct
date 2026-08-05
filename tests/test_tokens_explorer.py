@@ -20,7 +20,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import agentacct.api as api_module
-from agentacct.api import DashboardUsageRecord, _usage_record_time, create_local_api_app
+from agentacct.api import create_local_api_app
+from agentacct.usage_view import DashboardUsageRecord, _usage_record_time
 from agentacct.service import SentinelService
 from agentacct.usage_cube import (
     build_usage_cube,

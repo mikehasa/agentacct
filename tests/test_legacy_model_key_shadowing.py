@@ -16,7 +16,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from agentacct.api import _build_usage_view
+from agentacct.usage_view import _build_usage_view
 from agentacct.cli import app
 from agentacct.context_bridge import build_usage_context_bridge
 from agentacct.usage_truth import (
