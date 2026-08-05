@@ -10,7 +10,8 @@ show "usage · cost · plan · active sessions" at a glance. Design contract:
   number another surface would not show.
 * **Cheap under polling** — the payload is rebuilt when the event list changes
   (``events_fingerprint``) or when the cached build is older than the cache
-  TTL; a poll that hits the cache is a dictionary lookup. The TTL exists
+  TTL; a poll that hits the cache skips the aggregation rebuild (each poll
+  still loads the event list once to compute the change key). The TTL exists
   because the payload is calendar/time-dependent (the "today" window, the
   recency cutoff, ``limits[].stale``) — an unchanged event list must still
   refresh across midnight. The expensive work-ledger build is deliberately NOT
@@ -30,9 +31,12 @@ Reader contract for the discovery file: first-alive-writer-wins (a second
 server against the same store leaves a live owner's file alone and simply
 stays unpublished); a crash/SIGKILL/closed terminal can leave a stale file
 whose ``pid`` is dead — readers treat a failed connect exactly like a missing
-file (disconnected state), and the next server start takes the stale slot
-over. The token is per-boot, so a stale token is worthless. Re-read the file
-whenever auth fails (401): the server restarted with a fresh token.
+file (disconnected state). Every server runs a re-claim heartbeat
+(:func:`run_discovery_heartbeat`), so a freed or stale slot — including the
+restart-drain window where the new server started unpublished — is taken over
+within one interval (~30s). The token is per-boot, so a stale token is
+worthless. Re-read the file whenever auth fails (401): the server restarted
+with a fresh token.
 """
 
 from __future__ import annotations
@@ -207,7 +211,11 @@ def write_discovery_file(
         "written_at": time.time(),
     }
     tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # O_EXCL after clearing any stale leftover: a crash between open and
+    # replace can strand a 0600 tmp with a (per-boot, soon-worthless) token,
+    # and O_EXCL refuses to follow a pre-planted symlink at the tmp name.
+    tmp.unlink(missing_ok=True)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -246,6 +254,39 @@ def claim_discovery_file(
         if existing is not None and existing.get("pid") != owner and _pid_alive(existing.get("pid")):
             return None
         return write_discovery_file(store_dir, host=host, port=port, token=token, version=version, pid=owner)
+
+
+def run_discovery_heartbeat(
+    store_dir: Path | str,
+    *,
+    host: str,
+    port: int,
+    token: str,
+    version: str,
+    stop: Any,
+    interval_seconds: float = 30.0,
+) -> None:
+    """Periodically re-claim the discovery slot until ``stop`` is set.
+
+    Why a heartbeat: claim-once leaves one stranding window — a new server
+    that starts while the OLD one is still draining sees a live owner, stays
+    unpublished, and when the old server exits (removing its own file) the
+    healthy survivor is undiscoverable forever. The heartbeat closes that and
+    every other freed-slot state (SIGKILL-stale files included): within one
+    interval of the slot freeing up, the surviving server owns it.
+
+    Each tick is one flock + one small read (plus a rewrite only when the slot
+    is free or already ours — claim semantics). ``stop`` is a
+    ``threading.Event``; the loop exits promptly when it is set. Errors are
+    swallowed per-tick: discovery is best-effort and must never take the
+    server down.
+    """
+
+    while not stop.wait(interval_seconds):
+        try:
+            claim_discovery_file(store_dir, host=host, port=port, token=token, version=version)
+        except OSError:
+            continue
 
 
 def read_discovery_file(store_dir: Path | str) -> dict[str, Any] | None:

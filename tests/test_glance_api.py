@@ -498,6 +498,97 @@ def test_recent_session_plan_pct_is_gated_by_client(tmp_path):
     assert rows[("codex", shared_session)]["plan_pct"] is None
 
 
+def test_non_ascii_bearer_token_yields_401_not_500(tmp_path):
+    """Round-2 security finding: Starlette decodes header bytes as latin-1, and
+    hmac.compare_digest raises TypeError on non-ASCII str — the gate must stay
+    a clean 401 (the reader contract's re-read signal), never a 500. httpx
+    refuses to SEND such a header, so this drives the ASGI app directly."""
+
+    import asyncio
+
+    SentinelService(tmp_path)
+    app = create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN)
+
+    async def _get_status(raw_authorization: bytes) -> int:
+        messages: list[dict] = []
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            messages.append(message)
+
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/v1/glance",
+            "raw_path": b"/v1/glance",
+            "query_string": b"",
+            "root_path": "",
+            "headers": [(b"host", b"testserver"), (b"authorization", raw_authorization)],
+            "client": ("127.0.0.1", 12345),
+            "server": ("127.0.0.1", 80),
+        }
+        await app(scope, receive, send)
+        return next(m["status"] for m in messages if m["type"] == "http.response.start")
+
+    assert asyncio.run(_get_status(b"Bearer caf\xe9")) == 401
+    assert asyncio.run(_get_status(b"Bearer \xff\xfe")) == 401
+
+
+def test_discovery_heartbeat_reclaims_a_freed_slot(tmp_path):
+    """Round-2 lifecycle finding: a serve that started unpublished (live owner
+    still draining) must take the slot over once the owner's file goes away —
+    the heartbeat is what closes the stranded-undiscoverable end state."""
+
+    import threading
+
+    from agentacct.glance import run_discovery_heartbeat
+
+    store = tmp_path / "store"
+    store.mkdir()
+    # A live foreign owner holds the slot (pid 1).
+    write_discovery_file(store, host="127.0.0.1", port=9001, token="owner", version="0.9.0", pid=1)
+
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=run_discovery_heartbeat,
+        kwargs={
+            "store_dir": store,
+            "host": "127.0.0.1",
+            "port": 9002,
+            "token": "mine",
+            "version": "0.9.1",
+            "stop": stop,
+            "interval_seconds": 0.01,
+        },
+        daemon=True,
+    )
+    thread.start()
+    try:
+        time.sleep(0.1)
+        held = read_discovery_file(store)
+        assert held is not None and held["pid"] == 1  # live owner respected
+
+        # The owner exits and removes its file (simulated): the heartbeat must
+        # re-claim within a tick.
+        remove_discovery_file(store, pid=1)
+        deadline = time.time() + 2.0
+        claimed = None
+        while time.time() < deadline:
+            claimed = read_discovery_file(store)
+            if claimed is not None and claimed["pid"] == os.getpid():
+                break
+            time.sleep(0.02)
+        assert claimed is not None and claimed["pid"] == os.getpid() and claimed["token"] == "mine"
+    finally:
+        stop.set()
+        thread.join(timeout=2)
+
+
 # ---------------------------------------------------------------------------
 # serve wiring
 # ---------------------------------------------------------------------------
