@@ -1,4 +1,4 @@
-"""Canonical Task outcome parity across Work cards and Task Intelligence."""
+"""Canonical Task outcome parity across the reducer and Task Intelligence."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ from typing import Any
 
 import pytest
 
-from agentacct.api import _task_product_state
 from agentacct.finding_disposition import finding_target_digest
 from agentacct.task_intelligence import build_task_intelligence
 from agentacct.task_outcome import (
@@ -52,27 +51,27 @@ def _task(
 
 
 def _surface_states(task: dict[str, Any]) -> tuple[str, str]:
-    home, _carrier = _task_product_state(task)
+    outcome = reduce_task_outcome(task)
     detail = build_task_intelligence(task, public_task_id="task_test", title="Test task")
-    return str(home["key"]), str(detail["states"]["outcome"]["key"])
+    return str(outcome["key"]), str(detail["states"]["outcome"]["key"])
 
 
 @pytest.mark.parametrize(
-    ("check_time", "expected_home", "expected_detail"),
+    ("check_time", "expected_outcome", "expected_detail"),
     [
-        (50.0, "reported_done", "reported"),
+        (50.0, "reported", "reported"),
         (100.0, "verified", "verified"),
         (150.0, "verified", "verified"),
     ],
 )
 def test_passing_check_must_not_predate_the_work_it_verifies(
     check_time: float,
-    expected_home: str,
+    expected_outcome: str,
     expected_detail: str,
 ) -> None:
     task = _task(task_checks=[_check("passed", created_at=check_time, event_id="pass")])
 
-    assert _surface_states(task) == (expected_home, expected_detail)
+    assert _surface_states(task) == (expected_outcome, expected_detail)
 
 
 def test_failed_work_status_cannot_be_overridden_by_task_level_pass() -> None:
@@ -129,8 +128,8 @@ def test_capture_only_failure_is_finding_but_passing_only_is_observed() -> None:
         "task_evidence_events": [_check("passed", created_at=100.0, event_id="pass")],
     }
 
-    assert _surface_states(failed) == ("open_finding", "finding")
-    assert _surface_states(passed) == ("activity", "unknown")
+    assert _surface_states(failed) == ("finding", "finding")
+    assert _surface_states(passed) == ("observed", "unknown")
 
 
 @pytest.mark.parametrize(
@@ -153,7 +152,7 @@ def test_explicit_blocker_outranks_current_failed_check(
     assert _surface_states(task) == ("blocked", "blocked")
 
 
-def test_blocked_task_carrier_keeps_specific_blocker_across_multiple_steps() -> None:
+def test_blocked_step_outranks_other_steps_and_failures_across_multiple_steps() -> None:
     task = {
         "work_items": [
             {
@@ -182,12 +181,9 @@ def test_blocked_task_carrier_keeps_specific_blocker_across_multiple_steps() -> 
         "usage": {"rows": 0},
     }
 
-    state, carrier = _task_product_state(task)
+    outcome = reduce_task_outcome(task)
 
-    assert state["key"] == "blocked"
-    assert carrier is not None
-    assert carrier["work_id"] == "blocked-step"
-    assert carrier["blocker"] == "Need the user to provide an API key"
+    assert outcome["key"] == "blocked"
     assert _surface_states(task) == ("blocked", "blocked")
 
 
@@ -204,17 +200,15 @@ def test_resolved_blocker_is_canonical_but_never_verified_or_completed() -> None
         "summary": "The exact blocker was reported resolved.",
     }
 
-    home, carrier = _task_product_state(task)
+    outcome = reduce_task_outcome(task)
     detail = build_task_intelligence(
         task,
         public_task_id="task_resolved",
         title="Resolved task",
     )
 
-    assert home["key"] == "resolved"
-    assert home["label"] == "Resolved"
-    assert carrier is not None
-    assert carrier["blocker_resolution"]["state"] == "resolved"
+    assert outcome["key"] == "resolved"
+    assert outcome["key"] not in {"verified", "reported"}
     assert detail["states"]["outcome"]["key"] == "resolved"
     assert "not a verified completion" in detail["decision_brief"]["outcome_statement"]
 
@@ -252,13 +246,11 @@ def test_mixed_reviewed_and_resolved_findings_use_truthful_aggregate_copy() -> N
         },
     ]
 
-    home, _carrier = _task_product_state(task)
+    outcome = reduce_task_outcome(task)
     detail = build_task_intelligence(task, public_task_id="task_mixed", title="Mixed findings")
 
-    assert home["key"] == "finding_reviewed"
-    assert home["label"] == "Findings reviewed"
-    assert "reviewed or marked resolved" in home["why"]
-    assert "every current finding reviewed" not in home["why"].lower()
+    assert outcome["key"] == "finding"
+    assert outcome["finding_attention_state"] == "reviewed"
     assert detail["states"]["outcome"]["key"] == "finding"
     assert "reviewed or marked resolved" in detail["decision_brief"]["outcome_statement"]
     assert detail["findings"]["reviewed_count"] == 1
@@ -295,11 +287,10 @@ def test_handed_off_step_is_a_clean_terminal_not_in_progress_or_verified() -> No
     assert outcome["key"] == "handed_off"
     assert outcome["key"] not in {"in_progress", "verified", "reported", "reported_done", "blocked"}
 
-    home, _carrier = _task_product_state(task)
-    assert (home["key"], home["label"]) == ("handed_off", "Handed off")
-    assert home["action_required"] is False
+    detail = build_task_intelligence(task, public_task_id="task_handoff", title="Handoff")
+    assert detail["states"]["outcome"]["key"] == "handed_off"
     # Honesty: a handoff is never dressed up as a completion/verification.
-    assert "not a completed or verified" in home["why"]
+    assert "not a completed or verified" in detail["decision_brief"]["outcome_statement"]
 
 
 def test_completed_task_left_behind_by_later_elsewhere_activity_is_mostly_done() -> None:
@@ -325,10 +316,14 @@ def test_completed_task_left_behind_by_later_elsewhere_activity_is_mostly_done()
     # The open step stays open in the data; the Task is never called finished.
     assert outcome["key"] not in {"verified", "reported_done", "in_progress"}
 
-    home, _carrier = _task_product_state(task, latest_store_activity_at=later_elsewhere)
-    assert home["key"] == "mostly_done"
-    assert "1 step left open" in home["label"]
-    assert home["action_required"] is False
+    detail = build_task_intelligence(
+        task,
+        public_task_id="task_left_behind",
+        title="Left behind",
+        latest_store_activity_at=later_elsewhere,
+    )
+    assert detail["states"]["outcome"]["key"] == "mostly_done"
+    assert "not a claim the Task is finished" in detail["decision_brief"]["outcome_statement"]
 
 
 def test_old_task_with_no_later_activity_anywhere_stays_in_progress() -> None:
@@ -348,10 +343,6 @@ def test_old_task_with_no_later_activity_anywhere_stays_in_progress() -> None:
     # And with NO store signal supplied, it must also stay in_progress — nothing
     # silently flips on missing data.
     assert reduce_task_outcome(task)["key"] == "in_progress"
-    # The home surface, called without a cross-session reference, is likewise
-    # conservative rather than guessing abandonment from silence.
-    home, _carrier = _task_product_state(task)
-    assert home["key"] == "in_progress"
 
 
 def test_elsewhere_activity_within_buffer_stays_in_progress() -> None:
@@ -394,9 +385,6 @@ def test_genuinely_live_task_reads_in_progress() -> None:
     live_store = task_newest_event_at(task) + 30 * 60  # 30 min later, still live
     outcome = reduce_task_outcome(task, latest_store_activity_at=live_store)
     assert outcome["key"] == "in_progress"
-
-    home, _carrier = _task_product_state(task, latest_store_activity_at=live_store)
-    assert home["key"] == "in_progress"
 
 
 def test_open_steps_without_any_completed_step_stay_in_progress() -> None:

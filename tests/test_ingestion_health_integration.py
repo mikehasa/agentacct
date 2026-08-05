@@ -13,9 +13,8 @@ from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 import agentacct.cli as cli_module
-import agentacct.api as api_module
 import agentacct.client_usage as client_usage_module
-from agentacct.api import UsageDiscoveryConfig, create_local_api_app
+from agentacct.api import create_local_api_app
 from agentacct.cli import app
 from agentacct.ingestion_health import (
     INGESTION_HEALTH_DIRNAME,
@@ -23,7 +22,6 @@ from agentacct.ingestion_health import (
     IngestionHealthStore,
 )
 from agentacct.service import SentinelService
-from refresh_flash import refresh_flash_qs, run_dashboard_refresh
 
 
 def _make_codex_home(root: Path) -> Path:
@@ -202,27 +200,6 @@ def test_ingestion_health_endpoints_distinguish_service_liveness_from_sync_healt
     assert service_health.json()["ingestion"]["state"] == "degraded"
 
 
-def test_dashboard_degraded_sync_state_gives_a_concrete_action(tmp_path: Path) -> None:
-    store_dir = tmp_path / "state"
-    health_store = IngestionHealthStore(store_dir)
-    scan_id = health_store.begin_scan(
-        sources=("codex",),
-        scan_limit=20,
-        importer_version="integration-test",
-        pid=4242,
-        started_at=time.time() - 2,
-    )
-    health_store.fail_scan(scan_id, error_code="sqlite_read_failed", failed_at=time.time() - 1)
-
-    html = TestClient(create_local_api_app(store_dir=store_dir)).get("/").text
-
-    assert "Refresh now or inspect the source setup." in html
-    assert 'action="/usage/import-local"' in html
-    assert '<button class="button" type="submit">Refresh</button>' in html
-    # A warning without a recovery path was the old product failure mode.
-    assert "Needs attention" not in html
-
-
 def test_claude_structural_recovery_is_source_specific_and_retries_fail_closed(
     tmp_path: Path,
     monkeypatch,
@@ -271,39 +248,35 @@ def test_claude_structural_recovery_is_source_specific_and_retries_fail_closed(
         },
         completed_at=time.time() - 1,
     )
-    client = TestClient(
-        create_local_api_app(
-            store_dir=store_dir,
-            usage_discovery=UsageDiscoveryConfig.from_home(home),
-        )
-    )
+    client = TestClient(create_local_api_app(store_dir=store_dir))
 
-    home_html = client.get("/").text
-    assert "Refresh alone cannot repair it." in home_html
-    assert 'href="/advanced#activity-sync-recovery"' in home_html
-    advanced_html = client.get("/advanced").text
-    assert 'id="activity-sync-recovery"' in advanced_html
-    assert "Parsed selected / all candidates" in advanced_html
-    assert "Usage-bearing selected / all candidates" not in advanced_html
-    assert (
-        "agentacct usage import-local --client claude-code --dry-run --json"
-        in advanced_html
-    )
-    assert 'action="/usage/import-local/claude-code"' in advanced_html
-
-    def unexpected_pricing_refresh(**_kwargs):
+    def unexpected_pricing_refresh(*_args, **_kwargs):
         raise AssertionError("Claude recovery must not refresh the global pricing catalog")
 
     monkeypatch.setattr(
-        api_module,
+        cli_module,
         "ensure_fresh_pricing_snapshot",
         unexpected_pricing_refresh,
     )
-    recovered = client.post(
-        "/usage/import-local/claude-code",
-        follow_redirects=False,
-    )
-    assert recovered.status_code == 303
+
+    def _claude_import() -> None:
+        result = CliRunner().invoke(
+            app,
+            [
+                "usage",
+                "import-local",
+                "--client",
+                "claude-code",
+                "--store-dir",
+                str(store_dir),
+                "--claude-home",
+                str(home / ".claude"),
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+    _claude_import()
     recovered_health = client.get("/ingestion/health").json()
     assert recovered_health["issues"] == []
     assert {row["source"] for row in recovered_health["sources"]} == {
@@ -322,11 +295,7 @@ def test_claude_structural_recovery_is_source_specific_and_retries_fail_closed(
     )
     ledger_after_first_failed_scan = None
     for expected_failures in (1, 2):
-        retry = client.post(
-            "/usage/import-local/claude-code",
-            follow_redirects=False,
-        )
-        assert retry.status_code == 303
+        _claude_import()
         retry_health = client.get("/ingestion/health").json()
         claude = next(
             row
@@ -359,11 +328,7 @@ def test_claude_structural_recovery_is_source_specific_and_retries_fail_closed(
             assert current_ledger == ledger_after_first_failed_scan
 
     unresolved.unlink()
-    clean_retry = client.post(
-        "/usage/import-local/claude-code",
-        follow_redirects=False,
-    )
-    assert clean_retry.status_code == 303
+    _claude_import()
     assert client.get("/ingestion/health").json()["issues"] == []
     assert (
         SentinelService(store_dir, create=False).list_all_events()
@@ -399,8 +364,6 @@ def test_hermes_multiple_home_failure_requires_selection_not_refresh(tmp_path: P
     client = TestClient(create_local_api_app(store_dir=store_dir))
 
     health = client.get("/ingestion/health").json()
-    home_html = client.get("/").text
-    advanced_html = client.get("/advanced").text
 
     assert health["state"] == "degraded"
     assert health["issues"] == [
@@ -414,32 +377,43 @@ def test_hermes_multiple_home_failure_requires_selection_not_refresh(tmp_path: P
             ),
         }
     ]
-    assert "Refreshing the unchanged configuration cannot repair this." in home_html
-    assert 'href="/advanced#activity-sync-recovery"' in home_html
-    assert '<button class="button" type="submit">Refresh now</button>' not in home_html
-    assert "Choose and verify one home:" in advanced_html
-    assert (
-        "agentacct usage import-local --client hermes --hermes-home "
-        "/absolute/path/to/chosen-home --dry-run --json"
-        in advanced_html
-    )
 
 
-def test_dashboard_refresh_persists_receipts_exposed_by_health_api(tmp_path: Path) -> None:
+def test_all_clients_import_persists_receipts_exposed_by_health_api(tmp_path: Path) -> None:
     home = tmp_path / "home"
     _make_codex_home(home)
     store_dir = tmp_path / "state"
-    client = TestClient(
-        create_local_api_app(
-            store_dir=store_dir,
-            usage_discovery=UsageDiscoveryConfig.from_home(home),
-        )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "usage",
+            "import-local",
+            "--client",
+            "all",
+            "--store-dir",
+            str(store_dir),
+            "--codex-home",
+            str(home / ".codex"),
+            "--claude-home",
+            str(home / ".claude"),
+            "--opencode-home",
+            str(home / ".local" / "share" / "opencode"),
+            "--hermes-home",
+            str(home / ".hermes"),
+            "--openclaw-home",
+            str(home / ".openclaw"),
+            "--cursor-home",
+            str(home / "Library" / "Application Support" / "Cursor"),
+            "--json",
+        ],
     )
 
-    response = run_dashboard_refresh(client)
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["imported_events"] == 1
 
-    assert response.status_code == 303
-    assert "imported=1" in refresh_flash_qs(response)
+    client = TestClient(create_local_api_app(store_dir=store_dir))
     health = client.get("/ingestion/health").json()
     assert health["state"] == "unknown"  # Manual refresh succeeded; no watcher is running.
     assert {row["source"] for row in health["sources"]} == {

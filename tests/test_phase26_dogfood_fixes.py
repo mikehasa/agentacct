@@ -3,8 +3,9 @@ nesting via rollout session_meta parents, cross-store context-scope honesty,
 and the global-install CLI capability (hook --store-dir / user settings).
 
 All stores/homes are throwaway tmp_path fixtures (suite conftest guards the
-real dogfood ledger). Rendered-HTML assertions cover what the owner actually
-saw break; data-level assertions pin the ledger/importer contracts.
+real dogfood ledger). Since the HTML retirement the surfaced claims are
+asserted on the kept JSON routes (/sessions) and the ledger/importer
+contracts directly.
 """
 
 from __future__ import annotations
@@ -110,15 +111,13 @@ def _record_section(store_root: Path, *, section_id: str, session: str, client: 
     )
 
 
-def _product_html(store_root: Path) -> str:
-    # Phase 3.5a route split: session rows live on the /sessions page
-    # (Accept-negotiated HTML; the bare path stays the JSON rollup).
-    # days=all: these fixtures pin historical timestamps, which the
-    # explorer's default 30-day last-activity window (Phase 3.5c) excludes.
+def _sessions_response(store_root: Path):
+    # HTML retirement: GET /sessions is the JSON rollup (no day filtering on
+    # the JSON surface, so historical fixture timestamps stay visible).
     client = TestClient(create_local_api_app(store_dir=store_root))
-    response = client.get("/sessions?days=all", headers={"Accept": "text/html"})
+    response = client.get("/sessions")
     assert response.status_code == 200
-    return response.text
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -164,37 +163,30 @@ def test_non_worktree_row_keeps_plain_label_and_no_source(tmp_path) -> None:
     assert entry["project_source"] is None
 
 
-def test_worktree_row_renders_owner_label_with_worktree_chip(tmp_path) -> None:
-    store_root = tmp_path / "state"
-    _record_usage(store_root, _historical_usage_event(session="wt-session", project_dir=WORKTREE_CWD))
-
-    html = _product_html(store_root)
-
-    assert OWNER_LABEL in html
-    assert ">worktree</span>" in html
-    assert "great-tesla-9cc8ad" not in html
-
-
-def test_plain_row_renders_no_worktree_chip(tmp_path) -> None:
-    store_root = tmp_path / "state"
-    _record_usage(store_root, _historical_usage_event(session="plain-session", project_dir="/Users/owner/plain-repo"))
-
-    html = _product_html(store_root)
-
-    assert "plain-repo" in html
-    assert ">worktree</span>" not in html
-
-
 def test_sessions_json_keeps_clean_owner_name_plus_project_source(tmp_path) -> None:
     store_root = tmp_path / "state"
     _record_usage(store_root, _historical_usage_event(session="wt-session", project_dir=WORKTREE_CWD))
 
-    client = TestClient(create_local_api_app(store_dir=store_root))
-    payload = client.get("/sessions").json()
+    response = _sessions_response(store_root)
+    payload = response.json()
 
     entry = payload["sessions"][0]
     assert entry["project"] == OWNER_LABEL
     assert entry["project_source"] == "claude_worktree"
+    # The meaningless worktree folder name never leaks anywhere into the
+    # surfaced payload (was the HTML page's no-leak guarantee).
+    assert "great-tesla-9cc8ad" not in response.text
+
+
+def test_sessions_json_plain_row_has_no_worktree_marking(tmp_path) -> None:
+    store_root = tmp_path / "state"
+    _record_usage(store_root, _historical_usage_event(session="plain-session", project_dir="/Users/owner/plain-repo"))
+
+    payload = _sessions_response(store_root).json()
+
+    entry = payload["sessions"][0]
+    assert entry["project"] == "plain-repo"
+    assert entry["project_source"] is None
 
 
 def test_hook_capture_remaps_worktree_cwd_to_owner_basename() -> None:
@@ -446,7 +438,7 @@ def test_codex_spawn_edge_stays_the_primary_parent_source(tmp_path) -> None:
     assert internal.parent_client_session_id == other_parent
 
 
-def test_internal_session_nests_under_root_in_rendered_rollup(tmp_path) -> None:
+def test_internal_session_nests_under_root_in_sessions_rollup(tmp_path) -> None:
     store_root = tmp_path / "state"
     _record_usage(
         store_root,
@@ -462,19 +454,34 @@ def test_internal_session_nests_under_root_in_rendered_rollup(tmp_path) -> None:
     )
     _record_usage(store_root, internal_row)
 
-    html = _product_html(store_root)
+    payload = _sessions_response(store_root).json()
 
-    # One top-level row; the internal session folds under its true root as a
-    # labeled, never-merged subagent line.
-    sessions_html = html[html.index('id="sessions"') : html.index('id="work-items"')]
-    assert sessions_html.count('<details class="session-row">') == 1
-    assert "1 subagent session(s)" in sessions_html
+    by_id = {entry["client_session_id"]: entry for entry in payload["sessions"]}
+    assert len(by_id) == 2
+    root = by_id[ROOT_THREAD]
+    internal = by_id[INTERNAL_THREAD]
+    # One top-level group: the internal session folds under its true root
+    # (shared rollup_group_key), as a labeled child.
+    assert internal["rollup_group_key"] == f"codex::{ROOT_THREAD}"
+    assert root["rollup_group_key"] == f"codex::{ROOT_THREAD}"
+    assert internal["related"]["parent"]["client_session_id"] == ROOT_THREAD
+    assert root["related"]["child_session_count"] == 1
+    # Never merged, never double-counted: the root keeps its OWN totals
+    # (100 in + 25 out per fixture) and the codex child's row is excluded as
+    # non-additive (root rollout totals already cover subagents), riding only
+    # the labeled children_usage subtotal.
+    assert root["usage"]["total_tokens"] == 125
+    assert root["related"]["children_usage"]["sessions"] == 1
+    assert internal["usage"]["excluded_non_additive_rows"] == 1
+    assert root["related"]["children_usage"]["excluded_non_additive_rows"] == 1
+    # The auto-review kind stays: "internal", never "child".
+    assert internal["session_kind"] == "internal"
 
 
-def test_orphaned_internal_session_renders_auto_review_chip(tmp_path) -> None:
+def test_orphaned_internal_session_stays_top_level_with_internal_kind(tmp_path) -> None:
     store_root = tmp_path / "state"
-    # No parent recorded (outside the import window): stays top-level with an
-    # honest, self-explanatory chip.
+    # No parent recorded (outside the import window): stays top-level, its
+    # honest "internal" kind preserved for the display layer to label.
     _record_usage(
         store_root,
         _historical_usage_event(
@@ -482,9 +489,14 @@ def test_orphaned_internal_session_renders_auto_review_chip(tmp_path) -> None:
         ),
     )
 
-    html = _product_html(store_root)
+    payload = _sessions_response(store_root).json()
 
-    assert "internal (auto-review) session" in html
+    assert len(payload["sessions"]) == 1
+    entry = payload["sessions"][0]
+    assert entry["session_kind"] == "internal"
+    assert entry["related"]["parent"] is None
+    # Its own group key: top-level, not folded under anything.
+    assert entry["rollup_group_key"] == f"codex::{INTERNAL_THREAD}"
 
 
 # ---------------------------------------------------------------------------
@@ -553,27 +565,21 @@ def test_context_scope_defaults_to_this_store_without_a_store_label(tmp_path) ->
     assert ledger["session_rollup"]["sessions"][0]["join"]["context_scope"] == "this_store"
 
 
-def test_cross_store_chip_renders_project_name_and_explanation(tmp_path) -> None:
+def test_sessions_json_carries_context_scope(tmp_path) -> None:
     store_root = _dashboard_store(tmp_path)
     _record_usage(store_root, _historical_usage_event(session="foreign", project_dir="/Users/owner/legacy-project-a"))
     _record_usage(store_root, _historical_usage_event(session="local", project_dir=str(tmp_path / "dash-project")))
 
-    html = _product_html(store_root)
+    payload = _sessions_response(store_root).json()
 
-    assert "No MCP context in this store — session ran in legacy-project-a" in html
-    assert "Stores are per-project" in html
-    # The same-project zero-context row keeps the bare label.
-    assert ">No MCP context</span>" in html
-
-
-def test_sessions_json_carries_context_scope(tmp_path) -> None:
-    store_root = _dashboard_store(tmp_path)
-    _record_usage(store_root, _historical_usage_event(session="foreign", project_dir="/Users/owner/legacy-project-a"))
-
-    client = TestClient(create_local_api_app(store_dir=store_root))
-    payload = client.get("/sessions").json()
-
-    assert payload["sessions"][0]["join"]["context_scope"] == "other_project"
+    by_id = {entry["client_session_id"]: entry for entry in payload["sessions"]}
+    foreign = by_id["foreign"]
+    # The scope AND the foreign project's name both ride the entry — the
+    # display layer needs the name to say where the context actually lives.
+    assert foreign["join"]["context_scope"] == "other_project"
+    assert foreign["project"] == "legacy-project-a"
+    # The same-project zero-context row stays plain "this_store".
+    assert by_id["local"]["join"]["context_scope"] == "this_store"
 
 
 # ---------------------------------------------------------------------------

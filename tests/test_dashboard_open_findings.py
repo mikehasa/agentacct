@@ -1,4 +1,4 @@
-"""Product semantics for agent-discovered findings on the Work homepage."""
+"""Product semantics for agent-discovered findings in the /tasks projection."""
 
 from pathlib import Path
 
@@ -78,18 +78,30 @@ def test_agent_check_failure_is_an_open_finding_not_a_chronicle_failure(
         }
     )
 
-    html = TestClient(create_local_api_app(store_dir=store_root)).get("/").text
+    client = TestClient(create_local_api_app(store_dir=store_root))
+    projection = client.get("/tasks").json()
 
-    assert "1 task has an open finding" in html
-    assert '<span class="status status-finding">Open finding</span>' in html
-    assert "Agent finding" in html
-    assert "A negative buy produces an impossible share balance." in html
-    assert "This finding is about the work being reviewed, not agentacct health." in html
-    assert "No follow-up action was recorded." in html
-    assert "task needs review" not in html
-    assert "What failed" not in html
-    assert "What to do" not in html
-    assert "Resolve the reported failure" not in html
+    # The failure is an open finding on the task it belongs to...
+    assert projection["summary"]["assigned_open_finding_count"] == 1
+    assert projection["summary"]["unassigned_open_finding_count"] == 0
+    assert projection["summary"]["total_open_finding_count"] == 1
+    tasks_with_findings = [
+        task for task in projection["tasks"] if task.get("open_finding_events")
+    ]
+    assert len(tasks_with_findings) == 1
+    finding_event = tasks_with_findings[0]["open_finding_events"][0]
+    assert finding_event["summary"] == "A negative buy produces an impossible share balance."
+    episodes = tasks_with_findings[0]["finding_episodes"]
+    assert [episode["attention_open"] for episode in episodes] == [True]
+    # ...with no follow-up action recorded yet...
+    assert episodes[0]["disposition_state"] == "open"
+    assert episodes[0]["assignment"] == "assigned"
+    # ...and the failure is about the work being reviewed: it never surfaces
+    # as an agentacct-health attention item of its own.
+    attention_response = client.get("/attention")
+    assert attention_response.status_code == 200
+    assert "Share math boundary probe" not in attention_response.text
+    assert "A negative buy produces an impossible share balance." not in attention_response.text
 
 
 def test_unassigned_failure_stays_visible_without_becoming_needs_input(
@@ -114,19 +126,22 @@ def test_unassigned_failure_stays_visible_without_becoming_needs_input(
 
     client = TestClient(create_local_api_app(store_dir=store_root))
     projection = client.get("/tasks").json()
-    html = client.get("/").text
 
     assert projection["summary"]["unassigned_open_finding_count"] == 1
+    assert projection["summary"]["total_open_finding_count"] == 1
     assert len(projection["unassigned_findings"]) == 1
-    assert projection["unassigned_findings"][0]["assignment_state"] == "no_task_candidate"
-    assert "1 unassigned agent finding" in html
-    assert "Workspace findings" in html
-    assert "Unassigned agent finding" in html
-    assert "A negative buy produces an impossible share balance." in html
-    assert "Task association unavailable" in html
-    assert "agentacct kept the finding visible without inventing one." in html
-    assert '<strong>1</strong><span>Open findings</span>' in html
-    assert '<strong>0</strong><span>Needs input</span>' in html
+    unassigned = projection["unassigned_findings"][0]
+    assert unassigned["assignment_state"] == "no_task_candidate"
+    assert (
+        unassigned["event"]["summary"]
+        == "A negative buy produces an impossible share balance."
+    )
+    assert (
+        unassigned["reason"]
+        == "This check has no deterministic Task context. agentacct kept the finding visible without inventing one."
+    )
+    # Staying visible must not turn it into an agentacct needs-input item.
+    assert client.get("/attention").json()["total_items"] == 0
 
 
 def test_unassigned_same_check_pass_closes_failure_but_unrelated_pass_does_not(
@@ -159,12 +174,10 @@ def test_unassigned_same_check_pass_closes_failure_but_unrelated_pass_does_not(
 
     record(name="Share math boundary probe", result="passed")
     projection = client.get("/tasks").json()
-    html = client.get("/").text
 
     assert projection["summary"]["unassigned_open_finding_count"] == 0
+    assert projection["summary"]["total_open_finding_count"] == 0
     assert projection["unassigned_findings"] == []
-    assert "Workspace findings" not in html
-    assert '<strong>0</strong><span>Open findings</span>' in html
 
 
 def test_open_finding_metric_counts_episodes_across_task_and_unassigned_buckets(
@@ -206,13 +219,10 @@ def test_open_finding_metric_counts_episodes_across_task_and_unassigned_buckets(
 
     client = TestClient(create_local_api_app(store_dir=store_root))
     projection = client.get("/tasks").json()
-    html = client.get("/").text
 
     assert projection["summary"]["assigned_open_finding_count"] == 2
     assert projection["summary"]["unassigned_open_finding_count"] == 1
     assert projection["summary"]["total_open_finding_count"] == 3
-    assert '<strong>3</strong><span>Open findings</span>' in html
-    assert "3 open findings" in html
 
 
 def test_project_store_filters_same_basename_foreign_findings_by_full_identity(
@@ -253,16 +263,15 @@ def test_project_store_filters_same_basename_foreign_findings_by_full_identity(
     )
 
     client = TestClient(create_local_api_app(store_dir=store_root))
-    projection = client.get("/tasks").json()
-    html = client.get("/").text
+    response = client.get("/tasks")
+    projection = response.json()
 
     assert projection["summary"]["unassigned_open_finding_count"] == 1
     assert projection["summary"]["total_open_finding_count"] == 1
     assert [
         finding["event"]["summary"] for finding in projection["unassigned_findings"]
     ] == ["A legacy project-store row has no project path."]
-    assert "Legacy local finding" in html or "A legacy project-store row has no project path." in html
-    assert "This belongs to the other repo directory." not in html
+    assert "This belongs to the other repo directory." not in response.text
 
 
 def test_project_store_quarantines_pathless_check_from_filtered_foreign_session(
@@ -328,14 +337,13 @@ def test_project_store_quarantines_pathless_check_from_filtered_foreign_session(
     )
 
     client = TestClient(create_local_api_app(store_dir=store_root))
-    projection = client.get("/tasks").json()
-    html = client.get("/").text
+    response = client.get("/tasks")
+    projection = response.json()
 
     assert projection["tasks"] == []
     assert projection["unassigned_findings"] == []
     assert projection["summary"]["total_open_finding_count"] == 0
-    assert "FOREIGN ASSIGNED FINDING" not in html
-    assert '<strong>0</strong><span>Open findings</span>' in html
+    assert "FOREIGN ASSIGNED FINDING" not in response.text
 
 
 def test_project_store_quarantines_session_with_conflicting_full_project_identities(
@@ -552,27 +560,3 @@ def test_project_store_quarantines_pathless_check_with_only_foreign_candidate_se
     assert projection["tasks"] == []
     assert projection["unassigned_findings"] == []
     assert projection["summary"]["total_open_finding_count"] == 0
-
-
-def test_recent_feed_cap_never_hides_open_findings_or_blockers() -> None:
-    ordinary = [
-        {"name": f"ordinary-{index}", "state": {"key": "in_progress"}}
-        for index in range(12)
-    ]
-    finding = {"name": "must-show-finding", "state": {"finding_open": True}}
-    reviewed = {"name": "must-show-reviewed", "state": {"finding_present": True}}
-    blocker = {"name": "must-show-blocker", "state": {"action_required": True}}
-
-    visible = api_module._visible_attention_entries([*ordinary, finding, reviewed, blocker])
-    names = {entry["name"] for entry in visible}
-
-    assert len(visible) == 10
-    assert "must-show-finding" in names
-    assert "must-show-reviewed" in names
-    assert "must-show-blocker" in names
-
-    all_required = [
-        {"name": f"required-{index}", "state": {"finding_open": True}}
-        for index in range(12)
-    ]
-    assert api_module._visible_attention_entries(all_required) == all_required

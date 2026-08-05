@@ -12,10 +12,134 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from pathlib import Path
 
 import agentacct.client_usage as cu
-from tests.test_client_usage import _codex_token_count, _make_codex_home
+
+
+def _make_codex_home(root: Path, *, model: str = "gpt-5.5") -> Path:
+    codex_home = root / "codex-home"
+    sessions = codex_home / "sessions" / "2026" / "06" / "27"
+    sessions.mkdir(parents=True)
+    rollout = sessions / "rollout-2026-06-27T00-00-00-session-abc.jsonl"
+    rollout.write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "session_meta", "payload": {"id": "session-abc"}}),
+                json.dumps(
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "info": {
+                                "total_token_usage": {
+                                    "input_tokens": 1500,
+                                    "cached_input_tokens": 400,
+                                    "output_tokens": 75,
+                                    "reasoning_output_tokens": 11,
+                                    "total_tokens": 1575,
+                                }
+                            }
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "info": {
+                                "total_token_usage": {
+                                    "input_tokens": 2500,
+                                    "cached_input_tokens": 900,
+                                    "output_tokens": 125,
+                                    "reasoning_output_tokens": 22,
+                                    "total_tokens": 2625,
+                                },
+                                "last_token_usage": {
+                                    "input_tokens": 1000,
+                                    "cached_input_tokens": 500,
+                                    "output_tokens": 50,
+                                    "reasoning_output_tokens": 11,
+                                    "total_tokens": 1050,
+                                },
+                            },
+                            "model": model,
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    db = codex_home / "state_5.sqlite"
+    con = sqlite3.connect(db)
+    try:
+        con.execute(
+            """
+            create table threads (
+                id text primary key,
+                rollout_path text not null,
+                created_at integer not null,
+                updated_at integer not null,
+                cwd text not null,
+                title text not null,
+                tokens_used integer not null,
+                model text,
+                cli_version text
+            )
+            """
+        )
+        con.execute(
+            "insert into threads values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "session-abc",
+                str(rollout),
+                100,
+                200,
+                "/work/project",
+                "PRIVATE FIRST PROMPT MUST NEVER BECOME A TITLE",
+                2625,
+                model,
+                "0.test",
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+    (codex_home / "session_index.jsonl").write_text(
+        json.dumps(
+            {
+                "id": "session-abc",
+                "thread_name": "A useful Codex session",
+                "updated_at": "2026-06-27T00:00:00Z",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return codex_home
+
+
+def _codex_token_count(
+    timestamp: str,
+    total: dict[str, int],
+    *,
+    last: dict[str, int] | None = None,
+    model: str = "gpt-5.5",
+) -> dict[str, object]:
+    info: dict[str, object] = {"total_token_usage": total}
+    if last is not None:
+        info["last_token_usage"] = last
+    return {
+        "timestamp": timestamp,
+        "type": "event_msg",
+        "payload": {
+            "type": "token_count",
+            "model": model,
+            "info": info,
+        },
+    }
 
 
 def _rollout(home: Path) -> Path:

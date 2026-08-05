@@ -196,7 +196,7 @@ def test_global_install_recipe_installs_standing_instructions() -> None:
     assert "agentacct setup instructions --agent claude-code --user" in md
     assert "agentacct setup instructions --agent codex --user" in md
     # The note explaining WHY this is what fills the dashboard must ship too.
-    assert any("fill the dashboard with work context" in note for note in install_guide.GLOBAL_INSTALL_NOTES)
+    assert any("fill the work views (TUI / JSON API) with work context" in note for note in install_guide.GLOBAL_INSTALL_NOTES)
 
 
 def test_global_install_instructions_bind_the_marker_store_explicitly() -> None:
@@ -575,14 +575,16 @@ def test_capability_matrix_claude_code_line_is_honest_about_the_recipe() -> None
     assert "PreToolUse still captures" in claude_line
 
 
-def test_serve_note_names_the_refresh_button_not_a_page_reload() -> None:
-    """G1: a dashboard page reload is a read-only scan; only the
-    'Refresh & save usage' button writes. The note must name the button, never
-    tell the user to 'refresh the dashboard' to populate the ledger."""
-    assert "Refresh & save usage" in install_guide.SERVE_NOTE
-    assert "refresh the dashboard" not in install_guide.SERVE_NOTE.lower()
-    assert "read-only scan" in install_guide.SERVE_NOTE
-
+def test_serve_note_never_references_the_retired_dashboard_mechanics():
+    """G1 (post HTML retirement): the serve note must describe the JSON API and
+    must not resurrect retired page mechanics — no "Refresh & save usage"
+    button, no Overview/Tokens/Raw page instructions — while still stating the
+    write rule (API reads never write; only the explicit import populates)."""
+    note = install_guide.SERVE_NOTE
+    assert "local JSON API" in note
+    assert "Refresh & save usage" not in note
+    assert "Raw data page" not in note
+    assert "API reads never write" in note
 
 def test_reference_embeds_the_capability_matrix_verbatim() -> None:
     """Work item 4 (Phase 3), README rewrite follow-up: the public reference doc

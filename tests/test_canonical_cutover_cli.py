@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
@@ -403,32 +402,3 @@ def test_rollback_cli_reports_installed_verification_failure(
     assert payload["replacement_state"] == "installed"
     assert payload["rollback_receipt"] == {"operation_id": "rollback-op"}
     assert payload["verification"]["ok"] is False
-
-
-def test_read_canary_cli_propagates_structured_blockers(monkeypatch) -> None:
-    import agentacct.canonical.read_canary as canary
-
-    blocker = SimpleNamespace(
-        code="canonical_read_disabled",
-        surface=None,
-        message="canonical read flag is not enabled",
-    )
-    result_value = _Wire(
-        {"ready": False, "blockers": [{"code": blocker.code}]},
-        ready=False,
-        blockers=(blocker,),
-        probed_surfaces=(),
-        skipped_surfaces=(),
-    )
-    monkeypatch.setattr(canary, "verify_read_canary", lambda **_kwargs: result_value)
-
-    result = runner.invoke(
-        app,
-        ["canonical", "verify-read-canary", "--json"],
-    )
-
-    assert result.exit_code == 2
-    assert _json_stdout_only(result) == {
-        "ready": False,
-        "blockers": [{"code": "canonical_read_disabled"}],
-    }

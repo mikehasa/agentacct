@@ -265,6 +265,278 @@ app.add_typer(capture_app, name="capture")
 app.add_typer(capabilities_app, name="capabilities")
 app.add_typer(usage_app, name="usage")
 app.add_typer(mcp_app, name="mcp")
+
+# --- task continuation edits + finding attention actions (local write lanes) --
+# These replace the retired HTML form handlers: same store mutations, same
+# scope rules, driven from the terminal instead of a web page.
+task_app = typer.Typer(help="Task continuation edits: link, unlink, rename.")
+finding_app = typer.Typer(help="Finding attention actions: list, dispose.")
+app.add_typer(task_app, name="task")
+app.add_typer(finding_app, name="finding")
+
+
+def _existing_write_lane_store(store_dir: Path | None) -> Path:
+    """Resolve the store for the task/finding write lanes, refusing to invent one.
+
+    A typo'd --store-dir must be a loud error, not a silently fabricated empty
+    store that makes real findings appear to vanish (read-lane convention)."""
+
+    resolved = _resolve_cli_store_dir(store_dir).path
+    if not Path(resolved).expanduser().exists():
+        console.print(
+            f"No agentacct store at {resolved}. Check --store-dir (this lane never creates a store)."
+        )
+        raise typer.Exit(1)
+    return resolved
+
+
+def _continuation_store(store_dir: Path | None):
+    from .task_continuations import ContinuationTaskStore
+
+    return ContinuationTaskStore(_existing_write_lane_store(store_dir))
+
+
+def _resolve_task_id_argument(store_dir: Path | None, task_id: str) -> str:
+    """Accept either an internal continuation task id or a public task_… id."""
+
+    if not task_id.startswith("task_"):
+        return task_id
+    from .api import build_store_task_projection
+    from .task_identity import TaskIdentityCodec
+
+    resolved_store = _existing_write_lane_store(store_dir)
+    projection = build_store_task_projection(resolved_store)
+    resolved = TaskIdentityCodec(resolved_store).resolve(projection, task_id)
+    internal = (resolved or {}).get("task_id")
+    if not internal:
+        console.print(f"No task matches {task_id} in this store.")
+        raise typer.Exit(1)
+    return str(internal)
+
+
+@task_app.command("link")
+def task_link(
+    client: Annotated[str, typer.Option(help="Client of the earlier session (e.g. claude-code).")],
+    session: Annotated[str, typer.Option(help="Client session id of the earlier session.")],
+    to_client: Annotated[str, typer.Option(help="Client of the continuation session.")],
+    to_session: Annotated[str, typer.Option(help="Client session id of the continuation session.")],
+    title: Annotated[Optional[str], typer.Option(help="Optional title when a new task is created.")] = None,
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+) -> None:
+    """Link two root sessions into one Task (creates/extends/merges as needed)."""
+
+    from .task_continuations import ClientSessionRef, ContinuationTaskError
+
+    try:
+        result = _continuation_store(store_dir).link_sessions(
+            ClientSessionRef(client=client, client_session_id=session),
+            ClientSessionRef(client=to_client, client_session_id=to_session),
+            confirmed_by="cli",
+            title=title,
+        )
+    except ValueError as exc:  # ContinuationTaskError subclasses ValueError
+        console.print(f"Link failed: {exc}")
+        raise typer.Exit(1) from exc
+    state = "linked" if result.changed else "already linked"
+    console.print(f"Task {result.task_id}: {state}.")
+
+
+@task_app.command("unlink")
+def task_unlink(
+    task_id: Annotated[str, typer.Option("--task", help="Task id (internal, or public task_… id).")],
+    client: Annotated[str, typer.Option(help="Client of the session to unlink.")],
+    session: Annotated[str, typer.Option(help="Client session id to unlink.")],
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+) -> None:
+    """Remove one session from a Task."""
+
+    from .task_continuations import ClientSessionRef, ContinuationTaskError
+
+    resolved_task = _resolve_task_id_argument(store_dir, task_id)
+    try:
+        result = _continuation_store(store_dir).unlink_session(
+            resolved_task,
+            ClientSessionRef(client=client, client_session_id=session),
+            confirmed_by="cli",
+        )
+    except ValueError as exc:  # ContinuationTaskError subclasses ValueError
+        console.print(f"Unlink failed: {exc}")
+        raise typer.Exit(1) from exc
+    state = "unlinked" if result.changed else "was not linked"
+    console.print(f"Task {result.task_id}: session {state}.")
+
+
+@task_app.command("rename")
+def task_rename(
+    task_id: Annotated[str, typer.Option("--task", help="Task id (internal, or public task_… id).")],
+    title: Annotated[Optional[str], typer.Option(help="New title; omit to clear the override.")] = None,
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+) -> None:
+    """Set or clear a Task's title override."""
+
+    from .task_continuations import ContinuationTaskError
+
+    resolved_task = _resolve_task_id_argument(store_dir, task_id)
+    try:
+        result = _continuation_store(store_dir).rename_task(
+            resolved_task, title, confirmed_by="cli"
+        )
+    except ValueError as exc:  # ContinuationTaskError subclasses ValueError
+        console.print(f"Rename failed: {exc}")
+        raise typer.Exit(1) from exc
+    state = "renamed" if result.changed else "unchanged"
+    console.print(f"Task {result.task_id}: {state}.")
+
+
+@finding_app.command("list")
+def finding_list(
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+) -> None:
+    """Surfaced finding episodes (the scope-quarantined index) with digests."""
+
+    from .api import build_store_task_projection, surfaced_finding_episodes
+    from .finding_disposition import finding_target_digest
+
+    resolved_store = _existing_write_lane_store(store_dir)
+    projection = build_store_task_projection(resolved_store)
+    rows = []
+    for episode in surfaced_finding_episodes(projection):
+        event = episode.get("failure_event") if isinstance(episode.get("failure_event"), dict) else None
+        digest = finding_target_digest(event) if event is not None else None
+        if digest is None:
+            continue
+        rows.append({
+            "digest": digest,
+            "state": episode.get("disposition_state"),
+            "revision": episode.get("revision"),
+            "attention_open": bool(episode.get("attention_open")),
+            "summary": str((event or {}).get("summary") or (event or {}).get("name") or "")[:120],
+        })
+    if json_output:
+        print(json.dumps({"findings": rows}, indent=2, sort_keys=True))
+        return
+    if not rows:
+        console.print("No surfaced findings.")
+        return
+    table = Table(show_header=True)
+    for column in ("digest", "state", "revision", "open", "summary"):
+        table.add_column(column)
+    for row in rows:
+        table.add_row(
+            str(row["digest"])[:16],
+            str(row["state"] or ""),
+            str(row["revision"]),
+            "yes" if row["attention_open"] else "no",
+            row["summary"],
+        )
+    console.print(table)
+
+
+@finding_app.command("dispose")
+def finding_dispose(
+    digest: Annotated[str, typer.Option(help="Target finding digest (a unique prefix is enough; see `finding list`).")],
+    action: Annotated[str, typer.Option(help="mark_reviewed | resolve | reopen | reinstate.")],
+    note: Annotated[Optional[str], typer.Option(help="Short note recorded with the action (REQUIRED for resolve).")] = None,
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+) -> None:
+    """Record one attention transition for a SURFACED finding.
+
+    Resolves only against the scope-quarantined projection index (exactly what
+    `GET /tasks` shows), so a finding hidden from this store's scope cannot be
+    dispositioned here — the same refusal the retired form resolver enforced.
+    """
+
+    from .api import build_store_task_projection, resolve_finding_episode
+    from .finding_disposition import (
+        FindingDispositionConflict,
+        FindingDispositionNotFound,
+        finding_target_digest,
+    )
+    from .service import SentinelService
+
+    allowed_actions = ("mark_reviewed", "resolve", "reopen", "reinstate")
+    if action not in allowed_actions:
+        console.print(f"Unknown action {action!r}. Use one of: {', '.join(allowed_actions)}.")
+        raise typer.Exit(1)
+    if action == "resolve" and not (note or "").strip():
+        console.print("Resolving a finding requires --note (say what resolved it).")
+        raise typer.Exit(1)
+    resolved_store = _existing_write_lane_store(store_dir)
+    projection = build_store_task_projection(resolved_store)
+    try:
+        episode = resolve_finding_episode(projection, digest=digest)
+        target = episode.get("failure_event")
+        if not isinstance(target, dict):
+            raise FindingDispositionNotFound("finding target is unavailable")
+        revision = int(episode.get("revision") or 0)
+        full_digest = finding_target_digest(target)
+        state = str(episode.get("disposition_state") or "")
+        attention_open = bool(episode.get("attention_open"))
+        already = {"resolve": "resolved", "mark_reviewed": "reviewed"}
+        if already.get(action) and state == already[action]:
+            console.print(
+                f"Finding {str(full_digest)[:16]}: already {already[action]} (revision {revision})."
+            )
+            return
+        if action == "reopen" and state == "open":
+            if attention_open:
+                console.print(
+                    f"Finding {str(full_digest)[:16]}: already open (revision {revision})."
+                )
+                return
+            # Superseded-but-open: state says open, attention is off. reopen
+            # cannot bring it back — that is exactly what reinstate is for.
+            console.print(
+                f"Finding {str(full_digest)[:16]}: state is open but attention is off "
+                "(a later pass superseded it). Use --action reinstate to bring it back."
+            )
+            raise typer.Exit(1)
+        if action == "reinstate" and attention_open:
+            # Idempotent: reinstating an already-attended finding must not
+            # append another ledger row on every retry.
+            console.print(
+                f"Finding {str(full_digest)[:16]}: already under attention (revision {revision})."
+            )
+            return
+        assignment_context = (
+            episode.get("assignment_context")
+            if isinstance(episode.get("assignment_context"), dict)
+            else {}
+        )
+        task_scope = (
+            assignment_context.get("task_scope")
+            if isinstance(assignment_context.get("task_scope"), dict)
+            else None
+        )
+        idempotency_key = f"cli:finding:{full_digest}:{revision}:{action}"
+        service = SentinelService(resolved_store)
+        replay = service.replay_finding_disposition(
+            action=action,
+            expected_revision=revision,
+            note=note,
+            idempotency_key=idempotency_key,
+        )
+        if replay is not None:
+            console.print(f"Finding {str(full_digest)[:16]}: {action} already recorded (replay).")
+            return
+        service.record_finding_disposition(
+            target_event=target,
+            action=action,
+            expected_revision=revision,
+            note=note,
+            idempotency_key=idempotency_key,
+            task_scope=task_scope,
+            transport="cli",
+        )
+    except FindingDispositionNotFound as exc:
+        console.print(f"Finding not found: {exc}")
+        raise typer.Exit(1) from exc
+    except FindingDispositionConflict as exc:
+        console.print(f"Finding changed or the action is no longer valid: {exc}")
+        raise typer.Exit(1) from exc
+    console.print(f"Finding {str(full_digest)[:16]}: {action} recorded.")
+
 app.add_typer(setup_app, name="setup")
 hooks_app.add_typer(claude_code_hooks_app, name="claude-code")
 app.add_typer(hooks_app, name="hooks")
@@ -1684,7 +1956,7 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
             console.print(f"Cause: {exc}")
             console.print("Next: run `agentacct start`.")
             raise typer.Exit(1) from exc
-        console.print(f"Dashboard: {runtime_payload['dashboard_url']}")
+        console.print(f"Local API: {runtime_payload['dashboard_url']}")
 
     # Surfaces agentacct does NOT rewrite (OpenCode config, an already-merged
     # hook command) can still point at another store — say so loudly rather than
@@ -1957,7 +2229,7 @@ def onboard(
             console.print(f"Cause: {exc}")
             console.print("Next: run `agentacct repair`, then `agentacct start`.")
             raise typer.Exit(1) from exc
-        console.print(f"Dashboard: {runtime_payload['dashboard_url']}")
+        console.print(f"Local API: {runtime_payload['dashboard_url']}")
 
     if recording_clients:
         console.print("Ready for a real Task.")
@@ -2124,7 +2396,7 @@ def runtime_start(
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         console.print(f"agentacct runtime: {payload['state']}")
-        console.print(f"Dashboard: {payload['dashboard_url']}")
+        console.print(f"Local API: {payload['dashboard_url']}")
 
 
 def _runtime_start_foreground(
@@ -2155,7 +2427,7 @@ def _runtime_start_foreground(
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         console.print(f"agentacct runtime: {payload['state']}")
-        console.print(f"Dashboard: {payload['dashboard_url']}")
+        console.print(f"Local API: {payload['dashboard_url']}")
         console.print("Supervising in the foreground; send SIGTERM or press Ctrl-C to stop.")
 
     try:
@@ -2190,7 +2462,7 @@ def runtime_status(
     table.add_column("State")
     table.add_column("Details")
     table.add_row("overall", str(payload["state"]), str(payload["store_dir"]))
-    table.add_row("dashboard", str(payload["dashboard_health"]), str(payload["dashboard_url"]))
+    table.add_row("local api", str(payload["dashboard_health"]), str(payload["dashboard_url"]))
     table.add_row("continuous sync", str(payload["watcher"]), str(health.get("state") or "unknown"))
     console.print(table)
     for issue in payload.get("issues", []):
@@ -2731,9 +3003,9 @@ def demo(
     print(f"Report: {summary['report_md']}")
     print(f"Demo value score: {summary['value'].get('score')} rating={summary['value'].get('rating')} (synthetic local_demo score for walkthrough)")
     print("This was a demo run: no provider API keys were used, and no paid API calls were made.")
-    print("Next: start the local dashboard with:")
+    print("Next: start the local JSON API (or run `agentacct tui`) with:")
     print(f"  {summary['dashboard_command']}")
-    print(f"Then open: {summary['dashboard_url']}")
+    print(f"Local API (for scripts and native shells): {summary['dashboard_url']}")
     print("Inspect the run evidence with:")
     print(f"  {summary['report_json_command']}")
     print("Markdown report:")
@@ -4387,7 +4659,7 @@ def event_record(
         print(json.dumps({"event": recorded}, indent=2, sort_keys=True))
         return
     print(f"Recorded event {recorded['event_id']}: {recorded['source']} {recorded['event_type']}")
-    print(f"Dashboard: agentacct serve --store-dir {shlex.quote(str(resolved_store_dir))}")
+    print(f"Local API: agentacct serve --store-dir {shlex.quote(str(resolved_store_dir))}")
 
 
 @event_app.command("note")
@@ -4429,7 +4701,7 @@ def event_note(
         return
     display_summary = _metadata_summary(recorded.get("metadata")) or "[no summary]"
     print(f"Recorded note {recorded['event_id']}: {display_summary}")
-    print(f"Dashboard: agentacct serve --store-dir {shlex.quote(str(resolved_store_dir))}")
+    print(f"Local API: agentacct serve --store-dir {shlex.quote(str(resolved_store_dir))}")
 
 
 @event_app.command("summary")
@@ -6956,7 +7228,7 @@ def _print_usage_import_payload(payload: dict[str, object], *, store_dir: Path, 
             f"({payload.get('priced_events', 0)} priced session(s); not provider billing)"
         )
     _print_evidence_refreshable_usage_warning(payload)
-    print(f"Dashboard: agentacct serve --store-dir {shlex.quote(str(store_dir))}")
+    print(f"Local API: agentacct serve --store-dir {shlex.quote(str(store_dir))}")
 
 
 def _print_evidence_refreshable_usage_warning(
@@ -7625,52 +7897,6 @@ def canonical_rollback(
     print(f"retained backup: {result.receipt.backup_path}")
 
 
-@canonical_app.command("verify-read-canary")
-def canonical_verify_read_canary(
-    host: Annotated[
-        str,
-        typer.Option(help="Loopback dashboard host."),
-    ] = "127.0.0.1",
-    port: Annotated[
-        int,
-        typer.Option(help="Loopback dashboard port."),
-    ] = 8765,
-    timeout_seconds: Annotated[
-        float,
-        typer.Option("--timeout-seconds", help="Per-request timeout in seconds."),
-    ] = 2.0,
-    json_output: Annotated[
-        bool, typer.Option("--json", help="Emit read-canary evidence as JSON.")
-    ] = False,
-) -> None:
-    """Canary the canonical JSON surfaces and their health-counter deltas."""
-
-    from .canonical.read_canary import verify_read_canary
-
-    result = verify_read_canary(
-        host=host,
-        port=port,
-        timeout_seconds=timeout_seconds,
-    )
-    payload = result.to_dict()
-    if json_output:
-        print(json.dumps(payload, indent=2, sort_keys=True))
-    elif result.ready:
-        print(
-            "canonical JSON read canary ready: "
-            + ", ".join(result.probed_surfaces)
-        )
-        for skipped in result.skipped_surfaces:
-            print(f"skipped {skipped.surface}: {skipped.reason}")
-    else:
-        print("canonical JSON read canary blocked:", file=sys.stderr)
-        for blocker in result.blockers:
-            target = f" [{blocker.surface}]" if blocker.surface else ""
-            print(f"- {blocker.code}{target}: {blocker.message}", file=sys.stderr)
-    if not result.ready:
-        raise typer.Exit(2)
-
-
 @canonical_app.command("rebuild-read-models")
 def canonical_rebuild_read_models(
     store_dir: Annotated[
@@ -8031,7 +8257,7 @@ def usage_merge_store(
     if dry_run:
         print("Dry run: no events written. Re-run without --dry-run to apply.")
     else:
-        print(f"Dashboard: agentacct serve --store-dir {shlex.quote(str(into_path))}")
+        print(f"Local API: agentacct serve --store-dir {shlex.quote(str(into_path))}")
 
 
 @usage_app.command("discover-sources")
@@ -8474,7 +8700,7 @@ def serve(
     ] = None,
     allow_host: Annotated[Optional[list[str]], typer.Option("--allow-host", help=_ALLOW_HOST_HELP)] = None,
 ) -> None:
-    """Serve the local dashboard on localhost with local usage discovery enabled.
+    """Serve the local JSON API on localhost with local usage discovery enabled.
 
     The default port (8765) auto-advances to the next free port when it is busy,
     so the dashboard never fails to start just because a port is taken. An
@@ -8512,7 +8738,7 @@ def serve(
         raise typer.Exit(1)
     if bound_port != port:
         console.print(f"Port {port} was busy; dashboard on http://{host}:{bound_port}")
-    console.print(f"Starting agentacct dashboard: http://{host}:{bound_port}")
+    console.print(f"Starting the agentacct local API (JSON): http://{host}:{bound_port}")
     if resolution.source == "global":
         console.print("Dashboard scope: All projects (machine-wide store).")
         _warn_dashboard_mcp_store_shadow(effective_store_dir)
@@ -8597,7 +8823,7 @@ def api_serve(
     store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
     allow_host: Annotated[Optional[list[str]], typer.Option("--allow-host", help=_ALLOW_HOST_HELP)] = None,
 ) -> None:
-    """Serve the local dashboard/event API for sidecar/MCP integrations.
+    """Serve the local JSON/event API for sidecar/MCP integrations.
 
     This local API is unauthenticated, intended for trusted localhost clients,
     and exposes report/outcome/value/event primitives. It does not call paid

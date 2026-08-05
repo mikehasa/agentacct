@@ -9,9 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from agentacct.api import _work_product_state
 from agentacct.task_intelligence import build_task_intelligence
-from agentacct.task_outcome import reduce_task_outcome
+from agentacct.task_outcome import reduce_task_outcome, step_verification_counts
 from agentacct.work_ledger import build_evidence_events
 
 
@@ -244,25 +243,33 @@ def test_reduce_task_outcome_standing_failure_is_still_a_finding() -> None:
     assert outcome["key"] == "finding"
 
 
-def test_work_product_state_superseded_failure_can_never_become_verified() -> None:
+def test_step_verification_superseded_failure_can_never_become_verified() -> None:
+    # Step-level decider (the engine mirror of the retired HTML work-card state):
+    # a present-but-superseded failure must still block the step from verifying.
     superseded = _check_row(result="failed", created_at=100.0, event_id="fail", identity="check:a", supersession_state="superseded", superseded_by_event_id="pass")
     passing = _check_row(result="passed", created_at=144.0, event_id="pass", identity="check:b")
 
-    item = {
-        "latest_status": "completed",
-        "evidence_status": "strong",
-        "current_check_events": [superseded, passing],
-    }
-    state = _work_product_state(item)
-    assert state["key"] == "finding_superseded"
-    assert state["finding_open"] is False
-    assert state["finding_present"] is True
-    assert state["action_required"] is False
+    def _task_for(checks: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "work_items": [
+                {
+                    "latest_status": "completed",
+                    "evidence_status": "strong",
+                    "current_check_events": list(checks),
+                }
+            ]
+        }
 
-    # The failure is load-bearing: drop it and the very same item verifies. This
+    counts = step_verification_counts(_task_for([superseded, passing]))
+    assert counts["total_step_count"] == 1
+    assert counts["verified_step_count"] == 0
+    assert counts["agent_reported_step_count"] == 1
+
+    # The failure is load-bearing: drop it and the very same step verifies. This
     # is exactly what the present-but-superseded guard must prevent.
-    verified_item = {**item, "current_check_events": [passing]}
-    assert _work_product_state(verified_item)["key"] == "verified"
+    verified_counts = step_verification_counts(_task_for([passing]))
+    assert verified_counts["verified_step_count"] == 1
+    assert verified_counts["agent_reported_step_count"] == 0
 
 
 def test_strongest_proof_is_never_a_failure() -> None:

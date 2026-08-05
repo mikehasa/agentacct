@@ -16,7 +16,6 @@ from agentacct.client_usage import (
 )
 from agentacct.service import SentinelService
 from agentacct.usage_truth import split_shadowed_legacy_usage_events
-from refresh_flash import refresh_flash_qs, run_dashboard_refresh
 
 
 NS_A = "sha256:" + "a" * 64
@@ -163,7 +162,7 @@ def _api_config(tmp_path: Path, claude_home: Path) -> UsageDiscoveryConfig:
     )
 
 
-def test_dashboard_preserves_alias_cohort_when_same_lane_has_malformed_json(
+def test_import_preserves_alias_cohort_when_same_lane_has_malformed_json(
     tmp_path: Path,
 ) -> None:
     claude_home = _write_claude_home(
@@ -176,23 +175,35 @@ def test_dashboard_preserves_alias_cohort_when_same_lane_has_malformed_json(
     )
     store = tmp_path / "state"
     revisions = _seed_alias_store(store, tmp_path)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "usage",
+            "import-local",
+            "--client",
+            "claude-code",
+            "--store-dir",
+            str(store),
+            "--claude-home",
+            str(claude_home),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["imported_events"] == 0
+    assert payload["migrated_events"] == 0
+    assert payload["incomplete_alias_migrations"] == 1
+    _assert_legacy_alias_rows_preserved(store, revisions)
+
     client = TestClient(
         create_local_api_app(
             store_dir=store,
             usage_discovery=_api_config(tmp_path, claude_home),
         )
     )
-
-    response = run_dashboard_refresh(client)
-
-    assert response.status_code == 303
-    assert "imported=0" in refresh_flash_qs(response)
-    assert "migrated=0" in refresh_flash_qs(response)
-    assert "incomplete_alias_migrations=1" in refresh_flash_qs(response)
-    _assert_legacy_alias_rows_preserved(store, revisions)
-
-    page = client.get(response.headers["location"])
-    assert "agentacct preserved 1 legacy session(s)" in page.text
     health = client.get("/ingestion/health").json()
     claude_health = next(
         row for row in health["sources"] if row["source"] == "claude-code"

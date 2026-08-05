@@ -88,9 +88,9 @@ def test_absent_origin_post_allowed_and_recorded(tmp_path):
     assert events[0]["source"] == "sidecar"
 
 
-def test_same_origin_dashboard_form_post_allowed(tmp_path):
-    # The dashboard's own <form method="post" action="/usage/import-local">
-    # sends a matching Origin; both canonical spellings must pass.
+def test_same_origin_mutating_post_allowed(tmp_path):
+    # A browser page served from the local surface itself sends a matching
+    # Origin on mutating requests; both canonical spellings must pass.
     client = _api_client(tmp_path)
 
     for origin, host in (
@@ -98,11 +98,11 @@ def test_same_origin_dashboard_form_post_allowed(tmp_path):
         ("http://localhost:8765", "localhost:8765"),
     ):
         response = client.post(
-            "/usage/import-local",
+            "/events",
+            json={"source": "local-page", "event_type": "note"},
             headers={"Origin": origin, "Host": host},
-            follow_redirects=False,
         )
-        assert response.status_code == 303, (origin, host)
+        assert response.status_code == 200, (origin, host)
 
 
 def test_host_header_port_and_bracketed_ipv6_parse_correctly(tmp_path):

@@ -15,6 +15,7 @@ from agentacct.evidence_runtime import EvidenceRuntime
 from agentacct.evidence_store import EVIDENCE_STORE_DIRNAME
 from agentacct.finding_disposition import FindingDispositionConflict
 from agentacct.service import SentinelService
+from agentacct.task_outcome import reduce_task_outcome
 
 
 def _codex_payload(
@@ -119,17 +120,14 @@ def test_capture_only_session_appears_as_observed_without_usage_claim(tmp_path: 
     assert task["usage"]["estimated_cost_usd"] is None
     assert task["models"] == ["gpt-5"]
     assert task["usage"]["model_lanes"] == []
-    detail = client.get(f"/api/tasks/{task['public_task_id']}").json()
-    assert detail["lanes"][0]["models"] == ["gpt-5"]
     sessions_payload = client.get("/sessions").json()
     mechanical_health = sessions_payload["summary"]["mechanical_projection"]
     assert mechanical_health["window_limit"] == 10_000
     assert mechanical_health["history_window_maybe_truncated"] == 0
 
-    homepage = client.get("/").text
-    assert '<span class="status status-missing">Observed</span>' in homepage
-    assert '<span class="status status-found">Verified</span>' not in homepage
-    assert session_id not in homepage
+    outcome = reduce_task_outcome(task)
+    assert outcome["key"] == "observed"
+    assert outcome["verification"] is None
 
 
 def test_capture_parent_child_sessions_fold_into_one_task(tmp_path: Path) -> None:
@@ -249,7 +247,7 @@ def test_usage_mcp_and_hook_coalesce_without_recounting(tmp_path: Path) -> None:
     assert task["sessions"][0]["mechanical_capture"]["observation_count"] == 1
 
 
-def test_completed_task_with_task_level_pass_has_home_detail_state_parity(tmp_path: Path) -> None:
+def test_completed_task_with_task_level_pass_reduces_to_verified(tmp_path: Path) -> None:
     store = tmp_path / "project" / ".agent-sentinel" / "state"
     session_id = "verified-codex-session"
     _record_usage_and_work(store, session_id)
@@ -275,11 +273,10 @@ def test_completed_task_with_task_level_pass_has_home_detail_state_parity(tmp_pa
 
     task = client.get("/tasks").json()["tasks"][0]
     assert task["task_evidence_events"][0]["result"] == "passed"
-    detail = client.get(f"/api/tasks/{task['public_task_id']}").json()
-    homepage = client.get("/").text
 
-    assert detail["states"]["outcome"]["key"] == "verified"
-    assert '<span class="status status-found">Verified</span>' in homepage
+    outcome = reduce_task_outcome(task)
+    assert outcome["key"] == "verified"
+    assert outcome["verification"] is not None
 
 
 def test_failed_hook_check_is_finding_not_user_action(tmp_path: Path) -> None:
@@ -298,17 +295,14 @@ def test_failed_hook_check_is_finding_not_user_action(tmp_path: Path) -> None:
     task = client.get("/tasks").json()["tasks"][0]
     assert len(task["task_evidence_events"]) == 1
     assert task["task_evidence_events"][0]["result"] == "failed"
-    public_id = task["public_task_id"]
-    detail = client.get(f"/api/tasks/{public_id}").json()
-    assert detail["states"]["outcome"]["key"] == "finding"
-    assert detail["decision_brief"]["owner"] is None
-    assert detail["decision_brief"]["next_action"] is None
 
-    homepage = client.get("/").text
-    assert "Open finding" in homepage
-    assert "What to do" not in homepage
-    assert "PRIVATE_OUTPUT_CANARY" not in homepage
-    assert "PRIVATE_PROMPT_CANARY" not in homepage
+    outcome = reduce_task_outcome(task)
+    assert outcome["key"] == "finding"
+    assert outcome["finding_attention_state"] == "open"
+
+    projection_text = client.get("/tasks").text
+    assert "PRIVATE_OUTPUT_CANARY" not in projection_text
+    assert "PRIVATE_PROMPT_CANARY" not in projection_text
 
 
 def test_failed_hook_finding_can_be_reviewed_attention_only(tmp_path: Path) -> None:
@@ -325,18 +319,21 @@ def test_failed_hook_finding_can_be_reviewed_attention_only(tmp_path: Path) -> N
 
     initial = client.get("/tasks").json()
     episode = initial["tasks"][0]["finding_episodes"][0]
-    response = client.post(
-        "/findings/disposition",
-        data={
-            "csrf_token": initial["csrf_token"],
-            "finding_token": episode["finding_token"],
-            "action": "mark_reviewed",
-            "expected_revision": "0",
-            "note": "",
-        },
-        follow_redirects=False,
+    SentinelService(store).record_finding_disposition(
+        target_event=episode["failure_event"],
+        action="mark_reviewed",
+        expected_revision=0,
+        note=None,
+        idempotency_key="review-cursor-finding",
     )
-    assert response.status_code == 303
+    # A replay of the exact same operation must not double-record.
+    SentinelService(store).record_finding_disposition(
+        target_event=episode["failure_event"],
+        action="mark_reviewed",
+        expected_revision=0,
+        note=None,
+        idempotency_key="review-cursor-finding",
+    )
 
     reviewed = client.get("/tasks").json()
     task = reviewed["tasks"][0]
@@ -352,10 +349,9 @@ def test_failed_hook_finding_can_be_reviewed_attention_only(tmp_path: Path) -> N
             if event.get("event_type") == "finding_disposition"
         ]
     ) == 1
-    homepage = client.get("/").text
-    assert "Finding reviewed" in homepage
-    assert "no passing rerun has been recorded" in homepage
-    assert ">Reopen<" in homepage
+    outcome = reduce_task_outcome(task)
+    assert outcome["key"] == "finding"
+    assert outcome["finding_attention_state"] == "reviewed"
 
     assert client.post(
         "/capture/cursor/afterShellExecution",
@@ -401,18 +397,13 @@ def test_missing_timestamp_hook_retry_keeps_visible_finding_dispositionable(
     initial = client.get("/tasks").json()
     assert initial["summary"]["total_open_finding_count"] == 1
     episode = initial["tasks"][0]["finding_episodes"][0]
-    response = client.post(
-        "/findings/disposition",
-        data={
-            "csrf_token": initial["csrf_token"],
-            "finding_token": episode["finding_token"],
-            "action": "mark_reviewed",
-            "expected_revision": "0",
-            "note": "",
-        },
-        follow_redirects=False,
+    SentinelService(store).record_finding_disposition(
+        target_event=episode["failure_event"],
+        action="mark_reviewed",
+        expected_revision=0,
+        note=None,
+        idempotency_key="review-missing-time-finding",
     )
-    assert response.status_code == 303
     reviewed = client.get("/tasks").json()
     assert reviewed["summary"]["total_open_finding_count"] == 0
     reviewed_episode = reviewed["tasks"][0]["finding_episodes"][0]
@@ -444,12 +435,10 @@ def test_passing_only_hook_check_stays_observed_and_clears_earlier_finding(tmp_p
     checks = task["task_evidence_events"]
     assert len(checks) == 2
     assert len({check["check_identity"] for check in checks}) == 1
-    detail = client.get(f"/api/tasks/{task['public_task_id']}").json()
-    assert detail["states"]["outcome"]["key"] == "unknown"
-    homepage = client.get("/").text
-    assert '<span class="status status-missing">Observed</span>' in homepage
-    assert '<span class="status status-finding">Open finding</span>' not in homepage
-    assert '<span class="status status-found">Verified</span>' not in homepage
+    outcome = reduce_task_outcome(task)
+    assert outcome["key"] == "observed"
+    assert outcome["finding"] is None
+    assert outcome["verification"] is None
 
 
 def test_task_scope_evidence_ref_and_run_hints_refuse_foreign_namespace() -> None:
@@ -527,7 +516,7 @@ def test_work_reads_do_not_create_or_mutate_advanced_evidence(tmp_path: Path) ->
     fresh_store = tmp_path / "fresh" / "state"
     fresh_client = TestClient(create_local_api_app(store_dir=fresh_store))
     assert not (fresh_store / EVIDENCE_STORE_DIRNAME).exists()
-    assert fresh_client.get("/").status_code == 200
+    assert fresh_client.get("/overview").status_code == 200
     assert fresh_client.get("/tasks").status_code == 200
     assert not (fresh_store / EVIDENCE_STORE_DIRNAME).exists()
 
@@ -538,7 +527,7 @@ def test_work_reads_do_not_create_or_mutate_advanced_evidence(tmp_path: Path) ->
         json=_codex_payload("advanced-stability", timestamp="2026-07-16T08:00:00Z"),
     ).status_code == 200
     before = client.get("/evidence/status").json()["stats"]
-    assert client.get("/").status_code == 200
+    assert client.get("/overview").status_code == 200
     assert client.get("/tasks").status_code == 200
     after = client.get("/evidence/status").json()["stats"]
     assert after == before

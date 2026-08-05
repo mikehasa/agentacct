@@ -9,7 +9,7 @@ Covers the 2 confirmed majors and the code-level minors:
   never claims its context lives in another project's store.
 - Minors: hook home-dir worktree label is "~"; codex parent adoption reads
   ONLY the rollout's first session_meta line; non-dict JSON rollout lines
-  never crash the import; worktree chip title names the OWNER label;
+  never crash the import; a worktree session is labeled with the OWNER repo;
   backslashes are path separators only for Windows-shaped paths; session
   project label = majority LABEL first, then majority source within it, with
   source ties keeping the worktree marker.
@@ -110,18 +110,11 @@ def _record_section(
     )
 
 
-def _product_html(store_root: Path) -> str:
+def _sessions_payload(store_root: Path) -> dict:
     client = TestClient(create_local_api_app(store_dir=store_root))
-    response = client.get("/")
+    response = client.get("/sessions")
     assert response.status_code == 200
-    return response.text
-
-
-def _sessions_html(store_root: Path) -> str:
-    client = TestClient(create_local_api_app(store_dir=store_root))
-    response = client.get("/sessions?days=all", headers={"Accept": "text/html"})
-    assert response.status_code == 200
-    return response.text
+    return response.json()
 
 
 def _project_store(tmp_path) -> Path:
@@ -136,7 +129,7 @@ FOREIGN_PROJECT_DIR = "/Users/owner/legacy-project-a"
 # ---------------------------------------------------------------------------
 
 
-def test_global_shaped_store_renders_plain_no_mcp_context(tmp_path) -> None:
+def test_global_shaped_store_never_claims_other_project(tmp_path) -> None:
     """The INSTALL.md global layout must never claim 'session ran in <project>':
     the global store IS where every project's new MCP context is recorded."""
 
@@ -144,14 +137,13 @@ def test_global_shaped_store_renders_plain_no_mcp_context(tmp_path) -> None:
     _record_usage(store_root, _usage_event(session="foreign", project_dir=FOREIGN_PROJECT_DIR))
 
     assert _store_scope_and_label(store_root)[0] == "custom"
-    client = TestClient(create_local_api_app(store_dir=store_root))
-    payload = client.get("/sessions").json()
-    assert payload["sessions"][0]["join"]["context_scope"] == "this_store"
-
-    html = client.get("/sessions?days=all", headers={"Accept": "text/html"}).text
-    assert ">No MCP context</span>" in html
-    assert "session ran in" not in html
-    assert "Stores are per-project" not in html
+    entry = _sessions_payload(store_root)["sessions"][0]
+    # No MCP context recorded and no cross-store claim: the session stays an
+    # honest unjoined this_store row despite its foreign project_dir label.
+    assert entry["join"]["context_scope"] == "this_store"
+    assert entry["join"]["state"] == "unjoined"
+    assert entry["join"]["row_states"]["attributed"] == 0
+    assert entry["join"]["vetoed_rows"] == 0
 
 
 def test_custom_store_dir_never_fires_other_project(tmp_path) -> None:
@@ -249,7 +241,7 @@ def test_vetoed_session_never_fires_other_project(tmp_path) -> None:
     assert entry["join"]["context_scope"] == "this_store"
 
 
-def test_vetoed_session_chip_never_renders_the_other_project_claim(tmp_path) -> None:
+def test_vetoed_session_on_sessions_route_keeps_veto_reason_not_other_project(tmp_path) -> None:
     store_root = _project_store(tmp_path)
     _record_usage(
         store_root,
@@ -257,14 +249,17 @@ def test_vetoed_session_chip_never_renders_the_other_project_claim(tmp_path) -> 
     )
     _record_section(store_root, section_id="sec-conflict", session="other-session", transcript="shared-T")
 
-    html = _sessions_html(store_root)
+    entry = next(
+        item
+        for item in _sessions_payload(store_root)["sessions"]
+        if item["client_session_id"] == "veto-usage"
+    )
 
-    # The self-contradictory chip (both claims in one title attr) is gone.
-    assert "session ran in other-place" not in html
-    assert "lives in that project&#x27;s own store" not in html
-    assert "lives in that project's own store" not in html
-    # The honest veto reason survives on the chip title.
-    assert "conflicting evidence vetoes the join" in html
+    # The route surfaces the honest veto reason, never the self-contradictory
+    # "ran in another project" claim.
+    assert "conflicting evidence vetoes the join" in str(entry["join"]["reason"])
+    assert entry["join"]["context_scope"] == "this_store"
+    assert entry["join"]["vetoed_rows"] == 1
 
 
 def test_attribution_rows_expose_join_vetoes(tmp_path) -> None:
@@ -400,21 +395,24 @@ def test_codex_rollout_survives_valid_non_dict_json_lines(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Minor 4 — worktree chip title names the OWNER label, not "this repository"
+# Minor 4 — a foreign worktree session is labeled with the OWNER repo, not
+# blurred into "this repository"
 # ---------------------------------------------------------------------------
 
 
-def test_worktree_chip_title_names_the_owner_label(tmp_path) -> None:
+def test_worktree_session_is_labeled_with_the_owner_repo(tmp_path) -> None:
     store_root = _project_store(tmp_path)
     _record_usage(
         store_root,
         _usage_event(session="wt-session", project_dir="/Users/owner/otherrepo/.claude/worktrees/musing-x"),
     )
 
-    html = _sessions_html(store_root)
+    entry = _sessions_payload(store_root)["sessions"][0]
 
-    assert "temporary Claude worktree of otherrepo" in html
-    assert "worktree of this repository" not in html
+    # The owner repo is named (not the store's own "dash-project") and the
+    # worktree marker survives so surfaces can say "worktree of otherrepo".
+    assert entry["project"] == "otherrepo"
+    assert entry["project_source"] == "claude_worktree"
 
 
 # ---------------------------------------------------------------------------

@@ -1,27 +1,29 @@
 """Phase 2 adversarial-review fix-round regressions.
 
-Covers the five confirmed majors and the fixed minors:
+Covers the five confirmed majors and the fixed minors, on the KEPT data
+lanes (the HTML display layer is retired; ``/sessions`` and friends are
+JSON-only, and the rollup/ledger fields below are what any display must
+render from):
 
-[0] a session row may claim a bare "Attributed" chip ONLY when every usage
-    row in the session is attributed; mixed sessions render "Partially
-    attributed" with a visible per-session coverage line;
-[1] a transcript-conflict VETO is canonically unjoined — the rollup state and
-    session chip must never claim "Context matched";
+[0] a session may claim full attribution ONLY when every usage row in the
+    session is attributed; mixed sessions expose per-session coverage
+    (row_states + attributed_fresh_tokens) alongside whole-session totals;
+[1] a transcript-conflict VETO is canonically unjoined — the rollup state
+    must never claim a context match, and /work-items agrees;
 [2] one-level nesting: deep/cyclic/self-parent lineage never vanishes from
-    the Sessions view (property-tested invariant);
-[3] ambiguous join reasons are id-free in every rendered surface (full ids
-    are JSON-only / href-only);
-[4] proxy and diagnostic usage rows group per (client, day) in the default
-    timeline view like import rows, so sections cannot be drowned;
+    the session rollup (property-tested invariant on _top_level_session_keys);
+[3] ambiguous join reasons are id-free on every served surface (full ids
+    are dedicated-field-only);
+[4] proxy budget decisions travel the /timeline data lane as distinct,
+    honestly-unjoined rows that never drown recorded sections;
 plus minors: collision-suffixed labels for attention examples and parent
-references, fresh-first blind-spot figures, "~" for home-directory project
-labels, raw-tab short session labels, cache-triple reconciliation,
-out-of-range timestamp guard, dead DashboardUsageView fields removed.
+references, fresh-vs-cache-inclusive blind-spot figures, "~" for
+home-directory project labels, cache-triple reconciliation, out-of-range
+timestamp guard, dead DashboardUsageView fields removed.
 
 All stores are throwaway tmp_path stores (suite conftest guards the real
 dogfood ledger)."""
 
-import re
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -108,17 +110,12 @@ def _app_client(store_root):
     return TestClient(create_local_api_app(store_dir=store_root))
 
 
-def _product_html(store_root):
-    # Phase 3.5a route split: session rows, work items, attention,
-    # reconciliation, and ledger insights live on the /sessions page
-    # (Accept-negotiated HTML; the bare path stays the JSON rollup).
-    response = _app_client(store_root).get("/sessions", headers={"Accept": "text/html"})
+def _sessions_payload(store_root):
+    # HTML retirement: GET /sessions is JSON-only (the rollup, served
+    # verbatim from ledger["session_rollup"]).
+    response = _app_client(store_root).get("/sessions")
     assert response.status_code == 200
-    return response.text
-
-
-def _sessions_slice(html):
-    return html[html.index('id="sessions"') : html.index('id="work-items"')]
+    return response.json()
 
 
 def _ledger(store_root):
@@ -132,8 +129,15 @@ def _rollup_entry(ledger, client, session):
     raise AssertionError(f"no rollup entry for {client}::{session}")
 
 
+def _payload_entry(payload, client, session):
+    for entry in payload["sessions"]:
+        if entry["client"] == client and entry["client_session_id"] == session:
+            return entry
+    raise AssertionError(f"no /sessions entry for {client}::{session}")
+
+
 # ---------------------------------------------------------------------------
-# [0] partial attribution coverage on the session row
+# [0] partial attribution coverage on the session entry
 # ---------------------------------------------------------------------------
 
 
@@ -166,7 +170,7 @@ def _seed_partial_attribution_store(store_root):
         )
 
 
-def test_mixed_session_renders_partially_attributed_with_coverage_line(tmp_path):
+def test_mixed_session_exposes_partial_coverage_next_to_whole_session_totals(tmp_path):
     store_root = tmp_path / "state"
     _seed_partial_attribution_store(store_root)
 
@@ -177,29 +181,39 @@ def test_mixed_session_renders_partially_attributed_with_coverage_line(tmp_path)
     assert entry["join"]["row_states"]["unjoined"] == 99
     assert entry["join"]["attributed_fresh_tokens"] == 20
 
-    html = _product_html(store_root)
-    sessions_html = _sessions_slice(html)
+    # The /sessions JSON lane carries the SAME coverage data a display needs
+    # to qualify the chip ("1 of 100 rows / 20 fresh tokens attributed") —
+    # never a bare full-attribution claim next to whole-session totals.
+    served = _payload_entry(_sessions_payload(store_root), "codex", "partial-session")
+    assert served["join"]["state"] == "attributed"
+    assert served["join"]["row_states"] == {
+        "attributed": 1,
+        "ambiguous": 0,
+        "context_matched_unallocated": 0,
+        "unjoined": 99,
+    }
+    assert served["join"]["attributed_fresh_tokens"] == 20
+    # Whole-session figures stay alongside (exact-key session truth).
+    assert served["usage"]["rows"] == 100
+    assert served["usage"]["fresh_tokens"] == 1_485_020
 
-    # The chip is qualified and the coverage is visible text, not a tooltip.
-    assert ">Partially attributed</span>" in sessions_html
-    assert "1 of 100 rows · 20 fresh tokens attributed" in sessions_html
-    # NEVER a bare "Attributed" chip next to whole-session totals.
-    assert ">Attributed</span>" not in sessions_html
-    # Whole-session figures stay (exact-key session truth).
-    assert "1,485,020" in sessions_html
 
-
-def test_fully_attributed_session_keeps_the_bare_attributed_chip(tmp_path):
+def test_fully_attributed_session_reports_total_coverage(tmp_path):
     store_root = tmp_path / "state"
     _record_section(store_root, section_id="full-goal", title="Fully joined goal", session="full-session")
     _trusted_usage(store_root, session="full-session", input_tokens=40, output_tokens=10)
 
-    html = _product_html(store_root)
-    sessions_html = _sessions_slice(html)
-
-    assert ">Attributed</span>" in sessions_html
-    assert "Partially attributed" not in sessions_html
-    assert "rows ·" not in sessions_html  # no coverage line when coverage is total
+    served = _payload_entry(_sessions_payload(store_root), "codex", "full-session")
+    # Total coverage: the data that licenses a bare "Attributed" claim.
+    assert served["join"]["state"] == "attributed"
+    assert served["join"]["row_states"] == {
+        "attributed": 1,
+        "ambiguous": 0,
+        "context_matched_unallocated": 0,
+        "unjoined": 0,
+    }
+    assert served["join"]["attributed_fresh_tokens"] == 50
+    assert served["usage"]["fresh_tokens"] == 50
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +250,7 @@ def test_conflict_vetoed_session_state_is_unjoined_with_veto_reason(tmp_path):
     assert "conflicting evidence vetoes the join" in entry["join"]["reason"]
 
 
-def test_conflict_vetoed_session_chip_never_claims_a_match(tmp_path):
+def test_conflict_vetoed_session_never_claims_a_match_on_served_surfaces(tmp_path):
     store_root = tmp_path / "state"
     _trusted_usage(store_root, session="veto-session-001", transcript="transcript-USAGE")
     _record_section(
@@ -247,24 +261,29 @@ def test_conflict_vetoed_session_chip_never_claims_a_match(tmp_path):
         transcript="transcript-WORK",
     )
 
-    html = _product_html(store_root)
-    sessions_html = _sessions_slice(html)
-    work_html = html[html.index('id="work-items"') : html.index('id="attention"')]
+    client = _app_client(store_root)
 
-    # Session chip reads as unjoined; the veto reason travels on the title.
-    assert ">Not attributed</span>" in sessions_html
-    assert "Context matched" not in sessions_html
-    assert "conflicting evidence vetoes the join" in sessions_html
-    # The work-items table on the SAME page agrees.
-    assert ">Unattributed</span>" in work_html
-    assert "Context matched" not in work_html
+    # /sessions serves the unjoined state with the veto reason attached —
+    # never a context-match claim.
+    sessions_payload = client.get("/sessions").json()
+    served = _payload_entry(sessions_payload, "codex", "veto-session-001")
+    assert served["join"]["state"] == "unjoined"
+    assert served["join"]["row_states"]["context_matched_unallocated"] == 0
+    assert "conflicting evidence vetoes the join" in served["join"]["reason"]
+
+    # The /work-items lane on the SAME store agrees: nothing attributed.
+    items = client.get("/work-items").json()["work_items"]
+    veto_items = [item for item in items if item.get("section_id") == "veto-work"]
+    assert len(veto_items) == 1
+    assert veto_items[0]["linked_usage_records"] == 0
+    assert veto_items[0]["usage_total"] == 0
 
 
-def test_actual_context_match_still_renders_context_only(tmp_path):
+def test_actual_context_match_still_reports_context_only(tmp_path):
     store_root = tmp_path / "state"
     # run_id grouping hint: a REAL non-vetoed context match that never
     # allocates — this is what context_only is for. (Different sessions, so
-    # the context-matched session renders as its own top-level row.)
+    # the context-matched session is its own top-level rollup entry.)
     SentinelService(store_root).record_event(
         {
             "source": "codex",
@@ -306,8 +325,9 @@ def test_actual_context_match_still_renders_context_only(tmp_path):
     assert entry["join"]["state"] == "context_only"
     assert entry["join"]["row_states"]["context_matched_unallocated"] == 1
 
-    sessions_html = _sessions_slice(_product_html(store_root))
-    assert "Context matched; not allocated" in sessions_html
+    served = _payload_entry(_sessions_payload(store_root), "codex", "hint-usage-session")
+    assert served["join"]["state"] == "context_only"
+    assert served["join"]["row_states"]["context_matched_unallocated"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +335,7 @@ def test_actual_context_match_still_renders_context_only(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_grandchild_session_renders_top_level_with_child_of_chip(tmp_path):
+def test_grandchild_session_is_top_level_and_names_its_unrendered_parent(tmp_path):
     store_root = tmp_path / "state"
     _trusted_usage(store_root, session="lineage-root", client="claude-code", session_kind="root", input_tokens=100, output_tokens=10)
     _trusted_usage(
@@ -338,34 +358,46 @@ def test_grandchild_session_renders_top_level_with_child_of_chip(tmp_path):
         cost=3.0,
     )
 
-    html = _product_html(store_root)
-    sessions_html = _sessions_slice(html)
+    ledger = _ledger(store_root)
+    rollup_sessions = ledger["session_rollup"]["sessions"]
 
-    # Root and grandchild render as rows; the child nests under the root.
-    assert sessions_html.count('<details class="session-row">') == 2
-    assert "<code>lineage-</code>" not in sessions_html  # labels are suffixed on collision
-    # The grandchild's spend is visible in its own row, not vanished.
-    assert "<strong>44,000</strong> fresh" in sessions_html
-    assert "$3.00" in sessions_html
-    # The grandchild names its (unrendered) parent.
-    assert "child of " in sessions_html
+    # Root and grandchild are top-level entries; the child nests under the
+    # root (one-level nesting, nothing vanishes).
+    top_keys = _top_level_session_keys(rollup_sessions)
+    assert top_keys == {("claude-code", "lineage-root"), ("claude-code", "lineage-grandchild")}
+
+    # Labels are suffixed on the first-8 collision — never three identical
+    # "lineage-" truncations.
+    labels = {entry["client_session_id"]: entry["client_session_id_short"] for entry in rollup_sessions}
+    assert len(set(labels.values())) == 3
+    assert "lineage-" not in labels.values()
+
+    # The grandchild's spend is visible on its own entry, not vanished.
+    grandchild = _rollup_entry(ledger, "claude-code", "lineage-grandchild")
+    assert grandchild["usage"]["fresh_tokens"] == 44_000
+    assert grandchild["usage"]["estimated_cost_usd"] == 3.0
+    # The grandchild names its (non-top-level) parent.
+    assert grandchild["related"]["parent"] is not None
+    assert grandchild["related"]["parent"]["client_session_id"] == "lineage-child"
 
 
-def test_parent_cycle_members_all_render_top_level(tmp_path):
+def test_parent_cycle_members_are_all_top_level(tmp_path):
     store_root = tmp_path / "state"
     _trusted_usage(store_root, session="cycle-aaaa", parent_session="cycle-bbbb", input_tokens=10, output_tokens=1)
     _trusted_usage(store_root, session="cycle-bbbb", parent_session="cycle-aaaa", input_tokens=20, output_tokens=2)
 
-    html = _product_html(store_root)
-    sessions_html = _sessions_slice(html)
+    ledger = _ledger(store_root)
+    rollup_sessions = ledger["session_rollup"]["sessions"]
+    top_keys = _top_level_session_keys(rollup_sessions)
+    assert top_keys == {("codex", "cycle-aaaa"), ("codex", "cycle-bbbb")}
 
-    assert sessions_html.count('<details class="session-row">') == 2
     # codex labels keep the distinctive tail (UUIDv7 rule).
-    assert "<code>cle-aaaa</code>" in sessions_html
-    assert "<code>cle-bbbb</code>" in sessions_html
+    labels = {entry["client_session_id"]: entry["client_session_id_short"] for entry in rollup_sessions}
+    assert labels["cycle-aaaa"] == "cle-aaaa"
+    assert labels["cycle-bbbb"] == "cle-bbbb"
 
 
-def test_self_parent_session_renders_and_never_duplicates_its_own_usage(tmp_path):
+def test_self_parent_session_stays_top_level_and_never_duplicates_its_own_usage(tmp_path):
     store_root = tmp_path / "state"
     _trusted_usage(store_root, session="self-parent-session", parent_session="self-parent-session", input_tokens=9, output_tokens=1)
 
@@ -377,15 +409,15 @@ def test_self_parent_session_renders_and_never_duplicates_its_own_usage(tmp_path
     assert entry["related"]["note"] == "self-referencing parent pointer ignored"
     assert entry["related"]["children_usage"] is None
 
-    sessions_html = _sessions_slice(_product_html(store_root))
-    assert sessions_html.count('<details class="session-row">') == 1
-    assert "subagent session(s) — not allocated" not in sessions_html
+    rollup_sessions = ledger["session_rollup"]["sessions"]
+    assert len(rollup_sessions) == 1
+    assert _top_level_session_keys(rollup_sessions) == {("codex", "self-parent-session")}
 
 
 def test_top_level_invariant_nothing_vanishes_nothing_double_nests(tmp_path):
-    """Property: every rollup entry either renders as its own top-level row
-    or is the direct child of exactly one rendered top-level row — across
-    chains, cycles, self-parents, orphans, and forests."""
+    """Property: every rollup entry either is its own top-level entry or is
+    the direct child of exactly one top-level entry — across chains, cycles,
+    self-parents, orphans, and forests."""
 
     store_root = tmp_path / "state"
     lineage = {
@@ -420,7 +452,7 @@ def test_top_level_invariant_nothing_vanishes_nothing_double_nests(tmp_path):
         parent = entry["related"]["parent"]
         if key in top_keys:
             continue
-        # Nested: must have a parent that IS a rendered top-level entry.
+        # Nested: must have a parent that IS a top-level entry.
         assert parent is not None, key
         parent_key = (entry["client"], parent["client_session_id"])
         assert parent_key in entry_keys, key
@@ -431,19 +463,21 @@ def test_top_level_invariant_nothing_vanishes_nothing_double_nests(tmp_path):
     assert ledger["session_rollup"]["summary"]["totals"]["fresh_tokens"] == 22
     assert ledger["insights"]["usage_additivity_quarantine"]["excluded_rows"] == len(lineage) - 2
 
-    # Rendered check: the rows on the page are exactly the top-level keys.
-    sessions_html = _sessions_slice(_product_html(store_root))
-    assert sessions_html.count('<details class="session-row">') == len(top_keys)
+    # Served check: the /sessions JSON lane carries every entry (nothing
+    # vanishes on the wire either).
+    payload = _sessions_payload(store_root)
+    assert payload["total_sessions"] == len(lineage)
+    assert len(payload["sessions"]) == len(lineage)
 
 
 # ---------------------------------------------------------------------------
-# [3] ambiguous reasons are id-free everywhere rendered
+# [3] ambiguous reasons are id-free everywhere served
 # ---------------------------------------------------------------------------
 
 AMBIG_UUID = "0d9f31c2-7b44-4e02-9a55-1234deadbeef"
 
 
-def test_ambiguous_store_renders_no_full_session_id_anywhere(tmp_path):
+def test_ambiguous_join_reason_is_id_free_on_every_served_surface(tmp_path):
     store_root = tmp_path / "state"
     _record_section(store_root, section_id="ambig-a", title="Ambiguous section A", session=AMBIG_UUID)
     _record_section(store_root, section_id="ambig-b", title="Ambiguous section B", session=AMBIG_UUID)
@@ -452,38 +486,29 @@ def test_ambiguous_store_renders_no_full_session_id_anywhere(tmp_path):
     ledger = _ledger(store_root)
     attribution = ledger["attributions"][0]
     assert attribution["join_strategy"] == "exact_client_session_id_ambiguous_sections"
-    # Reason: counts + key name only; candidate ids stay JSON-only.
+    # Reason: counts + key name only; candidate ids stay in dedicated fields.
     assert attribution["join_reason"] == (
         "usage shares client_session_id with 2 sections; not allocating to a section"
     )
     assert len(attribution["ambiguous_candidate_work_ids"]) == 2
     assert all(AMBIG_UUID in work_id for work_id in attribution["ambiguous_candidate_work_ids"])
 
-    client = _app_client(store_root)
-    for target in ("/", "/?tab=raw"):
-        html = client.get(target).text
-        # Strip href attributes: full ids are allowed ONLY as addresses.
-        displayed = re.sub(r'href="[^"]*"', 'href=""', html)
-        assert AMBIG_UUID not in displayed, target
-    # The id-free reason renders in the full Sessions attribution inspector,
-    # not the compact Work home.
-    sessions_html = client.get("/sessions", headers={"Accept": "text/html"}).text
-    assert "usage shares client_session_id with 2 sections" in sessions_html
+    # The served rollup carries the same id-free reason: the full id is
+    # allowed ONLY in dedicated id fields, never inside the reason text.
+    served = _payload_entry(_sessions_payload(store_root), "codex", AMBIG_UUID)
+    assert served["join"]["reason"] == (
+        "usage shares client_session_id with 2 sections; not allocating to a section"
+    )
+    assert AMBIG_UUID not in served["join"]["reason"]
+    assert AMBIG_UUID not in served["client_session_id_short"]
 
 
 # ---------------------------------------------------------------------------
-# [4] proxy rows group in the default timeline view
+# [4] proxy rows ride the /timeline data lane without drowning sections
 # ---------------------------------------------------------------------------
 
 
-def _timeline_slice(html):
-    start = html.find("<h2>Work Timeline</h2>")
-    end = html.find("Agent source discovery", start)
-    assert start != -1 and end != -1
-    return html[start:end]
-
-
-def test_grouped_timeline_groups_proxy_budget_decisions(tmp_path):
+def test_timeline_lane_keeps_proxy_budget_decisions_distinct_and_sections_visible(tmp_path):
     store_root = tmp_path / "state"
     for name in ("alpha", "beta", "gamma"):
         _record_section(store_root, section_id=f"proxy-flood-{name}", title=f"Proxy flood section {name}", session=f"pf-{name}")
@@ -502,23 +527,27 @@ def test_grouped_timeline_groups_proxy_budget_decisions(tmp_path):
             decision="allowed",
         )
 
-    raw_html = _app_client(store_root).get("/?tab=raw").text
-    timeline_html = _timeline_slice(raw_html)
+    payload = _app_client(store_root).get("/timeline", params={"limit": 500}).json()
+    entries = payload["timeline"]
 
-    # Sections stay visible despite 100 NEWER budget decisions.
+    # Sections stay on the lane despite 100 NEWER budget decisions.
+    titles = {entry.get("title") for entry in entries}
     for name in ("alpha", "beta", "gamma"):
-        assert f"Proxy flood section {name}" in timeline_html
-    # One labeled group row instead of 100 passthrough rows.
-    assert "Proxy usage — 100 budget decision(s)" in timeline_html
-    assert timeline_html.count("Proxy budget decision<") == 0
-    # Group rows show labeled fresh tokens and honest join counts.
-    assert "300 fresh" in timeline_html
-    assert "0 attributed / 100 not attributed" in timeline_html
-    # Nothing truncated in the grouped view, so no cap note may render.
-    assert "timeline entries." not in raw_html
-    # Row-level rows remain available (and honestly capped) one click away.
-    all_html = _app_client(store_root).get("/?tab=raw&timeline_view=all").text
-    assert "Showing 80 of 103 timeline entries." in all_html
+        assert f"Proxy flood section {name}" in titles
+
+    # Proxy rows are a DISTINCT event kind with a distinct label — a display
+    # layer can group them without parsing titles apart (client travels as
+    # data on every proxy entry, per the v2 wire contract).
+    proxy_entries = [entry for entry in entries if entry.get("event_kind") == "proxy_usage"]
+    assert len(proxy_entries) == 100
+    for entry in proxy_entries:
+        assert entry["title"] == "Proxy budget decision"
+        assert "client" in entry
+        # Honest join accounting: proxy rows never claim attribution.
+        assert entry["work_id"] is None
+        assert entry["join_strategy"] == "unjoined"
+    # Labeled fresh tokens survive per-row (the group figure's data source).
+    assert sum(int(entry.get("tokens_fresh") or 0) for entry in proxy_entries) == 300
 
 
 # ---------------------------------------------------------------------------
@@ -552,16 +581,16 @@ def test_attention_example_refs_use_collision_suffixed_labels(tmp_path):
         assert not label.endswith(" abcdef12")
         assert any(label.endswith(suffixed) for suffixed in rollup_labels.values())
 
-    html = _product_html(store_root)
-    attention_html = html[html.index('id="attention"') : html.index('id="reconciliation"')]
-    for suffixed in rollup_labels.values():
-        assert suffixed in attention_html
+    # The served /attention lane carries the same suffixed example labels.
+    served_groups = _app_client(store_root).get("/attention").json()["attention_groups"]
+    served_labels = [ref["label"] for group in served_groups for ref in group["example_refs"]]
+    assert sorted(served_labels) == sorted(example_labels)
 
 
 def test_parent_reference_label_routes_through_collision_assigner(tmp_path):
     store_root = tmp_path / "state"
     # An entry whose base label collides with an UNRECORDED parent's base
-    # label: both must be suffixed, never rendered identically. claude-code
+    # label: both must be suffixed, never labeled identically. claude-code
     # fixtures keep the generic first-8 rule under test (codex is tail-based).
     _trusted_usage(store_root, session="collide99-aaaa-4000-8000-000000000001", client="claude-code")
     _trusted_usage(store_root, session="orphan-kid", client="claude-code", parent_session="collide99-bbbb-4000-8000-000000000002")
@@ -575,21 +604,23 @@ def test_parent_reference_label_routes_through_collision_assigner(tmp_path):
     assert entry["client_session_id_short"].startswith("collide9~")
 
 
-def test_blind_spot_detail_leads_with_fresh_and_labels_the_total(tmp_path):
+def test_blind_spot_figures_expose_fresh_separately_from_cache_inclusive_total(tmp_path):
     store_root = tmp_path / "state"
     _trusted_usage(store_root, session="blind-spot-session", input_tokens=10, output_tokens=10, cached_input_tokens=1_000_000, cost=0.5)
 
-    html = _product_html(store_root)
-    # Ledger insights is the last /sessions section since the 3.5a split
-    # (Usage Basics moved to /tokens); slice to the end of the page.
-    insights_html = html[html.index('id="ledger-insights"') :]
+    ledger = _ledger(store_root)
+    blind_spots = {spot["type"]: spot for spot in ledger["insights"]["blind_spots"]}
+    spot = blind_spots["usage_without_mcp_context"]
 
-    assert "20 fresh tokens; 1,000,020 incl. caches;" in insights_html
-    # The old bare cache-inflated figure must be gone.
-    assert "1,000,020 tokens;" not in insights_html
+    # Fresh figure leads its own field; the cache-inclusive total is a
+    # SEPARATE labeled field — never one bare cache-inflated number.
+    assert spot["fresh_tokens"] == 20
+    assert spot["tokens"] == 1_000_020
+    assert spot["cache_creation_tokens"] + spot["cache_read_tokens"] == 1_000_000
+    assert spot["fresh_tokens"] + spot["cache_creation_tokens"] + spot["cache_read_tokens"] == spot["tokens"]
 
 
-def test_home_directory_project_label_renders_tilde_not_username(tmp_path):
+def test_home_directory_project_label_is_tilde_not_username(tmp_path):
     store_root = tmp_path / "state"
     home = Path.home()
     _trusted_usage(store_root, session="home-cwd-session", project_dir=str(home))
@@ -598,38 +629,9 @@ def test_home_directory_project_label_renders_tilde_not_username(tmp_path):
     entry = _rollup_entry(ledger, "codex", "home-cwd-session")
     assert entry["project"] == "~"
 
-    html = _product_html(store_root)
-    assert home.name not in html
-    assert ">~<" in _sessions_slice(html)
-
-
-def test_raw_tab_bridge_and_activity_cells_truncate_session_ids(tmp_path):
-    store_root = tmp_path / "state"
-    session_uuid = "3c60be00-1f6e-4d10-9d3d-abcdefabcdef"
-    _trusted_usage(store_root, session=session_uuid)
-    # Unlinked context event in a session with no usage row at all: falls
-    # back to the shared base truncation, still never the full id.
-    SentinelService(store_root).record_event(
-        {
-            "source": "codex",
-            "event_type": "client_context_attached",
-            "metadata": {
-                "sentinel_semantic_kind": "client_context",
-                "client": "codex",
-                "client_session_id": "9f80c3d2-5a11-4b22-8c33-001122334455",
-            },
-        }
-    )
-
-    raw_html = _app_client(store_root).get("/?tab=raw").text
-    displayed = re.sub(r'href="[^"]*"', 'href=""', raw_html)
-
-    assert session_uuid not in displayed
-    assert "9f80c3d2-5a11-4b22-8c33-001122334455" not in displayed
-    # codex labels keep the distinctive UUIDv7 tail — on the rollup-backed
-    # usage row AND on the context-only fallback path alike.
-    assert "<code>efabcdef</code>" in raw_html
-    assert "<code>22334455</code>" in raw_html
+    # The served label agrees: displays render "~", never the username.
+    served = _payload_entry(_sessions_payload(store_root), "codex", "home-cwd-session")
+    assert served["project"] == "~"
 
 
 def test_cache_triple_reconciles_when_split_and_merged_fields_disagree(tmp_path):
@@ -673,14 +675,14 @@ def test_cache_triple_reconciles_when_split_and_merged_fields_disagree(tmp_path)
         assert row["fresh_tokens"] + row["cache_creation_tokens"] + row["cache_read_tokens"] == row["total_tokens"]
 
 
-def test_out_of_range_timestamp_never_500s_the_dashboard(tmp_path):
+def test_out_of_range_timestamp_never_500s_kept_surfaces(tmp_path):
     store_root = tmp_path / "state"
     # Millisecond-epoch drift: fromtimestamp(1.75e12) is "year 57425".
     _trusted_usage(store_root, session="ms-epoch-session", updated_at=1_750_000_000_000)
 
     client = _app_client(store_root)
-    assert client.get("/").status_code == 200
-    assert client.get("/?tab=raw").status_code == 200
+    assert client.get("/timeline").status_code == 200
+    assert client.get("/sessions").status_code == 200
 
     # The guard lives in _fmt_time itself, covering every render site.
     assert _fmt_time(1_750_000_000_000) == ""

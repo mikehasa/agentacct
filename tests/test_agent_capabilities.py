@@ -8,7 +8,7 @@ full model and vocabulary).  These tests cover:
 - cross-registry consistency (manifest matches the usage/capture client lists);
 - per-client evidence (specific agents' states and evidence refs);
 - the validator's rejection rules (every overclaim path pinned);
-- the public surfaces (API endpoint, CLI command, dashboard HTML, XSS escape).
+- the public surfaces (API endpoint, CLI command).
 
 How to read the validator tests: each mutates ONE field of an otherwise-valid
 manifest and asserts ``ValueError`` with the expected message substring.
@@ -17,7 +17,6 @@ manifest and asserts ``ValueError`` with the expected message substring.
 from __future__ import annotations
 
 import json
-from copy import deepcopy
 
 import pytest
 from fastapi.testclient import TestClient
@@ -32,7 +31,6 @@ from agentacct.api import create_local_api_app
 from agentacct.capture import DEFAULT_CAPTURE_REGISTRY
 from agentacct.cli import app
 from agentacct.client_usage import SUPPORTED_CLIENTS, USAGE_EVENT_CLIENTS
-from agentacct.evidence_html import render_agent_capability_manifest_body
 from agentacct.usage_cube import KNOWN_USAGE_CLIENTS
 
 
@@ -194,7 +192,7 @@ def test_manifest_validator_rejects_overclaims() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Public surfaces: API, CLI, dashboard, security.
+# Public surfaces: API, CLI.
 # ---------------------------------------------------------------------------
 
 
@@ -242,53 +240,6 @@ def test_agent_capability_cli_human_output_keeps_states_distinct() -> None:
     assert "limited" in result.output
     assert "experimental" in result.output
     assert "unavailable" in result.output
-
-
-def test_advanced_dashboard_renders_manifest_and_keeps_runtime_wording_honest(tmp_path) -> None:
-    """The dashboard renders the full matrix and never uses whole-client "supported" language."""
-    client = TestClient(create_local_api_app(store_dir=tmp_path / "state"))
-
-    advanced = client.get("/advanced").text
-    home = client.get("/").text
-    section = advanced[advanced.index('id="agent-capability-coverage"') : advanced.index("Evidence projections")]
-    raw = client.get("/raw").text
-
-    assert "Agent capability coverage" in section
-    assert "Limited verified path" in section
-    assert "Experimental" in section
-    assert "Unavailable" in section
-    for name in ("Claude Code", "Codex", "Hermes", "OpenCode", "OpenClaw", "Cursor", "Gemini CLI"):
-        assert name in section
-    assert "support badge" in section
-    assert "Limit:" in section
-    assert "Evidence:" in section
-    assert "Stability:" in section
-    assert "Roadmap only" in section
-    assert "Aider" in section
-    assert "Connected" not in section
-    assert "Known usage sources not detected" in raw
-    assert "Supported but not detected" not in raw
-    rendered_product_copy = "\n".join((home, advanced, raw)).lower()
-    for whole_client_phrase in (
-        "supported local agents",
-        "supported local tools",
-        "connect a supported coding agent",
-    ):
-        assert whole_client_phrase not in rendered_product_copy
-
-
-def test_capability_renderer_escapes_scope_and_agent_labels() -> None:
-    """The HTML renderer must HTML-escape agent names and scope text (XSS defense)."""
-    manifest = deepcopy(agent_capability_manifest())
-    manifest["clients"][0]["display_name"] = '<script id="agent-canary">'
-    manifest["clients"][0]["capabilities"]["usage_import"]["scope"] = '<img src=x onerror="scope-canary">'
-
-    html = render_agent_capability_manifest_body(manifest)
-
-    assert '<script id="agent-canary">' not in html
-    assert '<img src=x onerror="scope-canary">' not in html
-    assert "&lt;script id=&quot;agent-canary&quot;&gt;" in html
-    assert "&lt;img src=x onerror=&quot;scope-canary&quot;&gt;" in html
 
 
 # ---------------------------------------------------------------------------

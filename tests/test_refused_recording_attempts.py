@@ -21,22 +21,13 @@ from __future__ import annotations
 
 import ast
 import json
-import re
 import sqlite3
 from pathlib import Path
-
-from fastapi.testclient import TestClient
 
 import agentacct.client_usage as client_usage_module
 import agentacct.log_evidence as log_evidence_module
 import agentacct.mcp as mcp_module
 import agentacct.work_ledger as work_ledger_module
-from agentacct.api import (
-    _REFUSED_RECORDING_REASON_LABELS,
-    UsageDiscoveryConfig,
-    _refused_recording_html,
-    create_local_api_app,
-)
 from agentacct.client_usage import discover_claude_code_usage, discover_codex_usage
 from agentacct.log_evidence import (
     AGENTACCT_MCP_ERROR_CODES,
@@ -334,10 +325,6 @@ def test_a_successful_call_quoting_an_error_is_not_counted_in_the_scan(tmp_path)
     assert summary["outputs_skipped"] == 3
     assert summary["unclassified_outputs_skipped"] == 3
 
-    html = _refused_recording_html(summary, lambda value: str(value))
-    assert "No refused recording calls were found" in html
-    assert "refused by agentacct" not in html
-
 
 def test_a_client_transport_failure_is_not_a_refusal() -> None:
     """WHOSE error it is, not only where it sits.
@@ -524,12 +511,12 @@ def test_agent_invented_argument_names_never_become_a_field() -> None:
     assert result == (None, None, "unknown_argument")
 
 
-def test_minimum_bound_refusals_are_never_labelled_as_over_the_maximum() -> None:
-    """A label that inverts the refusal is worse than no label at all.
+def test_minimum_bound_refusals_are_never_classified_as_over_the_maximum() -> None:
+    """A reason code that inverts the refusal is worse than no code at all.
 
-    ``input_tokens=-5`` is rejected with "input_tokens must be >= 0"; reporting
-    that as "Value above the allowed maximum" tells the user to shrink a number
-    they need to raise.
+    ``input_tokens=-5`` is rejected with "input_tokens must be >= 0"; classing
+    that as ``value_over_limit`` tells the user to shrink a number they need
+    to raise.
     """
 
     cases = [
@@ -546,28 +533,6 @@ def test_minimum_bound_refusals_are_never_labelled_as_over_the_maximum() -> None
         _tool, field, reason = result
         assert reason in REFUSED_RECORDING_REASON_CODES
         assert (field, reason) == (expected_field, expected_reason), message
-
-    rows = refused_recording_rows(
-        {("agentacct_record_agent_usage_debug", "input_tokens", "value_under_limit"): 1}
-    )
-    html = _refused_recording_html(
-        {"refused_attempt_total": 1, "sessions_with_refusals": 1, "rows": rows},
-        lambda value: str(value),
-    )
-    assert "Value below the allowed minimum" in html
-    assert "Value above the allowed maximum" not in html
-
-
-def test_every_frozen_reason_code_has_plain_language_copy() -> None:
-    """Guard against the drift that produced the inverted label.
-
-    A code the table has no wording for still renders (as the bare code), so
-    this is not about breakage — it is about the surface never again showing a
-    sentence that describes a different refusal than the one that happened.
-    """
-
-    for reason_code in REFUSED_RECORDING_REASON_CODES:
-        assert reason_code in _REFUSED_RECORDING_REASON_LABELS, reason_code
 
 
 def test_minimum_bound_refusal_names_the_tool_that_was_refused(tmp_path) -> None:
@@ -733,7 +698,7 @@ def test_claude_model_lanes_do_not_multiply_one_session_of_refusals(tmp_path) ->
 # ---------------------------------------------------------------------------
 
 
-def test_no_user_content_reaches_the_stored_row_or_the_rendered_page(tmp_path) -> None:
+def test_no_user_content_reaches_the_stored_row_or_the_breakdown(tmp_path) -> None:
     secrets = (SECRET_PATH, SECRET_RUN, SECRET_ARG)
     lines = [
         _mcp_tool_call_end(
@@ -777,153 +742,19 @@ def test_no_user_content_reaches_the_stored_row_or_the_rendered_page(tmp_path) -
     # A "received N" length is user-derived measurement, never carried out.
     assert "4211" not in breakdown
 
-    # 3. The rendered page carries only the bounded triple too.
-    summary = summarize_refused_recording_attempts(events)
-    html = _refused_recording_html(summary, lambda value: str(value))
-    for secret in secrets:
-        assert secret not in html
-    assert "4211" not in html
-    assert "Recording calls agentacct refused" in html
-
-
-def test_rendered_copy_says_agentacct_refused_these_not_the_user(tmp_path) -> None:
-    lines = [
-        _mcp_tool_call_end(
-            "sentinel_record_section",
-            "call_a",
-            _mcp_err("sentinel_record_section", "files[0] must be project-relative"),
-        ),
-        _mcp_tool_call_end(
-            "sentinel_record_section",
-            "call_b",
-            {"Err": "This action was rejected due to unacceptable risk.\nReason: usage limit"},
-        ),
-    ]
-    codex_home = _make_codex_home(tmp_path, lines)
-    events = discover_codex_usage(codex_home=codex_home, limit_sessions=10)
-    summary = summarize_refused_recording_attempts(events)
-
-    html = _refused_recording_html(summary, lambda value: str(value))
-    assert "refused by agentacct" in html
-    assert "not work you failed to" in html
-    # The remainder is disclosed rather than quietly added to the total.
-    assert "1 scanned output(s) donated no recorded event but are NOT counted above" in html
-
-
-def test_empty_scan_renders_an_honest_zero_state() -> None:
-    html = _refused_recording_html(summarize_refused_recording_attempts([]), lambda value: str(value))
-    assert "No refused recording calls were found" in html
-
 
 # ---------------------------------------------------------------------------
-# The surface itself: the section has to reach the page over HTTP
+# Cross-file copy: the attention next step and the blind spot stay one sentence
 # ---------------------------------------------------------------------------
 
 
-def _raw_page(store_root: Path, home: Path) -> str:
-    client = TestClient(
-        create_local_api_app(
-            store_dir=store_root,
-            usage_discovery=UsageDiscoveryConfig.from_home(home),
-        )
-    )
-    response = client.get("/raw", headers={"Accept": "text/html"})
-    assert response.status_code == 200
-    return response.text
-
-
-def test_raw_route_renders_the_refusal_section_with_its_rows(tmp_path) -> None:
-    """Asserted over HTTP, not on the helper.
-
-    Every other test here calls ``_refused_recording_html`` directly, so
-    deleting the one line that injects it into /raw leaves the whole suite
-    green while the feature is gone from the product.
-    """
-
-    home = tmp_path / "home"
-    project = home / ".claude" / "projects" / "-work-project"
-    project.mkdir(parents=True)
-    lines = [
-        _claude_usage_line(CLAUDE_SESSION),
-        _claude_tool_use_line(
-            CLAUDE_SESSION, tool_use_id="toolu_a", name="mcp__agentacct__agentacct_record_section"
-        ),
-        _claude_tool_result_line(
-            CLAUDE_SESSION,
-            tool_use_id="toolu_a",
-            text=f"MCP error -32602: files[0] must be project-relative: {SECRET_PATH}",
-        ),
-    ]
-    (project / f"{CLAUDE_SESSION}.jsonl").write_text(
-        "\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8"
-    )
-
-    page = _raw_page(tmp_path / "state", home)
-
-    assert 'id="refused-recording-attempts"' in page
-    assert "Recording calls agentacct refused" in page
-    assert "1 recording call(s) across 1 client session(s) were refused by agentacct." in page
-    assert "agentacct_record_section" in page
-    assert "File path was not project-relative" in page
-    # The page is a rendering of the same pre-redaction scan, so the privacy
-    # rule has to hold at the route too, not only in the helper.
-    assert SECRET_PATH not in page
-
-
-def test_raw_route_renders_the_refusal_section_on_a_clean_machine(tmp_path) -> None:
-    """No refusals is a state to report, not a reason to drop the section."""
-
-    page = _raw_page(tmp_path / "state", tmp_path / "home")
-
-    assert 'id="refused-recording-attempts"' in page
-    assert "No refused recording calls were found" in page
-
-
-# ---------------------------------------------------------------------------
-# Cross-file copy: the next step points at a section that must exist
-# ---------------------------------------------------------------------------
-
-
-def _string_constants_containing(module, needle: str) -> list[str]:
-    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
-    return [
-        node.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) and needle in node.value
-    ]
-
-
-def test_the_next_step_sentence_names_a_section_the_page_really_renders() -> None:
-    """The sentence sends the user somewhere; that somewhere is in another file.
-
-    ``work_ledger`` tells a user with unexplained usage to look under a named
-    heading in Local logs, and ``api`` is what renders that heading. Rewording
-    either alone leaves the ledger directing people at a section that is not
-    there — a next step that cannot be followed is worse than none.
-    """
+def test_the_attention_group_and_the_blind_spot_share_one_next_step_sentence() -> None:
+    """One copy of the sentence, so the attention group and the blind spot
+    cannot be reworded apart from each other."""
 
     sentence = work_ledger_module._USAGE_WITHOUT_MCP_CONTEXT_NEXT_STEP
-    quoted = re.findall(r'"([^"]+)"', sentence)
-    assert quoted, sentence
-    heading = quoted[0]
-
-    # Rendered in both states, so the reader who follows the pointer lands on
-    # the section whether or not they have refusals.
-    esc = lambda value: str(value)  # noqa: E731 - the route's escaper, not under test here
-    assert heading in _refused_recording_html({}, esc)
-    assert heading in _refused_recording_html(
-        {
-            "refused_attempt_total": 1,
-            "sessions_with_refusals": 1,
-            "rows": refused_recording_rows({("agentacct_record_section", "summary", "narrative_over_limit"): 1}),
-        },
-        esc,
-    )
-
-    # One copy of the sentence, so the attention group and the blind spot
-    # cannot be reworded apart from each other.
+    assert isinstance(sentence, str) and sentence
     assert work_ledger_module._ATTENTION_GROUP_NEXT_STEPS["usage_truth_without_mcp_context"] is sentence
-    assert len(_string_constants_containing(work_ledger_module, heading)) == 1
 
 
 # ---------------------------------------------------------------------------

@@ -14,7 +14,6 @@ dogfood ledger).
 
 from __future__ import annotations
 
-import html as html_module
 import json
 import time
 from datetime import datetime, timedelta, timezone
@@ -23,7 +22,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-from agentacct.api import _session_join_chip_html, create_local_api_app
+from agentacct.api import create_local_api_app
 from agentacct.cli import app
 from agentacct.service import SentinelService
 from agentacct.usage_truth import (
@@ -403,31 +402,6 @@ def test_children_inherit_root_state_and_orphans_use_own_time() -> None:
     assert orphan["instrumentation_state_basis"] == "session_start_vs_marker"
 
 
-# --- 10: chip precedence (unit level; rendered chips are covered in
-# test_dashboard_product_tab.py) ---------------------------------------------
-
-
-def test_client_log_evidence_chip_still_wins_over_pre_instrumentation() -> None:
-    def esc(value: object) -> str:
-        return html_module.escape(str(value if value is not None else ""))
-
-    entry = {
-        "client": "claude-code",
-        "join": {
-            "state": "unjoined",
-            "reason": None,
-            "row_states": {"unjoined": 1},
-            "client_log_evidence": {"evidenced_event_count": 2, "conflicts": 0},
-        },
-        "work": {"counts": {"total": 0}},
-        "instrumentation_state": "pre_instrumentation",
-        "instrumentation_installed_at": 1000.0,
-    }
-    chip = _session_join_chip_html(entry, esc)
-    assert "client-log evidence" in chip
-    assert "Pre-instrumentation" not in chip
-
-
 # --- 11: KPI math -----------------------------------------------------------
 
 
@@ -501,17 +475,17 @@ def test_sessions_json_gains_additive_fields_and_earliest_marker_wins(tmp_path: 
     assert instrumentation["post_context_kpi"]["clients"][0]["installed_at"] == earliest_epoch
 
 
-# --- fix round A: the pre-instrumentation chip may fire ONLY for truly
-# context-free sessions (no sections, no vetoes, no evidence, no conflicts) ---
+# --- fix round A (retargeted to ledger data after the HTML layer's removal):
+# a conflict-vetoed session still carries its veto facts alongside the
+# pre-instrumentation state ---------------------------------------------------
 
 
-def _esc(value: object) -> str:
-    return html_module.escape(str(value if value is not None else ""))
-
-
-def test_vetoed_session_with_later_marker_keeps_the_veto_chip() -> None:
-    """A conflict-vetoed session HAS context here; the veto is the honest
-    display, never 'no MCP work context could have been recorded'."""
+def test_vetoed_session_with_later_marker_keeps_its_veto_facts() -> None:
+    """A conflict-vetoed session HAS context here; the rollup must expose the
+    veto (unjoined + vetoed_rows) alongside pre_instrumentation, so a display
+    layer can never honestly claim 'no MCP work context could have been
+    recorded'. (The HTML chip that rendered this precedence was removed with
+    the display layer; the data facts it drew from are pinned here.)"""
     ledger = build_work_ledger(
         [
             _marker(client="codex", installed_at=1000.0),
@@ -521,98 +495,9 @@ def test_vetoed_session_with_later_marker_keeps_the_veto_chip() -> None:
     )
     entry = _entry(ledger, "codex", "veto-sess")
     assert entry["instrumentation_state"] == "pre_instrumentation"
+    assert entry["instrumentation_state_basis"] == "session_start_vs_marker"
     assert entry["join"]["state"] == "unjoined"
     assert int(entry["join"]["vetoed_rows"]) == 1
-    chip = _session_join_chip_html(entry, _esc)
-    assert "Not attributed" in chip
-    assert "Pre-instrumentation" not in chip
-    assert "no MCP work context could have been recorded" not in chip
-    assert "conflicting evidence vetoes the join" in chip
-
-
-def test_sections_bearing_unjoined_entry_never_gets_the_pre_chip() -> None:
-    entry = {
-        "client": "claude-code",
-        "join": {
-            "state": "unjoined",
-            "reason": "no section shared this session's ids",
-            "row_states": {"unjoined": 1},
-            "vetoed_rows": 0,
-            "client_log_evidence": None,
-        },
-        "work": {"counts": {"total": 2}},
-        "instrumentation_state": "pre_instrumentation",
-        "instrumentation_state_basis": "session_start_vs_marker",
-        "instrumentation_installed_at": 1000.0,
-    }
-    chip = _session_join_chip_html(entry, _esc)
-    assert "Not attributed" in chip
-    assert "Pre-instrumentation" not in chip
-
-
-def test_conflicted_evidence_entry_never_gets_the_pre_chip() -> None:
-    entry = {
-        "client": "claude-code",
-        "join": {
-            "state": "unjoined",
-            "reason": None,
-            "row_states": {"unjoined": 1},
-            "vetoed_rows": 0,
-            "client_log_evidence": {"evidenced_event_count": 0, "conflicts": 1},
-        },
-        "work": {"counts": {"total": 0}},
-        "instrumentation_state": "pre_instrumentation",
-        "instrumentation_state_basis": "session_start_vs_marker",
-        "instrumentation_installed_at": 1000.0,
-    }
-    chip = _session_join_chip_html(entry, _esc)
-    assert "Pre-instrumentation" not in chip
-
-
-def test_truly_bare_pre_instrumentation_session_still_gets_the_chip() -> None:
-    entry = {
-        "client": "claude-code",
-        "join": {
-            "state": "unjoined",
-            "reason": None,
-            "row_states": {"unjoined": 1},
-            "vetoed_rows": 0,
-            "client_log_evidence": None,
-        },
-        "work": {"counts": {"total": 0}},
-        "instrumentation_state": "pre_instrumentation",
-        "instrumentation_state_basis": "session_start_vs_marker",
-        "instrumentation_installed_at": 1000.0,
-    }
-    chip = _session_join_chip_html(entry, _esc)
-    assert "Pre-instrumentation — recording was not installed when this session ran" in chip
-    assert "no MCP work context could have been recorded" in chip
-
-
-def test_inherited_child_pre_chip_speaks_about_the_root_session() -> None:
-    """A child can START after install yet inherit pre from its root: the
-    title must not claim THIS session started before install."""
-    entry = {
-        "client": "claude-code",
-        "join": {
-            "state": "unjoined",
-            "reason": None,
-            "row_states": {"unjoined": 1},
-            "vetoed_rows": 0,
-            "client_log_evidence": None,
-        },
-        "work": {"counts": {"total": 0}},
-        "instrumentation_state": "pre_instrumentation",
-        "instrumentation_state_basis": "inherited_from_root",
-        "instrumentation_installed_at": 1000.0,
-    }
-    chip = _session_join_chip_html(entry, _esc)
-    assert "Pre-instrumentation" in chip
-    assert (
-        "The root session of this subagent session started before recording instructions for Claude Code were installed"
-        in chip
-    )
-    assert "this session started before that" not in chip
 
 
 # --- fix round B: command-time auto-markers record on FRESH installs only ---

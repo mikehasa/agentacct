@@ -39,7 +39,6 @@ from agentacct.usage_truth import (
     is_local_session_observation_event,
     mark_trusted_local_usage_import_event,
 )
-from refresh_flash import refresh_flash_qs, run_dashboard_refresh
 
 
 def _make_codex_home(root: Path, *, model: str = "gpt-5.5") -> Path:
@@ -4890,7 +4889,7 @@ def test_usage_import_local_persists_hermes_zero_token_observation_only(
     }.intersection(stored[0])
 
 
-def test_dashboard_refresh_projects_observation_only_session_and_task(tmp_path):
+def test_import_local_projects_observation_only_session_and_task(tmp_path):
     codex_home = _make_codex_home(tmp_path)
     rollout = next((codex_home / "sessions").rglob("rollout-*.jsonl"))
     rollout.write_text(
@@ -4922,31 +4921,28 @@ def test_dashboard_refresh_projects_observation_only_session_and_task(tmp_path):
     finally:
         connection.close()
     store_dir = tmp_path / "sentinel-state"
-    client = TestClient(
-        create_local_api_app(
-            store_dir=store_dir,
-            usage_discovery=UsageDiscoveryConfig(
-                enabled=True,
-                codex_home=codex_home,
-                claude_home=tmp_path / "missing-claude",
-                opencode_home=tmp_path / "missing-opencode",
-                hermes_home=tmp_path / "missing-hermes",
-                openclaw_home=tmp_path / "missing-openclaw",
-                cursor_home=tmp_path / "missing-cursor",
-            ),
-        )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "usage",
+            "import-local",
+            "--client",
+            "codex",
+            "--store-dir",
+            str(store_dir),
+            "--codex-home",
+            str(codex_home),
+            "--json",
+        ],
     )
 
-    refresh = run_dashboard_refresh(client)
-
-    assert refresh.status_code == 303
-    assert "sessions_without_usage=1" in refresh_flash_qs(refresh)
-    assert "imported_session_observations=1" in refresh_flash_qs(refresh)
-    assert "preserved_session_observations=1" in refresh_flash_qs(refresh)
-    notice = client.get(refresh.headers["location"])
-    assert notice.status_code == 200
-    assert "usage unavailable" in notice.text
-    assert "did not invent zero tokens or zero cost" in notice.text
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["sessions_without_usage"] == 1
+    assert payload["imported_session_observations"] == 1
+    assert payload["preserved_session_observations"] == 1
+    client = TestClient(create_local_api_app(store_dir=store_dir))
     sessions_payload = client.get(
         "/sessions",
         headers={"accept": "application/json"},
@@ -4959,13 +4955,15 @@ def test_dashboard_refresh_projects_observation_only_session_and_task(tmp_path):
     assert session["local_client_observation"]["measurement_basis"] == (
         "local_client_log_observed"
     )
-    sessions_html = client.get(
-        "/sessions",
-        headers={"accept": "text/html"},
-    ).text
-    assert "Attributed usage</div><div class=\"value\">Unavailable" in sessions_html
-    assert "Attributed sessions</div><div class=\"value\">Usage unavailable" in sessions_html
-    assert "0 fresh tokens attributed" not in sessions_html
+    summary = sessions_payload["summary"]
+    assert summary["sessions_with_usage"] == 0
+    assert summary["attributed_sessions"] == 0
+    assert summary["sessions_with_local_client_observation"] == 1
+    # Unavailable usage must stay null (not a zero-cost claim), even though
+    # the additive token counters legitimately read 0.
+    assert summary["totals"]["estimated_cost_usd"] is None
+    assert summary["totals"]["fresh_tokens"] == 0
+    assert summary["totals"]["total_tokens"] == 0
     tasks_payload = client.get("/tasks").json()
     assert tasks_payload["summary"]["task_count"] == 1
     assert tasks_payload["tasks"][0]["usage"]["usage_availability"] == "unknown"
@@ -6379,22 +6377,6 @@ def test_product_dashboard_prefers_global_store_and_warns_about_project_mcp_shad
     assert "All projects" in result.output
     assert "project MCP" in result.output
     assert "new agent session" in result.output
-
-
-def test_global_dashboard_home_uses_all_projects_product_language(tmp_path):
-    global_store = tmp_path / ".agent-sentinel-global" / "state"
-    global_store.mkdir(parents=True)
-
-    response = TestClient(create_local_api_app(store_dir=global_store)).get(
-        "/",
-        headers={"Accept": "text/html"},
-    )
-
-    assert response.status_code == 200
-    assert "All projects" in response.text
-    assert "across all local projects" in response.text
-    assert "Local agent activity" in response.text
-    assert "custom-scoped store" not in response.text
 
 
 def test_task_title_prefers_trusted_primary_chat_title_over_work_step():

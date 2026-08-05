@@ -23,7 +23,6 @@ The load-bearing semantics under test:
 from __future__ import annotations
 
 import os
-import shutil
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -406,7 +405,7 @@ def test_tasks_and_sessions_flag_off_are_untouched(tmp_path):
     tasks = client.get("/tasks").json()
     assert tasks["schema_version"] == "agent-chronicle.task-projection.v1"
     assert "canonical_read" not in tasks
-    assert "csrf_token" in tasks
+    assert tasks["summary"]["task_count"] == 3
 
     sessions = client.get("/sessions").json()
     assert sessions["schema_version"] == "agent-sentinel.work-ledger.v2"
@@ -476,7 +475,7 @@ def test_tasks_flag_on_store_absent_falls_back_labeled(tmp_path, monkeypatch):
     assert payload["canonical_read"]["active"] is False
     assert payload["canonical_read"]["source"] == "v1_fallback"
     assert payload["canonical_read"]["reason"] == "store_absent"
-    assert "csrf_token" in payload, "the fallback is the full v1 surface"
+    assert payload["summary"]["task_count"] == 3, "the fallback is the full v1 surface"
 
 
 def test_tasks_flag_on_never_built_projection_falls_back_labeled(tmp_path, monkeypatch):
@@ -511,62 +510,6 @@ def test_tasks_payload_build_crash_falls_back_labeled(tmp_path, monkeypatch):
     assert "task payload exploded" in payload["canonical_read"]["detail"]
     health = client.get("/health").json()
     assert health["canonical_read"]["errors"] >= 1
-
-
-def test_task_detail_flag_on_serves_canonical_and_404s_foreign_ids(tmp_path, monkeypatch):
-    store_dir = _endpoint_store(tmp_path, _work_ledger_events(), name="detail-on")
-
-    # A v1-era public id, minted by the flag-OFF surface's HMAC codec.
-    v1_client = _api_client(store_dir)
-    v1_tasks = v1_client.get("/tasks").json()
-    v1_ids = [entry["public_task_id"] for entry in v1_tasks["tasks"]]
-    assert v1_ids, "fixture must produce v1 tasks"
-
-    monkeypatch.setenv(CANONICAL_READ_ENV, "1")
-    client = _api_client(store_dir)
-    canonical_tasks = client.get("/tasks").json()
-    canonical_id = canonical_tasks["tasks"][0]["public_task_id"]
-
-    detail = client.get(f"/api/tasks/{canonical_id}")
-    assert detail.status_code == 200
-    payload = detail.json()
-    assert payload["schema_version"] == "agent-chronicle.task-intelligence.v2-canonical"
-    assert payload["task"]["public_task_id"] == canonical_id
-    assert payload["canonical_read"]["active"] is True
-    alias = client.get(f"/api/tasks/view/{canonical_id}")
-    assert alias.status_code == 200
-
-    # The id namespaces are disjoint: a v1 id is an honest 404 in canonical
-    # mode (never silently answered from the v1 ledger)...
-    assert canonical_id not in v1_ids
-    for foreign in (v1_ids[0], "task_" + "0" * 32):
-        response = client.get(f"/api/tasks/{foreign}")
-        assert response.status_code == 404
-        assert "canonical" in response.json()["detail"]
-    # ...and the HTML detail page is migrated too (P1 HTML read cut): a
-    # canonical id serves the canonical HTML view, while a v1-era id is the
-    # same honest 404 the JSON twin returns (no silent v1 render).
-    canonical_html = client.get(
-        f"/tasks/view/{canonical_id}", headers={"accept": "text/html"}
-    )
-    assert canonical_html.status_code == 200
-    assert 'data-canonical-read="canonical"' in canonical_html.text
-    foreign_html = client.get(f"/tasks/view/{v1_ids[0]}", headers={"accept": "text/html"})
-    assert foreign_html.status_code == 404
-
-
-def test_task_detail_flag_on_unavailable_falls_back_to_v1(tmp_path, monkeypatch):
-    store_dir = tmp_path / "store"
-    _write_ledger(store_dir, _trusted(_work_ledger_events()))
-    v1_client = _api_client(store_dir)
-    v1_id = v1_client.get("/tasks").json()["tasks"][0]["public_task_id"]
-    monkeypatch.setenv(CANONICAL_READ_ENV, "1")
-    client = _api_client(store_dir)
-    response = client.get(f"/api/tasks/{v1_id}")
-    assert response.status_code == 200, "store-absent unavailability falls back to v1"
-    payload = response.json()
-    assert payload["schema_version"] == "agent-chronicle.task-intelligence.v1"
-    assert payload["canonical_read"]["reason"] == "store_absent"
 
 
 def test_sessions_flag_on_serves_canonical(tmp_path, monkeypatch):
@@ -628,21 +571,6 @@ def test_sessions_payload_build_crash_falls_back_labeled(tmp_path, monkeypatch):
     assert payload["schema_version"] == "agent-sentinel.work-ledger.v2"
     assert payload["canonical_read"]["reason"] == "error"
     assert "session payload exploded" in payload["canonical_read"]["detail"]
-
-
-def test_sessions_html_page_serves_canonical_under_flag(tmp_path, monkeypatch):
-    """P1 HTML read cut: the HTML sessions page is migrated — with the flag on
-    and the store serving, it renders the labeled canonical view (it no longer
-    stays v1). Full three-state coverage lives in test_canonical_html_reads.py."""
-
-    store_dir = _endpoint_store(tmp_path, _work_ledger_events(), name="sessions-html")
-    monkeypatch.setenv(CANONICAL_READ_ENV, "1")
-    client = _api_client(store_dir)
-    response = client.get("/sessions", headers={"accept": "text/html"})
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/html")
-    assert 'data-canonical-read="canonical"' in response.text
-    assert 'data-canonical-surface="session_list"' in response.text
 
 
 # --- review-round tests (adversarial review of the 4.2 diff) ----------------
@@ -748,78 +676,6 @@ def test_out_of_page_parent_is_fetched_and_resolved(tmp_path, monkeypatch):
     assert entry["parent"]["client_session_id"] == "p-1"
     assert entry["parent"]["identity_resolved"] is True
     assert entry["parent"]["client"] == "claude-code"
-
-
-def test_task_detail_flag_off_is_untouched(tmp_path):
-    store_dir = _endpoint_store(tmp_path, _work_ledger_events(), name="detail-off")
-    client = _api_client(store_dir)
-    v1_id = client.get("/tasks").json()["tasks"][0]["public_task_id"]
-    payload = client.get(f"/api/tasks/{v1_id}").json()
-    assert payload["schema_version"] == "agent-chronicle.task-intelligence.v1"
-    assert "canonical_read" not in payload
-    assert client.get("/api/tasks/" + "task_" + "0" * 32).status_code == 404
-
-
-def test_task_detail_payload_crash_is_typed_503_not_a_lying_404(tmp_path, monkeypatch):
-    """The task EXISTS canonically and v1 cannot serve its id (disjoint
-    namespaces): a payload-build crash must surface as a typed 503 recorded
-    on /health — never a 'Task not found' that contradicts the store."""
-
-    import agentacct.api as api_module
-
-    store_dir = _endpoint_store(tmp_path, _work_ledger_events(), name="detail-crash")
-    monkeypatch.setenv(CANONICAL_READ_ENV, "1")
-    client = _api_client(store_dir)
-    canonical_id = client.get("/tasks").json()["tasks"][0]["public_task_id"]
-
-    def _boom(*args: Any, **kwargs: Any) -> None:
-        raise ValueError("detail payload exploded")
-
-    monkeypatch.setattr(api_module, "_canonical_task_intelligence_payload", _boom)
-    response = client.get(f"/api/tasks/{canonical_id}")
-    assert response.status_code == 503
-    detail = response.json()["detail"]
-    assert "detail payload exploded" in detail
-    assert "canonical_read.errors" in detail
-    health = client.get("/health").json()
-    assert health["canonical_read"]["errors"] >= 1
-
-
-def test_planned_control_task_serves_v1_labeled_in_canonical_mode(tmp_path, monkeypatch):
-    """Planned control-plane tasks are live product state the canonical model
-    cannot represent (anchors are minted from sessions only): canonical mode
-    must keep serving them from v1 WITH the model-gap label — not 404 them
-    with a v1-era-namespace explanation."""
-
-    from agentacct.control_plane import ControlStore
-
-    store_dir = _endpoint_store(tmp_path, _work_ledger_events(), name="planned")
-    control = ControlStore(store_dir)
-    control.register_workspace(
-        store_dir.parent,
-        workspace_id="workspace_test",
-        store_dir=store_dir,
-        idempotency_key="test:workspace",
-    )
-    task = control.create_task(origin="planned", idempotency_key="test:task")
-    control.create_contract(
-        task.task_id,
-        objective="Plan the thing",
-        workspace_id="workspace_test",
-        permission_envelope={"mutation_mode": "read_only"},
-        idempotency_key="test:contract",
-    )
-
-    monkeypatch.setenv(CANONICAL_READ_ENV, "1")
-    client = _api_client(store_dir)
-    response = client.get(f"/api/tasks/{task.task_id}")
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["schema_version"] == "agent-chronicle.task-intelligence.v1"
-    assert payload["canonical_read"]["active"] is False
-    assert payload["canonical_read"]["reason"] == "not_represented"
-    assert "planned control-plane" in payload["canonical_read"]["detail"]
-    assert payload["title"] == "Plan the thing"
 
 
 # --- v1 vs canonical cross-checks on the same ledger -------------------------

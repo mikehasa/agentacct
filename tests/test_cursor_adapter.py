@@ -18,13 +18,12 @@ from agentacct.client_usage import (
     discover_client_usage_with_diagnostics,
     usage_less_session_observations,
 )
-from agentacct.api import UsageDiscoveryConfig, create_local_api_app
+from agentacct.api import create_local_api_app
 from agentacct.ingestion_health import IngestionHealthStore, health_scan_results
 from agentacct.event_log import RAW_EVENT_LOG_FILENAME, RawEventLog
 from agentacct.service import SentinelService
 from agentacct.source_discovery import discover_usage_sources
 from agentacct.usage_truth import is_local_session_observation_event
-from refresh_flash import refresh_flash_qs
 
 
 def _cursor_home(tmp_path: Path, rows: list[tuple[str, dict]]) -> Path:
@@ -642,7 +641,7 @@ def test_cursor_can_never_be_constructed_as_usage_event(tmp_path: Path) -> None:
         )
 
 
-def test_cursor_dashboard_refresh_projects_observation_only_and_raw_truth(
+def test_cursor_import_projects_observation_only_on_json_data_lanes(
     tmp_path: Path,
 ) -> None:
     home = _cursor_home(
@@ -653,34 +652,27 @@ def test_cursor_dashboard_refresh_projects_observation_only_and_raw_truth(
         ],
     )
     store = tmp_path / "chronicle-state"
-    api = TestClient(
-        create_local_api_app(
-            store_dir=store,
-            usage_discovery=UsageDiscoveryConfig(
-                enabled=True,
-                codex_home=tmp_path / "missing-codex",
-                claude_home=tmp_path / "missing-claude",
-                opencode_home=tmp_path / "missing-opencode",
-                hermes_home=tmp_path / "missing-hermes",
-                openclaw_home=tmp_path / "missing-openclaw",
-                cursor_home=home,
-            ),
-        )
+
+    imported = CliRunner().invoke(
+        app,
+        [
+            "usage",
+            "import-local",
+            "--client",
+            "cursor",
+            "--store-dir",
+            str(store),
+            "--cursor-home",
+            str(home),
+            "--json",
+        ],
     )
 
-    refresh = api.post("/usage/import-local/cursor", follow_redirects=False)
-
-    assert refresh.status_code == 303
-    assert "sessions_without_usage=2" in refresh_flash_qs(refresh)
-    assert "imported_session_observations=2" in refresh_flash_qs(refresh)
-    raw = api.get("/raw").text
-    assert "Session observations only" in raw
-    assert "2 observation(s) saved" in raw
-    assert "Found, no tokens yet" not in raw
-    assert "Usage: unavailable by design" in raw
-    assert "Cost: unavailable by design" in raw
-    assert "Usage: not found yet" not in raw
-    assert "Cost: not found yet" not in raw
+    assert imported.exit_code == 0, imported.output
+    payload = json.loads(imported.output)
+    assert payload["sessions_without_usage"] == 2
+    assert payload["imported_session_observations"] == 2
+    api = TestClient(create_local_api_app(store_dir=store))
     sessions = api.get("/sessions", headers={"accept": "application/json"}).json()
     assert sessions["total_sessions"] == 2
     assert all(session["usage"]["rows"] == 0 for session in sessions["sessions"])
@@ -698,27 +690,29 @@ def test_cursor_wal_health_has_actionable_single_source_recovery(
 ) -> None:
     home = _cursor_home(tmp_path, [("root", _composer("root"))])
     (home / "User" / "globalStorage" / "state.vscdb-wal").write_bytes(b"active")
-    api = TestClient(
-        create_local_api_app(
-            store_dir=tmp_path / "chronicle-state",
-            usage_discovery=UsageDiscoveryConfig(
-                enabled=True,
-                cursor_home=home,
-            ),
-        )
+    store = tmp_path / "chronicle-state"
+
+    imported = CliRunner().invoke(
+        app,
+        [
+            "usage",
+            "import-local",
+            "--client",
+            "cursor",
+            "--store-dir",
+            str(store),
+            "--cursor-home",
+            str(home),
+            "--json",
+        ],
     )
 
-    refresh = api.post("/usage/import-local/cursor", follow_redirects=False)
-
-    assert refresh.status_code == 303
+    assert imported.exit_code == 0, imported.output
+    api = TestClient(create_local_api_app(store_dir=store))
     health = api.get("/ingestion/health").json()
     issue = next(issue for issue in health["issues"] if issue["source"] == "cursor")
     assert issue["code"] == "source_snapshot_required"
     assert "Quit Cursor completely" in issue["action"]
-    advanced = api.get("/advanced").text
-    assert "Cursor source recovery" in advanced
-    assert "Retry Cursor after repair" in advanced
-    assert '--cursor-home "/absolute/path/to/Cursor" --dry-run --json' in advanced
 
 
 @pytest.mark.parametrize(
@@ -775,9 +769,9 @@ def test_cursor_structural_errors_have_actionable_recovery(
     assert issue["code"] == issue_code
     assert action_fragment in issue["action"]
 
-    advanced = TestClient(create_local_api_app(store_dir=store_dir)).get(
-        "/advanced"
-    ).text
-    assert "Cursor source recovery" in advanced
-    assert action_fragment in advanced
-    assert "Retry Cursor after repair" in advanced
+    health = TestClient(create_local_api_app(store_dir=store_dir)).get(
+        "/ingestion/health"
+    ).json()
+    served = next(issue for issue in health["issues"] if issue["source"] == "cursor")
+    assert served["code"] == issue_code
+    assert action_fragment in served["action"]

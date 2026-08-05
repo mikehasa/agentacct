@@ -26,19 +26,14 @@ How to read these tests
 from __future__ import annotations
 
 import stat
-import time
 
 import pytest
-from fastapi.testclient import TestClient
 
 from agentacct.activation import (
     ActivationStateError,
     ActivationStateStore,
     build_activation_snapshot,
 )
-from agentacct.api import create_local_api_app
-from agentacct.ingestion_health import IngestionHealthStore
-from agentacct.service import SentinelService
 
 
 def _runtime(state: str = "running") -> dict[str, object]:
@@ -65,37 +60,6 @@ def _snapshot(**overrides: object) -> dict[str, object]:
     }
     defaults.update(overrides)
     return build_activation_snapshot(**defaults)
-
-
-def _usage(service: SentinelService, *, session: str, started_at: float) -> None:
-    """Record one synthetic codex usage row -- i.e. simulate one agent 'chat'.
-
-    The row mimics what the local-usage importer writes when it reads a codex
-    session, so the service sees a realistic root session of a known client.
-    """
-    service.record_event(
-        {
-            "source": "codex-local-session-import",
-            "event_type": "model_usage",
-            "provider": "codex",
-            "model": "gpt-test",
-            "estimated_input_tokens": 10,
-            "estimated_output_tokens": 2,
-            "usage_confidence": "client_reported",
-            "cost_confidence": "unknown",
-            "metadata": {
-                "usage_source": "local_client_session_store",
-                "client": "codex",
-                "client_session_id": session,
-                "client_session_kind": "root",
-                "cache_creation_tokens_reported": False,
-                "cache_read_tokens_reported": True,
-                "started_at": started_at,
-                "updated_at": started_at,
-            },
-        },
-        trusted_usage_import=True,
-    )
 
 
 # The "progress" checklist returned by build_activation_snapshot is an ordered
@@ -310,81 +274,3 @@ def test_corrupt_install_record_fails_closed_with_an_issue(tmp_path) -> None:
     assert snapshot is not None                  # a record IS returned...
     assert "issue" in snapshot                   # ...but as an issue marker, not data.
     assert snapshot["issue"].startswith("activation_state_corrupt:")
-
-
-# ---------------------------------------------------------------------------
-# Dashboard integration: the readiness funnel end to end
-# ---------------------------------------------------------------------------
-
-
-def test_empty_store_dashboard_prompts_connecting_a_client(tmp_path) -> None:
-    """End-to-end: a brand-new store's dashboard shows exactly one action.
-
-    Significance: this exercises the real API + HTML render (not just the
-    projection function), confirming the stage from stage-1 actually reaches
-    the UI -- one action card, the privacy-promise copy, and no provider-key ask.
-    """
-    # Build the real dashboard app against a throwaway empty store.
-    client = TestClient(create_local_api_app(store_dir=tmp_path / "state"))
-
-    payload = client.get("/api/activation").json()  # machine-readable stage
-    page = client.get("/").text                     # rendered HTML overview
-
-    assert payload["stage"] == "client_needed"
-    assert payload["primary_action"]["command"] == "agentacct usage discover-sources"
-    # The overview renders the activation card with exactly one action button...
-    assert 'class="activation-card"' in page
-    assert "Get to your first real Task" in page
-    assert page.count('class="activation-action"') == 1
-    # ...and restates the no-provider-keys privacy promise.
-    assert "It does not request provider API keys." in page
-
-
-def test_only_a_post_configuration_chat_completes_activation(tmp_path) -> None:
-    """End-to-end: a chat started BEFORE config never counts; one AFTER does.
-
-    Significance: this is the core activation contract -- agentacct only becomes
-    "active" when a real agent chat begins AFTER onboarding, because hooks
-    attach at session start. A pre-existing chat must NOT flip the dashboard to
-    active on its own.
-    """
-    store_root = tmp_path / "state"
-    service = SentinelService(store_root)
-
-    # (1) A chat that existed BEFORE configuration -- it must not satisfy activation.
-    _usage(service, session="existing-chat", started_at=100.0)
-    # (2) Now configure the project (timestamp 200, after the pre-existing chat).
-    ActivationStateStore(store_root).mark_configured(
-        project_dir=tmp_path,
-        clients=["codex"],
-        configured_at=200.0,
-    )
-    # (3) Stand up the watcher so "continuous sync" is considered running.
-    health = IngestionHealthStore(store_root)
-    health.acquire_watcher(
-        lease_id="activation-watch",
-        pid=4242,
-        importer_version="integration-test",
-        interval_seconds=60,
-        scan_limit=20,
-        sources=("codex",),
-        now=time.time(),
-    )
-    client = TestClient(create_local_api_app(store_dir=store_root))
-
-    # Before any new chat: not yet active -- waiting for a post-configuration session.
-    before = client.get("/api/activation").json()
-    assert before["stage"] == "new_session_needed"
-    assert before["task_count"] == 0  # the pre-existing chat did NOT count
-
-    # (4) A NEW chat, started AFTER configuration (timestamp 300).
-    _usage(service, session="new-chat", started_at=300.0)
-    after = client.get("/api/activation").json()
-    page = client.get("/").text
-
-    # Now activation completes: the new chat is recognized as a real task...
-    assert after["stage"] == "active"
-    assert after["ready"] is True
-    assert after["task_count"] == 1  # ...exactly one task (the new chat)
-    # ...and the first-run card disappears from the overview.
-    assert 'class="activation-card"' not in page

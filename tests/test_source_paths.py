@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 import agentacct.client_usage as client_usage_module
-from agentacct.api import UsageDiscoveryConfig, create_local_api_app
+from agentacct.api import create_local_api_app
 from agentacct.cli import app
 from agentacct.client_usage import (
     ClientSessionObservation,
@@ -31,7 +31,6 @@ from agentacct.source_discovery import discover_usage_sources
 from agentacct.source_paths import MAX_USAGE_SOURCE_HOMES, resolve_usage_source_paths
 from agentacct.task_projection import build_task_projection
 from agentacct.work_ledger import build_work_ledger
-from refresh_flash import refresh_flash_qs, run_dashboard_refresh
 
 
 def _make_codex_home(root: Path, *, session_id: str = "codex-env-session") -> Path:
@@ -530,36 +529,6 @@ def test_corrupt_secondary_codex_home_does_not_discard_healthy_home(
     assert diagnostic["returned_rows"] == 1
     assert diagnostic["excluded_by_limit"] == 0
     assert diagnostic["excluded_by_source_namespace"] == 0
-
-
-def test_raw_dashboard_surfaces_corrupt_codex_database_as_read_error(
-    tmp_path: Path,
-) -> None:
-    codex_home = tmp_path / "corrupt-codex"
-    codex_home.mkdir()
-    (codex_home / "state_5.sqlite").write_text(
-        "not a sqlite database",
-        encoding="utf-8",
-    )
-    client = TestClient(
-        create_local_api_app(
-            store_dir=tmp_path / "state",
-            usage_discovery=UsageDiscoveryConfig(
-                enabled=True,
-                codex_home=codex_home,
-                claude_home=tmp_path / "missing-claude",
-                opencode_home=tmp_path / "missing-opencode",
-                hermes_home=tmp_path / "missing-hermes",
-                openclaw_home=tmp_path / "missing-openclaw",
-            ),
-        )
-    )
-
-    response = client.get("/raw")
-
-    assert response.status_code == 200
-    assert "Read error" in response.text
-    assert "Codex state database(s) could not be read" in response.text
 
 
 def test_corrupt_secondary_claude_home_does_not_discard_healthy_home(
@@ -1276,46 +1245,59 @@ def test_concurrent_foreign_new_lane_aborts_whole_legacy_adoption(
     assert current_by_model["sonnet"]["metadata"]["source_namespace_fingerprint"] == namespace_b
 
 
-def test_dashboard_protects_cross_home_refresh_and_surfaces_health_recovery_action(
+def test_cross_home_refresh_protection_is_surfaced_by_ingestion_health_route(
     tmp_path: Path,
 ) -> None:
     first_home = _make_codex_home(tmp_path / "first", session_id="dashboard-session")
     second_home = _make_codex_home(tmp_path / "second", session_id="dashboard-session")
     store = tmp_path / "state"
+    runner = CliRunner()
 
-    def config(home: Path) -> UsageDiscoveryConfig:
-        return UsageDiscoveryConfig(
-            enabled=True,
-            codex_home=home,
-            claude_home=tmp_path / "missing-claude",
-            opencode_home=tmp_path / "missing-opencode",
-            hermes_home=tmp_path / "missing-hermes",
-            openclaw_home=tmp_path / "missing-openclaw",
-        )
-
-    first_client = TestClient(
-        create_local_api_app(store_dir=store, usage_discovery=config(first_home))
+    initial = runner.invoke(
+        app,
+        [
+            "usage",
+            "import-local",
+            "--client",
+            "codex",
+            "--codex-home",
+            str(first_home),
+            "--store-dir",
+            str(store),
+            "--json",
+        ],
     )
-    initial = run_dashboard_refresh(first_client)
-    assert initial.status_code == 303
+    assert initial.exit_code == 0, initial.output
+    assert json.loads(initial.output)["imported_events"] == 1
     before = SentinelService(store).list_all_events()[0]
 
-    second_client = TestClient(
-        create_local_api_app(store_dir=store, usage_discovery=config(second_home))
+    protected = runner.invoke(
+        app,
+        [
+            "usage",
+            "import-local",
+            "--client",
+            "codex",
+            "--codex-home",
+            str(second_home),
+            "--store-dir",
+            str(store),
+            "--refresh",
+            "--json",
+        ],
     )
-    protected = run_dashboard_refresh(second_client)
+    assert protected.exit_code == 0, protected.output
+    payload = json.loads(protected.output)
 
-    assert protected.status_code == 303
-    assert "source_namespace_conflicts=1" in refresh_flash_qs(protected)
+    assert payload["source_namespace_conflicts"] == 1
+    assert payload["imported_events"] == 0
     after = SentinelService(store).list_all_events()[0]
     assert after["event_id"] == before["event_id"]
     assert after["metadata"]["source_namespace_fingerprint"] == before["metadata"][
         "source_namespace_fingerprint"
     ]
-    page = second_client.get(protected.headers["location"])
-    assert "agentacct protected 1 usage row(s)" in page.text
-    assert "confirm that agent's configured data home" in page.text
-    health = second_client.get("/ingestion/health").json()
+    api_client = TestClient(create_local_api_app(store_dir=store))
+    health = api_client.get("/ingestion/health").json()
     codex = next(row for row in health["sources"] if row["source"] == "codex")
     assert health["state"] == "degraded"
     assert health["source_namespace_conflicts"] == 1
@@ -1358,7 +1340,7 @@ def test_persisted_parent_source_namespace_controls_task_lineage_end_to_end(tmp_
     assert matched["tasks"][0]["session_count"] == 2
 
 
-def test_dashboard_reports_legacy_source_namespace_adoption_on_real_refresh(tmp_path: Path) -> None:
+def test_import_reports_legacy_source_namespace_adoption_on_real_scan(tmp_path: Path) -> None:
     codex_home = _make_codex_home(tmp_path, session_id="adoption-session")
     store = tmp_path / "state"
     legacy = _usage_candidate(
@@ -1368,27 +1350,31 @@ def test_dashboard_reports_legacy_source_namespace_adoption_on_real_refresh(tmp_
         input_tokens=1,
     )
     SentinelService(store).record_event(legacy.to_sentinel_event(), trusted_usage_import=True)
-    config = UsageDiscoveryConfig(
-        enabled=True,
-        codex_home=codex_home,
-        claude_home=tmp_path / "missing-claude",
-        opencode_home=tmp_path / "missing-opencode",
-        hermes_home=tmp_path / "missing-hermes",
-        openclaw_home=tmp_path / "missing-openclaw",
-        cursor_home=tmp_path / "missing-cursor",
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "usage",
+            "import-local",
+            "--client",
+            "codex",
+            "--codex-home",
+            str(codex_home),
+            "--store-dir",
+            str(store),
+            "--json",
+        ],
     )
-    client = TestClient(create_local_api_app(store_dir=store, usage_discovery=config))
 
-    response = run_dashboard_refresh(client)
-
-    assert response.status_code == 303
-    assert "source_namespace_adoptions=1" in refresh_flash_qs(response)
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["source_namespace_adoptions"] == 1
     stored = SentinelService(store).list_all_events()[0]
     assert stored["metadata"]["source_namespace_binding"] == "tofu_explicit_scan_v1"
     assert stored["metadata"]["source_namespace_fingerprint"].startswith("sha256:")
 
 
-def test_dashboard_binds_unchanged_legacy_row_once_without_reissuing_identity(
+def test_import_binds_unchanged_legacy_row_once_without_reissuing_identity(
     tmp_path: Path,
 ) -> None:
     codex_home = _make_codex_home(tmp_path, session_id="unchanged-legacy-session")
@@ -1401,8 +1387,8 @@ def test_dashboard_binds_unchanged_legacy_row_once_without_reissuing_identity(
     legacy_event = discovery.events[0].to_sentinel_event()
     legacy_event["metadata"].pop("source_namespace_fingerprint", None)
     legacy_event["metadata"].pop("parent_source_namespace_fingerprint", None)
-    # Keep the dashboard's intentional unknown→priced refresh out of this
-    # contract: only additive namespace metadata is under test here.
+    # Keep the intentional unknown→priced refresh out of this contract: only
+    # additive namespace metadata is under test here.
     legacy_event["estimated_cost_usd"] = 0.001
     legacy_event["cost_confidence"] = "estimated_from_tokens"
 
@@ -1412,21 +1398,26 @@ def test_dashboard_binds_unchanged_legacy_row_once_without_reissuing_identity(
         trusted_usage_import=True,
     )
     before_bytes = SentinelService(store).event_log.read_lines()
-    config = UsageDiscoveryConfig(
-        enabled=True,
-        codex_home=codex_home,
-        claude_home=tmp_path / "missing-claude",
-        opencode_home=tmp_path / "missing-opencode",
-        hermes_home=tmp_path / "missing-hermes",
-        openclaw_home=tmp_path / "missing-openclaw",
-    )
-    client = TestClient(create_local_api_app(store_dir=store, usage_discovery=config))
+    runner = CliRunner()
+    import_args = [
+        "usage",
+        "import-local",
+        "--client",
+        "codex",
+        "--codex-home",
+        str(codex_home),
+        "--store-dir",
+        str(store),
+        "--json",
+    ]
 
-    response = run_dashboard_refresh(client)
+    result = runner.invoke(app, import_args)
 
-    assert response.status_code == 303
-    assert "refreshed=0" in refresh_flash_qs(response)
-    assert "source_namespace_adoptions=1" in refresh_flash_qs(response)
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["refreshed_events"] == 0
+    assert payload["imported_events"] == 0
+    assert payload["source_namespace_adoptions"] == 1
     after_bytes = SentinelService(store).event_log.read_lines()
     assert after_bytes != before_bytes
     after = SentinelService(store).list_all_events()[0]
@@ -1435,8 +1426,8 @@ def test_dashboard_binds_unchanged_legacy_row_once_without_reissuing_identity(
     assert after["metadata"]["source_namespace_fingerprint"].startswith("sha256:")
     assert after["metadata"]["source_namespace_binding"] == "tofu_explicit_scan_v1"
 
-    second = run_dashboard_refresh(client)
+    second = runner.invoke(app, import_args)
 
-    assert second.status_code == 303
-    assert "source_namespace_adoptions=0" in refresh_flash_qs(second)
+    assert second.exit_code == 0, second.output
+    assert json.loads(second.output)["source_namespace_adoptions"] == 0
     assert SentinelService(store).event_log.read_lines() == after_bytes

@@ -42,18 +42,18 @@ agentacct tui       # the live terminal dashboard
 
 No `pipx` yet? Install it first with `brew install pipx` (macOS) or `python3 -m pip install --user pipx` — or skip pipx entirely and use `uv tool install agentacct`. See [INSTALL.md](INSTALL.md) for a plain-`venv` fallback.
 
-`onboard` installs agentacct once per machine (global by default, writing zero files into your repo): it detects your local coding-agent logs, sets up a global store, and runs a first usage sync. Then run **`agentacct tui`** for the live terminal dashboard (onboarding also starts an optional browser dashboard at `http://127.0.0.1:8765`). Open a **new** agent session in any repo — MCP servers and hooks bind at session start, so the session that ran onboarding cannot become the first recorded Task. (Prefer a per-repo install? Run `agentacct onboard --scope project` instead.)
+`onboard` installs agentacct once per machine (global by default, writing zero files into your repo): it detects your local coding-agent logs, sets up a global store, and runs a first usage sync. Then run **`agentacct tui`** for the live terminal dashboard (onboarding also starts the managed background sync plus a local JSON API on `http://127.0.0.1:8765` — the machine-readable lane native shells and scripts poll). Open a **new** agent session in any repo — MCP servers and hooks bind at session start, so the session that ran onboarding cannot become the first recorded Task. (Prefer a per-repo install? Run `agentacct onboard --scope project` instead.)
 
 Prefer to let the agent do it? Paste this into your coding agent:
 
 ```text
-Install and set up agentacct — a local-first dashboard that reads my
+Install and set up agentacct — a local-first tool that reads my
 coding-agent logs read-only and shows honest token usage and cost.
 
 Run `pipx install agentacct`
 (or `pipx install git+https://github.com/mikehasa/agentacct`),
 then `agentacct onboard` (installs once per machine, global by default, zero
-files written into the repo), then tell me the dashboard URL.
+files written into the repo), then tell me to run `agentacct tui`.
 
 Observe-only: never store, request, or echo any API key; all state stays local
 on this machine. Don't modify my global client config without showing the exact
@@ -69,7 +69,7 @@ The managed runtime is controlled with `agentacct start` / `status` / `stop` / `
 ### Uninstall
 
 ```bash
-agentacct stop                 # stop the managed sync + dashboard (owned processes only)
+agentacct stop                 # stop the managed sync + local API (owned processes only)
 agentacct uninstall-autostart  # only if you installed autostart
 pipx uninstall agentacct
 ```

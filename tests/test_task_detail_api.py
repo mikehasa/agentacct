@@ -77,56 +77,28 @@ def _seed_task(store_root: Path) -> tuple[TestClient, str]:
     return TestClient(create_local_api_app(store_dir=store_root)), session_id
 
 
-def test_task_detail_uses_opaque_url_and_returns_decision_brief(tmp_path: Path) -> None:
+def test_tasks_projection_uses_opaque_task_id_and_attributes_usage(tmp_path: Path) -> None:
+    """The kept GET /tasks JSON lane: the task is addressed by an opaque
+    public id that never embeds the raw client session id, the seeded usage
+    rolls up onto the task, and the recorded machine check surfaces as the
+    current check evidence."""
+
     client, raw_session_id = _seed_task(tmp_path / "state")
 
-    tasks = client.get("/tasks").json()["tasks"]
-    public_id = tasks[0]["public_task_id"]
+    response = client.get("/tasks")
+    assert response.status_code == 200
+    tasks = response.json()["tasks"]
+    assert len(tasks) == 1
+    task = tasks[0]
+
+    public_id = task["public_task_id"]
     assert re.fullmatch(r"task_[0-9a-f]{32}", public_id)
     assert raw_session_id not in public_id
 
-    homepage = client.get("/")
-    assert homepage.status_code == 200
-    assert f'/tasks/{public_id}' in homepage.text
-    # Dashboard v2 approved order: the usage pulse and the agent board sit above
-    # the recent-activity task feed (hero → tiles → usage → roster → activity).
-    assert homepage.text.index('class="usage-pulse"') < homepage.text.index('id="work-feed"')
-    assert homepage.text.index("Agents &amp; models") < homepage.text.index('id="work-feed"')
-
-    response = client.get(f"/api/tasks/{public_id}")
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["task_id"] == public_id
-    assert payload["title"] == "Build a decision-ready product"
-    assert set(payload["states"]) == {"execution", "outcome", "control"}
-    assert payload["states"]["outcome"]["key"] == "verified"
-    assert payload["decision_brief"]["strongest_proof"] == "All targeted checks passed."
-    assert payload["decision_brief"]["owner_state"] == "not_recorded"
-    assert payload["usage"]["total_tokens"] == 150
-    assert payload["timeline"]["total"] == 2
-    assert raw_session_id not in response.text
-
-    page = client.get(f"/tasks/{public_id}")
-    assert page.status_code == 200
-    assert 'name="viewport"' in page.text
-    assert 'class="skip-link"' in page.text
-    assert "Decision brief" in page.text
-    assert "What agentacct can prove" in page.text
-    assert "Execution timeline" in page.text
-    assert "Agent and model lanes" in page.text
-    assert "Estimated from tokens" in page.text
-    assert "agentacct does not invent the next action." in page.text
-    assert raw_session_id not in page.text
-
-
-def test_task_detail_unknown_and_malformed_ids_share_generic_404(tmp_path: Path) -> None:
-    client, _ = _seed_task(tmp_path / "state")
-
-    malformed = client.get("/api/tasks/view/not-a-task")
-    unknown = client.get("/api/tasks/view/task_ffffffffffffffffffffffffffffffff")
-
-    assert malformed.status_code == unknown.status_code == 404
-    assert malformed.json() == unknown.json() == {"detail": "Task not found"}
+    assert task["usage"]["total_tokens"] == 150
+    assert task["usage"]["cost_confidence"] == "estimated_from_tokens"
+    assert [event["result"] for event in task["current_check_events"]] == ["passed"]
+    assert task["sessions"][0]["client_session_title"] == "Build a decision-ready product"
 
 
 def test_raw_work_reference_collision_never_cross_attaches_evidence() -> None:

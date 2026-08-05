@@ -31,8 +31,8 @@ The deep reference for agentacct: the daily workflow, confidence labels, MCP too
 # 1. See what agentacct can read on this machine.
 agentacct usage discover-sources
 
-# 2. Start the local dashboard. Product pages render saved rows; the /raw page
-#    runs the read-only local scan.
+# 2. (Optional) Start the local JSON API — machine-readable endpoints for
+#    scripts and native shells. The TUI reads the store directly.
 agentacct serve
 
 # 3. Save current local usage summaries into agentacct's ledger.
@@ -46,7 +46,7 @@ agentacct usage watch --interval-seconds 60
 agentacct usage health
 ```
 
-The primary dashboard has three destinations. **Work** (`/`) is one compact, deduplicated feed of named work and otherwise-unlabelled local activity. Explicit blockers are user-action items; unresolved failed checks remain non-actionable open findings until the agent resolves them, rather than being assigned to the user. Completed work is labeled `Verified` when a current passing machine check is linked and `Agent reported` otherwise. Attribution gaps, missing join keys, source coverage, and evidence conflicts remain available in the full `/sessions` explorer and **Advanced** (`/advanced`) instead of becoming user-facing tasks. **Usage** (`/tokens`) owns token, cache, cost, and confidence analysis. The stable `/raw`, `/work-graph`, `/evidence-matrix`, `/discrepancies`, and `/cost-outcome-basis` routes remain available under Advanced. Old `/?tab=raw` / `/?tab=product` links keep working via 302 redirects.
+The product surfaces are **`agentacct tui`** (the live terminal dashboard: work, usage, limits, plan) and the local JSON API. The HTML browser dashboard was retired in favor of them; the same derived views stay available as JSON — `/overview`, `/timeline`, `/sessions`, `/attention`, `/work-items`, `/usage/summary`, and the evidence projections under `/evidence/*`. Explicit blockers remain user-action items; unresolved failed checks remain non-actionable open findings until the agent resolves them, rather than being assigned to the user. Completed work is labeled `Verified` when a current passing machine check is linked and `Agent reported` otherwise.
 
 Evidence **Source coverage** is historical evidence, not a connection monitor: “Evidence received” means agentacct saved records from that source, and the connection remains `not_verified` without an independent live check. **Activity sync** is separate operational state. It comes from durable per-source scan receipts plus the watcher's lease/heartbeat, so the Work page can distinguish a successful manual refresh, a live watcher, and a degraded or stale synchronizer. Full source, attribution, and evidence explanations stay inspectable in Sessions and Advanced.
 
@@ -184,7 +184,7 @@ agentacct connector paperclip /path/to/paperclip-export.json --dry-run --json
 agentacct connector entire /path/to/git-repository --dry-run --json
 ```
 
-The localhost API accepts OTLP/HTTP JSON at `POST /v1/traces`. Start evidence inspection at `/advanced`; the stable projections remain available at `/work-graph`, `/evidence-matrix`, `/discrepancies`, and `/cost-outcome-basis`. `GET /evidence/events` uses bounded arrival-order cursor pages (`limit`, then `cursor=next_cursor`). Set `AGENTACCT_EVIDENCE_V2=0` for a v1-only rollback; existing v2 evidence remains untouched.
+The localhost API accepts OTLP/HTTP JSON at `POST /v1/traces`. The evidence projections are JSON endpoints: `/evidence/status`, `/evidence/events`, `/evidence/work-graph`, `/evidence/matrix`, `/evidence/discrepancies`, and `/evidence/cost-outcome-basis`. `GET /evidence/events` uses bounded arrival-order cursor pages (`limit`, then `cursor=next_cursor`). Set `AGENTACCT_EVIDENCE_V2=0` for a v1-only rollback; existing v2 evidence remains untouched.
 
 Start the MCP server over stdio:
 
@@ -220,14 +220,7 @@ The workflow smoke does not call Claude, Codex, or provider APIs. By default it 
 
 ## Task Intelligence
 
-The top-level product object is a Task, not an individual event or sub-run. A recognized root client session creates the default observed Task boundary; explicitly linked continuation sessions can remain part of the same Task. Public routes use a stable opaque Task id rather than exposing a raw client session id:
-
-```text
-http://127.0.0.1:8765/tasks/task_<opaque-id>
-http://127.0.0.1:8765/api/tasks/task_<opaque-id>
-```
-
-The Task page leads with a decision brief: what was attempted, the current outcome, the strongest proof, usage/cost basis, unresolved findings, and a next action only when an owner was actually recorded. The evidence timeline is available underneath for inspection.
+The top-level product object is a Task, not an individual event or sub-run. A recognized root client session creates the default observed Task boundary; explicitly linked continuation sessions can remain part of the same Task. The Task projection is available as JSON at `GET /tasks` (stable opaque Task ids, never raw client session ids), and the same session/work views render live in `agentacct tui`: what was attempted, the current outcome, the strongest proof, usage/cost basis, and unresolved findings.
 
 Task status is deliberately split into three independent axes:
 
@@ -260,9 +253,9 @@ agentacct control plan \
   --success-check "the owned process exits successfully"
 ```
 
-Open `http://127.0.0.1:8765/control` to review pending attempts, independent execution/outcome/control state, approvals, budgets, and schedules. Nothing launches when a contract is created. The dashboard keeps a persistent local supervisor while it is running; the CLI `control launch` command deliberately supervises in the foreground instead of pretending a one-shot shell command is a daemon.
+Review pending attempts, independent execution/outcome/control state, approvals, budgets, and schedules with `agentacct control status` / `agentacct control list` (the same product view is JSON at `GET /api/control`). Nothing launches when a contract is created. The CLI `control launch` command deliberately supervises in the foreground instead of pretending a one-shot shell command is a daemon.
 
-Every mutation uses an idempotency key and expected revision. Workspace-write attempts created in the web UI follow `hold → request → approve → consume once → ready`; the supervisor refuses `awaiting_approval`, `policy_hold`, and `control_failure` attempts. Each attempt also freezes the registered agent revision, so changing that agent's argv after approval cannot change what the approval authorizes: create a new attempt for the new revision. Product JSON omits registered paths, argv, PIDs/process groups, executable/cwd fingerprints, manifest ids, and ownership nonces.
+Every mutation uses an idempotency key and expected revision. Workspace-write attempts follow `hold → request → approve → consume once → ready` (`control request-approval` / `control decide-approval`); the supervisor refuses `awaiting_approval`, `policy_hold`, and `control_failure` attempts. Each attempt also freezes the registered agent revision, so changing that agent's argv after approval cannot change what the approval authorizes: create a new attempt for the new revision. Product JSON omits registered paths, argv, PIDs/process groups, executable/cwd fingerprints, manifest ids, and ownership nonces.
 
 ## What “telemetry” means here
 
