@@ -66,18 +66,37 @@ final class GlanceState: ObservableObject {
         }
     }
 
-    /// Menu bar label: today's cost when connected (the number a glance is
-    /// for), a quiet marker otherwise — never a fabricated figure.
+    /// Menu bar label: the weekly plan meter (the subscription user's real
+    /// question), account truth from the provider's own 7d reading —
+    /// claude-code's when live, else the hottest live 7d window. Falls back
+    /// to today's cost when no limit reading exists; a quiet marker when the
+    /// daemon is down — never a fabricated figure.
     var menuBarTitle: String {
         switch phase {
         case .connected(let snapshot):
+            if let used = Self.sevenDayUsedPercent(snapshot.glance) {
+                return "⏺ \(Int(used.rounded()))%"
+            }
             let today = snapshot.glance.usage.windows.first { $0.label == "today" }
-            let cost = today?.totals.costText ?? "—"
-            return "⏺ \(cost)"
+            return "⏺ \(today?.totals.costText ?? "—")"
         case .connecting:
             return "⏺ …"
         case .disconnected, .incompatible:
             return "⏺ ∅"
         }
+    }
+
+    /// The provider-reported 7d used %% for the label + dropdown hero:
+    /// claude-code's live reading first (the primary plan), else the hottest
+    /// live 7d window across accounts. nil when nothing live reports one.
+    static func sevenDayUsedPercent(_ glance: Glance, client: String = "claude-code") -> Double? {
+        let live = glance.limits.filter { $0.stale != true }
+        let sevenDay: (LimitEntry) -> Double? = { entry in
+            (entry.windows ?? []).first { $0.kind == "7d" }?.usedPercent
+        }
+        if let primary = live.first(where: { $0.client == client }), let used = sevenDay(primary) {
+            return used
+        }
+        return live.compactMap(sevenDay).max()
     }
 }

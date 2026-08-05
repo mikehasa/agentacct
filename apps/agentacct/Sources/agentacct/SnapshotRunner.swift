@@ -22,7 +22,12 @@ enum SnapshotRunner {
                 let dashboard = DashboardStore()
                 await dashboard.refresh()
                 let selection = AppSelection()
-                selection.sessionId = dashboard.sessions.first?.id
+                if let first = dashboard.sessions.first {
+                    selection.sessionId = first.id
+                    // The deep view loads async in the live app; a snapshot
+                    // must render the loaded state, not the spinner.
+                    await dashboard.fetchDetail(client: first.client, sessionId: first.clientSessionId)
+                }
 
                 // Light AND dark of every surface: the theme is adaptive, so
                 // a design pass must see both. SnapshotScheme pins the Theme

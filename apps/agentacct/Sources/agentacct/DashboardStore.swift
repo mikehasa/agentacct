@@ -1,66 +1,101 @@
 import Foundation
 import SwiftUI
 
-// Data for the full window: the /sessions rollup and the /usage/summary cube.
-// These are the daemon's machine-local JSON surfaces (localhost-guarded, no
-// bearer); the port comes from the same discovery file the glance uses.
+// Data for the full window, all on the authenticated /v1 lane:
+// /v1/sessions (server-side roots + pagination + plan shares),
+// /v1/session (the one-session deep view), /v1/plan (attributed aggregates).
+// The legacy /usage/summary cube still feeds the cost charts (no /v1 twin
+// yet). Honesty rides the payloads; the store never re-derives a number.
 
 @MainActor
 final class DashboardStore: ObservableObject {
-    @Published private(set) var sessions: [SessionEntry] = []
+    @Published private(set) var sessions: [V1SessionRow] = []
     @Published private(set) var totalSessions: Int?
+    @Published private(set) var totalRootSessions: Int?
+    @Published private(set) var truncated = false
+    @Published private(set) var planStatuses: [V1PlanStatus] = []
+    @Published private(set) var planClients: [V1PlanClient] = []
     @Published private(set) var usage: UsageSummary?
+    @Published private(set) var detail: V1SessionDetail?
+    @Published private(set) var detailError: String?
     @Published private(set) var errorText: String?
     @Published private(set) var isRefreshing = false
+    @Published private(set) var isLoadingMore = false
     @Published private(set) var lastUpdated: Date?
 
-    private let session: URLSession
-
-    init() {
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 30
-        session = URLSession(configuration: config)
-    }
+    private let client = GlanceClient()
+    private let pageSize = 60
 
     func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
         do {
-            guard let data = try? Data(contentsOf: GlanceClient.discoveryPath()),
-                  let discovery = try? JSONDecoder().decode(Discovery.self, from: data)
-            else {
-                errorText = "daemon not running (no discovery file) — start it with `agentacct start`"
-                return
-            }
-            let host = discovery.host ?? "127.0.0.1"
-            let base = "http://\(host):\(discovery.port)"
-            let payload: SessionsPayload = try await get("\(base)/sessions?limit=300")
-            let summary: UsageSummary = try await get("\(base)/usage/summary?days=30")
-            // Root sessions only, newest first: the rollup lists child lanes as
-            // their own entries (related.parent set); the window folds them —
-            // a child's usage is already summarized under its root.
+            let payload: V1SessionsPayload = try await client.getAuthed(
+                "/v1/sessions?limit=\(pageSize)&offset=0"
+            )
+            let plan: V1PlanPayload = try await client.getAuthed("/v1/plan?days=30")
+            let summary: UsageSummary = try await client.getLocal("/usage/summary?days=30")
             sessions = payload.sessions
-                .filter(\.isRoot)
-                .sorted { ($0.lastActivityAt ?? 0) > ($1.lastActivityAt ?? 0) }
             totalSessions = payload.totalSessions
+            totalRootSessions = payload.totalRootSessions
+            truncated = payload.truncated ?? false
+            planStatuses = payload.plan ?? []
+            planClients = plan.clients
             usage = summary
             errorText = nil
             lastUpdated = Date()
+        } catch GlanceClientError.noDiscovery(_) {
+            errorText = "daemon not running (no discovery file) — start it with `agentacct start`"
         } catch {
             errorText = "daemon fetch failed: \(error.localizedDescription)"
         }
     }
 
-    private func get<T: Decodable>(_ urlString: String) async throws -> T {
-        guard let url = URL(string: urlString) else {
-            throw GlanceClientError.transport("bad URL")
+    /// The next page of the recency-ordered roots walk (server-side slice;
+    /// `truncated` from the envelope says whether more rows exist).
+    func loadMore() async {
+        guard truncated, !isLoadingMore else { return }
+        isLoadingMore = true
+        defer { isLoadingMore = false }
+        do {
+            let payload: V1SessionsPayload = try await client.getAuthed(
+                "/v1/sessions?limit=\(pageSize)&offset=\(sessions.count)"
+            )
+            // A session landing between pages shifts the window by one; the
+            // id-keyed de-dup keeps the walk honest instead of double-listing.
+            let known = Set(sessions.map(\.id))
+            sessions += payload.sessions.filter { !known.contains($0.id) }
+            truncated = payload.truncated ?? false
+            totalSessions = payload.totalSessions
+            totalRootSessions = payload.totalRootSessions
+        } catch {
+            errorText = "load more failed: \(error.localizedDescription)"
         }
-        let (data, response) = try await session.data(from: url)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw GlanceClientError.http((response as? HTTPURLResponse)?.statusCode ?? -1)
+    }
+
+    /// The deep view for one session. 404 (session aged out / unknown) is a
+    /// first-class message, never a silent empty screen.
+    func fetchDetail(client clientName: String, sessionId: String) async {
+        detail = nil
+        detailError = nil
+        do {
+            let encodedClient = clientName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? clientName
+            let encodedSession = sessionId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? sessionId
+            let payload: V1SessionDetail = try await client.getAuthed(
+                "/v1/session?client=\(encodedClient)&session_id=\(encodedSession)"
+            )
+            detail = payload
+        } catch GlanceClientError.http(404) {
+            detailError = "this session is not in the store (it may have been recorded elsewhere)"
+        } catch {
+            detailError = "detail fetch failed: \(error.localizedDescription)"
         }
-        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    /// The plan status for one client (three-state honesty), if known.
+    func planStatus(for clientName: String) -> V1PlanStatus? {
+        planStatuses.first { $0.client == clientName }
     }
 }
 
@@ -68,10 +103,11 @@ final class DashboardStore: ObservableObject {
 @MainActor
 final class AppSelection: ObservableObject {
     @Published var sessionId: String?
-    @Published var pane: MainPane = .sessions
+    @Published var pane: MainPane = .dashboard
 }
 
 enum MainPane: String, CaseIterable, Identifiable {
+    case dashboard = "Dashboard"
     case sessions = "Sessions"
     case usage = "Usage"
     case limits = "Limits"

@@ -87,6 +87,23 @@ struct SessionJoin: Decodable {
 
 struct SessionWork: Decodable {
     let items: [WorkItem]?
+    let counts: WorkCounts?
+    let evidence: EvidenceCounts?
+}
+
+struct WorkCounts: Decodable {
+    let total: Int?
+    let completed: Int?
+    let resolved: Int?
+    let active: Int?
+    let blocked: Int?
+}
+
+struct EvidenceCounts: Decodable {
+    let strong: Int?
+    let weak: Int?
+    let failed: Int?
+    let none: Int?
 }
 
 struct WorkItem: Decodable, Identifiable {
