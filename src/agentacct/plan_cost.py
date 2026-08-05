@@ -341,6 +341,156 @@ def session_plan_pcts(
     return {sid: weights.pct_for_tokens(tokens) for sid, tokens in by_session.items()}
 
 
+def plan_pct_aggregates(
+    records: Sequence[Any],
+    weights: PlanWeights,
+    *,
+    client: str,
+    days: int = 30,
+    today: Any = None,
+) -> dict[str, Any]:
+    """Windowed/daily/by-model plan-share aggregates for one client, one pass.
+
+    Mirrors the usage cube's calendar semantics exactly
+    (:func:`agentacct.usage_cube.usage_bucket_date`: local calendar days,
+    trailing ranges ending ``today``, a session-lane's tokens landing on its
+    latest-update day) so a plan-share daily series lines up column-for-column
+    with the /usage/summary cost chart. Tokens whose timestamp fails the
+    bad-timestamp guard cannot honestly join a bounded range; their share is
+    DISCLOSED as ``unknown_time_pct`` rather than silently dropped.
+
+    Returns ``{window_pcts: {today,7d,30d}, daily: [{date, pct}] (ascending,
+    empty days included), by_model: [{model, total_tokens, pct}] over the
+    trailing ``days`` range, unknown_time_pct}``. Raw floats, never rounded.
+    The calibrated-or-nothing rule is the CALLER's job (attach these only
+    when ``weights.confidence == "calibrated"``), same as session shares.
+    """
+
+    from datetime import date as _date, timedelta as _timedelta
+
+    from .usage_cube import usage_bucket_date
+    from .usage_view import _usage_record_time
+
+    resolved_today: _date = today or _date.today()
+    start = resolved_today - _timedelta(days=days - 1)
+    window_starts = {
+        "today": resolved_today,
+        "7d": resolved_today - _timedelta(days=6),
+        "30d": resolved_today - _timedelta(days=29),
+    }
+
+    daily_tokens: dict[_date, dict[str, float]] = {}
+    window_tokens: dict[str, dict[str, float]] = {label: {} for label in window_starts}
+    model_tokens: dict[str, float] = {}
+    unknown_tokens: dict[str, float] = {}
+    for record in records:
+        if str(getattr(record, "client", "") or "") != client:
+            continue
+        model = str(getattr(record, "model", "") or "")
+        if not model:
+            continue
+        total = _finite(getattr(record, "total_tokens_including_cached", None)) or 0.0
+        if total <= 0:
+            continue
+        day = usage_bucket_date(_usage_record_time(record))
+        if day is None:
+            unknown_tokens[model] = unknown_tokens.get(model, 0.0) + total
+            continue
+        if day > resolved_today:
+            continue
+        if start <= day:
+            bucket = daily_tokens.setdefault(day, {})
+            bucket[model] = bucket.get(model, 0.0) + total
+            model_tokens[model] = model_tokens.get(model, 0.0) + total
+        for label, window_start in window_starts.items():
+            if window_start <= day:
+                window_bucket = window_tokens[label]
+                window_bucket[model] = window_bucket.get(model, 0.0) + total
+
+    daily: list[dict[str, Any]] = []
+    cursor = start
+    while cursor <= resolved_today:
+        daily.append(
+            {
+                "date": cursor.isoformat(),
+                "pct": weights.pct_for_tokens(daily_tokens.get(cursor) or {}),
+            }
+        )
+        cursor += _timedelta(days=1)
+
+    by_model = sorted(
+        (
+            {
+                "model": model,
+                "total_tokens": tokens,
+                "pct": weights.pct_for_tokens({model: tokens}),
+            }
+            for model, tokens in model_tokens.items()
+        ),
+        key=lambda entry: (-entry["pct"], entry["model"]),
+    )
+
+    return {
+        "window_pcts": {
+            label: weights.pct_for_tokens(tokens) for label, tokens in window_tokens.items()
+        },
+        "daily": daily,
+        "by_model": by_model,
+        "unknown_time_pct": (
+            weights.pct_for_tokens(unknown_tokens) if unknown_tokens else None
+        ),
+    }
+
+
+V1_PLAN_SCHEMA_VERSION = "agentacct.v1-plan.v1"
+
+
+def build_v1_plan_payload(
+    events: list[dict[str, Any]],
+    *,
+    days: int = 30,
+    now: float | None = None,
+    today: Any = None,
+) -> dict[str, Any]:
+    """The ``GET /v1/plan`` body: per-client plan status + attributed aggregates.
+
+    One entry per plan-bearing client (the glance's PLAN_CLIENTS): the
+    three-state calibration status with its why-this-number disclosure, and —
+    calibrated-or-nothing — the attributed weekly-plan aggregates from
+    :func:`plan_pct_aggregates` (window_pcts / daily series / by_model /
+    unknown_time_pct). An uncalibrated client carries explicit ``None``
+    aggregates next to its state, never fabricated numbers. These are
+    ATTRIBUTED estimates over tracked sessions; the account-wide provider
+    truth (7d used %) lives in the glance ``limits[]`` and is deliberately
+    not duplicated here — the two are different quantities and shells must
+    label them apart.
+    """
+
+    import time as _time
+
+    from .glance import PLAN_CLIENTS
+    from .usage_snapshot import usage_records
+
+    clients: list[dict[str, Any]] = []
+    for client in PLAN_CLIENTS:
+        records = usage_records(events, client=client)
+        weights = calibrate_plan_weights(events, client=client, records=records)
+        entry: dict[str, Any] = plan_status_entry(weights)
+        if weights.confidence == "calibrated":
+            entry.update(plan_pct_aggregates(records, weights, client=client, days=days, today=today))
+        else:
+            entry.update(
+                {"window_pcts": None, "daily": None, "by_model": None, "unknown_time_pct": None}
+            )
+        clients.append(entry)
+    return {
+        "schema": V1_PLAN_SCHEMA_VERSION,
+        "generated_at": _time.time() if now is None else float(now),
+        "days": days,
+        "clients": clients,
+    }
+
+
 def calibration_state(weights: PlanWeights) -> str:
     """Three-state display semantic for one client's plan estimate.
 
@@ -382,11 +532,14 @@ def plan_status_entry(weights: PlanWeights) -> dict[str, Any]:
 __all__ = [
     "BASELINE_MODEL_WEIGHTS",
     "CALIBRATABLE_CLIENTS",
+    "V1_PLAN_SCHEMA_VERSION",
     "PlanWeights",
     "baseline_weight",
+    "build_v1_plan_payload",
     "seven_day_series",
     "calibrate_plan_weights",
     "calibration_state",
+    "plan_pct_aggregates",
     "plan_status_entry",
     "session_tokens_by_model",
     "session_plan_pcts",

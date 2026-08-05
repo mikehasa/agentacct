@@ -94,20 +94,59 @@ def _record_section(
     title: str = "t",
     created_at: float,
     section_id: str | None = None,
+    kind: str | None = None,
+    summary: str | None = None,
 ) -> None:
     resolved_section = section_id or f"sec-{session_id}-{status}"
+    metadata: dict = {
+        "client": client,
+        "client_session_id": session_id,
+        "section_id": resolved_section,
+        "section_status": status,
+        "section_title": title,
+    }
+    if kind is not None:
+        metadata["kind"] = kind
+    if summary is not None:
+        metadata["summary"] = summary
     service.append_events_preserving_identity([
         {
             "event_id": f"evt_sec_{client}_{session_id}_{resolved_section}_{int(created_at)}",
             "created_at": created_at,
             "source": client,
             "event_type": f"section_{status}",
+            "metadata": metadata,
+        }
+    ])
+
+
+def _record_check(
+    service: SentinelService,
+    *,
+    client: str = "claude-code",
+    session_id: str,
+    section_id: str,
+    result: str = "passed",
+    evidence_type: str = "test",
+    summary: str = "suite green",
+    created_at: float,
+) -> None:
+    service.append_events_preserving_identity([
+        {
+            "event_id": f"evt_chk_{client}_{session_id}_{section_id}_{result}_{int(created_at)}",
+            "created_at": created_at,
+            "source": client,
+            "event_type": "machine_check",
             "metadata": {
+                "sentinel_semantic_kind": "evidence",
                 "client": client,
                 "client_session_id": session_id,
-                "section_id": resolved_section,
-                "section_status": status,
-                "section_title": title,
+                "section_id": section_id,
+                "evidence_type": evidence_type,
+                "result": result,
+                "summary": summary,
+                "command": "pytest -q --token secret",
+                "exit_code": 0 if result == "passed" else 1,
             },
         }
     ])
@@ -670,3 +709,163 @@ def test_ledger_cache_expires_by_age_even_when_events_are_unchanged():
     assert cache.ledger(1, _build, now=t0 + 29) == {"n": 1}   # fresh: same fp, inside TTL
     assert cache.ledger(1, _build, now=t0 + 31) == {"n": 2}   # TTL expired → rebuild
     assert cache.ledger(2, _build, now=t0 + 31.5) == {"n": 3}  # fp change → rebuild
+
+
+# ---------------------------------------------------------------------------
+# /v1/session detail + /v1/plan
+# ---------------------------------------------------------------------------
+
+
+def test_detail_and_plan_require_the_bearer_token(tmp_path):
+    SentinelService(tmp_path)
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    detail = "/v1/session?client=claude-code&session_id=x"
+    assert client.get(detail).status_code == 401
+    assert client.get("/v1/plan").status_code == 401
+    no_token = TestClient(create_local_api_app(store_dir=tmp_path))
+    assert no_token.get(detail, headers=AUTH).status_code == 503
+    assert no_token.get("/v1/plan", headers=AUTH).status_code == 503
+
+
+def test_detail_404_for_an_unknown_session(tmp_path):
+    service = SentinelService(tmp_path)
+    _record_usage(service, session_id="root-a", tokens=100, updated_at=time.time() - 60)
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    response = client.get("/v1/session", headers=AUTH,
+                          params={"client": "claude-code", "session_id": "nope"})
+    assert response.status_code == 404
+
+
+def test_detail_steps_carry_tui_grade_depth(tmp_path):
+    """The bar the owner set: per-step status/kind/title/summary/timestamps
+    plus the machine checks with their results — everything the TUI detail
+    screen shows, on the wire."""
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_usage(service, session_id="root-a", tokens=1000, updated_at=now - 900)
+    _record_section(service, session_id="root-a", status="started", title="build the thing",
+                    created_at=now - 800, section_id="s1", kind="implementation",
+                    summary="working on it")
+    _record_check(service, session_id="root-a", section_id="s1", result="passed",
+                  created_at=now - 700)
+    _record_section(service, session_id="root-a", status="completed", title="build the thing",
+                    created_at=now - 600, section_id="s1", kind="implementation")
+
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    detail = client.get("/v1/session", headers=AUTH,
+                        params={"client": "claude-code", "session_id": "root-a"}).json()
+    assert detail["schema"] == "agentacct.v1-session-detail.v1"
+    assert detail["session"]["client_session_id"] == "root-a"
+    assert "is_root" not in detail["session"] and "fold_top" not in detail["session"]
+    steps = detail["steps"]
+    assert len(steps) == 1
+    step = steps[0]
+    assert step["section_id"] == "s1"
+    assert step["latest_status"] == "completed"
+    assert step["kind"] == "implementation"
+    assert step["title"] == "build the thing"
+    assert step["started_at"] is not None and step["updated_at"] is not None
+    assert isinstance(step["models"], list)
+    assert step["evidence_status"] == "strong"
+    checks = step["checks"]
+    assert len(checks) == 1
+    assert checks[0]["evidence_type"] == "test"
+    assert checks[0]["result"] == "passed"
+    assert checks[0]["summary"] == "suite green"
+    assert checks[0]["exit_code"] == 0
+    # The raw command never rides this wire — only the redacted variant key.
+    assert "pytest -q --token secret" not in str(checks[0].get("command") or "")
+
+
+def test_detail_descendants_and_plan_block(tmp_path):
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _calibrate_claude(service, now=now)
+    opus = pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
+    _record_usage(service, session_id="root-a", tokens=10_000_000, updated_at=now - 600)
+    _record_usage(service, session_id="22222222-aaaa-bbbb-cccc-333333333333",
+                  tokens=5_000_000, updated_at=now - 300,
+                  session_kind="child", parent_session_id="root-a")
+
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    detail = client.get("/v1/session", headers=AUTH,
+                        params={"client": "claude-code", "session_id": "root-a"}).json()
+    scale = detail["plan"]["scale"]
+    assert detail["plan"]["confidence"] == "calibrated"
+    assert abs(detail["plan"]["pct_own"] - 10.0 * opus * scale) < 1e-6
+    assert abs(detail["plan"]["pct_children"] - 5.0 * opus * scale) < 1e-6
+    assert abs(detail["plan"]["pct"] - 15.0 * opus * scale) < 1e-6
+    by_model = {entry["model"]: entry for entry in detail["plan"]["by_model"]}
+    assert abs(by_model["claude-opus-4-8"]["pct"] - 10.0 * opus * scale) < 1e-6
+    descendants = detail["descendants"]
+    assert len(descendants) == 1
+    child = descendants[0]
+    assert child["client_session_id"] == "22222222-aaaa-bbbb-cccc-333333333333"
+    assert abs(child["plan_pct"] - 5.0 * opus * scale) < 1e-6
+
+
+def test_step_models_join_unit():
+    """The attribution join, in isolation: tokens come from the attribution
+    rows, unknown usage events are skipped, lanes sort by tokens."""
+
+    from agentacct.v1_sessions import _step_models
+
+    attributions = {
+        "w1": [
+            {"usage_event_id": "u1", "usage_tokens": 100},
+            {"usage_event_id": "u2", "usage_tokens": 900},
+            {"usage_event_id": "missing", "usage_tokens": 50},
+        ]
+    }
+    models = {
+        "u1": ("claude-opus-4-8", "claude-code"),
+        "u2": ("claude-fable-5", "claude-code"),
+    }
+    lanes = _step_models("w1", attributions, models)
+    assert [lane["model"] for lane in lanes] == ["claude-fable-5", "claude-opus-4-8"]
+    assert lanes[0]["total_tokens"] == 900
+    assert _step_models("unknown", attributions, models) == []
+
+
+def test_plan_endpoint_uncalibrated_carries_states_not_numbers(tmp_path):
+    service = SentinelService(tmp_path)
+    _record_usage(service, session_id="root-a", tokens=1_000_000, updated_at=time.time() - 60)
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    payload = client.get("/v1/plan", headers=AUTH).json()
+    assert payload["schema"] == "agentacct.v1-plan.v1"
+    clients = {entry["client"]: entry for entry in payload["clients"]}
+    assert clients["claude-code"]["calibration_state"] == "calibrating"
+    assert clients["claude-code"]["window_pcts"] is None
+    assert clients["claude-code"]["daily"] is None
+    assert clients["codex"]["calibration_state"] == "never"
+    assert clients["codex"]["by_model"] is None
+
+
+def test_plan_endpoint_calibrated_aggregates_agree(tmp_path):
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _calibrate_claude(service, now=now)
+    opus = pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
+    _record_usage(service, session_id="root-a", tokens=10_000_000, updated_at=now - 60)
+
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    payload = client.get("/v1/plan", headers=AUTH, params={"days": 14}).json()
+    entry = {row["client"]: row for row in payload["clients"]}["claude-code"]
+    assert entry["confidence"] == "calibrated"
+    scale = entry["scale"]
+    # All calibration usage (400M) + root-a (10M) landed within 7 days. The
+    # calibration hours can straddle local midnight (a test running at 1am),
+    # so "today" is only bounded, not pinned: it must include at least
+    # root-a's just-now share and never exceed the window total.
+    expected_total = 410.0 * opus * scale
+    assert abs(entry["window_pcts"]["7d"] - expected_total) < 1e-6
+    assert 10.0 * opus * scale - 1e-6 <= entry["window_pcts"]["today"] <= expected_total + 1e-6
+    daily = entry["daily"]
+    assert len(daily) == 14  # trailing days incl. empty ones
+    assert abs(sum(day["pct"] for day in daily) - expected_total) < 1e-6
+    by_model = {row["model"]: row for row in entry["by_model"]}
+    assert abs(by_model["claude-opus-4-8"]["pct"] - expected_total) < 1e-6
+    # Cache: an unchanged store serves the same build (same generated_at).
+    again = client.get("/v1/plan", headers=AUTH, params={"days": 14}).json()
+    assert again["generated_at"] == payload["generated_at"]

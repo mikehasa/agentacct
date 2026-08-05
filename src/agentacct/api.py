@@ -39,9 +39,12 @@ from .capture import CaptureContext, DEFAULT_CAPTURE_REGISTRY, render_hook_manif
 from .capture.registry import DEFAULT_MAX_PAYLOAD_BYTES
 from .capture_runtime import capture_hook_payload
 from .glance import GLANCE_SCHEMA_VERSION, GlanceCache, events_fingerprint
+from .plan_cost import V1_PLAN_SCHEMA_VERSION, build_v1_plan_payload
 from .v1_sessions import (
+    V1_SESSION_DETAIL_SCHEMA_VERSION,
     V1_SESSIONS_SCHEMA_VERSION,
     V1SessionsCache,
+    build_v1_session_detail,
     build_v1_sessions_view,
     slice_sessions_payload,
 )
@@ -2796,6 +2799,8 @@ def create_local_api_app(
             "version": _dashboard_importer_version(),
             "glance_schema": GLANCE_SCHEMA_VERSION,
             "sessions_schema": V1_SESSIONS_SCHEMA_VERSION,
+            "session_detail_schema": V1_SESSION_DETAIL_SCHEMA_VERSION,
+            "plan_schema": V1_PLAN_SCHEMA_VERSION,
             "pid": os.getpid(),
             "store_dir": str(store_dir),
             "store_scope": store_scope,
@@ -2845,6 +2850,65 @@ def create_local_api_app(
         )
         return slice_sessions_payload(view, roots_only=roots_only, limit=limit, offset=offset)
 
+    @app.get("/v1/session")
+    def v1_session_detail(
+        request: Request,
+        client: str = Query(..., min_length=1),
+        session_id: str = Query(..., min_length=1),
+    ) -> dict[str, Any]:
+        """One session's deep view: the list row + expandable steps (status,
+        kind, per-step usage, attributed model lanes, machine checks) +
+        descendants + the plan why-this-number block. Query params rather
+        than a path segment because session ids legally contain ':' and other
+        separator-shaped characters. 404 when the store has no such session —
+        never an empty fabrication."""
+
+        _require_v1_token(request)
+        events = service.list_all_events()
+        fingerprint = events_fingerprint(events)
+        view = v1_sessions_cache.view(
+            fingerprint,
+            lambda: build_v1_sessions_view(
+                _derived_work_ledger(events, fingerprint=fingerprint), events
+            ),
+        )
+        detail = build_v1_session_detail(
+            view,
+            _derived_work_ledger(events, fingerprint=fingerprint),
+            events,
+            client=client,
+            session_id=session_id,
+        )
+        if detail is None:
+            raise HTTPException(status_code=404, detail="unknown session for this store")
+        return detail
+
+    # (fingerprint, built_at, payload) per requested day-range; bounded by the
+    # route's ge/le so this can never grow past a handful of keys.
+    v1_plan_cache: dict[int, tuple[int, float, dict[str, Any]]] = {}
+
+    @app.get("/v1/plan")
+    def v1_plan(
+        request: Request,
+        days: int = Query(30, ge=1, le=90),
+    ) -> dict[str, Any]:
+        """Attributed plan aggregates per plan-bearing client (calibrated-or-
+        nothing): today/7d/30d window shares, a daily series aligned with the
+        /usage/summary calendar buckets, a by-model split, and the unknown-time
+        disclosure. The account-wide provider truth stays in glance limits[]
+        — a different quantity, deliberately not duplicated here."""
+
+        _require_v1_token(request)
+        events = service.list_all_events()
+        fingerprint = events_fingerprint(events)
+        moment = time.time()
+        cached = v1_plan_cache.get(days)
+        if cached is not None and cached[0] == fingerprint and (moment - cached[1]) < 30.0:
+            return cached[2]
+        payload = build_v1_plan_payload(events, days=days, now=moment)
+        v1_plan_cache[days] = (fingerprint, moment, payload)
+        return payload
+
     @app.get("/")
     def index() -> dict[str, Any]:
         """A machine-readable front door (the HTML dashboard is retired).
@@ -2870,6 +2934,8 @@ def create_local_api_app(
                 "/v1/version (bearer token from the store's local-api.json)",
                 "/v1/glance (bearer token from the store's local-api.json)",
                 "/v1/sessions (bearer token from the store's local-api.json)",
+                "/v1/session?client=&session_id= (bearer token from the store's local-api.json)",
+                "/v1/plan (bearer token from the store's local-api.json)",
             ],
         }
 

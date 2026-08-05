@@ -218,7 +218,13 @@ def test_read_discovery_file_never_raises(tmp_path):
 def test_v1_routes_fail_closed_without_configured_token(tmp_path):
     SentinelService(tmp_path)
     client = TestClient(create_local_api_app(store_dir=tmp_path))
-    for route in ("/v1/glance", "/v1/version", "/v1/sessions"):
+    for route in (
+        "/v1/glance",
+        "/v1/version",
+        "/v1/sessions",
+        "/v1/session?client=x&session_id=y",
+        "/v1/plan",
+    ):
         response = client.get(route, headers={"Authorization": "Bearer anything"})
         assert response.status_code == 503, route
 
