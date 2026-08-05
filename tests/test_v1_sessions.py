@@ -420,6 +420,50 @@ def test_title_prefers_the_newest_work_item(tmp_path):
     assert _rows_by_id(_sessions(client))["root-a"]["title"] == "new goal"
 
 
+def test_mutual_parent_cycle_keeps_shares_on_a_visible_root(tmp_path):
+    """Corrupt/hostile mutual parent pointers must not make sessions and
+    their money vanish from the default roots page: the cycle breaks
+    deterministically (min member becomes the root) and carries every
+    member's share — on BOTH /v1 surfaces."""
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _calibrate_claude(service, now=now)
+    opus = pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
+    _record_usage(service, session_id="cyc-b", tokens=5_000_000, updated_at=now - 300,
+                  session_kind="child", parent_session_id="cyc-a")
+    _record_usage(service, session_id="cyc-a", tokens=10_000_000, updated_at=now - 200,
+                  session_kind="child", parent_session_id="cyc-b")
+
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    payload = _sessions(client, limit=50)
+    rows = _rows_by_id(payload)
+    assert "cyc-a" in rows and "cyc-b" not in rows  # min member is the canonical root
+    scale = {entry["client"]: entry for entry in payload["plan"]}["claude-code"]["scale"]
+    expected_total = 15.0 * opus * scale
+    assert abs(rows["cyc-a"]["plan_pct"] - expected_total) < 1e-6
+    glance = client.get("/v1/glance", headers=AUTH).json()
+    glance_rows = {row["session_id"]: row for row in glance["recent_sessions"]}
+    assert "cyc-a" in glance_rows and "cyc-b" not in glance_rows
+    assert abs(glance_rows["cyc-a"]["plan_pct"] - expected_total) < 1e-6
+
+
+def test_title_skips_untitled_item_placeholders(tmp_path):
+    """A newer UNTITLED section (whose item title is backfilled with its
+    work_id) must not shadow an older human title."""
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_usage(service, session_id="root-a", tokens=100, updated_at=now - 900)
+    _record_section(service, session_id="root-a", status="completed", title="human goal",
+                    created_at=now - 800, section_id="s1")
+    _record_section(service, session_id="root-a", status="started", title="",
+                    created_at=now - 100, section_id="s2")
+
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    assert _rows_by_id(_sessions(client))["root-a"]["title"] == "human goal"
+
+
 def test_generated_at_is_the_view_build_time(tmp_path):
     """A cache-hit response must not stamp a fresh clock on cached content."""
 

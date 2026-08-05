@@ -83,7 +83,7 @@ def _reduce_work_status(items: Any) -> str | None:
 
 
 def _fold_parent_key(
-    entry: dict[str, Any], existing_keys: set[tuple[str, str]]
+    entry: dict[str, Any], entries_by_key: dict[tuple[str, str], dict[str, Any]]
 ) -> tuple[str, str] | None:
     """The entry's fold parent ON THIS SURFACE, or None (= shown as a root).
 
@@ -101,10 +101,17 @@ def _fold_parent_key(
       orphan as its own root; so does this surface.
 
     A legacy ``':stem'`` child lane with no parent metadata folds into its
-    prefix root when that root exists — the same defensive fallback the
-    glance applies, so the two /v1 surfaces agree on the root's headline
-    number instead of the sessions lane re-counting legacy children as roots.
+    prefix root when that root exists AND lives in the same source home
+    (:func:`agentacct.glance.fold_namespace_compatible` — the ledger has no
+    link to refuse for these lanes, so the namespace gate is applied here) —
+    the same defensive fallback the glance applies, so the two /v1 surfaces
+    agree on the root's headline number instead of the sessions lane
+    re-counting legacy children as roots. Like the glance, the fallback is
+    not client-gated (a non-claude id containing ':' folds by shape);
+    acceptable while only claude-code carries plan shares.
     """
+
+    from .glance import fold_namespace_compatible
 
     client = str(entry.get("client") or "")
     related = entry.get("related")
@@ -115,13 +122,21 @@ def _fold_parent_key(
         parent_id = str(parent.get("client_session_id") or "")
         if parent_id:
             key = (client, parent_id)
-            return key if key in existing_keys else None
+            return key if key in entries_by_key else None
         return None
     session_id = str(entry.get("client_session_id") or "")
     if ":" in session_id:
         key = (client, session_id.split(":", 1)[0])
-        if key in existing_keys:
-            return key
+        prefix_entry = entries_by_key.get(key)
+        if prefix_entry is not None:
+            child_ns = entry.get("source_namespace_fingerprint")
+            parent_ns = prefix_entry.get("source_namespace_fingerprint")
+            if fold_namespace_compatible(
+                str(child_ns) if child_ns else None,
+                str(parent_ns) if parent_ns else None,
+                None,
+            ):
+                return key
     return None
 
 
@@ -136,17 +151,23 @@ def _project_entry(entry: dict[str, Any]) -> dict[str, Any]:
 
     work = entry.get("work") if isinstance(entry.get("work"), dict) else {}
     # Title fallback chain, mirroring the glance: the client's own transcript
-    # title when it recorded one, else the newest work item's title (a
+    # title when it recorded one, else the newest HUMAN-titled work item (a
     # section-only session still deserves a human label). work.items arrives
     # NEWEST-FIRST from the rollup (build_work_items sorts by updated_at
     # descending) — iterate forward; reversed() picked the oldest title
-    # (adversarial-review finding).
+    # (adversarial-review finding). build_work_items backfills an untitled
+    # item's title with its work_id/section_id — skip those placeholders so a
+    # newer untitled section can't shadow an older human title (round-2
+    # finding: the glance only considers real section titles).
     title = entry.get("client_session_title")
     if not title:
         items = work.get("items") if isinstance(work.get("items"), list) else []
         for item in items:
-            if isinstance(item, dict) and item.get("title"):
-                title = item["title"]
+            if not isinstance(item, dict):
+                continue
+            candidate = item.get("title")
+            if candidate and candidate != item.get("work_id") and candidate != item.get("section_id"):
+                title = candidate
                 break
     return {
         "session_key": entry.get("session_key"),
@@ -196,7 +217,7 @@ def build_v1_sessions_view(
 
     import time as _time
 
-    from .glance import plan_status_and_session_pcts
+    from .glance import plan_status_and_session_pcts, resolve_fold_top
 
     rollup = ledger.get("session_rollup") if isinstance(ledger, dict) else {}
     entries = rollup.get("sessions") if isinstance(rollup, dict) else []
@@ -207,20 +228,13 @@ def build_v1_sessions_view(
     def _key(entry: dict[str, Any]) -> tuple[str, str]:
         return (str(entry.get("client") or ""), str(entry.get("client_session_id") or ""))
 
-    existing_keys = {_key(entry) for entry in entries}
-    fold_step = {_key(entry): _fold_parent_key(entry, existing_keys) for entry in entries}
-
-    def _fold_top(key: tuple[str, str]) -> tuple[str, str]:
-        # Resolve to the topmost existing ancestor (rows normally nest one
-        # level; the loop guards hostile chains/cycles rather than trusting
-        # that). A share must land on a row the roots page actually shows.
-        seen = {key}
-        while True:
-            parent = fold_step.get(key)
-            if parent is None or parent in seen:
-                return key
-            seen.add(parent)
-            key = parent
+    entries_by_key = {_key(entry): entry for entry in entries}
+    fold_step = {key: _fold_parent_key(entry, entries_by_key) for key, entry in entries_by_key.items()}
+    # Rootness and share attribution come from the SAME fixpoint: a row is a
+    # root iff it is its own fold top. resolve_fold_top breaks parent cycles
+    # deterministically (min member), so cycle members can never all vanish
+    # from the roots page with their shares (round-2 adversarial finding).
+    fold_top_by_key = {key: resolve_fold_top(fold_step, key) for key in entries_by_key}
 
     descendant_pct_by_top: dict[tuple[str, str], float] = {}
     for entry in entries:
@@ -228,7 +242,7 @@ def build_v1_sessions_view(
         own = session_pcts.get(key)
         if own is None:
             continue
-        top = _fold_top(key)
+        top = fold_top_by_key.get(key, key)
         if top != key:
             descendant_pct_by_top[top] = descendant_pct_by_top.get(top, 0.0) + own
 
@@ -237,7 +251,7 @@ def build_v1_sessions_view(
     for entry in entries:
         row = _project_entry(entry)
         key = _key(entry)
-        is_root = fold_step.get(key) is None
+        is_root = fold_top_by_key.get(key, key) == key
         if is_root:
             root_count += 1
         own = session_pcts.get(key)
