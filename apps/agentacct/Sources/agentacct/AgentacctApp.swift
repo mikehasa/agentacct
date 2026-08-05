@@ -6,7 +6,6 @@ import SwiftUI
 // opens the window on that session. All aggregation and honesty logic lives
 // in the Python daemon; this process only renders what the API vouches for.
 
-@main
 struct AgentacctApp: App {
     @StateObject private var glance = GlanceState()
     @StateObject private var dashboard = DashboardStore()
@@ -29,6 +28,7 @@ struct AgentacctApp: App {
                 .environmentObject(dashboard)
                 .environmentObject(selection)
         }
-        .defaultSize(width: 980, height: 620)
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1040, height: 640)
     }
 }

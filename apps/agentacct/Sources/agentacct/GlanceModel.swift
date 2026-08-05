@@ -62,10 +62,10 @@ struct UsageTotals: Decodable {
     /// is marked approximate; nothing priced renders as an em-dash — never $0.
     var costText: String {
         if costComplete == true, let cost = estimatedCostUsd {
-            return String(format: "$%.2f", cost)
+            return Fmt.dollars(cost)
         }
         if let known = knownAdditiveCostUsd {
-            return String(format: "~$%.2f", known)
+            return Fmt.dollars(known, prefix: "~$")
         }
         return "—"
     }

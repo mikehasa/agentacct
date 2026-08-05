@@ -76,8 +76,7 @@ struct SessionUsage: Decodable {
     /// unpriced session renders as an em-dash — never $0.00.
     var costText: String {
         guard let cost = estimatedCostUsd else { return "—" }
-        let prefix = costConfidence == "client_reported" ? "$" : "≈$"
-        return String(format: "%@%.2f", prefix, cost)
+        return Fmt.dollars(cost, prefix: costConfidence == "client_reported" ? "$" : "≈$")
     }
 }
 
@@ -119,7 +118,7 @@ struct WorkItem: Decodable, Identifiable {
 }
 
 struct SessionRelated: Decodable {
-    let parent: String?
+    let parent: ParentRef?
     let childSessionCount: Int?
     let childrenUsage: ChildrenUsage?
 
@@ -127,6 +126,16 @@ struct SessionRelated: Decodable {
         case parent
         case childSessionCount = "child_session_count"
         case childrenUsage = "children_usage"
+    }
+}
+
+struct ParentRef: Decodable {
+    let clientSessionId: String?
+    let label: String?
+
+    enum CodingKeys: String, CodingKey {
+        case clientSessionId = "client_session_id"
+        case label
     }
 }
 
@@ -145,12 +154,45 @@ struct ChildrenUsage: Decodable {
 struct UsageSummary: Decodable {
     let byClient: [UsageBucket]
     let byModel: [UsageBucket]
+    let byPeriod: [PeriodBucket]?
     let totals: UsageBucket?
 
     enum CodingKeys: String, CodingKey {
         case byClient = "by_client"
         case byModel = "by_model"
+        case byPeriod = "by_period"
         case totals
+    }
+}
+
+struct PeriodBucket: Decodable, Identifiable {
+    let period: String?
+    let freshTokens: Int?
+    let estimatedCostUsd: Double?
+    let costComplete: Bool?
+    let byClient: [String: PeriodClientSlice]?
+
+    var id: String { period ?? UUID().uuidString }
+    /// "08-05" from "2026-08-05" for axis labels.
+    var shortLabel: String {
+        guard let period, period.count >= 10 else { return period ?? "" }
+        return String(period.dropFirst(5))
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case period
+        case freshTokens = "fresh_tokens"
+        case estimatedCostUsd = "estimated_cost_usd"
+        case costComplete = "cost_complete"
+        case byClient = "by_client"
+    }
+}
+
+struct PeriodClientSlice: Decodable {
+    let freshTokens: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case freshTokens = "fresh_tokens"
     }
 }
 
@@ -180,10 +222,10 @@ struct UsageBucket: Decodable, Identifiable {
     /// The shared cube cost rule: complete `$` / partial `~$` / `—`.
     var costText: String {
         if costComplete == true, let cost = estimatedCostUsd {
-            return String(format: "$%.2f", cost)
+            return Fmt.dollars(cost)
         }
         if let known = knownAdditiveCostUsd {
-            return String(format: "~$%.2f", known)
+            return Fmt.dollars(known, prefix: "~$")
         }
         return "—"
     }

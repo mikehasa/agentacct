@@ -4,7 +4,34 @@ import SwiftUI
 // theme. Accents carry the brand; surfaces stay adaptive (light/dark) via
 // system materials so the app always looks native.
 
+enum Fmt {
+    static let usd: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        formatter.groupingSeparator = ","
+        formatter.usesGroupingSeparator = true
+        return formatter
+    }()
+
+    static func dollars(_ value: Double, prefix: String = "$") -> String {
+        prefix + (usd.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value))
+    }
+}
+
 enum Theme {
+    // The committed dark surface system (Tokyo Night storm): the window owns
+    // its identity like the TUI does, instead of dressing up system chrome.
+    static let bg = Color(red: 0.086, green: 0.086, blue: 0.118)        // #16161e
+    static let surface = Color(red: 0.102, green: 0.106, blue: 0.149)   // #1a1b26
+    static let card = Color(red: 0.122, green: 0.137, blue: 0.208)      // #1f2335
+    static let cardAlt = Color(red: 0.141, green: 0.157, blue: 0.231)   // #24283b
+    static let border = Color(red: 0.161, green: 0.180, blue: 0.259)    // #292e42
+    static let text = Color(red: 0.753, green: 0.792, blue: 0.961)      // #c0caf5
+    static let textMuted = Color(red: 0.471, green: 0.487, blue: 0.600) // #787c99
+    static let textFaint = Color(red: 0.337, green: 0.371, blue: 0.537) // #565f89
+
     // Tokyo Night accents (shared identity with `agentacct tui`).
     static let blue = Color(red: 0.478, green: 0.635, blue: 0.969)     // #7aa2f7
     static let purple = Color(red: 0.733, green: 0.604, blue: 0.969)   // #bb9af7
@@ -142,5 +169,26 @@ struct SectionCaption: View {
             .font(.system(size: 10, weight: .semibold))
             .tracking(0.8)
             .foregroundStyle(.secondary)
+    }
+}
+
+
+// MARK: - Snapshot support
+
+/// Offscreen ImageRenderer can't lay out ScrollViews/lazy stacks; snapshot
+/// mode swaps them for plain containers so renders match the live app.
+enum SnapshotMode {
+    nonisolated(unsafe) static var enabled = false
+}
+
+struct ScrollBox<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        if SnapshotMode.enabled {
+            content().frame(maxHeight: .infinity, alignment: .top)
+        } else {
+            ScrollView(showsIndicators: false) { content() }
+        }
     }
 }
