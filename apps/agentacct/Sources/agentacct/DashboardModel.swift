@@ -41,6 +41,42 @@ struct SessionUsage: Decodable {
 struct SessionJoin: Decodable {
     let state: String?
     let reason: String?
+    /// Per-row join outcome counts (attributed / ambiguous /
+    /// context_matched_unallocated / unjoined) + veto count.
+    let rowStates: [String: Int]?
+    let vetoedRows: Int?
+    let attributedFreshTokens: Int?
+    let attributedTotalTokens: Int?
+    let attributedWork: [AttributedWork]?
+    let ambiguousCandidateWorkIds: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case state, reason
+        case rowStates = "row_states"
+        case vetoedRows = "vetoed_rows"
+        case attributedFreshTokens = "attributed_fresh_tokens"
+        case attributedTotalTokens = "attributed_total_tokens"
+        case attributedWork = "attributed_work"
+        case ambiguousCandidateWorkIds = "ambiguous_candidate_work_ids"
+    }
+}
+
+struct AttributedWork: Decodable, Identifiable {
+    let workId: String?
+    let sectionId: String?
+    let title: String?
+    let joinStrategy: String?
+    let joinConfidence: String?
+
+    var id: String { workId ?? sectionId ?? UUID().uuidString }
+
+    enum CodingKeys: String, CodingKey {
+        case title
+        case workId = "work_id"
+        case sectionId = "section_id"
+        case joinStrategy = "join_strategy"
+        case joinConfidence = "join_confidence"
+    }
 }
 
 struct SessionWork: Decodable {
@@ -152,6 +188,12 @@ struct PeriodBucket: Decodable, Identifiable {
     var shortLabel: String {
         guard let period, period.count >= 10 else { return period ?? "" }
         return String(period.dropFirst(5))
+    }
+
+    /// The shared cost honesty rule (complete-$ / partial-~$ / em-dash).
+    var costText: String {
+        guard let cost = estimatedCostUsd else { return "—" }
+        return Fmt.dollars(cost, prefix: costComplete == true ? "$" : "~$")
     }
 
     enum CodingKeys: String, CodingKey {

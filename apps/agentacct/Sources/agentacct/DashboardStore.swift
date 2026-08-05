@@ -23,6 +23,14 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var isLoadingMore = false
     @Published private(set) var lastUpdated: Date?
 
+    /// The cost-chart range (7/30/90 trailing days); the plan lane stays on
+    /// its own fixed windows.
+    @Published private(set) var usageDays = 30
+
+    /// Monotonic token so rapid range switches can't land out of order and a
+    /// failed fetch can't leave the old data labeled with the new range.
+    private var usageDaysGeneration = 0
+
     private let client = GlanceClient()
     private let pageSize = 60
 
@@ -39,7 +47,7 @@ final class DashboardStore: ObservableObject {
                 "/v1/sessions?limit=\(limit)&offset=0"
             )
             let plan: V1PlanPayload = try await client.getAuthed("/v1/plan?days=30")
-            let summary: UsageSummary = try await client.getLocal("/usage/summary?days=30")
+            let summary: UsageSummary = try await client.getLocal("/usage/summary?days=\(usageDays)")
             sessions = payload.sessions
             totalSessions = payload.totalSessions
             totalRootSessions = payload.totalRootSessions
@@ -111,6 +119,24 @@ final class DashboardStore: ObservableObject {
     /// The plan status for one client (three-state honesty), if known.
     func planStatus(for clientName: String) -> V1PlanStatus? {
         planStatuses.first { $0.client == clientName }
+    }
+
+    /// Switch the cost-chart range and refetch just the usage cube. The range
+    /// label only flips once the matching payload has landed, and only the
+    /// newest in-flight switch is allowed to write.
+    func setUsageDays(_ days: Int) async {
+        guard days != usageDays else { return }
+        usageDaysGeneration += 1
+        let generation = usageDaysGeneration
+        do {
+            let summary: UsageSummary = try await client.getLocal("/usage/summary?days=\(days)")
+            guard generation == usageDaysGeneration else { return }
+            usageDays = days
+            usage = summary
+        } catch {
+            guard generation == usageDaysGeneration else { return }
+            errorText = "usage range fetch failed: \(error.localizedDescription)"
+        }
     }
 }
 
