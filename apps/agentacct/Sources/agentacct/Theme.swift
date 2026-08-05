@@ -76,7 +76,7 @@ enum Theme {
 
     static let text = dynamic(light: 0x201E1B, dark: 0xC0CAF5)
     static let textMuted = dynamic(light: 0x6E6960, dark: 0x787C99)
-    static let textFaint = dynamic(light: 0xA39D91, dark: 0x565F89)
+    static let textFaint = dynamic(light: 0x8F8878, dark: 0x565F89)
 
     // MARK: accents — one restrained indigo carries the brand; the client
     // palette keeps the TUI's hue identities, darkened for paper.

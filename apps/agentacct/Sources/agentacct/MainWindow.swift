@@ -241,7 +241,10 @@ struct SessionRow: View {
         .padding(.horizontal, 11)
         .padding(.vertical, 8)
         .background(
-            selected ? AnyShapeStyle(Theme.cardAlt) : (hovering ? AnyShapeStyle(Theme.surface) : AnyShapeStyle(.clear)),
+            // Hover must be VISIBLE on paper: surface-on-bg was a ~1% value
+            // difference in light mode (review polish note) — cardAlt at half
+            // opacity reads as a real highlight in both schemes.
+            selected ? AnyShapeStyle(Theme.cardAlt) : (hovering ? AnyShapeStyle(Theme.cardAlt.opacity(0.5)) : AnyShapeStyle(.clear)),
             in: RoundedRectangle(cornerRadius: 8, style: .continuous)
         )
         .overlay(
