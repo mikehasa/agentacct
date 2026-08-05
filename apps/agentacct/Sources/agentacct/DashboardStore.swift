@@ -23,9 +23,11 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var isLoadingMore = false
     @Published private(set) var lastUpdated: Date?
 
-    /// The cost-chart range (7/30/90 trailing days); the plan lane stays on
-    /// its own fixed windows.
-    @Published private(set) var usageDays = 30
+    /// The usage-pane range (7/30/90 trailing days). Defaults to 7 so the
+    /// per-model plan breakdown lines up with the 7d headline out of the box
+    /// (a 30-day accumulation reads as >100% of a weekly plan and confuses);
+    /// the today/7d headline windows are fixed regardless of this.
+    @Published private(set) var usageDays = 7
 
     /// Monotonic token so rapid range switches can't land out of order and a
     /// failed fetch can't leave the old data labeled with the new range.
@@ -46,7 +48,11 @@ final class DashboardStore: ObservableObject {
             let payload: V1SessionsPayload = try await client.getAuthed(
                 "/v1/sessions?limit=\(limit)&offset=0"
             )
-            let plan: V1PlanPayload = try await client.getAuthed("/v1/plan?days=30")
+            // Both the plan lane and the cost cube follow the pane range so the
+            // per-model breakdown, the daily bars, and the $ view all describe
+            // the same window. The today/7d headline windows are fixed inside
+            // the plan payload regardless of this days param.
+            let plan: V1PlanPayload = try await client.getAuthed("/v1/plan?days=\(usageDays)")
             let summary: UsageSummary = try await client.getLocal("/usage/summary?days=\(usageDays)")
             sessions = payload.sessions
             totalSessions = payload.totalSessions
@@ -121,17 +127,20 @@ final class DashboardStore: ObservableObject {
         planStatuses.first { $0.client == clientName }
     }
 
-    /// Switch the cost-chart range and refetch just the usage cube. The range
-    /// label only flips once the matching payload has landed, and only the
+    /// Switch the pane range and refetch BOTH the plan lane and the cost cube
+    /// so the plan breakdown, the daily bars, and the $ view stay on one window.
+    /// The range label only flips once both payloads have landed, and only the
     /// newest in-flight switch is allowed to write.
     func setUsageDays(_ days: Int) async {
         guard days != usageDays else { return }
         usageDaysGeneration += 1
         let generation = usageDaysGeneration
         do {
+            let plan: V1PlanPayload = try await client.getAuthed("/v1/plan?days=\(days)")
             let summary: UsageSummary = try await client.getLocal("/usage/summary?days=\(days)")
             guard generation == usageDaysGeneration else { return }
             usageDays = days
+            planClients = plan.clients
             usage = summary
         } catch {
             guard generation == usageDaysGeneration else { return }
