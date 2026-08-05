@@ -63,14 +63,31 @@ _MAX_INTERVAL_PCT = 60.0
 # Only fit from recent history, so an old plan tier / stale baseline doesn't drag the
 # current scale.
 _CALIBRATION_WINDOW_DAYS = 21
-# Keep a raw fitted scale sane even if the sparse early data is noisy.
-_SCALE_CLAMP = (0.1, 10.0)
 # Only APPLY a fitted scale (and claim "calibrated") when it lands in this band. The
 # 7-day meter is account-wide but our tokens cover only tracked clients, so a scale
 # far from 1 means either heavy untracked Claude usage (desktop app / claude.ai) or a
 # very different plan tier — neither of which we can identify — so we keep the shipped
 # baseline rather than apply an unreliable (over- or under-stating) scale.
 _TRUSTED_SCALE_BAND = (0.5, 2.5)
+
+# The two-component token model. The weekly meter is driven by FRESH work
+# (input + output + cache_creation); cache READS barely move it — measured on
+# the reference account (2026-08-06): a two-component fit put the cache-read
+# coefficient at 0.00 in every leave-one-out fold while cutting the residual
+# by a third, and the single-component fit (total-including-cache) had been
+# structurally over-predicting on cache-heavy days until the trusted band
+# rejected it (the "plan %% vanishes exactly on heavy days" cliff). alpha (the
+# cache-read discount) is FITTED per account in [0, 1], so an account whose
+# meter does charge cache reads still calibrates.
+#
+# The shipped BASELINE_MODEL_WEIGHTS were measured against total-including-
+# cache volume at the reference account's cache mix; re-anchoring the same
+# table into fresh-component units uses this factor, measured the same way the
+# table itself was (two-component fit on the reference account: fresh scale
+# 8.3 vs the total-anchored table).
+_FRESH_COMPONENT_REF_FACTOR = 8.3
+# alpha grid resolution for the fit (closed-form scale per alpha, min-SSE pick).
+_ALPHA_GRID_STEPS = 100
 
 # Plan-bearing clients whose meter can actually CALIBRATE to per-session weekly
 # percentages — i.e. a clean weekly-reset cumulative meter. codex's 7-day meter is
@@ -83,12 +100,17 @@ CALIBRATABLE_CLIENTS = ("claude-code",)
 
 @dataclass(frozen=True)
 class PlanWeights:
-    """Effective per-model weekly-plan weights (percent per 1M tokens) for one account.
+    """Effective per-model weekly-plan weights for one account (two-component).
 
-    ``weights`` is the baseline times the fitted ``scale``. ``confidence`` is
-    ``calibrated`` when ``scale`` was fit from enough recorded 7-day history, else
-    ``baseline`` (the shipped table at scale 1.0). ``default_weight`` applies to a
-    model absent from ``weights``.
+    ``weights`` are FRESH-component weights (percent of the weekly plan per 1M
+    fresh tokens = input + output + cache_creation): the re-anchored baseline
+    times the fitted ``scale``. ``alpha`` is the fitted cache-read discount in
+    [0, 1] — a cache-read token counts as ``alpha`` fresh tokens (measured ~0
+    on the reference account). ``confidence`` is ``calibrated`` when the fit
+    came from enough recorded 7-day history and landed in the trusted band,
+    else ``baseline``. ``raw_scale`` preserves the pre-band fit for the
+    calibration-progress disclosure. ``default_weight`` applies to a model
+    absent from ``weights``.
     """
 
     weights: Mapping[str, float]
@@ -98,13 +120,15 @@ class PlanWeights:
     basis: str
     intervals_used: int
     client: str
+    alpha: float = 0.0
+    raw_scale: float | None = None
 
     def weight_for(self, model: Any) -> float:
         value = self.weights.get(str(model))
         return float(value) if isinstance(value, (int, float)) else self.default_weight
 
     def pct_for_tokens(self, tokens_by_model: Mapping[str, Any]) -> float:
-        """Estimated percent of the weekly plan for a per-model token map."""
+        """Percent of the weekly plan for a per-model FRESH-component map."""
 
         total = 0.0
         for model, tokens in tokens_by_model.items():
@@ -113,6 +137,45 @@ class PlanWeights:
                 continue
             total += self.weight_for(model) * (count / 1_000_000.0)
         return total
+
+    def pct_for_components(
+        self,
+        fresh_by_model: Mapping[str, Any],
+        cache_read_by_model: Mapping[str, Any],
+    ) -> float:
+        """Percent of the weekly plan for per-model (fresh, cache_read) maps."""
+
+        total = self.pct_for_tokens(fresh_by_model)
+        for model, tokens in cache_read_by_model.items():
+            count = _finite(tokens)
+            if count is None or count <= 0:
+                continue
+            total += self.weight_for(model) * self.alpha * (count / 1_000_000.0)
+        return total
+
+
+def record_components(record: Any) -> tuple[float, float]:
+    """One usage record's (fresh, cache_read) token components.
+
+    fresh = input + output + cache_creation (the work that drives the weekly
+    meter); cache_read is the discounted component. A record carrying a
+    combined cached count with no creation/read split books the whole cached
+    bucket as reads — reads dominate real caches, and the conservative
+    direction for the ESTIMATE is the discounted one (never overstate a
+    session's share on unreported data).
+    """
+
+    creation = _finite(getattr(record, "cache_creation_input_tokens", None)) or 0.0
+    read = _finite(getattr(record, "cache_read_input_tokens", None)) or 0.0
+    cached = _finite(getattr(record, "cached_input_tokens", None)) or 0.0
+    if creation + read == 0 and cached > 0:
+        read = cached
+    fresh = (
+        (_finite(getattr(record, "input_tokens", None)) or 0.0)
+        + (_finite(getattr(record, "output_tokens", None)) or 0.0)
+        + creation
+    )
+    return fresh, read
 
 
 def _finite(value: Any) -> float | None:
@@ -136,6 +199,31 @@ def baseline_weight(model: Any, cost_per_mtok: float | None = None) -> float:
     if price is not None and price > 0:
         return price * _REF_PCT_PER_DOLLAR
     return BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
+
+
+def baseline_weight_fresh(model: Any, cost_per_fresh_mtok: float | None = None) -> float:
+    """The baseline weight in FRESH-component units (%/M fresh tokens).
+
+    Table models: the shipped total-anchored weight times the measured
+    reference factor (see ``_FRESH_COMPONENT_REF_FACTOR``). An UNKNOWN model
+    with a price derives directly from its cost per FRESH token times the
+    reference plan-%-per-dollar — NOT the table path times the factor, which
+    double-counted the reference cache mix and inflated a cache-light unknown
+    model's weight up to ~19x (adversarial-review HIGH finding: any newly
+    shipped model id would have decalibrated the account or skewed its
+    sessions' shares). The identity check: at the reference mix,
+    price_fresh = price_total x factor, so both paths agree for a
+    reference-mix model. With neither table nor price, the Opus anchor in
+    fresh units — never zero for real usage.
+    """
+
+    name = str(model or "")
+    if name in BASELINE_MODEL_WEIGHTS:
+        return BASELINE_MODEL_WEIGHTS[name] * _FRESH_COMPONENT_REF_FACTOR
+    price_fresh = _finite(cost_per_fresh_mtok)
+    if price_fresh is not None and price_fresh > 0:
+        return price_fresh * _REF_PCT_PER_DOLLAR
+    return BASELINE_MODEL_WEIGHTS["claude-opus-4-8"] * _FRESH_COMPONENT_REF_FACTOR
 
 
 def seven_day_series(events: Sequence[Mapping[str, Any]], *, client: str = "claude-code") -> list[tuple[float, float]]:
@@ -182,8 +270,37 @@ def _cost_per_mtok(records: Sequence[Any]) -> dict[str, float]:
     return {m: cost[m] / (toks[m] / 1_000_000.0) for m in toks if toks[m] > 0 and m in cost}
 
 
-def _model_tokens_between(records: Sequence[Any], record_time, lo: float, hi: float) -> dict[str, float]:
-    tokens: dict[str, float] = {}
+def _cost_per_fresh_mtok(records: Sequence[Any]) -> dict[str, float]:
+    """Per-model $ per 1M FRESH tokens (the price basis for fresh-unit
+    weights): total observed cost over the fresh component only. Dollars are
+    mix-free evidence; dividing by fresh volume yields the weight basis the
+    two-component model actually applies."""
+
+    cost: dict[str, float] = {}
+    fresh_toks: dict[str, float] = {}
+    for record in records:
+        model = str(getattr(record, "model", "") or "")
+        if not model:
+            continue
+        fresh, _reads = record_components(record)
+        fresh_toks[model] = fresh_toks.get(model, 0.0) + fresh
+        price = _finite(getattr(record, "estimated_cost_usd", None))
+        if price is not None:
+            cost[model] = cost.get(model, 0.0) + price
+    return {
+        m: cost[m] / (fresh_toks[m] / 1_000_000.0)
+        for m in fresh_toks
+        if fresh_toks[m] > 0 and m in cost
+    }
+
+
+def _component_tokens_between(
+    records: Sequence[Any], record_time, lo: float, hi: float
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Per-model (fresh, cache_read) token maps for records inside (lo, hi]."""
+
+    fresh: dict[str, float] = {}
+    reads: dict[str, float] = {}
     for record in records:
         moment = record_time(record)
         if not isinstance(moment, (int, float)) or isinstance(moment, bool):
@@ -193,9 +310,10 @@ def _model_tokens_between(records: Sequence[Any], record_time, lo: float, hi: fl
         model = str(getattr(record, "model", "") or "")
         if not model:
             continue
-        total = _finite(getattr(record, "total_tokens_including_cached", None))
-        tokens[model] = tokens.get(model, 0.0) + (total or 0.0)
-    return tokens
+        f, r = record_components(record)
+        fresh[model] = fresh.get(model, 0.0) + f
+        reads[model] = reads.get(model, 0.0) + r
+    return fresh, reads
 
 
 def calibrate_plan_weights(
@@ -205,20 +323,25 @@ def calibrate_plan_weights(
     records: list[Any] | None = None,
     now: float | None = None,
 ) -> PlanWeights:
-    """Baseline per-model weights scaled to this account's recorded plan history.
+    """Baseline per-model weights fit to this account's recorded plan history.
 
-    Fits ONE per-user scale = (observed weekly-%% moved) / (baseline-predicted %%)
-    over recent, clean, non-reset intervals — robust and collinearity-free. Only
-    intervals whose movement our tracked-client tokens can actually explain
-    (``predicted > 0``) contribute, and the fitted scale is applied only inside a
-    trusted band; otherwise the shipped baseline is kept. This guards the estimate's
-    known blind spot: the 7-day meter is ACCOUNT-WIDE (Claude desktop app, claude.ai,
-    other machines all move it) while our tokens cover only tracked clients, so
-    movement with no local tokens is untracked usage that must not inflate the scale.
+    Two-component fit: for each clean interval the movement is modeled as
+    ``scale × (A + alpha × B)`` where A is the fresh-component prediction
+    (input+output+cache_creation at the re-anchored baseline weights) and B
+    the cache-read prediction. ``scale`` is the robust ratio-of-sums
+    Σobserved / Σ(A + alpha×B) for a given alpha; alpha is chosen on a [0, 1]
+    grid by residual (closed-form per point, no iterative optimizer). Only
+    intervals whose movement our tracked-client tokens can explain
+    (``A + B > 0``) contribute, and the fitted scale is applied only inside
+    the trusted band; otherwise the shipped baseline is kept. This guards the
+    estimate's known blind spot: the 7-day meter is ACCOUNT-WIDE (Claude
+    desktop app, claude.ai, other machines all move it) while our tokens cover
+    only tracked clients, so movement with no local tokens is untracked usage
+    that must not inflate the scale.
 
-    ``records`` may be passed pre-built (the caller already ran the usage view) to
-    avoid rebuilding it. ``now`` bounds the recency window (injectable for tests).
-    ``events`` still supplies the 7-day series regardless.
+    ``records`` may be passed pre-built (the caller already ran the usage view)
+    to avoid rebuilding it. ``now`` bounds the recency window (injectable for
+    tests). ``events`` still supplies the 7-day series regardless.
     """
 
     from .usage_view import _usage_record_time
@@ -230,21 +353,22 @@ def calibrate_plan_weights(
 
         records = _usage_records(events, client=client)
 
-    cost_per_mtok = _cost_per_mtok(records)
+    cost_per_fresh = _cost_per_fresh_mtok(records)
     observed_models = {str(getattr(r, "model", "") or "") for r in records if getattr(r, "model", None)}
     model_names = observed_models | set(BASELINE_MODEL_WEIGHTS)
-    base = {m: baseline_weight(m, cost_per_mtok.get(m)) for m in model_names if m}
+    base = {m: baseline_weight_fresh(m, cost_per_fresh.get(m)) for m in model_names if m}
+    default_base = BASELINE_MODEL_WEIGHTS["claude-opus-4-8"] * _FRESH_COMPONENT_REF_FACTOR
 
     if client not in CALIBRATABLE_CLIENTS:
         # A rolling/opaque meter (codex) can land 3 numerically-clean intervals
-        # inside the trusted band by coincidence — but its weekly plan %% is
+        # inside the trusted band by coincidence — but its weekly plan % is
         # UNDEFINED by design, so a fit here would confidently label a number
         # that means nothing (adversarial-review finding: /v1/plan served
         # "calibrated" codex aggregates). The gate lives HERE, not in each
         # display surface, so no surface can ever receive one.
         return PlanWeights(
             weights=base,
-            default_weight=BASELINE_MODEL_WEIGHTS["claude-opus-4-8"],
+            default_weight=default_base,
             scale=1.0,
             confidence="baseline",
             basis="weekly plan % is undefined for this client's rolling meter (it never calibrates)",
@@ -254,9 +378,9 @@ def calibrate_plan_weights(
 
     series = seven_day_series(events, client=client)
     window_start = now_epoch - _CALIBRATION_WINDOW_DAYS * 86400.0
-    observed = 0.0
-    predicted = 0.0
-    intervals = 0
+    # (delta, A, B) per clean interval: observed movement, fresh-component
+    # prediction, cache-read prediction.
+    points: list[tuple[float, float, float]] = []
     for (t0, p0), (t1, p1) in zip(series, series[1:]):
         if not (0 < t1 - t0 <= _MAX_INTERVAL_SECONDS):
             continue
@@ -265,65 +389,103 @@ def calibrate_plan_weights(
         delta = p1 - p0
         if delta < 0 or delta > _MAX_INTERVAL_PCT:  # a drop is a weekly reset
             continue
-        interval_tokens = _model_tokens_between(records, _usage_record_time, t0, t1)
-        pred = sum(base.get(m, 0.0) * (tok / 1_000_000.0) for m, tok in interval_tokens.items())
-        # Fit ONLY from movement our tokens can explain. An interval where the meter
-        # moved with no local tokens (pred == 0) is Claude usage outside the tracked
+        fresh, reads = _component_tokens_between(records, _usage_record_time, t0, t1)
+        fresh_pred = sum(base.get(m, 0.0) * (tok / 1_000_000.0) for m, tok in fresh.items())
+        read_pred = sum(base.get(m, 0.0) * (tok / 1_000_000.0) for m, tok in reads.items())
+        # Fit ONLY from movement our tokens can explain. An interval where the
+        # meter moved with no local tokens is Claude usage outside the tracked
         # clients (desktop app / web); counting it would inflate the scale and
         # over-state every session, so skip it.
-        if pred <= 0:
+        if fresh_pred + read_pred <= 0:
             continue
-        observed += delta
-        predicted += pred
-        intervals += 1
+        points.append((delta, fresh_pred, read_pred))
 
-    raw_scale = (observed / predicted) if predicted > 0 else 1.0
-    raw_scale = max(_SCALE_CLAMP[0], min(_SCALE_CLAMP[1], raw_scale))
+    intervals = len(points)
+    raw_scale = 1.0
+    alpha = 0.0
+    if points:
+        candidates: list[tuple[float, float, float]] = []  # (alpha, scale, sse)
+        observed_sum = sum(delta for delta, _a, _b in points)
+        for step in range(_ALPHA_GRID_STEPS + 1):
+            candidate_alpha = step / _ALPHA_GRID_STEPS
+            predicted_sum = sum(a + candidate_alpha * b for _d, a, b in points)
+            if predicted_sum <= 0:
+                continue
+            candidate_scale = observed_sum / predicted_sum
+            sse = sum(
+                (delta - candidate_scale * (a + candidate_alpha * b)) ** 2
+                for delta, a, b in points
+            )
+            candidates.append((candidate_alpha, candidate_scale, sse))
+        if candidates:
+            # SMALLEST alpha within tolerance of the best fit wins. alpha is a
+            # second degree of freedom the trusted band never inspects:
+            # untracked meter movement that co-occurs with cache-read-heavy
+            # days would otherwise be absorbed into alpha, silently multiplying
+            # every cache-heavy session's share while reporting "calibrated"
+            # (adversarial-review finding). Reads are only charged when the
+            # data clearly demands it; a collinear cache mix (alpha
+            # unidentifiable) deterministically lands on 0.
+            best_sse = min(sse for _a, _s, sse in candidates)
+            tolerance = best_sse * 1.05 + 1e-12
+            for candidate_alpha, candidate_scale, sse in candidates:  # ascending alpha
+                if sse <= tolerance:
+                    alpha = candidate_alpha
+                    raw_scale = candidate_scale
+                    break
     trusted = _TRUSTED_SCALE_BAND[0] <= raw_scale <= _TRUSTED_SCALE_BAND[1]
-    if intervals >= _MIN_SCALE_INTERVALS and predicted > 0 and trusted:
+    if intervals >= _MIN_SCALE_INTERVALS and trusted:
         scale = raw_scale
         confidence = "calibrated"
         # A plain string, not a %-format template — no %% escaping (a literal
         # "%%" leaked onto every basis-rendering surface).
-        basis = f"baseline scaled x{scale:.2f} to this account ({intervals} recent weekly-% intervals)"
+        basis = (
+            f"two-component fit x{scale:.2f}, cache-read discount {alpha:.2f} "
+            f"({intervals} recent weekly-% intervals)"
+        )
     else:
-        # Too little clean history, or a fit outside the trusted band (heavy untracked
-        # Claude usage or a very different plan tier we can't identify) → keep the
-        # shipped baseline rather than apply an unreliable scale.
+        # Too little clean history, or a fit outside the trusted band (heavy
+        # untracked Claude usage or a very different plan tier we can't
+        # identify) → keep the shipped baseline rather than apply an
+        # unreliable scale. alpha stays 0 under baseline: cache reads are
+        # excluded rather than guessed (the measured reference behavior).
         scale = 1.0
+        alpha = 0.0
         confidence = "baseline"
         basis = "shipped baseline (record more 7-day limit history from tracked clients to calibrate)"
 
     weights = {m: w * scale for m, w in base.items()}
-    default = BASELINE_MODEL_WEIGHTS["claude-opus-4-8"] * scale
     return PlanWeights(
         weights=weights,
-        default_weight=default,
+        default_weight=default_base * scale,
         scale=scale,
         confidence=confidence,
         basis=basis,
         intervals_used=intervals,
         client=client,
+        alpha=alpha,
+        raw_scale=raw_scale if intervals else None,
     )
 
 
-def session_tokens_by_model(
+def session_components_by_model(
     events: list[dict[str, Any]] | None = None,
     *,
     client: str,
     session_id: str,
     records: list[Any] | None = None,
-) -> dict[str, float]:
-    """Per-model total tokens (incl. cache) for one session, from its usage records.
+) -> dict[str, dict[str, float]]:
+    """Per-model ``{total, fresh, cache_read}`` tokens for one session.
 
-    ``records`` may be passed pre-built to avoid rebuilding the usage view."""
+    ``total`` is the REAL total (incl. cache — what a user recognizes);
+    ``fresh``/``cache_read`` are the plan components the estimate weighs."""
 
     if records is None:
         from .usage_snapshot import usage_records as _usage_records
 
         records = _usage_records(events or [], client=client)
 
-    tokens: dict[str, float] = {}
+    out: dict[str, dict[str, float]] = {}
     for record in records:
         if str(getattr(record, "client", "") or "") != client:
             continue
@@ -332,9 +494,13 @@ def session_tokens_by_model(
         model = str(getattr(record, "model", "") or "")
         if not model:
             continue
+        fresh, reads = record_components(record)
         total = _finite(getattr(record, "total_tokens_including_cached", None)) or 0.0
-        tokens[model] = tokens.get(model, 0.0) + total
-    return tokens
+        bucket = out.setdefault(model, {"total": 0.0, "fresh": 0.0, "cache_read": 0.0})
+        bucket["total"] += total
+        bucket["fresh"] += fresh
+        bucket["cache_read"] += reads
+    return out
 
 
 def session_plan_pcts(
@@ -342,11 +508,13 @@ def session_plan_pcts(
 ) -> dict[str, float]:
     """``{session_id: estimated % of the weekly plan}`` for one client, in ONE pass.
 
-    Groups the pre-built usage records by (session, model) once, then applies
-    ``weights`` — so estimating many sessions (a list view) is cheap, not O(records)
-    per session."""
+    Groups the pre-built usage records by (session, model) once — fresh and
+    cache-read components separately — then applies ``weights`` (two-component:
+    cache reads at the fitted discount), so estimating many sessions (a list
+    view) is cheap, not O(records) per session."""
 
-    by_session: dict[str, dict[str, float]] = {}
+    fresh_by_session: dict[str, dict[str, float]] = {}
+    reads_by_session: dict[str, dict[str, float]] = {}
     for record in records:
         if str(getattr(record, "client", "") or "") != client:
             continue
@@ -354,10 +522,15 @@ def session_plan_pcts(
         model = str(getattr(record, "model", "") or "")
         if not session_id or not model:
             continue
-        total = _finite(getattr(record, "total_tokens_including_cached", None)) or 0.0
-        bucket = by_session.setdefault(session_id, {})
-        bucket[model] = bucket.get(model, 0.0) + total
-    return {sid: weights.pct_for_tokens(tokens) for sid, tokens in by_session.items()}
+        fresh, reads = record_components(record)
+        fresh_bucket = fresh_by_session.setdefault(session_id, {})
+        fresh_bucket[model] = fresh_bucket.get(model, 0.0) + fresh
+        read_bucket = reads_by_session.setdefault(session_id, {})
+        read_bucket[model] = read_bucket.get(model, 0.0) + reads
+    return {
+        sid: weights.pct_for_components(fresh_tokens, reads_by_session.get(sid) or {})
+        for sid, fresh_tokens in fresh_by_session.items()
+    }
 
 
 def plan_pct_aggregates(
@@ -398,10 +571,24 @@ def plan_pct_aggregates(
         "30d": resolved_today - _timedelta(days=29),
     }
 
-    daily_tokens: dict[_date, dict[str, float]] = {}
-    window_tokens: dict[str, dict[str, float]] = {label: {} for label in window_starts}
-    model_tokens: dict[str, float] = {}
-    unknown_tokens: dict[str, float] = {}
+    # Accumulator shape everywhere: {model: [fresh, cache_read, total]} — the
+    # components drive the estimate, the real total stays for display.
+    def _add(bucket: dict[str, list[float]], model: str, fresh: float, reads: float, total: float) -> None:
+        entry = bucket.setdefault(model, [0.0, 0.0, 0.0])
+        entry[0] += fresh
+        entry[1] += reads
+        entry[2] += total
+
+    def _pct(bucket: dict[str, list[float]]) -> float:
+        return weights.pct_for_components(
+            {m: parts[0] for m, parts in bucket.items()},
+            {m: parts[1] for m, parts in bucket.items()},
+        )
+
+    daily_tokens: dict[_date, dict[str, list[float]]] = {}
+    window_tokens: dict[str, dict[str, list[float]]] = {label: {} for label in window_starts}
+    model_tokens: dict[str, list[float]] = {}
+    unknown_tokens: dict[str, list[float]] = {}
     for record in records:
         if str(getattr(record, "client", "") or "") != client:
             continue
@@ -411,20 +598,19 @@ def plan_pct_aggregates(
         total = _finite(getattr(record, "total_tokens_including_cached", None)) or 0.0
         if total <= 0:
             continue
+        fresh, reads = record_components(record)
         day = usage_bucket_date(_usage_record_time(record))
         if day is None:
-            unknown_tokens[model] = unknown_tokens.get(model, 0.0) + total
+            _add(unknown_tokens, model, fresh, reads, total)
             continue
         if day > resolved_today:
             continue
         if start <= day:
-            bucket = daily_tokens.setdefault(day, {})
-            bucket[model] = bucket.get(model, 0.0) + total
-            model_tokens[model] = model_tokens.get(model, 0.0) + total
+            _add(daily_tokens.setdefault(day, {}), model, fresh, reads, total)
+            _add(model_tokens, model, fresh, reads, total)
         for label, window_start in window_starts.items():
             if window_start <= day:
-                window_bucket = window_tokens[label]
-                window_bucket[model] = window_bucket.get(model, 0.0) + total
+                _add(window_tokens[label], model, fresh, reads, total)
 
     daily: list[dict[str, Any]] = []
     cursor = start
@@ -432,7 +618,7 @@ def plan_pct_aggregates(
         daily.append(
             {
                 "date": cursor.isoformat(),
-                "pct": weights.pct_for_tokens(daily_tokens.get(cursor) or {}),
+                "pct": _pct(daily_tokens.get(cursor) or {}),
             }
         )
         cursor += _timedelta(days=1)
@@ -441,23 +627,19 @@ def plan_pct_aggregates(
         (
             {
                 "model": model,
-                "total_tokens": tokens,
-                "pct": weights.pct_for_tokens({model: tokens}),
+                "total_tokens": parts[2],
+                "pct": weights.pct_for_components({model: parts[0]}, {model: parts[1]}),
             }
-            for model, tokens in model_tokens.items()
+            for model, parts in model_tokens.items()
         ),
         key=lambda entry: (-entry["pct"], entry["model"]),
     )
 
     return {
-        "window_pcts": {
-            label: weights.pct_for_tokens(tokens) for label, tokens in window_tokens.items()
-        },
+        "window_pcts": {label: _pct(tokens) for label, tokens in window_tokens.items()},
         "daily": daily,
         "by_model": by_model,
-        "unknown_time_pct": (
-            weights.pct_for_tokens(unknown_tokens) if unknown_tokens else None
-        ),
+        "unknown_time_pct": (_pct(unknown_tokens) if unknown_tokens else None),
     }
 
 
@@ -531,20 +713,46 @@ def plan_status_entry(weights: PlanWeights) -> dict[str, Any]:
 
     Additive superset of the original ``{client, confidence}`` shape: the
     three-state ``calibration_state`` (so no shell has to hard-code which
-    clients can calibrate), ``calibratable``, and the why-this-number
-    disclosure fields (``basis``/``scale``/``intervals_used``) a detail view
-    renders verbatim. ``scale`` is only meaningful when calibrated; it is
-    reported as-is (1.0 under baseline) with ``confidence`` as its guard.
+    clients can calibrate), ``calibratable``, the why-this-number disclosure
+    fields (``basis``/``scale``/``alpha``/``intervals_used``), and the
+    calibration-PROGRESS fields (``raw_scale``/``trusted_band``/
+    ``intervals_needed``/``state_detail``) so a shell can show WHY a client is
+    still calibrating instead of a bare spinner. ``scale``/``alpha`` are only
+    meaningful when calibrated (1.0/0.0 under baseline) with ``confidence`` as
+    their guard.
     """
 
+    state = calibration_state(weights)
+    if state == "calibrated":
+        detail = weights.basis
+    elif state == "never":
+        detail = weights.basis
+    elif weights.intervals_used < _MIN_SCALE_INTERVALS:
+        detail = (
+            f"{weights.intervals_used} of {_MIN_SCALE_INTERVALS} clean weekly-% intervals "
+            "recorded — keep working with tracked clients to calibrate"
+        )
+    else:
+        raw = weights.raw_scale
+        detail = (
+            f"{weights.intervals_used} intervals recorded; the fit"
+            + (f" (x{raw:.2f})" if raw is not None else "")
+            + f" is outside the trusted band [{_TRUSTED_SCALE_BAND[0]}, {_TRUSTED_SCALE_BAND[1]}]"
+            " — heavy untracked usage or a plan change can cause this"
+        )
     return {
         "client": weights.client,
         "confidence": weights.confidence,
-        "calibration_state": calibration_state(weights),
+        "calibration_state": state,
         "calibratable": weights.client in CALIBRATABLE_CLIENTS,
         "basis": weights.basis,
         "scale": weights.scale,
+        "alpha": weights.alpha,
         "intervals_used": weights.intervals_used,
+        "intervals_needed": _MIN_SCALE_INTERVALS,
+        "raw_scale": weights.raw_scale,
+        "trusted_band": list(_TRUSTED_SCALE_BAND),
+        "state_detail": detail,
     }
 
 
@@ -560,6 +768,7 @@ __all__ = [
     "calibration_state",
     "plan_pct_aggregates",
     "plan_status_entry",
-    "session_tokens_by_model",
+    "record_components",
+    "session_components_by_model",
     "session_plan_pcts",
 ]

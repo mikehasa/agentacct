@@ -157,7 +157,7 @@ def _calibrate_claude(service: SentinelService, *, now: float) -> None:
     fitted scale is ~1.0 (inside the trusted band) and claude-code calibrates.
     The calibration burner sessions are named ``cal-N``."""
 
-    opus = pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
+    opus = pc.baseline_weight_fresh("claude-opus-4-8")
     move = 100.0 * opus  # 100M Opus tokens per interval → observed == predicted
     t0 = now - 5 * 3600
     pct = 10.0
@@ -300,7 +300,7 @@ def test_plan_pct_folds_children_into_the_root_row(tmp_path):
     service = SentinelService(tmp_path)
     now = time.time()
     _calibrate_claude(service, now=now)
-    opus = pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
+    opus = pc.baseline_weight_fresh("claude-opus-4-8")
     _record_usage(service, session_id="root-a", tokens=10_000_000, updated_at=now - 600)
     _record_usage(
         service,
@@ -468,7 +468,7 @@ def test_mutual_parent_cycle_keeps_shares_on_a_visible_root(tmp_path):
     service = SentinelService(tmp_path)
     now = time.time()
     _calibrate_claude(service, now=now)
-    opus = pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
+    opus = pc.baseline_weight_fresh("claude-opus-4-8")
     _record_usage(service, session_id="cyc-b", tokens=5_000_000, updated_at=now - 300,
                   session_kind="child", parent_session_id="cyc-a")
     _record_usage(service, session_id="cyc-a", tokens=10_000_000, updated_at=now - 200,
@@ -629,6 +629,99 @@ def test_explicit_vs_missing_namespace_refuses_the_fold(tmp_path):
     assert abs(g_child["plan_pct"] - child["plan_pct"]) < 1e-9
 
 
+def test_descendant_task_label_is_bounded_and_redacted(tmp_path, monkeypatch):
+    """The descendants' role enrichment ships a LABEL, not the prompt: first
+    line, bounded, secret spans redacted (round-2 findings: a live payload
+    blew past 1MB of raw Task prompts, and prompts can carry keys)."""
+
+    import agentacct.subagent_roles as roles_module
+    from agentacct.subagent_roles import SubagentRole
+    from agentacct.v1_sessions import build_v1_session_detail, build_v1_sessions_view
+    from agentacct.work_ledger import build_work_ledger
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_usage(service, session_id="root-a", tokens=1000, updated_at=now - 900)
+    _record_usage(service, session_id="root-a:agent-abc123", tokens=100, updated_at=now - 300,
+                  session_kind="child", parent_session_id="root-a")
+    _record_usage(service, session_id="root-a:agent-def456", tokens=100, updated_at=now - 200,
+                  session_kind="child", parent_session_id="root-a")
+    _record_usage(service, session_id="root-a:agent-ghi789", tokens=100, updated_at=now - 100,
+                  session_kind="child", parent_session_id="root-a")
+
+    secret = "sk-ant-abc123def456ghi789jkl012mno345pqr678stu901vwx234yz"
+    long_line = "review the deploy " + "x" * 400 + " end"
+    # A secret that STRADDLES the 160-char bound: it starts before 160 and runs
+    # past it, so truncate-then-redact would cut it into a short prefix that
+    # could fall under the redactor's min-length floor. redact-then-truncate
+    # must scrub it whole regardless of where the bound lands.
+    boundary_secret = "sk-ant-" + "z" * 80
+    boundary_task = "x" * 149 + " " + boundary_secret + " tail"
+    # A first line of ONLY control/format chars (BOM + zero-width space): these
+    # survive .strip() (non-whitespace category-C), so the sanitizer returns
+    # None. The label path must not crash on that None (regression: an unguarded
+    # None[:160] 500'd the whole /v1/session response).
+    format_only_task = "﻿​\nDo the real work"
+    monkeypatch.setattr(roles_module, "scan_enabled", lambda: True)
+    monkeypatch.setattr(
+        roles_module,
+        "read_roles_for_children",
+        lambda parent, ids, projects_root=None: {
+            "root-a:agent-abc123": SubagentRole(
+                agent_type="Explore",
+                task=f"use {secret} then {long_line}\nsecond line ignored",
+            ),
+            "root-a:agent-def456": SubagentRole(
+                agent_type="Explore",
+                task=boundary_task,
+            ),
+            "root-a:agent-ghi789": SubagentRole(
+                agent_type="Explore",
+                task=format_only_task,
+            ),
+        },
+    )
+
+    events = service.list_all_events()
+    ledger = build_work_ledger(events)
+    view = build_v1_sessions_view(ledger, events)
+    detail = build_v1_session_detail(view, ledger, client="claude-code", session_id="root-a")
+    by_id = {c["client_session_id"]: c for c in detail["descendants"]}
+    child = by_id["root-a:agent-abc123"]
+    assert child["agent_type"] == "Explore"
+    assert secret not in (child["task"] or "")
+    assert "second line" not in (child["task"] or "")
+    assert len(child["task"] or "") <= 170
+
+    # No fragment of the boundary-straddling secret survives, and no bare
+    # "sk-ant-" prefix leaks even though the bound falls inside the key.
+    boundary_label = by_id["root-a:agent-def456"]["task"] or ""
+    assert "sk-ant-" not in boundary_label
+    assert "z" * 20 not in boundary_label
+    assert len(boundary_label) <= 170
+
+    # A format-only first line sanitizes to None: the enrichment must degrade to
+    # task=None (present key) rather than crash the whole detail response.
+    assert by_id["root-a:agent-ghi789"]["task"] is None
+
+
+def test_non_plan_client_detail_plan_block_keeps_the_full_key_set(tmp_path):
+    """The no-plan block mirrors plan_status_entry's key set exactly, so the
+    schema shape is uniform across clients on this endpoint."""
+
+    service = SentinelService(tmp_path)
+    _record_usage(service, client="hermes", model="gpt-5.5", session_id="h1",
+                  tokens=1000, updated_at=time.time() - 60)
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    detail = client.get("/v1/session", headers=AUTH,
+                        params={"client": "hermes", "session_id": "h1"}).json()
+    plan = detail["plan"]
+    for key in ("client", "confidence", "calibration_state", "calibratable", "basis",
+                "scale", "alpha", "intervals_used", "intervals_needed", "raw_scale",
+                "trusted_band", "state_detail", "by_model"):
+        assert key in plan, key
+
+
 def test_generated_at_is_the_view_build_time(tmp_path):
     """A cache-hit response must not stamp a fresh clock on cached content."""
 
@@ -786,7 +879,7 @@ def test_detail_descendants_and_plan_block(tmp_path):
     service = SentinelService(tmp_path)
     now = time.time()
     _calibrate_claude(service, now=now)
-    opus = pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
+    opus = pc.baseline_weight_fresh("claude-opus-4-8")
     _record_usage(service, session_id="root-a", tokens=10_000_000, updated_at=now - 600)
     _record_usage(service, session_id="22222222-aaaa-bbbb-cccc-333333333333",
                   tokens=5_000_000, updated_at=now - 300,
@@ -902,7 +995,7 @@ def test_plan_endpoint_calibrated_aggregates_agree(tmp_path):
     service = SentinelService(tmp_path)
     now = time.time()
     _calibrate_claude(service, now=now)
-    opus = pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
+    opus = pc.baseline_weight_fresh("claude-opus-4-8")
     _record_usage(service, session_id="root-a", tokens=10_000_000, updated_at=now - 60)
 
     client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))

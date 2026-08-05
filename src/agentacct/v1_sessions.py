@@ -564,7 +564,7 @@ def build_v1_session_detail(
     with the very pct values it shipped next to (adversarial-review findings).
     """
 
-    from .plan_cost import plan_status_entry, session_tokens_by_model
+    from .plan_cost import plan_status_entry, session_components_by_model
 
     key = (client, session_id)
     row = next(
@@ -604,6 +604,46 @@ def build_v1_session_detail(
         if candidate.get("fold_top") == key
         and (candidate.get("client"), candidate.get("client_session_id")) != key
     ]
+    # Enrich with the subagent's role + Task prompt read from its transcript
+    # on disk (the same bounded, fail-soft reader the TUI detail uses) — an
+    # untitled child otherwise renders as a bare id, which unravels nothing.
+    if descendants:
+        from .client_usage import _sanitized_session_title
+        from .service import _redact_secret_spans
+        from .subagent_roles import read_roles_for_children, scan_enabled
+
+        if scan_enabled():
+            # NB: a dedicated loop variable — reusing ``row`` here shadowed the
+            # selected session row and served the LAST descendant as the
+            # session (self-caught while validating against the live store).
+            child_ids = [str(child.get("client_session_id") or "") for child in descendants]
+            roles = read_roles_for_children(session_id, child_ids)
+            for child in descendants:
+                role = roles.get(str(child.get("client_session_id") or ""))
+                if role is not None:
+                    child["agent_type"] = role.agent_type
+                    # The wire gets a LABEL, not the prompt: first line,
+                    # bounded, secret-spans redacted, then the same sanitizer
+                    # session titles use. Full multi-KB Task prompts blew a
+                    # live 179-descendant payload past 1MB and can carry
+                    # secrets — the same redaction posture that keeps raw
+                    # commands off this wire applies (adversarial-review
+                    # findings).
+                    label: str | None = None
+                    if role.task:
+                        # Redact BEFORE bounding: truncating first could split a
+                        # secret so the remaining prefix falls under a pattern's
+                        # min-length floor and slips through un-redacted. Redact
+                        # the whole first line, then bound the sanitized text.
+                        # _sanitized_session_title returns None when the line
+                        # sanitizes to empty (e.g. a first line of only
+                        # control/format chars, which survive .strip()); guard
+                        # it — None[:160] would 500 the whole detail response.
+                        first_line = role.task.splitlines()[0]
+                        redacted, _classes = _redact_secret_spans(first_line)
+                        sanitized = _sanitized_session_title(redacted)
+                        label = sanitized[:160] if sanitized else None
+                    child["task"] = label
 
     plan_context = view.get("plan_context") if isinstance(view.get("plan_context"), dict) else {}
     weights = (plan_context.get("weights_by_client") or {}).get(client)
@@ -612,27 +652,34 @@ def build_v1_session_detail(
     if weights is not None:
         plan = dict(plan_status_entry(weights))
         if weights.confidence == "calibrated":
-            tokens_by_model = session_tokens_by_model(
+            components = session_components_by_model(
                 client=client, session_id=session_id, records=records
             )
             plan["by_model"] = sorted(
                 (
                     {
+                        # total = the REAL token count (incl. cache); the pct
+                        # weighs the components (cache reads discounted).
                         "model": model,
-                        "total_tokens": tokens,
-                        "pct": weights.pct_for_tokens({model: tokens}),
+                        "total_tokens": parts["total"],
+                        "pct": weights.pct_for_components(
+                            {model: parts["fresh"]}, {model: parts["cache_read"]}
+                        ),
                     }
-                    for model, tokens in tokens_by_model.items()
+                    for model, parts in components.items()
                 ),
                 key=lambda entry: (-entry["pct"], entry["model"]),
             )
         else:
             plan["by_model"] = None
     else:
-        # Not a plan-bearing client: an explicit no-plan block, not a guess.
+        # Not a plan-bearing client: an explicit no-plan block, not a guess —
+        # SAME key set as plan_status_entry so the schema shape is uniform
+        # across clients on this endpoint (adversarial-review finding).
         plan = {"client": client, "confidence": None, "calibration_state": None,
-                "calibratable": False, "basis": None, "scale": None,
-                "intervals_used": None, "by_model": None}
+                "calibratable": False, "basis": None, "scale": None, "alpha": None,
+                "intervals_used": None, "intervals_needed": None, "raw_scale": None,
+                "trusted_band": None, "state_detail": None, "by_model": None}
     plan["pct_own"] = row.get("plan_pct_own")
     plan["pct_children"] = row.get("plan_pct_children")
     plan["pct"] = row.get("plan_pct")

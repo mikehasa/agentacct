@@ -104,9 +104,9 @@ def _seed_calibrated_claude(service: SentinelService, *, now: float) -> None:
     """Recent history where the account's weekly-% moves exactly as the baseline
     predicts (fitted scale ~1.0, trusted) so claude-code calibrates: 4 clean hourly
     intervals of 100M Opus tokens, all within the recency window."""
-    from agentacct.plan_cost import BASELINE_MODEL_WEIGHTS
+    from agentacct.plan_cost import baseline_weight_fresh
 
-    move = 100.0 * BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]  # 100M Opus → baseline move
+    move = 100.0 * baseline_weight_fresh("claude-opus-4-8")  # 100M Opus → baseline move
     base = now - 6 * 3600
     pct = 0.0
     _record_7d(service, captured=base, pct=pct, index=0)

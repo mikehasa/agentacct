@@ -617,7 +617,7 @@ def test_folded_root_plan_pct_includes_child_shares(tmp_path):
 
     service = SentinelService(tmp_path)
     now = time.time()
-    opus = pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
+    opus = pc.baseline_weight_fresh("claude-opus-4-8")
     # Calibration history: observed movement == baseline prediction → scale ~1.
     move = 100.0 * opus
     t0 = now - 5 * 3600
@@ -659,7 +659,7 @@ def test_glance_refuses_cross_home_child_fold(tmp_path):
 
     service = SentinelService(tmp_path)
     now = time.time()
-    opus = pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
+    opus = pc.baseline_weight_fresh("claude-opus-4-8")
     move = 100.0 * opus
     t0 = now - 5 * 3600
     pct = 10.0
