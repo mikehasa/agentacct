@@ -774,8 +774,12 @@ def test_detail_steps_carry_tui_grade_depth(tmp_path):
     assert checks[0]["result"] == "passed"
     assert checks[0]["summary"] == "suite green"
     assert checks[0]["exit_code"] == 0
-    # The raw command never rides this wire — only the redacted variant key.
-    assert "pytest -q --token secret" not in str(checks[0].get("command") or "")
+    # No raw command exists on this wire at all — only the boolean disclosure
+    # that one was recorded (the ledger's evidence projection never carries
+    # the string). Regression for the booleans-under-string-keys finding.
+    assert "command" not in checks[0]
+    assert checks[0]["command_redacted"] is True
+    assert "pytest -q --token secret" not in str(checks[0])
 
 
 def test_detail_descendants_and_plan_block(tmp_path):
@@ -807,7 +811,9 @@ def test_detail_descendants_and_plan_block(tmp_path):
 
 def test_step_models_join_unit():
     """The attribution join, in isolation: tokens come from the attribution
-    rows, unknown usage events are skipped, lanes sort by tokens."""
+    rows, dangling usage events are skipped, a KNOWN event without a model
+    keeps a null lane (lane sums must reconcile with the step total), lanes
+    sort by tokens."""
 
     from agentacct.v1_sessions import _step_models
 
@@ -815,17 +821,67 @@ def test_step_models_join_unit():
         "w1": [
             {"usage_event_id": "u1", "usage_tokens": 100},
             {"usage_event_id": "u2", "usage_tokens": 900},
+            {"usage_event_id": "u3", "usage_tokens": 400},
             {"usage_event_id": "missing", "usage_tokens": 50},
         ]
     }
     models = {
         "u1": ("claude-opus-4-8", "claude-code"),
         "u2": ("claude-fable-5", "claude-code"),
+        "u3": (None, "codex"),
     }
     lanes = _step_models("w1", attributions, models)
-    assert [lane["model"] for lane in lanes] == ["claude-fable-5", "claude-opus-4-8"]
+    assert [lane["model"] for lane in lanes] == ["claude-fable-5", None, "claude-opus-4-8"]
     assert lanes[0]["total_tokens"] == 900
+    assert lanes[1]["total_tokens"] == 400  # model-less lane kept, not dropped
     assert _step_models("unknown", attributions, models) == []
+
+
+def test_step_cost_is_none_when_nothing_priced():
+    """estimated_cost_usd on the wire means None-never-$0 when nothing was
+    priced — the ledger's internal 0.0 default must not leak as a measured
+    zero (adversarial-review finding)."""
+
+    from agentacct.v1_sessions import _project_step
+
+    unpriced = _project_step(
+        {"work_id": "w", "estimated_cost_total": 0.0, "priced_usage_records": 0,
+         "unpriced_usage_records": 2, "work": {}},
+        [],
+    )
+    assert unpriced["usage"]["estimated_cost_usd"] is None
+    priced = _project_step(
+        {"work_id": "w", "estimated_cost_total": 1.25, "priced_usage_records": 2,
+         "unpriced_usage_records": 0, "work": {}},
+        [],
+    )
+    assert priced["usage"]["estimated_cost_usd"] == 1.25
+
+
+def test_detail_reuses_the_cached_fit_no_per_request_usage_view(tmp_path, monkeypatch):
+    """A polling detail screen must not pay a full usage-view rebuild per
+    request: everything plan-shaped comes from the cached view's own fit
+    (which also keeps the payload self-consistent)."""
+
+    import agentacct.usage_snapshot as usage_snapshot_module
+
+    service = SentinelService(tmp_path)
+    _record_usage(service, session_id="root-a", tokens=1000, updated_at=time.time() - 60)
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    assert client.get("/v1/sessions", headers=AUTH).status_code == 200  # warm the view
+
+    calls = {"count": 0}
+    real = usage_snapshot_module.usage_records
+
+    def _counting(*args, **kwargs):
+        calls["count"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(usage_snapshot_module, "usage_records", _counting)
+    detail = client.get("/v1/session", headers=AUTH,
+                        params={"client": "claude-code", "session_id": "root-a"})
+    assert detail.status_code == 200
+    assert calls["count"] == 0  # pure cache lookups, no usage-view rebuild
 
 
 def test_plan_endpoint_uncalibrated_carries_states_not_numbers(tmp_path):

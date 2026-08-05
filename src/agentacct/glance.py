@@ -543,7 +543,12 @@ def fold_plan_pcts_to_roots(
 
 def plan_status_and_session_pcts(
     events: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], dict[tuple[str, str], float]]:
+) -> tuple[
+    list[dict[str, Any]],
+    dict[tuple[str, str], float],
+    dict[str, Any],
+    dict[str, list[Any]],
+]:
     """Per-client plan payload entries + calibrated per-session plan shares.
 
     The calibrated-or-nothing honesty rule is baked in: ``session_pcts`` holds
@@ -553,6 +558,12 @@ def plan_status_and_session_pcts(
     session ids, UNFOLDED — apply :func:`fold_plan_pcts_to_roots` on a surface
     that hides child sessions. Shared by the glance and the /v1 sessions lane
     so the two can never disagree.
+
+    Also returns the fitted ``weights_by_client`` and ``records_by_client``
+    this ONE computation used, so a caller deriving further numbers (the
+    session-detail by-model split) works from the same fit — recomputing
+    per-request produced payloads whose plan block disagreed with its own
+    cached pct values (adversarial-review finding).
     """
 
     from .plan_cost import calibrate_plan_weights, plan_status_entry, session_plan_pcts
@@ -561,14 +572,18 @@ def plan_status_and_session_pcts(
 
     plan: list[dict[str, Any]] = []
     session_pcts: dict[tuple[str, str], float] = {}
+    weights_by_client: dict[str, Any] = {}
+    records_by_client: dict[str, list[Any]] = {}
     for client in PLAN_CLIENTS:
         records = usage_records(events, client=client)
         weights = calibrate_plan_weights(events, client=client, records=records)
         plan.append(plan_status_entry(weights))
+        weights_by_client[client] = weights
+        records_by_client[client] = records
         if weights.confidence == "calibrated":
             for session_id, pct in session_plan_pcts(records, weights, client=client).items():
                 session_pcts[(client, session_id)] = pct
-    return plan, session_pcts
+    return plan, session_pcts, weights_by_client, records_by_client
 
 
 def _recent_sessions(
@@ -723,7 +738,7 @@ def build_glance_snapshot(
     # row (it records sections but its usage folded away) shows None rather
     # than a share its root's row already includes. ONE fold map drives both
     # the activity fold and the share fold, so they can never disagree.
-    plan, session_pcts = plan_status_and_session_pcts(events)
+    plan, session_pcts, _weights, _records = plan_status_and_session_pcts(events)
     fold_map = child_root_plan_fold(events)
     folded_pcts = fold_plan_pcts_to_roots(session_pcts, fold_map)
 

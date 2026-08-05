@@ -235,6 +235,23 @@ def calibrate_plan_weights(
     model_names = observed_models | set(BASELINE_MODEL_WEIGHTS)
     base = {m: baseline_weight(m, cost_per_mtok.get(m)) for m in model_names if m}
 
+    if client not in CALIBRATABLE_CLIENTS:
+        # A rolling/opaque meter (codex) can land 3 numerically-clean intervals
+        # inside the trusted band by coincidence — but its weekly plan %% is
+        # UNDEFINED by design, so a fit here would confidently label a number
+        # that means nothing (adversarial-review finding: /v1/plan served
+        # "calibrated" codex aggregates). The gate lives HERE, not in each
+        # display surface, so no surface can ever receive one.
+        return PlanWeights(
+            weights=base,
+            default_weight=BASELINE_MODEL_WEIGHTS["claude-opus-4-8"],
+            scale=1.0,
+            confidence="baseline",
+            basis="weekly plan %% is undefined for this client's rolling meter (it never calibrates)",
+            intervals_used=0,
+            client=client,
+        )
+
     series = seven_day_series(events, client=client)
     window_start = now_epoch - _CALIBRATION_WINDOW_DAYS * 86400.0
     observed = 0.0

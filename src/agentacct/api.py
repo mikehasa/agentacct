@@ -2866,19 +2866,12 @@ def create_local_api_app(
         _require_v1_token(request)
         events = service.list_all_events()
         fingerprint = events_fingerprint(events)
+        ledger = _derived_work_ledger(events, fingerprint=fingerprint)
         view = v1_sessions_cache.view(
             fingerprint,
-            lambda: build_v1_sessions_view(
-                _derived_work_ledger(events, fingerprint=fingerprint), events
-            ),
+            lambda: build_v1_sessions_view(ledger, events),
         )
-        detail = build_v1_session_detail(
-            view,
-            _derived_work_ledger(events, fingerprint=fingerprint),
-            events,
-            client=client,
-            session_id=session_id,
-        )
+        detail = build_v1_session_detail(view, ledger, client=client, session_id=session_id)
         if detail is None:
             raise HTTPException(status_code=404, detail="unknown session for this store")
         return detail
