@@ -101,6 +101,32 @@ final class GlanceClient {
         return GlanceSnapshot(glance: glance, daemonVersion: version.version)
     }
 
+    /// A bearer-authed GET on the /v1 lane with the standard 401 retry
+    /// (daemon restarted → re-read the discovery file once). The window's
+    /// data lanes use this so ALL app traffic rides the authenticated lane.
+    func getAuthed<T: Decodable>(_ path: String) async throws -> T {
+        do {
+            return try await get(path, discovery: loadDiscovery())
+        } catch GlanceClientError.http(401) {
+            return try await get(path, discovery: loadDiscovery())
+        }
+    }
+
+    /// A localhost GET on the legacy machine-local JSON surfaces (no bearer —
+    /// e.g. /usage/summary, which has no /v1 twin yet).
+    func getLocal<T: Decodable>(_ path: String) async throws -> T {
+        let discovery = try loadDiscovery()
+        let host = discovery.host ?? "127.0.0.1"
+        guard let url = URL(string: "http://\(host):\(discovery.port)\(path)") else {
+            throw GlanceClientError.transport("bad daemon URL")
+        }
+        let (data, response) = try await session.data(from: url)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw GlanceClientError.http((response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
     private func get<T: Decodable>(_ path: String, discovery: Discovery) async throws -> T {
         let host = discovery.host ?? "127.0.0.1"
         guard let url = URL(string: "http://\(host):\(discovery.port)\(path)") else {

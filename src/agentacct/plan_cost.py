@@ -247,7 +247,7 @@ def calibrate_plan_weights(
             default_weight=BASELINE_MODEL_WEIGHTS["claude-opus-4-8"],
             scale=1.0,
             confidence="baseline",
-            basis="weekly plan %% is undefined for this client's rolling meter (it never calibrates)",
+            basis="weekly plan % is undefined for this client's rolling meter (it never calibrates)",
             intervals_used=0,
             client=client,
         )
@@ -283,7 +283,9 @@ def calibrate_plan_weights(
     if intervals >= _MIN_SCALE_INTERVALS and predicted > 0 and trusted:
         scale = raw_scale
         confidence = "calibrated"
-        basis = f"baseline scaled x{scale:.2f} to this account ({intervals} recent weekly-%% intervals)"
+        # A plain string, not a %-format template — no %% escaping (a literal
+        # "%%" leaked onto every basis-rendering surface).
+        basis = f"baseline scaled x{scale:.2f} to this account ({intervals} recent weekly-% intervals)"
     else:
         # Too little clean history, or a fit outside the trusted band (heavy untracked
         # Claude usage or a very different plan tier we can't identify) → keep the

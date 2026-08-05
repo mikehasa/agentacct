@@ -1,53 +1,11 @@
 import Foundation
 
-// Models for the full window: the /sessions rollup and /usage/summary cube.
-// Same decoding stance as the glance: tolerant, selective, never inventing a
-// number an absent field does not carry.
-
-struct SessionsPayload: Decodable {
-    let sessions: [SessionEntry]
-    let totalSessions: Int?
-
-    enum CodingKeys: String, CodingKey {
-        case sessions
-        case totalSessions = "total_sessions"
-    }
-}
-
-struct SessionEntry: Decodable, Identifiable {
-    let client: String
-    let clientSessionId: String
-    let shortId: String?
-    let title: String?
-    let sessionKind: String?
-    let project: String?
-    let durationSeconds: Double?
-    let lastActivityAt: Double?
-    let usage: SessionUsage?
-    let join: SessionJoin?
-    let work: SessionWork?
-    let related: SessionRelated?
-    let usageNote: String?
-    let observedModels: [String]?
-
-    var id: String { "\(client)::\(clientSessionId)" }
-    var isRoot: Bool { (related?.parent ?? nil) == nil }
-    var displayTitle: String { title ?? "\(client) · \(shortId ?? String(clientSessionId.prefix(8)))" }
-
-    enum CodingKeys: String, CodingKey {
-        case client
-        case clientSessionId = "client_session_id"
-        case shortId = "client_session_id_short"
-        case title = "client_session_title"
-        case sessionKind = "session_kind"
-        case project
-        case durationSeconds = "duration_seconds"
-        case lastActivityAt = "last_activity_at"
-        case usage, join, work, related
-        case usageNote = "usage_note"
-        case observedModels = "observed_models"
-    }
-}
+// Shared decodables for the daemon's session sub-blocks (usage/join/work/
+// related — embedded verbatim in /v1/sessions rows, see V1Model.swift) and
+// the /usage/summary cube that feeds the cost charts. Same decoding stance
+// as the glance: tolerant, selective, never inventing a number an absent
+// field does not carry. (The legacy /sessions list decoders left with the
+// /v1 migration.)
 
 struct SessionUsage: Decodable {
     let rows: Int?
@@ -87,6 +45,23 @@ struct SessionJoin: Decodable {
 
 struct SessionWork: Decodable {
     let items: [WorkItem]?
+    let counts: WorkCounts?
+    let evidence: EvidenceCounts?
+}
+
+struct WorkCounts: Decodable {
+    let total: Int?
+    let completed: Int?
+    let resolved: Int?
+    let active: Int?
+    let blocked: Int?
+}
+
+struct EvidenceCounts: Decodable {
+    let strong: Int?
+    let weak: Int?
+    let failed: Int?
+    let none: Int?
 }
 
 struct WorkItem: Decodable, Identifiable {

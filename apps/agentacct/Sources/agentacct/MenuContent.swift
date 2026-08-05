@@ -1,8 +1,10 @@
+import ServiceManagement
 import SwiftUI
 
-// The dropdown: a glance, not a workspace. A today hero, compact window
-// stats, live limit meters, and root sessions — click anything deep to open
-// the full window. Honesty rules carried from the TUI: costs are complete-$ /
+// The dropdown: a glance, not a workspace. The weekly-plan hero (account
+// truth, the subscription user's real question), today's cost as reference,
+// live limit meters, and root sessions — click anything deep to open the
+// full window. Honesty rules carried from the TUI: costs are complete-$ /
 // partial-~$ / em-dash (never a fabricated $0), plan shares only when
 // calibrated, statuses use the server-side reduction. Stale limit accounts
 // are hidden here (the full window has the toggle).
@@ -68,11 +70,13 @@ struct MenuContent: View {
     private func connectedView(snapshot: GlanceSnapshot) -> some View {
         let glance = snapshot.glance
         let windows = Dictionary(uniqueKeysWithValues: glance.usage.windows.map { ($0.label, $0.totals) })
+        let sevenDay = GlanceState.sevenDayUsedPercent(glance)
 
-        // Hero: today.
+        // Hero: the weekly plan (account truth). Falls back to today's cost
+        // when no provider reading exists — never a fabricated %.
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline) {
-                Text("TODAY")
+                Text(sevenDay != nil ? "WEEKLY PLAN · 7D" : "TODAY")
                     .font(.system(size: 10, weight: .semibold))
                     .tracking(0.8)
                     .foregroundStyle(.secondary)
@@ -85,12 +89,23 @@ struct MenuContent: View {
                         .foregroundStyle(.tertiary)
                 }
             }
-            Text(windows["today"]?.costText ?? "—")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
-                .monospacedDigit()
-            Text("\(windows["today"]?.tokensText ?? "—") fresh tokens")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+            if let used = sevenDay {
+                Text("\(Int(used.rounded()))%")
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                MeterBar(fraction: used / 100.0, tint: Theme.limitColor(usedPercent: used), height: 6)
+                    .padding(.vertical, 2)
+                Text("today \(windows["today"]?.costText ?? "—") · \(windows["today"]?.tokensText ?? "—") fresh tok")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(windows["today"]?.costText ?? "—")
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                Text("\(windows["today"]?.tokensText ?? "—") fresh tokens")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
         }
 
         HStack(spacing: 8) {
@@ -196,6 +211,7 @@ struct MenuContent: View {
             .buttonStyle(.plain)
             .foregroundStyle(Theme.accent)
             Spacer()
+            LaunchAtLoginToggle()
             Button {
                 state.refreshNow()
             } label: {
@@ -226,6 +242,41 @@ struct MenuContent: View {
         openWindow(id: "main")
         NSApp.activate(ignoringOtherApps: true)
         Task { await dashboard.refresh() }
+    }
+}
+
+/// "Launch at Login" via SMAppService — the app registers ITSELF (the OS
+/// shows it in System Settings › Login Items under this app's name; no
+/// hidden helpers, nothing system-wide). State reads back from the service
+/// so the toggle always reflects reality, including changes made in System
+/// Settings.
+struct LaunchAtLoginToggle: View {
+    @State private var enabled = SMAppService.mainApp.status == .enabled
+
+    var body: some View {
+        Toggle(isOn: Binding(
+            get: { enabled },
+            set: { wanted in
+                do {
+                    if wanted {
+                        try SMAppService.mainApp.register()
+                    } else {
+                        try SMAppService.mainApp.unregister()
+                    }
+                } catch {
+                    // Registration can fail for an unsigned dev build moved
+                    // mid-run; reflect reality rather than pretending.
+                }
+                enabled = SMAppService.mainApp.status == .enabled
+            }
+        )) {
+            Text("Login")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+        }
+        .toggleStyle(.checkbox)
+        .controlSize(.small)
+        .help("Launch agentacct at login")
     }
 }
 
