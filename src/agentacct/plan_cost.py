@@ -63,8 +63,6 @@ _MAX_INTERVAL_PCT = 60.0
 # Only fit from recent history, so an old plan tier / stale baseline doesn't drag the
 # current scale.
 _CALIBRATION_WINDOW_DAYS = 21
-# Keep a raw fitted scale sane even if the sparse early data is noisy.
-_SCALE_CLAMP = (0.1, 10.0)
 # Only APPLY a fitted scale (and claim "calibrated") when it lands in this band. The
 # 7-day meter is account-wide but our tokens cover only tracked clients, so a scale
 # far from 1 means either heavy untracked Claude usage (desktop app / claude.ai) or a
@@ -203,14 +201,29 @@ def baseline_weight(model: Any, cost_per_mtok: float | None = None) -> float:
     return BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
 
 
-def baseline_weight_fresh(model: Any, cost_per_mtok: float | None = None) -> float:
-    """The baseline weight in FRESH-component units (%%/M fresh tokens).
+def baseline_weight_fresh(model: Any, cost_per_fresh_mtok: float | None = None) -> float:
+    """The baseline weight in FRESH-component units (%/M fresh tokens).
 
-    The shipped table is anchored to total-including-cache volume; the
-    two-component model re-anchors it by the measured reference factor (see
-    ``_FRESH_COMPONENT_REF_FACTOR``)."""
+    Table models: the shipped total-anchored weight times the measured
+    reference factor (see ``_FRESH_COMPONENT_REF_FACTOR``). An UNKNOWN model
+    with a price derives directly from its cost per FRESH token times the
+    reference plan-%-per-dollar — NOT the table path times the factor, which
+    double-counted the reference cache mix and inflated a cache-light unknown
+    model's weight up to ~19x (adversarial-review HIGH finding: any newly
+    shipped model id would have decalibrated the account or skewed its
+    sessions' shares). The identity check: at the reference mix,
+    price_fresh = price_total x factor, so both paths agree for a
+    reference-mix model. With neither table nor price, the Opus anchor in
+    fresh units — never zero for real usage.
+    """
 
-    return baseline_weight(model, cost_per_mtok) * _FRESH_COMPONENT_REF_FACTOR
+    name = str(model or "")
+    if name in BASELINE_MODEL_WEIGHTS:
+        return BASELINE_MODEL_WEIGHTS[name] * _FRESH_COMPONENT_REF_FACTOR
+    price_fresh = _finite(cost_per_fresh_mtok)
+    if price_fresh is not None and price_fresh > 0:
+        return price_fresh * _REF_PCT_PER_DOLLAR
+    return BASELINE_MODEL_WEIGHTS["claude-opus-4-8"] * _FRESH_COMPONENT_REF_FACTOR
 
 
 def seven_day_series(events: Sequence[Mapping[str, Any]], *, client: str = "claude-code") -> list[tuple[float, float]]:
@@ -257,20 +270,28 @@ def _cost_per_mtok(records: Sequence[Any]) -> dict[str, float]:
     return {m: cost[m] / (toks[m] / 1_000_000.0) for m in toks if toks[m] > 0 and m in cost}
 
 
-def _model_tokens_between(records: Sequence[Any], record_time, lo: float, hi: float) -> dict[str, float]:
-    tokens: dict[str, float] = {}
+def _cost_per_fresh_mtok(records: Sequence[Any]) -> dict[str, float]:
+    """Per-model $ per 1M FRESH tokens (the price basis for fresh-unit
+    weights): total observed cost over the fresh component only. Dollars are
+    mix-free evidence; dividing by fresh volume yields the weight basis the
+    two-component model actually applies."""
+
+    cost: dict[str, float] = {}
+    fresh_toks: dict[str, float] = {}
     for record in records:
-        moment = record_time(record)
-        if not isinstance(moment, (int, float)) or isinstance(moment, bool):
-            continue
-        if not (lo < float(moment) <= hi):
-            continue
         model = str(getattr(record, "model", "") or "")
         if not model:
             continue
-        total = _finite(getattr(record, "total_tokens_including_cached", None))
-        tokens[model] = tokens.get(model, 0.0) + (total or 0.0)
-    return tokens
+        fresh, _reads = record_components(record)
+        fresh_toks[model] = fresh_toks.get(model, 0.0) + fresh
+        price = _finite(getattr(record, "estimated_cost_usd", None))
+        if price is not None:
+            cost[model] = cost.get(model, 0.0) + price
+    return {
+        m: cost[m] / (fresh_toks[m] / 1_000_000.0)
+        for m in fresh_toks
+        if fresh_toks[m] > 0 and m in cost
+    }
 
 
 def _component_tokens_between(
@@ -332,10 +353,10 @@ def calibrate_plan_weights(
 
         records = _usage_records(events, client=client)
 
-    cost_per_mtok = _cost_per_mtok(records)
+    cost_per_fresh = _cost_per_fresh_mtok(records)
     observed_models = {str(getattr(r, "model", "") or "") for r in records if getattr(r, "model", None)}
     model_names = observed_models | set(BASELINE_MODEL_WEIGHTS)
-    base = {m: baseline_weight_fresh(m, cost_per_mtok.get(m)) for m in model_names if m}
+    base = {m: baseline_weight_fresh(m, cost_per_fresh.get(m)) for m in model_names if m}
     default_base = BASELINE_MODEL_WEIGHTS["claude-opus-4-8"] * _FRESH_COMPONENT_REF_FACTOR
 
     if client not in CALIBRATABLE_CLIENTS:
@@ -383,7 +404,7 @@ def calibrate_plan_weights(
     raw_scale = 1.0
     alpha = 0.0
     if points:
-        best: tuple[float, float, float] | None = None  # (sse, scale, alpha)
+        candidates: list[tuple[float, float, float]] = []  # (alpha, scale, sse)
         observed_sum = sum(delta for delta, _a, _b in points)
         for step in range(_ALPHA_GRID_STEPS + 1):
             candidate_alpha = step / _ALPHA_GRID_STEPS
@@ -395,12 +416,23 @@ def calibrate_plan_weights(
                 (delta - candidate_scale * (a + candidate_alpha * b)) ** 2
                 for delta, a, b in points
             )
-            if best is None or sse < best[0]:
-                best = (sse, candidate_scale, candidate_alpha)
-        if best is not None:
-            raw_scale = best[1]
-            alpha = best[2]
-    raw_scale = max(_SCALE_CLAMP[0], min(_SCALE_CLAMP[1], raw_scale))
+            candidates.append((candidate_alpha, candidate_scale, sse))
+        if candidates:
+            # SMALLEST alpha within tolerance of the best fit wins. alpha is a
+            # second degree of freedom the trusted band never inspects:
+            # untracked meter movement that co-occurs with cache-read-heavy
+            # days would otherwise be absorbed into alpha, silently multiplying
+            # every cache-heavy session's share while reporting "calibrated"
+            # (adversarial-review finding). Reads are only charged when the
+            # data clearly demands it; a collinear cache mix (alpha
+            # unidentifiable) deterministically lands on 0.
+            best_sse = min(sse for _a, _s, sse in candidates)
+            tolerance = best_sse * 1.05 + 1e-12
+            for candidate_alpha, candidate_scale, sse in candidates:  # ascending alpha
+                if sse <= tolerance:
+                    alpha = candidate_alpha
+                    raw_scale = candidate_scale
+                    break
     trusted = _TRUSTED_SCALE_BAND[0] <= raw_scale <= _TRUSTED_SCALE_BAND[1]
     if intervals >= _MIN_SCALE_INTERVALS and trusted:
         scale = raw_scale
@@ -434,36 +466,6 @@ def calibrate_plan_weights(
         alpha=alpha,
         raw_scale=raw_scale if intervals else None,
     )
-
-
-def session_tokens_by_model(
-    events: list[dict[str, Any]] | None = None,
-    *,
-    client: str,
-    session_id: str,
-    records: list[Any] | None = None,
-) -> dict[str, float]:
-    """Per-model total tokens (incl. cache) for one session, from its usage records.
-
-    ``records`` may be passed pre-built to avoid rebuilding the usage view."""
-
-    if records is None:
-        from .usage_snapshot import usage_records as _usage_records
-
-        records = _usage_records(events or [], client=client)
-
-    tokens: dict[str, float] = {}
-    for record in records:
-        if str(getattr(record, "client", "") or "") != client:
-            continue
-        if str(getattr(record, "session_id", "") or "") != str(session_id):
-            continue
-        model = str(getattr(record, "model", "") or "")
-        if not model:
-            continue
-        total = _finite(getattr(record, "total_tokens_including_cached", None)) or 0.0
-        tokens[model] = tokens.get(model, 0.0) + total
-    return tokens
 
 
 def session_components_by_model(
@@ -768,6 +770,5 @@ __all__ = [
     "plan_status_entry",
     "record_components",
     "session_components_by_model",
-    "session_tokens_by_model",
     "session_plan_pcts",
 ]

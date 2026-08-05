@@ -92,18 +92,6 @@ def test_seven_day_series(tmp_path):
     assert series == [(100.0, 3.0), (200.0, 5.0)]  # ascending, claude only
 
 
-def test_session_tokens_by_model(tmp_path):
-    service = SentinelService(tmp_path)
-    _record_usage(service, client="claude-code", model="claude-opus-4-8", session_id="s1",
-                  tokens=100, updated_at=1000, cost=0.1)
-    _record_usage(service, client="claude-code", model="claude-fable-5", session_id="s1",
-                  tokens=40, updated_at=1001, cost=0.1)
-    _record_usage(service, client="claude-code", model="claude-opus-4-8", session_id="s2",
-                  tokens=999, updated_at=1002, cost=0.1)
-    tbm = pc.session_tokens_by_model(service.list_all_events(), client="claude-code", session_id="s1")
-    assert tbm == {"claude-opus-4-8": 100.0, "claude-fable-5": 40.0}  # only s1, grouped by model
-
-
 # ---------------------------------------------------------------------------
 # calibration
 # ---------------------------------------------------------------------------
@@ -265,6 +253,79 @@ def test_cache_heavy_days_no_longer_fall_out_of_the_band(tmp_path):
     )
     pcts = pc.session_plan_pcts(records, weights, client="claude-code")
     assert abs(pcts["s0"] - w * 10.0) < 0.2
+
+
+def test_unknown_model_fallback_prices_in_fresh_units():
+    """Round-2 HIGH regression: an unknown model's cost fallback derives from
+    its $ per FRESH Mtok x the reference %/$, NOT the total-anchored path
+    times the reference factor (which double-counted the reference cache mix
+    and inflated cache-light unknown models ~19x). Identity: at the reference
+    mix the two paths agree."""
+
+    # Table path: unchanged anchoring.
+    assert pc.baseline_weight_fresh("claude-opus-4-8") == (
+        pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"] * pc._FRESH_COMPONENT_REF_FACTOR
+    )
+    # Unknown model with a FRESH price: linear in the price, no 8.3 anywhere.
+    assert abs(pc.baseline_weight_fresh("brand-new", cost_per_fresh_mtok=100.0)
+               - 100.0 * pc._REF_PCT_PER_DOLLAR) < 1e-12
+    # Reference-mix identity: price_fresh = price_total x factor -> the
+    # fallback equals the old total path re-anchored.
+    price_total = 15.0
+    price_fresh = price_total * pc._FRESH_COMPONENT_REF_FACTOR
+    assert abs(pc.baseline_weight_fresh("brand-new", cost_per_fresh_mtok=price_fresh)
+               - price_total * pc._REF_PCT_PER_DOLLAR * pc._FRESH_COMPONENT_REF_FACTOR) < 1e-12
+    # No price at all -> the Opus anchor in fresh units.
+    assert pc.baseline_weight_fresh("brand-new") == (
+        pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"] * pc._FRESH_COMPONENT_REF_FACTOR
+    )
+
+
+def test_collinear_cache_mix_lands_on_alpha_zero(tmp_path):
+    """When every interval has the SAME fresh:read ratio, alpha is
+    unidentifiable — the smallest-alpha-within-tolerance rule must land on 0
+    deterministically (never an arbitrary grid point)."""
+
+    service = SentinelService(tmp_path)
+    t0 = 1_000_000
+    w = pc.baseline_weight_fresh("claude-opus-4-8")
+    pct = 0.0
+    _record_7d(service, captured=float(t0), pct=pct, index=0)
+    for i in range(4):
+        # constant 1:4 fresh:read mix; meter moves as if only fresh counts.
+        _record_cached_usage(service, session_id=f"s{i}", fresh=50_000_000,
+                             cache_read=200_000_000, updated_at=t0 + i * 3600 + 1800,
+                             index=i)
+        pct += w * 50.0
+        _record_7d(service, captured=float(t0 + (i + 1) * 3600), pct=pct, index=i + 1)
+    weights = pc.calibrate_plan_weights(service.list_all_events(), client="claude-code",
+                                        now=float(t0 + 5 * 3600))
+    assert weights.alpha == 0.0
+    assert weights.confidence == "calibrated"
+
+
+def test_raw_scale_discloses_the_unclamped_fit(tmp_path):
+    """The calibration-progress field must carry the TRUE fitted ratio, not a
+    clamped copy — two very different out-of-band accounts must not read
+    identically (round-2 finding)."""
+
+    service = SentinelService(tmp_path)
+    t0 = 1_000_000
+    w = pc.baseline_weight_fresh("claude-opus-4-8")
+    # Small volume so a 45x ratio still fits inside a clean interval (<60%).
+    move = 45.0 * (10.0 * w)
+    pct = 0.0
+    _record_7d(service, captured=float(t0), pct=pct, index=0)
+    for i in range(4):
+        _record_usage(service, client="claude-code", model="claude-opus-4-8",
+                      session_id=f"s{i}", tokens=10_000_000, updated_at=t0 + i * 3600 + 1800,
+                      cost=1.0)
+        pct += move
+        _record_7d(service, captured=float(t0 + (i + 1) * 3600), pct=pct, index=i + 1)
+    weights = pc.calibrate_plan_weights(service.list_all_events(), client="claude-code",
+                                        now=float(t0 + 5 * 3600))
+    assert weights.confidence == "baseline"  # far outside the band
+    assert weights.raw_scale is not None and weights.raw_scale > 10.0
 
 
 def test_codex_never_calibrates_even_with_numerically_clean_history(tmp_path):

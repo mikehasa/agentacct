@@ -629,6 +629,64 @@ def test_explicit_vs_missing_namespace_refuses_the_fold(tmp_path):
     assert abs(g_child["plan_pct"] - child["plan_pct"]) < 1e-9
 
 
+def test_descendant_task_label_is_bounded_and_redacted(tmp_path, monkeypatch):
+    """The descendants' role enrichment ships a LABEL, not the prompt: first
+    line, bounded, secret spans redacted (round-2 findings: a live payload
+    blew past 1MB of raw Task prompts, and prompts can carry keys)."""
+
+    import agentacct.subagent_roles as roles_module
+    from agentacct.subagent_roles import SubagentRole
+    from agentacct.v1_sessions import build_v1_session_detail, build_v1_sessions_view
+    from agentacct.work_ledger import build_work_ledger
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_usage(service, session_id="root-a", tokens=1000, updated_at=now - 900)
+    _record_usage(service, session_id="root-a:agent-abc123", tokens=100, updated_at=now - 300,
+                  session_kind="child", parent_session_id="root-a")
+
+    secret = "sk-ant-abc123def456ghi789jkl012mno345pqr678stu901vwx234yz"
+    long_line = "review the deploy " + "x" * 400 + " end"
+    monkeypatch.setattr(roles_module, "scan_enabled", lambda: True)
+    monkeypatch.setattr(
+        roles_module,
+        "read_roles_for_children",
+        lambda parent, ids, projects_root=None: {
+            "root-a:agent-abc123": SubagentRole(
+                agent_type="Explore",
+                task=f"use {secret} then {long_line}\nsecond line ignored",
+            )
+        },
+    )
+
+    events = service.list_all_events()
+    ledger = build_work_ledger(events)
+    view = build_v1_sessions_view(ledger, events)
+    detail = build_v1_session_detail(view, ledger, client="claude-code", session_id="root-a")
+    child = detail["descendants"][0]
+    assert child["agent_type"] == "Explore"
+    assert secret not in (child["task"] or "")
+    assert "second line" not in (child["task"] or "")
+    assert len(child["task"] or "") <= 170
+
+
+def test_non_plan_client_detail_plan_block_keeps_the_full_key_set(tmp_path):
+    """The no-plan block mirrors plan_status_entry's key set exactly, so the
+    schema shape is uniform across clients on this endpoint."""
+
+    service = SentinelService(tmp_path)
+    _record_usage(service, client="hermes", model="gpt-5.5", session_id="h1",
+                  tokens=1000, updated_at=time.time() - 60)
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    detail = client.get("/v1/session", headers=AUTH,
+                        params={"client": "hermes", "session_id": "h1"}).json()
+    plan = detail["plan"]
+    for key in ("client", "confidence", "calibration_state", "calibratable", "basis",
+                "scale", "alpha", "intervals_used", "intervals_needed", "raw_scale",
+                "trusted_band", "state_detail", "by_model"):
+        assert key in plan, key
+
+
 def test_generated_at_is_the_view_build_time(tmp_path):
     """A cache-hit response must not stamp a fresh clock on cached content."""
 

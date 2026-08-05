@@ -608,6 +608,8 @@ def build_v1_session_detail(
     # on disk (the same bounded, fail-soft reader the TUI detail uses) — an
     # untitled child otherwise renders as a bare id, which unravels nothing.
     if descendants:
+        from .client_usage import _sanitized_session_title
+        from .service import _redact_secret_spans
         from .subagent_roles import read_roles_for_children, scan_enabled
 
         if scan_enabled():
@@ -620,7 +622,19 @@ def build_v1_session_detail(
                 role = roles.get(str(child.get("client_session_id") or ""))
                 if role is not None:
                     child["agent_type"] = role.agent_type
-                    child["task"] = role.task
+                    # The wire gets a LABEL, not the prompt: first line,
+                    # bounded, secret-spans redacted, then the same sanitizer
+                    # session titles use. Full multi-KB Task prompts blew a
+                    # live 179-descendant payload past 1MB and can carry
+                    # secrets — the same redaction posture that keeps raw
+                    # commands off this wire applies (adversarial-review
+                    # findings).
+                    label: str | None = None
+                    if role.task:
+                        first_line = role.task.splitlines()[0][:160]
+                        redacted, _classes = _redact_secret_spans(first_line)
+                        label = _sanitized_session_title(redacted)
+                    child["task"] = label
 
     plan_context = view.get("plan_context") if isinstance(view.get("plan_context"), dict) else {}
     weights = (plan_context.get("weights_by_client") or {}).get(client)
@@ -650,10 +664,13 @@ def build_v1_session_detail(
         else:
             plan["by_model"] = None
     else:
-        # Not a plan-bearing client: an explicit no-plan block, not a guess.
+        # Not a plan-bearing client: an explicit no-plan block, not a guess —
+        # SAME key set as plan_status_entry so the schema shape is uniform
+        # across clients on this endpoint (adversarial-review finding).
         plan = {"client": client, "confidence": None, "calibration_state": None,
-                "calibratable": False, "basis": None, "scale": None,
-                "intervals_used": None, "by_model": None}
+                "calibratable": False, "basis": None, "scale": None, "alpha": None,
+                "intervals_used": None, "intervals_needed": None, "raw_scale": None,
+                "trusted_band": None, "state_detail": None, "by_model": None}
     plan["pct_own"] = row.get("plan_pct_own")
     plan["pct_children"] = row.get("plan_pct_children")
     plan["pct"] = row.get("plan_pct")
