@@ -1,13 +1,18 @@
 import SwiftUI
 
-// The dropdown: usage · limits · plan · recent sessions, in that order.
-// Honesty rules carried over from the TUI: costs are complete-$ / partial-~$ /
-// em-dash (never a fabricated $0), plan shares only when calibrated, statuses
-// use the blocked > handed_off > in_progress > completed reduction the glance
-// already applied server-side.
+// The dropdown: a glance, not a workspace. Usage · limits · recent sessions;
+// anything deeper (session detail, per-agent breakdowns) opens the full
+// window. Honesty rules carried from the TUI: costs are complete-$ /
+// partial-~$ / em-dash (never a fabricated $0), plan shares only when
+// calibrated, statuses use the server-side blocked > handed_off >
+// in_progress > completed reduction. Stale limit accounts are hidden here
+// (the full window has the toggle).
 
 struct MenuContent: View {
-    @ObservedObject var state: GlanceState
+    @EnvironmentObject var state: GlanceState
+    @EnvironmentObject var dashboard: DashboardStore
+    @EnvironmentObject var selection: AppSelection
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -50,7 +55,6 @@ struct MenuContent: View {
     private func connectedView(snapshot: GlanceSnapshot) -> some View {
         let glance = snapshot.glance
 
-        // Usage windows (today / 7d / 30d)
         VStack(alignment: .leading, spacing: 4) {
             Text("Usage").font(.headline)
             ForEach(glance.usage.windows.filter { $0.label != "all time" }, id: \.label) { window in
@@ -69,11 +73,12 @@ struct MenuContent: View {
             }
         }
 
-        if !glance.limits.isEmpty {
+        let liveLimits = glance.limits.filter { $0.stale != true }
+        if !liveLimits.isEmpty {
             Divider()
             VStack(alignment: .leading, spacing: 6) {
                 Text("Limits").font(.headline)
-                ForEach(Array(glance.limits.enumerated()), id: \.offset) { _, limit in
+                ForEach(Array(liveLimits.enumerated()), id: \.offset) { _, limit in
                     limitRows(limit)
                 }
             }
@@ -105,11 +110,6 @@ struct MenuContent: View {
                     Text(String(format: "%.0f%%", used))
                         .font(.callout.monospacedDigit())
                         .frame(width: 44, alignment: .trailing)
-                    if limit.stale == true {
-                        Text("stale")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
                 }
                 .font(.callout)
             }
@@ -117,21 +117,28 @@ struct MenuContent: View {
     }
 
     private func sessionRow(_ session: RecentSession) -> some View {
-        HStack(spacing: 6) {
-            Text(session.statusGlyph)
-                .frame(width: 14)
-                .foregroundStyle(session.status == "blocked" ? .orange : .secondary)
-            Text(session.title ?? "\(session.client) · \(session.shortSessionId)")
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer()
-            if let pct = session.planPctText {
-                Text(pct)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+        Button {
+            openMain(selecting: "\(session.client)::\(session.sessionId)")
+        } label: {
+            HStack(spacing: 6) {
+                Text(session.statusGlyph)
+                    .frame(width: 14)
+                    .foregroundStyle(session.status == "blocked" ? .orange : .secondary)
+                Text(session.title ?? "\(session.client) · \(session.shortSessionId)")
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer()
+                if let pct = session.planPctText {
+                    Text(pct)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
             }
+            .font(.callout)
+            .contentShape(Rectangle())
         }
-        .font(.callout)
+        .buttonStyle(.plain)
+        .help("Open in the agentacct window")
     }
 
     @ViewBuilder
@@ -145,15 +152,37 @@ struct MenuContent: View {
     }
 
     private var footer: some View {
-        HStack {
-            Button("Refresh") { state.refreshNow() }
+        HStack(spacing: 10) {
+            Button("Open agentacct") { openMain(selecting: nil) }
             Spacer()
+            if state.isRefreshing {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Button {
+                    state.refreshNow()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .help("Refresh now")
+            }
             if let updated = state.lastUpdated {
-                Text(updated, style: .time)
+                Text(updated, style: .relative)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             Button("Quit") { NSApplication.shared.terminate(nil) }
         }
+    }
+
+    private func openMain(selecting sessionId: String?) {
+        if let sessionId {
+            selection.pane = .sessions
+            selection.sessionId = sessionId
+        }
+        openWindow(id: "main")
+        NSApp.activate(ignoringOtherApps: true)
+        Task { await dashboard.refresh() }
     }
 }

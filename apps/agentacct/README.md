@@ -29,15 +29,21 @@ open .build/agentacct.app
 
 Or during development: `swift run` (menu bar item appears; Ctrl-C to quit).
 
-## Skeleton status / roadmap
+## Status / roadmap
 
 - [x] discovery + bearer + version handshake + 30s poll
 - [x] menu bar: today's cost (complete `$` / partial `~$` / `—`, never a fake $0)
-- [x] dropdown: usage windows · limit bars with stale marker · recent sessions
-      with status glyphs and calibrated-only plan shares · calibrating footnote
+- [x] dropdown: usage windows · live limit bars (stale accounts hidden) ·
+      root-only recent sessions with status glyphs and calibrated-only plan
+      shares · refresh spinner + updated-ago · click a session to open the
+      full window
+- [x] the full window: Sessions (root list → detail: usage, work items with
+      check evidence, attribution, subagent rollup) · Usage by agent and by
+      model (30d cube) · Limits with a show-stale toggle
 - [ ] adaptive poll cadence (menu-open recency / Low Power Mode — CodexBar's
       2–30 min policy)
-- [ ] session drill-down, notifications on limit thresholds
+- [ ] usage window picker (7d/30d/all), per-session plan share in the window
+- [ ] notifications on limit thresholds
 - [ ] Sparkle updates, Developer ID signing + notarization, brew cask
 - [ ] app icon + proper menu bar iconography (text-only today)
 

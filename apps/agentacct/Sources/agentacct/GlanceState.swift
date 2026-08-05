@@ -17,6 +17,7 @@ final class GlanceState: ObservableObject {
 
     @Published private(set) var phase: Phase = .connecting
     @Published private(set) var lastUpdated: Date?
+    @Published private(set) var isRefreshing = false
 
     private let client = GlanceClient()
     private var pollTask: Task<Void, Never>?
@@ -41,6 +42,8 @@ final class GlanceState: ObservableObject {
     }
 
     private func poll() async {
+        isRefreshing = true
+        defer { isRefreshing = false }
         do {
             let snapshot = try await client.fetch()
             phase = .connected(snapshot)

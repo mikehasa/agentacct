@@ -399,6 +399,17 @@ def _recent_sessions(events: list[dict[str, Any]], *, now: float) -> list[dict[s
             raw_session = str(metadata.get("client_session_id") or event.get("run_id") or "")
             if not client or not raw_session:
                 continue
+            # Child sessions (subagents, workflow agents, replay lanes) FOLD
+            # into their root: a glance list full of a root's own children is
+            # noise, and every child's plan share is attributed to the root
+            # anyway. Kind/parent metadata is authoritative; the ':' suffix
+            # check is the defensive fallback for legacy child lanes.
+            kind = str(metadata.get("client_session_kind") or "root")
+            parent = str(metadata.get("parent_client_session_id") or "")
+            if kind != "root" and parent:
+                raw_session = parent
+            if ":" in raw_session:
+                raw_session = raw_session.split(":", 1)[0]
             # The same id normalization the usage view applies, so these keys
             # join with section session ids and plan_pct session ids.
             session_id = normalized_local_usage_session_id(metadata.get("client"), raw_session)
