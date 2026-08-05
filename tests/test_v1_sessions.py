@@ -37,7 +37,7 @@ def _record_usage(
     updated_at: float,
     session_kind: str | None = None,
     parent_session_id: str | None = None,
-    namespace: str | None = None,
+    namespace: str | None = "__default__",
 ) -> None:
     event = ClientUsageEvent(
         client=client,
@@ -61,7 +61,7 @@ def _record_usage(
         updated_at=updated_at,
         turn_count=1,
         usage_row_lane=f"model:{model}",
-        source_namespace_fingerprint=namespace or f"sha256:{client}",
+        source_namespace_fingerprint=(f"sha256:{client}" if namespace == "__default__" else namespace),
         input_tokens_reported=True,
         output_tokens_reported=True,
         reasoning_output_tokens_reported=True,
@@ -462,6 +462,79 @@ def test_title_skips_untitled_item_placeholders(tmp_path):
 
     client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
     assert _rows_by_id(_sessions(client))["root-a"]["title"] == "human goal"
+
+
+def test_fold_decision_is_event_order_independent(tmp_path):
+    """A session whose rows mix source homes must refuse every fold touching
+    it, in ANY event order — never 'last fingerprint wins' (round-3 finding:
+    reordering the same events flipped the fold decision)."""
+
+    from agentacct.glance import child_root_plan_fold
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_usage(service, session_id="mixed-p", tokens=100, updated_at=now - 900,
+                  namespace="sha256:home-1")
+    _record_usage(service, model="claude-fable-5", session_id="mixed-p", tokens=100,
+                  updated_at=now - 800, namespace="sha256:home-2")
+    _record_usage(service, session_id="77777777-aaaa-bbbb-cccc-888888888888", tokens=100,
+                  updated_at=now - 700, session_kind="child", parent_session_id="mixed-p",
+                  namespace="sha256:home-1")
+
+    events = service.list_all_events()
+    forward = child_root_plan_fold(events)
+    backward = child_root_plan_fold(list(reversed(events)))
+    assert forward == backward == {}
+
+
+def test_sections_only_parent_receives_the_fold_on_both_surfaces(tmp_path):
+    """An orchestrator that records sections but imports no usage of its own
+    still EXISTS — a legacy (fingerprint-less) child's share folds onto it on
+    BOTH /v1 surfaces (round-3 finding: the glance treated it as a ghost
+    while the sessions lane folded)."""
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _calibrate_claude(service, now=now)
+    _record_section(service, session_id="sec-root", status="started", title="orchestrating",
+                    created_at=now - 700)
+    _record_usage(service, session_id="99999999-aaaa-bbbb-cccc-000000000000",
+                  tokens=5_000_000, updated_at=now - 300,
+                  session_kind="child", parent_session_id="sec-root", namespace=None)
+
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    payload = _sessions(client, limit=50)
+    rows = _rows_by_id(payload)
+    assert "99999999-aaaa-bbbb-cccc-000000000000" not in rows
+    v1_pct = rows["sec-root"]["plan_pct"]
+    assert v1_pct is not None
+    glance = client.get("/v1/glance", headers=AUTH).json()
+    glance_rows = {row["session_id"]: row for row in glance["recent_sessions"]}
+    assert "99999999-aaaa-bbbb-cccc-000000000000" not in glance_rows
+    assert abs(glance_rows["sec-root"]["plan_pct"] - v1_pct) < 1e-9
+
+
+def test_metadata_parent_id_joins_raw_not_prefix_split(tmp_path):
+    """A metadata parent id like 'rootr:lane' joins RAW (the rollup's rule).
+    The glance must not split it and gate against 'rootr' — a session the
+    metadata never named (round-3 finding)."""
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _calibrate_claude(service, now=now)
+    _record_usage(service, session_id="rootr:lane", tokens=10_000_000, updated_at=now - 600)
+    _record_usage(service, session_id="88888888-aaaa-bbbb-cccc-111111111111",
+                  tokens=5_000_000, updated_at=now - 300,
+                  session_kind="child", parent_session_id="rootr:lane")
+
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    payload = _sessions(client, limit=50)
+    rows = _rows_by_id(payload)
+    assert "88888888-aaaa-bbbb-cccc-111111111111" not in rows
+    v1_pct = rows["rootr:lane"]["plan_pct"]
+    glance = client.get("/v1/glance", headers=AUTH).json()
+    glance_rows = {row["session_id"]: row for row in glance["recent_sessions"]}
+    assert abs(glance_rows["rootr:lane"]["plan_pct"] - v1_pct) < 1e-9
 
 
 def test_generated_at_is_the_view_build_time(tmp_path):

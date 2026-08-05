@@ -383,6 +383,14 @@ def resolve_fold_top(
         current = parent
 
 
+# Sentinel: a session whose own rows disagree about their source home. Folds
+# into or out of such a session are always refused — the ledger quarantines
+# mixed-source rows the same way (unique-or-quarantine), and any "pick one"
+# rule would make the fold decision depend on event ORDER (round-3
+# adversarial finding: last-non-null-wins flipped folds under reordering).
+_NS_CONFLICT = object()
+
+
 def child_root_plan_fold(
     events: list[dict[str, Any]],
 ) -> dict[tuple[str, str], tuple[str, str]]:
@@ -394,44 +402,67 @@ def child_root_plan_fold(
     and unfoldable rows are absent — a lookup falls through to identity;
     resolve chains with :func:`resolve_fold_top`.
 
-    Fold sources, in authority order: kind/parent metadata on the usage row,
-    then the ``':'`` suffix split for legacy child lanes without parent
-    metadata (not client-gated — a non-claude id containing ':' folds by
-    shape; acceptable while only claude-code carries plan shares, and the
-    sessions lane applies the same rule so the surfaces agree). Either way
-    the fold is namespace-gated (:func:`fold_namespace_compatible`): a parent
-    with NO recorded usage of its own (ghost/orphan) or from a DIFFERENT
-    source home refuses the fold, matching the ledger's refusal — the child
-    stands as its own row instead of sinking its share into a phantom or
-    foreign root.
+    This is the events-only mirror of the ledger's parent join, matched rule
+    by rule so the two /v1 surfaces agree (round-3 adversarial findings):
+
+    * parent ids join RAW (no ``':'`` splitting of a metadata parent id — the
+      rollup joins raw ids; a ``'R:lane'`` parent that is itself a legacy
+      child lane reaches ``R`` through its OWN fold step, gates applied at
+      every hop);
+    * the parent must EXIST on this surface — visible via its own usage or
+      section events. A ghost parent refuses the fold (the child stands as
+      its own row); a sections-only orchestrator counts as existing, exactly
+      as it holds a rollup entry on the sessions lane;
+    * namespaces are unique-or-refuse per session (never "last one wins"),
+      then gated by :func:`fold_namespace_compatible` — same-home evidence or
+      no fold. A session whose rows mix source homes refuses every fold
+      touching it, deterministically, in any event order;
+    * conflicting parent CLAIMS for one child (different rows naming
+      different parents) refuse the fold rather than pick one.
+
+    The ``':'`` suffix fallback applies only to a session with no parent
+    metadata at all (legacy child lanes; not client-gated — acceptable while
+    only claude-code carries plan shares). Residual known divergence, both
+    conservative and sum-preserving: a parent visible ONLY through mechanical
+    observations (no usage, no sections) exists on the sessions lane but not
+    here.
     """
 
     from .client_usage import is_local_usage_import_event
     from .usage_truth import normalized_local_usage_session_id
 
-    ns_by_key: dict[tuple[str, str], str | None] = {}
-    claims: list[tuple[tuple[str, str], tuple[str, str], str | None, str | None]] = []
+    ns_values: dict[tuple[str, str], set[str]] = {}
+    universe: set[tuple[str, str]] = set()
+    # child_key -> {(parent_key, expected_parent_ns)}
+    claims: dict[tuple[str, str], set[tuple[tuple[str, str], str | None]]] = {}
     for event in events:
+        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        event_type = str(event.get("event_type") or "")
+        if event_type.startswith("section_"):
+            client = str(metadata.get("client") or event.get("source") or "")
+            session_id = str(metadata.get("client_session_id") or "")
+            if client and session_id:
+                universe.add((client, normalized_local_usage_session_id(metadata.get("client"), session_id)))
+            continue
         if not is_local_usage_import_event(event):
             continue
-        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
         client = str(metadata.get("client") or event.get("source") or "")
         raw_session = str(metadata.get("client_session_id") or event.get("run_id") or "")
         if not client or not raw_session:
             continue
         child_id = normalized_local_usage_session_id(metadata.get("client"), raw_session)
         child_key = (client, child_id)
+        universe.add(child_key)
         own_ns = metadata.get("source_namespace_fingerprint")
-        own_ns = str(own_ns) if own_ns else None
-        if own_ns is not None or child_key not in ns_by_key:
-            ns_by_key[child_key] = own_ns
+        if own_ns:
+            ns_values.setdefault(child_key, set()).add(str(own_ns))
 
         kind = str(metadata.get("client_session_kind") or "root")
         parent = str(metadata.get("parent_client_session_id") or "")
         expected_parent_ns = metadata.get("parent_source_namespace_fingerprint")
         expected_parent_ns = str(expected_parent_ns) if expected_parent_ns else None
         if kind != "root" and parent:
-            folded_raw = parent.split(":", 1)[0] if ":" in parent else parent
+            folded_raw = parent
         elif ":" in raw_session:
             folded_raw = raw_session.split(":", 1)[0]
             expected_parent_ns = None  # legacy lanes carry no parent-home claim
@@ -439,14 +470,32 @@ def child_root_plan_fold(
             continue
         parent_key = (client, normalized_local_usage_session_id(metadata.get("client"), folded_raw))
         if parent_key != child_key:
-            claims.append((child_key, parent_key, own_ns, expected_parent_ns))
+            claims.setdefault(child_key, set()).add((parent_key, expected_parent_ns))
+
+    def _session_ns(key: tuple[str, str]) -> Any:
+        values = ns_values.get(key)
+        if not values:
+            return None
+        if len(values) > 1:
+            return _NS_CONFLICT
+        return next(iter(values))
 
     mapping: dict[tuple[str, str], tuple[str, str]] = {}
-    for child_key, parent_key, child_ns, expected_parent_ns in claims:
-        parent_ns = ns_by_key.get(parent_key)
-        if parent_key not in ns_by_key:
-            continue  # parent has no usage of its own here (ghost/orphan) — no fold
-        if fold_namespace_compatible(child_ns, parent_ns, expected_parent_ns):
+    for child_key, child_claims in claims.items():
+        parent_keys = {parent_key for parent_key, _expected in child_claims}
+        if len(parent_keys) != 1:
+            continue  # conflicting lineage claims — refuse rather than pick one
+        parent_key = next(iter(parent_keys))
+        if parent_key not in universe:
+            continue  # ghost parent — the child stands as its own row
+        child_ns = _session_ns(child_key)
+        parent_ns = _session_ns(parent_key)
+        if child_ns is _NS_CONFLICT or parent_ns is _NS_CONFLICT:
+            continue
+        if all(
+            fold_namespace_compatible(child_ns, parent_ns, expected)
+            for _parent, expected in child_claims
+        ):
             mapping[child_key] = parent_key
     return mapping
 
