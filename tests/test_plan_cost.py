@@ -177,6 +177,31 @@ def test_calibrate_skips_untracked_movement(tmp_path):
     assert weights.intervals_used == 0
 
 
+def test_codex_never_calibrates_even_with_numerically_clean_history(tmp_path):
+    """A rolling meter can land 3 clean intervals in the trusted band by
+    coincidence, but codex's weekly plan % is UNDEFINED by design — the gate
+    lives in calibrate_plan_weights so NO surface can ever receive a
+    'calibrated' codex fit (adversarial-review finding: /v1/plan served
+    confidently-labeled aggregates of an undefined quantity)."""
+
+    service = SentinelService(tmp_path)
+    t0 = 1_000_000
+    anchor = pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]  # unknown codex model -> anchor weight
+    move = 100.0 * anchor  # observed == predicted -> scale ~1.0, inside the band
+    pct = 10.0
+    _record_7d(service, captured=float(t0), pct=pct, client="codex", index=0)
+    for i in range(4):
+        _record_usage(service, client="codex", model="gpt-5.2-codex", session_id=f"c{i}",
+                      tokens=100_000_000, updated_at=t0 + i * 3600 + 1800, cost=None)
+        pct += move
+        _record_7d(service, captured=float(t0 + (i + 1) * 3600), pct=pct, client="codex", index=i + 1)
+    weights = pc.calibrate_plan_weights(service.list_all_events(), client="codex",
+                                        now=float(t0 + 5 * 3600))
+    assert weights.confidence == "baseline"
+    assert pc.calibration_state(weights) == "never"
+    assert "undefined" in weights.basis
+
+
 def test_calibrate_untrusted_scale_falls_back_to_baseline(tmp_path):
     # Regression (review): if the meter moved ~10x what local tokens predict (heavy
     # untracked usage, or a very different tier we can't identify), the fitted scale is

@@ -34,6 +34,10 @@ from threading import Lock
 from typing import Any, Callable
 
 V1_SESSIONS_SCHEMA_VERSION = "agentacct.v1-sessions.v1"
+V1_SESSION_DETAIL_SCHEMA_VERSION = "agentacct.v1-session-detail.v1"
+
+# Row keys that exist only for the view's own bookkeeping, never on the wire.
+_VIEW_INTERNAL_KEYS = frozenset({"is_root", "fold_top"})
 
 # TTL rationale: the view is mostly event-derived (the fingerprint catches
 # those changes), but plan calibration windows are clock-relative and the
@@ -230,7 +234,7 @@ def build_v1_sessions_view(
     entries = rollup.get("sessions") if isinstance(rollup, dict) else []
     entries = [entry for entry in entries if isinstance(entry, dict)] if isinstance(entries, list) else []
 
-    plan, session_pcts = plan_status_and_session_pcts(events)
+    plan, session_pcts, weights_by_client, records_by_client = plan_status_and_session_pcts(events)
 
     def _key(entry: dict[str, Any]) -> tuple[str, str]:
         return (str(entry.get("client") or ""), str(entry.get("client_session_id") or ""))
@@ -268,7 +272,32 @@ def build_v1_sessions_view(
         if own is not None or descendants is not None:
             row["plan_pct"] = (own or 0.0) + (descendants or 0.0)
         row["is_root"] = is_root
+        # View-internal (stripped from the wire like is_root): the fixpoint
+        # this row's share folds to — the detail endpoint lists a root's
+        # descendants by matching it.
+        row["fold_top"] = fold_top_by_key.get(key, key)
         rows.append(row)
+
+    # Step-join indexes, built once per view so the detail route is pure
+    # lookups instead of per-request ledger scans + a full usage-view rebuild
+    # (adversarial-review finding: /v1/session cost ~10x /v1/sessions per
+    # poll). Everything under plan_context/step_join is VIEW-INTERNAL — the
+    # wire never carries it (slice/detail project explicit fields only).
+    attributions_by_work: dict[str, list[dict[str, Any]]] = {}
+    for attribution in ledger.get("attributions") or []:
+        if isinstance(attribution, dict):
+            work_id = str(attribution.get("work_id") or "")
+            if work_id:
+                attributions_by_work.setdefault(work_id, []).append(attribution)
+    usage_event_models: dict[str, tuple[str | None, str | None]] = {}
+    for usage_event in ledger.get("usage_events") or []:
+        if isinstance(usage_event, dict):
+            usage_event_id = str(usage_event.get("usage_event_id") or "")
+            if usage_event_id:
+                usage_event_models[usage_event_id] = (
+                    usage_event.get("model"),
+                    usage_event.get("provider"),
+                )
 
     return {
         "generated_at": _time.time() if now is None else float(now),
@@ -276,6 +305,14 @@ def build_v1_sessions_view(
         "plan": plan,
         "total_sessions": len(rows),
         "total_root_sessions": root_count,
+        "plan_context": {
+            "weights_by_client": weights_by_client,
+            "records_by_client": records_by_client,
+        },
+        "step_join": {
+            "attributions_by_work": attributions_by_work,
+            "usage_event_models": usage_event_models,
+        },
     }
 
 
@@ -299,9 +336,12 @@ def slice_sessions_payload(
     rows = view.get("rows") or []
     pool = [row for row in rows if row.get("is_root")] if roots_only else list(rows)
     page = pool[offset : offset + limit]
-    # ``is_root`` is view-internal bookkeeping (the wire has related.parent);
-    # strip it without mutating the cached rows.
-    page = [{key: value for key, value in row.items() if key != "is_root"} for row in page]
+    # ``is_root``/``fold_top`` are view-internal bookkeeping (the wire has
+    # related.parent); strip them without mutating the cached rows.
+    page = [
+        {key: value for key, value in row.items() if key not in _VIEW_INTERNAL_KEYS}
+        for row in page
+    ]
     return {
         "schema": V1_SESSIONS_SCHEMA_VERSION,
         "generated_at": view.get("generated_at"),
@@ -356,3 +396,253 @@ class V1SessionsCache:
             view = builder()
             self._cached = (fingerprint, moment, view)
             return view
+
+
+# ---------------------------------------------------------------------------
+# session detail (the expandable-steps view — the depth the TUI sets the bar for)
+# ---------------------------------------------------------------------------
+
+_STEP_CHECK_FIELDS = (
+    # Curated check projection, passed through from the ledger's evidence
+    # events VERBATIM under their real names and types. In that projection
+    # ``artifact_path``/``artifact_url`` are ALREADY the sanitized-safe
+    # strings, the ``*_redacted`` twins are BOOLEAN was-withheld disclosures,
+    # and no raw command string exists at all (``command_redacted`` says one
+    # was recorded). Round-1 adversarial finding: an earlier draft mistook
+    # the boolean flags for redacted strings and served ``command: true``
+    # while dropping the safe artifact values.
+    "event_id",
+    "created_at",
+    "evidence_type",
+    "result",
+    "summary",
+    "exit_code",
+    "check_identity",
+    "supersession_state",
+    "superseded_by_event_id",
+    "resolution_scope",
+    "resolution_summary",
+    "resolves_blocked_event_id",
+    "files",
+    "artifact_ref",
+    "artifact_path",
+    "artifact_url",
+    "command_redacted",
+    "artifact_path_redacted",
+    "artifact_url_redacted",
+)
+
+
+def _project_check(event: dict[str, Any]) -> dict[str, Any]:
+    return {name: event.get(name) for name in _STEP_CHECK_FIELDS}
+
+
+def _project_step(item: dict[str, Any], models: list[dict[str, Any]]) -> dict[str, Any]:
+    evidence_events = item.get("evidence_events")
+    checks = [
+        _project_check(event)
+        for event in (evidence_events if isinstance(evidence_events, list) else [])
+        if isinstance(event, dict)
+    ]
+    return {
+        "work_id": item.get("work_id"),
+        "section_id": item.get("section_id"),
+        "title": item.get("title"),
+        "latest_status": item.get("latest_status"),
+        "kind": item.get("kind"),
+        "phase": item.get("phase"),
+        "started_at": item.get("started_at"),
+        "updated_at": item.get("updated_at"),
+        "summary": item.get("summary"),
+        "files": item.get("files"),
+        "blocker": item.get("blocker"),
+        "next_step": item.get("next_step"),
+        "usage": {
+            "total_tokens": item.get("usage_total"),
+            "fresh_tokens": item.get("usage_fresh_total"),
+            "cache_read_tokens": item.get("usage_cache_read_total"),
+            "cache_creation_tokens": item.get("usage_cache_creation_total"),
+            # The ledger's internal sum defaults to 0.0; under the wire name
+            # estimated_cost_usd the product-wide contract is None-never-$0
+            # when nothing was priced (adversarial-review finding). A value
+            # with unpriced rows alongside is a PARTIAL subtotal — the counts
+            # below are the shell's completeness signal.
+            "estimated_cost_usd": (
+                item.get("estimated_cost_total")
+                if isinstance(item.get("priced_usage_records"), int)
+                and item.get("priced_usage_records", 0) > 0
+                else None
+            ),
+            "linked_usage_records": item.get("linked_usage_records"),
+            "priced_usage_records": item.get("priced_usage_records"),
+            "unpriced_usage_records": item.get("unpriced_usage_records"),
+        },
+        "join_confidence": item.get("join_confidence"),
+        "join_explanation": item.get("join_explanation"),
+        "evidence_status": item.get("evidence_status"),
+        "models": models,
+        "checks": checks,
+    }
+
+
+def _step_models(
+    work_id: str,
+    attributions_by_work: dict[str, list[dict[str, Any]]],
+    usage_event_models: dict[str, tuple[str | None, str | None]],
+) -> list[dict[str, Any]]:
+    """Per-step model lanes via the attribution join.
+
+    A step has no model of its own — models ride on usage events, and the
+    ledger's attributions are the ONLY honest link between the two. Tokens
+    come from the attribution rows (the attributed slice), never re-guessed.
+    Unattributed steps simply return [] — missing beats invented.
+    """
+
+    lanes: dict[tuple[str | None, str | None], float] = {}
+    for attribution in attributions_by_work.get(work_id, []):
+        usage_event_id = str(attribution.get("usage_event_id") or "")
+        lane_identity = usage_event_models.get(usage_event_id)
+        if lane_identity is None:
+            continue  # dangling attribution — we know nothing about this event
+        model, provider = lane_identity
+        # A known event with NO model keeps its lane (model: null) — dropping
+        # it made the lane sum silently undercount the step total (the
+        # session rollup's model_lanes keep null lanes for the same reason).
+        key = (model, provider)
+        tokens = attribution.get("usage_tokens")
+        amount = float(tokens) if isinstance(tokens, (int, float)) and not isinstance(tokens, bool) else 0.0
+        lanes[key] = lanes.get(key, 0.0) + amount
+    return sorted(
+        (
+            {"model": model, "provider": provider, "total_tokens": tokens}
+            for (model, provider), tokens in lanes.items()
+        ),
+        key=lambda lane: (-lane["total_tokens"], str(lane["model"])),
+    )
+
+
+def _descendant_row(row: dict[str, Any]) -> dict[str, Any]:
+    usage = row.get("usage") if isinstance(row.get("usage"), dict) else {}
+    return {
+        "client": row.get("client"),
+        "client_session_id": row.get("client_session_id"),
+        "client_session_id_short": row.get("client_session_id_short"),
+        "title": row.get("title"),
+        "status": row.get("status"),
+        "last_activity_at": row.get("last_activity_at"),
+        "usage": {
+            "total_tokens": usage.get("total_tokens"),
+            "fresh_tokens": usage.get("fresh_tokens"),
+            "estimated_cost_usd": usage.get("estimated_cost_usd"),
+            "cost_confidence": usage.get("cost_confidence"),
+        },
+        "plan_pct": row.get("plan_pct_own"),
+    }
+
+
+def build_v1_session_detail(
+    view: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    client: str,
+    session_id: str,
+) -> dict[str, Any] | None:
+    """The one-session deep view: the list row + expandable steps + descendants.
+
+    ``None`` when the session has no rollup entry (the route 404s — never an
+    empty fabrication). Steps come from the ledger's full work_items (the
+    rollup's embedded mini-rows lack timestamps/usage/checks), filtered by
+    (client, session_id) exactly like the TUI's detail screen, newest first.
+    Each step carries its attributed model lanes and its machine checks
+    (curated projection). Descendants are every view row whose fold fixpoint
+    is this session — the same accounting behind the list row's
+    ``plan_pct_children``, so the numbers can never disagree. The per-session
+    plan block adds the why-this-number disclosure (basis/scale) and a
+    by-model split of the session's OWN share (calibrated-or-nothing), all
+    derived from the CACHED view's own fit and indexes — a per-request
+    recompute both cost a full usage-view rebuild per poll and could disagree
+    with the very pct values it shipped next to (adversarial-review findings).
+    """
+
+    from .plan_cost import plan_status_entry, session_tokens_by_model
+
+    key = (client, session_id)
+    row = next(
+        (
+            candidate
+            for candidate in (view.get("rows") or [])
+            if (candidate.get("client"), candidate.get("client_session_id")) == key
+        ),
+        None,
+    )
+    if row is None:
+        return None
+
+    items = [
+        item
+        for item in (ledger.get("work_items") or [])
+        if isinstance(item, dict)
+        and str(item.get("client") or "") == client
+        and str(item.get("client_session_id") or "") == session_id
+    ]
+
+    step_join = view.get("step_join") if isinstance(view.get("step_join"), dict) else {}
+    attributions_by_work = step_join.get("attributions_by_work") or {}
+    usage_event_models = step_join.get("usage_event_models") or {}
+
+    steps = [
+        _project_step(
+            item,
+            _step_models(str(item.get("work_id") or ""), attributions_by_work, usage_event_models),
+        )
+        for item in items
+    ]
+
+    descendants = [
+        _descendant_row(candidate)
+        for candidate in (view.get("rows") or [])
+        if candidate.get("fold_top") == key
+        and (candidate.get("client"), candidate.get("client_session_id")) != key
+    ]
+
+    plan_context = view.get("plan_context") if isinstance(view.get("plan_context"), dict) else {}
+    weights = (plan_context.get("weights_by_client") or {}).get(client)
+    records = (plan_context.get("records_by_client") or {}).get(client) or []
+    plan: dict[str, Any]
+    if weights is not None:
+        plan = dict(plan_status_entry(weights))
+        if weights.confidence == "calibrated":
+            tokens_by_model = session_tokens_by_model(
+                client=client, session_id=session_id, records=records
+            )
+            plan["by_model"] = sorted(
+                (
+                    {
+                        "model": model,
+                        "total_tokens": tokens,
+                        "pct": weights.pct_for_tokens({model: tokens}),
+                    }
+                    for model, tokens in tokens_by_model.items()
+                ),
+                key=lambda entry: (-entry["pct"], entry["model"]),
+            )
+        else:
+            plan["by_model"] = None
+    else:
+        # Not a plan-bearing client: an explicit no-plan block, not a guess.
+        plan = {"client": client, "confidence": None, "calibration_state": None,
+                "calibratable": False, "basis": None, "scale": None,
+                "intervals_used": None, "by_model": None}
+    plan["pct_own"] = row.get("plan_pct_own")
+    plan["pct_children"] = row.get("plan_pct_children")
+    plan["pct"] = row.get("plan_pct")
+
+    session = {name: value for name, value in row.items() if name not in _VIEW_INTERNAL_KEYS}
+    return {
+        "schema": V1_SESSION_DETAIL_SCHEMA_VERSION,
+        "generated_at": view.get("generated_at"),
+        "session": session,
+        "steps": steps,
+        "descendants": descendants,
+        "plan": plan,
+    }
