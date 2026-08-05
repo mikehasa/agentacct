@@ -8524,16 +8524,70 @@ def serve(
         "Local usage scan: enabled for this localhost dashboard; agentacct reads implemented local agent usage paths "
         "and imports only summarized usage rows. Use `agentacct api serve` for an API server with local usage discovery disabled."
     )
-    uvicorn.run(
-        create_local_api_app(
-            store_dir=effective_store_dir,
-            usage_discovery=UsageDiscoveryConfig.real_home(),
-            extra_allowed_hosts=tuple(allow_host or ()),
-        ),
+    # Native-shell handshake: a per-boot bearer token published through the
+    # 0600 discovery file next to the store. Claimed AFTER the bind port is
+    # chosen so readers always see the real port; first-alive-writer-wins (a
+    # second serve against the same store leaves a live owner's slot alone);
+    # removed on shutdown behind a pid gate + lock so a dying old server never
+    # deletes a fresh server's file.
+    import secrets as _secrets
+    import threading as _threading
+
+    from .glance import claim_discovery_file, remove_discovery_file, run_discovery_heartbeat
+
+    v1_token = _secrets.token_urlsafe(32)
+    v1_version_string = _usage_importer_version()
+    discovery_path = claim_discovery_file(
+        effective_store_dir,
         host=host,
         port=bound_port,
-        log_level="info",
+        token=v1_token,
+        version=v1_version_string,
     )
+    if discovery_path is not None:
+        console.print(f"Native-shell API (/v1): discovery file {discovery_path}")
+    else:
+        console.print(
+            "Native-shell API (/v1): another agentacct server already publishes the discovery "
+            "file for this store; this instance serves /v1 unpublished (it re-claims the slot "
+            "automatically if that server goes away)."
+        )
+    # The re-claim heartbeat closes the restart-drain stranding: a serve that
+    # started unpublished (old server still dying) takes the slot over within
+    # one interval of it freeing up; also heals SIGKILL-stale files.
+    heartbeat_stop = _threading.Event()
+    heartbeat = _threading.Thread(
+        target=run_discovery_heartbeat,
+        kwargs={
+            "store_dir": effective_store_dir,
+            "host": host,
+            "port": bound_port,
+            "token": v1_token,
+            "version": v1_version_string,
+            "stop": heartbeat_stop,
+        },
+        name="agentacct-discovery-heartbeat",
+        daemon=True,
+    )
+    heartbeat.start()
+    try:
+        uvicorn.run(
+            create_local_api_app(
+                store_dir=effective_store_dir,
+                usage_discovery=UsageDiscoveryConfig.real_home(),
+                extra_allowed_hosts=tuple(allow_host or ()),
+                v1_auth_token=v1_token,
+            ),
+            host=host,
+            port=bound_port,
+            log_level="info",
+        )
+    finally:
+        # Stop the heartbeat BEFORE removing so it cannot re-publish a file
+        # this shutdown just deleted.
+        heartbeat_stop.set()
+        heartbeat.join(timeout=5)
+        remove_discovery_file(effective_store_dir)
 
 
 @api_app.command("serve")

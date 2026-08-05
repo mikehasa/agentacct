@@ -59,6 +59,7 @@ from .canonical_read import (
 from .capture import CaptureContext, DEFAULT_CAPTURE_REGISTRY, render_hook_manifest
 from .capture.registry import DEFAULT_MAX_PAYLOAD_BYTES
 from .capture_runtime import capture_hook_payload
+from .glance import GLANCE_SCHEMA_VERSION, GlanceCache
 # Re-exported for compatibility: these names moved verbatim to usage_view (the
 # data-layer split). Rebinding/monkeypatching them on THIS module no longer
 # reaches usage_snapshot/plan_cost/the TUI — patch agentacct.usage_view instead.
@@ -12937,12 +12938,18 @@ def create_local_api_app(
     store_dir: Path | str,
     usage_discovery: UsageDiscoveryConfig | None = None,
     extra_allowed_hosts: Iterable[str] = (),
+    v1_auth_token: str | None = None,
 ) -> FastAPI:
     """Create the local-only agentacct API used by sidecar/MCP surfaces.
 
     This app exposes report/outcome/event primitives only. It does not call paid
     LLM judges or mutate external agent tools. Bind it to 127.0.0.1 for local use.
     Callers must resolve the store first (no silent home-store default).
+
+    ``v1_auth_token`` arms the ``/v1`` native-shell lane (glance/version). It is
+    per-boot: ``agentacct serve`` generates one and publishes it via the 0600
+    discovery file (see :mod:`agentacct.glance`). Without a token the /v1 routes
+    fail closed (503) — they never open an unauthenticated lane by accident.
     """
     app = FastAPI(title="agentacct local api", version="0.1.0")
     app_pricing_catalog_path = pricing_catalog_path_for_store(store_dir)
@@ -14698,6 +14705,64 @@ def create_local_api_app(
             samesite="strict",
         )
         return response
+
+    # ---- /v1 native-shell lane (menu bar app / SwiftBar / widgets) --------
+    glance_cache = GlanceCache()
+
+    def _require_v1_token(request: Request) -> None:
+        """Bearer gate for the /v1 lane. Fails closed: a server constructed
+        without a token (tests, ``agentacct api serve`` sidecars) serves 503 on
+        every /v1 route rather than opening an unauthenticated lane by accident.
+        Comparison is constant-time; the token comes from the discovery file."""
+
+        if not v1_auth_token:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "v1 API disabled: this server was started without a v1 token. "
+                    "`agentacct serve` provisions one and writes the discovery file automatically."
+                ),
+            )
+        header = request.headers.get("authorization") or ""
+        scheme, _, candidate = header.partition(" ")
+        # Compare BYTES: hmac.compare_digest raises TypeError on non-ASCII str
+        # (Starlette decodes header bytes as latin-1, so a garbled local client
+        # can deliver one), and the reader contract needs a clean 401 — never a
+        # 500 — as its "re-read the discovery file" signal.
+        candidate_bytes = candidate.strip().encode("utf-8", "surrogateescape")
+        expected_bytes = v1_auth_token.encode("utf-8", "surrogateescape")
+        if scheme.lower() != "bearer" or not hmac.compare_digest(candidate_bytes, expected_bytes):
+            raise HTTPException(status_code=401, detail="missing or invalid bearer token for the v1 local API")
+
+    @app.get("/v1/version")
+    def v1_version(request: Request) -> dict[str, Any]:
+        """Native-shell handshake: pin daemon/schema compatibility BEFORE
+        parsing any payload (an incompatible daemon is a first-class UI state,
+        never a JSON parse error)."""
+
+        _require_v1_token(request)
+        return {
+            "schema": "agentacct.v1-version.v1",
+            "version": _dashboard_importer_version(),
+            "glance_schema": GLANCE_SCHEMA_VERSION,
+            "pid": os.getpid(),
+            "store_dir": str(store_dir),
+            "store_scope": store_scope,
+        }
+
+    @app.get("/v1/glance")
+    def v1_glance(request: Request) -> dict[str, Any]:
+        """The glance snapshot (usage · cost · plan · recent sessions).
+
+        Fingerprint + TTL cached: a poll that finds no event change skips the
+        aggregation REBUILD (the expensive part) — each poll still reads the
+        event list once to compute the change key, so per-request cost is one
+        store read + an O(n) hash, never a re-aggregation (see
+        :mod:`agentacct.glance` for the schema contract)."""
+
+        _require_v1_token(request)
+        events = service.list_all_events()
+        return glance_cache.snapshot(events, store_dir=store_dir, version=_dashboard_importer_version())
 
     @app.get("/health")
     def health() -> dict[str, Any]:
