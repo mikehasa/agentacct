@@ -1,4 +1,13 @@
-"""End-to-end dashboard contracts for attention-only finding dispositions."""
+"""GET /tasks projection contracts for attention-only finding dispositions.
+
+The HTML dashboard and its POST /findings/disposition form flow are retired.
+Dispositions now arrive as recorded events via
+``SentinelService.record_finding_disposition``; these tests cover how the kept
+JSON ``GET /tasks`` projection reflects those transitions (lanes, summary
+counts, revisions, tokens, restarts, and scope quarantine).  Pure disposition
+semantics (idempotency, transitions, corruption) live in
+``tests/test_finding_disposition.py``.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +17,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from agentacct.api import DASHBOARD_CSP, _finding_form_token, create_local_api_app
+from agentacct.api import create_local_api_app
+from agentacct.finding_disposition import FindingDispositionConflict
 from agentacct.service import SentinelService
 from agentacct.work_ledger import build_evidence_events
 
@@ -81,28 +91,22 @@ def _record_check(
     )
 
 
+def _latest_failed_target(service: SentinelService) -> dict[str, Any]:
+    failures = [
+        event
+        for event in build_evidence_events(service.list_all_events())
+        if event.get("result") == "failed"
+    ]
+    assert failures
+    return failures[-1]
+
+
 def _assigned_episode(payload: dict[str, Any]) -> dict[str, Any]:
     return payload["tasks"][0]["finding_episodes"][0]
 
 
 def _unassigned_episode(payload: dict[str, Any]) -> dict[str, Any]:
     return payload["unassigned_findings"][0]["episode"]
-
-
-def _form(
-    payload: dict[str, Any],
-    episode: dict[str, Any],
-    *,
-    action: str,
-    note: str = "",
-) -> dict[str, str]:
-    return {
-        "csrf_token": payload["csrf_token"],
-        "finding_token": episode["finding_token"],
-        "action": action,
-        "expected_revision": str(episode["revision"]),
-        "note": note,
-    }
 
 
 def _disposition_rows(service: SentinelService) -> list[dict[str, Any]]:
@@ -113,59 +117,7 @@ def _disposition_rows(service: SentinelService) -> list[dict[str, Any]]:
     ]
 
 
-def test_finding_post_rejects_bad_parser_csrf_and_token_without_writing(
-    tmp_path: Path,
-) -> None:
-    store_root = tmp_path / "state"
-    service = SentinelService(store_root)
-    _record_check(service)
-    client = TestClient(create_local_api_app(store_dir=store_root))
-    payload = client.get("/tasks").json()
-    episode = _unassigned_episode(payload)
-    valid = _form(payload, episode, action="mark_reviewed")
-    events_before = service.event_log.read_lines()
-
-    missing_csrf = dict(valid)
-    missing_csrf.pop("csrf_token")
-    assert client.post("/findings/disposition", data=missing_csrf).status_code == 403
-
-    invalid_csrf = {**valid, "csrf_token": "not-issued"}
-    assert client.post("/findings/disposition", data=invalid_csrf).status_code == 403
-
-    for revision in (True, 1.0):
-        response = client.post(
-            "/findings/disposition",
-            json={
-                **valid,
-                "expected_revision": revision,
-            },
-        )
-        assert response.status_code == 422
-
-    unknown = {**valid, "finding_token": "0" * 32}
-    assert client.post("/findings/disposition", data=unknown).status_code == 404
-    malformed = {**valid, "finding_token": "not-a-token"}
-    assert client.post("/findings/disposition", data=malformed).status_code == 404
-
-    duplicate = (
-        f"csrf_token={payload['csrf_token']}&finding_token={episode['finding_token']}"
-        "&action=mark_reviewed&action=resolve&expected_revision=0&note="
-    )
-    assert client.post(
-        "/findings/disposition",
-        content=duplicate,
-        headers={"content-type": "application/x-www-form-urlencoded"},
-    ).status_code == 422
-    assert client.post(
-        "/findings/disposition",
-        json={**valid, "target_event_id": "raw-identifiers-are-not-accepted"},
-    ).status_code == 422
-    assert client.get("/findings/disposition").status_code == 405
-
-    assert service.event_log.read_lines() == events_before
-
-
-def test_resolve_retry_collision_reopen_and_truth_rendering(tmp_path: Path) -> None:
+def test_resolve_retry_collision_reopen_and_truth_projection(tmp_path: Path) -> None:
     store_root = tmp_path / "state"
     service = SentinelService(store_root)
     session_id = "prediction-root"
@@ -175,29 +127,39 @@ def test_resolve_retry_collision_reopen_and_truth_rendering(tmp_path: Path) -> N
         session_id=session_id,
         summary="A negative buy produces an impossible share balance.",
     )
+    target = _latest_failed_target(service)
+    note = "<tag> verified in a separate review"
+
+    first = service.record_finding_disposition(
+        target_event=target,
+        action="resolve",
+        expected_revision=0,
+        note=note,
+        idempotency_key="op-resolve",
+    )
+    assert len(_disposition_rows(service)) == 1
+
+    retry = service.record_finding_disposition(
+        target_event=target,
+        action="resolve",
+        expected_revision=0,
+        note=note,
+        idempotency_key="op-resolve",
+    )
+    assert retry["event_id"] == first["event_id"]
+    assert len(_disposition_rows(service)) == 1
+
+    with pytest.raises(FindingDispositionConflict):
+        service.record_finding_disposition(
+            target_event=target,
+            action="resolve",
+            expected_revision=0,
+            note="different operation under the same derived key",
+            idempotency_key="op-resolve",
+        )
+    assert len(_disposition_rows(service)) == 1
+
     client = TestClient(create_local_api_app(store_dir=store_root))
-    initial = client.get("/tasks").json()
-    episode = _assigned_episode(initial)
-    form = _form(initial, episode, action="resolve", note="<tag> verified in a separate review")
-
-    response = client.post("/findings/disposition", data=form, follow_redirects=False)
-    assert response.status_code == 303
-    assert response.headers["content-security-policy"] == DASHBOARD_CSP
-    assert response.headers["location"] == f"/#finding-{episode['finding_token']}"
-    assert len(_disposition_rows(service)) == 1
-
-    retry = client.post("/findings/disposition", data=form, follow_redirects=False)
-    assert retry.status_code == 303
-    assert len(_disposition_rows(service)) == 1
-
-    changed_note = {**form, "note": "different operation under the same derived key"}
-    assert client.post(
-        "/findings/disposition",
-        data=changed_note,
-        follow_redirects=False,
-    ).status_code == 409
-    assert len(_disposition_rows(service)) == 1
-
     resolved = client.get("/tasks").json()
     resolved_episode = _assigned_episode(resolved)
     assert resolved["summary"]["total_open_finding_count"] == 0
@@ -206,32 +168,16 @@ def test_resolve_retry_collision_reopen_and_truth_rendering(tmp_path: Path) -> N
     assert resolved_episode["disposition_state"] == "resolved"
     assert resolved_episode["revision"] == 1
     assert resolved_episode["failure_event"]["result"] == "failed"
-    html = client.get("/").text
-    assert "Marked resolved" in html
-    assert "not machine verification" in html
-    assert "&lt;tag&gt; verified in a separate review" in html
-    assert "<tag> verified in a separate review" not in html
-    assert ">Reopen<" in html
-    assert '<span class="status status-ok">Verified</span>' not in html
+    # The user note is carried verbatim as data; escaping is the consumer's job.
+    assert resolved_episode["latest_disposition"]["note"] == note
 
-    public_task_id = resolved["tasks"][0]["public_task_id"]
-    intelligence = client.get(f"/api/tasks/{public_task_id}").json()
-    assert intelligence["states"]["outcome"]["key"] == "finding"
-    assert intelligence["decision_brief"]["finding_attention_state"] == "resolved"
-    assert intelligence["findings"]["current_count"] == 1
-    assert intelligence["findings"]["resolved_count"] == 1
-    assert intelligence["findings"]["current"][0]["result"] == "failed"
-    detail_html = client.get(f"/tasks/{public_task_id}").text
-    assert "Marked resolved finding" in detail_html
-    assert "this is not machine verification" in detail_html
-    assert "<strong>Unresolved finding</strong>" not in detail_html
-
-    reopen = _form(resolved, resolved_episode, action="reopen")
-    assert client.post(
-        "/findings/disposition",
-        data=reopen,
-        follow_redirects=False,
-    ).status_code == 303
+    service.record_finding_disposition(
+        target_event=target,
+        action="reopen",
+        expected_revision=1,
+        note=None,
+        idempotency_key="op-reopen",
+    )
     reopened = client.get("/tasks").json()
     assert reopened["summary"]["total_open_finding_count"] == 1
     assert _assigned_episode(reopened)["disposition_state"] == "open"
@@ -247,37 +193,43 @@ def test_exact_retry_survives_later_pass_without_reopening_raw_resolution(
     session_id = "retry-after-pass-root"
     _record_root_usage(service, session_id=session_id)
     _record_check(service, session_id=session_id)
-    client = TestClient(create_local_api_app(store_dir=store_root))
-    initial = client.get("/tasks").json()
-    episode = _assigned_episode(initial)
-    form = _form(initial, episode, action="resolve", note="Reviewed before the passing rerun.")
+    target = _latest_failed_target(service)
 
-    assert client.post(
-        "/findings/disposition",
-        data=form,
-        follow_redirects=False,
-    ).status_code == 303
+    first = service.record_finding_disposition(
+        target_event=target,
+        action="resolve",
+        expected_revision=0,
+        note="Reviewed before the passing rerun.",
+        idempotency_key="op-resolve",
+    )
     _record_check(service, session_id=session_id, result="passed")
+    client = TestClient(create_local_api_app(store_dir=store_root))
     assert client.get("/tasks").json()["tasks"][0]["finding_episodes"] == []
 
-    retry = client.post(
-        "/findings/disposition",
-        data=form,
-        follow_redirects=False,
+    retry = service.record_finding_disposition(
+        target_event=target,
+        action="resolve",
+        expected_revision=0,
+        note="Reviewed before the passing rerun.",
+        idempotency_key="op-resolve",
     )
-    assert retry.status_code == 303
+    assert retry["event_id"] == first["event_id"]
     assert len(_disposition_rows(service)) == 1
-    collision = client.post(
-        "/findings/disposition",
-        data={**form, "note": "A different payload after the pass."},
-        follow_redirects=False,
-    )
-    assert collision.status_code == 409
+
+    with pytest.raises(FindingDispositionConflict):
+        service.record_finding_disposition(
+            target_event=target,
+            action="resolve",
+            expected_revision=0,
+            note="A different payload after the pass.",
+            idempotency_key="op-resolve",
+        )
     assert len(_disposition_rows(service)) == 1
+    assert client.get("/tasks").json()["tasks"][0]["finding_episodes"] == []
 
 
 @pytest.mark.parametrize("newer_result", ["passed", "failed"])
-def test_stale_finding_form_after_newer_check_never_writes(
+def test_stale_disposition_after_newer_check_never_writes(
     tmp_path: Path,
     newer_result: str,
 ) -> None:
@@ -289,15 +241,17 @@ def test_stale_finding_form_after_newer_check_never_writes(
     client = TestClient(create_local_api_app(store_dir=store_root))
     initial = client.get("/tasks").json()
     old_episode = _assigned_episode(initial)
-    old_form = _form(initial, old_episode, action="mark_reviewed")
+    old_target = _latest_failed_target(service)
 
     _record_check(service, session_id=session_id, result=newer_result)
-    response = client.post(
-        "/findings/disposition",
-        data=old_form,
-        follow_redirects=False,
-    )
-    assert response.status_code in {404, 409}
+    with pytest.raises(FindingDispositionConflict):
+        service.record_finding_disposition(
+            target_event=old_target,
+            action="mark_reviewed",
+            expected_revision=0,
+            note=None,
+            idempotency_key="op-stale",
+        )
     assert _disposition_rows(service) == []
 
     current = client.get("/tasks").json()
@@ -311,71 +265,22 @@ def test_stale_finding_form_after_newer_check_never_writes(
         assert replacement["disposition_state"] == "open"
 
 
-def test_linked_root_pass_racing_post_closes_target_before_append(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    store_root = tmp_path / "state"
-    service = SentinelService(store_root)
-    first_session = "linked-root-a"
-    second_session = "linked-root-b"
-    _record_root_usage(service, session_id=first_session)
-    _record_root_usage(service, session_id=second_session)
-    client = TestClient(create_local_api_app(store_dir=store_root))
-    before_link = client.get("/tasks").json()
-    assert client.post(
-        "/tasks/link",
-        data={
-            "csrf_token": before_link["csrf_token"],
-            "client": "codex",
-            "client_session_id": first_session,
-            "target_client": "codex",
-            "target_client_session_id": second_session,
-            "confirm_cross_scope": "false",
-        },
-        follow_redirects=False,
-    ).status_code == 303
-    _record_check(service, session_id=first_session)
-    current = client.get("/tasks").json()
-    assert len(current["tasks"]) == 1
-    episode = _assigned_episode(current)
-
-    original = SentinelService.record_finding_disposition
-    injected = False
-
-    def inject_pass_before_lock(self: SentinelService, **kwargs: Any) -> dict[str, Any]:
-        nonlocal injected
-        if not injected:
-            injected = True
-            _record_check(service, session_id=second_session, result="passed")
-        return original(self, **kwargs)
-
-    monkeypatch.setattr(SentinelService, "record_finding_disposition", inject_pass_before_lock)
-    response = client.post(
-        "/findings/disposition",
-        data=_form(current, episode, action="mark_reviewed"),
-        follow_redirects=False,
-    )
-
-    assert response.status_code == 409
-    assert _disposition_rows(service) == []
-    settled = client.get("/tasks").json()
-    assert settled["tasks"][0]["finding_episodes"] == []
-
-
 def test_unassigned_review_remains_visible_and_reopenable(tmp_path: Path) -> None:
     store_root = tmp_path / "state"
     service = SentinelService(store_root)
     _record_check(service, summary="An unassigned security finding remains objective evidence.")
+    target = _latest_failed_target(service)
     client = TestClient(create_local_api_app(store_dir=store_root))
     initial = client.get("/tasks").json()
-    episode = _unassigned_episode(initial)
+    assert _unassigned_episode(initial)["disposition_state"] == "open"
 
-    assert client.post(
-        "/findings/disposition",
-        data=_form(initial, episode, action="mark_reviewed"),
-        follow_redirects=False,
-    ).status_code == 303
+    service.record_finding_disposition(
+        target_event=target,
+        action="mark_reviewed",
+        expected_revision=0,
+        note=None,
+        idempotency_key="op-review",
+    )
     reviewed = client.get("/tasks").json()
     assert reviewed["summary"]["total_open_finding_count"] == 0
     assert reviewed["unassigned_findings"] == []
@@ -383,16 +288,14 @@ def test_unassigned_review_remains_visible_and_reopenable(tmp_path: Path) -> Non
     disposed_episode = reviewed["disposed_unassigned_findings"][0]["episode"]
     assert disposed_episode["failure_event"]["result"] == "failed"
     assert disposed_episode["disposition_state"] == "reviewed"
-    html = client.get("/").text
-    assert "Reviewed workspace finding" in html
-    assert "Finding reviewed" in html
-    assert ">Reopen<" in html
 
-    assert client.post(
-        "/findings/disposition",
-        data=_form(reviewed, disposed_episode, action="reopen"),
-        follow_redirects=False,
-    ).status_code == 303
+    service.record_finding_disposition(
+        target_event=target,
+        action="reopen",
+        expected_revision=1,
+        note=None,
+        idempotency_key="op-reopen",
+    )
     reopened = client.get("/tasks").json()
     assert reopened["summary"]["total_open_finding_count"] == 1
     assert _unassigned_episode(reopened)["revision"] == 2
@@ -404,26 +307,34 @@ def test_disposition_persists_across_dashboard_restart_with_a_new_action_token(
     store_root = tmp_path / "state"
     service = SentinelService(store_root)
     _record_check(service)
+    target = _latest_failed_target(service)
     first_client = TestClient(create_local_api_app(store_dir=store_root))
     initial = first_client.get("/tasks").json()
     episode = _unassigned_episode(initial)
-    assert first_client.post(
-        "/findings/disposition",
-        data=_form(initial, episode, action="mark_reviewed"),
-        follow_redirects=False,
-    ).status_code == 303
+    service.record_finding_disposition(
+        target_event=target,
+        action="mark_reviewed",
+        expected_revision=0,
+        note=None,
+        idempotency_key="op-review",
+    )
 
     second_client = TestClient(create_local_api_app(store_dir=store_root))
     restored = second_client.get("/tasks").json()
     restored_episode = restored["disposed_unassigned_findings"][0]["episode"]
     assert restored_episode["disposition_state"] == "reviewed"
     assert restored_episode["revision"] == 1
+    # Action tokens are derived from a per-process secret: a restarted
+    # dashboard must issue fresh ones for the same underlying finding.
     assert restored_episode["finding_token"] != episode["finding_token"]
-    assert second_client.post(
-        "/findings/disposition",
-        data=_form(restored, restored_episode, action="reopen"),
-        follow_redirects=False,
-    ).status_code == 303
+
+    service.record_finding_disposition(
+        target_event=target,
+        action="reopen",
+        expected_revision=1,
+        note=None,
+        idempotency_key="op-reopen",
+    )
     reopened = second_client.get("/tasks").json()
     assert _unassigned_episode(reopened)["disposition_state"] == "open"
     assert _unassigned_episode(reopened)["revision"] == 2
@@ -482,38 +393,39 @@ def test_unresolved_work_finding_controls_round_trip(tmp_path: Path) -> None:
         namespace="ns:unresolved",
         summary="The unresolved work check remains failed.",
     )
+    target = _latest_failed_target(service)
 
     client = TestClient(create_local_api_app(store_dir=store_root))
     initial = client.get("/tasks").json()
     assert initial["summary"]["unresolved_open_finding_count"] == 1
-    episode = initial["unresolved_work"][0]["item"]["finding_episodes"][0]
-    initial_html = client.get("/").text
-    assert "Mark reviewed" in initial_html
-    assert "Mark resolved" in initial_html
+    assert initial["unresolved_work"][0]["item"]["finding_episodes"][0]["disposition_state"] == "open"
 
-    assert client.post(
-        "/findings/disposition",
-        data=_form(initial, episode, action="mark_reviewed"),
-        follow_redirects=False,
-    ).status_code == 303
+    service.record_finding_disposition(
+        target_event=target,
+        action="mark_reviewed",
+        expected_revision=0,
+        note=None,
+        idempotency_key="op-review",
+    )
     reviewed = client.get("/tasks").json()
     reviewed_episode = reviewed["unresolved_work"][0]["item"]["finding_episodes"][0]
     assert reviewed["summary"]["unresolved_open_finding_count"] == 0
     assert reviewed_episode["disposition_state"] == "reviewed"
     assert reviewed_episode["failure_event"]["result"] == "failed"
-    assert ">Reopen<" in client.get("/").text
 
-    assert client.post(
-        "/findings/disposition",
-        data=_form(reviewed, reviewed_episode, action="reopen"),
-        follow_redirects=False,
-    ).status_code == 303
+    service.record_finding_disposition(
+        target_event=target,
+        action="reopen",
+        expected_revision=1,
+        note=None,
+        idempotency_key="op-reopen",
+    )
     reopened = client.get("/tasks").json()
     assert reopened["summary"]["unresolved_open_finding_count"] == 1
     assert reopened["unresolved_work"][0]["item"]["finding_episodes"][0]["revision"] == 2
 
 
-def test_hidden_foreign_project_finding_cannot_be_dispositioned(tmp_path: Path) -> None:
+def test_hidden_foreign_project_finding_is_scope_quarantined(tmp_path: Path) -> None:
     own_project = tmp_path / "owner-a" / "repo"
     foreign_project = tmp_path / "owner-b" / "repo"
     store_root = own_project / ".agent-sentinel" / "state"
@@ -542,30 +454,18 @@ def test_hidden_foreign_project_finding_cannot_be_dispositioned(tmp_path: Path) 
         trusted_usage_import=True,
     )
     _record_check(service, session_id=session_id, summary="HIDDEN FOREIGN FINDING")
-    client = TestClient(create_local_api_app(store_dir=store_root))
-    payload = client.get("/tasks").json()
-    assert payload["summary"]["total_open_finding_count"] == 0
 
-    # The form secret is intentionally available to the localhost page. Even
-    # with the exact HMAC for a raw hidden row, the resolver must use only the
-    # canonical scope-quarantined episode index.
-    hidden_target = next(
+    # The raw failed check exists in the evidence stream ...
+    hidden = [
         event
         for event in build_evidence_events(service.list_all_events())
         if event.get("summary") == "HIDDEN FOREIGN FINDING"
-    )
-    crafted_token = _finding_form_token(payload["csrf_token"], hidden_target)
-    assert crafted_token is not None
-    response = client.post(
-        "/findings/disposition",
-        data={
-            "csrf_token": payload["csrf_token"],
-            "finding_token": crafted_token,
-            "action": "mark_reviewed",
-            "expected_revision": "0",
-            "note": "",
-        },
-        follow_redirects=False,
-    )
-    assert response.status_code == 404
-    assert _disposition_rows(service) == []
+    ]
+    assert len(hidden) == 1
+
+    # ... but the /tasks projection quarantines the foreign-project scope, so
+    # no open finding (nor its action token) is ever surfaced for it.
+    client = TestClient(create_local_api_app(store_dir=store_root))
+    payload = client.get("/tasks").json()
+    assert payload["summary"]["total_open_finding_count"] == 0
+    assert payload["unassigned_findings"] == []

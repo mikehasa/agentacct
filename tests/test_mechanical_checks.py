@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-from agentacct.api import _latest_machine_check_events, _task_product_state
 from agentacct.mechanical_checks import build_mechanical_check_events
 from agentacct.task_intelligence import build_task_intelligence
+from agentacct.task_outcome import latest_check_events
 
 
 def _check_envelope(
@@ -143,17 +143,17 @@ def test_mechanical_check_projection_never_copies_command_or_output() -> None:
 
 
 @pytest.mark.parametrize(
-    ("newer_exit_code", "newer_passed", "expected_result", "expected_state"),
+    ("newer_exit_code", "newer_passed", "expected_result", "expected_outcome"),
     [
         (0, True, "passed", "verified"),
-        (2, False, "failed", "open_finding"),
+        (2, False, "failed", "finding"),
     ],
 )
 def test_arrival_sequence_breaks_same_timestamp_rerun_ties_consistently(
     newer_exit_code: int,
     newer_passed: bool,
     expected_result: str,
-    expected_state: str,
+    expected_outcome: str,
 ) -> None:
     older_exit_code = 2 if newer_exit_code == 0 else 0
     older_passed = older_exit_code == 0
@@ -176,10 +176,10 @@ def test_arrival_sequence_breaks_same_timestamp_rerun_ties_consistently(
         first_receipt_sequence=11,
     )
     events = build_mechanical_check_events([newer, older])
-    latest = _latest_machine_check_events({"evidence_events": events})
+    latest = latest_check_events(events)
 
     assert len(latest) == 1
-    assert latest[0][0]["result"] == expected_result
+    assert latest[0]["result"] == expected_result
 
     task = {
         "work_items": [{"latest_status": "completed", "evidence_events": []}],
@@ -187,8 +187,5 @@ def test_arrival_sequence_breaks_same_timestamp_rerun_ties_consistently(
         "sessions": [],
         "usage": {"rows": 0},
     }
-    home_state, _carrier = _task_product_state(task)
     detail = build_task_intelligence(task, public_task_id="task_test", title="Test task")
-    expected_detail = "verified" if expected_state == "verified" else "finding"
-    assert home_state["key"] == expected_state
-    assert detail["states"]["outcome"]["key"] == expected_detail
+    assert detail["states"]["outcome"]["key"] == expected_outcome

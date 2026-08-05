@@ -76,9 +76,9 @@ def test_evidence_json_surfaces_have_projection_parity(tmp_path) -> None:
     assert client.get("/evidence/events/evd_missing").status_code == 404
 
 
-def test_advanced_hub_owns_stable_evidence_and_raw_routes(tmp_path) -> None:
+def test_evidence_claimed_links_route_contract(tmp_path) -> None:
     client = TestClient(create_local_api_app(store_dir=tmp_path / "state"))
-    client.post(
+    response = client.post(
         "/work-events",
         json={
             "source": "codex",
@@ -88,58 +88,20 @@ def test_advanced_hub_owns_stable_evidence_and_raw_routes(tmp_path) -> None:
             "client_session_id": "session-1",
         },
     )
+    assert response.status_code == 200, response.text
 
-    advanced = client.get("/advanced", headers={"accept": "text/html"})
-    assert advanced.status_code == 200
-    assert "Inspect only when you need to" in advanced.text
-    assert "Preview evidence" in advanced.text
-    assert "Preview sources" in advanced.text
-    assert "Latest 1" in advanced.text
-    assert "bounded HTML preview · cap 2,000 records" in advanced.text
-    assert "Indexed evidence" not in advanced.text
-    assert "Evidence projections" in advanced.text
-    assert "Forensic inspectors" in advanced.text
-    for href in (
-        "/raw",
-        "/work-graph",
-        "/evidence-matrix",
-        "/discrepancies",
-        "/cost-outcome-basis",
-        "/evidence/events",
-        "/evidence/claimed-links",
-        "/evidence/status",
-        "/evidence/product",
-    ):
-        assert f'href="{href}"' in advanced.text, href
-    assert '<a class="button secondary button-link" href="/raw">Preview local logs</a>' in advanced.text
+    links = client.get("/evidence/claimed-links")
+    assert links.status_code == 200, links.text
+    assert links.json() == {"claimed_links": []}
 
-    expected = {
-        "/work-graph": "Work Graph",
-        "/evidence-matrix": "Evidence Matrix",
-        "/discrepancies": "Discrepancies",
-        "/cost-outcome-basis": "Cost &amp; Outcome Basis",
-    }
-    for path, title in expected.items():
-        response = client.get(path, headers={"accept": "text/html"})
-        assert response.status_code == 200
-        assert title in response.text
-        assert "Evidence v2" in response.text
-        assert "Indexed evidence" in response.text
-        assert "Preview evidence" not in response.text
-        assert "Preview sources" not in response.text
-        assert "Content-Security-Policy" in response.headers
-        # Advanced is demoted out of the primary nav (Work + Usage only); its
-        # routes stay reachable via the "Advanced home" button + footer link.
-        assert response.text.count('<a class="tab-link') == 2
-        assert 'class="tab-link" href="/">Work</a>' in response.text
-        assert 'class="tab-link" href="/tokens">Usage</a>' in response.text
-        assert ">Control</a>" not in response.text[
-            response.text.index('<nav class="tabs"') : response.text.index("</nav>")
-        ]
-        assert response.text.count('class="tab-link active"') == 0
-        assert '<a class="button secondary button-link" href="/advanced">Advanced home</a>' in response.text
-        assert "only explicitly provider-billed evidence is invoice-backed" in response.text
-        assert "Costs shown anywhere are estimates" not in response.text
+    for state in ("pending", "valid", "invalid"):
+        filtered = client.get("/evidence/claimed-links", params={"validation_state": state})
+        assert filtered.status_code == 200, filtered.text
+        assert filtered.json()["claimed_links"] == []
+
+    assert client.get("/evidence/claimed-links?validation_state=bogus").status_code == 422
+    assert client.get("/evidence/claimed-links?limit=0").status_code == 422
+    assert client.get("/evidence/claimed-links?limit=1001").status_code == 422
 
 
 def test_work_event_validation_cannot_mint_unknown_transport_or_kind(tmp_path) -> None:

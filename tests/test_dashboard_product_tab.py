@@ -1,11 +1,19 @@
-"""Phase 2 Batch B regressions: Product-tab session rollup, work items,
-grouped attention, reconciliation, redaction, and cap notes.
+"""Phase 2 Batch B regressions, retargeted after the HTML display-layer
+retirement: session rollup, work items, grouped attention, reconciliation,
+redaction, and truncation honesty — asserted on the kept JSON surfaces
+(/sessions, /work-items, /attention, /timeline, /overview). The claims are
+the same product truths the old /sessions HTML explorer rendered; only the
+assertion surface moved (the JSON payloads carry the exact same rollup).
 
 All stores are throwaway tmp_path stores (suite conftest guards the real
-dogfood ledger). Every assertion is at the rendered-HTML level — the whole
-point of Batch B is what a first-time user actually sees."""
+dogfood ledger).
 
-import re
+Deleted with the HTML layer (display-only claims with no JSON equivalent):
+attributed-first row ordering (an HTML sort; the JSON rollup is served
+verbatim and ``sort`` is an ignored wire param), the work-items
+"Showing 50 of 51" cap note (the /work-items JSON has no total counter),
+friendly empty-state copy, and HTML escaping of agent-authored titles.
+"""
 
 from fastapi.testclient import TestClient
 
@@ -88,64 +96,30 @@ def _record_section(store_root, *, section_id, title, session, client="codex", s
     )
 
 
-def _product_html(store_root):
-    """Work home `/`: compact state summary plus one deduplicated feed."""
-    client = TestClient(create_local_api_app(store_dir=store_root))
-    response = client.get("/")
+def _api(store_root):
+    return TestClient(create_local_api_app(store_dir=store_root))
+
+
+def _sessions_payload(store_root, query=""):
+    """The /sessions JSON rollup (the one sessions surface since the HTML
+    retirement; the payload is ledger["session_rollup"] served verbatim)."""
+    response = _api(store_root).get(f"/sessions{query}")
     assert response.status_code == 200
-    return response.text
+    return response.json()
 
 
-def _sessions_html(store_root, query=""):
-    """Sessions page (Phase 3.5a: the full rollup, work items, attention,
-    reconciliation, and ledger insights live here; the bare /sessions path
-    without an HTML Accept header stays the JSON rollup). Pass
-    ``query="?days=all"`` when the test's synthetic sessions fall outside
-    the explorer's default 30-day last-activity window (Phase 3.5c)."""
-    client = TestClient(create_local_api_app(store_dir=store_root))
-    response = client.get(f"/sessions{query}", headers={"Accept": "text/html"})
-    assert response.status_code == 200
-    return response.text
-
-
-def _tokens_html(store_root):
-    client = TestClient(create_local_api_app(store_dir=store_root))
-    response = client.get("/tokens")
-    assert response.status_code == 200
-    return response.text
-
-
-def _section_slice(html, section_id, next_section_id):
-    start = html.index(f'id="{section_id}"')
-    end = html.index(f'id="{next_section_id}"')
-    assert start < end
-    return html[start:end]
+def _entry(payload, session_id):
+    matches = [entry for entry in payload["sessions"] if entry["client_session_id"] == session_id]
+    assert len(matches) == 1, f"expected exactly one rollup entry for {session_id}"
+    return matches[0]
 
 
 # ---------------------------------------------------------------------------
-# 2g: summary strip + session rollup rows
+# 2g: summary + session rollup entries
 # ---------------------------------------------------------------------------
 
 
-def test_task_feed_usage_metadata_leads_with_total_tokens(tmp_path):
-    store_root = tmp_path / "state"
-    _trusted_usage(store_root, session="strip-session", input_tokens=100, output_tokens=25, cached_input_tokens=50)
-
-    html = _product_html(store_root)
-
-    # A Task card leads with the full reported total. The workspace usage pulse
-    # keeps the component composition visible separately.
-    card_start = html.index('<article class="work-feed-item">')
-    card = html[card_start : html.index("</article>", card_start)]
-    assert "175 total tokens" in card
-    assert "125 fresh tokens" not in card
-    assert "cache writes" not in card
-    assert "Workspace usage" in html
-    assert "175</strong><span>Total incl. cache" in html
-    assert "Usage snapshot" not in html
-
-
-def test_session_rollup_renders_root_rows_and_never_merged_children(tmp_path):
+def test_session_rollup_groups_child_under_root_and_never_merges_usage(tmp_path):
     store_root = tmp_path / "state"
     _trusted_usage(
         store_root,
@@ -167,32 +141,44 @@ def test_session_rollup_renders_root_rows_and_never_merged_children(tmp_path):
         parent_session=ROOT_UUID,
     )
 
-    html = _sessions_html(store_root)
-    sessions_html = _section_slice(html, "sessions", "work-items")
+    payload = _sessions_payload(store_root)
 
-    # Exactly ONE top-level row: the child nests as a labeled line, never a row.
-    assert sessions_html.count('<details class="session-row">') == 1
-    assert f"<code>{ROOT_UUID[:8]}</code>" in sessions_html
-    # Child usage is a labeled, never-merged descendants line.
-    assert "1 subagent session(s) — not allocated to this session" in sessions_html
-    assert "370 fresh" in sessions_html  # child's own fresh tokens in the line
-    # Parent row's own tokens stay the parent's own usage only.
-    assert "<strong>1,200</strong> fresh" in sessions_html
-    assert "<strong>1,570</strong> fresh" not in sessions_html
-    # Child short label is component-wise, agent- prefix stripped.
-    assert f"{ROOT_UUID[:8]}:abcdef12" in sessions_html
-    # Sessions metric: 1 root-level group of 2 total sessions.
-    assert '<div class="value">1</div>' in sessions_html
-    assert "2 total" in sessions_html
-    # Full session ids never render.
-    assert ROOT_UUID not in html
-    assert CHILD_SESSION not in html
+    # One root-level group of 2 total sessions.
+    assert payload["total_sessions"] == 2
+    assert payload["summary"]["root_sessions"] == 1
+    assert payload["summary"]["child_sessions"] == 1
+
+    root = _entry(payload, ROOT_UUID)
+    child = _entry(payload, CHILD_SESSION)
+
+    # Parent's own tokens stay the parent's own usage only — the child is
+    # NEVER merged in.
+    assert root["usage"]["fresh_tokens"] == 1200
+    assert root["usage"]["fresh_tokens"] != 1570
+    assert child["usage"]["fresh_tokens"] == 370
+
+    # Child usage travels as a labeled, never-allocated descendants block.
+    children_usage = root["related"]["children_usage"]
+    assert children_usage["sessions"] == 1
+    assert children_usage["fresh_tokens"] == 370
+    assert children_usage["total_tokens"] == 370
+    assert root["related"]["child_session_count"] == 1
+
+    # Short labels are component-wise with the agent- prefix stripped, and
+    # the child groups under the root's rollup key.
+    assert root["client_session_id_short"] == ROOT_UUID[:8]
+    assert child["client_session_id_short"] == f"{ROOT_UUID[:8]}:abcdef12"
+    assert root["related"]["child_session_labels"] == [f"{ROOT_UUID[:8]}:abcdef12"]
+    assert child["rollup_group_key"] == root["rollup_group_key"] == f"claude-code::{ROOT_UUID}"
+    assert child["session_kind"] == "child"
+    assert root["session_kind"] == "root"
 
 
 def test_orphan_child_session_stays_visible_with_parent_reference(tmp_path):
     store_root = tmp_path / "state"
     # Child row whose parent never formed a rollup entry: it must stay
-    # visible as a top-level row (never vanish) with a short parent label.
+    # visible as its own rollup entry (never vanish) with a parent reference
+    # carrying the short display label.
     _trusted_usage(
         store_root,
         session=CHILD_SESSION,
@@ -201,129 +187,117 @@ def test_orphan_child_session_stays_visible_with_parent_reference(tmp_path):
         parent_session=ROOT_UUID,
     )
 
-    html = _sessions_html(store_root)
-    sessions_html = _section_slice(html, "sessions", "work-items")
+    payload = _sessions_payload(store_root)
 
-    assert sessions_html.count('<details class="session-row">') == 1
-    assert "child of session <code>" in sessions_html
-    # The related-sessions line is real markup, not double-escaped text.
-    assert "&lt;code&gt;" not in sessions_html
-    # The parent is referenced by short label only.
-    assert ROOT_UUID not in html
+    assert payload["total_sessions"] == 1
+    child = _entry(payload, CHILD_SESSION)
+    assert child["session_kind"] == "child"
+    parent_ref = child["related"]["parent"]
+    assert parent_ref["client_session_id"] == ROOT_UUID
+    # The display label is the short form (HTML consumers must render it).
+    assert parent_ref["label"] == ROOT_UUID[:8]
+    assert child["related"]["relationship_source"] == "importer_recorded_parent_id"
 
 
-def test_sections_only_session_renders_honest_usage_note(tmp_path):
+def test_sections_only_session_carries_honest_usage_note(tmp_path):
     store_root = tmp_path / "state"
     _record_section(store_root, section_id="ghost-work", title="Sections only work", session="sections-only-session")
 
-    html = _sessions_html(store_root)
-    sessions_html = _section_slice(html, "sessions", "work-items")
+    payload = _sessions_payload(store_root)
 
-    assert "Sections recorded; no usage imported" in sessions_html
-    assert "usage unknown for this session — no imported usage rows matched; this is not a zero-cost claim" in sessions_html
-    assert "Sections only work" in sessions_html
-    # Sections-only entries render a dash, never a zero-cost claim.
-    assert "<strong>0</strong> fresh" not in sessions_html
+    entry = _entry(payload, "sections-only-session")
+    assert entry["join"]["state"] == "sections_only"
+    # The exact honest note: usage unknown, never a zero-cost claim.
+    assert entry["usage_note"] == (
+        "usage unknown for this session — no imported usage rows matched; this is not a zero-cost claim"
+    )
+    # No imported usage rows backing any token figure.
+    assert entry["usage"]["rows"] == 0
+    assert [item["title"] for item in entry["work"]["items"]] == ["Sections only work"]
+    assert payload["summary"]["sessions_with_sections_only"] == 1
 
 
-def test_join_state_chips_attributed_and_unjoined_with_reason_title(tmp_path):
+def test_join_states_attributed_and_unjoined_with_reason(tmp_path):
     store_root = tmp_path / "state"
     _trusted_usage(store_root, session="joined-session", input_tokens=500, output_tokens=100, cached_input_tokens=0)
     _record_section(store_root, section_id="joined-work", title="Joined work", session="joined-session")
     _trusted_usage(store_root, session="lonely-session", input_tokens=10, output_tokens=5, cached_input_tokens=0)
 
-    html = _sessions_html(store_root)
-    sessions_html = _section_slice(html, "sessions", "work-items")
+    payload = _sessions_payload(store_root)
 
-    assert ">Attributed</span>" in sessions_html
-    assert ">No MCP context</span>" in sessions_html
-    # The join reason travels on the chip's title attribute.
-    assert '"status status-ready" title="' in sessions_html
-    # Attributed-sessions fraction in the strip.
-    assert '<div class="value">1 of 2</div>' in html
-    # Attributed detail names the strategy at its confidence.
-    assert "Joined work" in sessions_html
-    assert "confidence" in sessions_html
+    joined = _entry(payload, "joined-session")
+    lonely = _entry(payload, "lonely-session")
 
-
-def test_session_rows_order_attributed_first(tmp_path):
-    store_root = tmp_path / "state"
-    # Newest activity but unattributed…
-    _trusted_usage(store_root, session="new-unjoined", input_tokens=50, output_tokens=10)
-    # …versus older attributed session: attributed still renders first.
-    _trusted_usage(store_root, session="old-attributed", input_tokens=40, output_tokens=8)
-    _record_section(store_root, section_id="old-work", title="Old attributed work", session="old-attributed")
-
-    html = _sessions_html(store_root)
-    sessions_html = _section_slice(html, "sessions", "work-items")
-
-    # codex tail labels: "old-attributed" -> "tributed", "new-unjoined" -> "unjoined".
-    # Anchor on the session-row <code> label markup: bare "tributed"/"unjoined"
-    # also match the "Attributed sessions" metric card and the "?join=unjoined"
-    # filter pill, which render BEFORE the first row and made the ordering
-    # assertion vacuous. Only session rows render the <code> label.
-    attributed_row_at = sessions_html.index("<code>tributed</code>")
-    unjoined_row_at = sessions_html.index("<code>unjoined</code>")
-    assert attributed_row_at < unjoined_row_at
+    assert joined["join"]["state"] == "attributed"
+    assert lonely["join"]["state"] == "unjoined"
+    # The join reason travels with the state (the HTML chip's title text).
+    assert lonely["join"]["reason"]
+    # Attributed-sessions fraction.
+    assert payload["summary"]["attributed_sessions"] == 1
+    assert payload["summary"]["total_sessions"] == 2
+    # Attributed detail names the work item at a stated confidence.
+    attributed_work = joined["join"]["attributed_work"]
+    assert len(attributed_work) == 1
+    assert attributed_work[0]["title"] == "Joined work"
+    assert attributed_work[0]["join_confidence"] == "high"
+    assert attributed_work[0]["join_strategy"]
 
 
-def test_session_cap_note_only_when_truncated(tmp_path):
+def test_sessions_limit_slices_but_total_stays_honest(tmp_path):
     store_root = tmp_path / "state"
     for index in range(41):
         _trusted_usage(store_root, session=f"bulk-session-{index:03d}", input_tokens=10, output_tokens=1, cached_input_tokens=0)
 
-    html = _sessions_html(store_root)
-    sessions_html = _section_slice(html, "sessions", "work-items")
+    # limit slices sessions[] only; total_sessions always describes the full
+    # store, so truncation can never be silent (the JSON form of the old
+    # "Showing 40 of 41" cap note).
+    truncated = _sessions_payload(store_root, query="?limit=40")
+    assert len(truncated["sessions"]) == 40
+    assert truncated["total_sessions"] == 41
+    # ``limit`` is a real JSON param, never flagged as an ignored HTML param.
+    assert "ignored_html_params" not in truncated
 
-    assert "Showing 40 of 41 top-level sessions." in sessions_html
-    assert sessions_html.count('<details class="session-row">') == 40
+    full = _sessions_payload(store_root)
+    assert len(full["sessions"]) == 41
+    assert full["total_sessions"] == 41
 
 
 # ---------------------------------------------------------------------------
-# 2h: work items table
+# 2h: work items
 # ---------------------------------------------------------------------------
 
 
-def test_work_items_attributed_first_dash_for_zero_and_encoded_href(tmp_path):
+def test_work_items_usage_attribution_and_namespaced_id_resolution(tmp_path):
     store_root = tmp_path / "state"
     _trusted_usage(store_root, session="attr-session", input_tokens=700, output_tokens=100, cached_input_tokens=20)
     _record_section(store_root, section_id="attributed-work", title="Attributed work item", session="attr-session")
-    # Recorded AFTER (newer updated_at) but without usage: must sort second.
     _record_section(store_root, section_id="usage-less-work", title="Usage-less work item", session="other-session")
 
-    api_client = TestClient(create_local_api_app(store_dir=store_root))
-    html = api_client.get("/sessions", headers={"Accept": "text/html"}).text
-    work_html = _section_slice(html, "work-items", "attention")
+    api_client = _api(store_root)
+    items = api_client.get("/work-items").json()["work_items"]
+    by_title = {item["title"]: item for item in items}
+    assert set(by_title) == {"Attributed work item", "Usage-less work item"}
 
-    assert work_html.index("Attributed work item") < work_html.index("Usage-less work item")
-    # Fresh headline for the attributed item; dash (never 0) for the other.
-    assert "<strong>800</strong> fresh tokens" in work_html
-    assert "Usage unknown / not attributed" in work_html
-    # The attributed cost carries its confidence label (PRD §10.2 — every
-    # cost figure states a confidence).
-    assert "(estimated_from_tokens confidence)" in work_html
-    # JSON links URL-encode the namespaced work_id and resolve.
-    hrefs = re.findall(r'href="(/work-items/[^"]+)"', work_html)
-    assert len(hrefs) == 2
-    assert any("%3A%3A" in href for href in hrefs)
-    for href in hrefs:
-        assert api_client.get(href).status_code == 200
+    attributed = by_title["Attributed work item"]
+    # Fresh headline for the attributed item (cache reads stay separate).
+    assert attributed["usage_fresh_total"] == 800
+    assert attributed["usage_cache_read_total"] == 20
+    assert attributed["linked_usage_records"] == 1
+    # Every cost figure states a confidence (PRD §10.2).
+    assert attributed["estimated_cost_total"] == 0.01
+    assert attributed["cost_confidence_breakdown"] == {"estimated_from_tokens": 1}
 
+    # The usage-less item never carries a zero-cost claim: no linked records.
+    usage_less = by_title["Usage-less work item"]
+    assert usage_less["linked_usage_records"] == 0
+    assert usage_less["join_explanation"]["attributed_usage_count"] == 0
 
-def test_work_items_cap_note_at_fifty(tmp_path):
-    store_root = tmp_path / "state"
-    for index in range(51):
-        _record_section(
-            store_root,
-            section_id=f"bulk-work-{index:03d}",
-            title=f"Bulk work {index:03d}",
-            session=f"bulk-work-session-{index:03d}",
-        )
-
-    html = _sessions_html(store_root)
-    work_html = _section_slice(html, "work-items", "attention")
-
-    assert "Showing 50 of 51 work items." in work_html
+    # work_id is namespaced client::session::section_id and resolves.
+    for item in items:
+        assert "::" in item["work_id"]
+        response = api_client.get(f"/work-items/{item['work_id']}")
+        assert response.status_code == 200
+        assert response.json()["work_item"]["work_id"] == item["work_id"]
 
 
 # ---------------------------------------------------------------------------
@@ -331,31 +305,47 @@ def test_work_items_cap_note_at_fifty(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_attention_headline_is_group_count_with_anchor_and_bounded_examples(tmp_path):
+def test_attention_groups_by_cause_with_bounded_redacted_examples(tmp_path):
     store_root = tmp_path / "state"
     for index in range(30):
         _trusted_usage(store_root, session=f"noise-session-{index:02d}", input_tokens=10, output_tokens=2, cached_input_tokens=0)
 
-    html = _sessions_html(store_root)
+    api_client = _api(store_root)
+    response = api_client.get("/attention")
+    assert response.status_code == 200
+    payload = response.json()
 
-    # Strip metric: headline number = GROUP count, raw item count in the note.
-    assert '<a href="#attention">1</a>' in html
-    assert "30 item(s) grouped by cause" in html
-    attention_html = _section_slice(html, "attention", "reconciliation")
-    assert "30 usage row(s) have no work context" in attention_html
-    # Bounded, pre-redacted example refs (never one line per flooded row).
-    assert attention_html.count("e.g. ") == 3
-    assert "1 cause group(s) · 30 item(s)" in html
+    # ONE cause group for the flood; the raw item count travels alongside.
+    assert payload["total_items"] == 30
+    groups = payload["attention_groups"]
+    assert len(groups) == 1
+    group = groups[0]
+    assert group["cause"] == "usage_truth_without_mcp_context"
+    assert group["count"] == 30
+    assert group["title"] == "30 usage row(s) have no work context"
+    # Bounded, pre-redacted example refs (never one entry per flooded row).
+    assert len(group["example_refs"]) == 3
+    # Labels are pre-redacted short session tails — full ids never appear.
+    assert "noise-session-" not in response.text
+
+    overview = api_client.get("/overview").json()["overview"]
+    assert overview["attention_group_count"] == 1
+    assert overview["attention_item_count"] == 30
+    assert overview["attention_counts"] == {"usage_truth_without_mcp_context": 30}
 
 
 def test_attention_empty_state(tmp_path):
     store_root = tmp_path / "state"
     SentinelService(store_root)
 
-    html = _sessions_html(store_root)
+    api_client = _api(store_root)
+    payload = api_client.get("/attention").json()
+    assert payload["total_items"] == 0
+    assert payload["attention_groups"] == []
 
-    assert "No reconciliation attention items." in html
-    assert '<a href="#attention">0</a>' in html
+    overview = api_client.get("/overview").json()["overview"]
+    assert overview["attention_group_count"] == 0
+    assert overview["attention_item_count"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -363,7 +353,7 @@ def test_attention_empty_state(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_reconciliation_shows_attributed_row_among_121_unattributed(tmp_path):
+def test_reconciliation_keeps_attributed_row_visible_among_121_unattributed(tmp_path):
     store_root = tmp_path / "state"
     for index in range(121):
         _trusted_usage(
@@ -377,39 +367,48 @@ def test_reconciliation_shows_attributed_row_among_121_unattributed(tmp_path):
     _trusted_usage(store_root, session="honest-session", input_tokens=42, output_tokens=8, cached_input_tokens=0, cost=0.001)
     _record_section(store_root, section_id="honest-work", title="Attributed marker section", session="honest-session")
 
-    html = _sessions_html(store_root)
-    recon_html = _section_slice(html, "reconciliation", "ledger-insights")
+    api_client = _api(store_root)
+    timeline = api_client.get("/timeline?limit=500").json()["timeline"]
 
-    # The attributed row is visible in the rendered table…
-    assert "Attributed marker section" in recon_html
-    assert ">Attributed</span>" in recon_html
-    # …ahead of the unattributed flood…
-    assert recon_html.index("Attributed marker section") < recon_html.index("Usage without MCP context")
-    # …and the cap is announced, never silent.
-    assert "Showing 120 of 122 usage rows." in recon_html
+    usage_rows = [entry for entry in timeline if entry["event_kind"] == "usage"]
+    assert len(usage_rows) == 122
+    # The single attributed row never drowns: it stays joined to its work item.
+    attributed_rows = [row for row in usage_rows if row["work_id"] == "codex::honest-session::honest-work"]
+    assert len(attributed_rows) == 1
+    assert attributed_rows[0]["join_confidence"] == "high"
+    assert attributed_rows[0]["tokens_fresh"] == 50
+    unjoined_rows = [row for row in usage_rows if row["join_strategy"] == "unjoined"]
+    assert len(unjoined_rows) == 121
+    # The work event itself is present under its recorded title.
+    assert any(entry["event_kind"] == "work" and entry["title"] == "Attributed marker section" for entry in timeline)
+
+    overview = api_client.get("/overview").json()["overview"]
+    assert overview["usage_without_mcp_context_count"] == 121
 
 
-def test_reconciliation_no_cap_note_below_cap_and_fresh_tokens_cell(tmp_path):
+def test_reconciliation_row_reports_fresh_and_cache_read_tokens_separately(tmp_path):
     store_root = tmp_path / "state"
     _trusted_usage(store_root, session="recon-session", input_tokens=100, output_tokens=25, cached_input_tokens=50)
 
-    html = _sessions_html(store_root)
-    recon_html = _section_slice(html, "reconciliation", "ledger-insights")
+    timeline = _api(store_root).get("/timeline?limit=500").json()["timeline"]
+    usage_rows = [entry for entry in timeline if entry["event_kind"] == "usage"]
+    assert len(usage_rows) == 1
+    row = usage_rows[0]
 
-    assert "Showing" not in recon_html
-    assert "125 fresh tokens" in recon_html
-    assert "175 total incl. 50 cache reads" in recon_html
-    # Session id renders as the ledger's short label only (codex tail rule).
-    assert "<code>-session</code>" in recon_html
-    assert "recon-session" not in recon_html
+    # Fresh vs cache-read never blur: 125 fresh, 175 total incl. 50 cache reads.
+    assert row["tokens_fresh"] == 125
+    assert row["tokens_cache_read"] == 50
+    assert row["tokens_cache_creation"] == 0
+    assert row["tokens"] == 175
+    assert row["join_strategy"] == "unjoined"
 
 
 # ---------------------------------------------------------------------------
-# Redaction, empty store, escaping
+# Redaction and diagnostic-noise exclusion
 # ---------------------------------------------------------------------------
 
 
-def test_product_tab_redacts_paths_full_ids_and_doctor_noise(tmp_path):
+def test_product_payloads_redact_paths_and_exclude_doctor_noise(tmp_path):
     store_root = tmp_path / "state"
     _trusted_usage(
         store_root,
@@ -427,71 +426,32 @@ def test_product_tab_redacts_paths_full_ids_and_doctor_noise(tmp_path):
         }
     )
 
-    # The sweep covers every product page the sections moved to (3.5a split).
-    api_client = TestClient(create_local_api_app(store_dir=store_root))
-    pages = {
-        "/": _product_html(store_root),
-        "/sessions": _sessions_html(store_root),
-        "/tokens": api_client.get("/tokens").text,
-    }
-    for page, html in pages.items():
-        # No absolute paths anywhere; the pre-redacted last segment is allowed.
-        assert "/Users/" not in html, page
-        # Full session ids appear nowhere outside href addresses (locked
-        # decision: the namespaced work_id in /work-items hrefs is an
-        # address, not display).
-        displayed = re.sub(r'href="[^"]*"', 'href=""', html)
-        assert ROOT_UUID not in displayed, page
-        assert OTHER_UUID not in displayed, page
-        # Chronicle's own diagnostic events never reach a product page.
-        assert "mcp_doctor_test" not in html, page
-        assert "Doctor test" not in html, page
-        assert "doctor self-test event" not in html, page
-    for page in ("/", "/sessions"):
-        assert "secret-project" in pages[page], page
-        displayed = re.sub(r'href="[^"]*"', 'href=""', pages[page])
-        if page == "/sessions":
-            assert ROOT_UUID[:8] in displayed
-        else:
-            assert ROOT_UUID[:8] not in displayed
+    api_client = _api(store_root)
+    sessions_response = api_client.get("/sessions")
+    timeline_response = api_client.get("/timeline?limit=500")
+    work_items_response = api_client.get("/work-items")
 
+    for response in (sessions_response, timeline_response, work_items_response):
+        assert response.status_code == 200
+        # No absolute paths anywhere; only the pre-redacted last segment may
+        # survive as the project label.
+        assert "/Users/" not in response.text
+        # Chronicle's own diagnostic events never reach a product surface.
+        assert "mcp_doctor_test" not in response.text
+        assert "doctor self-test event" not in response.text
 
-def test_empty_store_renders_friendly_empty_states(tmp_path):
-    store_root = tmp_path / "state"
-    SentinelService(store_root)
-
-    overview_html = _product_html(store_root)
-    sessions_html = _sessions_html(store_root)
-
-    assert "No work or local activity has been recorded for this workspace yet." in overview_html
-    assert "No sessions yet." not in overview_html
-    assert "No sessions yet." in sessions_html
-    assert "No MCP section work items yet." in sessions_html
-    assert "No reconciliation attention items." in sessions_html
-    assert "No imported usage recorded yet." in sessions_html
-    assert '<div class="value">Usage unavailable</div>' in sessions_html
-    # No table is truncated, so no cap note may render on either page.
-    assert "Showing" not in overview_html
-    assert "Showing" not in sessions_html
-
-
-def test_new_sections_escape_agent_authored_titles(tmp_path):
-    store_root = tmp_path / "state"
-    _trusted_usage(store_root, session="xss-session", input_tokens=10, output_tokens=2, cached_input_tokens=0)
-    _record_section(
-        store_root,
-        section_id="xss-work",
-        title="<script>alert(1)</script>Evil title",
-        session="xss-session",
-    )
-
-    for html in (_product_html(store_root), _sessions_html(store_root)):
-        assert "<script>alert(1)</script>" not in html
-        assert "&lt;script&gt;alert(1)&lt;/script&gt;Evil title" in html
+    # The project label is pre-redacted at the data level to the last segment.
+    payload = sessions_response.json()
+    root = _entry(payload, ROOT_UUID)
+    assert root["project"] == "secret-project"
+    # The short display label rides next to the full machine-local id
+    # (full ids on the JSON wire are addresses by locked decision; HTML/TUI
+    # consumers must render client_session_id_short).
+    assert root["client_session_id_short"] == ROOT_UUID[:8]
 
 
 # ---------------------------------------------------------------------------
-# Instrumentation markers: pre-instrumentation chip + "Context after install"
+# Instrumentation markers: pre/post state + "Context after install" KPI
 # ---------------------------------------------------------------------------
 
 
@@ -512,44 +472,46 @@ def _instrumentation_marker(store_root, *, client="claude-code", installed_at, s
     )
 
 
-def test_pre_instrumentation_chip_neutral_and_post_keeps_bare_no_context(tmp_path):
-    from datetime import datetime
-
+def test_pre_instrumentation_state_neutral_and_post_keeps_bare_unjoined(tmp_path):
     store_root = tmp_path / "state"
     marker_at = 1_700_000_000.0
     _instrumentation_marker(store_root, client="claude-code", installed_at=marker_at)
     _trusted_usage(store_root, session="pre-session", client="claude-code", started_at=marker_at - 3600.0)
     _trusted_usage(store_root, session="post-session", client="claude-code", started_at=marker_at + 3600.0)
 
-    html = _sessions_html(store_root, query="?days=all")
-    sessions_html = _section_slice(html, "sessions", "work-items")
+    payload = _sessions_payload(store_root)
 
-    # Pre-install session: neutral chip (status-found, absent context is the
-    # EXPECTED state, not a gap) with the install-date explanation on title.
-    assert "Pre-instrumentation — recording was not installed when this session ran" in sessions_html
-    installed_date = datetime.fromtimestamp(marker_at).strftime("%Y-%m-%d")
-    assert (
-        f"Recording instructions for Claude Code were installed {installed_date}; "
-        "this session started before that, so no MCP work context could have been recorded."
-    ) in sessions_html
-    pre_chip_start = sessions_html.index("Pre-instrumentation —")
-    chip_open = sessions_html.rindex('<span class="status ', 0, pre_chip_start)
-    assert 'class="status status-found"' in sessions_html[chip_open:pre_chip_start]
-    # Post-install session with no context keeps today's bare chip unchanged.
-    assert ">No MCP context</span>" in sessions_html
+    # Pre-install session: absent context is the EXPECTED state, labeled as
+    # pre_instrumentation with the marker time and its derivation basis.
+    pre = _entry(payload, "pre-session")
+    assert pre["instrumentation_state"] == "pre_instrumentation"
+    assert pre["instrumentation_state_basis"] == "session_start_vs_marker"
+    assert pre["instrumentation_installed_at"] == marker_at
+    # Post-install session with no context keeps today's bare unjoined state.
+    post = _entry(payload, "post-session")
+    assert post["instrumentation_state"] == "post_instrumentation"
+    assert post["instrumentation_state_basis"] == "session_start_vs_marker"
+    assert post["join"]["state"] == "unjoined"
+
+    instrumentation = payload["summary"]["instrumentation"]
+    assert instrumentation["pre_instrumentation_sessions"] == 1
+    assert instrumentation["post_instrumentation_sessions"] == 1
+    assert instrumentation["markers_by_client"]["claude-code"]["installed_at"] == marker_at
 
 
-def test_context_after_install_metric_kpi_fraction_and_no_marker_note(tmp_path):
-    # Without any marker the KPI is ABSENT: a muted setup note, never a rate.
+def test_context_after_install_kpi_fraction_and_no_marker_absence(tmp_path):
+    # Without any marker the KPI is ABSENT: no rate is ever invented.
     bare_store = tmp_path / "bare-state"
     _trusted_usage(bare_store, session="uninstrumented-session", client="claude-code")
-    bare_html = _tokens_html(bare_store)
-    assert "No instrumentation marker recorded" in bare_html
-    assert "`agentacct setup instructions`" in bare_html
-    assert "setup mark-instrumented" in bare_html
-    assert "post-install top-level sessions have MCP context" not in bare_html
+    bare = _sessions_payload(bare_store)
+    bare_instrumentation = bare["summary"]["instrumentation"]
+    assert bare_instrumentation["markers_by_client"] == {}
+    assert bare_instrumentation["post_context_kpi"]["post_sessions"] == 0
+    assert bare_instrumentation["post_context_kpi"]["context_rate"] is None
+    assert _entry(bare, "uninstrumented-session")["instrumentation_state"] == "unknown"
+    assert bare_instrumentation["unknown_sessions"] == 1
 
-    # With a marker: 1 pre + 2 post (one with a section) -> "1 of 2".
+    # With a marker: 1 pre + 2 post (one with a section) -> 1 of 2.
     store_root = tmp_path / "state"
     marker_at = 1_700_000_000.0
     _instrumentation_marker(store_root, client="claude-code", installed_at=marker_at)
@@ -558,14 +520,25 @@ def test_context_after_install_metric_kpi_fraction_and_no_marker_note(tmp_path):
     _record_section(store_root, section_id="post-work", title="Post-install work", session="post-context", client="claude-code")
     _trusted_usage(store_root, session="post-bare", client="claude-code", started_at=marker_at + 7200.0)
 
-    html = _tokens_html(store_root)
+    payload = _sessions_payload(store_root)
+    kpi = payload["summary"]["instrumentation"]["post_context_kpi"]
+    assert kpi["post_sessions"] == 2
+    assert kpi["post_with_context"] == 1
+    assert kpi["context_rate"] == 0.5
+    assert kpi["clients"] == [
+        {
+            "client": "claude-code",
+            "installed_at": marker_at,
+            "post_sessions": 2,
+            "post_with_context": 1,
+            "context_rate": 0.5,
+        }
+    ]
 
-    assert '<div class="label">Context after install</div><div class="value">1 of 2</div>' in html
-    assert "50% of post-install top-level sessions have MCP context" in html
 
-
-def test_context_after_install_percent_floors_instead_of_rounding_up(tmp_path):
-    """199/200 must render 99%, never a flattering rounded 100%."""
+def test_context_after_install_rate_is_exact_never_flattered(tmp_path):
+    """199/200 must surface as the exact 0.995 fraction, never a rounded 1.0
+    (the retired HTML page floored the percent; the data keeps exactness)."""
     store_root = tmp_path / "state"
     marker_at = 1_700_000_000.0
     _instrumentation_marker(store_root, client="claude-code", installed_at=marker_at)
@@ -610,9 +583,10 @@ def test_context_after_install_percent_floors_instead_of_rounding_up(tmp_path):
             }
         )
 
-    html = _tokens_html(store_root)
-
-    assert '<div class="label">Context after install</div><div class="value">199 of 200</div>' in html
-    assert "99% of post-install top-level sessions have MCP context" in html
-    assert "100% of post-install top-level sessions have MCP context" not in html
-    assert "No instrumentation marker recorded" not in html
+    payload = _sessions_payload(store_root, query="?limit=1000")
+    kpi = payload["summary"]["instrumentation"]["post_context_kpi"]
+    assert kpi["post_sessions"] == 200
+    assert kpi["post_with_context"] == 199
+    assert kpi["context_rate"] == 199 / 200
+    assert kpi["context_rate"] != 1.0
+    assert payload["summary"]["instrumentation"]["markers_by_client"] != {}

@@ -13,7 +13,7 @@ present on THIS machine right now? -- comes from runtime source discovery
 (``discover_usage_sources``) and ingestion health (``IngestionHealthStore``).
 ``agent_capability_manifest()`` feeds the ``agentacct capabilities agents`` CLI
 command (``cli.py``), the dashboard's ``/capabilities/agents`` endpoint
-(``api.py``), and the HTML matrix renderer (``evidence_html.py``); it always
+(``api.py``) and the docs' capability matrix; it always
 returns a validated deep copy.  The evidence behind each rating lives in
 ``docs/adapter-capability-evidence.md``.
 
@@ -915,7 +915,7 @@ def agent_capability_manifest() -> dict[str, Any]:
       The returned dict is a deep copy; mutating it does not affect future calls.
 
     Callers: ``cli.py`` (the ``agentacct capabilities agents`` command),
-    ``api.py`` (the ``/capabilities/agents`` endpoint), and ``evidence_html.py``
+    ``api.py`` (the ``/capabilities/agents`` endpoint) and the docs
     (the matrix renderer).
     """
 

@@ -1,18 +1,17 @@
-"""Phase 3.5b regressions: the Tokens explorer (PRD §5).
+"""Usage-cube and /usage/summary regressions (originally PRD §5 Tokens explorer).
 
 The usage cube (pure aggregation: bucketing, weekly rollup, empty periods,
-distinct-session counting, dominant/mixed cost confidence, unknown-time
-guard); the /usage/summary endpoint (shape, whitelist validation, the locked
-unknown-model-echoes-empty decision, trusted-import-only intake); the rebuilt
-/tokens page (filter URLs, total-first filtered totals, explicit category
-breakdowns, and cache-reporting capability labels); the total-token SVG chart
-(cache-heavy rows affect bar height; a11y pins; empty-store state); and Usage
-page ownership of the chart and ranked breakdowns.
+distinct-session counting, dominant/mixed cost confidence with its shared
+label rule, unknown-time guard, quarantine of non-additive rows,
+cache-reporting capability, stored-cost basis) and the /usage/summary JSON
+endpoint (shape, whitelist validation, the locked unknown-model-echoes-empty
+decision, trusted-import-only intake, range context). The /tokens HTML page
+and its SVG chart were retired with the HTML display layer; the data
+contracts they rendered live on here against the JSON lane.
 
 All stores are throwaway tmp_path stores (suite conftest guards the real
 dogfood ledger)."""
 
-import re
 import time
 from datetime import date, datetime, time as dtime, timedelta
 
@@ -32,7 +31,6 @@ from agentacct.usage_cube import (
     week_start,
 )
 
-HTML_ACCEPT = {"Accept": "text/html"}
 TODAY = date(2026, 7, 10)
 
 
@@ -139,12 +137,6 @@ def _trusted_usage(
 
 def _client(store_root, **kwargs):
     return TestClient(create_local_api_app(store_dir=store_root, **kwargs))
-
-
-def _bar_rect_signature(html: str) -> list[tuple[str, str]]:
-    """(class, height) of every stacked-bar rect, in document order."""
-
-    return re.findall(r'<rect class="(chart-bar [^"]*)" [^>]*height="([0-9.]+)"', html)
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +441,7 @@ def test_usage_summary_range_context_fails_closed_for_unknown_time_history(tmp_p
     assert all_time["range_context"]["history_outside_range"] == []
 
 
-def test_usage_summary_and_tokens_do_not_call_future_rows_preserved_history(tmp_path):
+def test_usage_summary_does_not_call_future_rows_preserved_history(tmp_path):
     store_root = tmp_path / "state"
     future = time.time() + 45 * 24 * 60 * 60
     _trusted_usage(
@@ -463,13 +455,10 @@ def test_usage_summary_and_tokens_do_not_call_future_rows_preserved_history(tmp_
 
     bounded = client.get("/usage/summary?client=hermes").json()
     all_time = client.get("/usage/summary?client=hermes&days=all").json()
-    html = client.get("/tokens?client=hermes").text
 
     assert bounded["by_client"] == []
     assert bounded["range_context"]["history_outside_range"] == []
     assert all_time["by_client"][0]["rows"] == 1
-    assert "Saved history is preserved." not in html
-    assert "Hermes — 1 all-time row(s)" not in html
 
 
 def test_usage_summary_range_context_fails_closed_for_mixed_old_and_future_rows(tmp_path):
@@ -577,22 +566,9 @@ def test_usage_summary_quarantines_huge_codex_descendant_without_hiding_raw_evid
     assert payload["by_client"][0]["additive_rows"] == 1
     assert payload["by_client"][0]["excluded_non_additive_rows"] == 1
 
-    tokens_html = client.get("/tokens?days=all", headers=HTML_ACCEPT).text
-    assert (
-        "1 source-conflicted or lineage-dependent usage row is held out of token and cost totals"
-        in tokens_html
-    )
-    assert "9,000,000,000" not in tokens_html
-    overview_html = client.get("/", headers=HTML_ACCEPT).text
-    assert "Known subtotal incl. cache" in overview_html
-    assert "Known cost subtotal" in overview_html
-
-    # Quarantine is a derived aggregation rule, not deletion: the raw page
-    # labels the row, while the event endpoint still exposes its original
-    # client counters for forensic inspection.
-    raw_html = client.get("/raw", headers=HTML_ACCEPT).text
-    assert "Held from totals" in raw_html
-    assert "81,000,000,000 raw cumulative" in raw_html
+    # Quarantine is a derived aggregation rule, not deletion: the event
+    # endpoint still exposes the row's original client counters for
+    # forensic inspection.
     events = client.get("/events?limit=10").json()["events"]
     child = next(event for event in events if event["metadata"].get("client_session_id") == "codex-child")
     assert child["estimated_input_tokens"] == 9_000_000_000
@@ -626,14 +602,7 @@ def test_all_held_codex_usage_stays_unavailable_not_a_zero_usage_or_cost_claim(t
     assert payload["usage_exclusions"]["non_additive_rows"] == 1
     assert payload["usage_exclusions"]["raw_evidence_preserved"] is True
 
-    tokens_html = client.get("/tokens?days=all", headers=HTML_ACCEPT).text
-    assert "Usage normalization in progress" in tokens_html
-    assert "No saved usage rows in this range yet" not in tokens_html
-    assert "0 total tokens" not in tokens_html
-    assert "$0.00" not in tokens_html
-
-    raw_html = client.get("/raw", headers=HTML_ACCEPT).text
-    assert "Held from totals" in raw_html
+    # Raw evidence stays inspectable even while held out of every subtotal.
     raw_events = client.get("/events?limit=10").json()["events"]
     held = next(event for event in raw_events if event["metadata"].get("client_session_id") == "held-only-child")
     assert held["estimated_input_tokens"] == 7_000_000_000
@@ -718,182 +687,14 @@ def test_usage_summary_uses_trusted_import_rows_only_and_never_scans(tmp_path, m
     assert payload["totals"]["fresh_tokens"] == 125
 
 
-def test_usage_summary_documented_in_raw_debug_endpoints_table(tmp_path):
-    client = _client(tmp_path / "state")
-
-    raw_html = client.get("/raw").text
-
-    assert "/usage/summary" in raw_html
-    assert "Usage cube JSON" in raw_html
-
-
 # ---------------------------------------------------------------------------
-# /tokens explorer page
+# Cache-reporting capability — the cube states reporting status instead of
+# inventing zeros. (The /tokens HTML surface is retired; the JSON data lane
+# keeps the honesty contract.)
 # ---------------------------------------------------------------------------
 
 
-def test_tokens_filter_urls_render_and_filtered_totals_restate_basis(tmp_path):
-    store_root = tmp_path / "state"
-    now = time.time()
-    _trusted_usage(
-        store_root,
-        session="filter-codex",
-        client="codex",
-        input_tokens=100,
-        output_tokens=25,
-        cache_read=9_999,
-        cache_creation_reported=False,
-        started_at=now - 3600,
-    )
-    _trusted_usage(store_root, session="filter-claude", client="claude-code", model="fable-5", input_tokens=500, output_tokens=50, started_at=now - 7200)
-    client = _client(store_root)
-
-    html = client.get("/tokens?client=codex&days=7").text
-
-    # Every filter combination is a URL: pills re-encode the current state.
-    assert 'href="/tokens?client=all&amp;model=all&amp;days=7&amp;granularity=auto&amp;cost_sort=total"' in html
-    assert 'href="/tokens?client=claude-code&amp;model=all&amp;days=7&amp;granularity=auto&amp;cost_sort=total"' in html
-    assert 'href="/tokens?client=codex&amp;model=all&amp;days=30&amp;granularity=auto&amp;cost_sort=total"' in html
-    assert 'href="/tokens?client=codex&amp;model=all&amp;days=7&amp;granularity=weekly&amp;cost_sort=total"' in html
-    assert 'href="/tokens?client=codex&amp;model=fable-5&amp;days=7&amp;granularity=auto&amp;cost_sort=total"' in html
-    # Filtered totals lead with the cache-inclusive volume and estimated cost,
-    # then preserve the component split. Codex does not expose a distinct
-    # cache-write counter, so the UI must say that rather than inventing zero.
-    assert "Filtered totals: <strong>10,124 total tokens</strong> (incl. caches)" in html
-    assert "Breakdown: 100 input after reported cache" in html
-    assert "25 output" in html
-    assert "cache writes not reported by this source" in html
-    assert "9,999 cache reads" in html
-    assert "estimated, not a provider bill" in html
-    # The other client's rows are genuinely filtered out.
-    assert "fable-5" not in html.split("Filtered totals:")[1].split("By model")[0]
-    # Bogus whitelist values fall back to defaults, never a 500.
-    assert client.get("/tokens?client=bogus&days=999&granularity=hourly").status_code == 200
-
-
-def test_tokens_date_window_says_preserved_platform_history_is_not_deleted(tmp_path):
-    store_root = tmp_path / "state"
-    now = time.time()
-    _trusted_usage(
-        store_root,
-        session="current-codex",
-        client="codex",
-        started_at=now - 3600,
-    )
-    _trusted_usage(
-        store_root,
-        session="older-hermes",
-        client="hermes",
-        model="gpt-5.4-mini",
-        started_at=now - 45 * 24 * 60 * 60,
-    )
-    client = _client(store_root)
-
-    default_html = client.get("/tokens").text
-    hermes_html = client.get("/tokens?client=hermes").text
-    all_time_html = client.get("/tokens?client=hermes&days=all").text
-
-    for html in (default_html, hermes_html):
-        assert "Saved history is preserved." in html
-        assert "Hermes — 1 all-time row(s)" in html
-        assert "View all time" in html
-    assert (
-        'href="/tokens?client=hermes&amp;model=all&amp;days=all&amp;granularity=auto&amp;cost_sort=total"'
-        in hermes_html
-    )
-    assert "Saved history is preserved." not in all_time_html
-    assert "Hermes" in all_time_html
-
-
-def test_tokens_unknown_model_renders_empty_result_with_echo(tmp_path):
-    store_root = tmp_path / "state"
-    _trusted_usage(store_root, session="model-echo", started_at=time.time() - 3600)
-    client = _client(store_root)
-
-    html = client.get("/tokens?model=never-imported").text
-
-    assert "<code>never-imported</code> has no saved usage rows" in html
-    assert "never a guess" in html
-    assert "Usage unavailable for this filter." in html
-    assert "token and cost totals are unknown, not zero" in html
-    assert "Filtered totals: <strong>0 total tokens</strong>" not in html
-    assert "No saved usage rows match this filter." in html
-
-
-def test_tokens_observation_only_store_never_claims_zero_usage(tmp_path):
-    store_root = tmp_path / "state"
-    SentinelService(store_root).record_trusted_session_observation(
-        {
-            "source": "codex-local-session-observation-import",
-            "event_type": "session_observed",
-            "run_id": "client_codex_observed_only",
-            "metadata": {
-                "client": "codex",
-                "client_session_id": "observed-only",
-                "source_namespace_fingerprint": "sha256:" + "a" * 64,
-                "started_at": 100.0,
-                "updated_at": 200.0,
-                "source_parse_complete": True,
-            },
-        }
-    )
-
-    html = _client(store_root).get("/tokens?days=all").text
-
-    assert "Usage unavailable for this filter." in html
-    assert "token and cost totals are unknown, not zero" in html
-    assert "0 total tokens" not in html
-    assert "$0.00" not in html
-
-
-def test_tokens_tables_lead_with_total_and_show_component_breakdown(tmp_path):
-    store_root = tmp_path / "state"
-    _trusted_usage(
-        store_root,
-        session="honesty-row",
-        client="claude-code",
-        model="fable-5",
-        cache_creation=10,
-        cache_read=1_000_000,
-        started_at=time.time() - 3600,
-    )
-    client = _client(store_root)
-
-    html = client.get("/tokens").text
-
-    # The old ambiguous bare token column and caption excuse are gone.
-    assert "By agent" not in html
-    assert "include cache reads at full weight" not in html
-    assert "<th>Tokens</th>" not in html
-    # Every aggregate table leads with Total tokens, then shows the same four
-    # input/output/cache-write/cache-read categories.
-    assert "By platform" in html
-    assert "By model" in html
-    assert "By period" in html
-    platform_header = html.index("<th>Platform</th>")
-    assert html.index("<th>Total tokens</th>", platform_header) < html.index(
-        "<th>Input after reported cache</th>", platform_header
-    )
-    assert "<th>Output</th>" in html
-    assert "<th>Cache writes</th>" in html
-    assert "<th>Cache reads</th>" in html
-    # Fix round, cluster A: the By-model cost column renders the cube's
-    # stored-cost basis in ONE confidence-chipped column (the per-component
-    # catalog re-estimates are gone from /tokens).
-    assert "<th>Est. cost</th>" in html
-    assert "<th>Total tokens incl. caches / cost</th>" not in html
-    assert "Tokens incl. caches" in html  # confidence tables label their basis
-    assert "Usage basics" in html  # the confidence tables stay at the bottom
-    # Ranked platform bar exists and uses the lane palette; the platform
-    # badge carries the SAME lane class as bars/chart/legend (batch D
-    # consistency: one lane-color source everywhere).
-    assert 'class="bar-fill lane-claude-code"' in html
-    assert 'class="badge-client lane-claude-code"' in html
-    # The platform/model/period rows lead with the full 1,000,135-token volume.
-    assert "<strong>1,000,135</strong>" in html
-
-
-def test_codex_cache_write_counter_not_reported_renders_as_unknown_not_zero(tmp_path):
+def test_codex_cache_write_counter_not_reported_stays_not_reported_not_zero(tmp_path):
     store_root = tmp_path / "state"
     _trusted_usage(
         store_root,
@@ -907,23 +708,18 @@ def test_codex_cache_write_counter_not_reported_renders_as_unknown_not_zero(tmp_
     )
     client = _client(store_root)
 
-    html = client.get("/tokens?client=codex&days=all").text
-    overview = client.get("/").text
-    platform_table = html[html.index("By platform") : html.index("By model")]
+    totals = client.get("/usage/summary?client=codex&days=all").json()["totals"]
 
-    assert "cache writes not reported by this source" in html
-    assert "Not reported by this source" in platform_table
-    assert "<th>Cache writes</th>" in platform_table
-    assert "cache writes not reported by this source" in overview
-    assert "0 reported cache writes" not in overview
-    assert "Est. API cost" in overview
-    assert "Partial est. cost" not in overview
-    filtered_totals = html[html.index("Filtered totals:") : html.index("By platform")]
-    assert "estimated, not a provider bill" in filtered_totals
-    assert "partial estimate" not in filtered_totals
+    # Codex does not expose a distinct cache-write counter: the cube says so
+    # ("not_reported") instead of presenting a fabricated zero as a report.
+    assert totals["cache_creation_reporting"] == "not_reported"
+    assert totals["cache_creation_unreported_rows"] == 1
+    assert totals["cache_creation_tokens"] == 0
+    assert totals["cache_read_reporting"] == "reported"
+    assert totals["cache_read_tokens"] == 50
 
 
-def test_saved_legacy_row_without_capability_flags_stays_unknown_in_api_and_ui(tmp_path):
+def test_saved_legacy_row_without_capability_flags_stays_unknown_in_api(tmp_path):
     store_root = tmp_path / "state"
     SentinelService(store_root).record_event(
         {
@@ -952,102 +748,16 @@ def test_saved_legacy_row_without_capability_flags_stays_unknown_in_api_and_ui(t
     client = _client(store_root)
 
     summary = client.get("/usage/summary?days=all").json()
-    html = client.get("/tokens?days=all").text
-    overview = client.get("/").text
 
+    # A legacy row saved before the capability flags existed cannot honestly
+    # claim its caches were "reported" or "not reported" — it stays unknown.
     assert summary["totals"]["cache_creation_tokens"] == 10
     assert summary["totals"]["cache_creation_reporting"] == "unknown"
     assert summary["totals"]["cache_read_tokens"] == 40
     assert summary["totals"]["cache_read_reporting"] == "unknown"
-    assert "cache-write reporting capability unknown" in html
-    assert "cache-read reporting capability unknown" in html
-    assert "Reporting capability unknown" in html
-    assert "0 reported cache writes" not in overview
-    assert "0 reported cache reads" not in overview
 
 
-def test_tokens_by_period_table_renders_empty_periods(tmp_path):
-    store_root = tmp_path / "state"
-    now = time.time()
-    _trusted_usage(store_root, session="period-a", started_at=now - 3600)
-    _trusted_usage(store_root, session="period-b", started_at=now - 3 * 86400)
-    client = _client(store_root)
-
-    html = client.get("/tokens?days=7").text
-
-    period_section = html[html.index("By period") :]
-    for offset in range(7):
-        day = (date.today() - timedelta(days=offset)).isoformat()
-        assert day in period_section, day
-
-
-def test_chart_cache_read_heavy_day_changes_total_token_bar(tmp_path):
-    """The §5.3 total-first regression: every reported token category,
-    including cache reads, contributes to the main bar height."""
-
-    now = time.time()
-
-    def seed(store_root, *, heavy_reads):
-        _trusted_usage(store_root, session="chart-a", client="codex", input_tokens=800, output_tokens=200, started_at=now - 3600)
-        _trusted_usage(
-            store_root,
-            session="chart-b",
-            client="claude-code",
-            model="fable-5",
-            input_tokens=400,
-            output_tokens=100,
-            cache_creation=250,
-            cache_read=500_000_000 if heavy_reads else 0,
-            started_at=now - 2 * 86400,
-        )
-
-    plain_store = tmp_path / "plain" / "state"
-    heavy_store = tmp_path / "heavy" / "state"
-    seed(plain_store, heavy_reads=False)
-    seed(heavy_store, heavy_reads=True)
-
-    plain_html = _client(plain_store).get("/tokens").text
-    heavy_html = _client(heavy_store).get("/tokens").text
-
-    plain_bars = _bar_rect_signature(plain_html)
-    heavy_bars = _bar_rect_signature(heavy_html)
-    assert plain_bars, "expected stacked bar rects"
-    assert plain_bars != heavy_bars
-    assert "500,000,750 total tokens" in heavy_html
-    assert "500,000,000 cache reads" in heavy_html
-    assert 'class="chart-read"' not in heavy_html
-
-
-def test_chart_a11y_pins_and_empty_periods_and_empty_store_state(tmp_path):
-    store_root = tmp_path / "state"
-    _trusted_usage(store_root, session="a11y-row", started_at=time.time() - 3600)
-    client = _client(store_root)
-
-    html = client.get("/tokens?days=7").text
-    chart = html[html.index('<figure class="chart" id="tokens-chart">') : html.index("</figure>")]
-    assert 'role="img"' in chart
-    assert 'aria-labelledby="tokens-chart-title tokens-chart-desc"' in chart
-    assert "Total tokens per day, last 7 days, stacked by platform" in chart
-    # The <desc> states the basis in words.
-    assert "every reported input, output, cache-write, and cache-read token" in chart
-    assert "Tooltips show the category breakdown" in chart
-    # Native per-rect tooltips, incl. labeled empty-period hover slots.
-    assert "<title>" in chart
-    assert "no usage rows</title>" in chart
-    assert 'class="chart-hover"' in chart
-    # Legend chips carry the platform lane palette; category detail stays in
-    # the native tooltip instead of creating a second cache-read axis.
-    assert 'class="legend-swatch lane-codex"' in chart
-    assert "Bar height = all reported token categories" in chart
-    assert 'class="chart-read"' not in chart
-
-    # Empty store: an explicit empty state, never an all-zero fake chart.
-    empty_html = _client(tmp_path / "empty-state").get("/tokens").text
-    assert "No saved usage rows in this range yet" in empty_html
-    assert "<svg" not in empty_html
-
-
-def test_tokens_page_redaction_sweep(tmp_path):
+def test_usage_summary_redaction_sweep(tmp_path):
     store_root = tmp_path / "state"
     session_uuid = "ab12cd34-5678-4abc-9def-0123456789ab"
     _trusted_usage(
@@ -1060,32 +770,26 @@ def test_tokens_page_redaction_sweep(tmp_path):
     )
     client = _client(store_root)
 
-    html = client.get("/tokens?days=all").text
+    body = client.get("/usage/summary?days=all").text
 
-    # No absolute paths, no usernames, no session ids (full or short) —
-    # /tokens is pure aggregate. Model names are fine (and required).
-    assert "/Users/" not in html
-    assert "testuser" not in html
-    assert session_uuid not in html
-    assert session_uuid[:8] not in html
-    assert "fable-5" in html
+    # /usage/summary is pure aggregate: no absolute paths, no usernames, no
+    # session ids (full or short). Model names are fine (and required).
+    assert "/Users/" not in body
+    assert "testuser" not in body
+    assert session_uuid not in body
+    assert session_uuid[:8] not in body
+    assert "fable-5" in body
 
 
 # ---------------------------------------------------------------------------
-# Phase 3.5 fix round, cluster A (major): the By-model table renders the
-# cube's STORED-cost basis — the pricing-catalog re-estimate is gone from
-# /tokens — so By platform, By model, filtered totals, the Overview card,
-# and /usage/summary agree on identical filters.
+# Stored-cost basis — by_model carries the cube's STORED cost with its
+# confidence, never a pricing-catalog re-estimate of the same rows.
 # ---------------------------------------------------------------------------
 
 
-def _by_model_slice(html: str) -> str:
-    return html[html.index("By model") : html.index("By period")]
-
-
-def test_by_model_renders_stored_cost_for_unpriced_model_consistently(tmp_path):
-    # Probe scenario 1: an unpriced model whose row carries a client-reported
-    # $5.00 stored cost — every surface must say $5.00, never "No estimate".
+def test_by_model_reports_stored_cost_for_unpriced_model(tmp_path):
+    # An unpriced (not-in-catalog) model whose row carries a client-reported
+    # $5.00 stored cost — the cube must say $5.00, never "no estimate".
     store_root = tmp_path / "state"
     _trusted_usage(
         store_root,
@@ -1097,26 +801,20 @@ def test_by_model_renders_stored_cost_for_unpriced_model_consistently(tmp_path):
     )
     client = _client(store_root)
 
-    html = client.get("/tokens").text
-    by_model = _by_model_slice(html)
-    assert "$5.00" in by_model
-    assert "client_reported confidence" in by_model
-    assert "No estimate" not in by_model
-    # Stored-cost coverage column: rows with a stored cost vs without.
-    assert "1 costed" in by_model
-    assert "$5.00" in html[html.index("By platform") : html.index("By model")]
-    assert "$5.00" in html[html.index("Filtered totals:") : html.index("By platform")]
-    # Overview cost card and the JSON cube agree.
-    assert "$5.00" in client.get("/").text
     summary = client.get("/usage/summary").json()
-    assert summary["by_model"][0]["estimated_cost_usd"] == pytest.approx(5.0)
-    assert summary["by_model"][0]["cost_confidence"] == "client_reported"
+
+    entry = summary["by_model"][0]
+    assert entry["estimated_cost_usd"] == pytest.approx(5.0)
+    assert entry["cost_confidence"] == "client_reported"
+    assert entry["priced_rows"] == 1
+    assert summary["totals"]["estimated_cost_usd"] == pytest.approx(5.0)
+    assert summary["totals"]["cost_confidence"] == "client_reported"
 
 
 def test_by_model_never_replaces_client_reported_cost_with_list_price(tmp_path):
-    # Probe scenario 2: a priced model with a client-reported $50.00 stored
-    # cost — the table must render the stored figure with its confidence
-    # chip, never a silent catalog re-estimate of the same rows.
+    # A catalog-priced model with a client-reported $50.00 stored cost — the
+    # cube must keep the stored figure with its confidence, never a silent
+    # catalog re-estimate (1M input of gpt-5.5 would re-price at $12.50).
     store_root = tmp_path / "state"
     _trusted_usage(
         store_root,
@@ -1130,29 +828,30 @@ def test_by_model_never_replaces_client_reported_cost_with_list_price(tmp_path):
     )
     client = _client(store_root)
 
-    html = client.get("/tokens").text
-    by_model = _by_model_slice(html)
-    assert "$50.00" in by_model
-    assert "client_reported confidence" in by_model
-    assert "$12.50" not in html  # the old list-price re-estimate of 1M input
-    assert "$50.00" in html[html.index("By platform") : html.index("By model")]
     summary = client.get("/usage/summary").json()
-    assert summary["by_model"][0]["estimated_cost_usd"] == pytest.approx(50.0)
+
+    entry = summary["by_model"][0]
+    assert entry["estimated_cost_usd"] == pytest.approx(50.0)
+    assert entry["cost_confidence"] == "client_reported"
+    assert summary["totals"]["estimated_cost_usd"] == pytest.approx(50.0)
 
 
-def test_by_model_row_without_stored_cost_keeps_honest_no_estimate(tmp_path):
+def test_by_model_row_without_stored_cost_stays_honest_none(tmp_path):
     store_root = tmp_path / "state"
     _trusted_usage(
         store_root, session="uncosted-row", model="mystery-model", cost=None, started_at=time.time() - 3600
     )
     client = _client(store_root)
 
-    by_model = _by_model_slice(client.get("/tokens").text)
-    assert "No estimate" in by_model
-    assert "1 uncosted" in by_model
+    summary = client.get("/usage/summary").json()
+
+    entry = summary["by_model"][0]
+    assert entry["estimated_cost_usd"] is None
+    assert entry["priced_rows"] == 0
+    assert entry["unpriced_rows"] == 1
 
 
-def test_partial_cost_sum_is_labeled_with_row_coverage_everywhere(tmp_path):
+def test_partial_cost_sum_exposes_row_coverage_in_every_bucket(tmp_path):
     store_root = tmp_path / "state"
     # Anchor both rows to local midday so they always fall in one day bucket. A
     # bare time.time() offset straddles midnight when the suite runs just after
@@ -1178,198 +877,35 @@ def test_partial_cost_sum_is_labeled_with_row_coverage_everywhere(tmp_path):
     )
     client = _client(store_root)
 
-    html = client.get("/tokens?days=all").text
-    totals = html[html.index("Filtered totals:") : html.index("By platform")]
-
-    assert "$5.00 partial estimate, not a provider bill" in totals
-    assert "1/2 additive rows priced" in totals
-    # Platform, model, and populated period buckets all expose the same
-    # incomplete-row coverage instead of presenting $5.00 as a whole sum.
-    assert html.count("partial estimate · 1/2 rows priced") >= 3
-    assert "1 costed / 1 uncosted" in _by_model_slice(html)
-    assert "Partial est. cost" in client.get("/").text
     summary = client.get("/usage/summary?days=all").json()
+
+    # $5.00 is a partial sum, and every bucket says so via priced/unpriced row
+    # coverage instead of presenting it as a whole-population figure.
     assert summary["totals"]["estimated_cost_usd"] == pytest.approx(5.0)
     assert summary["totals"]["priced_rows"] == 1
     assert summary["totals"]["unpriced_rows"] == 1
-
-
-def test_default_cost_sort_places_complete_buckets_before_partial_sums():
-    entries = [
-        {"model": "partial-high", "estimated_cost_usd": 100.0, "unpriced_rows": 1},
-        {"model": "complete-low", "estimated_cost_usd": 1.0, "unpriced_rows": 0},
-        {"model": "unpriced", "estimated_cost_usd": None, "unpriced_rows": 1},
-    ]
-
-    ordered = sorted(entries, key=api_module._tokens_by_model_sort_key("total"), reverse=True)
-
-    assert [entry["model"] for entry in ordered] == ["complete-low", "partial-high", "unpriced"]
-
-
-# ---------------------------------------------------------------------------
-# Phase 3.5 fix round, cluster C (major): chart/table truth — the cap note
-# never claims completeness, the Unknown-time row survives the cap, the
-# empty state never lies about saved rows, zero-fresh axes stay unmeasured,
-# and the leading partial weekly bucket says so.
-# ---------------------------------------------------------------------------
-
-
-def test_chart_cap_note_names_both_caps_and_unknown_row_survives_the_cap(tmp_path):
-    store_root = tmp_path / "state"
-    now = time.time()
-    # Two rows ~130 weeks apart gap-fill into >120 weekly periods; one row
-    # with an absurd-but-finite timestamp lands under Unknown time.
-    _trusted_usage(store_root, session="cap-old-row", started_at=now - 130 * 7 * 86400)
-    _trusted_usage(store_root, session="cap-new-row", started_at=now - 3600)
-    _trusted_usage(store_root, session="cap-bad-ts", started_at=1e300)
-    client = _client(store_root)
-
-    html = client.get("/tokens?days=all").text
-
-    assert "the By period table is complete" not in html
-    match = re.search(
-        r"Chart draws the most recent 120 of ([\d,]+) periods; "
-        r"the By period table below shows the most recent 60 of \1\.",
-        html,
-    )
-    assert match, "cap note must state both caps over the same period total"
-    assert f"Showing 60 of {match.group(1)} periods." in html
-    # The Unknown time row is pinned outside the cap — the filtered-totals
-    # pointer ("appear under Unknown time") must always be true.
-    period_section = html[html.index("By period") : html.index("Usage basics")]
-    assert "Unknown time" in period_section
-    assert "appear under Unknown time" in html
-
-
-def test_chart_distinguishes_unknown_time_only_store_from_truly_empty(tmp_path):
-    store_root = tmp_path / "state"
-    _trusted_usage(store_root, session="unknown-only-a", started_at=1e300)
-    _trusted_usage(store_root, session="unknown-only-b", started_at=9e299)
-    client = _client(store_root)
-
-    html = client.get("/tokens?days=all").text
-    figure = html[html.index('<figure class="chart" id="tokens-chart">') : html.index("</figure>")]
-
-    # Rows ARE saved and in range (days=all keeps unknown-time rows in the
-    # totals) — the chart must not claim otherwise or prescribe a re-import.
-    assert "No saved usage rows in this range yet" not in figure
-    assert "usable timestamp" in figure
-    assert "Unknown time" in figure
-    assert "2 usage row(s)" in html  # totals line still counts them
-    assert "Unknown time" in html[html.index("By period") : html.index("Usage basics")]
-
-
-def test_cache_read_only_range_renders_real_total_bar_without_fabricated_ticks(tmp_path):
-    # Cache-read-only usage is still real token volume on the total axis. It
-    # gets a bar while retaining the no-fabricated-fractional-ticks guarantee.
-    store_root = tmp_path / "state"
-    _trusted_usage(
-        store_root,
-        session="reads-only-row",
-        input_tokens=0,
-        output_tokens=0,
-        cache_read=250_000_000,
-        started_at=time.time() - 3600,
-    )
-    client = _client(store_root)
-
-    html = client.get("/tokens?days=7").text
-    chart = html[html.index('<figure class="chart" id="tokens-chart">') : html.index("</figure>")]
-
-    assert ">0.5</text>" not in chart
-    assert ">1</text>" not in chart
-    assert 'class="chart-bar lane-codex"' in chart
-    assert "250,000,000 total tokens" in chart
-    assert "250,000,000 cache reads" in chart
-    assert 'class="chart-read"' not in chart
-    assert ">0</text>" in chart
-
-
-def test_leading_partial_weekly_bucket_hover_says_partial_not_no_usage():
-    # TODAY is a Friday: days=7 starts Saturday 2026-07-04, inside the ISO
-    # week of Monday 2026-06-29 — the leading bucket is a partial week.
-    records = [_cube_record(day=date(2026, 7, 8), session="in-range")]
-    cube = _cube(records, days=7, granularity="weekly")
-
-    svg = api_module._tokens_chart_html(
-        cube,
-        esc=api_module._esc_html,
-        chart_id="t",
-        granularity="weekly",
-        range_label="last 7 days",
-        range_days=7,
-        today=TODAY,
-    )
-
-    assert "Week of 2026-06-29 · partial week (range starts mid-week)" in svg
-    assert "Week of 2026-06-29 · no usage rows" not in svg
+    assert summary["totals"]["cost_complete"] is False
+    by_model = summary["by_model"][0]
+    assert by_model["priced_rows"] == 1
+    assert by_model["unpriced_rows"] == 1
+    by_client = summary["by_client"][0]
+    assert by_client["priced_rows"] == 1
+    assert by_client["unpriced_rows"] == 1
+    populated_periods = [entry for entry in summary["by_period"] if entry["rows"]]
+    assert len(populated_periods) == 1
+    assert populated_periods[0]["priced_rows"] == 1
+    assert populated_periods[0]["unpriced_rows"] == 1
 
 
 # ---------------------------------------------------------------------------
-# Phase 3.5 fix round, cluster D: bounded surfaces — the By-model table and
-# the data-driven filter pill rows are capped with honest notes, and unknown
-# filter values are never echoed into constructed URLs.
+# ONE shared dominant-confidence rule (usage_cube.dominant_cost_confidence,
+# surfaced as the bucket's cost_confidence_label) — weighted by summed cost
+# (fallback row count), "mostly X" only when strictly dominant, ties name
+# both labels and never break toward the higher-authority label.
 # ---------------------------------------------------------------------------
 
 
-def test_by_model_table_capped_at_60_with_honest_note_and_pills_capped_at_12(tmp_path):
-    store_root = tmp_path / "state"
-    now = time.time()
-    for index in range(65):
-        _trusted_usage(store_root, session=f"cap-{index:03d}", model=f"model-{index:03d}", started_at=now - 60 - index)
-    # A model with almost no fresh volume but a large cache-read volume must
-    # rank into the total-token pill top-12 despite sorting last alphabetically.
-    _trusted_usage(
-        store_root,
-        session="cap-busy",
-        model="zz-busy-model",
-        input_tokens=1,
-        output_tokens=0,
-        cache_read=1_000_000,
-        started_at=now - 30,
-    )
-    client = _client(store_root)
-
-    html = client.get("/tokens?days=all").text
-
-    by_model = _by_model_slice(html)
-    assert "Showing 60 of 66 model rows." in html
-    assert by_model.count("<tr>") - 1 == 60  # one header row
-    # Model pills: top 12 by total tokens in the current range + an honest
-    # overflow note; the cache-heavy model ranks in, the tail does not render.
-    model_row = html[html.index('<span class="filter-label">Model</span>') : html.index('<span class="filter-label">Date range</span>')]
-    assert ">zz-busy-model</a>" in model_row
-    assert ">model-010</a>" in model_row
-    assert ">model-011</a>" not in model_row  # rank 13 (after the busy model)
-    assert "and 54 more (use ?model=)" in model_row
-
-
-def test_unknown_model_value_never_echoes_into_urls_and_stays_escaped(tmp_path):
-    store_root = tmp_path / "state"
-    _trusted_usage(store_root, session="echo-guard", started_at=time.time() - 3600)
-    client = _client(store_root)
-
-    evil = "<script>alert(1)</script>"
-    response = client.get("/tokens", params={"model": evil})
-
-    assert response.status_code == 200
-    html = response.text
-    assert "<script>alert(1)</script>" not in html  # escaped everywhere it appears
-    assert "&lt;script&gt;" in html  # the unknown-filter note names it, escaped
-    assert "has no saved usage rows" in html  # the empty-result state renders
-    for href in re.findall(r'href="([^"]*)"', html):
-        assert "script" not in href and "alert" not in href, href
-
-
-# ---------------------------------------------------------------------------
-# Phase 3.5 fix round, cluster E: ONE shared dominant-confidence rule —
-# weighted by summed cost (fallback row count), "mostly X" only when
-# strictly dominant, ties name both labels and never break toward the
-# higher-authority label.
-# ---------------------------------------------------------------------------
-
-
-def test_confidence_tie_renders_mixed_naming_both_never_mostly():
+def test_confidence_tie_labels_mixed_naming_both_never_mostly():
     records = [
         _cube_record(session="tie-a", day=TODAY, cost=0.05, cost_confidence="provider_billed"),
         _cube_record(session="tie-b", day=TODAY, cost=0.05, cost_confidence="estimated_from_tokens"),
@@ -1377,8 +913,8 @@ def test_confidence_tie_renders_mixed_naming_both_never_mostly():
 
     totals = _cube(records, days=30, granularity="daily")["totals"]
 
-    assert "mostly" not in api_module._bucket_confidence_label(totals)
-    assert api_module._bucket_confidence_label(totals) == (
+    assert "mostly" not in totals["cost_confidence_label"]
+    assert totals["cost_confidence_label"] == (
         "mixed confidence (estimated_from_tokens + provider_billed)"
     )
     # The tie never resolves toward the higher-authority label.
@@ -1386,7 +922,7 @@ def test_confidence_tie_renders_mixed_naming_both_never_mostly():
     assert totals["cost_confidence_mixed"] is True
 
 
-def test_confidence_majority_by_cost_weight_renders_mostly():
+def test_confidence_majority_by_cost_weight_labels_mostly():
     records = [
         _cube_record(session="w-a", day=TODAY, cost=0.99, cost_confidence="estimated_from_tokens"),
         _cube_record(session="w-b", day=TODAY, cost=0.01, cost_confidence="client_reported"),
@@ -1394,7 +930,7 @@ def test_confidence_majority_by_cost_weight_renders_mostly():
 
     totals = _cube(records, days=30, granularity="daily")["totals"]
 
-    assert api_module._bucket_confidence_label(totals) == "mixed confidence (mostly estimated_from_tokens)"
+    assert totals["cost_confidence_label"] == "mixed confidence (mostly estimated_from_tokens)"
 
 
 def test_confidence_weighting_uses_cost_not_row_counts():
@@ -1407,46 +943,25 @@ def test_confidence_weighting_uses_cost_not_row_counts():
 
     totals = _cube(records, days=30, granularity="daily")["totals"]
 
-    assert api_module._bucket_confidence_label(totals) == "mixed confidence (mostly client_reported)"
+    assert totals["cost_confidence_label"] == "mixed confidence (mostly client_reported)"
 
 
-def test_confidence_single_bucket_renders_plain_label():
+def test_confidence_single_bucket_labels_plain():
     records = [_cube_record(session="solo", day=TODAY, cost=0.10, cost_confidence="estimated_from_tokens")]
 
     totals = _cube(records, days=30, granularity="daily")["totals"]
 
-    assert api_module._bucket_confidence_label(totals) == "estimated_from_tokens confidence"
-
-
-def test_work_keeps_cost_compact_while_usage_owns_confidence(tmp_path):
-    # Work shows compact per-session estimates. Confidence analysis remains
-    # on Usage and in its JSON contract.
-    store_root = tmp_path / "state"
-    now = time.time()
-    for index in range(5):
-        _trusted_usage(store_root, session=f"conf-{index}", cost=0.01, started_at=now - 600 - index)
-    _trusted_usage(store_root, session="conf-unpriced", cost=None, cost_confidence=None, started_at=now - 300)
-    client = _client(store_root)
-
-    overview = client.get("/").text
-    assert "$0.01 est." in overview
-    assert "estimated_from_tokens confidence" not in overview
-    assert "mixed confidence" not in overview
-    usage_html = client.get("/tokens?days=all").text
-    assert "estimated_from_tokens" in usage_html
-    summary = client.get("/usage/summary?days=all").json()
-    assert summary["totals"]["cost_confidence"] == "estimated_from_tokens"
-    assert summary["totals"]["cost_confidence_mixed"] is False
+    assert totals["cost_confidence_label"] == "estimated_from_tokens confidence"
 
 
 # ---------------------------------------------------------------------------
-# Phase 3.5 fix round, cluster H: one `today` per request — the cube never
-# resolves its own clock on a page path, so a request served across local
-# midnight cannot render two different row populations.
+# One `today` per request — the cube never resolves its own clock on a
+# request path, so a request served across local midnight cannot render two
+# different row populations.
 # ---------------------------------------------------------------------------
 
 
-def test_pages_resolve_today_once_and_pass_it_to_the_cube(tmp_path, monkeypatch):
+def test_usage_summary_resolves_today_once_and_passes_it_to_the_cube(tmp_path, monkeypatch):
     import agentacct.usage_cube as usage_cube_module
 
     store_root = tmp_path / "state"
@@ -1460,122 +975,4 @@ def test_pages_resolve_today_once_and_pass_it_to_the_cube(tmp_path, monkeypatch)
 
     monkeypatch.setattr(usage_cube_module, "date", _NoClock)
 
-    assert client.get("/tokens").status_code == 200
-    assert client.get("/").status_code == 200
     assert client.get("/usage/summary").status_code == 200
-
-
-# ---------------------------------------------------------------------------
-# Phase 3.5 fix round, cluster L: y-axis labels get a gutter wide enough
-# that >=10M values never clip the leading digit.
-# ---------------------------------------------------------------------------
-
-
-def test_chart_total_axis_labels_fit_the_gutter_at_525m_scale():
-    records = [
-        _cube_record(
-            session="big-day",
-            day=TODAY,
-            input_tokens=20_000_000,
-            output_tokens=5_000_000,
-            cache_read=500_000_000,
-        )
-    ]
-    cube = _cube(records, days=7, granularity="daily")
-
-    svg = api_module._tokens_chart_html(
-        cube,
-        esc=api_module._esc_html,
-        chart_id="t",
-        granularity="daily",
-        range_label="last 7 days",
-        range_days=7,
-        today=TODAY,
-    )
-
-    labels = re.findall(r'<text class="chart-axis-label" x="([0-9.]+)"[^>]*text-anchor="end">([\d,.]+)</text>', svg)
-    # 525M total rounds to the chart's 1B nice ceiling; 500M is its midpoint.
-    assert any(text == "1,000,000,000" for _x, text in labels)
-    assert any(text == "500,000,000" for _x, text in labels)
-    for x, text in labels:
-        # Conservative 11px system-ui advance (~6.5 viewBox units/char): the
-        # right-aligned label must fit entirely inside the viewBox.
-        assert float(x) - len(text) * 6.5 >= 0, (x, text)
-
-
-# ---------------------------------------------------------------------------
-# Phase 7 Usage ownership
-# ---------------------------------------------------------------------------
-
-
-def test_usage_page_owns_the_chart_and_ranked_breakdowns(tmp_path):
-    store_root = tmp_path / "state"
-    now = time.time()
-    # Claude Code has fewer fresh tokens but a huge cache-read pile: total-first
-    # ranking and chart scale must put it ahead of Codex.
-    _trusted_usage(store_root, session="ov-codex", client="codex", input_tokens=250, output_tokens=50, started_at=now - 3600)
-    _trusted_usage(
-        store_root,
-        session="ov-claude",
-        client="claude-code",
-        model="fable-5",
-        input_tokens=100,
-        output_tokens=50,
-        cache_read=800_000_000,
-        started_at=now - 7200,
-    )
-    client = _client(store_root)
-
-    work_html = client.get("/").text
-    usage_html = client.get("/tokens").text
-
-    # Work keeps only a compact saved-usage snapshot. The chart and detailed
-    # rankings have one clear owner: Usage.
-    assert '<figure class="chart"' not in work_html
-    assert "Top platforms · fresh tokens" not in work_html
-    assert '<figure class="chart" id="tokens-chart">' in usage_html
-    assert "Total tokens per day, last 30 days, stacked by platform" in usage_html
-    assert "By platform" in usage_html
-    assert "By model" in usage_html
-    platforms_table = usage_html[usage_html.index("By platform") : usage_html.index("By model")]
-    # Claude Code leads on total volume because cache reads count in the total.
-    assert platforms_table.index("Claude Code") < platforms_table.index("Codex")
-    assert "800,000,000" in platforms_table
-    assert "fable-5" in usage_html
-    assert "gpt-5.5" in usage_html
-
-
-def test_usage_range_empty_state_stays_on_usage_page(tmp_path):
-    store_root = tmp_path / "state"
-    # A single OLD row: store totals exist, but the 30-day window is empty.
-    _trusted_usage(store_root, session="old-row", started_at=1_700_000_000.0)
-    client = _client(store_root)
-
-    work_html = client.get("/").text
-    usage_html = client.get("/tokens").text
-
-    assert "Usage snapshot" not in work_html
-    assert "No saved usage rows in the last 30 days." not in work_html
-    assert "No saved usage rows in this range yet" in usage_html
-
-
-def test_tokens_page_has_instant_hover_on_chart_and_table_rows(tmp_path):
-    store_root = tmp_path / "state"
-    now = time.time()
-    for d in range(3):
-        _trusted_usage(store_root, session=f"cx{d}", client="codex", model="gpt-5.5", started_at=now - d * 86400 - 100)
-        _trusted_usage(store_root, session=f"cc{d}", client="claude-code", model="opus", started_at=now - d * 86400 - 200)
-    html = _client(store_root).get("/tokens", headers=HTML_ACCEPT).text
-    # Chart gets the same instant no-JS hover as the homepage charts, while
-    # keeping the verbose per-rect <title> and the empty-slot chart-hover.
-    start = html.index('id="tokens-chart"')
-    chart = html[start : html.index("</figure>", start)]
-    assert 'class="ovh-hit"' in chart
-    assert 'class="ovh-tip"' in chart
-    assert ">Total<" in chart
-    assert '<rect class="chart-bar' in chart
-    # Tables highlight rows on hover, scoped to the usage page.
-    assert "#tokens-explorer tbody tr:hover" in html
-    assert "#usage-basics tbody tr:hover" in html
-    # Still zero JavaScript (CSP forbids it).
-    assert "<script" not in html.lower()

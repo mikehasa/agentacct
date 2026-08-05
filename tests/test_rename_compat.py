@@ -534,11 +534,11 @@ def test_frozen_metadata_keys_wire_vocab_and_store_dirs() -> None:
     assert 'x_agent_sentinel_run_id' in proxy_src  # X-Agent-Sentinel-Run-Id header
     assert '"agent_sentinel": {' in _src("hooks.py")  # hook decision key
     # /health now returns the agentacct-branded service string; the pre-rename
-    # value stays ACCEPTED by both recognizers so cross-version upgrades still
-    # recognize each other's dashboards.
+    # value stays ACCEPTED by the activation recognizer so cross-version
+    # upgrades still recognize each other's dashboards. (The read-canary
+    # recognizer was retired with the HTML display layer.)
     assert '"agentacct-local-api"' in _src("api.py")  # health service string (renamed)
     assert "agent-sentinel-local-api" in _src("activation.py")  # legacy still accepted
-    assert "agent-sentinel-local-api" in _src("canonical/read_canary.py")  # legacy still accepted
     assert '"agent_sentinel_pricing_catalog"' in _src("client_usage.py")
     assert '"agent_sentinel_builtin"' in _src("pricing_catalog.py")
     # Store dirs: fresh init keeps writing the pre-rename names forever.

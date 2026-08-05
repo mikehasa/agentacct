@@ -1,16 +1,12 @@
 from __future__ import annotations
 
 import json
-from html import unescape
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-import agentacct.api as api_module
 import agentacct.cli as cli_module
-from agentacct.api import UsageDiscoveryConfig, create_local_api_app
 from agentacct.client_usage import (
     ClientSessionObservation,
     ClientUsageDiscoveryResult,
@@ -45,18 +41,9 @@ def _discovery(tmp_path: Path) -> ClientUsageDiscoveryResult:
     )
 
 
-@pytest.mark.parametrize(
-    "reason",
-    [
-        "source_namespace_conflict",
-        "same_watermark_conflict",
-        "source_watermark_unorderable",
-        "invalid_observation",
-    ],
-)
-def test_cli_import_reports_specific_observation_conflict_reason(
-    tmp_path: Path,
+def _reject_observations(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     reason: str,
 ) -> None:
     discovery = _discovery(tmp_path)
@@ -80,6 +67,23 @@ def test_cli_import_reports_specific_observation_conflict_reason(
         "record_trusted_session_observation",
         reject,
     )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "source_namespace_conflict",
+        "same_watermark_conflict",
+        "source_watermark_unorderable",
+        "invalid_observation",
+    ],
+)
+def test_cli_import_reports_specific_observation_conflict_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reason: str,
+) -> None:
+    _reject_observations(monkeypatch, tmp_path, reason)
     result = CliRunner().invoke(
         cli_module.app,
         [
@@ -119,95 +123,36 @@ def test_cli_import_reports_specific_observation_conflict_reason(
         "invalid_observation",
     ],
 )
-def test_dashboard_import_persists_specific_observation_conflict_health(
+def test_import_persists_specific_observation_conflict_health(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     reason: str,
 ) -> None:
-    discovery = _discovery(tmp_path)
-    monkeypatch.setattr(
-        api_module,
-        "_discover_local_usage",
-        lambda *_args, **_kwargs: discovery,
-    )
-
-    def reject(
-        _service: SentinelService,
-        _event: dict,
-        *,
-        transport: str | None = "internal",
-    ) -> dict:
-        del transport
-        raise SessionObservationConflict(reason, "test conflict")
-
-    monkeypatch.setattr(
-        SentinelService,
-        "record_trusted_session_observation",
-        reject,
-    )
+    _reject_observations(monkeypatch, tmp_path, reason)
     store_dir = tmp_path / "state"
-    service = SentinelService(store_dir)
-    health = IngestionHealthStore(store_dir)
 
-    result = api_module._import_local_usage_events(
-        service,
-        UsageDiscoveryConfig(enabled=True),
-        health,
-        client="codex",
+    result = CliRunner().invoke(
+        cli_module.app,
+        [
+            "usage",
+            "import-local",
+            "--client",
+            "codex",
+            "--store-dir",
+            str(store_dir),
+            "--json",
+        ],
     )
 
-    assert result["session_observation_conflict_rows"] == 1
-    snapshot = health.snapshot()
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["session_observation_conflict_rows"] == 1
+
+    # The non-dry-run import must persist the specific conflict reason to the
+    # ingestion-health store so later readers see it without re-importing.
+    snapshot = IngestionHealthStore(store_dir).snapshot()
     source = snapshot["sources"][0]
     assert source["session_observation_conflict_reasons"] == {reason: 1}
     assert reason in source["error_codes"]
     assert "session_observation_conflict" in source["error_codes"]
     assert snapshot["issues"][0]["code"] == reason
-
-    client = TestClient(create_local_api_app(store_dir=store_dir))
-    home_html = client.get("/").text
-    assert "Open recovery steps" in home_html
-    assert 'href="/advanced#activity-sync-recovery"' in home_html
-    assert str(snapshot["issues"][0]["action"]) in unescape(home_html)
-
-    advanced_html = client.get("/advanced").text
-    assert 'id="activity-sync-recovery"' in advanced_html
-    assert "Codex source recovery" in advanced_html
-    assert str(snapshot["issues"][0]["action"]) in unescape(advanced_html)
-    assert (
-        "agentacct usage import-local --client codex --dry-run --json"
-        in advanced_html
-    )
-    assert 'action="/usage/import-local/codex"' in advanced_html
-    assert "Retry Codex after repair" in advanced_html
-
-
-def test_observation_recovery_post_retries_only_the_selected_source(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    selected_clients: list[str] = []
-
-    def import_one_source(
-        _service: SentinelService,
-        _usage_config: UsageDiscoveryConfig,
-        _health: IngestionHealthStore,
-        *,
-        limit_sessions: int = 500,
-        client: str = "all",
-    ) -> dict[str, int]:
-        del limit_sessions
-        selected_clients.append(client)
-        return {"scanned": 0}
-
-    monkeypatch.setattr(api_module, "_import_local_usage_events", import_one_source)
-    client = TestClient(create_local_api_app(store_dir=tmp_path / "state"))
-
-    response = client.post("/usage/import-local/codex", follow_redirects=False)
-
-    assert response.status_code == 303
-    assert selected_clients == ["codex"]
-    assert client.post(
-        "/usage/import-local/not-a-client",
-        follow_redirects=False,
-    ).status_code == 404

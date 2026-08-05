@@ -12,7 +12,7 @@ This file is written for the CODING AGENT performing the install (Claude Code, C
 agentacct is local-first Agent Work Intelligence for coding agents:
 - a usage ledger of client-reported tokens, imported from the coding agent's own local session files;
 - an MCP work context: sections and events the agent records while working, joined to usage with honest confidence labels;
-- a local dashboard (`agentacct serve`, http://127.0.0.1:8765).
+- a local JSON API (`agentacct serve`, http://127.0.0.1:8765) for scripts and native shells, and `agentacct tui` — the live terminal dashboard.
 
 Hard rules for this install:
 
@@ -83,7 +83,7 @@ agentacct repair
 - `stop` signals only processes whose complete agentacct ownership proof still matches.
 - `repair` clears dead or corrupt owned runtime state without adopting or killing an unknown process.
 
-The dashboard is at http://127.0.0.1:8765 by default. Everything stays local to this machine (the global store by default, or a per-repo `.agent-sentinel/` store under `--scope project`); onboarding neither requests provider API keys nor uploads session data.
+The local JSON API listens at http://127.0.0.1:8765 by default (the TUI reads the store directly and does not need it). Everything stays local to this machine (the global store by default, or a per-repo `.agent-sentinel/` store under `--scope project`); onboarding neither requests provider API keys nor uploads session data.
 
 ## Migration notes (formerly Agent Sentinel)
 
@@ -154,7 +154,7 @@ Replace `hermes` with `opencode` or `openclaw` for those clients.
 - Show the previewed command to the user and ask before modifying global agent configuration, then paste it into that client's own MCP setup flow.
 - For an unlisted MCP-capable client, use `--agent generic` to get a portable stdio server definition.
 
-Every section ends the same way: `agentacct serve` is long-running: start it in the background or hand the command to the user; dashboard at http://127.0.0.1:8765. The dry-run import only previews; drop `--dry-run` (or click the dashboard's "Refresh & save usage" button) when the user wants the ledger populated — reloading a dashboard page writes nothing (the Overview/Tokens/Sessions pages render saved rows only; the read-only scan runs on the Raw data page).
+Every section ends the same way: `agentacct serve` is long-running: start it in the background or hand the command to the user; local JSON API at http://127.0.0.1:8765 (the HTML dashboard is retired — `agentacct tui` is the interactive surface). The dry-run import only previews; drop `--dry-run` when the user wants the ledger populated — API reads never write.
 
 ## What the Task page shows
 
@@ -185,7 +185,7 @@ agentacct control register-agent \
   --argv-json '["/absolute/command","arg"]'
 ```
 
-Then open `http://127.0.0.1:8765/control`, create a pending Task Contract, review its workspace/adapter/checks, and explicitly press **Launch**. Contract creation never starts a process. Workspace-write attempts require an expiring, single-use approval before the supervisor will launch them.
+Then use the control CLI: `agentacct control create-task` creates a pending Task Contract, `agentacct control list`/`status` review its workspace/adapter/checks, and `agentacct control launch` explicitly starts it (state is also readable as JSON at `GET /api/control`). Contract creation never starts a process. Workspace-write attempts require an expiring, single-use approval (`control request-approval` / `control decide-approval`) before the supervisor will launch them.
 
 The same flow is available from the CLI:
 
@@ -228,9 +228,9 @@ agentacct serve --store-dir "$HOME/.agent-sentinel-global/state"
 - Every registration embeds an explicit absolute `--store-dir` on purpose: GUI-launched clients (Claude Code desktop, Codex.app) do not inherit shell environment variables, so `AGENTACCT_STORE_DIR` (or its pre-rename aliases `AGENT_CHRONICLE_STORE_DIR` / `AGENT_SENTINEL_STORE_DIR`) is shell convenience only — never the mechanism.
 - The printed settings example includes `"env": {"ENABLE_TOOL_SEARCH": "auto"}` alongside the hooks — merge that block too (never overwriting env keys the user already has): without it the agentacct MCP tools stay deferred in Claude Code and un-primed sessions record nothing, however well the hooks are wired.
 - REQUIRED cleanup in every repo you switch to global mode: remove the `agentacct` (or pre-rename `agent-chronicle`/`agent-sentinel`) entry from that repo's `.mcp.json` and the `[mcp_servers.agentacct]` (or pre-rename `[mcp_servers.agent-chronicle]` / `[mcp_servers.agent-sentinel]`) block from its `.codex/config.toml` (and stop merging its per-project hooks block) — a project-scope entry silently shadows the user-scope server and pins that repo's MCP context to its old per-project store.
-- Point any `usage watch` / `usage import-local` daemons at the same store, ONE watch daemon per store: `agentacct usage watch --store-dir "$HOME/.agent-sentinel-global/state"`. By default each session is imported once at first observation and never updated; add `--refresh` if the daemon should keep growing sessions' totals current (the dashboard's "Refresh & save usage" replace semantics).
-- REQUIRED to fill the dashboard with work context: `setup instructions` writes a short, idempotent 'record your work as sections' block into `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` (merged inside `<!-- agentacct:begin -->`/`<!-- agentacct:end -->` markers, so your own content is never touched; re-run to update — pre-rename `agent-chronicle:begin` and `agent-sentinel:begin` blocks are recognized and replaced — add `--remove` to strip it, `--dry-run` to preview). Without it, global mode records tokens but almost no work context, because global installs no standing instruction the way a per-project setup does.
-- What you get and what stays behind: one dashboard with machine-wide usage and all NEW work context; MCP context already recorded in per-project stores can be folded in with `agentacct usage merge-store --from <repo>/.agent-sentinel/state --into "$HOME/.agent-sentinel-global/state"` (dedup-safe, additive-only, `--dry-run` first) — or browse an old store in place with `agentacct serve --store-dir <repo>/.agent-sentinel/state --port 8790`.
+- Point any `usage watch` / `usage import-local` daemons at the same store, ONE watch daemon per store: `agentacct usage watch --store-dir "$HOME/.agent-sentinel-global/state"`. By default each session is imported once at first observation and never updated; add `--refresh` if the daemon should keep growing sessions' totals current (replace semantics).
+- REQUIRED to fill the work views (TUI / JSON API) with work context: `setup instructions` writes a short, idempotent 'record your work as sections' block into `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` (merged inside `<!-- agentacct:begin -->`/`<!-- agentacct:end -->` markers, so your own content is never touched; re-run to update — pre-rename `agent-chronicle:begin` and `agent-sentinel:begin` blocks are recognized and replaced — add `--remove` to strip it, `--dry-run` to preview). Without it, global mode records tokens but almost no work context, because global installs no standing instruction the way a per-project setup does.
+- What you get and what stays behind: one store with machine-wide usage and all NEW work context; MCP context already recorded in per-project stores can be folded in with `agentacct usage merge-store --from <repo>/.agent-sentinel/state --into "$HOME/.agent-sentinel-global/state"` (dedup-safe, additive-only, `--dry-run` first) — or inspect an old store in place with `agentacct tui --store-dir <repo>/.agent-sentinel/state` (or `agentacct serve --store-dir … --port 8790` for the JSON API).
 - As with every section: start NEW client sessions after registering — running sessions never see newly added MCP servers or hooks.
 
 ## What this setup can and cannot claim

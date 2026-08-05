@@ -1,27 +1,22 @@
 """Phase 8 integration contract for session-first Tasks.
 
-These tests intentionally exercise the HTTP boundary and the rendered Work
-page together.  The lower-level continuation reducer and pure Task projection
-have their own unit tests; this file protects the product seam that joins them:
-ephemeral CSRF, explicit continuation edits, Task-level usage aggregation, and
-honest ambiguous log evidence.
+The HTML Work page and its POST form handlers were retired; the product seam
+this file protects is now the data lane that replaced them: explicit
+continuation edits recorded through the continuation store, the GET /tasks
+JSON projection (Task-level usage aggregation, honest ambiguous log evidence),
+and the observed-task titles surfaced on GET /api/control.
 """
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
 
-from agentacct.api import DASHBOARD_CSP, create_local_api_app
-from agentacct.event_log import RAW_EVENT_LOG_FILENAME, RawEventLog
+from agentacct.api import create_local_api_app
 from agentacct.service import SentinelService
-from agentacct.task_continuations import (
-    CONTINUATION_ACTIONS_FILENAME,
-    CONTINUATION_STORE_DIRNAME,
-)
+from agentacct.task_continuations import ClientSessionRef, ContinuationTaskStore
 
 
 def _record_usage(
@@ -121,84 +116,21 @@ def _tasks(client: TestClient) -> dict[str, Any]:
     response = client.get("/tasks")
     assert response.status_code == 200
     payload = response.json()
-    assert isinstance(payload.get("csrf_token"), str)
-    assert len(payload["csrf_token"]) >= 32
     assert isinstance(payload.get("tasks"), list)
     assert isinstance(payload.get("summary"), dict)
     return payload
 
 
-def _task_cards(html: str) -> list[str]:
-    return re.findall(
-        r'<article class="work-feed-item(?: [^"]*)?">.*?</article>',
-        html,
-        flags=re.DOTALL,
-    )
+def _observed_task_titles(client: TestClient) -> list[str]:
+    response = client.get("/api/control")
+    assert response.status_code == 200
+    observed = response.json().get("observed_tasks")
+    assert isinstance(observed, list)
+    return [str(row.get("title") or "") for row in observed]
 
 
-def _link_form(csrf_token: str, first: str, second: str) -> dict[str, str]:
-    return {
-        "csrf_token": csrf_token,
-        "client": "codex",
-        "client_session_id": first,
-        "target_client": "codex",
-        "target_client_session_id": second,
-        "confirm_cross_scope": "false",
-    }
-
-
-def test_task_mutations_reject_missing_or_invalid_csrf_without_writing(tmp_path: Path) -> None:
-    store_root = tmp_path / "state"
-    service = SentinelService(store_root)
-    _record_usage(service, session="csrf-chat-a", input_tokens=10, output_tokens=2)
-    _record_usage(service, session="csrf-chat-b", input_tokens=20, output_tokens=3)
-    client = _client(store_root)
-    initial = _tasks(client)
-    assert initial["summary"]["task_count"] == 2
-
-    events_before = RawEventLog(store_root / RAW_EVENT_LOG_FILENAME).read_lines()
-    actions_path = store_root / CONTINUATION_STORE_DIRNAME / CONTINUATION_ACTIONS_FILENAME
-    assert not actions_path.exists()
-
-    missing = _link_form(initial["csrf_token"], "csrf-chat-a", "csrf-chat-b")
-    missing.pop("csrf_token")
-    missing_response = client.post("/tasks/link", data=missing, follow_redirects=False)
-    assert missing_response.status_code == 403
-
-    invalid = _link_form("not-the-issued-token", "csrf-chat-a", "csrf-chat-b")
-    invalid_response = client.post("/tasks/link", data=invalid, follow_redirects=False)
-    assert invalid_response.status_code == 403
-
-    duplicate_form_response = client.post(
-        "/tasks/link",
-        content=(
-            f"csrf_token={initial['csrf_token']}&client=codex&client=claude-code"
-            "&client_session_id=csrf-chat-a&target_client=codex"
-            "&target_client_session_id=csrf-chat-b&confirm_cross_scope=false"
-        ),
-        headers={"content-type": "application/x-www-form-urlencoded"},
-        follow_redirects=False,
-    )
-    assert duplicate_form_response.status_code == 422
-
-    duplicate_json_response = client.post(
-        "/tasks/link",
-        content=(
-            '{"csrf_token":"'
-            + initial["csrf_token"]
-            + '","client":"codex","client":"claude-code",'
-            '"client_session_id":"csrf-chat-a","target_client":"codex",'
-            '"target_client_session_id":"csrf-chat-b","confirm_cross_scope":false}'
-        ),
-        headers={"content-type": "application/json"},
-        follow_redirects=False,
-    )
-    assert duplicate_json_response.status_code == 422
-
-    assert RawEventLog(store_root / RAW_EVENT_LOG_FILENAME).read_lines() == events_before
-    assert not actions_path.exists()
-    unchanged = _tasks(client)
-    assert unchanged["tasks"] == initial["tasks"]
+def _session_ref(session: str, client: str = "codex") -> ClientSessionRef:
+    return ClientSessionRef(client=client, client_session_id=session)
 
 
 def test_link_and_unlink_merge_root_chats_and_count_each_session_usage_once(tmp_path: Path) -> None:
@@ -222,49 +154,37 @@ def test_link_and_unlink_merge_root_chats_and_count_each_session_usage_once(tmp_
     before = _tasks(client)
     assert before["summary"]["task_count"] == 2
 
-    linked_response = client.post(
-        "/tasks/link",
-        data=_link_form(before["csrf_token"], "first-root-chat", "continued-root-chat"),
-        follow_redirects=False,
+    store = ContinuationTaskStore(store_root)
+    result = store.link_sessions(
+        _session_ref("first-root-chat"),
+        _session_ref("continued-root-chat"),
+        confirmed_by="dashboard-user",
     )
-    assert linked_response.status_code == 303
-    assert linked_response.headers["location"].startswith("/")
-    assert linked_response.headers["content-security-policy"] == DASHBOARD_CSP
+    assert result.changed is True
+    assert isinstance(result.task_id, str) and result.task_id.startswith("ctask_")
 
     linked = _tasks(client)
     assert linked["summary"]["task_count"] == 1
     task = linked["tasks"][0]
     assert task["identity_basis"] == "explicit_continuation"
+    assert task["continuation_id"] == result.task_id
     assert task["session_count"] == 2
     assert task["usage"]["fresh_tokens"] == 220
 
-    linked_html = client.get("/").text
-    linked_cards = _task_cards(linked_html)
-    assert len(linked_cards) == 1
-    assert "2 chats linked" in linked_cards[0]
-    assert linked_cards[0].count("220 total tokens") == 1
-
-    unlinked_response = client.post(
-        "/tasks/unlink",
-        data={
-            "csrf_token": linked["csrf_token"],
-            "client": "codex",
-            "client_session_id": "continued-root-chat",
-        },
-        follow_redirects=False,
+    unlink_result = store.unlink_session(
+        result.task_id,
+        _session_ref("continued-root-chat"),
+        confirmed_by="dashboard-user",
     )
-    assert unlinked_response.status_code == 303
-    assert unlinked_response.headers["content-security-policy"] == DASHBOARD_CSP
+    assert unlink_result.changed is True
 
     unlinked = _tasks(client)
     assert unlinked["summary"]["task_count"] == 2
     assert sorted(task["usage"]["fresh_tokens"] for task in unlinked["tasks"]) == [100, 120]
-    unlinked_cards = _task_cards(client.get("/").text)
-    assert len(unlinked_cards) == 2
-    assert all("2 chats linked" not in card for card in unlinked_cards)
+    assert all(task["identity_basis"] == "session_root" for task in unlinked["tasks"])
 
 
-def test_rename_overrides_the_task_card_title(tmp_path: Path) -> None:
+def test_rename_overrides_the_task_title(tmp_path: Path) -> None:
     store_root = tmp_path / "state"
     service = SentinelService(store_root)
     _record_usage(service, session="rename-chat-a", input_tokens=30, output_tokens=5)
@@ -275,37 +195,33 @@ def test_rename_overrides_the_task_card_title(tmp_path: Path) -> None:
         title="Original implementation title",
         session="rename-chat-a",
     )
-    client = _client(store_root)
-    initial = _tasks(client)
-    response = client.post(
-        "/tasks/link",
-        data=_link_form(initial["csrf_token"], "rename-chat-a", "rename-chat-b"),
-        follow_redirects=False,
+    store = ContinuationTaskStore(store_root)
+    linked_result = store.link_sessions(
+        _session_ref("rename-chat-a"),
+        _session_ref("rename-chat-b"),
+        confirmed_by="dashboard-user",
     )
-    assert response.status_code == 303
-    linked = _tasks(client)
-    task_id = linked["tasks"][0]["task_id"]
+    assert linked_result.changed is True
+    assert isinstance(linked_result.task_id, str)
 
-    renamed_response = client.post(
-        "/tasks/rename",
-        data={
-            "csrf_token": linked["csrf_token"],
-            "task_id": task_id,
-            "title": "Renamed migration task",
-        },
-        follow_redirects=False,
+    client = _client(store_root)
+    linked = _tasks(client)
+    assert linked["summary"]["task_count"] == 1
+    task_id = linked["tasks"][0]["task_id"]
+    assert linked["tasks"][0]["title_override"] is None
+    assert _observed_task_titles(client) == ["Original implementation title"]
+
+    rename_result = store.rename_task(
+        linked_result.task_id,
+        "Renamed migration task",
+        confirmed_by="dashboard-user",
     )
-    assert renamed_response.status_code == 303
-    assert renamed_response.headers["content-security-policy"] == DASHBOARD_CSP
+    assert rename_result.changed is True
 
     renamed = _tasks(client)
     assert renamed["tasks"][0]["task_id"] == task_id
     assert renamed["tasks"][0]["title_override"] == "Renamed migration task"
-    headings = re.findall(
-        r'<h3 class="work-feed-title"><a class="task-title-link" href="/tasks/task_[0-9a-f]{32}">([^<]+)</a></h3>',
-        client.get("/").text,
-    )
-    assert headings == ["Renamed migration task"]
+    assert _observed_task_titles(client) == ["Renamed migration task"]
 
 
 def test_claude_root_without_work_uses_explicit_client_session_title(tmp_path: Path) -> None:
@@ -325,16 +241,10 @@ def test_claude_root_without_work_uses_explicit_client_session_title(tmp_path: P
     assert projection["summary"]["task_count"] == 1
     assert projection["tasks"][0]["work_items"] == []
 
-    cards = _task_cards(client.get("/").text)
-    assert len(cards) == 1
-    assert re.search(
-        r'<h3 class="work-feed-title"><a class="task-title-link" href="/tasks/task_[0-9a-f]{32}">Refine billing dashboard</a></h3>',
-        cards[0],
-    )
-    assert "Claude Code task" not in cards[0]
+    assert _observed_task_titles(client) == ["Refine billing dashboard"]
 
 
-def test_untrusted_or_redacted_session_title_never_reaches_tasks_or_home(tmp_path: Path) -> None:
+def test_untrusted_or_redacted_session_title_never_reaches_task_surfaces(tmp_path: Path) -> None:
     store_root = tmp_path / "state"
     service = SentinelService(store_root)
     secret = "PRIVATE prompt-derived text"
@@ -350,17 +260,15 @@ def test_untrusted_or_redacted_session_title_never_reaches_tasks_or_home(tmp_pat
     client = _client(store_root)
 
     projection = _tasks(client)
-    home = client.get("/").text
-
     assert secret not in str(projection)
-    assert secret not in home
-    assert re.search(
-        r'<h3 class="work-feed-title"><a class="task-title-link" href="/tasks/task_[0-9a-f]{32}">Untitled Claude Code chat</a></h3>',
-        home,
-    )
+
+    control_payload = client.get("/api/control")
+    assert control_payload.status_code == 200
+    assert secret not in control_payload.text
+    assert _observed_task_titles(client) == ["Untitled Claude Code chat"]
 
 
-def test_run_id_steps_in_one_root_render_as_nested_work_in_one_task(tmp_path: Path) -> None:
+def test_run_id_steps_in_one_root_group_as_nested_work_in_one_task(tmp_path: Path) -> None:
     store_root = tmp_path / "state"
     service = SentinelService(store_root)
     _record_usage(service, session="gstack-root-chat", input_tokens=120, output_tokens=30)
@@ -391,13 +299,9 @@ def test_run_id_steps_in_one_root_render_as_nested_work_in_one_task(tmp_path: Pa
         }
     ]
 
-    cards = _task_cards(client.get("/").text)
-    assert len(cards) == 1
-    card = cards[0]
-    details_at = card.index('<details class="work-feed-why">')
-    assert card.index("Install gstack for Codex") < details_at
-    assert card.index("Inspect gstack Codex setup") < details_at
-    assert "2 work steps" in card
+    titles = _observed_task_titles(client)
+    assert len(titles) == 1
+    assert titles[0] in {"Install gstack for Codex", "Inspect gstack Codex setup"}
 
 
 def test_common_root_ambiguous_log_donors_group_without_exact_item_attribution(tmp_path: Path) -> None:
@@ -446,10 +350,3 @@ def test_common_root_ambiguous_log_donors_group_without_exact_item_attribution(t
     assert association["client_session"] is None
     assert association["exact_session_id"] is None
     assert association["session_unlinked"] is True
-
-    cards = _task_cards(client.get("/").text)
-    assert len(cards) == 1
-    assert "Install gstack from shared log evidence" in cards[0]
-    assert "60 known subtotal tokens" in cards[0]
-    assert "1 usage row held" in cards[0]
-    assert "attributed usage" not in cards[0]

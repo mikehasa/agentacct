@@ -6,6 +6,35 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **A `/v1` native-shell lane on the local API.** `GET /v1/glance` returns usage
+  windows, provider limits, plan-calibration status, and recent sessions in one
+  versioned, additive-only payload — computed by the exact same functions
+  `agentacct now` and the TUI render. `GET /v1/version` is the daemon/schema
+  handshake. Both sit behind a per-boot bearer token; `agentacct serve` publishes
+  the actual bound port + token in a 0600 discovery file (`<store>/local-api.json`)
+  that a menu bar app or script reads — no configuration, first-alive-writer-wins,
+  re-claimed automatically if the slot frees up.
+
+### Changed
+- **The shared usage view builder moved out of the web module** into
+  `usage_view.py`, so the data layer (TUI, `now`, plan calibration) no longer
+  imports the web server for pure data logic.
+- **Live-view caches now notice the codex namespace bind.** The shared event
+  fingerprint behind the TUI's caches and the glance cache folds in the
+  source-namespace binding fields, so an in-place TOFU bind refreshes live
+  totals immediately instead of waiting for an unrelated event.
+
+### Removed
+- **The HTML browser dashboard.** The web display layer (`/`, `/tokens`, `/raw`,
+  `/advanced`, `/control`, the task pages, and their form handlers) is retired in
+  favor of `agentacct tui` and the local JSON API — every derived view stays
+  available as JSON (`/overview`, `/timeline`, `/sessions`, `/attention`,
+  `/usage/summary`, `/evidence/*`, `GET /tasks`, `GET /api/control`), and the
+  control plane keeps its full CLI (`agentacct control …`). The recording lanes
+  (`/work-events`, `/capture/*`, connectors, `/v1/traces`) are untouched. Also
+  retires the migration-era `canonical verify-read-canary` command.
+
 ## [0.8.1] - 2026-08-05
 
 ### Fixed

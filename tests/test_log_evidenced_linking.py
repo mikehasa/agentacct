@@ -17,13 +17,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from html import escape
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-from agentacct.api import _session_detail_html, _session_join_chip_html, create_local_api_app
+from agentacct.api import create_local_api_app
 from agentacct.cli import app
 from agentacct.client_usage import ClientUsageEvent, discover_claude_code_usage, discover_codex_usage
 from agentacct.context_bridge import build_usage_context_bridge
@@ -1242,9 +1241,6 @@ def test_fabricated_id_conflict_vetoes_both_directions() -> None:
     assert entry["join"]["project_level_context_only"] is False
     listed = entry["work"]["items"][0]
     assert listed["log_evidence_conflict"] is True
-    detail_html = _session_detail_html(entry, escape)
-    assert "id conflict" in detail_html
-    assert fake not in detail_html
     evidence = ledger["insights"]["client_log_evidence"]
     assert evidence["conflicts"] == 1
     assert evidence["implied_session_keys"] == 0
@@ -1438,15 +1434,11 @@ def test_bridge_groups_evidenced_attach_but_caps_at_medium() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Display: chip precedence + residual chip + JSON
+# Rollup join block: evidence block precedence + residual flag + JSON
 # ---------------------------------------------------------------------------
 
 
-def _chip(entry: dict) -> str:
-    return _session_join_chip_html(entry, escape)
-
-
-def test_evidenced_context_chip_with_conflict_note() -> None:
+def test_evidenced_context_block_carries_counts_and_conflicts() -> None:
     fake = "codex-chat-zhe-li-2026-07-05"
     events = [
         _usage_row(event_id="evt_usage_s", evidenced=["evt_a77000000001", "evt_91a100000001"]),
@@ -1468,14 +1460,9 @@ def test_evidenced_context_chip_with_conflict_note() -> None:
     assert block["conflicts"] == 2
     assert block["by_event_type"] == {"client_context_attached": 1, "sentinel_install_check": 1}
     assert entry["join"]["state"] == "unjoined"
-    chip = _chip(entry)
-    assert "MCP context recorded in this session (client-log evidence); not allocated" in chip
-    assert "conflicted with the log evidence" in chip
-    assert "status-needs-import" in chip
-    assert SESSION not in chip and fake not in chip and "/Users/" not in chip and "/tmp" not in chip
 
 
-def test_project_level_context_only_chip_conditions_falsified_in_turn() -> None:
+def test_project_level_context_only_conditions_falsified_in_turn() -> None:
     def _ledger_for(*, client: str = "codex", attach_project: str = "/tmp/projA", with_evidence: bool = False, with_veto: bool = False):
         usage = _usage_row(
             event_id="evt_usage_s",
@@ -1501,35 +1488,30 @@ def test_project_level_context_only_chip_conditions_falsified_in_turn() -> None:
     ledger = _ledger_for()
     entry = _entry(ledger, "codex", SESSION)
     assert entry["join"]["project_level_context_only"] is True
-    chip = _chip(entry)
-    assert "Project-level MCP context only (Codex sessions cannot self-identify)" in chip
-    assert "No usage is allocated" in chip
 
-    # Codex-only by decision: any other client renders the bare chip.
+    # Codex-only by decision: any other client never gets the residual flag.
     claude_entry = _entry(_ledger_for(client="claude-code"), "claude-code", SESSION)
     assert claude_entry["join"]["project_level_context_only"] is False
-    assert "cannot self-identify" not in _chip(claude_entry)
 
     # Label mismatch: context from another project proves nothing here.
     other_label_entry = _entry(_ledger_for(attach_project="/tmp/otherproj"), "codex", SESSION)
     assert other_label_entry["join"]["project_level_context_only"] is False
 
-    # Evidence wins: the stronger evidenced-context chip takes precedence.
+    # Evidence wins: the stronger evidenced-context block takes precedence.
     evidenced_entry = _entry(_ledger_for(with_evidence=True), "codex", SESSION)
     assert evidenced_entry["join"]["project_level_context_only"] is False
-    assert "client-log evidence" in _chip(evidenced_entry)
+    assert evidenced_entry["join"]["client_log_evidence"]["evidenced_event_count"] == 1
 
-    # A vetoed session has context HERE; the veto is the honest display.
+    # A vetoed session has context HERE; the veto is the honest state.
     vetoed_entry = _entry(_ledger_for(with_veto=True), "codex", SESSION)
     assert vetoed_entry["join"]["vetoed_rows"] >= 1
     assert vetoed_entry["join"]["project_level_context_only"] is False
-    assert "cannot self-identify" not in _chip(vetoed_entry)
 
-    # Bare fallback when no condition matches at all.
+    # Bare fallback when no condition matches at all: no evidence block either.
     bare_ledger = build_work_ledger([_usage_row(event_id="evt_usage_s", project_dir="/tmp/projB")])
     bare_entry = _entry(bare_ledger, "codex", SESSION)
     assert bare_entry["join"]["project_level_context_only"] is False
-    assert ">No MCP context<" in _chip(bare_entry)
+    assert bare_entry["join"]["client_log_evidence"] is None
 
 
 def test_evidenced_session_never_claims_other_project_scope() -> None:
@@ -1796,13 +1778,6 @@ def test_fix2_transcript_only_conflict_is_labelled_by_the_transcript_key() -> No
     assert "session id conflicts" not in attr["join_reason"]
     assert SESSION not in attr["join_reason"] and "tx-fake" not in attr["join_reason"]
 
-    # The session-detail "id conflict" chip names the transcript too (id-free).
-    detail = _session_detail_html(_entry(ledger, "codex", SESSION), escape)
-    assert "id conflict" in detail
-    assert "agent-claimed transcript id conflicts" in detail
-    assert "agent-claimed session id conflicts" not in detail
-    assert "tx-fake" not in detail and SESSION not in detail
-
 
 def test_fix2_session_conflict_still_labelled_by_the_session_key() -> None:
     """FIX 2: a session-id conflict keeps the session-worded veto reason."""
@@ -1830,59 +1805,6 @@ def test_fix2_session_conflict_still_labelled_by_the_session_key() -> None:
     assert "agent-claimed session id conflicts" in attr["join_reason"]
 
 
-def test_fix3_evidenced_chip_title_is_well_formed_sentences() -> None:
-    """FIX 3: override notes end in terminal punctuation and the appended base
-    reason reads as its own capitalized sentence — no run-on titles.
-
-    Evidenced-context branch WITH a conflict (three sentences), plus the
-    conflict note must not double up the raw session-id wording.
-    """
-
-    fake = "codex-chat-fabricated"
-    events = [
-        _usage_row(event_id="evt_usage_s", evidenced=["evt_a77000000001"]),
-        _attach_event(event_id="evt_a77000000001", session=fake, authored=["client_session_id"]),
-    ]
-
-    ledger = build_work_ledger(events)
-    entry = _entry(ledger, "codex", SESSION)
-    title = _extract_title(_chip(entry))
-
-    # No run-on: the pairing sentence ends before the conflict sentence starts.
-    assert "no usage allocation. An agent-claimed context id conflicted with the log evidence." in title
-    # No double space, no lower-case run-on join, no id/path leak.
-    assert "  " not in title
-    assert ". the " not in title  # a lowercase sentence-join would produce this
-    assert fake not in title and SESSION not in title
-    # Every sentence terminates.
-    assert title.rstrip().endswith(".")
-
-
-def test_fix3_override_branches_all_terminate_cleanly() -> None:
-    """FIX 3: evidenced / project-level / bare unjoined chips are all
-    well-formed sentences (no trailing run-on with the base rollup reason)."""
-
-    # Project-level-only branch (codex, unjoined, no evidence, label match).
-    events = [
-        _usage_row(event_id="evt_usage_s", transcript="trans-1", project_dir="/tmp/projA"),
-        _attach_event(event_id="evt_a77000000001", session=None, project_dir="/tmp/projA"),
-    ]
-    entry = _entry(build_work_ledger(events), "codex", SESSION)
-    title = _extract_title(_chip(entry))
-    assert "No usage is allocated." in title
-    assert "  " not in title
-    # The appended base rollup reason is capitalized as its own sentence, not
-    # run on: "... allocated. No section shared ..." (never lowercase "no").
-    assert "allocated. No section shared" in title
-    assert "allocated. no section" not in title
-
-    # Bare no-context branch: a single, clean sentence.
-    bare = _entry(build_work_ledger([_usage_row(event_id="evt_usage_s", project_dir="/tmp/projB")]), "codex", SESSION)
-    bare_title = _extract_title(_chip(bare))
-    assert bare_title == bare_title.strip()
-    assert "  " not in bare_title
-
-
 def test_fix4_trailing_whitespace_evt_ids_rejected() -> None:
     """FIX 4: the evt-id regex uses \\Z, so a trailing newline/whitespace is
     rejected at every .match() call site (extract + index + donor summary)."""
@@ -1904,15 +1826,6 @@ def test_fix4_trailing_whitespace_evt_ids_rejected() -> None:
     row = _usage_row(event_id="evt_usage_s", evidenced=["evt_deadbeef\n"])
     index = build_log_evidence_index([row])
     assert index == {}
-
-
-def _extract_title(chip_html: str) -> str:
-    import re
-
-    match = re.search(r'title="([^"]*)"', chip_html)
-    assert match is not None, chip_html
-    # Unescape the two entities the chip escaper emits in these titles.
-    return match.group(1).replace("&#x27;", "'").replace("&amp;", "&")
 
 
 def test_client_less_codex_section_gains_client_and_session_from_log_evidence() -> None:

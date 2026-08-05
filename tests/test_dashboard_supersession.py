@@ -1,4 +1,4 @@
-"""End-to-end supersession behavior on the served dashboard and MCP writers."""
+"""End-to-end supersession behavior on the served JSON projection and MCP writers."""
 
 from __future__ import annotations
 
@@ -60,6 +60,14 @@ def _check(service: SentinelService, *, section_id: str, session: str, result: s
     )
 
 
+def _task_episodes(payload: dict) -> list[dict]:
+    return [
+        episode
+        for task in payload["tasks"]
+        for episode in task.get("finding_episodes", [])
+    ]
+
+
 def test_superseded_failure_leaves_needs_attention_but_stays_visible(tmp_path: Path) -> None:
     store_root = tmp_path / "state"
     service = SentinelService(store_root)
@@ -67,26 +75,33 @@ def test_superseded_failure_leaves_needs_attention_but_stays_visible(tmp_path: P
     project = str(tmp_path / "yc")
     _section(service, section_id="yc-build", status="started", session=session, title="Ship YC countdown", project_dir=project)
     _check(service, section_id="yc-build", session=session, result="failed", name="首次应用包构建与严格签名验证", command=_FAIL_CMD, exit_code=1, project=project)
-    _check(service, section_id="yc-build", session=session, result="passed", name="应用包构建与签名验证", command=_PASS_CMD, exit_code=0, project=project)
+    passing = _check(service, section_id="yc-build", session=session, result="passed", name="应用包构建与签名验证", command=_PASS_CMD, exit_code=0, project=project)
     _section(service, section_id="yc-build", status="completed", session=session, title="Ship YC countdown", project_dir=project)
 
-    html = TestClient(create_local_api_app(store_dir=store_root)).get("/").text
+    payload = TestClient(create_local_api_app(store_dir=store_root)).get("/tasks").json()
 
-    # Dropped out of "Needs attention": not an open finding, not verified.
-    assert '<span class="status status-finding">Open finding</span>' not in html
-    assert '<span class="status status-found">Verified</span>' not in html
-    # Its own explicit state, counted in its own tile, not folded into Open findings.
-    assert "Finding · resolved in a later check" in html
-    assert "<strong>0</strong><span>Open findings</span>" in html
-    assert "<strong>1</strong><span>Resolved in later check</span>" in html
-    # The failed check and its later passing check are rendered adjacently, and
-    # the "No follow-up action was recorded" copy is dropped.
-    assert "Resolved in a later check" in html
-    assert "Later check passed" in html
-    assert "No follow-up action was recorded." not in html
+    episodes = _task_episodes(payload)
+    assert len(episodes) == 1
+    episode = episodes[0]
+    # Dropped out of "Needs attention": no open attention, not a verified pass —
+    # the episode carries its own explicit demoted state instead.
+    assert episode["attention_open"] is False
+    assert episode["disposition_state"] == "open"
+    assert episode["supersession_state"] == "superseded"
+    # The demotion names the exact later passing check and its basis: the failed
+    # check and its resolution stay linked, not an unexplained disappearance.
+    assert episode["superseded_by_event_id"] == passing["event_id"]
+    assert episode["supersession_basis"]
+    # The failure itself stays visible as historical evidence.
+    assert episode["failure_event"]["result"] == "failed"
+    # Counted in its own bucket, never folded into Open findings.
+    summary = payload["summary"]
+    assert summary["total_open_finding_count"] == 0
+    assert summary["superseded_finding_count"] == 1
+    assert summary["current_finding_count"] == 1
 
 
-def test_a_superseded_finding_can_be_reinstated_to_attention_in_one_click(tmp_path: Path) -> None:
+def test_a_superseded_finding_can_be_reinstated_to_attention(tmp_path: Path) -> None:
     store_root = tmp_path / "state"
     service = SentinelService(store_root)
     session = "yc-session"
@@ -98,36 +113,35 @@ def test_a_superseded_finding_can_be_reinstated_to_attention_in_one_click(tmp_pa
 
     client = TestClient(create_local_api_app(store_dir=store_root))
 
-    # It starts demoted out of Needs attention, and the card offers a one-click
-    # reinstate (not the two-step "mark reviewed then reopen" dance).
-    assert "<strong>0</strong><span>Open findings</span>" in client.get("/").text
-    assert "Reinstate to attention" in client.get("/").text
-
+    # It starts demoted out of Needs attention (automatic supersession).
     payload = client.get("/tasks").json()
-    episode = next(
-        ep
-        for task in payload["tasks"]
-        for ep in task.get("finding_episodes", [])
-        if ep.get("finding_token")
+    episode = next(ep for ep in _task_episodes(payload) if ep.get("finding_token"))
+    assert episode["attention_open"] is False
+    assert episode["supersession_state"] == "superseded"
+    assert int(episode["revision"]) == 0
+    assert payload["summary"]["total_open_finding_count"] == 0
+
+    # The kept disposition write lane records the user's explicit reinstate
+    # (dispositions arrive as recorded events; the HTML form is retired).
+    service.record_finding_disposition(
+        target_event=episode["failure_event"],
+        action="reinstate",
+        expected_revision=int(episode["revision"]),
+        note=None,
+        idempotency_key="reinstate-yc-build-1",
     )
-    response = client.post(
-        "/findings/disposition",
-        data={
-            "csrf_token": payload["csrf_token"],
-            "finding_token": episode["finding_token"],
-            "action": "reinstate",
-            "expected_revision": str(episode["revision"]),
-            "note": "",
-        },
-        follow_redirects=False,
-    )
-    assert response.status_code in (200, 303)
 
     # The user's explicit choice now wins over the automatic supersession: the
     # failure is back in Needs attention as an open finding.
-    html = client.get("/").text
-    assert '<span class="status status-finding">Open finding</span>' in html
-    assert "<strong>1</strong><span>Open findings</span>" in html
+    payload = client.get("/tasks").json()
+    episode = next(ep for ep in _task_episodes(payload) if ep.get("finding_token"))
+    assert episode["attention_open"] is True
+    assert episode["disposition_state"] == "open"
+    assert int(episode["revision"]) == 1
+    # Still factually superseded — the objective stamp is not rewritten.
+    assert episode["supersession_state"] == "superseded"
+    assert payload["summary"]["total_open_finding_count"] == 1
+    assert payload["summary"]["superseded_finding_count"] == 0
 
 
 def test_unconfirmed_failure_stays_open_with_inline_disclosure(tmp_path: Path) -> None:
@@ -140,14 +154,19 @@ def test_unconfirmed_failure_stays_open_with_inline_disclosure(tmp_path: Path) -
     _check(service, section_id="market", session=session, result="passed", name="unrelated lint", command="ruff check src", exit_code=0, project=project)
     _section(service, section_id="market", status="completed", session=session, title="Prediction market", project_dir=project)
 
-    html = TestClient(create_local_api_app(store_dir=store_root)).get("/").text
+    payload = TestClient(create_local_api_app(store_dir=store_root)).get("/tasks").json()
 
     # A later same-scope pass exists but is not provably the same check: the
-    # finding stays open, with the ambiguity disclosed inline.
-    assert '<span class="status status-finding">Open finding</span>' in html
-    assert "agentacct cannot prove it is the same check" in html
-    assert "<strong>1</strong><span>Open findings</span>" in html
-    assert "Resolved in later check" not in html
+    # finding stays open, with the ambiguity stamped on the episode itself.
+    episodes = _task_episodes(payload)
+    assert len(episodes) == 1
+    episode = episodes[0]
+    assert episode["attention_open"] is True
+    assert episode["supersession_state"] == "unconfirmed"
+    assert episode["superseded_by_event_id"] is None
+    summary = payload["summary"]
+    assert summary["total_open_finding_count"] == 1
+    assert summary["superseded_finding_count"] == 0
 
 
 def test_supersedes_check_event_id_requires_a_passing_result(tmp_path: Path) -> None:
