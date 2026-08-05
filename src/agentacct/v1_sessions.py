@@ -635,9 +635,14 @@ def build_v1_session_detail(
                         # secret so the remaining prefix falls under a pattern's
                         # min-length floor and slips through un-redacted. Redact
                         # the whole first line, then bound the sanitized text.
+                        # _sanitized_session_title returns None when the line
+                        # sanitizes to empty (e.g. a first line of only
+                        # control/format chars, which survive .strip()); guard
+                        # it — None[:160] would 500 the whole detail response.
                         first_line = role.task.splitlines()[0]
                         redacted, _classes = _redact_secret_spans(first_line)
-                        label = _sanitized_session_title(redacted)[:160]
+                        sanitized = _sanitized_session_title(redacted)
+                        label = sanitized[:160] if sanitized else None
                     child["task"] = label
 
     plan_context = view.get("plan_context") if isinstance(view.get("plan_context"), dict) else {}

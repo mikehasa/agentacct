@@ -646,6 +646,8 @@ def test_descendant_task_label_is_bounded_and_redacted(tmp_path, monkeypatch):
                   session_kind="child", parent_session_id="root-a")
     _record_usage(service, session_id="root-a:agent-def456", tokens=100, updated_at=now - 200,
                   session_kind="child", parent_session_id="root-a")
+    _record_usage(service, session_id="root-a:agent-ghi789", tokens=100, updated_at=now - 100,
+                  session_kind="child", parent_session_id="root-a")
 
     secret = "sk-ant-abc123def456ghi789jkl012mno345pqr678stu901vwx234yz"
     long_line = "review the deploy " + "x" * 400 + " end"
@@ -655,6 +657,11 @@ def test_descendant_task_label_is_bounded_and_redacted(tmp_path, monkeypatch):
     # must scrub it whole regardless of where the bound lands.
     boundary_secret = "sk-ant-" + "z" * 80
     boundary_task = "x" * 149 + " " + boundary_secret + " tail"
+    # A first line of ONLY control/format chars (BOM + zero-width space): these
+    # survive .strip() (non-whitespace category-C), so the sanitizer returns
+    # None. The label path must not crash on that None (regression: an unguarded
+    # None[:160] 500'd the whole /v1/session response).
+    format_only_task = "﻿​\nDo the real work"
     monkeypatch.setattr(roles_module, "scan_enabled", lambda: True)
     monkeypatch.setattr(
         roles_module,
@@ -667,6 +674,10 @@ def test_descendant_task_label_is_bounded_and_redacted(tmp_path, monkeypatch):
             "root-a:agent-def456": SubagentRole(
                 agent_type="Explore",
                 task=boundary_task,
+            ),
+            "root-a:agent-ghi789": SubagentRole(
+                agent_type="Explore",
+                task=format_only_task,
             ),
         },
     )
@@ -688,6 +699,10 @@ def test_descendant_task_label_is_bounded_and_redacted(tmp_path, monkeypatch):
     assert "sk-ant-" not in boundary_label
     assert "z" * 20 not in boundary_label
     assert len(boundary_label) <= 170
+
+    # A format-only first line sanitizes to None: the enrichment must degrade to
+    # task=None (present key) rather than crash the whole detail response.
+    assert by_id["root-a:agent-ghi789"]["task"] is None
 
 
 def test_non_plan_client_detail_plan_block_keeps_the_full_key_set(tmp_path):
