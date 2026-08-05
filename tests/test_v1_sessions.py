@@ -37,6 +37,7 @@ def _record_usage(
     updated_at: float,
     session_kind: str | None = None,
     parent_session_id: str | None = None,
+    namespace: str | None = None,
 ) -> None:
     event = ClientUsageEvent(
         client=client,
@@ -60,7 +61,7 @@ def _record_usage(
         updated_at=updated_at,
         turn_count=1,
         usage_row_lane=f"model:{model}",
-        source_namespace_fingerprint=f"sha256:{client}",
+        source_namespace_fingerprint=namespace or f"sha256:{client}",
         input_tokens_reported=True,
         output_tokens_reported=True,
         reasoning_output_tokens_reported=True,
@@ -321,6 +322,113 @@ def test_plan_entries_carry_the_three_state_semantic(tmp_path):
     for entry in plan.values():
         assert isinstance(entry["basis"], str) and entry["basis"]
         assert "scale" in entry and "intervals_used" in entry
+
+
+# ---------------------------------------------------------------------------
+# review-finding regressions (adversarial review of PR #66)
+# ---------------------------------------------------------------------------
+
+
+def test_refused_namespace_parent_join_is_not_folded(tmp_path):
+    """The ledger refuses a cross-home parent join (namespace mismatch) — the
+    plan fold must respect that refusal: the foreign child stays visible as
+    its own root with its own share, and the same-id 'parent' row never claims
+    another identity's weekly-plan consumption."""
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _calibrate_claude(service, now=now)
+    _record_usage(service, session_id="root-a", tokens=10_000_000, updated_at=now - 600)
+    _record_usage(
+        service,
+        session_id="44444444-aaaa-bbbb-cccc-555555555555",
+        tokens=5_000_000,
+        updated_at=now - 300,
+        session_kind="child",
+        parent_session_id="root-a",
+        namespace="sha256:other-home",
+    )
+
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    payload = _sessions(client, limit=50)
+    rows = _rows_by_id(payload)
+    root = rows["root-a"]
+    # The ledger's own view of this root says zero children — the plan share
+    # must agree, not contradict the same row's related block.
+    assert (root["related"] or {}).get("child_session_count") == 0
+    assert root["plan_pct_children"] is None
+    foreign = rows.get("44444444-aaaa-bbbb-cccc-555555555555")
+    assert foreign is not None, "the refused child must stay visible on the roots page"
+    assert foreign["plan_pct"] is not None and foreign["plan_pct_children"] is None
+
+
+def test_orphan_child_appears_as_root_with_its_share(tmp_path):
+    """A child whose parent has no rollup entry (no stub entries) is its own
+    root on this surface — previously it vanished from the default roots page
+    together with its plan share."""
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _calibrate_claude(service, now=now)
+    _record_usage(
+        service,
+        session_id="33333333-aaaa-bbbb-cccc-666666666666",
+        tokens=5_000_000,
+        updated_at=now - 300,
+        session_kind="child",
+        parent_session_id="ghost-root",
+    )
+
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    payload = _sessions(client, limit=50)
+    row = _rows_by_id(payload).get("33333333-aaaa-bbbb-cccc-666666666666")
+    assert row is not None, "an orphan child must not vanish from the roots page"
+    assert row["plan_pct"] is not None
+
+
+def test_legacy_suffix_lane_folds_like_the_glance(tmp_path):
+    """A legacy ':stem' child lane without parent metadata folds into its
+    prefix root — and the two /v1 surfaces report the SAME headline number
+    for that root instead of the sessions lane re-counting the child as a
+    root."""
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _calibrate_claude(service, now=now)
+    _record_usage(service, session_id="root-b", tokens=10_000_000, updated_at=now - 600)
+    _record_usage(service, session_id="root-b:wf1", tokens=5_000_000, updated_at=now - 300)
+
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    payload = _sessions(client, limit=50)
+    rows = _rows_by_id(payload)
+    assert "root-b:wf1" not in rows, "the legacy child lane must not be listed as a root"
+    glance = client.get("/v1/glance", headers=AUTH).json()
+    glance_root = {row["session_id"]: row for row in glance["recent_sessions"]}["root-b"]
+    assert abs(rows["root-b"]["plan_pct"] - glance_root["plan_pct"]) < 1e-9
+
+
+def test_title_prefers_the_newest_work_item(tmp_path):
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_usage(service, session_id="root-a", tokens=100, updated_at=now - 900)
+    _record_section(service, session_id="root-a", status="completed", title="old goal",
+                    created_at=now - 800, section_id="s1")
+    _record_section(service, session_id="root-a", status="started", title="new goal",
+                    created_at=now - 100, section_id="s2")
+
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    assert _rows_by_id(_sessions(client))["root-a"]["title"] == "new goal"
+
+
+def test_generated_at_is_the_view_build_time(tmp_path):
+    """A cache-hit response must not stamp a fresh clock on cached content."""
+
+    service = SentinelService(tmp_path)
+    _record_usage(service, session_id="root-a", tokens=100, updated_at=time.time() - 60)
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    first = _sessions(client)
+    second = _sessions(client, offset=0)
+    assert second["generated_at"] == first["generated_at"]
 
 
 # ---------------------------------------------------------------------------

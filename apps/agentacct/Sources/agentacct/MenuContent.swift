@@ -174,7 +174,10 @@ struct MenuContent: View {
 
     @ViewBuilder
     private func planFootnote(_ plan: [PlanEntry]) -> some View {
-        let calibrating = plan.filter { $0.confidence != "calibrated" }.map(\.client)
+        // Only clients the daemon says are actually warming up. "never"
+        // clients (codex) must not be promised a number that will not arrive,
+        // and an old daemon without the field gets no claim at all.
+        let calibrating = plan.filter { $0.calibrationState == "calibrating" }.map(\.client)
         if !calibrating.isEmpty {
             Text("plan share calibrating from your own limit history: \(calibrating.joined(separator: ", "))")
                 .font(.system(size: 9.5))

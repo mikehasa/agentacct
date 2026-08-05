@@ -2843,9 +2843,7 @@ def create_local_api_app(
                 _derived_work_ledger(events, fingerprint=fingerprint), events
             ),
         )
-        return slice_sessions_payload(
-            view, roots_only=roots_only, limit=limit, offset=offset, generated_at=time.time()
-        )
+        return slice_sessions_payload(view, roots_only=roots_only, limit=limit, offset=offset)
 
     @app.get("/")
     def index() -> dict[str, Any]:
