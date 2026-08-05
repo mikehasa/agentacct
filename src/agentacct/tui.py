@@ -96,23 +96,9 @@ def _evidence_mark(result: str) -> tuple[str, str]:
     return "•", "dim"
 
 
-def _events_fingerprint(events: list) -> int:
-    """A content-sensitive change key for the loaded event list.
-
-    The event COUNT is NOT a sound change key: the usage importer supersedes rows
-    IN PLACE (``service.replace_events`` drops a re-observed row and records a
-    fresh one), so a growing single-model session keeps the count fixed while its
-    tokens/cost change — the whole point of a live view. Hashing each event's
-    identity + observation time makes any append, removal, or in-place supersede
-    (which records a new event id) change the key and trigger a rebuild.
-
-    The values are stringified so the key is TOTAL: a corrupted/hand-injected
-    ledger row can round-trip ``event_id`` / ``created_at`` as a JSON list or
-    object (unhashable), and this function runs on the unguarded refresh path —
-    it must never raise, per refresh_data's fail-soft contract.
-    """
-
-    return hash(tuple((str(event.get("event_id")), str(event.get("created_at"))) for event in events))
+# One shared change key for every fingerprint-keyed cache (TUI + glance API);
+# owned by glance.py so the two surfaces can never drift. Docstring there.
+from .glance import events_fingerprint as _events_fingerprint  # noqa: E402
 
 
 def _limit_color(used_percent: float) -> str:

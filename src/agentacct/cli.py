@@ -8524,16 +8524,37 @@ def serve(
         "Local usage scan: enabled for this localhost dashboard; agentacct reads implemented local agent usage paths "
         "and imports only summarized usage rows. Use `agentacct api serve` for an API server with local usage discovery disabled."
     )
-    uvicorn.run(
-        create_local_api_app(
-            store_dir=effective_store_dir,
-            usage_discovery=UsageDiscoveryConfig.real_home(),
-            extra_allowed_hosts=tuple(allow_host or ()),
-        ),
+    # Native-shell handshake: a per-boot bearer token published through the
+    # 0600 discovery file next to the store. Written AFTER the bind port is
+    # chosen so readers always see the real port; removed on shutdown (pid-
+    # gated so a dying old server never deletes a fresh server's file).
+    import secrets as _secrets
+
+    from .glance import discovery_file_path, remove_discovery_file, write_discovery_file
+
+    v1_token = _secrets.token_urlsafe(32)
+    write_discovery_file(
+        effective_store_dir,
         host=host,
         port=bound_port,
-        log_level="info",
+        token=v1_token,
+        version=_usage_importer_version(),
     )
+    console.print(f"Native-shell API (/v1): discovery file {discovery_file_path(effective_store_dir)}")
+    try:
+        uvicorn.run(
+            create_local_api_app(
+                store_dir=effective_store_dir,
+                usage_discovery=UsageDiscoveryConfig.real_home(),
+                extra_allowed_hosts=tuple(allow_host or ()),
+                v1_auth_token=v1_token,
+            ),
+            host=host,
+            port=bound_port,
+            log_level="info",
+        )
+    finally:
+        remove_discovery_file(effective_store_dir)
 
 
 @api_app.command("serve")
