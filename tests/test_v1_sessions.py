@@ -157,7 +157,7 @@ def _calibrate_claude(service: SentinelService, *, now: float) -> None:
     fitted scale is ~1.0 (inside the trusted band) and claude-code calibrates.
     The calibration burner sessions are named ``cal-N``."""
 
-    opus = pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
+    opus = pc.baseline_weight_fresh("claude-opus-4-8")
     move = 100.0 * opus  # 100M Opus tokens per interval → observed == predicted
     t0 = now - 5 * 3600
     pct = 10.0
@@ -300,7 +300,7 @@ def test_plan_pct_folds_children_into_the_root_row(tmp_path):
     service = SentinelService(tmp_path)
     now = time.time()
     _calibrate_claude(service, now=now)
-    opus = pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
+    opus = pc.baseline_weight_fresh("claude-opus-4-8")
     _record_usage(service, session_id="root-a", tokens=10_000_000, updated_at=now - 600)
     _record_usage(
         service,
@@ -468,7 +468,7 @@ def test_mutual_parent_cycle_keeps_shares_on_a_visible_root(tmp_path):
     service = SentinelService(tmp_path)
     now = time.time()
     _calibrate_claude(service, now=now)
-    opus = pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
+    opus = pc.baseline_weight_fresh("claude-opus-4-8")
     _record_usage(service, session_id="cyc-b", tokens=5_000_000, updated_at=now - 300,
                   session_kind="child", parent_session_id="cyc-a")
     _record_usage(service, session_id="cyc-a", tokens=10_000_000, updated_at=now - 200,
@@ -786,7 +786,7 @@ def test_detail_descendants_and_plan_block(tmp_path):
     service = SentinelService(tmp_path)
     now = time.time()
     _calibrate_claude(service, now=now)
-    opus = pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
+    opus = pc.baseline_weight_fresh("claude-opus-4-8")
     _record_usage(service, session_id="root-a", tokens=10_000_000, updated_at=now - 600)
     _record_usage(service, session_id="22222222-aaaa-bbbb-cccc-333333333333",
                   tokens=5_000_000, updated_at=now - 300,
@@ -902,7 +902,7 @@ def test_plan_endpoint_calibrated_aggregates_agree(tmp_path):
     service = SentinelService(tmp_path)
     now = time.time()
     _calibrate_claude(service, now=now)
-    opus = pc.BASELINE_MODEL_WEIGHTS["claude-opus-4-8"]
+    opus = pc.baseline_weight_fresh("claude-opus-4-8")
     _record_usage(service, session_id="root-a", tokens=10_000_000, updated_at=now - 60)
 
     client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))

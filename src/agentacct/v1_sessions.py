@@ -564,7 +564,7 @@ def build_v1_session_detail(
     with the very pct values it shipped next to (adversarial-review findings).
     """
 
-    from .plan_cost import plan_status_entry, session_tokens_by_model
+    from .plan_cost import plan_status_entry, session_components_by_model
 
     key = (client, session_id)
     row = next(
@@ -604,6 +604,23 @@ def build_v1_session_detail(
         if candidate.get("fold_top") == key
         and (candidate.get("client"), candidate.get("client_session_id")) != key
     ]
+    # Enrich with the subagent's role + Task prompt read from its transcript
+    # on disk (the same bounded, fail-soft reader the TUI detail uses) — an
+    # untitled child otherwise renders as a bare id, which unravels nothing.
+    if descendants:
+        from .subagent_roles import read_roles_for_children, scan_enabled
+
+        if scan_enabled():
+            # NB: a dedicated loop variable — reusing ``row`` here shadowed the
+            # selected session row and served the LAST descendant as the
+            # session (self-caught while validating against the live store).
+            child_ids = [str(child.get("client_session_id") or "") for child in descendants]
+            roles = read_roles_for_children(session_id, child_ids)
+            for child in descendants:
+                role = roles.get(str(child.get("client_session_id") or ""))
+                if role is not None:
+                    child["agent_type"] = role.agent_type
+                    child["task"] = role.task
 
     plan_context = view.get("plan_context") if isinstance(view.get("plan_context"), dict) else {}
     weights = (plan_context.get("weights_by_client") or {}).get(client)
@@ -612,17 +629,21 @@ def build_v1_session_detail(
     if weights is not None:
         plan = dict(plan_status_entry(weights))
         if weights.confidence == "calibrated":
-            tokens_by_model = session_tokens_by_model(
+            components = session_components_by_model(
                 client=client, session_id=session_id, records=records
             )
             plan["by_model"] = sorted(
                 (
                     {
+                        # total = the REAL token count (incl. cache); the pct
+                        # weighs the components (cache reads discounted).
                         "model": model,
-                        "total_tokens": tokens,
-                        "pct": weights.pct_for_tokens({model: tokens}),
+                        "total_tokens": parts["total"],
+                        "pct": weights.pct_for_components(
+                            {model: parts["fresh"]}, {model: parts["cache_read"]}
+                        ),
                     }
-                    for model, tokens in tokens_by_model.items()
+                    for model, parts in components.items()
                 ),
                 key=lambda entry: (-entry["pct"], entry["model"]),
             )

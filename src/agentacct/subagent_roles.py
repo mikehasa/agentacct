@@ -171,9 +171,16 @@ def subagent_files_for_parent(
     # instead of every parent — a crafted id must never read outside the root.
     if any(ch in parent_client_session_id for ch in ("/", os.sep, "\x00")) or ".." in parent_client_session_id:
         return {}
-    pattern = str(root / "*" / glob.escape(parent_client_session_id) / "subagents" / "agent-*.jsonl")
+    # Two layouts: Task-tool subagents sit directly in subagents/; workflow
+    # agents nest one level deeper (subagents/workflows/wf_*/agent-*.jsonl).
+    # Both are bounded single-directory-depth globs, not a recursive walk.
+    base = root / "*" / glob.escape(parent_client_session_id) / "subagents"
+    patterns = (
+        str(base / "agent-*.jsonl"),
+        str(base / "workflows" / "*" / "agent-*.jsonl"),
+    )
     try:
-        matches = glob.glob(pattern)
+        matches = [match for pattern in patterns for match in glob.glob(pattern)]
     except OSError:
         return {}
     try:
