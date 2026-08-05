@@ -31,7 +31,7 @@ struct UsagePane: View {
         ScrollBox {
             VStack(alignment: .leading, spacing: Space.l) {
                 HStack {
-                    SectionCaption(tone: Theme.textMuted, text: "Usage · last 30 days")
+                    SectionCaption(tone: Theme.textMuted, text: "Usage · last \(dashboard.usageDays) days")
                     Spacer()
                     Picker("", selection: Binding(get: { mode }, set: { chosenMode = $0 })) {
                         ForEach(UsageMode.allCases) { mode in
@@ -154,8 +154,8 @@ struct UsagePane: View {
         if let usage = dashboard.usage {
             if let totals = usage.totals {
                 HStack(spacing: 8) {
-                    PanelTile(label: "30d cost", value: totals.costText, accent: Theme.blue)
-                    PanelTile(label: "30d fresh tokens",
+                    PanelTile(label: "\(dashboard.usageDays)d cost", value: totals.costText, accent: Theme.blue)
+                    PanelTile(label: "\(dashboard.usageDays)d fresh tokens",
                               value: totals.freshTokens.map(UsageTotals.compact) ?? "—")
                     PanelTile(label: "cache read",
                               value: totals.cacheReadTokens.map(UsageTotals.compact) ?? "—")
@@ -164,7 +164,11 @@ struct UsagePane: View {
                 }
             }
             if let periods = usage.byPeriod, periods.count > 1 {
-                DailyChart(periods: periods)
+                DailyChart(
+                    periods: periods,
+                    selectedDays: dashboard.usageDays,
+                    onSelectDays: { days in Task { await dashboard.setUsageDays(days) } }
+                )
             }
             bucketSection(title: "By agent", buckets: usage.byClient) { bucket in
                 (bucket.client ?? "?", Theme.clientColor(bucket.client))
@@ -193,7 +197,7 @@ struct UsagePane: View {
         let sorted = buckets.sorted { ($0.freshTokens ?? 0) > ($1.freshTokens ?? 0) }
         let maxFresh = Double(sorted.first?.freshTokens ?? 1)
         return VStack(alignment: .leading, spacing: 8) {
-            SectionCaption(tone: Theme.textMuted, text: title + " · last 30 days")
+            SectionCaption(tone: Theme.textMuted, text: title + " · last \(dashboard.usageDays) days")
             Card(padding: 6) {
                 VStack(spacing: 0) {
                     ForEach(Array(sorted.enumerated()), id: \.element.id) { index, bucket in
@@ -270,10 +274,18 @@ struct PlanDailyChart: View {
     }
 }
 
-/// The 30-day stacked daily bars, client-colored (cost/tokens view + the
-/// dashboard's rhythm strip).
+/// The stacked daily bars, client-colored (cost/tokens view + the dashboard's
+/// rhythm strip). Interactive: hover a bar for the day's per-client split,
+/// click a legend entry to hide/show that agent's slices, and (when wired)
+/// switch the trailing-days range.
 struct DailyChart: View {
     let periods: [PeriodBucket]
+    /// Present → the range switcher renders (7/30/90) and calls back.
+    var selectedDays: Int? = nil
+    var onSelectDays: ((Int) -> Void)? = nil
+
+    @State private var hovered: PeriodBucket?
+    @State private var hidden: Set<String> = []
 
     private var clients: [String] {
         var seen: [String] = []
@@ -285,47 +297,84 @@ struct DailyChart: View {
         return seen.sorted()
     }
 
+    private var visibleClients: [String] {
+        clients.filter { !hidden.contains($0) }
+    }
+
+    private func visibleTotal(_ period: PeriodBucket) -> Double {
+        visibleClients.reduce(0.0) { partial, client in
+            partial + Double(period.byClient?[client]?.freshTokens ?? 0)
+        }
+    }
+
     private var maxTokens: Double {
-        max(Double(periods.compactMap(\.freshTokens).max() ?? 1), 1)
+        max(periods.map(visibleTotal).max() ?? 1, 1)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 SectionCaption(tone: Theme.textMuted, text: "Daily fresh tokens")
+                if let selectedDays, let onSelectDays {
+                    Picker("", selection: Binding(get: { selectedDays }, set: onSelectDays)) {
+                        Text("7d").tag(7)
+                        Text("30d").tag(30)
+                        Text("90d").tag(90)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 130)
+                }
                 Spacer()
                 ForEach(clients, id: \.self) { client in
-                    HStack(spacing: 4) {
-                        StatusDot(color: Theme.clientColor(client), size: 5)
-                        Text(client)
-                            .font(.system(size: 9.5))
-                            .foregroundStyle(Theme.textMuted)
+                    Button {
+                        if hidden.contains(client) { hidden.remove(client) } else { hidden.insert(client) }
+                    } label: {
+                        HStack(spacing: 4) {
+                            StatusDot(color: hidden.contains(client)
+                                      ? Theme.textFaint.opacity(0.4)
+                                      : Theme.clientColor(client), size: 5)
+                            Text(client)
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(hidden.contains(client) ? Theme.textFaint : Theme.textMuted)
+                                .strikethrough(hidden.contains(client))
+                        }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .help(hidden.contains(client) ? "Show \(client)" : "Hide \(client)")
                 }
             }
             Card(padding: 12) {
                 VStack(spacing: 6) {
                     HStack(alignment: .bottom, spacing: 3) {
                         ForEach(periods) { period in
-                            VStack(spacing: 0) {
-                                let total = Double(period.freshTokens ?? 0)
-                                let height = 110 * total / maxTokens
-                                VStack(spacing: 0.5) {
-                                    ForEach(clients, id: \.self) { client in
-                                        let slice = Double(period.byClient?[client]?.freshTokens ?? 0)
-                                        if slice > 0, total > 0 {
-                                            RoundedRectangle(cornerRadius: 1)
-                                                .fill(Theme.clientColor(client).gradient)
-                                                .frame(height: max(1.5, height * slice / total))
-                                        }
+                            let total = visibleTotal(period)
+                            let height = 110 * total / maxTokens
+                            VStack(spacing: 0.5) {
+                                ForEach(visibleClients, id: \.self) { client in
+                                    let slice = Double(period.byClient?[client]?.freshTokens ?? 0)
+                                    if slice > 0, total > 0 {
+                                        RoundedRectangle(cornerRadius: 1)
+                                            .fill(Theme.clientColor(client).gradient)
+                                            .frame(height: max(1.5, height * slice / total))
                                     }
                                 }
-                                .frame(maxWidth: .infinity)
                             }
                             .frame(maxWidth: .infinity, alignment: .bottom)
+                            .frame(maxHeight: .infinity, alignment: .bottom)
+                            .contentShape(Rectangle())
+                            .opacity(hovered == nil || hovered?.id == period.id ? 1 : 0.55)
+                            .onHover { inside in
+                                if inside { hovered = period } else if hovered?.id == period.id { hovered = nil }
+                            }
                         }
                     }
                     .frame(height: 112, alignment: .bottom)
+                    .overlay(alignment: .topLeading) {
+                        if let hovered {
+                            DayTooltip(period: hovered, clients: visibleClients)
+                        }
+                    }
                     HStack {
                         Text(periods.first?.shortLabel ?? "")
                         Spacer()
@@ -338,5 +387,49 @@ struct DailyChart: View {
                 }
             }
         }
+    }
+}
+
+/// The hover card: one day's totals and per-client split.
+struct DayTooltip: View {
+    let period: PeriodBucket
+    let clients: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(period.shortLabel)
+                    .font(Type.tiny.weight(.semibold))
+                    .foregroundStyle(Theme.text)
+                Text(period.freshTokens.map(UsageTotals.compact) ?? "—")
+                    .font(Type.tiny.monospacedDigit())
+                    .foregroundStyle(Theme.textMuted)
+                Text(period.costText)
+                    .font(Type.tiny.monospacedDigit())
+                    .foregroundStyle(Theme.textMuted)
+            }
+            ForEach(clients, id: \.self) { client in
+                if let slice = period.byClient?[client], let fresh = slice.freshTokens, fresh > 0 {
+                    HStack(spacing: 5) {
+                        StatusDot(color: Theme.clientColor(client), size: 4)
+                        Text(client)
+                            .font(Type.tiny)
+                            .foregroundStyle(Theme.textMuted)
+                        Spacer(minLength: 6)
+                        Text(UsageTotals.compact(fresh))
+                            .font(Type.tiny.monospacedDigit())
+                            .foregroundStyle(Theme.text)
+                    }
+                }
+            }
+        }
+        .padding(8)
+        .frame(minWidth: 140, alignment: .leading)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .strokeBorder(Theme.border, lineWidth: 1))
+        .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+        .padding(4)
+        .allowsHitTesting(false)
     }
 }

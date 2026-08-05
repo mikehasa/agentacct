@@ -37,12 +37,19 @@ struct V1PlanStatus: Decodable {
     let calibratable: Bool?
     let basis: String?
     let scale: Double?
+    let alpha: Double?
     let intervalsUsed: Int?
+    let intervalsNeeded: Int?
+    let rawScale: Double?
+    let stateDetail: String?
 
     enum CodingKeys: String, CodingKey {
-        case client, confidence, calibratable, basis, scale
+        case client, confidence, calibratable, basis, scale, alpha
         case calibrationState = "calibration_state"
         case intervalsUsed = "intervals_used"
+        case intervalsNeeded = "intervals_needed"
+        case rawScale = "raw_scale"
+        case stateDetail = "state_detail"
     }
 }
 
@@ -233,15 +240,31 @@ struct V1Descendant: Decodable, Identifiable {
     let lastActivityAt: Double?
     let usage: V1DescendantUsage?
     let planPct: Double?
+    /// Subagent role read from its transcript (daemon-enriched): the agent
+    /// type (Explore / Plan / workflow-subagent / …) and its Task prompt.
+    let agentType: String?
+    let task: String?
 
     var id: String { "\(client ?? "?")::\(clientSessionId ?? UUID().uuidString)" }
 
+    /// The best human label: Task prompt first line > recorded title >
+    /// agent type > short id.
+    var displayTitle: String {
+        if let task, let first = task.split(separator: "\n").first, !first.isEmpty {
+            return String(first)
+        }
+        if let title, !title.isEmpty { return title }
+        if let agentType, !agentType.isEmpty { return agentType }
+        return clientSessionIdShort ?? clientSessionId ?? "?"
+    }
+
     enum CodingKeys: String, CodingKey {
-        case client, title, status, usage
+        case client, title, status, usage, task
         case clientSessionId = "client_session_id"
         case clientSessionIdShort = "client_session_id_short"
         case lastActivityAt = "last_activity_at"
         case planPct = "plan_pct"
+        case agentType = "agent_type"
     }
 }
 
@@ -313,7 +336,11 @@ struct V1PlanClient: Decodable, Identifiable {
     let calibratable: Bool?
     let basis: String?
     let scale: Double?
+    let alpha: Double?
     let intervalsUsed: Int?
+    let intervalsNeeded: Int?
+    let rawScale: Double?
+    let stateDetail: String?
     let windowPcts: [String: Double?]?
     let daily: [V1PlanDay]?
     let byModel: [V1PlanModelShare]?
@@ -322,9 +349,12 @@ struct V1PlanClient: Decodable, Identifiable {
     var id: String { client }
 
     enum CodingKeys: String, CodingKey {
-        case client, confidence, calibratable, basis, scale, daily
+        case client, confidence, calibratable, basis, scale, alpha, daily
         case calibrationState = "calibration_state"
         case intervalsUsed = "intervals_used"
+        case intervalsNeeded = "intervals_needed"
+        case rawScale = "raw_scale"
+        case stateDetail = "state_detail"
         case windowPcts = "window_pcts"
         case byModel = "by_model"
         case unknownTimePct = "unknown_time_pct"

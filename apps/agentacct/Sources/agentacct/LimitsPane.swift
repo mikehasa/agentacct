@@ -99,11 +99,14 @@ struct LimitsPane: View {
                                     .frame(width: 110, alignment: .leading)
                                 Chip(text: client.calibrationState ?? "unknown",
                                      tint: calibrationTint(client.calibrationState))
-                                if let basis = client.basis {
-                                    Text(basis)
+                                // The progress/why sentence beats the raw
+                                // basis: "48 intervals recorded; the fit
+                                // (x0.38) is outside the trusted band…"
+                                if let detail = client.stateDetail ?? client.basis {
+                                    Text(detail)
                                         .font(Type.tiny)
                                         .foregroundStyle(Theme.textFaint)
-                                        .lineLimit(2)
+                                        .fixedSize(horizontal: false, vertical: true)
                                 }
                                 Spacer(minLength: 0)
                             }

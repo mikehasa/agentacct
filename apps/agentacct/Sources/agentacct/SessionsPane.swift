@@ -9,15 +9,61 @@ import SwiftUI
 struct SessionsPane: View {
     @EnvironmentObject var dashboard: DashboardStore
     @EnvironmentObject var selection: AppSelection
+    @State private var query = ""
+    @State private var clientFilter: String?
+    @State private var sort: SessionSort = .latest
+
+    enum SessionSort: String, CaseIterable, Identifiable {
+        case latest = "latest"
+        case plan = "plan %"
+        case cost = "cost"
+        var id: String { rawValue }
+    }
+
+    /// The loaded rows through the toolbar: search (title/project/id),
+    /// client filter, sort. Client-side over the paginated walk — the footer
+    /// still discloses how much of the store is loaded.
+    private var visibleRows: [V1SessionRow] {
+        var rows = dashboard.sessions
+        if let clientFilter {
+            rows = rows.filter { $0.client == clientFilter }
+        }
+        if !query.isEmpty {
+            let needle = query.lowercased()
+            rows = rows.filter { row in
+                row.displayTitle.lowercased().contains(needle)
+                    || (row.project ?? "").lowercased().contains(needle)
+                    || row.clientSessionId.lowercased().contains(needle)
+            }
+        }
+        switch sort {
+        case .latest:
+            return rows  // server order: recency
+        case .plan:
+            return rows.sorted { ($0.planPct ?? -1) > ($1.planPct ?? -1) }
+        case .cost:
+            return rows.sorted { ($0.usage?.estimatedCostUsd ?? -1) > ($1.usage?.estimatedCostUsd ?? -1) }
+        }
+    }
+
+    private var loadedClients: [String] {
+        var seen: [String] = []
+        for row in dashboard.sessions where !seen.contains(row.client) {
+            seen.append(row.client)
+        }
+        return seen.sorted()
+    }
 
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
+                toolbar
+                Rectangle().fill(Theme.border.opacity(0.6)).frame(height: 1)
                 ScrollBox {
                     VStack(spacing: 2) {
                         // Offscreen renders have no scrolling: cap the list so
                         // the snapshot shows the top of it plus the detail.
-                        let rows = SnapshotMode.enabled ? Array(dashboard.sessions.prefix(9)) : dashboard.sessions
+                        let rows = SnapshotMode.enabled ? Array(visibleRows.prefix(8)) : visibleRows
                         ForEach(rows) { row in
                             SessionRow(row: row, selected: selection.sessionId == row.id)
                                 .onTapGesture { selection.sessionId = row.id }
@@ -72,11 +118,59 @@ struct SessionsPane: View {
         }
     }
 
+    private var toolbar: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 5) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.textFaint)
+                TextField("Search title · project · id", text: $query)
+                    .textFieldStyle(.plain)
+                    .font(Type.body)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(Theme.border, lineWidth: 1))
+
+            Menu {
+                Button("All agents") { clientFilter = nil }
+                Divider()
+                ForEach(loadedClients, id: \.self) { client in
+                    Button(client) { clientFilter = client }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    StatusDot(color: clientFilter.map { Theme.clientColor($0) } ?? Theme.textFaint, size: 5)
+                    Text(clientFilter ?? "all")
+                        .font(Type.small)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+
+            Picker("", selection: $sort) {
+                ForEach(SessionSort.allCases) { option in
+                    Text(option.rawValue).tag(option)
+                }
+            }
+            .pickerStyle(.menu)
+            .fixedSize()
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+    }
+
     private var footerText: String {
-        let shown = dashboard.sessions.count
+        let shown = visibleRows.count
+        let loaded = dashboard.sessions.count
         let roots = dashboard.totalRootSessions.map(String.init) ?? "?"
         let total = dashboard.totalSessions.map(String.init) ?? "?"
-        return "\(shown) of \(roots) root sessions · \(total) total in the store"
+        if shown != loaded {
+            return "\(shown) shown of \(loaded) loaded · \(roots) roots · \(total) total in the store"
+        }
+        return "\(loaded) of \(roots) root sessions · \(total) total in the store"
     }
 
     @ViewBuilder
@@ -113,6 +207,21 @@ struct SessionRow: View {
     let selected: Bool
     @State private var hovering = false
 
+    /// The TUI's steps cell: "6 · 4✓ 1▶ 1⚠" from the work counts.
+    private var stepsSummary: String? {
+        guard let counts = row.work?.counts, let total = counts.total, total > 0 else { return nil }
+        var parts: [String] = []
+        let done = (counts.completed ?? 0) + (counts.resolved ?? 0)
+        if done > 0 { parts.append("\(done)✓") }
+        if let active = counts.active, active > 0 { parts.append("\(active)▶") }
+        if let blocked = counts.blocked, blocked > 0 { parts.append("\(blocked)⚠") }
+        return "\(total) step\(total == 1 ? "" : "s")\(parts.isEmpty ? "" : " · " + parts.joined(separator: " "))"
+    }
+
+    private var statusWord: String? {
+        row.status?.replacingOccurrences(of: "_", with: " ")
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             StatusDot(color: Theme.statusColor(row.status), size: 7)
@@ -122,21 +231,43 @@ struct SessionRow: View {
                     .foregroundStyle(Theme.text)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                // One metadata line: the load-bearing bits (client, status,
+                // steps, sub count) never wrap; the project name is the one
+                // that yields, truncating in the middle.
                 HStack(spacing: 6) {
                     Text(row.client)
                         .font(.system(size: 9.5, weight: .semibold))
                         .foregroundStyle(Theme.clientColor(row.client))
+                        .fixedSize()
+                    if let statusWord {
+                        Text(statusWord)
+                            .font(.system(size: 9.5, weight: .medium))
+                            .foregroundStyle(Theme.statusColor(row.status))
+                            .fixedSize()
+                    }
+                    if let stepsSummary {
+                        Text(stepsSummary)
+                            .font(.system(size: 9.5))
+                            .monospacedDigit()
+                            .foregroundStyle(Theme.textMuted)
+                            .fixedSize()
+                    }
                     if let project = row.project {
                         Text(project)
                             .font(.system(size: 10))
                             .foregroundStyle(Theme.textFaint)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .layoutPriority(-1)
                     }
                     if let count = row.related?.childSessionCount, count > 0 {
                         Text("×\(count) sub")
                             .font(.system(size: 9.5))
                             .foregroundStyle(Theme.textFaint)
+                            .fixedSize()
                     }
                 }
+                .lineLimit(1)
             }
             Spacer(minLength: 10)
             VStack(alignment: .trailing, spacing: 3) {
@@ -180,6 +311,7 @@ struct SessionRow: View {
 struct SessionDetail: View {
     let row: V1SessionRow
     @EnvironmentObject var dashboard: DashboardStore
+    @State private var showAllDescendants = false
 
     var body: some View {
         ScrollBox {
@@ -309,40 +441,28 @@ struct SessionDetail: View {
                 SectionCaption(tone: Theme.textMuted, text: "Subagent sessions · \(descendants.count)")
                 Card(padding: 4) {
                     VStack(spacing: 0) {
-                        let shown = Array(descendants.prefix(8))
+                        let shown = showAllDescendants ? descendants : Array(descendants.prefix(8))
                         ForEach(Array(shown.enumerated()), id: \.element.id) { index, child in
-                            HStack(spacing: 9) {
-                                StatusDot(color: Theme.statusColor(child.status), size: 6)
-                                Text(child.title ?? child.clientSessionIdShort ?? child.clientSessionId ?? "?")
-                                    .font(Type.body)
-                                    .foregroundStyle(Theme.text)
-                                    .lineLimit(1)
-                                Spacer(minLength: 8)
-                                if let pct = Fmt.planPct(child.planPct) {
-                                    Text(pct)
-                                        .font(Type.numeric)
-                                        .foregroundStyle(Theme.accent)
-                                }
-                                if let tokens = child.usage?.freshTokens {
-                                    Text(UsageTotals.compact(Int(tokens)))
-                                        .font(Type.tiny.monospacedDigit())
-                                        .foregroundStyle(Theme.textFaint)
-                                        .frame(width: 48, alignment: .trailing)
-                                }
-                            }
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 6)
+                            DescendantRow(child: child)
                             if index < shown.count - 1 {
                                 Rectangle().fill(Theme.border.opacity(0.6)).frame(height: 1)
                             }
                         }
                         if descendants.count > 8 {
-                            Text("+ \(descendants.count - 8) more")
-                                .font(Type.tiny)
-                                .foregroundStyle(Theme.textFaint)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 9)
-                                .padding(.vertical, 6)
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.15)) { showAllDescendants.toggle() }
+                            } label: {
+                                Text(showAllDescendants
+                                     ? "Show fewer"
+                                     : "Show all \(descendants.count)")
+                                    .font(Type.small)
+                                    .foregroundStyle(Theme.accent)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 6)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -355,16 +475,93 @@ struct SessionDetail: View {
         if let join = row.join {
             VStack(alignment: .leading, spacing: Space.s) {
                 SectionCaption(tone: Theme.textMuted, text: "Attribution")
+                // Attribution ≠ evidence: this answers "which recorded work
+                // does this session's USAGE belong to" (the money↔work join);
+                // evidence lives on each step (what the machine checks prove).
+                Text("how this session's usage maps onto its recorded work — separate from each step's evidence")
+                    .font(Type.tiny)
+                    .foregroundStyle(Theme.textFaint)
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Chip(text: join.state ?? "unknown", tint: joinTint(join.state))
                     if let reason = join.reason {
                         Text(reason)
                             .font(Type.small)
                             .foregroundStyle(Theme.textMuted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if let rows = join.rowStates, !rows.isEmpty {
+                    HStack(spacing: 8) {
+                        ForEach(rows.sorted(by: { $0.key < $1.key }), id: \.key) { state, count in
+                            if count > 0 {
+                                Text("\(state.replacingOccurrences(of: "_", with: " ")): \(count)")
+                                    .font(Type.tiny.monospacedDigit())
+                                    .foregroundStyle(Theme.textMuted)
+                            }
+                        }
+                        if let vetoed = join.vetoedRows, vetoed > 0 {
+                            Text("vetoed: \(vetoed)")
+                                .font(Type.tiny.monospacedDigit())
+                                .foregroundStyle(Theme.orange)
+                        }
+                    }
+                }
+                if let attributed = join.attributedWork, !attributed.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(attributed) { work in
+                            HStack(spacing: 6) {
+                                Image(systemName: "arrow.right")
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(Theme.textFaint)
+                                Text(work.title ?? work.sectionId ?? "?")
+                                    .font(Type.tiny)
+                                    .foregroundStyle(Theme.textMuted)
+                                    .lineLimit(1)
+                                if let confidence = work.joinConfidence {
+                                    Chip(text: confidence.replacingOccurrences(of: "_", with: " "),
+                                         tint: Theme.textFaint)
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+/// One subagent row: role-aware label (Task first line > title > agent type),
+/// an agent-type chip, plan share and fresh tokens.
+struct DescendantRow: View {
+    let child: V1Descendant
+
+    var body: some View {
+        HStack(spacing: 9) {
+            StatusDot(color: Theme.statusColor(child.status), size: 6)
+            Text(child.displayTitle)
+                .font(Type.body)
+                .foregroundStyle(Theme.text)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if let agentType = child.agentType {
+                Chip(text: agentType, tint: Theme.purple)
+            }
+            Spacer(minLength: 8)
+            if let pct = Fmt.planPct(child.planPct) {
+                Text(pct)
+                    .font(Type.numeric)
+                    .foregroundStyle(Theme.accent)
+            }
+            if let tokens = child.usage?.freshTokens {
+                Text(UsageTotals.compact(Int(tokens)))
+                    .font(Type.tiny.monospacedDigit())
+                    .foregroundStyle(Theme.textFaint)
+                    .frame(width: 48, alignment: .trailing)
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .help(child.task ?? child.displayTitle)
     }
 }
 
@@ -373,6 +570,34 @@ struct SessionDetail: View {
 struct StepCard: View {
     let step: V1Step
     @State private var expanded = false
+
+    /// WHY this confidence level — mirrors the daemon's evidence_status
+    /// derivation (failed: any live failing check; strong: any pass; weak:
+    /// claims without a pass; none: nothing recorded) using the same inputs
+    /// it used, so the label never needs to be taken on faith.
+    private var evidenceExplanation: String? {
+        guard let status = step.evidenceStatus else { return nil }
+        let checks = step.checks ?? []
+        let live = checks.filter { $0.supersessionState != "superseded" }
+        let passed = live.filter { $0.result == "passed" }.count
+        let failed = live.filter { $0.result == "failed" || $0.result == "error" }.count
+        let files = step.files?.count ?? 0
+        switch status {
+        case "failed":
+            return "failed — \(failed) failing check\(failed == 1 ? "" : "s") with no later pass superseding \(failed == 1 ? "it" : "them")"
+        case "strong":
+            return "strong — \(passed) passing machine check\(passed == 1 ? "" : "s") recorded"
+        case "weak":
+            if checks.isEmpty && files > 0 {
+                return "weak — \(files) file\(files == 1 ? "" : "s") claimed, but no machine check proves the work"
+            }
+            return "weak — checks were recorded but none passed"
+        case "none":
+            return "none — no machine checks and no file claims were recorded for this step"
+        default:
+            return nil
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -388,7 +613,8 @@ struct StepCard: View {
                     Text(step.title ?? step.sectionId ?? "untitled")
                         .font(Type.body)
                         .foregroundStyle(Theme.text)
-                        .lineLimit(expanded ? 3 : 1)
+                        .lineLimit(expanded ? nil : 1)
+                        .fixedSize(horizontal: false, vertical: expanded)
                     Spacer(minLength: 8)
                     if let kind = step.kind, kind != "unknown" {
                         Chip(text: kind, tint: Theme.textMuted)
@@ -409,6 +635,8 @@ struct StepCard: View {
             .buttonStyle(.plain)
 
             if expanded {
+                // The expanded step is the DETAILED view: nothing here is
+                // truncated — the user opened it to see everything.
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
                         if let status = step.latestStatus {
@@ -431,11 +659,18 @@ struct StepCard: View {
                                 .foregroundStyle(Theme.purple)
                         }
                     }
+                    if let why = evidenceExplanation {
+                        Text(why)
+                            .font(Type.tiny)
+                            .foregroundStyle(evidenceTint(step.evidenceStatus))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if let summary = step.summary, !summary.isEmpty {
                         Text(summary)
                             .font(Type.small)
                             .foregroundStyle(Theme.textMuted)
                             .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
                     }
                     if let checks = step.checks, !checks.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
@@ -449,18 +684,28 @@ struct StepCard: View {
                             .font(Type.small)
                             .foregroundStyle(Theme.orange)
                             .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
                     }
                     if let next = step.nextStep, !next.isEmpty {
                         Label(next, systemImage: "arrow.turn.down.right")
                             .font(Type.small)
                             .foregroundStyle(Theme.textMuted)
                             .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
                     }
                     if let files = step.files, !files.isEmpty {
-                        Text("\(files.count) file\(files.count == 1 ? "" : "s"): \(files.prefix(4).joined(separator: ", "))\(files.count > 4 ? " …" : "")")
-                            .font(Type.tiny)
-                            .foregroundStyle(Theme.textFaint)
-                            .lineLimit(2)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(files.count) file\(files.count == 1 ? "" : "s")")
+                                .font(Type.tiny.weight(.semibold))
+                                .foregroundStyle(Theme.textFaint)
+                            ForEach(files, id: \.self) { file in
+                                Text(file)
+                                    .font(Type.tiny.monospaced())
+                                    .foregroundStyle(Theme.textFaint)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .textSelection(.enabled)
+                            }
+                        }
                     }
                 }
                 .padding(.horizontal, 12)

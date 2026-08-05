@@ -66,23 +66,16 @@ final class GlanceState: ObservableObject {
         }
     }
 
-    /// Menu bar label: the weekly plan meter (the subscription user's real
-    /// question), account truth from the provider's own 7d reading —
-    /// claude-code's when live, else the hottest live 7d window. Falls back
-    /// to today's cost when no limit reading exists; a quiet marker when the
-    /// daemon is down — never a fabricated figure.
-    var menuBarTitle: String {
+    /// Menu bar icon (placeholder until a brand mark exists): a steady gauge
+    /// when connected, a slashed one when the daemon is down/incompatible.
+    /// No number in the bar — the provider's own menu already shows the plan
+    /// meter; ours lives one click away in the dropdown.
+    var menuBarSymbol: String {
         switch phase {
-        case .connected(let snapshot):
-            if let used = Self.sevenDayUsedPercent(snapshot.glance) {
-                return "⏺ \(Int(used.rounded()))%"
-            }
-            let today = snapshot.glance.usage.windows.first { $0.label == "today" }
-            return "⏺ \(today?.totals.costText ?? "—")"
-        case .connecting:
-            return "⏺ …"
+        case .connected, .connecting:
+            return "gauge.with.dots.needle.50percent"
         case .disconnected, .incompatible:
-            return "⏺ ∅"
+            return "gauge.badge.minus"
         }
     }
 

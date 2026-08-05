@@ -266,14 +266,18 @@ struct PlanHeroCard: View {
                             .font(Type.small)
                             .foregroundStyle(Theme.textMuted)
                     }
-                    if let tracked = trackedLine {
+    if let tracked = trackedLine {
                         Text(tracked)
                             .font(Type.small)
                             .foregroundStyle(Theme.accent)
                     } else if planClient?.calibrationState == "calibrating" {
-                        Text("tracked share calibrating from your own limit history")
+                        // The daemon's calibration-progress sentence (why the
+                        // number is withheld), not a bare spinner.
+                        Text(planClient?.stateDetail ?? "tracked share calibrating from your own limit history")
                             .font(Type.tiny)
                             .foregroundStyle(Theme.textFaint)
+                            .lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     if let five = fiveHour?.usedPercent {
                         HStack(spacing: 6) {

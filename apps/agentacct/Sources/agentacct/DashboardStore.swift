@@ -23,6 +23,10 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var isLoadingMore = false
     @Published private(set) var lastUpdated: Date?
 
+    /// The cost-chart range (7/30/90 trailing days); the plan lane stays on
+    /// its own fixed windows.
+    @Published private(set) var usageDays = 30
+
     private let client = GlanceClient()
     private let pageSize = 60
 
@@ -39,7 +43,7 @@ final class DashboardStore: ObservableObject {
                 "/v1/sessions?limit=\(limit)&offset=0"
             )
             let plan: V1PlanPayload = try await client.getAuthed("/v1/plan?days=30")
-            let summary: UsageSummary = try await client.getLocal("/usage/summary?days=30")
+            let summary: UsageSummary = try await client.getLocal("/usage/summary?days=\(usageDays)")
             sessions = payload.sessions
             totalSessions = payload.totalSessions
             totalRootSessions = payload.totalRootSessions
@@ -111,6 +115,18 @@ final class DashboardStore: ObservableObject {
     /// The plan status for one client (three-state honesty), if known.
     func planStatus(for clientName: String) -> V1PlanStatus? {
         planStatuses.first { $0.client == clientName }
+    }
+
+    /// Switch the cost-chart range and refetch just the usage cube.
+    func setUsageDays(_ days: Int) async {
+        guard days != usageDays else { return }
+        usageDays = days
+        do {
+            let summary: UsageSummary = try await client.getLocal("/usage/summary?days=\(days)")
+            usage = summary
+        } catch {
+            errorText = "usage range fetch failed: \(error.localizedDescription)"
+        }
     }
 }
 
