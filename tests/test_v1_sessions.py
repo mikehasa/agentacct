@@ -537,6 +537,59 @@ def test_metadata_parent_id_joins_raw_not_prefix_split(tmp_path):
     assert abs(glance_rows["rootr:lane"]["plan_pct"] - v1_pct) < 1e-9
 
 
+def test_ledger_parent_refusal_blocks_the_suffix_fallback(tmp_path):
+    """When the ledger refused a recorded parent link (conflicting pointers —
+    'missing beats wrong'), the ':' id-shape fallback must not re-fold what
+    the ledger refused; both surfaces keep the lane as its own root."""
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _calibrate_claude(service, now=now)
+    _record_usage(service, session_id="r5", tokens=10_000_000, updated_at=now - 700)
+    _record_usage(service, session_id="r5:lane", tokens=3_000_000, updated_at=now - 600,
+                  session_kind="child", parent_session_id="r5")
+    _record_usage(service, model="claude-fable-5", session_id="r5:lane", tokens=2_000_000,
+                  updated_at=now - 500, session_kind="child", parent_session_id="q5")
+
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    payload = _sessions(client, limit=50)
+    rows = _rows_by_id(payload)
+    lane = rows.get("r5:lane")
+    assert lane is not None, "a refused-parent lane must stand as its own root"
+    assert rows["r5"]["plan_pct_children"] is None
+    glance = client.get("/v1/glance", headers=AUTH).json()
+    glance_rows = {row["session_id"]: row for row in glance["recent_sessions"]}
+    assert "r5:lane" in glance_rows
+    assert abs(glance_rows["r5:lane"]["plan_pct"] - lane["plan_pct"]) < 1e-9
+
+
+def test_explicit_vs_missing_namespace_refuses_the_fold(tmp_path):
+    """A parent whose rows mix a fingerprint with fingerprint-less rows (the
+    upgrade-boundary state the ledger quarantines) must refuse folds on the
+    glance too — the child keeps its own share on both surfaces."""
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _calibrate_claude(service, now=now)
+    _record_usage(service, session_id="root-m", tokens=1_000_000, updated_at=now - 900,
+                  namespace=None)
+    _record_usage(service, model="claude-fable-5", session_id="root-m", tokens=1_000_000,
+                  updated_at=now - 800)
+    _record_usage(service, session_id="66666666-aaaa-bbbb-cccc-777777777777",
+                  tokens=5_000_000, updated_at=now - 300,
+                  session_kind="child", parent_session_id="root-m")
+
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    rows = _rows_by_id(_sessions(client, limit=50))
+    child = rows.get("66666666-aaaa-bbbb-cccc-777777777777")
+    assert child is not None, "the child must stand as its own root"
+    assert child["plan_pct"] is not None and child["plan_pct_children"] is None
+    glance = client.get("/v1/glance", headers=AUTH).json()
+    glance_rows = {row["session_id"]: row for row in glance["recent_sessions"]}
+    g_child = glance_rows["66666666-aaaa-bbbb-cccc-777777777777"]
+    assert abs(g_child["plan_pct"] - child["plan_pct"]) < 1e-9
+
+
 def test_generated_at_is_the_view_build_time(tmp_path):
     """A cache-hit response must not stamp a fresh clock on cached content."""
 

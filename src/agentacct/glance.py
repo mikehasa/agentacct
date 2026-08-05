@@ -422,16 +422,24 @@ def child_root_plan_fold(
 
     The ``':'`` suffix fallback applies only to a session with no parent
     metadata at all (legacy child lanes; not client-gated — acceptable while
-    only claude-code carries plan shares). Residual known divergence, both
+    only claude-code carries plan shares). Residual known divergences, all
     conservative and sum-preserving: a parent visible ONLY through mechanical
     observations (no usage, no sections) exists on the sessions lane but not
-    here.
+    here, and a parent POINTER carried only by observation rows is invisible
+    to this events-only pass.
     """
 
     from .client_usage import is_local_usage_import_event
     from .usage_truth import normalized_local_usage_session_id
 
     ns_values: dict[tuple[str, str], set[str]] = {}
+    # Sessions with at least one usage row carrying NO fingerprint. Explicit
+    # alongside missing is identity ambiguity, same as two different values —
+    # the ledger quarantines "source_namespace_missing_vs_explicit" sessions
+    # (the upgrade-boundary store state), and treating the explicit value as
+    # the session's home here folded what the sessions lane quarantines
+    # (round-4 adversarial finding).
+    ns_missing: set[tuple[str, str]] = set()
     universe: set[tuple[str, str]] = set()
     # child_key -> {(parent_key, expected_parent_ns)}
     claims: dict[tuple[str, str], set[tuple[tuple[str, str], str | None]]] = {}
@@ -456,6 +464,8 @@ def child_root_plan_fold(
         own_ns = metadata.get("source_namespace_fingerprint")
         if own_ns:
             ns_values.setdefault(child_key, set()).add(str(own_ns))
+        else:
+            ns_missing.add(child_key)
 
         kind = str(metadata.get("client_session_kind") or "root")
         parent = str(metadata.get("parent_client_session_id") or "")
@@ -475,9 +485,9 @@ def child_root_plan_fold(
     def _session_ns(key: tuple[str, str]) -> Any:
         values = ns_values.get(key)
         if not values:
-            return None
-        if len(values) > 1:
-            return _NS_CONFLICT
+            return None  # no fingerprints at all: a pre-fingerprint session
+        if len(values) > 1 or key in ns_missing:
+            return _NS_CONFLICT  # mixed homes, or explicit-vs-missing ambiguity
         return next(iter(values))
 
     mapping: dict[tuple[str, str], tuple[str, str]] = {}

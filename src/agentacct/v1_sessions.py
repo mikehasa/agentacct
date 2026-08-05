@@ -124,6 +124,13 @@ def _fold_parent_key(
             key = (client, parent_id)
             return key if key in entries_by_key else None
         return None
+    if isinstance(related, dict) and related.get("note"):
+        # The ledger REFUSED a recorded parent link (conflicting or
+        # self-referencing pointers — related.note carries the refusal).
+        # "Missing beats wrong" must not be overridden by an id-shape guess:
+        # falling through to the ':' fallback here re-folded exactly what the
+        # ledger refused (round-4 adversarial finding).
+        return None
     session_id = str(entry.get("client_session_id") or "")
     if ":" in session_id:
         key = (client, session_id.split(":", 1)[0])
