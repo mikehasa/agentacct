@@ -14725,7 +14725,13 @@ def create_local_api_app(
             )
         header = request.headers.get("authorization") or ""
         scheme, _, candidate = header.partition(" ")
-        if scheme.lower() != "bearer" or not hmac.compare_digest(candidate.strip(), v1_auth_token):
+        # Compare BYTES: hmac.compare_digest raises TypeError on non-ASCII str
+        # (Starlette decodes header bytes as latin-1, so a garbled local client
+        # can deliver one), and the reader contract needs a clean 401 — never a
+        # 500 — as its "re-read the discovery file" signal.
+        candidate_bytes = candidate.strip().encode("utf-8", "surrogateescape")
+        expected_bytes = v1_auth_token.encode("utf-8", "surrogateescape")
+        if scheme.lower() != "bearer" or not hmac.compare_digest(candidate_bytes, expected_bytes):
             raise HTTPException(status_code=401, detail="missing or invalid bearer token for the v1 local API")
 
     @app.get("/v1/version")
@@ -14748,9 +14754,11 @@ def create_local_api_app(
     def v1_glance(request: Request) -> dict[str, Any]:
         """The glance snapshot (usage · cost · plan · recent sessions).
 
-        Fingerprint-cached: a poll that finds no event change is a dict lookup,
-        so a native shell polling every few seconds never re-aggregates the
-        store (see :mod:`agentacct.glance` for the schema contract)."""
+        Fingerprint + TTL cached: a poll that finds no event change skips the
+        aggregation REBUILD (the expensive part) — each poll still reads the
+        event list once to compute the change key, so per-request cost is one
+        store read + an O(n) hash, never a re-aggregation (see
+        :mod:`agentacct.glance` for the schema contract)."""
 
         _require_v1_token(request)
         events = service.list_all_events()

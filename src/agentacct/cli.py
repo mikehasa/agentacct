@@ -8531,24 +8531,45 @@ def serve(
     # removed on shutdown behind a pid gate + lock so a dying old server never
     # deletes a fresh server's file.
     import secrets as _secrets
+    import threading as _threading
 
-    from .glance import claim_discovery_file, remove_discovery_file
+    from .glance import claim_discovery_file, remove_discovery_file, run_discovery_heartbeat
 
     v1_token = _secrets.token_urlsafe(32)
+    v1_version_string = _usage_importer_version()
     discovery_path = claim_discovery_file(
         effective_store_dir,
         host=host,
         port=bound_port,
         token=v1_token,
-        version=_usage_importer_version(),
+        version=v1_version_string,
     )
     if discovery_path is not None:
         console.print(f"Native-shell API (/v1): discovery file {discovery_path}")
     else:
         console.print(
             "Native-shell API (/v1): another agentacct server already publishes the discovery "
-            "file for this store; this instance serves /v1 unpublished."
+            "file for this store; this instance serves /v1 unpublished (it re-claims the slot "
+            "automatically if that server goes away)."
         )
+    # The re-claim heartbeat closes the restart-drain stranding: a serve that
+    # started unpublished (old server still dying) takes the slot over within
+    # one interval of it freeing up; also heals SIGKILL-stale files.
+    heartbeat_stop = _threading.Event()
+    heartbeat = _threading.Thread(
+        target=run_discovery_heartbeat,
+        kwargs={
+            "store_dir": effective_store_dir,
+            "host": host,
+            "port": bound_port,
+            "token": v1_token,
+            "version": v1_version_string,
+            "stop": heartbeat_stop,
+        },
+        name="agentacct-discovery-heartbeat",
+        daemon=True,
+    )
+    heartbeat.start()
     try:
         uvicorn.run(
             create_local_api_app(
@@ -8562,6 +8583,10 @@ def serve(
             log_level="info",
         )
     finally:
+        # Stop the heartbeat BEFORE removing so it cannot re-publish a file
+        # this shutdown just deleted.
+        heartbeat_stop.set()
+        heartbeat.join(timeout=5)
         remove_discovery_file(effective_store_dir)
 
 
