@@ -38,7 +38,13 @@ from .canonical_read import (
 from .capture import CaptureContext, DEFAULT_CAPTURE_REGISTRY, render_hook_manifest
 from .capture.registry import DEFAULT_MAX_PAYLOAD_BYTES
 from .capture_runtime import capture_hook_payload
-from .glance import GLANCE_SCHEMA_VERSION, GlanceCache
+from .glance import GLANCE_SCHEMA_VERSION, GlanceCache, events_fingerprint
+from .v1_sessions import (
+    V1_SESSIONS_SCHEMA_VERSION,
+    V1SessionsCache,
+    build_v1_sessions_view,
+    slice_sessions_payload,
+)
 # Re-exported for compatibility: these names moved verbatim to usage_view (the
 # data-layer split). Rebinding/monkeypatching them on THIS module no longer
 # reaches usage_snapshot/plan_cost/the TUI — patch agentacct.usage_view instead.
@@ -112,7 +118,7 @@ from .usage_cube import (
     usage_bucket_date,
 )
 from .usage_truth import CODEX_REPLAY_QUARANTINE_STATE
-from .work_ledger import _project_identity, _safe_project_label, build_work_ledger
+from .work_ledger import WorkLedgerCache, _project_identity, _safe_project_label, build_work_ledger
 from .work_events import WORK_EVENT_KINDS, WORK_EVENT_STATUSES, WorkEvent
 
 DASHBOARD_USAGE_LIMIT_SESSIONS = 500
@@ -2619,26 +2625,49 @@ def create_local_api_app(
     def _mechanical_projection_envelopes() -> tuple[list[Any], dict[str, int]]:
         return _mechanical_projection_envelopes_for(service, store_dir)
 
-    def _derived_work_ledger() -> dict[str, Any]:
-        mechanical_envelopes, observation_diagnostics = _mechanical_projection_envelopes()
-        session_observations = (
-            build_session_observations(
-                mechanical_envelopes,
-                default_project_label=store_project_label if store_scope == "project" else None,
-                diagnostics=observation_diagnostics,
+    ledger_cache = WorkLedgerCache()
+
+    def _derived_work_ledger(
+        events: list[dict[str, Any]] | None = None,
+        *,
+        fingerprint: int | None = None,
+    ) -> dict[str, Any]:
+        """The derived ledger, fingerprint + TTL cached (see WorkLedgerCache).
+
+        Every ledger-backed route shares one cache: a poll that finds no event
+        change pays one store read + an O(n) hash, never the multi-second
+        rebuild. ``events``/``fingerprint`` may be passed pre-computed by a
+        route that already loaded them (avoids a second store read/hash).
+        """
+
+        if events is None:
+            events = service.list_all_events()
+        if fingerprint is None:
+            fingerprint = events_fingerprint(events)
+        loaded_events = events
+
+        def _build() -> dict[str, Any]:
+            mechanical_envelopes, observation_diagnostics = _mechanical_projection_envelopes()
+            session_observations = (
+                build_session_observations(
+                    mechanical_envelopes,
+                    default_project_label=store_project_label if store_scope == "project" else None,
+                    diagnostics=observation_diagnostics,
+                )
+                if mechanical_envelopes
+                else []
             )
-            if mechanical_envelopes
-            else []
-        )
-        return build_work_ledger(
-            service.list_all_events(),
-            run_reports=_collect_run_reports(limit=100),
-            cost_events=cost_ledger.read_events(),
-            session_observations=session_observations,
-            session_observation_diagnostics=observation_diagnostics,
-            store_project_label=store_project_label,
-            store_scope=store_scope,
-        )
+            return build_work_ledger(
+                loaded_events,
+                run_reports=_collect_run_reports(limit=100),
+                cost_events=cost_ledger.read_events(),
+                session_observations=session_observations,
+                session_observation_diagnostics=observation_diagnostics,
+                store_project_label=store_project_label,
+                store_scope=store_scope,
+            )
+
+        return ledger_cache.ledger(fingerprint, _build)
 
     def _page_data(
         local_usage_preview: list[ClientUsageEvent] | None = None,
@@ -2766,6 +2795,7 @@ def create_local_api_app(
             "schema": "agentacct.v1-version.v1",
             "version": _dashboard_importer_version(),
             "glance_schema": GLANCE_SCHEMA_VERSION,
+            "sessions_schema": V1_SESSIONS_SCHEMA_VERSION,
             "pid": os.getpid(),
             "store_dir": str(store_dir),
             "store_scope": store_scope,
@@ -2784,6 +2814,38 @@ def create_local_api_app(
         _require_v1_token(request)
         events = service.list_all_events()
         return glance_cache.snapshot(events, store_dir=store_dir, version=_dashboard_importer_version())
+
+    v1_sessions_cache = V1SessionsCache()
+
+    @app.get("/v1/sessions")
+    def v1_sessions(
+        request: Request,
+        roots_only: bool = Query(True),
+        limit: int = Query(50, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+    ) -> dict[str, Any]:
+        """The versioned session list for native shells (see agentacct.v1_sessions).
+
+        ``roots_only`` filters BEFORE the recency slice (the "12 root
+        sessions" fix), ``offset``/``limit`` walk the filtered population, and
+        the envelope disclose every cut (totals + ``truncated``). Rows carry
+        per-session weekly-plan shares with children folded into their root
+        (calibrated-or-nothing). Cached like the glance: fingerprint + TTL over
+        the enriched view; the per-request work is a filter + slice.
+        """
+
+        _require_v1_token(request)
+        events = service.list_all_events()
+        fingerprint = events_fingerprint(events)
+        view = v1_sessions_cache.view(
+            fingerprint,
+            lambda: build_v1_sessions_view(
+                _derived_work_ledger(events, fingerprint=fingerprint), events
+            ),
+        )
+        return slice_sessions_payload(
+            view, roots_only=roots_only, limit=limit, offset=offset, generated_at=time.time()
+        )
 
     @app.get("/")
     def index() -> dict[str, Any]:
@@ -2809,6 +2871,7 @@ def create_local_api_app(
                 "/evidence/status",
                 "/v1/version (bearer token from the store's local-api.json)",
                 "/v1/glance (bearer token from the store's local-api.json)",
+                "/v1/sessions (bearer token from the store's local-api.json)",
             ],
         }
 

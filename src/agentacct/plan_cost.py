@@ -72,6 +72,14 @@ _SCALE_CLAMP = (0.1, 10.0)
 # baseline rather than apply an unreliable (over- or under-stating) scale.
 _TRUSTED_SCALE_BAND = (0.5, 2.5)
 
+# Plan-bearing clients whose meter can actually CALIBRATE to per-session weekly
+# percentages — i.e. a clean weekly-reset cumulative meter. codex's 7-day meter is
+# rolling and opaque (Σdeltas ≫ the window, resets unobservable), so a weekly plan %
+# is undefined for it: it must never be shown as "calibrating", because that promises
+# a number that will never arrive. This is the single source of truth; shells
+# (TUI plan column, glance/app payloads) derive their three-state display from it.
+CALIBRATABLE_CLIENTS = ("claude-code",)
+
 
 @dataclass(frozen=True)
 class PlanWeights:
@@ -333,12 +341,53 @@ def session_plan_pcts(
     return {sid: weights.pct_for_tokens(tokens) for sid, tokens in by_session.items()}
 
 
+def calibration_state(weights: PlanWeights) -> str:
+    """Three-state display semantic for one client's plan estimate.
+
+    ``calibrated`` — per-session percentages are grounded in this account's own
+    recorded limit history and may be shown. ``calibrating`` — the client CAN
+    calibrate but hasn't yet (not enough clean intervals, or the fit fell outside
+    the trusted band); an honest "warming up", not a missing feature.  ``never``
+    — the client's meter cannot yield a weekly plan %% (see
+    :data:`CALIBRATABLE_CLIENTS`); shells must not show "calibrating" for it.
+    """
+
+    if weights.confidence == "calibrated":
+        return "calibrated"
+    return "calibrating" if weights.client in CALIBRATABLE_CLIENTS else "never"
+
+
+def plan_status_entry(weights: PlanWeights) -> dict[str, Any]:
+    """The per-client plan payload entry shared by glance and the /v1 lane.
+
+    Additive superset of the original ``{client, confidence}`` shape: the
+    three-state ``calibration_state`` (so no shell has to hard-code which
+    clients can calibrate), ``calibratable``, and the why-this-number
+    disclosure fields (``basis``/``scale``/``intervals_used``) a detail view
+    renders verbatim. ``scale`` is only meaningful when calibrated; it is
+    reported as-is (1.0 under baseline) with ``confidence`` as its guard.
+    """
+
+    return {
+        "client": weights.client,
+        "confidence": weights.confidence,
+        "calibration_state": calibration_state(weights),
+        "calibratable": weights.client in CALIBRATABLE_CLIENTS,
+        "basis": weights.basis,
+        "scale": weights.scale,
+        "intervals_used": weights.intervals_used,
+    }
+
+
 __all__ = [
     "BASELINE_MODEL_WEIGHTS",
+    "CALIBRATABLE_CLIENTS",
     "PlanWeights",
     "baseline_weight",
     "seven_day_series",
     "calibrate_plan_weights",
+    "calibration_state",
+    "plan_status_entry",
     "session_tokens_by_model",
     "session_plan_pcts",
 ]

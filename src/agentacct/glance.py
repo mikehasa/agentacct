@@ -338,6 +338,103 @@ def remove_discovery_file(store_dir: Path | str, *, pid: int | None = None) -> b
 # ---------------------------------------------------------------------------
 
 
+def _fold_root_session_id(metadata: dict[str, Any], raw_session: str) -> str:
+    """The root session id a usage row's session folds into (identity for roots).
+
+    Child sessions (subagents, workflow agents, replay lanes) fold into their
+    root. Kind/parent metadata is authoritative; the ``':'`` suffix split is
+    the defensive fallback for legacy child lanes that carry no parent
+    metadata.
+    """
+
+    kind = str(metadata.get("client_session_kind") or "root")
+    parent = str(metadata.get("parent_client_session_id") or "")
+    folded = raw_session
+    if kind != "root" and parent:
+        folded = parent
+    if ":" in folded:
+        folded = folded.split(":", 1)[0]
+    return folded
+
+
+def child_root_plan_fold(events: list[dict[str, Any]]) -> dict[tuple[str, str], tuple[str, str]]:
+    """``(client, child_session_id) -> (client, root_session_id)`` for usage rows.
+
+    The key space matches :func:`agentacct.plan_cost.session_plan_pcts` (the
+    usage view's normalized session ids), so a per-session plan share can be
+    re-attributed from a child to the root whose row actually shows it. Roots
+    and unfoldable rows are absent — a lookup falls through to identity.
+    """
+
+    from .client_usage import is_local_usage_import_event
+    from .usage_truth import normalized_local_usage_session_id
+
+    mapping: dict[tuple[str, str], tuple[str, str]] = {}
+    for event in events:
+        if not is_local_usage_import_event(event):
+            continue
+        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        client = str(metadata.get("client") or event.get("source") or "")
+        raw_session = str(metadata.get("client_session_id") or event.get("run_id") or "")
+        if not client or not raw_session:
+            continue
+        folded_raw = _fold_root_session_id(metadata, raw_session)
+        child_id = normalized_local_usage_session_id(metadata.get("client"), raw_session)
+        root_id = normalized_local_usage_session_id(metadata.get("client"), folded_raw)
+        if child_id != root_id:
+            mapping[(client, child_id)] = (client, root_id)
+    return mapping
+
+
+def fold_plan_pcts_to_roots(
+    session_pcts: dict[tuple[str, str], float],
+    fold_map: dict[tuple[str, str], tuple[str, str]],
+) -> dict[tuple[str, str], float]:
+    """Re-attribute child plan shares onto their roots (sum-preserving).
+
+    A surface that HIDES child sessions must carry their share on the root row
+    it does show — otherwise a workflow-heavy session understates exactly when
+    it matters most. The total across keys is unchanged; a child key vanishes
+    into its root's sum.
+    """
+
+    folded: dict[tuple[str, str], float] = {}
+    for key, pct in session_pcts.items():
+        root_key = fold_map.get(key, key)
+        folded[root_key] = folded.get(root_key, 0.0) + pct
+    return folded
+
+
+def plan_status_and_session_pcts(
+    events: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[tuple[str, str], float]]:
+    """Per-client plan payload entries + calibrated per-session plan shares.
+
+    The calibrated-or-nothing honesty rule is baked in: ``session_pcts`` holds
+    ONLY clients whose estimate is grounded in this account's own recorded
+    limit history, keyed ``(client, session_id)`` so one client's number can
+    never attach to another client's row. Keys are the usage view's normalized
+    session ids, UNFOLDED — apply :func:`fold_plan_pcts_to_roots` on a surface
+    that hides child sessions. Shared by the glance and the /v1 sessions lane
+    so the two can never disagree.
+    """
+
+    from .plan_cost import calibrate_plan_weights, plan_status_entry, session_plan_pcts
+
+    from .usage_snapshot import usage_records
+
+    plan: list[dict[str, Any]] = []
+    session_pcts: dict[tuple[str, str], float] = {}
+    for client in PLAN_CLIENTS:
+        records = usage_records(events, client=client)
+        weights = calibrate_plan_weights(events, client=client, records=records)
+        plan.append(plan_status_entry(weights))
+        if weights.confidence == "calibrated":
+            for session_id, pct in session_plan_pcts(records, weights, client=client).items():
+                session_pcts[(client, session_id)] = pct
+    return plan, session_pcts
+
+
 def _recent_sessions(events: list[dict[str, Any]], *, now: float) -> list[dict[str, Any]]:
     """Recent sessions from the section + usage event streams, newest first.
 
@@ -401,15 +498,9 @@ def _recent_sessions(events: list[dict[str, Any]], *, now: float) -> list[dict[s
                 continue
             # Child sessions (subagents, workflow agents, replay lanes) FOLD
             # into their root: a glance list full of a root's own children is
-            # noise, and every child's plan share is attributed to the root
-            # anyway. Kind/parent metadata is authoritative; the ':' suffix
-            # check is the defensive fallback for legacy child lanes.
-            kind = str(metadata.get("client_session_kind") or "root")
-            parent = str(metadata.get("parent_client_session_id") or "")
-            if kind != "root" and parent:
-                raw_session = parent
-            if ":" in raw_session:
-                raw_session = raw_session.split(":", 1)[0]
+            # noise, and every child's plan share is re-attributed to the root
+            # via fold_plan_pcts_to_roots (same fold rule, one helper).
+            raw_session = _fold_root_session_id(metadata, raw_session)
             # The same id normalization the usage view applies, so these keys
             # join with section session ids and plan_pct session ids.
             session_id = normalized_local_usage_session_id(metadata.get("client"), raw_session)
@@ -461,8 +552,7 @@ def build_glance_snapshot(
     importing this module stays cheap for CLI cold starts and tests.
     """
 
-    from .plan_cost import calibrate_plan_weights, session_plan_pcts
-    from .usage_snapshot import build_live_snapshot, limit_is_stale, usage_records
+    from .usage_snapshot import build_live_snapshot, limit_is_stale
 
     moment = time.time() if now is None else float(now)
     live = build_live_snapshot(events, now=moment)
@@ -478,27 +568,22 @@ def build_glance_snapshot(
         entry["stale"] = limit_is_stale(limit, moment)
         limits.append(entry)
 
-    # Plan calibration per plan-bearing client — the calibrated-or-nothing
-    # honesty rule: per-session percentages exist ONLY when the estimate is
-    # grounded in this account's own recorded limit history. Keyed by
-    # (client, session_id) so one client's number can never attach to another
-    # client's row.
-    plan: list[dict[str, Any]] = []
-    session_pcts: dict[tuple[str, str], float] = {}
-    for client in PLAN_CLIENTS:
-        records = usage_records(events, client=client)
-        weights = calibrate_plan_weights(events, client=client, records=records)
-        plan.append({"client": client, "confidence": weights.confidence})
-        if weights.confidence == "calibrated":
-            for session_id, pct in session_plan_pcts(records, weights, client=client).items():
-                session_pcts[(client, session_id)] = pct
+    # Plan calibration per plan-bearing client (calibrated-or-nothing; see
+    # plan_status_and_session_pcts). The recents list HIDES child sessions
+    # (they fold into their root row), so each root's plan_pct must carry its
+    # children's share too — an unfolded join understates a workflow-heavy
+    # root exactly when it matters most. A child that still appears as its own
+    # row (it records sections but its usage folded away) shows None rather
+    # than a share its root's row already includes.
+    plan, session_pcts = plan_status_and_session_pcts(events)
+    folded_pcts = fold_plan_pcts_to_roots(session_pcts, child_root_plan_fold(events))
 
     recent_sessions = _recent_sessions(events, now=moment)
     for row in recent_sessions:
         # The raw estimate, never rounded here: round(pct, 2) can claim an
         # exact 0 for a nonzero share. Shells format like the TUI does —
         # "≈{pct:.1f}%" with a "<0.1%" band — the payload carries the float.
-        row["plan_pct"] = session_pcts.get((row["client"], row["session_id"]))
+        row["plan_pct"] = folded_pcts.get((row["client"], row["session_id"]))
 
     return {
         "schema": GLANCE_SCHEMA_VERSION,

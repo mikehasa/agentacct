@@ -34,6 +34,7 @@ from textual.screen import Screen
 from textual.theme import Theme
 from textual.widgets import Collapsible, DataTable, Footer, LoadingIndicator, Static
 
+from .plan_cost import CALIBRATABLE_CLIENTS
 from .service import SentinelService
 from .subagent_roles import read_roles_for_children
 from .usage_snapshot import (
@@ -219,11 +220,10 @@ def _session_badge(entry: dict) -> str:
 
 # Clients that have a weekly subscription plan agentacct can estimate against.
 _PLAN_CLIENTS = ("claude-code", "codex")
-# Of those, the ones whose meter can actually calibrate to a per-session weekly %
-# — i.e. a clean weekly-reset cumulative meter. codex's 7-day meter is rolling and
-# opaque (it never yields a stable weekly-reset %), so it never reaches a number and
-# must NOT be shown as "calibrating" (that would promise a value that never arrives).
-_CALIBRATABLE_CLIENTS = ("claude-code",)
+# Of those, the ones whose meter can actually calibrate to a per-session weekly %.
+# The rationale (codex's rolling 7-day meter never yields a weekly-reset %) and the
+# authoritative tuple live in plan_cost; this alias keeps existing call sites.
+_CALIBRATABLE_CLIENTS = CALIBRATABLE_CLIENTS
 
 
 #: Shown in the plan column while a plan-bearing client's estimate is still
