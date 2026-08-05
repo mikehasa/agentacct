@@ -1,8 +1,20 @@
+import AppKit
 import SwiftUI
 
-// The agentacct visual system — the native sibling of the TUI's Tokyo Night
-// theme. Accents carry the brand; surfaces stay adaptive (light/dark) via
-// system materials so the app always looks native.
+// The agentacct visual system — semantic tokens with a light and a dark value
+// each, resolved live from the system appearance. The identity is a precision
+// instrument: warm paper surfaces, ink text, one restrained indigo accent,
+// hairline borders, monospaced digits everywhere a number lives. Dark mode is
+// the Tokyo Night storm variant (shared identity with `agentacct tui`), not a
+// separate design.
+//
+// Rules of the road:
+// * Views never hard-code a color or a font size — they use Theme/Type tokens
+//   so a retune touches ONE file.
+// * Numbers always render in monospaced digits (Type.metric*), so columns of
+//   money and tokens align like a meter, not a paragraph.
+// * No `.preferredColorScheme` locks anywhere: the app follows the system,
+//   and snapshots pin the scheme explicitly via `SnapshotScheme`.
 
 enum Fmt {
     static let usd: NumberFormatter = {
@@ -20,25 +32,62 @@ enum Fmt {
     }
 }
 
-enum Theme {
-    // The committed dark surface system (Tokyo Night storm): the window owns
-    // its identity like the TUI does, instead of dressing up system chrome.
-    static let bg = Color(red: 0.086, green: 0.086, blue: 0.118)        // #16161e
-    static let surface = Color(red: 0.102, green: 0.106, blue: 0.149)   // #1a1b26
-    static let card = Color(red: 0.122, green: 0.137, blue: 0.208)      // #1f2335
-    static let cardAlt = Color(red: 0.141, green: 0.157, blue: 0.231)   // #24283b
-    static let border = Color(red: 0.161, green: 0.180, blue: 0.259)    // #292e42
-    static let text = Color(red: 0.753, green: 0.792, blue: 0.961)      // #c0caf5
-    static let textMuted = Color(red: 0.471, green: 0.487, blue: 0.600) // #787c99
-    static let textFaint = Color(red: 0.337, green: 0.371, blue: 0.537) // #565f89
+/// Snapshot-only scheme pin: offscreen ImageRenderer resolves dynamic NSColors
+/// against whatever appearance the process has, so deterministic light/dark
+/// renders set this override alongside `.environment(\.colorScheme, ...)`.
+/// The live app leaves it nil and follows the system.
+enum SnapshotScheme {
+    nonisolated(unsafe) static var override: ColorScheme? = nil
+}
 
-    // Tokyo Night accents (shared identity with `agentacct tui`).
-    static let blue = Color(red: 0.478, green: 0.635, blue: 0.969)     // #7aa2f7
-    static let purple = Color(red: 0.733, green: 0.604, blue: 0.969)   // #bb9af7
-    static let green = Color(red: 0.620, green: 0.808, blue: 0.416)    // #9ece6a
-    static let orange = Color(red: 0.878, green: 0.686, blue: 0.408)   // #e0af68
-    static let red = Color(red: 0.969, green: 0.463, blue: 0.557)      // #f7768e
-    static let cyan = Color(red: 0.490, green: 0.812, blue: 1.0)       // #7dcfff
+enum Theme {
+    // MARK: dynamic resolution
+
+    private static func rgb(_ hex: UInt32, _ alpha: CGFloat = 1) -> NSColor {
+        NSColor(
+            srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
+            green: CGFloat((hex >> 8) & 0xFF) / 255,
+            blue: CGFloat(hex & 0xFF) / 255,
+            alpha: alpha
+        )
+    }
+
+    /// A semantic color with a light and a dark value. Resolves per-draw via
+    /// the appearance (live app) or the snapshot override (offscreen).
+    static func dynamic(light: UInt32, dark: UInt32) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            if let pinned = SnapshotScheme.override {
+                return pinned == .dark ? rgb(dark) : rgb(light)
+            }
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            return isDark ? rgb(dark) : rgb(light)
+        })
+    }
+
+    // MARK: surfaces (light: warm paper + white panels · dark: Tokyo storm)
+
+    static let bg = dynamic(light: 0xF7F5F1, dark: 0x16161E)
+    static let surface = dynamic(light: 0xFDFCFA, dark: 0x1A1B26)
+    static let card = dynamic(light: 0xFFFFFF, dark: 0x1F2335)
+    static let cardAlt = dynamic(light: 0xEEEBE4, dark: 0x24283B)
+    static let border = dynamic(light: 0xE3DFD6, dark: 0x292E42)
+
+    // MARK: text (ink on paper · Tokyo foreground)
+
+    static let text = dynamic(light: 0x201E1B, dark: 0xC0CAF5)
+    static let textMuted = dynamic(light: 0x6E6960, dark: 0x787C99)
+    static let textFaint = dynamic(light: 0xA39D91, dark: 0x565F89)
+
+    // MARK: accents — one restrained indigo carries the brand; the client
+    // palette keeps the TUI's hue identities, darkened for paper.
+
+    static let accent = dynamic(light: 0x3B5BDB, dark: 0x7AA2F7)
+    static let blue = dynamic(light: 0x3B5BDB, dark: 0x7AA2F7)
+    static let purple = dynamic(light: 0x7048B6, dark: 0xBB9AF7)
+    static let green = dynamic(light: 0x2F7D46, dark: 0x9ECE6A)
+    static let orange = dynamic(light: 0xB26A00, dark: 0xE0AF68)
+    static let red = dynamic(light: 0xC03050, dark: 0xF7768E)
+    static let cyan = dynamic(light: 0x0E7490, dark: 0x7DCFFF)
 
     static func clientColor(_ client: String?) -> Color {
         switch client {
@@ -82,9 +131,45 @@ enum Theme {
     }
 }
 
+// MARK: - Typography tokens
+
+/// The type ramp. Metrics are rounded + monospaced-digit (instrument dials);
+/// labels are compact tracked caps; body copy is the system face.
+enum Type {
+    /// The one big number (menu hero).
+    static let hero = Font.system(size: 30, weight: .bold, design: .rounded).monospacedDigit()
+    /// Panel-leading metric (stat tiles).
+    static let metric = Font.system(size: 18, weight: .semibold, design: .rounded).monospacedDigit()
+    /// Row-trailing metric (list money/token cells).
+    static let metricS = Font.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit()
+    /// Inline numeric text (meters, percentages).
+    static let numeric = Font.system(size: 11.5, weight: .semibold).monospacedDigit()
+    /// Row titles.
+    static let rowTitle = Font.system(size: 12.5, weight: .medium)
+    /// Body copy.
+    static let body = Font.system(size: 12)
+    /// Secondary copy.
+    static let small = Font.system(size: 10.5)
+    /// Footnotes / axis labels.
+    static let tiny = Font.system(size: 9.5)
+    /// Tracked caps caption (see SectionCaption).
+    static let caption = Font.system(size: 10, weight: .semibold)
+    /// Small tracked caps label inside tiles.
+    static let tileLabel = Font.system(size: 9.5, weight: .semibold)
+}
+
+/// The spacing scale. Padding and gaps come from here, not magic numbers.
+enum Space {
+    static let xs: CGFloat = 4
+    static let s: CGFloat = 8
+    static let m: CGFloat = 12
+    static let l: CGFloat = 16
+    static let xl: CGFloat = 24
+}
+
 // MARK: - Reusable components
 
-/// A caption + big monospaced value, on a soft card.
+/// A caption + big monospaced value, on a soft adaptive card (menu variant).
 struct StatTile: View {
     let label: String
     let value: String
@@ -94,12 +179,11 @@ struct StatTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label.uppercased())
-                .font(.system(size: 9.5, weight: .semibold))
+                .font(Type.tileLabel)
                 .tracking(0.6)
                 .foregroundStyle(.secondary)
             Text(value)
-                .font(.system(size: 17, weight: .semibold, design: .rounded))
-                .monospacedDigit()
+                .font(Font.system(size: 17, weight: .semibold, design: .rounded).monospacedDigit())
                 .foregroundStyle(accent)
             if let detail {
                 Text(detail)
@@ -110,6 +194,54 @@ struct StatTile: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+}
+
+/// The window's stat tile: white/storm panel, hairline border, big dial.
+struct PanelTile: View {
+    let label: String
+    let value: String
+    var detail: String? = nil
+    var accent: Color = Theme.text
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label.uppercased())
+                .font(Type.tileLabel)
+                .tracking(0.7)
+                .foregroundStyle(Theme.textFaint)
+            Text(value)
+                .font(Type.metric)
+                .foregroundStyle(accent)
+            if let detail {
+                Text(detail)
+                    .font(Type.tiny)
+                    .foregroundStyle(Theme.textFaint)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(11)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(Theme.border, lineWidth: 1)
+        )
+    }
+}
+
+/// The window's panel card: content on card surface with a hairline border.
+struct Card<Content: View>: View {
+    var padding: CGFloat = Space.m
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        content()
+            .padding(padding)
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Theme.border, lineWidth: 1)
+            )
     }
 }
 
@@ -142,12 +274,12 @@ struct Chip: View {
             .font(.system(size: 10, weight: .medium))
             .padding(.horizontal, 7)
             .padding(.vertical, 2.5)
-            .background(tint.opacity(0.16), in: Capsule())
+            .background(tint.opacity(0.14), in: Capsule())
             .foregroundStyle(tint)
     }
 }
 
-/// A colored status dot.
+/// A colored status dot (soft glow kept subtle so paper stays clean).
 struct StatusDot: View {
     let color: Color
     var size: CGFloat = 7
@@ -156,19 +288,22 @@ struct StatusDot: View {
         Circle()
             .fill(color)
             .frame(width: size, height: size)
-            .shadow(color: color.opacity(0.5), radius: 2)
+            .shadow(color: color.opacity(0.35), radius: 1.5)
     }
 }
 
-/// Section header caption used across the dropdown and window.
+/// Section header caption used across the dropdown and window. ``tone``
+/// precedes ``text`` so the memberwise init reads ``(tone:text:)`` at window
+/// call sites while menu calls stay ``(text:)``.
 struct SectionCaption: View {
+    var tone: Color? = nil
     let text: String
 
     var body: some View {
         Text(text.uppercased())
-            .font(.system(size: 10, weight: .semibold))
+            .font(Type.caption)
             .tracking(0.8)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(tone ?? Color.secondary)
     }
 }
 

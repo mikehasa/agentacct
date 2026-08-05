@@ -194,7 +194,7 @@ struct MenuContent: View {
                     .font(.system(size: 11.5, weight: .medium))
             }
             .buttonStyle(.plain)
-            .foregroundStyle(Theme.blue)
+            .foregroundStyle(Theme.accent)
             Spacer()
             Button {
                 state.refreshNow()

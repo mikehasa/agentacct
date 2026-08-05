@@ -1,8 +1,9 @@
 import SwiftUI
 
-// The full window, committed to the brand: a dark Tokyo Night surface with
-// custom chrome (no system sidebar), like the TUI is. The menu bar is the
-// glance; this is where details live.
+// The full window: a precision instrument on warm paper (light) or the Tokyo
+// Night storm (dark), following the system appearance — every color is a
+// Theme token with both values. Custom chrome (no system sidebar), like the
+// TUI. The menu bar is the glance; this is where details live.
 
 struct MainWindow: View {
     @EnvironmentObject var dashboard: DashboardStore
@@ -23,7 +24,6 @@ struct MainWindow: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(Theme.bg)
-        .preferredColorScheme(.dark)
         .frame(minWidth: 960, minHeight: 560)
         .task { await dashboard.refresh() }
     }
@@ -38,7 +38,7 @@ struct TopBar: View {
     var body: some View {
         HStack(spacing: 14) {
             HStack(spacing: 7) {
-                Circle().fill(Theme.blue.gradient).frame(width: 9, height: 9)
+                Circle().fill(Theme.accent.gradient).frame(width: 9, height: 9)
                 Text("agentacct")
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .foregroundStyle(Theme.text)
@@ -115,23 +115,6 @@ extension MainPane {
         case .usage: return "chart.bar.fill"
         case .limits: return "gauge.with.needle.fill"
         }
-    }
-}
-
-// MARK: - Shared dark card
-
-struct DarkCard<Content: View>: View {
-    var padding: CGFloat = 12
-    @ViewBuilder let content: () -> Content
-
-    var body: some View {
-        content()
-            .padding(padding)
-            .background(Theme.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Theme.border, lineWidth: 1)
-            )
     }
 }
 
@@ -263,7 +246,7 @@ struct SessionRow: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(selected ? Theme.blue.opacity(0.45) : .clear, lineWidth: 1)
+                .strokeBorder(selected ? Theme.accent.opacity(0.45) : .clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
@@ -295,12 +278,12 @@ struct SessionDetail: View {
 
                 if let usage = entry.usage {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
-                        DarkStatTile(label: "cost", value: usage.costText,
+                        PanelTile(label: "cost", value: usage.costText,
                                      detail: usage.costConfidence?.replacingOccurrences(of: "_", with: " "),
                                      accent: Theme.blue)
-                        DarkStatTile(label: "fresh", value: usage.freshTokens.map(UsageTotals.compact) ?? "—")
-                        DarkStatTile(label: "cache read", value: usage.cacheReadTokens.map(UsageTotals.compact) ?? "—")
-                        DarkStatTile(label: "turns", value: usage.turnsTotal.map(String.init) ?? "—")
+                        PanelTile(label: "fresh", value: usage.freshTokens.map(UsageTotals.compact) ?? "—")
+                        PanelTile(label: "cache read", value: usage.cacheReadTokens.map(UsageTotals.compact) ?? "—")
+                        PanelTile(label: "turns", value: usage.turnsTotal.map(String.init) ?? "—")
                     }
                 }
 
@@ -312,8 +295,8 @@ struct SessionDetail: View {
 
                 if let items = entry.work?.items, !items.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
-                        DarkSectionCaption(text: "Work")
-                        DarkCard(padding: 4) {
+                        SectionCaption(tone: Theme.textMuted, text: "Work")
+                        Card(padding: 4) {
                             VStack(alignment: .leading, spacing: 0) {
                                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                                     HStack(spacing: 9) {
@@ -325,7 +308,7 @@ struct SessionDetail: View {
                                         Spacer(minLength: 8)
                                         if let evidence = item.evidenceStatus {
                                             Chip(text: evidence.replacingOccurrences(of: "_", with: " "),
-                                                 tint: evidence.contains("verified") ? Theme.green : Theme.textMuted)
+                                                 tint: evidenceTint(evidence))
                                         }
                                     }
                                     .padding(.horizontal, 9)
@@ -341,7 +324,7 @@ struct SessionDetail: View {
 
                 if let join = entry.join {
                     VStack(alignment: .leading, spacing: 8) {
-                        DarkSectionCaption(text: "Attribution")
+                        SectionCaption(tone: Theme.textMuted, text: "Attribution")
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Chip(text: join.state ?? "unknown", tint: joinTint(join.state))
                             if let reason = join.reason {
@@ -354,7 +337,7 @@ struct SessionDetail: View {
                 }
 
                 if let related = entry.related, (related.childSessionCount ?? 0) > 0 {
-                    DarkCard {
+                    Card {
                         HStack(spacing: 8) {
                             Image(systemName: "point.3.connected.trianglepath.dotted")
                                 .foregroundStyle(Theme.textMuted)
@@ -376,6 +359,19 @@ struct SessionDetail: View {
         }
     }
 
+    /// The evidence four-state enum, in the product's confidence colors —
+    /// strong proof green, failure red, weak amber, nothing muted. This chip
+    /// IS the product (what did the agent prove?), so it never renders as an
+    /// undifferentiated gray.
+    private func evidenceTint(_ status: String) -> Color {
+        switch status {
+        case "strong": return Theme.green
+        case "failed": return Theme.red
+        case "weak": return Theme.orange
+        default: return Theme.textMuted
+        }
+    }
+
     private func joinTint(_ state: String?) -> Color {
         switch state {
         case "attributed": return Theme.green
@@ -394,50 +390,6 @@ struct SessionDetail: View {
     }
 }
 
-/// Dark-surface stat tile (window variant of StatTile).
-struct DarkStatTile: View {
-    let label: String
-    let value: String
-    var detail: String? = nil
-    var accent: Color = Theme.text
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label.uppercased())
-                .font(.system(size: 9, weight: .semibold))
-                .tracking(0.7)
-                .foregroundStyle(Theme.textFaint)
-            Text(value)
-                .font(.system(size: 18, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(accent)
-            if let detail {
-                Text(detail)
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(Theme.textFaint)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(11)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(Theme.border, lineWidth: 1)
-        )
-    }
-}
-
-struct DarkSectionCaption: View {
-    let text: String
-
-    var body: some View {
-        Text(text.uppercased())
-            .font(.system(size: 10, weight: .semibold))
-            .tracking(0.9)
-            .foregroundStyle(Theme.textFaint)
-    }
-}
-
 // MARK: - Usage
 
 struct UsagePane: View {
@@ -449,12 +401,12 @@ struct UsagePane: View {
                 if let usage = dashboard.usage {
                     if let totals = usage.totals {
                         HStack(spacing: 8) {
-                            DarkStatTile(label: "30d cost", value: totals.costText, accent: Theme.blue)
-                            DarkStatTile(label: "30d fresh tokens",
+                            PanelTile(label: "30d cost", value: totals.costText, accent: Theme.blue)
+                            PanelTile(label: "30d fresh tokens",
                                          value: totals.freshTokens.map(UsageTotals.compact) ?? "—")
-                            DarkStatTile(label: "cache read",
+                            PanelTile(label: "cache read",
                                          value: totals.cacheReadTokens.map(UsageTotals.compact) ?? "—")
-                            DarkStatTile(label: "sessions",
+                            PanelTile(label: "sessions",
                                          value: totals.sessions.map(String.init) ?? "—")
                         }
                     }
@@ -491,8 +443,8 @@ struct UsagePane: View {
         let sorted = buckets.sorted { ($0.freshTokens ?? 0) > ($1.freshTokens ?? 0) }
         let maxFresh = Double(sorted.first?.freshTokens ?? 1)
         return VStack(alignment: .leading, spacing: 8) {
-            DarkSectionCaption(text: title + " · last 30 days")
-            DarkCard(padding: 6) {
+            SectionCaption(tone: Theme.textMuted, text: title + " · last 30 days")
+            Card(padding: 6) {
                 VStack(spacing: 0) {
                     ForEach(Array(sorted.enumerated()), id: \.element.id) { index, bucket in
                         let (name, tint) = nameOf(bucket)
@@ -549,7 +501,7 @@ struct DailyChart: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                DarkSectionCaption(text: "Daily fresh tokens")
+                SectionCaption(tone: Theme.textMuted, text: "Daily fresh tokens")
                 Spacer()
                 ForEach(clients, id: \.self) { client in
                     HStack(spacing: 4) {
@@ -560,7 +512,7 @@ struct DailyChart: View {
                     }
                 }
             }
-            DarkCard(padding: 12) {
+            Card(padding: 12) {
                 VStack(spacing: 6) {
                     HStack(alignment: .bottom, spacing: 3) {
                         ForEach(periods) { period in
@@ -608,7 +560,7 @@ struct LimitsPane: View {
         ScrollBox {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    DarkSectionCaption(text: "Provider limits")
+                    SectionCaption(tone: Theme.textMuted, text: "Provider limits")
                     Spacer()
                     Toggle("Show stale accounts", isOn: $showStale)
                         .toggleStyle(.checkbox)
@@ -636,7 +588,7 @@ struct LimitsPane: View {
     }
 
     private func limitCard(_ limit: LimitEntry) -> some View {
-        DarkCard {
+        Card {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 7) {
                     StatusDot(color: Theme.clientColor(limit.client))
