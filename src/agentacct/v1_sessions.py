@@ -631,9 +631,13 @@ def build_v1_session_detail(
                     # findings).
                     label: str | None = None
                     if role.task:
-                        first_line = role.task.splitlines()[0][:160]
+                        # Redact BEFORE bounding: truncating first could split a
+                        # secret so the remaining prefix falls under a pattern's
+                        # min-length floor and slips through un-redacted. Redact
+                        # the whole first line, then bound the sanitized text.
+                        first_line = role.task.splitlines()[0]
                         redacted, _classes = _redact_secret_spans(first_line)
-                        label = _sanitized_session_title(redacted)
+                        label = _sanitized_session_title(redacted)[:160]
                     child["task"] = label
 
     plan_context = view.get("plan_context") if isinstance(view.get("plan_context"), dict) else {}

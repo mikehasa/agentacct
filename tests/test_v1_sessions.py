@@ -644,9 +644,17 @@ def test_descendant_task_label_is_bounded_and_redacted(tmp_path, monkeypatch):
     _record_usage(service, session_id="root-a", tokens=1000, updated_at=now - 900)
     _record_usage(service, session_id="root-a:agent-abc123", tokens=100, updated_at=now - 300,
                   session_kind="child", parent_session_id="root-a")
+    _record_usage(service, session_id="root-a:agent-def456", tokens=100, updated_at=now - 200,
+                  session_kind="child", parent_session_id="root-a")
 
     secret = "sk-ant-abc123def456ghi789jkl012mno345pqr678stu901vwx234yz"
     long_line = "review the deploy " + "x" * 400 + " end"
+    # A secret that STRADDLES the 160-char bound: it starts before 160 and runs
+    # past it, so truncate-then-redact would cut it into a short prefix that
+    # could fall under the redactor's min-length floor. redact-then-truncate
+    # must scrub it whole regardless of where the bound lands.
+    boundary_secret = "sk-ant-" + "z" * 80
+    boundary_task = "x" * 149 + " " + boundary_secret + " tail"
     monkeypatch.setattr(roles_module, "scan_enabled", lambda: True)
     monkeypatch.setattr(
         roles_module,
@@ -655,7 +663,11 @@ def test_descendant_task_label_is_bounded_and_redacted(tmp_path, monkeypatch):
             "root-a:agent-abc123": SubagentRole(
                 agent_type="Explore",
                 task=f"use {secret} then {long_line}\nsecond line ignored",
-            )
+            ),
+            "root-a:agent-def456": SubagentRole(
+                agent_type="Explore",
+                task=boundary_task,
+            ),
         },
     )
 
@@ -663,11 +675,19 @@ def test_descendant_task_label_is_bounded_and_redacted(tmp_path, monkeypatch):
     ledger = build_work_ledger(events)
     view = build_v1_sessions_view(ledger, events)
     detail = build_v1_session_detail(view, ledger, client="claude-code", session_id="root-a")
-    child = detail["descendants"][0]
+    by_id = {c["client_session_id"]: c for c in detail["descendants"]}
+    child = by_id["root-a:agent-abc123"]
     assert child["agent_type"] == "Explore"
     assert secret not in (child["task"] or "")
     assert "second line" not in (child["task"] or "")
     assert len(child["task"] or "") <= 170
+
+    # No fragment of the boundary-straddling secret survives, and no bare
+    # "sk-ant-" prefix leaks even though the bound falls inside the key.
+    boundary_label = by_id["root-a:agent-def456"]["task"] or ""
+    assert "sk-ant-" not in boundary_label
+    assert "z" * 20 not in boundary_label
+    assert len(boundary_label) <= 170
 
 
 def test_non_plan_client_detail_plan_block_keeps_the_full_key_set(tmp_path):
