@@ -78,6 +78,46 @@ def _record_usage(
     service.record_event(event, trusted_usage_import=True)
 
 
+def _record_child_usage(
+    service: SentinelService,
+    *,
+    client: str,
+    session_id: str,
+    parent_session_id: str,
+    updated_at: float,
+) -> None:
+    event = ClientUsageEvent(
+        client=client,
+        client_session_id=session_id,
+        client_session_kind="child",
+        parent_client_session_id=parent_session_id,
+        source_path=Path(f"/tmp/{client}/{session_id}.jsonl"),
+        title=None,
+        cwd="/tmp/project",
+        model="claude-opus-4-8",
+        input_tokens=10,
+        output_tokens=10,
+        cached_input_tokens=0,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+        cache_creation_tokens_reported=True,
+        cache_read_tokens_reported=True,
+        reasoning_output_tokens=0,
+        provider_name=client,
+        started_at=updated_at,
+        updated_at=updated_at,
+        turn_count=1,
+        usage_row_lane="model:claude-opus-4-8",
+        source_namespace_fingerprint=f"sha256:{client}",
+        input_tokens_reported=True,
+        output_tokens_reported=True,
+        reasoning_output_tokens_reported=True,
+        total_tokens=20,
+        total_tokens_reported=True,
+    ).to_sentinel_event()
+    service.record_event(event, trusted_usage_import=True)
+
+
 def _record_7d_limit(service: SentinelService, *, captured: float, pct: float, client: str = "claude-code", index: int = 0) -> None:
     service.record_event({
         "event_id": f"evt_rl_{client}_{index}",
@@ -307,6 +347,50 @@ def test_glance_cache_rebuilds_only_on_event_change(tmp_path, monkeypatch):
     third = api_client.get("/v1/glance", headers=headers).json()
     assert calls["count"] == 2  # new event -> rebuild
     assert third["usage"]["usage_record_count"] == 2
+
+
+def test_recent_sessions_fold_children_into_their_root(tmp_path):
+    """A glance list full of a root's own subagent children is noise: child
+    usage activity folds into the root row (kind/parent metadata first, the
+    ':' suffix as the legacy fallback), keeping the root's recency fresh."""
+
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_usage(
+        service,
+        client="claude-code",
+        model="claude-opus-4-8",
+        session_id="root-a",
+        input_tokens=100,
+        output_tokens=100,
+        updated_at=now - 3600,
+    )
+    # A subagent child (own uuid, kind child + parent metadata) more recent
+    # than the root's own activity.
+    _record_child_usage(
+        service,
+        client="claude-code",
+        session_id="11111111-aaaa-bbbb-cccc-222222222222",
+        parent_session_id="root-a",
+        updated_at=now - 60,
+    )
+    # A legacy ':'-suffixed child lane without parent metadata.
+    _record_usage(
+        service,
+        client="claude-code",
+        model="claude-opus-4-8",
+        session_id="root-a:agentstem",
+        input_tokens=5,
+        output_tokens=5,
+        updated_at=now - 30,
+    )
+
+    api_client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    payload = api_client.get("/v1/glance", headers={"Authorization": f"Bearer {TOKEN}"}).json()
+    rows = payload["recent_sessions"]
+    assert [row["session_id"] for row in rows] == ["root-a"]
+    # The root's recency reflects its children's freshest activity.
+    assert rows[0]["last_activity_at"] >= now - 31
 
 
 # ---------------------------------------------------------------------------
