@@ -144,12 +144,20 @@ enum ProcessRunner {
         return AsyncStream<String> { continuation in
             let handle = pipe.fileHandleForReading
             var buffer = Data()
+            let drainTail: () -> Void = {
+                if !buffer.isEmpty, let tail = String(data: buffer, encoding: .utf8) {
+                    continuation.yield(tail)
+                }
+                buffer.removeAll()
+            }
             handle.readabilityHandler = { fh in
                 let chunk = fh.availableData
                 if chunk.isEmpty {
-                    if !buffer.isEmpty, let tail = String(data: buffer, encoding: .utf8) {
-                        continuation.yield(tail)
-                    }
+                    // EOF: yield any unterminated tail once and STOP — leaving the
+                    // handler installed would busy-spin on repeated empty reads and
+                    // re-yield the same tail every tick.
+                    drainTail()
+                    fh.readabilityHandler = nil
                     return
                 }
                 buffer.append(chunk)
@@ -162,6 +170,10 @@ enum ProcessRunner {
                 }
             }
             process.terminationHandler = { _ in
+                // Finish the stream. `buffer` is deliberately NOT touched here —
+                // it is owned by the readability queue, and the EOF read above
+                // drains the final tail; racing it from this queue would be a
+                // data race for a log-only line. Post-finish yields are ignored.
                 handle.readabilityHandler = nil
                 continuation.finish()
             }

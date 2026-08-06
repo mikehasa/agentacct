@@ -42,10 +42,12 @@ if [[ -n "${DEVELOPER_ID:-}" ]]; then
     # first, then the .app. Hardened runtime is REQUIRED for notarization; the
     # CLI needs the disable-library-validation + allow-jit entitlements because
     # a PyInstaller binary loads unsigned-at-build .so files and Python JITs.
+    # Sign every Mach-O in the embedded CLI. Failures are NOT swallowed — a lib
+    # that won't sign must surface here, not silently fail notarization later.
     find "$DMG_STAGE/agentacct.app/Contents/Resources/cli" \
         -type f \( -name "*.so" -o -name "*.dylib" -o -perm +111 \) \
         -exec codesign --force --timestamp --options runtime \
-        --entitlements "$ENTITLEMENTS" --sign "$DEVELOPER_ID" {} + 2>/dev/null || true
+        --entitlements "$ENTITLEMENTS" --sign "$DEVELOPER_ID" {} +
     codesign --force --timestamp --options runtime \
         --entitlements "$ENTITLEMENTS" --sign "$DEVELOPER_ID" \
         "$DMG_STAGE/agentacct.app/Contents/Resources/cli/agentacct"
@@ -70,7 +72,6 @@ if [[ -n "${DEVELOPER_ID:-}" && -n "${NOTARY_PROFILE:-}" ]]; then
     echo "==> [5/5] notarizing (submit + wait + staple)"
     xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
     xcrun stapler staple "$DMG"
-    xcrun stapler staple "$DMG_STAGE/agentacct.app"  # staple the app too
     echo "    notarized + stapled"
 else
     echo "==> [5/5] SKIP notarization (need DEVELOPER_ID + NOTARY_PROFILE)"
