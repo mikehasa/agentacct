@@ -151,6 +151,47 @@ def _fold_parent_key(
     return None
 
 
+def _observed_models_with_usage_fallback(
+    instrumented: Any, usage: Any
+) -> list[str] | None:
+    """The session's model list, completed from usage when instrumentation is
+    thin.
+
+    ``observed_models`` is sourced from the recording hook's section metadata,
+    which is often empty even when the session demonstrably used models. The
+    usage records are the authoritative token source and always carry the model
+    (``identity_models`` / ``model_lanes``). Union the two — instrumentation
+    order first, then any usage model not already listed — so a multi-model
+    session (e.g. one that switched models mid-run) shows every model it used at
+    the row level instead of a blank. Returns ``None`` when neither source has a
+    model, so the wire stays null-not-empty.
+    """
+
+    models: list[str] = []
+    seen: set[str] = set()
+
+    def _add(name: Any) -> None:
+        text = str(name or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            models.append(text)
+
+    if isinstance(instrumented, list):
+        for name in instrumented:
+            _add(name)
+    if isinstance(usage, dict):
+        identity = usage.get("identity_models")
+        if isinstance(identity, list):
+            for name in identity:
+                _add(name)
+        lanes = usage.get("model_lanes")
+        if isinstance(lanes, list):
+            for lane in lanes:
+                if isinstance(lane, dict):
+                    _add(lane.get("model"))
+    return models or None
+
+
 def _project_entry(entry: dict[str, Any]) -> dict[str, Any]:
     """The curated wire row for one rollup entry (plan fields joined later).
 
@@ -196,7 +237,9 @@ def _project_entry(entry: dict[str, Any]) -> dict[str, Any]:
         "instrumentation_state": entry.get("instrumentation_state"),
         "instrumentation_state_basis": entry.get("instrumentation_state_basis"),
         "instrumentation_installed_at": entry.get("instrumentation_installed_at"),
-        "observed_models": entry.get("observed_models"),
+        "observed_models": _observed_models_with_usage_fallback(
+            entry.get("observed_models"), entry.get("usage")
+        ),
         "usage": entry.get("usage"),
         "usage_note": entry.get("usage_note"),
         "join": entry.get("join"),

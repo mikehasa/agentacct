@@ -902,6 +902,34 @@ def test_detail_descendants_and_plan_block(tmp_path):
     assert abs(child["plan_pct"] - 5.0 * opus * scale) < 1e-6
 
 
+def test_observed_models_falls_back_and_unions_with_usage():
+    """A session's model list is completed from the authoritative usage records
+    when the instrumentation-sourced observed_models is thin — so a multi-model
+    (e.g. mid-run model switch) session never shows a blank at the row level."""
+
+    from agentacct.v1_sessions import _observed_models_with_usage_fallback
+
+    usage = {
+        "identity_models": ["claude-opus-4-8", "claude-fable-5"],
+        "model_lanes": [
+            {"model": "claude-fable-5"},
+            {"model": "claude-opus-4-8"},
+            {"model": "claude-haiku-4-5-20251001"},
+        ],
+    }
+    # Empty instrumentation → the models come entirely from usage.
+    got = _observed_models_with_usage_fallback([], usage)
+    assert got == ["claude-opus-4-8", "claude-fable-5", "claude-haiku-4-5-20251001"]
+
+    # Instrumentation order is preserved first; usage adds only what's missing.
+    got2 = _observed_models_with_usage_fallback(["claude-fable-5"], usage)
+    assert got2 == ["claude-fable-5", "claude-opus-4-8", "claude-haiku-4-5-20251001"]
+
+    # No models anywhere → null-not-empty on the wire.
+    assert _observed_models_with_usage_fallback(None, None) is None
+    assert _observed_models_with_usage_fallback([], {"identity_models": []}) is None
+
+
 def test_step_models_join_unit():
     """The attribution join, in isolation: tokens come from the attribution
     rows, dangling usage events are skipped, a KNOWN event without a model
