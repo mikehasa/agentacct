@@ -40,6 +40,57 @@ def test_normalize_codex_full_object():
     assert kinds["5h"].window_minutes == 300
     # ISO-8601 with a trailing Z parses to a real epoch.
     assert snap.captured_at is not None and snap.captured_at > 1_700_000_000
+    # limit_id / limit_name (top-level bucket identity) are preserved.
+    assert snap.limit_id == "codex"
+    assert snap.limit_name is None
+
+
+def test_normalize_codex_preserves_nondefault_bucket_identity():
+    """A model-specific / Spark bucket keeps its own limit_id + limit_name."""
+    raw = {
+        "limit_id": "gpt-5-spark",
+        "limit_name": "GPT-5 Spark",
+        "secondary": {"used_percent": 3.0, "window_minutes": 10080, "resets_at": 9},
+        "plan_type": "pro",
+    }
+    snap = rl.normalize_codex_rate_limits(raw)
+    assert snap is not None
+    assert snap.limit_id == "gpt-5-spark"
+    assert snap.limit_name == "GPT-5 Spark"
+
+
+def test_run_id_segregates_nondefault_codex_buckets():
+    """Different limit_id = different quota bucket = different stream. The
+    default 'codex' bucket keeps the legacy run_id (no migration churn); any
+    other bucket branches into its own stream so it can't contaminate the
+    default series' transition history."""
+    default = rl.normalize_codex_rate_limits(
+        {"limit_id": "codex", "secondary": {"used_percent": 40.0, "window_minutes": 10080}}
+    )
+    spark = rl.normalize_codex_rate_limits(
+        {"limit_id": "gpt-5-spark", "secondary": {"used_percent": 40.0, "window_minutes": 10080}}
+    )
+    missing = rl.normalize_codex_rate_limits(
+        {"secondary": {"used_percent": 40.0, "window_minutes": 10080}}
+    )
+    assert rl.snapshot_run_id(default) == rl.CODEX_RUN_ID
+    assert rl.snapshot_run_id(missing) == rl.CODEX_RUN_ID  # absent id → legacy stream
+    assert rl.snapshot_run_id(spark) == f"{rl.CODEX_RUN_ID}:gpt-5-spark"
+    assert rl.snapshot_run_id(spark) != rl.snapshot_run_id(default)
+    # Same window state, different bucket → different state signatures, so the
+    # transition dedup never collapses two buckets into one meter.
+    assert rl.snapshot_state_signature(spark) != rl.snapshot_state_signature(default)
+
+
+def test_snapshot_to_event_carries_bucket_identity():
+    snap = rl.normalize_codex_rate_limits(
+        {"limit_id": "gpt-5-spark", "limit_name": "GPT-5 Spark",
+         "secondary": {"used_percent": 3.0, "window_minutes": 10080}}
+    )
+    event = rl.snapshot_to_event(snap)
+    assert event["metadata"]["limit_id"] == "gpt-5-spark"
+    assert event["metadata"]["limit_name"] == "GPT-5 Spark"
+    assert event["run_id"] == f"{rl.CODEX_RUN_ID}:gpt-5-spark"
 
 
 def test_normalize_codex_rejects_empty_and_malformed():
@@ -203,6 +254,67 @@ def test_read_codex_rate_limits_latest_picks_freshest(tmp_path):
     assert snap is not None
     assert snap.plan_type == "pro"
     assert snap.windows[0].used_percent == 88.0  # the later-captured file won
+
+
+def test_read_codex_latest_ignores_rewritten_outer_timestamp(tmp_path):
+    """The replay bug: a fork copies history into a new file and the recorder
+    stamps each copied TokenCount with a fresh now_utc(), so a REPLAYED old
+    limit payload can carry a LATER outer timestamp than the genuine current
+    one. Selection must go by file mtime (which replay does not rewrite), not by
+    the outer timestamp — else a stale, replayed snapshot surfaces as 'latest'.
+    """
+    import os
+
+    home = tmp_path / "codex"
+    # The genuine active file: current state (55%), but an EARLIER outer stamp.
+    active = _write_codex_rollout(
+        home, "29", "active",
+        timestamp="2026-07-29T09:00:00.000Z",
+        rate_limits={"limit_id": "codex", "secondary": {"used_percent": 55.0, "window_minutes": 10080, "resets_at": 5}, "plan_type": "pro"},
+    )
+    # A fork/replay file: stale value (10%) but a LATER (rewritten) outer stamp.
+    replay = _write_codex_rollout(
+        home, "28", "replay",
+        timestamp="2026-07-30T23:00:00.000Z",  # numerically newer, but rewritten
+        rate_limits={"limit_id": "codex", "secondary": {"used_percent": 10.0, "window_minutes": 10080, "resets_at": 1}},
+    )
+    # Force filesystem truth: the active file is genuinely the most recent write.
+    os.utime(replay, (1_785_000_000, 1_785_000_000))   # older mtime
+    os.utime(active, (1_785_600_000, 1_785_600_000))   # newer mtime
+    snap = rl.read_codex_rate_limits_latest(home)
+    assert snap is not None
+    # mtime wins: the genuine current 55%, NOT the replayed 10% with the newer
+    # (rewritten) outer timestamp.
+    assert snap.windows[0].used_percent == 55.0
+    assert snap.plan_type == "pro"
+
+
+def test_read_codex_latest_ignores_nondefault_bucket_last_line(tmp_path):
+    """The account meter is the DEFAULT bucket, even when a file's last
+    rate_limits line is a non-default bucket. A rollout interleaves lines from
+    every bucket the session touched; if the last billable turn ran on a
+    model-specific / Spark bucket, returning that line would mislabel a distinct
+    quota as 'the codex plan' (adversarial-review finding)."""
+    home = tmp_path / "codex"
+    d = home / "sessions" / "2026" / "07" / "29"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / "rollout-mixed.jsonl"
+    lines = [
+        # default bucket at 61% earlier in the file...
+        {"timestamp": "2026-07-29T09:00:00.000Z", "payload": {"type": "token_count",
+            "info": {"total_token_usage": {"total_tokens": 1}},
+            "rate_limits": {"limit_id": "codex", "secondary": {"used_percent": 61.0, "window_minutes": 10080, "resets_at": 5}, "plan_type": "pro"}}},
+        # ...then a Spark bucket line is chronologically LAST.
+        {"timestamp": "2026-07-29T09:05:00.000Z", "payload": {"type": "token_count",
+            "info": {"total_token_usage": {"total_tokens": 1}},
+            "rate_limits": {"limit_id": "codex_bengalfox", "limit_name": "GPT-5.3-Codex-Spark", "secondary": {"used_percent": 4.0, "window_minutes": 10080, "resets_at": 9}}}},
+    ]
+    f.write_text("\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8")
+    snap = rl.read_codex_rate_limits_latest(home)
+    assert snap is not None
+    assert snap.limit_id == "codex"  # the default account bucket, not Spark
+    assert snap.windows[0].used_percent == 61.0
+    assert rl.snapshot_run_id(snap) == rl.CODEX_RUN_ID  # single account stream
 
 
 def test_read_codex_rate_limits_missing_root(tmp_path):

@@ -130,6 +130,13 @@ class RateLimitSnapshot:
     org: str | None = None
     source_session_id: str | None = None
     source_file: str | None = None
+    # Codex quota-bucket identity. Different ``limit_id`` values are DIFFERENT
+    # quota buckets (default account bucket vs model-specific / Spark / rare
+    # buckets) and must never be merged into one time series — see
+    # ``snapshot_run_id``. ``limit_name`` is a mutable display label, kept for
+    # provenance but never used as identity.
+    limit_id: str | None = None
+    limit_name: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +261,10 @@ def normalize_codex_rate_limits(
         reached_type=_str_or_none(rate_limits.get("rate_limit_reached_type")),
         source_session_id=session_id,
         source_file=source_file,
+        # limit_id / limit_name live at the rate_limits top level (not per
+        # window); preserve them so buckets stay distinct streams.
+        limit_id=_str_or_none(rate_limits.get("limit_id")),
+        limit_name=_str_or_none(rate_limits.get("limit_name")),
     )
 
 
@@ -367,14 +378,24 @@ def normalize_claude_statusline(
 def snapshot_run_id(snapshot: RateLimitSnapshot) -> str:
     """A stable per-stream run_id.
 
-    Codex limits are account-wide, so all codex snapshots share one run_id; the
-    Claude desktop plan-usage series is per-org; the terminal-CLI statusLine feed
-    is its own stream. All are stable across scans so consecutive unchanged
-    snapshots collapse to one recorded event.
+    Codex quota buckets are keyed by ``limit_id``: the default account bucket
+    keeps the legacy ``CODEX_RUN_ID`` stream, but any OTHER ``limit_id``
+    (model-specific / Spark / rare buckets) gets its own stream so a bucket with
+    a different quota can never contaminate the default series' transition
+    history (adversarial-review finding: two buckets sharing a window duration
+    were merged into one meter). The Claude desktop plan-usage series is
+    per-org; the terminal-CLI statusLine feed is its own stream. All are stable
+    across scans so consecutive unchanged snapshots collapse to one event.
     """
 
     if snapshot.origin == ORIGIN_CODEX_SESSION or snapshot.client == "codex":
-        return CODEX_RUN_ID
+        # The default account-wide bucket keeps its legacy stream id so this fix
+        # does not fork the existing healthy series (case-insensitive, so a
+        # "Codex" casing variant does not orphan it). Only genuinely non-default
+        # buckets branch into their own stream.
+        if _is_default_codex_bucket(snapshot):
+            return CODEX_RUN_ID
+        return f"{CODEX_RUN_ID}:{snapshot.limit_id}"
     if snapshot.origin == ORIGIN_CLAUDE_STATUSLINE:
         return CLAUDE_STATUSLINE_RUN_ID
     org = snapshot.org or "unknown"
@@ -440,6 +461,11 @@ def snapshot_to_event(snapshot: RateLimitSnapshot) -> dict[str, Any]:
         "org": snapshot.org,
         "source_client_session_id": snapshot.source_session_id,
         "source_file": snapshot.source_file,
+        # Bucket identity, persisted so a future per-epoch calibrator can keep
+        # buckets distinct (§7.2 recording foundation). limit_id is identity;
+        # limit_name is a mutable display label kept only for provenance.
+        "limit_id": snapshot.limit_id,
+        "limit_name": snapshot.limit_name,
         "state_signature": snapshot_state_signature(snapshot),
     }
     return {
@@ -638,8 +664,36 @@ def _codex_session_id_from_path(path: Path) -> str | None:
     return stem or None
 
 
+def _is_default_codex_bucket(snapshot: RateLimitSnapshot) -> bool:
+    """Whether a snapshot is the default account-wide Codex bucket.
+
+    ``limit_id`` absent or ``"codex"`` (case-insensitive) is the default plan
+    meter; any other id is a distinct quota bucket (model-specific / Spark /
+    premium). The match is case-insensitive so a provider casing variant
+    (``"Codex"``) is not wrongly forked into its own stream, orphaning the
+    legacy default series (adversarial-review finding).
+    """
+
+    limit_id = snapshot.limit_id
+    return limit_id is None or limit_id.strip().lower() == "codex"
+
+
 def _read_codex_file_latest_rate_limits(path: Path) -> RateLimitSnapshot | None:
-    """Latest ``rate_limits`` snapshot in one rollout file (chronological), or None."""
+    """The file's latest DEFAULT-bucket ``rate_limits`` snapshot, or None.
+
+    Deliberately keeps the last snapshot whose ``limit_id`` is the default
+    account bucket, NOT the last snapshot of any bucket. A rollout interleaves
+    lines from every bucket the session touched, so the chronologically-last
+    line can be a non-default bucket (e.g. a Spark turn); returning that as the
+    account-wide meter would mislabel a model-specific quota as "the codex plan"
+    (adversarial-review finding).
+
+    Non-default buckets are currently DROPPED — this reader is the only producer
+    of recorded codex limit snapshots, so today only the default account meter
+    is recorded and shown. The ``limit_id`` preservation and the per-bucket
+    ``snapshot_run_id`` branch are forward-compat scaffolding for a future
+    per-bucket reader/calibrator (§7.2); they are not yet fed by any live path.
+    """
 
     latest: RateLimitSnapshot | None = None
     try:
@@ -669,8 +723,8 @@ def _read_codex_file_latest_rate_limits(path: Path) -> RateLimitSnapshot | None:
                     )
                 except Exception:  # noqa: BLE001 - one poison line must not abort the file/scan.
                     continue
-                if snapshot is not None:
-                    latest = snapshot  # file is chronological; keep the last
+                if snapshot is not None and _is_default_codex_bucket(snapshot):
+                    latest = snapshot  # file is chronological; keep the last default-bucket line
     except OSError:
         return None
     return latest
@@ -683,10 +737,23 @@ def read_codex_rate_limits_latest(
 ) -> RateLimitSnapshot | None:
     """The freshest account-wide Codex limit snapshot from recent session files.
 
-    Scans the ``max_files`` most-recently-modified rollout files across every
-    resolved codex root (the active session's file carries the newest limits) and
-    returns the snapshot with the latest ``captured_at``. Returns ``None`` if no
-    rollout carries rate limits.
+    Selection is by **file modification time**, not the rollout's outer
+    ``timestamp``. The outer timestamp is untrustworthy for freshness: a
+    fork/replay copies history into a NEW file and the recorder stamps each
+    copied ``TokenCount`` with a fresh ``now_utc()``, so a replayed OLD limit
+    payload can carry a numerically LARGER outer timestamp than the genuine
+    current one. Picking the global max over that timestamp (the previous
+    behaviour) could therefore surface a stale, replayed snapshot as "latest".
+
+    Filesystem mtime is not rewritten by replay: the active session's file is
+    the most-recently-modified, and its LAST chronological DEFAULT-bucket
+    ``rate_limits`` line is the genuine current account meter (replayed payloads
+    sit in the copied prefix, never after the live turns). So we walk files
+    newest-mtime first and return the first that yields a default-bucket
+    snapshot. Only the DEFAULT account bucket feeds this account meter — a file
+    whose last line is a non-default bucket (a Spark/model-specific turn) does
+    not mislabel that bucket as the account plan. Returns ``None`` if no rollout
+    carries a default-bucket rate-limit line.
     """
 
     rollouts: list[Path] = []
@@ -704,21 +771,17 @@ def read_codex_rate_limits_latest(
         except OSError:
             return 0.0
 
-    rollouts.sort(key=_mtime, reverse=True)
-    best: RateLimitSnapshot | None = None
-    best_key = float("-inf")
+    # Secondary key (path) makes an exact-mtime tie deterministic instead of
+    # depending on filesystem iteration order (adversarial-review finding).
+    rollouts.sort(key=lambda p: (_mtime(p), str(p)), reverse=True)
     for path in rollouts[: max(1, max_files)]:
         try:
             snapshot = _read_codex_file_latest_rate_limits(path)
         except Exception:  # noqa: BLE001 - fail soft per the module contract.
             continue
-        if snapshot is None:
-            continue
-        key = snapshot.captured_at if snapshot.captured_at is not None else 0.0
-        if key > best_key:
-            best = snapshot
-            best_key = key
-    return best
+        if snapshot is not None:
+            return snapshot
+    return None
 
 
 def read_claude_plan_usage_latest(
