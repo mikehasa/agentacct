@@ -686,8 +686,13 @@ def _read_codex_file_latest_rate_limits(path: Path) -> RateLimitSnapshot | None:
     lines from every bucket the session touched, so the chronologically-last
     line can be a non-default bucket (e.g. a Spark turn); returning that as the
     account-wide meter would mislabel a model-specific quota as "the codex plan"
-    (adversarial-review finding). Non-default buckets are recorded on their own
-    streams elsewhere; this reader feeds the single account meter.
+    (adversarial-review finding).
+
+    Non-default buckets are currently DROPPED — this reader is the only producer
+    of recorded codex limit snapshots, so today only the default account meter
+    is recorded and shown. The ``limit_id`` preservation and the per-bucket
+    ``snapshot_run_id`` branch are forward-compat scaffolding for a future
+    per-bucket reader/calibrator (§7.2); they are not yet fed by any live path.
     """
 
     latest: RateLimitSnapshot | None = None
