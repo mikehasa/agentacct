@@ -203,6 +203,30 @@ def test_cost_dimension_carries_basis_without_gapping_a_complete_estimate() -> N
         assert not any("estimate" in reason for reason in cost["gaps"])
 
 
+def test_identity_scope_is_project_when_project_is_explicit_without_namespace() -> None:
+    # A claude-code Task in a known project: an explicit project identity but no
+    # cryptographic namespace fingerprint. It is scoped to the project, so
+    # identity is NOT a gap (this branch is Fix 1; the namespace branch is not).
+    task = _task([{"work_id": "w", "title": "do the thing", "latest_status": "completed", "updated_at": 100.0}])
+    task["sessions"][0].pop("identity_scope_state", None)
+    task["sessions"][0]["project_identity_state"] = "explicit"
+    boundary = _receipt(task)["dimensions"]["task"]["boundary"]
+    assert boundary["identity_scope"] == "project"
+    assert boundary["project_identity_state"] == "explicit"
+    assert not any("could not be bound" in gap for gap in _receipt(task)["dimensions"]["task"]["gaps"])
+
+
+def test_identity_is_gapped_only_when_truly_unbound() -> None:
+    # No namespace fingerprint AND no explicit project identity → genuinely
+    # unbound, so the identity gap fires.
+    task = _task([{"work_id": "w", "title": "do the thing", "latest_status": "completed", "updated_at": 100.0}])
+    task["sessions"][0].pop("identity_scope_state", None)
+    task["sessions"][0].pop("project_identity_state", None)
+    boundary = _receipt(task)["dimensions"]["task"]["boundary"]
+    assert boundary["identity_scope"] == "unscoped"
+    assert any("could not be bound" in gap for gap in _receipt(task)["dimensions"]["task"]["gaps"])
+
+
 def test_provenance_rollup_covers_every_dimension_with_a_legend() -> None:
     receipt = _receipt(_task([{"work_id": "w", "latest_status": "completed", "updated_at": 100.0}]))
     provenance = receipt["dimensions"]["provenance"]

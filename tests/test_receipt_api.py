@@ -198,8 +198,12 @@ def test_receipt_gaps_are_genuinely_missing_not_structural_noise(tmp_path: Path)
     dims = receipt["dimensions"]
     reasons = [item["reason"] for item in dims["gaps"]["items"]]
 
-    # Touched files recovered from the check evidence, not gapped.
+    # Touched files recovered from the check evidence, not gapped. The section
+    # itself records only src/login.py; tests/test_login.py exists ONLY on the
+    # machine check, so asserting it proves the evidence-file union (not the
+    # section path) — this fails if the union is reverted.
     assert "src/login.py" in dims["actions"]["touched_files"]
+    assert "tests/test_login.py" in dims["actions"]["touched_files"]
     assert not any("No touched files" in r for r in reasons)
     # A known project is scoped, not "unscoped" — no identity gap.
     assert dims["task"]["boundary"]["identity_scope"] != "unscoped"
