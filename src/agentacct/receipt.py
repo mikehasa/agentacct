@@ -41,7 +41,12 @@ from collections.abc import Mapping
 from typing import Any
 
 from .task_intelligence import build_task_intelligence
-from .task_outcome import latest_task_checks, reduce_task_outcome, step_verification_counts
+from .task_outcome import (
+    latest_task_checks,
+    reduce_task_outcome,
+    step_verification_counts,
+    task_newest_event_at,
+)
 
 
 # frozen: stored/emitted receipts carry this schema string; surfaces pin it.
@@ -566,4 +571,65 @@ def build_receipt(
     }
 
 
-__all__ = ["RECEIPT_SCHEMA_VERSION", "PROVENANCE_LEGEND", "build_receipt"]
+def build_receipt_summary(
+    task: Mapping[str, Any],
+    *,
+    public_task_id: str,
+    title: str,
+    latest_store_activity_at: float | None = None,
+) -> dict[str, Any]:
+    """A compact Receipt row for a task LIST — the two axes plus cost/activity.
+
+    Shares the exact decision/evidence reducers with ``build_receipt`` so the
+    list and the detail can never disagree, without paying for the full 8
+    dimensions per row.
+    """
+
+    verification = step_verification_counts(task)
+    checks = _project_checks(task)
+    evidence_strength = _evidence_strength(verification, checks)
+    decision = _decision_status(task, latest_store_activity_at=latest_store_activity_at)
+    usage = _mapping(task.get("usage"))
+    return {
+        "task_id": public_task_id,
+        "title": title,
+        "decision_status": {
+            "key": decision["key"],
+            "label": decision["label"],
+            "asserted_by": decision["asserted_by"],
+        },
+        "evidence_strength": {
+            "key": evidence_strength["key"],
+            "label": evidence_strength["label"],
+            "verified_step_count": evidence_strength["verified_step_count"],
+            "total_step_count": evidence_strength["total_step_count"],
+        },
+        "cost": {
+            "estimated_cost_usd": usage.get("estimated_cost_usd"),
+            "cost_basis": _text(usage.get("cost_basis")) or None,
+            "cost_complete": bool(usage.get("cost_complete")),
+        },
+        "session_count": int(task.get("session_count") or 0),
+        "last_activity_at": _number(task.get("last_activity_at")) or None,
+    }
+
+
+def latest_store_activity(tasks: list[Mapping[str, Any]]) -> float | None:
+    """The newest event time across every Task — the deterministic 'now' the
+    outcome reducer compares against (never the wall clock). See
+    ``reduce_task_outcome``'s ``latest_store_activity_at``."""
+
+    newest = max(
+        (task_newest_event_at(task) for task in tasks if isinstance(task, Mapping)),
+        default=0.0,
+    )
+    return newest or None
+
+
+__all__ = [
+    "RECEIPT_SCHEMA_VERSION",
+    "PROVENANCE_LEGEND",
+    "build_receipt",
+    "build_receipt_summary",
+    "latest_store_activity",
+]
