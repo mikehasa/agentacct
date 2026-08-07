@@ -140,6 +140,11 @@ private struct ReceiptRow: View {
             selected ? AnyShapeStyle(Theme.cardAlt) : AnyShapeStyle(.clear),
             in: RoundedRectangle(cornerRadius: 7, style: .continuous)
         )
+        // The whole card is the tap target, not just the text — an unselected
+        // row's background is `.clear`, which SwiftUI does not hit-test, so
+        // without this the blank areas of the card swallow the tap (SessionRow
+        // already does this).
+        .contentShape(Rectangle())
     }
 }
 
