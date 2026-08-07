@@ -236,7 +236,9 @@ struct MenuContent: View {
 
     private func openMain(selecting sessionId: String?) {
         if let sessionId {
-            selection.pane = .sessions
+            // The Work surface is Task-primary; it resolves this session key to
+            // its Task (by primary-root match) and selects/expands it there.
+            selection.pane = .work
             selection.sessionId = sessionId
         }
         openWindow(id: "main")

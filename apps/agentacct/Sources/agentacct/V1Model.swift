@@ -400,6 +400,7 @@ struct ReceiptSummary: Decodable, Identifiable {
     let evidenceStrength: ReceiptEvidence
     let cost: ReceiptCost
     let sessionCount: Int?
+    let primaryRoot: ReceiptSessionRef?
     let lastActivityAt: Double?
 
     var id: String { taskId }
@@ -411,7 +412,61 @@ struct ReceiptSummary: Decodable, Identifiable {
         case evidenceStrength = "evidence_strength"
         case cost
         case sessionCount = "session_count"
+        case primaryRoot = "primary_root"
         case lastActivityAt = "last_activity_at"
+    }
+}
+
+/// A {client, client_session_id} pointer — the pair `/v1/session` consumes.
+struct ReceiptSessionRef: Decodable, Equatable {
+    let client: String
+    let clientSessionId: String
+
+    var sessionKey: String { "\(client)::\(clientSessionId)" }
+
+    enum CodingKeys: String, CodingKey {
+        case client
+        case clientSessionId = "client_session_id"
+    }
+}
+
+/// One constituent session of a Task, as listed on its Receipt: enough to label
+/// and address it; the full steps/checks load from `/v1/session` on expand.
+struct ReceiptSessionMember: Decodable, Identifiable {
+    let client: String
+    let clientSessionId: String
+    let sessionKind: String?
+    let role: String?        // "root" | "subagent"
+    let title: String?
+    let project: String?
+    let lastActivityAt: Double?
+
+    var id: String { "\(client)::\(clientSessionId)" }
+    var ref: ReceiptSessionRef { ReceiptSessionRef(client: client, clientSessionId: clientSessionId) }
+
+    enum CodingKeys: String, CodingKey {
+        case client, title, project, role
+        case clientSessionId = "client_session_id"
+        case sessionKind = "session_kind"
+        case lastActivityAt = "last_activity_at"
+    }
+}
+
+/// A Task's sessions grouped by root (primary or continuation), root listed
+/// first then its subagents — the drill-down tree under a Receipt.
+struct ReceiptSessionGroup: Decodable, Identifiable {
+    let root: ReceiptSessionRef
+    let role: String?        // "primary" | "continuation"
+    let lineageState: String?
+    let supportingCount: Int?
+    let members: [ReceiptSessionMember]
+
+    var id: String { root.sessionKey }
+
+    enum CodingKeys: String, CodingKey {
+        case root, role, members
+        case lineageState = "lineage_state"
+        case supportingCount = "supporting_count"
     }
 }
 
@@ -475,11 +530,12 @@ struct Receipt: Decodable {
     let title: String?
     let axes: ReceiptAxes
     let dimensions: ReceiptDimensions
+    let sessions: [ReceiptSessionGroup]?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case taskId = "task_id"
-        case title, axes, dimensions
+        case title, axes, dimensions, sessions
     }
 }
 
