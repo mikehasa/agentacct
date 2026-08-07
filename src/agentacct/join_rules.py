@@ -397,6 +397,74 @@ def pair_match(
     return {"join_keys": join_keys, "id_tiers": id_tiers, "vetoes": sorted(set(vetoes))}
 
 
+# The id keys pair_match() joins on. A usage row U and a work candidate W can
+# only produce a non-None pair_match — a join key OR a veto — when at least one
+# of these equalities holds:
+#     U.client_session_id        == W.client_session_id
+#     U.client_transcript_id     == W.client_transcript_id
+#     U.run_id                   == W.run_id
+#     U.parent_client_session_id == W.client_session_id
+#     U.client_session_id        == W.parent_client_session_id
+# Every veto pair_match can emit is gated behind one of these equalities (the
+# session/transcript equality branches, or namespace/source vetoes that only
+# fire once join_keys is non-empty), so a pair sharing NONE of them contributes
+# nothing to attribution — pair_match returns None. Indexing candidates by these
+# fields lets the attribution loops pair_match only the ~1% of candidates that
+# could possibly match, with byte-identical results.
+#
+# Each entry is (key_read_on_the_query_row, field_the_index_is_keyed_on). The
+# relation is structurally symmetric, so the SAME table drives both directions
+# (usage->work candidates and work->usage candidates). Keep it in lockstep with
+# pair_match().
+_JOIN_INDEX_LOOKUPS: tuple[tuple[str, str], ...] = (
+    ("client_session_id", "client_session_id"),
+    ("parent_client_session_id", "client_session_id"),
+    ("client_transcript_id", "client_transcript_id"),
+    ("run_id", "run_id"),
+    ("client_session_id", "parent_client_session_id"),
+)
+_JOIN_INDEX_FIELDS: tuple[str, ...] = (
+    "client_session_id",
+    "client_transcript_id",
+    "run_id",
+    "parent_client_session_id",
+)
+
+
+class JoinCandidateIndex:
+    """Index a candidate list by the id keys pair_match() joins on.
+
+    Lets the two O(usage x work) attribution loops pair_match only the
+    candidates that could possibly match a given row, instead of scanning the
+    whole list (the dominant cost of build_work_ledger). Provably lossless: a
+    candidate sharing none of _JOIN_INDEX_LOOKUPS' keys returns None from
+    pair_match (no join key, no veto), so skipping it cannot change any
+    decision. ``matches`` returns the subset in the candidates' ORIGINAL order,
+    so the caller sees the identical match/veto/candidate sequence a full scan
+    would produce.
+    """
+
+    def __init__(self, candidates: list[dict[str, Any]]) -> None:
+        self._by: dict[str, dict[Any, list[tuple[int, dict[str, Any]]]]] = {
+            field: {} for field in _JOIN_INDEX_FIELDS
+        }
+        for position, candidate in enumerate(candidates):
+            for field in _JOIN_INDEX_FIELDS:
+                value = candidate.get(field)
+                if value:
+                    self._by[field].setdefault(value, []).append((position, candidate))
+
+    def matches(self, row: dict[str, Any]) -> list[dict[str, Any]]:
+        gathered: dict[int, dict[str, Any]] = {}
+        for row_key, index_field in _JOIN_INDEX_LOOKUPS:
+            value = row.get(row_key)
+            if not value:
+                continue
+            for position, candidate in self._by[index_field].get(value, ()):
+                gathered[position] = candidate
+        return [candidate for _position, candidate in sorted(gathered.items())]
+
+
 def pair_confidence(match: dict[str, Any]) -> str:
     """Display confidence for a single pair match (used by the join inspector)."""
 
