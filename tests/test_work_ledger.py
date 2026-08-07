@@ -1735,3 +1735,35 @@ def test_join_index_matches_a_full_scan_byte_for_byte() -> None:
     assert any("ambiguous" in strategy for strategy in strategies)
     assert "exact_client_session_id" in strategies
     assert "exact_client_transcript_id" in strategies
+
+
+def test_evidence_link_index_matches_a_full_scan_byte_for_byte() -> None:
+    """The evidence->work_item link scans (by section_id and by run_id) are also
+    indexed under the same use_index seam. Build the ledger both ways over
+    several sections each carrying section-linked evidence and assert the whole
+    ledger is identical, so the evidence-link index preserves grouped order and
+    the exact one-candidate linking rule."""
+
+    events = [
+        _usage_event(session="sess-1", event_id="1", created_at=10),
+        _section_event(session="sess-1", section_id="sec-1", status="completed", created_at=11),
+        _evidence_event(section_id="sec-1", result="passed"),
+        _usage_event(session="sess-2", event_id="2", created_at=20),
+        _section_event(session="sess-2", section_id="sec-2", status="completed", created_at=21),
+        _evidence_event(section_id="sec-2", result="failed"),
+        _evidence_event(section_id="sec-2", result="passed"),
+        _section_event(session="sess-3", section_id="sec-3", status="checkpoint", created_at=31),
+        _evidence_event(section_id="sec-3", result="passed"),
+    ]
+
+    indexed = build_work_ledger(events, use_index=True)
+    full = build_work_ledger(events, use_index=False)
+
+    assert indexed == full
+
+    # Non-vacuous: the section-linked evidence must actually attach via the
+    # indexed candidate resolution, so parity is proven on real linkages.
+    statuses = {item["section_id"]: item.get("evidence_status") for item in indexed["work_items"]}
+    assert statuses.get("sec-1") == "strong"  # single passing check
+    assert statuses.get("sec-3") == "strong"
+    assert statuses.get("sec-2") not in (None, "none")  # evidenced (fail + pass both attached)
