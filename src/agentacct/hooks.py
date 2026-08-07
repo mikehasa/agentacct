@@ -474,6 +474,42 @@ def capture_claude_code_client_context(raw: str, *, store_dir: Path | str | None
         return None
 
 
+def capture_tool_activity(raw: str, *, store_dir: Path | str | None = None) -> None:
+    """Record ONE coarse tool-category tick for this PreToolUse. Never raises.
+
+    The PreToolUse hook already receives the tool name (and fails open), so this
+    is the cheapest honest place to observe what KIND of tool ran. Only a
+    category derived from the tool NAME is spooled — never the name, arguments,
+    or any payload — so this stays strictly inside the WorkEvent privacy line
+    while giving the Receipt's Actions dimension a real source. The spool lands
+    in the SAME store as the client-context bridge so the usage importer drains
+    both from one place.
+    """
+
+    try:
+        from .tool_activity import record_tool_activity_tick, tool_category
+
+        event = json.loads(raw or "{}")
+        if not isinstance(event, dict):
+            return
+        session_id = event.get("session_id")
+        if not isinstance(session_id, str) or not session_id or len(session_id) > _MAX_CONTEXT_ID_LENGTH:
+            return
+        target = Path(store_dir) if store_dir is not None else _hook_store_dir_from_event(event)
+        if target is None:
+            return
+        category = tool_category(event.get("tool_name") or event.get("tool"))
+        record_tool_activity_tick(
+            target,
+            client="claude-code",
+            session_id=session_id,
+            category=category,
+            at=time.time(),
+        )
+    except Exception:  # noqa: BLE001 - activity capture must never affect the hook decision.
+        return
+
+
 def is_subagent_session_start(event: Any) -> bool:
     """True when a SessionStart event fired inside a subagent session.
 

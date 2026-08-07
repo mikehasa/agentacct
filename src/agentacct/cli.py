@@ -118,6 +118,7 @@ from .context_bridge import build_client_context_join_health
 from .hooks import (
     CLAUDE_HOOK_RELATIVE_PATH,
     capture_claude_code_client_context,
+    capture_tool_activity,
     claude_code_hook_context_status,
     claude_code_hook_doctor_checks,
     claude_code_hook_paths,
@@ -3302,6 +3303,13 @@ def claude_code_pre_tool_use(
         try:
             capture_claude_code_client_context(raw, store_dir=store_dir)
         except Exception:  # noqa: BLE001 - context capture must never affect the hook decision.
+            pass
+        try:
+            # Observe only the tool CATEGORY (never the name/args) for the
+            # Receipt's Actions dimension. Separate try/except so it can never
+            # affect the decision or the context capture above.
+            capture_tool_activity(raw, store_dir=store_dir)
+        except Exception:  # noqa: BLE001 - activity capture must never affect the hook decision.
             pass
         print(json.dumps(decision, ensure_ascii=False))
     except Exception as exc:  # noqa: BLE001 - FAIL OPEN: a PreToolUse hook must NEVER block a tool call, even on an internal agentacct error. An observe-only recorder that can brick every tool call is worse than one that records nothing.
@@ -6698,6 +6706,22 @@ def _local_usage_import_payload(
                     )
                 except Exception:  # noqa: BLE001 - best-effort; recording must not fail import.
                     rate_limit_snapshots_recorded = 0
+        if not dry_run:
+            # Drain the Claude Code hook's tool-category spool into additive
+            # tool_activity_observed events (Receipt Actions dimension). Same
+            # record=service.record_event contract as the rate-limit spool; the
+            # batches are additive and content-idded, so re-import never double
+            # counts. Best-effort: a spool error can never fail the usage import.
+            from .tool_activity import ingest_tool_activity_spool
+
+            try:
+                ingest_tool_activity_spool(
+                    effective_store_dir,
+                    record=service.record_event,
+                    now=time.time(),
+                )
+            except Exception:  # noqa: BLE001 - draining the spool must never fail the import.
+                pass
         if dry_run:
             projectable_observation_identities: set[tuple[str, str, str]] = set()
             observation_conflict_identities = 0

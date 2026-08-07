@@ -529,6 +529,23 @@ def test_cost_basis_aggregates_single_mixed_and_absent_across_task_sessions() ->
     assert absent["tasks"][0]["usage"]["cost_basis"] is None
 
 
+def test_actions_touched_files_union_dedupes_across_steps() -> None:
+    projection = build_task_projection(
+        [_session("root")],
+        [
+            {"work_id": "w1", "client": "codex", "client_session_id": "root", "files": ["src/a.py", "src/b.py"]},
+            {"work_id": "w2", "client": "codex", "client_session_id": "root", "files": ["src/b.py", "src/c.py"]},
+        ],
+    )
+    actions = projection["tasks"][0]["actions"]
+    assert actions["touched_files"] == ["src/a.py", "src/b.py", "src/c.py"]
+    assert actions["touched_file_count"] == 3
+    # No tool categories were captured for these sessions: honest empty counts
+    # (the Receipt renders this as a Gap), never a fabricated zero-of-everything.
+    assert actions["tool_category_counts"] == {}
+    assert actions["tool_category_total"] == 0
+
+
 def test_task_keeps_held_codex_child_as_supporting_identity_without_adding_usage() -> None:
     root = _session(
         "root",

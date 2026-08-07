@@ -972,6 +972,36 @@ def build_task_projection(
                 run_work_ids[run_id].append(work_id)
         task_associations = associations.get(task_key, [])
         supporting_keys = member_keys - root_keys
+        # Actions dimension: which KINDS of tools ran (hook-captured category
+        # counts, summed over the Task's sessions) and which repo-relative
+        # artifacts were touched (union of every step's files). Both are pure
+        # aggregates of already-recorded, privacy-reviewed data — no tool names
+        # or arguments ever reach here.
+        tool_category_counts: dict[str, int] = {}
+        for key in ordered_members:
+            counts = sessions[key].get("tool_category_counts")
+            if not isinstance(counts, Mapping):
+                continue
+            for category, value in counts.items():
+                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                    name = _text(category)
+                    if name:
+                        tool_category_counts[name] = tool_category_counts.get(name, 0) + value
+        touched_files: list[str] = []
+        seen_touched_files: set[str] = set()
+        for item in task_work:
+            files = item.get("files") if isinstance(item.get("files"), list) else []
+            for candidate in files:
+                path = _text(candidate)
+                if path and path not in seen_touched_files:
+                    seen_touched_files.add(path)
+                    touched_files.append(path)
+        actions = {
+            "tool_category_counts": dict(sorted(tool_category_counts.items())),
+            "tool_category_total": sum(tool_category_counts.values()),
+            "touched_files": touched_files,
+            "touched_file_count": len(touched_files),
+        }
         tasks.append(
             {
                 "task_id": task_id,
@@ -1009,6 +1039,7 @@ def build_task_projection(
                 ],
                 "usage": usage,
                 "models": models,
+                "actions": actions,
             }
         )
 

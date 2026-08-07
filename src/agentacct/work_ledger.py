@@ -13,6 +13,7 @@ from .confidence import (
     normalize_cost_confidence,
     normalize_usage_confidence,
 )
+from .tool_activity import build_tool_activity_by_session
 from .join_rules import (
     annotate_usage_source_namespace_ambiguity,
     decide_attribution,
@@ -198,6 +199,18 @@ def build_work_ledger(
         session_observations=session_observations,
         local_session_observations=local_session_observations,
     )
+    # Tool-category counts (Receipt Actions dimension) ride onto each session
+    # rollup entry when the Claude Code hook captured them. Batches are additive
+    # so this sum is stable across imports; a session with no captured activity
+    # gets NO key, so the Receipt shows an honest Gap, never a fabricated zero.
+    tool_activity_by_session = build_tool_activity_by_session(events)
+    if tool_activity_by_session:
+        for entry in session_rollup.get("sessions", []):
+            counts = tool_activity_by_session.get(
+                (str(entry.get("client") or ""), str(entry.get("client_session_id") or ""))
+            )
+            if counts:
+                entry["tool_category_counts"] = dict(counts)
     rollup_summary = session_rollup.get("summary")
     if isinstance(rollup_summary, dict):
         rollup_summary["mechanical_projection"] = dict(session_observation_diagnostics or {})
