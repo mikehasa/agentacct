@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import html
 import json
+import threading
 import math
 import os
 import secrets
@@ -2910,35 +2911,32 @@ def create_local_api_app(
         return payload
 
     # The decorated, evidence-attached Task projection, fingerprint + TTL
-    # cached so the receipt list/detail routes stay cheap under app polling.
+    # cached AND single-flighted: the build is an expensive full-ledger reduce,
+    # so concurrent app requests (the tasks list + several receipts fired at
+    # once) must share ONE build under the lock — otherwise each sync worker
+    # rebuilds in parallel and they all blow the client's request timeout.
     v1_receipt_projection_cache: dict[str, tuple[int, float, dict[str, Any]]] = {}
-
-    def _receipt_projection_cache_key(events: list[dict[str, Any]]) -> int:
-        # The projection also consumes the Evidence v2 client_hook store (hook
-        # mechanical checks + privacy-safe tool-category captures), which changes
-        # WITHOUT a v1 ledger event — so hashing only the event log would serve a
-        # pre-capture projection for the whole TTL and let the Receipt under-claim
-        # proven evidence. Fold a cheap monotonic marker from the evidence store
-        # into the key so any capture/import invalidates the cache immediately.
-        evidence_marker: tuple[int, ...] = (0,)
-        try:
-            if service.evidence.enabled:
-                stats = service.evidence.status()
-                evidence_marker = (stats.logical_events, stats.receipts, stats.duplicate_receipts)
-        except Exception:  # noqa: BLE001 - a stats read must never fail the route.
-            evidence_marker = (0,)
-        return hash((events_fingerprint(events), evidence_marker))
+    v1_receipt_projection_lock = threading.Lock()
 
     def _v1_task_projection() -> dict[str, Any]:
+        # Keyed on the v1 event log. Machine checks ARE v1 events, so they
+        # invalidate this the instant they land; the only writes it does not
+        # notice within the TTL are evidence-store-only imports (connector /
+        # capture-hook), the same bound every sibling /v1 cache already has —
+        # the real fix for that is materialization, not a hotter key.
         events = service.list_all_events()
-        cache_key = _receipt_projection_cache_key(events)
-        moment = time.time()
+        fingerprint = events_fingerprint(events)
         cached = v1_receipt_projection_cache.get("projection")
-        if cached is not None and cached[0] == cache_key and (moment - cached[1]) < 30.0:
+        if cached is not None and cached[0] == fingerprint and (time.time() - cached[1]) < 30.0:
             return cached[2]
-        projection = _dashboard_task_projection(_page_data())
-        v1_receipt_projection_cache["projection"] = (cache_key, moment, projection)
-        return projection
+        with v1_receipt_projection_lock:
+            # Double-check: a concurrent request may have just built it.
+            cached = v1_receipt_projection_cache.get("projection")
+            if cached is not None and cached[0] == fingerprint and (time.time() - cached[1]) < 30.0:
+                return cached[2]
+            projection = _dashboard_task_projection(_page_data())
+            v1_receipt_projection_cache["projection"] = (fingerprint, time.time(), projection)
+            return projection
 
     def _visible_tasks(projection: Mapping[str, Any]) -> list[dict[str, Any]]:
         return [

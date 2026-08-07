@@ -49,7 +49,11 @@ final class GlanceClient {
 
     init() {
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 20
+        // The receipt/tasks routes do a full-ledger reduce on a cold cache (a
+        // few seconds on a large store); 20s let a legitimately slow first
+        // build surface as a transport error. 60s rides the cold build; the
+        // single-flight cache on the daemon keeps the warm path sub-second.
+        config.timeoutIntervalForRequest = 60
         session = URLSession(configuration: config)
     }
 
