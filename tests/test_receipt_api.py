@@ -6,9 +6,20 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from agentacct.api import create_local_api_app
+from agentacct.api import (
+    _LEDGER_RUN_REPORT_LIMIT,
+    _collect_service_run_reports,
+    _dashboard_task_projection,
+    _mechanical_projection_envelopes_for,
+    _store_scope_and_label,
+    build_page_data,
+    create_local_api_app,
+)
+from agentacct.cost import CostLedger
 from agentacct.receipt import RECEIPT_SCHEMA_VERSION
 from agentacct.service import SentinelService
+from agentacct.session_observations import build_session_observations
+from agentacct.work_ledger import build_proxy_usage_events, build_work_ledger
 
 TOKEN = "test-v1-token"
 NS = "sha256:receipt-api-ns"
@@ -171,3 +182,111 @@ def test_receipt_reports_verified_when_a_current_check_passes(tmp_path: Path) ->
     assert receipt["dimensions"]["evidence"]["checks_passed"] == 1
     # The touched file recorded on the section rides the Actions dimension.
     assert "src/login.py" in receipt["dimensions"]["actions"]["touched_files"]
+
+
+def _derived_style_ledger(service: SentinelService, tmp_path: Path) -> dict:
+    """Build the work ledger exactly the way the sessions lane's cached
+    ``_derived_work_ledger`` does — the shared ``_LEDGER_RUN_REPORT_LIMIT`` cap
+    and cost events in raw store order — so a golden test can prove the /v1
+    task lane's reuse of it yields the same projection build_page_data
+    self-builds (same cap; its cost events are pre-sorted but re-sorted away
+    inside the reduce)."""
+
+    events = service.list_all_events()
+    envelopes, diagnostics = _mechanical_projection_envelopes_for(service, tmp_path)
+    scope, label = _store_scope_and_label(tmp_path)
+    observations = (
+        build_session_observations(
+            envelopes,
+            default_project_label=label if scope == "project" else None,
+            diagnostics=diagnostics,
+        )
+        if envelopes
+        else []
+    )
+    return build_work_ledger(
+        events,
+        run_reports=_collect_service_run_reports(service, limit=_LEDGER_RUN_REPORT_LIMIT),
+        cost_events=CostLedger(tmp_path).read_events(),
+        session_observations=observations,
+        session_observation_diagnostics=diagnostics,
+        store_project_label=label,
+        store_scope=scope,
+    )
+
+
+def test_injecting_the_shared_derived_ledger_matches_the_self_built_projection(
+    tmp_path: Path,
+) -> None:
+    """Reusing the shared derived ledger must not change what receipts show.
+
+    The /v1 task lane assembles its projection over the sessions lane's cached
+    ledger instead of rebuilding one per request. This locks that swap: a
+    ledger built the derived lane's way, injected into build_page_data, yields
+    a task projection byte-identical to the one build_page_data self-builds.
+    """
+
+    service = SentinelService(tmp_path)
+    _record_usage(service, session_id="s1", at=100.0)
+    _record_section(service, session_id="s1", section_id="sec-1", status="completed", at=101.0)
+    _record_passing_check(service, session_id="s1", section_id="sec-1", at=102.0)
+    _record_usage(service, session_id="s2", at=200.0)
+    _record_section(service, session_id="s2", section_id="sec-2", status="handed_off", at=201.0)
+
+    reference = _dashboard_task_projection(build_page_data(tmp_path))
+
+    events = service.list_all_events()
+    derived_ledger = _derived_style_ledger(service, tmp_path)
+    injected = _dashboard_task_projection(
+        build_page_data(tmp_path, events=events, ledger=derived_ledger)
+    )
+
+    assert injected == reference
+
+
+def test_injected_task_and_receipt_wire_output_is_unchanged(tmp_path: Path) -> None:
+    """End to end: the /v1/tasks and /v1/receipt payloads the app serves over
+    the injected shared ledger equal the ones built from the self-built
+    projection — the reuse is invisible on the wire."""
+
+    service = SentinelService(tmp_path)
+    _record_usage(service, session_id="s1", at=100.0)
+    _record_section(service, session_id="s1", section_id="sec-1", status="completed", at=101.0)
+    _record_passing_check(service, session_id="s1", section_id="sec-1", at=102.0)
+
+    client = _app(tmp_path)
+    listing = client.get("/v1/tasks", headers=_auth()).json()
+    task_id = listing["tasks"][0]["task_id"]
+    receipt = client.get(f"/v1/receipt?task={task_id}", headers=_auth()).json()
+
+    # The projection the routes consume (built over the injected shared ledger)
+    # must equal the self-built one field for field.
+    reference = _dashboard_task_projection(build_page_data(tmp_path))
+    injected = _dashboard_task_projection(
+        build_page_data(
+            tmp_path,
+            events=service.list_all_events(),
+            ledger=_derived_style_ledger(service, tmp_path),
+        )
+    )
+    assert injected == reference
+    assert listing["total"] == 1
+    assert receipt["schema_version"] == RECEIPT_SCHEMA_VERSION
+
+
+def test_proxy_usage_events_are_order_invariant() -> None:
+    """The cost-event ordering delta between the two ledger build sites is
+    provably immaterial: build_proxy_usage_events re-sorts by created_at, so
+    the raw store order the sessions lane passes and the pre-sorted order
+    build_page_data passes reduce to the identical list."""
+
+    cost_events = [
+        {"event_id": "c1", "created_at": 300.0, "estimated_cost_usd": 0.3},
+        {"event_id": "c2", "created_at": 100.0, "estimated_cost_usd": 0.1},
+        {"event_id": "c3", "created_at": 200.0, "estimated_cost_usd": 0.2},
+    ]
+    ascending = sorted(cost_events, key=lambda event: event["created_at"])
+    descending = sorted(cost_events, key=lambda event: event["created_at"], reverse=True)
+
+    assert build_proxy_usage_events(ascending) == build_proxy_usage_events(descending)
+    assert build_proxy_usage_events(cost_events) == build_proxy_usage_events(ascending)
