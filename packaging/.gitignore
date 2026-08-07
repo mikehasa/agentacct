@@ -1,0 +1,6 @@
+# Freeze build artifacts — never committed (rebuilt by freeze-cli.sh).
+.buildvenv/
+build/
+dist/
+*.spec
+release/

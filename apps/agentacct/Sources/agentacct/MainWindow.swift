@@ -13,10 +13,12 @@ struct MainWindow: View {
     @EnvironmentObject var dashboard: DashboardStore
     @EnvironmentObject var glance: GlanceState
     @EnvironmentObject var selection: AppSelection
+    @StateObject private var setup = SetupModel()
+    @State private var showSetup = false
 
     var body: some View {
         VStack(spacing: 0) {
-            TopBar()
+            TopBar(canSetUp: setup.bundledCLIDir != nil) { showSetup = true }
             Rectangle().fill(Theme.border).frame(height: 1)
             Group {
                 switch selection.pane {
@@ -30,7 +32,14 @@ struct MainWindow: View {
         }
         .background(Theme.bg)
         .frame(minWidth: 960, minHeight: 560)
+        .sheet(isPresented: $showSetup) {
+            SetupSheet(setup: setup) { showSetup = false }
+        }
         .task {
+            // First-run: a packaged build whose recorder isn't installed yet
+            // offers setup once, automatically. A dev build (no embedded CLI)
+            // never prompts.
+            if !SnapshotMode.enabled, setup.shouldOfferSetup { showSetup = true }
             await dashboard.refresh()
             // The window is a live instrument: refresh while it stays open
             // (the daemon caches by fingerprint, so a quiet minute is one
@@ -62,6 +71,9 @@ struct MainWindow: View {
 struct TopBar: View {
     @EnvironmentObject var dashboard: DashboardStore
     @EnvironmentObject var selection: AppSelection
+    /// Packaged build → show the "Set up recording" entry point.
+    var canSetUp: Bool = false
+    var onSetUp: () -> Void = {}
 
     var body: some View {
         HStack(spacing: 14) {
@@ -85,6 +97,17 @@ struct TopBar: View {
 
             Spacer()
 
+            if canSetUp {
+                Button(action: onSetUp) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "sparkles")
+                        Text("Set up recording").font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundStyle(Theme.accent)
+                }
+                .buttonStyle(.plain)
+                .help("Install the recorder and configure your coding agents")
+            }
             if let updated = dashboard.lastUpdated {
                 Text(updated, style: .relative)
                     .font(.system(size: 10.5))
