@@ -158,6 +158,7 @@ def build_work_ledger(
         evidence_events,
         attributions,
         allow_legacy_unscoped_namespace=allow_legacy_unscoped_namespace,
+        use_index=use_index,
     )
     blocker_resolution_diagnostics = apply_blocker_resolutions(
         work_items,
@@ -913,6 +914,7 @@ def build_work_items(
     attributions: list[dict[str, Any]],
     *,
     allow_legacy_unscoped_namespace: bool = False,
+    use_index: bool = True,
 ) -> list[dict[str, Any]]:
     work_events, _diagnostics = _projectable_work_event_cohorts(
         work_events,
@@ -1107,6 +1109,28 @@ def build_work_items(
         if work_id:
             usage_by_work.setdefault(str(work_id), []).append(attribution)
 
+    # Both evidence link scans below are otherwise O(evidence x grouped). Index
+    # grouped ONCE by the raw keys each scan matches on — position (to keep
+    # grouped's insertion order in the results), section_id, and run_id — so
+    # each evidence event visits only the handful of items it could reference.
+    # Lossless: the indexes reproduce the exact same candidate set and order the
+    # full scans yield. ``use_index=False`` restores the scans for the test.
+    grouped_position: dict[str, int] | None = None
+    work_ids_by_section: dict[str, list[str]] | None = None
+    work_ids_by_run: dict[str, list[str]] | None = None
+    if use_index:
+        grouped_position = {}
+        work_ids_by_section = {}
+        work_ids_by_run = {}
+        for position, (work_id, item) in enumerate(grouped.items()):
+            grouped_position[work_id] = position
+            section_id = str(item.get("section_id") or "")
+            if section_id:
+                work_ids_by_section.setdefault(section_id, []).append(work_id)
+            run_id_value = item.get("run_id")
+            if run_id_value:
+                work_ids_by_run.setdefault(run_id_value, []).append(work_id)
+
     evidence_by_work: dict[str, list[dict[str, Any]]] = {}
     for evidence in evidence_events:
         linked_ids = _evidence_link_ids(evidence)
@@ -1121,6 +1145,8 @@ def build_work_items(
                 linked_ids,
                 grouped,
                 allow_legacy_unscoped_namespace=allow_legacy_unscoped_namespace,
+                work_ids_by_section=work_ids_by_section,
+                grouped_position=grouped_position,
             )
             if len(candidates) == 1:
                 evidence_by_work.setdefault(candidates[0], []).append(evidence)
@@ -1128,7 +1154,11 @@ def build_work_items(
         run_id = evidence.get("run_id")
         if not run_id:
             continue
-        for work_id, item in grouped.items():
+        run_candidate_ids = (
+            work_ids_by_run.get(run_id, ()) if work_ids_by_run is not None else grouped
+        )
+        for work_id in run_candidate_ids:
+            item = grouped[work_id]
             if item.get("run_id") == run_id and _evidence_run_context_compatible(
                 evidence,
                 item,
@@ -4330,19 +4360,34 @@ def _evidence_candidate_work_ids(
     grouped: dict[str, dict[str, Any]],
     *,
     allow_legacy_unscoped_namespace: bool,
+    work_ids_by_section: dict[str, list[str]] | None = None,
+    grouped_position: dict[str, int] | None = None,
 ) -> list[str]:
     """Resolve an evidence event's raw section/work references to work items.
 
     References match either the composite work_id or the raw section_id.
     When the evidence carries client/session context, items with conflicting
     context are dropped, and an exact session match narrows the candidates.
+
+    ``work_ids_by_section``/``grouped_position`` (built once by the caller) turn
+    the reference match from a full scan of ``grouped`` into direct lookups; the
+    result is the same candidate set in the same grouped order.
     """
 
-    candidates = [
-        work_id
-        for work_id, item in grouped.items()
-        if work_id in linked_ids or str(item.get("section_id") or "") in linked_ids
-    ]
+    if work_ids_by_section is None or grouped_position is None:
+        candidates = [
+            work_id
+            for work_id, item in grouped.items()
+            if work_id in linked_ids or str(item.get("section_id") or "") in linked_ids
+        ]
+    else:
+        matched: set[str] = set()
+        for linked in linked_ids:
+            if linked in grouped:
+                matched.add(linked)
+            for work_id in work_ids_by_section.get(linked, ()):
+                matched.add(work_id)
+        candidates = sorted(matched, key=lambda work_id: grouped_position[work_id])
     candidates = [
         work_id
         for work_id in candidates
