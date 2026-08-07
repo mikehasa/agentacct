@@ -32,6 +32,7 @@ _exit_if_unsupported_platform(sys.platform)
 
 import typer
 from rich.console import Console
+from rich.markup import escape as _rich_escape
 from rich.table import Table
 
 from .agent_loop import AgentLoopOptions, run_agent_like_loop
@@ -118,6 +119,7 @@ from .context_bridge import build_client_context_join_health
 from .hooks import (
     CLAUDE_HOOK_RELATIVE_PATH,
     capture_claude_code_client_context,
+    capture_tool_activity,
     claude_code_hook_context_status,
     claude_code_hook_doctor_checks,
     claude_code_hook_paths,
@@ -3302,6 +3304,13 @@ def claude_code_pre_tool_use(
         try:
             capture_claude_code_client_context(raw, store_dir=store_dir)
         except Exception:  # noqa: BLE001 - context capture must never affect the hook decision.
+            pass
+        try:
+            # Observe only the tool CATEGORY (never the name/args) for the
+            # Receipt's Actions dimension. Separate try/except so it can never
+            # affect the decision or the context capture above.
+            capture_tool_activity(raw, store_dir=store_dir)
+        except Exception:  # noqa: BLE001 - activity capture must never affect the hook decision.
             pass
         print(json.dumps(decision, ensure_ascii=False))
     except Exception as exc:  # noqa: BLE001 - FAIL OPEN: a PreToolUse hook must NEVER block a tool call, even on an internal agentacct error. An observe-only recorder that can brick every tool call is worse than one that records nothing.
@@ -6698,6 +6707,22 @@ def _local_usage_import_payload(
                     )
                 except Exception:  # noqa: BLE001 - best-effort; recording must not fail import.
                     rate_limit_snapshots_recorded = 0
+        if not dry_run:
+            # Drain the Claude Code hook's tool-category spool into additive
+            # tool_activity_observed events (Receipt Actions dimension). Same
+            # record=service.record_event contract as the rate-limit spool; the
+            # batches are additive and content-idded, so re-import never double
+            # counts. Best-effort: a spool error can never fail the usage import.
+            from .tool_activity import ingest_tool_activity_spool
+
+            try:
+                ingest_tool_activity_spool(
+                    effective_store_dir,
+                    record=service.record_event,
+                    now=time.time(),
+                )
+            except Exception:  # noqa: BLE001 - draining the spool must never fail the import.
+                pass
         if dry_run:
             projectable_observation_identities: set[tuple[str, str, str]] = set()
             observation_conflict_identities = 0
@@ -8919,6 +8944,209 @@ def cost_proxy(
         host=host,
         port=port,
     )
+
+
+def _receipt_cost_text(cost: dict[str, Any]) -> str:
+    amount = cost.get("estimated_cost_usd")
+    if amount is None:
+        return "—"
+    basis = cost.get("cost_basis") or "unknown basis"
+    suffix = "" if cost.get("cost_complete") else " (partial)"
+    return f"${float(amount):.2f} · {basis}{suffix}"
+
+
+def _receipt_category_text(counts: dict[str, Any]) -> str:
+    if not counts:
+        return "not instrumented"
+    return " ".join(f"{name}×{value}" for name, value in sorted(counts.items()))
+
+
+def _find_receipt_task(projection: dict[str, Any], task_id: str) -> dict[str, Any] | None:
+    tasks = [
+        task
+        for task in projection.get("tasks", [])
+        if isinstance(task, dict) and str(task.get("public_task_id") or "")
+    ]
+    exact = next((task for task in tasks if str(task.get("public_task_id")) == task_id), None)
+    if exact is not None:
+        return exact
+    # Convenience: an unambiguous id prefix (e.g. the first 12 chars) resolves.
+    matches = [task for task in tasks if str(task.get("public_task_id")).startswith(task_id)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _render_receipt_text(receipt: dict[str, Any]) -> None:
+    axes = receipt.get("axes", {})
+    dims = receipt.get("dimensions", {})
+    decision = axes.get("decision_status", {})
+    evidence = axes.get("evidence_strength", {})
+
+    console.print(f"[bold]Work Receipt[/bold] · {_rich_escape(str(receipt.get('title') or 'Task'))}")
+    console.print(f"[dim]{_rich_escape(str(receipt.get('task_id') or ''))}[/dim]\n")
+
+    console.print(
+        f"  Decision status    [bold]{str(decision.get('key') or 'unknown').upper()}[/bold]"
+        f"  (asserted by {decision.get('asserted_by') or 'none'})"
+    )
+    if decision.get("statement"):
+        console.print(f"                     [dim]{_rich_escape(str(decision['statement']))}[/dim]")
+    console.print(
+        f"  Evidence strength  [bold]{str(evidence.get('key') or 'none').upper()}[/bold]"
+        f"  ({int(evidence.get('verified_step_count') or 0)}/{int(evidence.get('total_step_count') or 0)}"
+        f" steps verified · {int(evidence.get('checks_total') or 0)} checks,"
+        f" {int(evidence.get('checks_passed') or 0)} passed)"
+    )
+    if evidence.get("strongest_proof"):
+        console.print(
+            f"                     [dim]strongest proof: {_rich_escape(str(evidence['strongest_proof']))}[/dim]"
+        )
+    if axes.get("orthogonality_note"):
+        console.print(f"  [dim]{axes['orthogonality_note']}[/dim]")
+
+    table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+    table.add_column("Dimension")
+    table.add_column("Summary")
+    table.add_column("Source", style="dim")
+
+    task = dims.get("task", {})
+    objectives = task.get("objectives") or []
+    boundary = task.get("boundary", {})
+    task_summary = "; ".join(objectives[:2]) or "no objective recorded"
+    if boundary.get("project"):
+        task_summary += f"  · project {boundary['project']}"
+    table.add_row("Task", _rich_escape(task_summary), ", ".join(task.get("provenance") or []))
+
+    actors = dims.get("actors", {})
+    actor_summary = " · ".join(
+        part
+        for part in (
+            actors.get("primary_agent"),
+            ", ".join(actors.get("models") or []) or None,
+            (f"{actors.get('subagent_session_count')} subagents" if actors.get("subagent_session_count") else None),
+        )
+        if part
+    )
+    table.add_row("Actors", _rich_escape(actor_summary or "—"), ", ".join(actors.get("provenance") or []))
+
+    actions = dims.get("actions", {})
+    actions_summary = _receipt_category_text(actions.get("tool_category_counts") or {})
+    actions_summary += f"  · touched {int(actions.get('touched_file_count') or 0)} file(s)"
+    table.add_row("Actions", _rich_escape(actions_summary), ", ".join(actions.get("provenance") or []))
+
+    cost = dims.get("cost", {})
+    table.add_row("Cost", _receipt_cost_text(cost), ", ".join(cost.get("provenance") or []))
+
+    evidence_dim = dims.get("evidence", {})
+    table.add_row(
+        "Evidence",
+        f"{int(evidence_dim.get('checks_total') or 0)} checks · "
+        f"{int(evidence_dim.get('checks_passed') or 0)} passed · "
+        f"{int(evidence_dim.get('checks_failed') or 0)} failed",
+        ", ".join(evidence_dim.get("provenance") or []),
+    )
+
+    outcome = dims.get("outcome", {})
+    table.add_row(
+        "Outcome",
+        f"{outcome.get('decision_status')} · asserted by {outcome.get('asserted_by')}",
+        ", ".join(outcome.get("provenance") or []),
+    )
+    console.print(table)
+
+    gaps = dims.get("gaps", {})
+    if gaps.get("items"):
+        console.print(f"\n[bold]Gaps[/bold] ({gaps.get('count')}) — what could not be proven")
+        for item in gaps["items"]:
+            console.print(f"  · \\[{item.get('dimension')}] {_rich_escape(str(item.get('reason')))}")
+
+    legend = dims.get("provenance", {}).get("legend") or {}
+    if legend:
+        console.print("\n[bold]Provenance[/bold]")
+        for source, description in legend.items():
+            console.print(f"  {source} — [dim]{description}[/dim]")
+
+
+@app.command("receipts")
+def receipts(
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    limit: Annotated[int, typer.Option(help="Maximum number of Tasks to list.")] = 20,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit the raw summary JSON.")] = False,
+) -> None:
+    """List recent Tasks with their Receipt summary (decision × evidence, cost)."""
+
+    from .api import build_store_task_projection, _task_title
+    from .receipt import RECEIPT_SCHEMA_VERSION, build_receipt_summary, latest_store_activity
+
+    resolved = _resolve_cli_store_dir(store_dir).path
+    projection = build_store_task_projection(resolved)
+    tasks = [
+        task
+        for task in projection.get("tasks", [])
+        if isinstance(task, dict) and str(task.get("public_task_id") or "")
+    ]
+    latest = latest_store_activity(tasks)
+    tasks.sort(key=lambda task: float(task.get("last_activity_at") or 0.0), reverse=True)
+    rows = [
+        build_receipt_summary(
+            task,
+            public_task_id=str(task.get("public_task_id")),
+            title=_task_title(task),
+            latest_store_activity_at=latest,
+        )
+        for task in tasks[:limit]
+    ]
+    if json_output:
+        console.print_json(data={"schema": RECEIPT_SCHEMA_VERSION, "tasks": rows})
+        return
+    if not rows:
+        console.print("No Tasks recorded in this store yet.")
+        return
+    table = Table(title="Work Receipts", header_style="bold")
+    table.add_column("Task")
+    table.add_column("Title")
+    table.add_column("Decision")
+    table.add_column("Evidence")
+    table.add_column("Cost")
+    for row in rows:
+        table.add_row(
+            str(row["task_id"])[:16],
+            _rich_escape(str(row.get("title") or "")[:48]),
+            str(row["decision_status"]["key"]),
+            str(row["evidence_strength"]["key"]),
+            _receipt_cost_text(row.get("cost") or {}),
+        )
+    console.print(table)
+
+
+@app.command("receipt")
+def receipt(
+    task_id: Annotated[str, typer.Argument(help="Public Task id (task_…); an unambiguous prefix works.")],
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit the full agentacct.receipt.v1 JSON.")] = False,
+) -> None:
+    """Print one Task's full Work Receipt: the 8 questions, the two orthogonal
+    axes (decision status × evidence strength), per-field provenance, and gaps."""
+
+    from .api import build_store_task_projection, _task_title
+    from .receipt import build_receipt, latest_store_activity
+
+    resolved = _resolve_cli_store_dir(store_dir).path
+    projection = build_store_task_projection(resolved)
+    task = _find_receipt_task(projection, task_id)
+    if task is None:
+        console.print(f"No Task matches {task_id} in this store.")
+        raise typer.Exit(1)
+    all_tasks = [t for t in projection.get("tasks", []) if isinstance(t, dict)]
+    receipt_payload = build_receipt(
+        task,
+        public_task_id=str(task.get("public_task_id")),
+        title=_task_title(task),
+        latest_store_activity_at=latest_store_activity(all_tasks),
+    )
+    if json_output:
+        console.print_json(data=receipt_payload)
+        return
+    _render_receipt_text(receipt_payload)
 
 
 if __name__ == "__main__":

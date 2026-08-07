@@ -18,6 +18,9 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var usage: UsageSummary?
     @Published private(set) var detail: V1SessionDetail?
     @Published private(set) var detailError: String?
+    @Published private(set) var receiptTasks: [ReceiptSummary] = []
+    @Published private(set) var receipt: Receipt?
+    @Published private(set) var receiptError: String?
     @Published private(set) var errorText: String?
     @Published private(set) var isRefreshing = false
     @Published private(set) var isLoadingMore = false
@@ -122,6 +125,44 @@ final class DashboardStore: ObservableObject {
         }
     }
 
+    /// The Task list for the Receipts pane (one compact Receipt summary each).
+    func fetchReceipts() async {
+        do {
+            let payload: ReceiptTasksPayload = try await client.getAuthed("/v1/tasks?limit=200")
+            receiptTasks = payload.tasks
+            receiptError = nil
+        } catch GlanceClientError.noDiscovery(_) {
+            receiptError = "daemon not running (no discovery file) — start it with `agentacct start`"
+        } catch {
+            receiptError = "receipts fetch failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// One Task's full Receipt. 404 (task unknown / recorded elsewhere) is a
+    /// first-class message; a CANCELLED fetch (the user picked another Task)
+    /// writes nothing so a late error can't mask the fresh receipt.
+    func fetchReceipt(taskId: String) async {
+        receipt = nil
+        receiptError = nil
+        do {
+            let encoded = taskId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? taskId
+            let payload: Receipt = try await client.getAuthed("/v1/receipt?task=\(encoded)")
+            guard !Task.isCancelled else { return }
+            receipt = payload
+            receiptError = nil
+        } catch is CancellationError {
+            return
+        } catch let error as URLError where error.code == .cancelled {
+            return
+        } catch GlanceClientError.http(404) {
+            guard !Task.isCancelled else { return }
+            receiptError = "this Task is not in the store (it may have been recorded elsewhere)"
+        } catch {
+            guard !Task.isCancelled else { return }
+            receiptError = "receipt fetch failed: \(error.localizedDescription)"
+        }
+    }
+
     /// The plan status for one client (three-state honesty), if known.
     func planStatus(for clientName: String) -> V1PlanStatus? {
         planStatuses.first { $0.client == clientName }
@@ -153,11 +194,13 @@ final class DashboardStore: ObservableObject {
 @MainActor
 final class AppSelection: ObservableObject {
     @Published var sessionId: String?
+    @Published var taskId: String?
     @Published var pane: MainPane = .dashboard
 }
 
 enum MainPane: String, CaseIterable, Identifiable {
     case dashboard = "Dashboard"
+    case receipts = "Receipts"
     case sessions = "Sessions"
     case usage = "Usage"
     case limits = "Limits"

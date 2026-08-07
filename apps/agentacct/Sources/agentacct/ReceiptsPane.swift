@@ -1,0 +1,346 @@
+import SwiftUI
+
+// The Receipts pane: Task list (left) -> one Task's Work Receipt (right).
+//
+// A Receipt answers the 8 questions for one converged Task and keeps the two
+// honesty axes visibly SEPARATE: decision status (what a human/agent SAYS) and
+// evidence strength (how well that is PROVEN). Both colors and both labels are
+// distinct so an agent's "done" never reads as machine verification. Honesty
+// rides the payload — nothing here re-derives an axis or invents a number.
+
+/// Decision-status color (what is CLAIMED). Deliberately a different function
+/// from ``evidenceStrengthTint`` so the two axes can never share a color.
+func receiptDecisionTint(_ key: String?) -> Color {
+    switch key {
+    case "verified": return Theme.green
+    case "finding", "failed", "blocked": return Theme.red
+    case "reported", "mostly_done", "in_progress": return Theme.orange
+    case "handed_off", "resolved", "finding_superseded": return Theme.blue
+    default: return Theme.textMuted
+    }
+}
+
+/// Evidence-strength color (how well PROVEN). A failing check is never "strong"
+/// proof — it lands on the decision axis as a finding, not here.
+func receiptEvidenceTint(_ key: String?) -> Color {
+    switch key {
+    case "verified": return Theme.green
+    case "checked": return Theme.blue
+    case "reported": return Theme.orange
+    default: return Theme.textMuted
+    }
+}
+
+/// Provenance-source chip color: the strongest source is warmest.
+func receiptSourceTint(_ source: String) -> Color {
+    switch source {
+    case "ci": return Theme.green
+    case "hook": return Theme.blue
+    case "mcp": return Theme.accent
+    case "git": return Theme.orange
+    case "human": return Theme.orange
+    case "client_log": return Theme.textMuted
+    default: return Theme.textFaint
+    }
+}
+
+struct ReceiptsPane: View {
+    @EnvironmentObject var dashboard: DashboardStore
+    @EnvironmentObject var selection: AppSelection
+    @State private var query = ""
+
+    private var visibleTasks: [ReceiptSummary] {
+        guard !query.isEmpty else { return dashboard.receiptTasks }
+        let needle = query.lowercased()
+        return dashboard.receiptTasks.filter {
+            ($0.title ?? "").lowercased().contains(needle) || $0.taskId.lowercased().contains(needle)
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            taskList
+                .frame(width: 320)
+            Rectangle().fill(Theme.border).frame(width: 1)
+            detail
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .task { await dashboard.fetchReceipts() }
+    }
+
+    private var taskList: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Image(systemName: "magnifyingglass").foregroundStyle(Theme.textFaint)
+                TextField("Filter tasks", text: $query)
+                    .textFieldStyle(.plain)
+            }
+            .padding(8)
+            Rectangle().fill(Theme.border.opacity(0.6)).frame(height: 1)
+            if let error = dashboard.receiptError, dashboard.receiptTasks.isEmpty {
+                Text(error).font(.callout).foregroundStyle(Theme.textMuted)
+                    .padding().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollBox {
+                    VStack(spacing: 2) {
+                        ForEach(visibleTasks) { task in
+                            ReceiptRow(task: task, selected: task.taskId == selection.taskId)
+                                .onTapGesture { select(task.taskId) }
+                        }
+                    }
+                    .padding(6)
+                }
+            }
+        }
+        .background(Theme.surface.opacity(0.4))
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        if let receipt = dashboard.receipt {
+            ReceiptDetail(receipt: receipt)
+        } else if let error = dashboard.receiptError, selection.taskId != nil {
+            Text(error).font(.callout).foregroundStyle(Theme.textMuted).padding()
+        } else {
+            VStack(spacing: 8) {
+                Image(systemName: "checklist").font(.largeTitle).foregroundStyle(Theme.textFaint)
+                Text("Select a Task to read its Work Receipt")
+                    .foregroundStyle(Theme.textMuted)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func select(_ taskId: String) {
+        selection.taskId = taskId
+        Task { await dashboard.fetchReceipt(taskId: taskId) }
+    }
+}
+
+private struct ReceiptRow: View {
+    let task: ReceiptSummary
+    let selected: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(task.title ?? task.taskId)
+                .font(.callout).fontWeight(.medium)
+                .foregroundStyle(Theme.text)
+                .lineLimit(2)
+            HStack(spacing: 6) {
+                AxisChip(text: task.decisionStatus.key, tint: receiptDecisionTint(task.decisionStatus.key))
+                AxisChip(text: task.evidenceStrength.key, tint: receiptEvidenceTint(task.evidenceStrength.key))
+                Spacer()
+                Text(task.cost.text).font(.caption).foregroundStyle(Theme.textMuted)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            selected ? AnyShapeStyle(Theme.cardAlt) : AnyShapeStyle(.clear),
+            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+        )
+    }
+}
+
+private struct AxisChip: View {
+    let text: String
+    let tint: Color
+
+    var body: some View {
+        Text(text)
+            .font(.caption2).fontWeight(.semibold)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(tint.opacity(0.18), in: Capsule())
+            .foregroundStyle(tint)
+    }
+}
+
+private struct ReceiptDetail: View {
+    let receipt: Receipt
+
+    var body: some View {
+        ScrollBox {
+            VStack(alignment: .leading, spacing: 14) {
+                header
+                axesCard
+                dimensionsCard
+                gapsCard
+                provenanceCard
+            }
+            .padding(16)
+            .frame(maxWidth: 720, alignment: .leading)
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(receipt.title ?? "Task").font(.title3).fontWeight(.semibold)
+                .foregroundStyle(Theme.text)
+            Text(receipt.taskId).font(.caption).foregroundStyle(Theme.textFaint)
+        }
+    }
+
+    private var axesCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                axisRow(
+                    label: "Decision status",
+                    key: receipt.axes.decisionStatus.key,
+                    tint: receiptDecisionTint(receipt.axes.decisionStatus.key),
+                    detail: assertedText(receipt.axes.decisionStatus.assertedBy),
+                    note: receipt.axes.decisionStatus.statement
+                )
+                axisRow(
+                    label: "Evidence strength",
+                    key: receipt.axes.evidenceStrength.key,
+                    tint: receiptEvidenceTint(receipt.axes.evidenceStrength.key),
+                    detail: evidenceDetail(receipt.axes.evidenceStrength),
+                    note: receipt.axes.evidenceStrength.strongestProof.map { "strongest proof: \($0)" }
+                )
+                if let orthogonality = receipt.axes.orthogonalityNote {
+                    Text(orthogonality).font(.caption).foregroundStyle(Theme.textFaint)
+                }
+            }
+        }
+    }
+
+    private func axisRow(label: String, key: String, tint: Color, detail: String?, note: String?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                Text(label).font(.caption).foregroundStyle(Theme.textMuted).frame(width: 130, alignment: .leading)
+                Text(key.uppercased()).font(.callout).fontWeight(.bold).foregroundStyle(tint)
+                if let detail { Text(detail).font(.caption).foregroundStyle(Theme.textMuted) }
+            }
+            if let note {
+                Text(note).font(.caption).foregroundStyle(Theme.textFaint)
+                    .padding(.leading, 138)
+            }
+        }
+    }
+
+    private var dimensionsCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 8) {
+                dimensionRow("Task", taskSummary, receipt.dimensions.task.provenance)
+                dimensionRow("Actors", actorsSummary, receipt.dimensions.actors.provenance)
+                dimensionRow("Actions", actionsSummary, receipt.dimensions.actions.provenance)
+                dimensionRow("Cost", costSummary, receipt.dimensions.cost.provenance)
+                dimensionRow("Evidence", evidenceSummary, receipt.dimensions.evidence.provenance)
+                dimensionRow("Outcome", outcomeSummary, receipt.dimensions.outcome.provenance)
+            }
+        }
+    }
+
+    private func dimensionRow(_ name: String, _ summary: String, _ provenance: [String]?) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(name).font(.caption).fontWeight(.semibold).foregroundStyle(Theme.textMuted)
+                .frame(width: 74, alignment: .leading)
+            Text(summary).font(.callout).foregroundStyle(Theme.text)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 4) {
+                ForEach(provenance ?? [], id: \.self) { source in
+                    Text(source).font(.caption2)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(receiptSourceTint(source).opacity(0.16), in: Capsule())
+                        .foregroundStyle(receiptSourceTint(source))
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var gapsCard: some View {
+        let items = receipt.dimensions.gaps.items ?? []
+        if !items.isEmpty {
+            Card {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Gaps (\(items.count)) — what could not be proven")
+                        .font(.callout).fontWeight(.semibold).foregroundStyle(Theme.text)
+                    ForEach(items) { item in
+                        HStack(alignment: .top, spacing: 6) {
+                            Text(item.dimension).font(.caption2).foregroundStyle(Theme.textFaint)
+                                .frame(width: 70, alignment: .leading)
+                            Text(item.reason).font(.caption).foregroundStyle(Theme.textMuted)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var provenanceCard: some View {
+        let legend = receipt.dimensions.provenance.legend ?? [:]
+        if !legend.isEmpty {
+            Card {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Provenance").font(.callout).fontWeight(.semibold).foregroundStyle(Theme.text)
+                    ForEach(legend.keys.sorted(), id: \.self) { source in
+                        HStack(alignment: .top, spacing: 6) {
+                            Text(source).font(.caption2).fontWeight(.semibold)
+                                .foregroundStyle(receiptSourceTint(source))
+                                .frame(width: 78, alignment: .leading)
+                            Text(legend[source] ?? "").font(.caption).foregroundStyle(Theme.textMuted)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - dimension summaries
+
+    private var taskSummary: String {
+        let dim = receipt.dimensions.task
+        var parts = (dim.objectives ?? []).prefix(2).joined(separator: "; ")
+        if parts.isEmpty { parts = "no objective recorded" }
+        if let project = dim.boundary?.project { parts += " · project \(project)" }
+        return parts
+    }
+
+    private var actorsSummary: String {
+        let dim = receipt.dimensions.actors
+        var parts: [String] = []
+        if let agent = dim.primaryAgent { parts.append(agent) }
+        if let models = dim.models, !models.isEmpty { parts.append(models.joined(separator: ", ")) }
+        if let subagents = dim.subagentSessionCount, subagents > 0 { parts.append("\(subagents) subagents") }
+        return parts.isEmpty ? "—" : parts.joined(separator: " · ")
+    }
+
+    private var actionsSummary: String {
+        let dim = receipt.dimensions.actions
+        let counts = dim.toolCategoryCounts ?? [:]
+        let categories = counts.isEmpty
+            ? "not instrumented"
+            : counts.sorted { $0.key < $1.key }.map { "\($0.key)×\($0.value)" }.joined(separator: " ")
+        return "\(categories) · touched \(dim.touchedFileCount ?? 0) file(s)"
+    }
+
+    private var costSummary: String {
+        let dim = receipt.dimensions.cost
+        guard let cost = dim.estimatedCostUsd else { return "—" }
+        let basis = dim.costBasis ?? "unknown basis"
+        return String(format: "$%.2f · %@%@", cost, basis, (dim.costComplete ?? true) ? "" : " (partial)")
+    }
+
+    private var evidenceSummary: String {
+        let dim = receipt.dimensions.evidence
+        return "\(dim.checksTotal ?? 0) checks · \(dim.checksPassed ?? 0) passed · \(dim.checksFailed ?? 0) failed"
+    }
+
+    private var outcomeSummary: String {
+        let dim = receipt.dimensions.outcome
+        return "\(dim.decisionStatus ?? "—") · asserted by \(dim.assertedBy ?? "none")"
+    }
+
+    private func assertedText(_ assertedBy: String?) -> String? {
+        guard let assertedBy else { return nil }
+        return "asserted by \(assertedBy)"
+    }
+
+    private func evidenceDetail(_ evidence: ReceiptEvidence) -> String {
+        "\(evidence.verifiedStepCount ?? 0)/\(evidence.totalStepCount ?? 0) steps verified · "
+            + "\(evidence.checksTotal ?? 0) checks, \(evidence.checksPassed ?? 0) passed"
+    }
+}

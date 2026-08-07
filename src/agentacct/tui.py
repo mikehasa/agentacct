@@ -398,6 +398,7 @@ class AgentAcctTUI(App):
         Binding("r", "refresh", "Refresh"),
         Binding("w", "cycle_window", "Cycle window"),
         Binding("s", "open_sessions", "Sessions"),
+        Binding("t", "open_receipts", "Receipts"),
         Binding("u", "open_usage", "Usage"),
         Binding("p", "screenshot", "Snapshot"),
     ]
@@ -924,6 +925,9 @@ class AgentAcctTUI(App):
     def action_open_sessions(self) -> None:
         self._show_top_level(SessionsScreen)
 
+    def action_open_receipts(self) -> None:
+        self._show_top_level(ReceiptsScreen)
+
     def action_open_usage(self) -> None:
         self._show_top_level(UsageScreen)
 
@@ -1153,6 +1157,301 @@ class SessionsScreen(Screen):
     def action_refresh(self) -> None:
         self._set_loading(True, "Rebuilding the work ledger…")
         self._load(force=True)
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+
+_RECEIPTS_LIMIT = 300
+
+
+def _receipt_decision_color(key: str) -> str:
+    return {
+        "verified": "green",
+        "finding": "red",
+        "failed": "red",
+        "blocked": "red",
+        "reported": "yellow",
+        "mostly_done": "yellow",
+        "in_progress": "yellow",
+        "handed_off": "blue",
+        "resolved": "blue",
+        "finding_superseded": "blue",
+    }.get(key, "dim")
+
+
+def _receipt_evidence_color(key: str) -> str:
+    return {"verified": "green", "checked": "blue", "reported": "yellow"}.get(key, "dim")
+
+
+def _receipt_summary_cost(cost: dict) -> str:
+    amount = cost.get("estimated_cost_usd")
+    if amount is None:
+        return "—"
+    return f"${float(amount):.2f} · {cost.get('cost_basis') or 'unknown basis'}"
+
+
+def _render_receipt_markup(receipt: dict) -> str:
+    """One Task's Work Receipt as Rich markup for the detail Static.
+
+    Shares the exact build_receipt vocabulary the CLI, app, and API render —
+    the two orthogonal axes up top, a per-dimension line with its provenance,
+    then the gaps roll-up and the provenance legend.
+    """
+
+    axes = receipt.get("axes") or {}
+    dims = receipt.get("dimensions") or {}
+    decision = axes.get("decision_status") or {}
+    evidence = axes.get("evidence_strength") or {}
+    lines: list[str] = []
+    lines.append(f"[b]{_escape(str(receipt.get('title') or 'Task'))}[/b]")
+    lines.append(f"[dim]{_escape(str(receipt.get('task_id') or ''))}[/dim]\n")
+
+    dcolor = _receipt_decision_color(str(decision.get("key")))
+    ecolor = _receipt_evidence_color(str(evidence.get("key")))
+    lines.append(
+        f"Decision status    [b {dcolor}]{str(decision.get('key') or '').upper()}[/]"
+        f"  [dim](asserted by {decision.get('asserted_by')})[/]"
+    )
+    if decision.get("statement"):
+        lines.append(f"                   [dim]{_escape(str(decision['statement']))}[/]")
+    lines.append(
+        f"Evidence strength  [b {ecolor}]{str(evidence.get('key') or '').upper()}[/]"
+        f"  [dim]({evidence.get('verified_step_count', 0)}/{evidence.get('total_step_count', 0)}"
+        f" steps verified · {evidence.get('checks_total', 0)} checks,"
+        f" {evidence.get('checks_passed', 0)} passed)[/]"
+    )
+    if evidence.get("strongest_proof"):
+        lines.append(f"                   [dim]strongest proof: {_escape(str(evidence['strongest_proof']))}[/]")
+    if axes.get("orthogonality_note"):
+        lines.append(f"[dim]{_escape(str(axes['orthogonality_note']))}[/]")
+    lines.append("")
+
+    def _prov(name: str) -> str:
+        return ", ".join((dims.get(name) or {}).get("provenance") or [])
+
+    task = dims.get("task") or {}
+    objectives = "; ".join((task.get("objectives") or [])[:2]) or "no objective recorded"
+    if (task.get("boundary") or {}).get("project"):
+        objectives += f" · project {task['boundary']['project']}"
+    lines.append(f"[b]Task[/]      {_escape(objectives)}   [dim]\\[{_prov('task')}][/]")
+
+    actors = dims.get("actors") or {}
+    actor_parts = [
+        part
+        for part in (
+            actors.get("primary_agent"),
+            ", ".join(actors.get("models") or []) or None,
+            (f"{actors.get('subagent_session_count')} subagents" if actors.get("subagent_session_count") else None),
+        )
+        if part
+    ]
+    lines.append(f"[b]Actors[/]    {_escape(' · '.join(actor_parts) or '—')}   [dim]\\[{_prov('actors')}][/]")
+
+    actions = dims.get("actions") or {}
+    counts = actions.get("tool_category_counts") or {}
+    category_text = " ".join(f"{k}×{v}" for k, v in sorted(counts.items())) if counts else "not instrumented"
+    lines.append(
+        f"[b]Actions[/]   {_escape(category_text)} · touched {actions.get('touched_file_count', 0)} file(s)"
+        f"   [dim]\\[{_prov('actions')}][/]"
+    )
+
+    cost = dims.get("cost") or {}
+    lines.append(f"[b]Cost[/]      {_escape(_receipt_summary_cost(cost))}   [dim]\\[{_prov('cost')}][/]")
+
+    ev = dims.get("evidence") or {}
+    lines.append(
+        f"[b]Evidence[/]  {ev.get('checks_total', 0)} checks · {ev.get('checks_passed', 0)} passed · "
+        f"{ev.get('checks_failed', 0)} failed   [dim]\\[{_prov('evidence')}][/]"
+    )
+
+    outcome = dims.get("outcome") or {}
+    lines.append(
+        f"[b]Outcome[/]   {outcome.get('decision_status')} · asserted by {outcome.get('asserted_by')}"
+        f"   [dim]\\[{_prov('outcome')}][/]"
+    )
+
+    gaps = (dims.get("gaps") or {}).get("items") or []
+    if gaps:
+        lines.append(f"\n[b]Gaps[/] ({len(gaps)}) — what could not be proven")
+        for gap in gaps:
+            lines.append(f"  · [dim]\\[{gap.get('dimension')}][/] {_escape(str(gap.get('reason')))}")
+
+    legend = (dims.get("provenance") or {}).get("legend") or {}
+    if legend:
+        lines.append("\n[b]Provenance[/]")
+        for source in sorted(legend):
+            lines.append(f"  [b]{source}[/] — [dim]{_escape(str(legend[source]))}[/]")
+
+    return "\n".join(lines)
+
+
+class ReceiptsScreen(Screen):
+    """The Task list: one converged Task per row with its Receipt summary
+    (decision × evidence, cost). Select one to read its full Work Receipt."""
+
+    BINDINGS = [
+        Binding("escape", "back", "Back"),
+        Binding("r", "refresh", "Rebuild"),
+        Binding("q", "quit", "Quit"),
+        Binding("p", "screenshot", "Snapshot"),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._by_id: dict[str, dict] = {}
+
+    def compose(self) -> ComposeResult:
+        yield _navbar("receipts")
+        yield Static("", id="sessions-status")
+        yield LoadingIndicator(id="sessions-loading")
+        yield DataTable(id="receipts", cursor_type="row", zebra_stripes=True)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.title = "agentacct"
+        self.sub_title = "receipts"
+        self.query_one("#receipts", DataTable).add_columns(
+            "task", "decision", "evidence", "cost", "activity"
+        )
+        self.query_one("#sessions-status", Static).update(
+            "Building receipts (one-time, a few seconds)…"
+        )
+        self._load()
+
+    def _set_loading(self, loading: bool) -> None:
+        try:
+            self.query_one("#sessions-loading", LoadingIndicator).display = loading
+        except Exception:  # noqa: BLE001 - cosmetic only
+            pass
+
+    @work(thread=True, exclusive=True)
+    def _load(self) -> None:
+        from textual.worker import get_current_worker
+
+        worker = get_current_worker()
+        app = self.app
+        try:
+            from .api import build_store_task_projection, _task_title
+            from .receipt import build_receipt_summary, latest_store_activity
+
+            projection = build_store_task_projection(app.store_dir)
+            tasks = [
+                task
+                for task in projection.get("tasks", [])
+                if isinstance(task, dict) and str(task.get("public_task_id") or "")
+            ]
+            latest = latest_store_activity(tasks)
+            tasks.sort(key=lambda task: float(task.get("last_activity_at") or 0.0), reverse=True)
+            rows = [
+                (
+                    task,
+                    build_receipt_summary(
+                        task,
+                        public_task_id=str(task.get("public_task_id")),
+                        title=_task_title(task),
+                        latest_store_activity_at=latest,
+                    ),
+                )
+                for task in tasks[:_RECEIPTS_LIMIT]
+            ]
+        except Exception as exc:  # noqa: BLE001 - surface, never crash the screen.
+            if not worker.is_cancelled:
+                app.call_from_thread(self._show_error, str(exc))
+            return
+        if worker.is_cancelled:
+            return
+        app.call_from_thread(self._populate, rows)
+
+    def _show_error(self, message: str) -> None:
+        if not self.is_mounted:
+            return
+        self._set_loading(False)
+        self.query_one("#sessions-status", Static).update(
+            f"[red]could not build receipts:[/] {_escape(message)}"
+        )
+
+    def _populate(self, rows: list) -> None:
+        if not self.is_mounted:
+            return
+        table = self.query_one("#receipts", DataTable)
+        table.clear()
+        self._by_id.clear()
+        now = time.time()
+        for task, summary in rows:
+            task_id = str(summary["task_id"])
+            self._by_id[task_id] = task
+            decision = summary["decision_status"]
+            evidence = summary["evidence_strength"]
+            table.add_row(
+                _escape(str(summary.get("title") or task_id))[:46],
+                f"[{_receipt_decision_color(decision['key'])}]{decision['key']}[/]",
+                f"[{_receipt_evidence_color(evidence['key'])}]{evidence['key']}[/]",
+                _escape(_receipt_summary_cost(summary.get("cost") or {})),
+                _humanize_ago(summary.get("last_activity_at"), now),
+                key=task_id,
+            )
+        self._set_loading(False)
+        self.query_one("#sessions-status", Static).update(
+            f"[b]{len(rows)} tasks[/]      [dim]Enter open · r rebuild · Esc back[/]"
+        )
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        key = event.row_key.value if event.row_key is not None else None
+        task = self._by_id.get(str(key)) if key is not None else None
+        if task is not None:
+            self.app.push_screen(ReceiptDetailScreen(task))
+
+    def action_refresh(self) -> None:
+        self._set_loading(True)
+        self.query_one("#sessions-status", Static).update("Rebuilding receipts…")
+        self._load()
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+
+class ReceiptDetailScreen(Screen):
+    """One Task's full Work Receipt: the 8 questions, the two orthogonal axes,
+    per-field provenance, and the gaps block."""
+
+    BINDINGS = [
+        Binding("escape", "back", "Back"),
+        Binding("backspace", "back", "Back"),
+        Binding("q", "quit", "Quit"),
+        Binding("p", "screenshot", "Snapshot"),
+    ]
+
+    def __init__(self, task: dict) -> None:
+        super().__init__()
+        # NB: Textual's Widget base uses ``self._task`` for its message-pump
+        # asyncio.Task — never shadow it. Store the Task RECORD under our own name.
+        self._task_record = task
+        self._body_text = ""
+
+    def compose(self) -> ComposeResult:
+        yield _navbar("receipt")
+        with VerticalScroll(id="detail-scroll"):
+            try:
+                from .api import _task_title
+                from .receipt import build_receipt, latest_store_activity
+
+                receipt = build_receipt(
+                    self._task_record,
+                    public_task_id=str(self._task_record.get("public_task_id")),
+                    title=_task_title(self._task_record),
+                    latest_store_activity_at=latest_store_activity([self._task_record]),
+                )
+                markup = _render_receipt_markup(receipt)
+            except Exception as exc:  # noqa: BLE001 - surface, never crash the screen.
+                markup = f"[red]could not render receipt:[/] {_escape(str(exc))}"
+            self._body_text = markup
+            yield Static(markup, id="receipt-body")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.title = "agentacct"
+        self.sub_title = "receipt"
 
     def action_back(self) -> None:
         self.app.pop_screen()

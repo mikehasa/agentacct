@@ -378,3 +378,271 @@ extension Fmt {
         return pct >= 0.1 ? String(format: "≈%.1f%%", pct) : "≈<0.1%"
     }
 }
+
+// MARK: - Receipt (agentacct.receipt.v1)
+//
+// One converged Task's Work Receipt: the 8 questions, the two orthogonal axes
+// (decision status × evidence strength), per-field provenance, and gaps. As
+// with every /v1 decodable: additive-only, unknown keys tolerated, honesty
+// rides the payload (the app never re-derives an axis or invents a number).
+
+struct ReceiptTasksPayload: Decodable {
+    let schema: String
+    let tasks: [ReceiptSummary]
+    let total: Int?
+    let truncated: Bool?
+}
+
+struct ReceiptSummary: Decodable, Identifiable {
+    let taskId: String
+    let title: String?
+    let decisionStatus: ReceiptDecision
+    let evidenceStrength: ReceiptEvidence
+    let cost: ReceiptCost
+    let sessionCount: Int?
+    let lastActivityAt: Double?
+
+    var id: String { taskId }
+
+    enum CodingKeys: String, CodingKey {
+        case taskId = "task_id"
+        case title
+        case decisionStatus = "decision_status"
+        case evidenceStrength = "evidence_strength"
+        case cost
+        case sessionCount = "session_count"
+        case lastActivityAt = "last_activity_at"
+    }
+}
+
+struct ReceiptDecision: Decodable {
+    let key: String
+    let label: String?
+    let statement: String?
+    let assertedBy: String?
+
+    enum CodingKeys: String, CodingKey {
+        case key, label, statement
+        case assertedBy = "asserted_by"
+    }
+}
+
+struct ReceiptEvidence: Decodable {
+    let key: String
+    let label: String?
+    let verifiedStepCount: Int?
+    let totalStepCount: Int?
+    let checksTotal: Int?
+    let checksPassed: Int?
+    let checksFailed: Int?
+    let strongestProof: String?
+
+    enum CodingKeys: String, CodingKey {
+        case key, label
+        case verifiedStepCount = "verified_step_count"
+        case totalStepCount = "total_step_count"
+        case checksTotal = "checks_total"
+        case checksPassed = "checks_passed"
+        case checksFailed = "checks_failed"
+        case strongestProof = "strongest_proof"
+    }
+}
+
+struct ReceiptCost: Decodable {
+    let estimatedCostUsd: Double?
+    let costBasis: String?
+    let costConfidence: String?
+    let costComplete: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case estimatedCostUsd = "estimated_cost_usd"
+        case costBasis = "cost_basis"
+        case costConfidence = "cost_confidence"
+        case costComplete = "cost_complete"
+    }
+
+    /// None-never-$0: an absent estimate is "—", never a fabricated zero.
+    var text: String {
+        guard let estimatedCostUsd else { return "—" }
+        let basis = costBasis ?? "unknown basis"
+        return String(format: "$%.2f · %@", estimatedCostUsd, basis)
+    }
+}
+
+struct Receipt: Decodable {
+    let schemaVersion: String
+    let taskId: String
+    let title: String?
+    let axes: ReceiptAxes
+    let dimensions: ReceiptDimensions
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case taskId = "task_id"
+        case title, axes, dimensions
+    }
+}
+
+struct ReceiptAxes: Decodable {
+    let decisionStatus: ReceiptDecision
+    let evidenceStrength: ReceiptEvidence
+    let orthogonalityNote: String?
+
+    enum CodingKeys: String, CodingKey {
+        case decisionStatus = "decision_status"
+        case evidenceStrength = "evidence_strength"
+        case orthogonalityNote = "orthogonality_note"
+    }
+}
+
+struct ReceiptDimensions: Decodable {
+    let task: ReceiptTaskDim
+    let actors: ReceiptActorsDim
+    let actions: ReceiptActionsDim
+    let cost: ReceiptCostDim
+    let evidence: ReceiptEvidenceDim
+    let outcome: ReceiptOutcomeDim
+    let gaps: ReceiptGapsDim
+    let provenance: ReceiptProvenanceDim
+}
+
+struct ReceiptBoundary: Decodable {
+    let project: String?
+    let identityScope: String?
+    let sessionCount: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case project
+        case identityScope = "identity_scope"
+        case sessionCount = "session_count"
+    }
+}
+
+struct ReceiptTaskDim: Decodable {
+    let objectives: [String]?
+    let boundary: ReceiptBoundary?
+    let provenance: [String]?
+    let gaps: [String]?
+}
+
+struct ReceiptActorsDim: Decodable {
+    let primaryAgent: String?
+    let models: [String]?
+    let subagentSessionCount: Int?
+    let childSessionCount: Int?
+    let provenance: [String]?
+    let gaps: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case primaryAgent = "primary_agent"
+        case models
+        case subagentSessionCount = "subagent_session_count"
+        case childSessionCount = "child_session_count"
+        case provenance, gaps
+    }
+}
+
+struct ReceiptActionsDim: Decodable {
+    let toolCategoryCounts: [String: Int]?
+    let toolCategoryTotal: Int?
+    let touchedFiles: [String]?
+    let touchedFileCount: Int?
+    let provenance: [String]?
+    let gaps: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case toolCategoryCounts = "tool_category_counts"
+        case toolCategoryTotal = "tool_category_total"
+        case touchedFiles = "touched_files"
+        case touchedFileCount = "touched_file_count"
+        case provenance, gaps
+    }
+}
+
+struct ReceiptCostDim: Decodable {
+    let estimatedCostUsd: Double?
+    let costBasis: String?
+    let costConfidence: String?
+    let costComplete: Bool?
+    let provenance: [String]?
+    let gaps: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case estimatedCostUsd = "estimated_cost_usd"
+        case costBasis = "cost_basis"
+        case costConfidence = "cost_confidence"
+        case costComplete = "cost_complete"
+        case provenance, gaps
+    }
+}
+
+struct ReceiptCheck: Decodable, Identifiable {
+    let kind: String?
+    let name: String?
+    let result: String?
+    let exitCode: Int?
+    let scope: String?
+    let source: String?
+
+    var id: String { "\(name ?? "check")-\(result ?? "")-\(exitCode ?? 0)" }
+
+    enum CodingKeys: String, CodingKey {
+        case kind, name, result, scope, source
+        case exitCode = "exit_code"
+    }
+}
+
+struct ReceiptEvidenceDim: Decodable {
+    let checks: [ReceiptCheck]?
+    let checksTotal: Int?
+    let checksPassed: Int?
+    let checksFailed: Int?
+    let provenance: [String]?
+    let gaps: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case checks
+        case checksTotal = "checks_total"
+        case checksPassed = "checks_passed"
+        case checksFailed = "checks_failed"
+        case provenance, gaps
+    }
+}
+
+struct ReceiptOutcomeDim: Decodable {
+    let decisionStatus: String?
+    let statement: String?
+    let assertedBy: String?
+    let provenance: [String]?
+    let gaps: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case decisionStatus = "decision_status"
+        case statement
+        case assertedBy = "asserted_by"
+        case provenance, gaps
+    }
+}
+
+struct ReceiptGapItem: Decodable, Identifiable {
+    let dimension: String
+    let reason: String
+    var id: String { "\(dimension)-\(reason)" }
+}
+
+struct ReceiptGapsDim: Decodable {
+    let items: [ReceiptGapItem]?
+    let count: Int?
+}
+
+struct ReceiptProvenanceDim: Decodable {
+    let byDimension: [String: [String]]?
+    let sourcesPresent: [String]?
+    let legend: [String: String]?
+
+    enum CodingKeys: String, CodingKey {
+        case byDimension = "by_dimension"
+        case sourcesPresent = "sources_present"
+        case legend
+    }
+}

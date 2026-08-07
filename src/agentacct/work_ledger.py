@@ -8,7 +8,12 @@ from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .confidence import normalize_cost_confidence, normalize_usage_confidence
+from .confidence import (
+    normalize_cost_basis,
+    normalize_cost_confidence,
+    normalize_usage_confidence,
+)
+from .tool_activity import build_tool_activity_by_session
 from .join_rules import (
     annotate_usage_source_namespace_ambiguity,
     decide_attribution,
@@ -194,6 +199,18 @@ def build_work_ledger(
         session_observations=session_observations,
         local_session_observations=local_session_observations,
     )
+    # Tool-category counts (Receipt Actions dimension) ride onto each session
+    # rollup entry when the Claude Code hook captured them. Batches are additive
+    # so this sum is stable across imports; a session with no captured activity
+    # gets NO key, so the Receipt shows an honest Gap, never a fabricated zero.
+    tool_activity_by_session = build_tool_activity_by_session(events)
+    if tool_activity_by_session:
+        for entry in session_rollup.get("sessions", []):
+            counts = tool_activity_by_session.get(
+                (str(entry.get("client") or ""), str(entry.get("client_session_id") or ""))
+            )
+            if counts:
+                entry["tool_category_counts"] = dict(counts)
     rollup_summary = session_rollup.get("summary")
     if isinstance(rollup_summary, dict):
         rollup_summary["mechanical_projection"] = dict(session_observation_diagnostics or {})
@@ -2901,6 +2918,7 @@ def _session_usage_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "turns_total": sum(turn_counts) if turn_counts else None,
         "estimated_cost_usd": sum(priced) if priced else None,
         "cost_confidence": _single_or_mixed(row.get("cost_confidence") for row in rows),
+        "cost_basis": _single_or_mixed(row.get("cost_basis") for row in rows),
         "usage_confidence": _single_or_mixed(row.get("usage_confidence") for row in rows),
         "model_lanes": sorted(
             lanes.values(),
@@ -3727,6 +3745,12 @@ def _usage_event(event: dict[str, Any]) -> dict[str, Any] | None:
         "estimated_cost_usd": _safe_optional_float(event.get("estimated_cost_usd")) if usage_additive else None,
         "usage_confidence": normalize_usage_confidence(event.get("usage_confidence")),
         "cost_confidence": normalize_cost_confidence(event.get("cost_confidence")) if usage_additive else "unknown",
+        # ``cost_basis`` answers "what kind of number is this" (provider invoice /
+        # local client session / pricing-table estimate / subscription). It is
+        # stamped upstream but was historically dropped at this read hop, so the
+        # Cost dimension could show confidence but never basis. Non-additive rows
+        # carry no cost, so they carry no basis.
+        "cost_basis": normalize_cost_basis(event.get("cost_basis") if usage_additive else None),
     }
 
 
@@ -3859,6 +3883,7 @@ def _proxy_usage_event(event: dict[str, Any]) -> dict[str, Any]:
         "estimated_cost_usd": _safe_optional_float(event.get("estimated_cost_usd")),
         "usage_confidence": normalize_usage_confidence(event.get("usage_confidence")),
         "cost_confidence": normalize_cost_confidence(event.get("cost_confidence")),
+        "cost_basis": normalize_cost_basis(event.get("cost_basis")),
     }
 
 

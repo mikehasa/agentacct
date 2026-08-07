@@ -17,6 +17,7 @@ def _session(
     fresh_tokens: int = 10,
     total_tokens: int | None = None,
     cost: float | None = 0.10,
+    cost_basis: str | None = None,
     model: str | None = None,
     last_activity_at: float = 1.0,
 ) -> dict[str, Any]:
@@ -37,6 +38,8 @@ def _session(
         "estimated_cost_usd": cost,
         "model_lanes": [{"model": model or f"model-{session_id}"}],
     }
+    if cost_basis is not None:
+        usage["cost_basis"] = cost_basis
     return {
         "client": client,
         "client_session_id": session_id,
@@ -498,6 +501,49 @@ def test_transitive_session_root_is_task_boundary_and_usage_is_deduped() -> None
     )
     assert root_association["session_attribution"] == "upstream"
     assert root_association["exact_session_id"] is None
+
+
+def test_cost_basis_aggregates_single_mixed_and_absent_across_task_sessions() -> None:
+    # Cost basis rides alongside cost so a Task can say what KIND of number its
+    # cost is. One basis across the Task's sessions => that basis; disagreement
+    # => "mixed"; no session carried a basis => None (never a fabricated value).
+    same_a = build_task_projection(
+        [
+            _session("root", cost_basis="local_client_session"),
+            _session("child", parent="root", kind="child", cost_basis="local_client_session"),
+        ],
+        [],
+    )
+    assert same_a["tasks"][0]["usage"]["cost_basis"] == "local_client_session"
+
+    mixed = build_task_projection(
+        [
+            _session("root", cost_basis="local_client_session"),
+            _session("child", parent="root", kind="child", cost_basis="pricing_table"),
+        ],
+        [],
+    )
+    assert mixed["tasks"][0]["usage"]["cost_basis"] == "mixed"
+
+    absent = build_task_projection([_session("root")], [])
+    assert absent["tasks"][0]["usage"]["cost_basis"] is None
+
+
+def test_actions_touched_files_union_dedupes_across_steps() -> None:
+    projection = build_task_projection(
+        [_session("root")],
+        [
+            {"work_id": "w1", "client": "codex", "client_session_id": "root", "files": ["src/a.py", "src/b.py"]},
+            {"work_id": "w2", "client": "codex", "client_session_id": "root", "files": ["src/b.py", "src/c.py"]},
+        ],
+    )
+    actions = projection["tasks"][0]["actions"]
+    assert actions["touched_files"] == ["src/a.py", "src/b.py", "src/c.py"]
+    assert actions["touched_file_count"] == 3
+    # No tool categories were captured for these sessions: honest empty counts
+    # (the Receipt renders this as a Gap), never a fabricated zero-of-everything.
+    assert actions["tool_category_counts"] == {}
+    assert actions["tool_category_total"] == 0
 
 
 def test_task_keeps_held_codex_child_as_supporting_identity_without_adding_usage() -> None:

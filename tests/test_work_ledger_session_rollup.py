@@ -39,6 +39,7 @@ def _usage(
     namespace_fingerprint: str | None = None,
     source_namespace_fingerprint: str | None = None,
     parent_source_namespace_fingerprint: str | None = None,
+    cost_basis: str | None = None,
 ) -> dict:
     metadata = {
         "usage_source": "local_client_session_store",
@@ -76,6 +77,7 @@ def _usage(
         "estimated_cost_usd": cost,
         "usage_confidence": "client_reported",
         "cost_confidence": "estimated_from_tokens",
+        "cost_basis": cost_basis,
         "metadata": metadata,
     }
 
@@ -1301,3 +1303,54 @@ def test_rollup_never_contradicts_attributions_property() -> None:
                     if (row["client"], row["client_session_id"]) in child_keys
                 )
                 assert children_usage["total_tokens"] == expected_child_total
+
+
+def test_cost_basis_flows_from_usage_event_into_session_rollup() -> None:
+    # The basis was stamped upstream but historically dropped at the ledger read
+    # hop, so a session could show cost confidence but never its basis.
+    rollup = _rollup([_usage(session="s1", cost_basis="local_client_session")])
+    assert _entry(rollup, "codex", "s1")["usage"]["cost_basis"] == "local_client_session"
+
+
+def test_cost_basis_without_upstream_stamp_reduces_to_none_not_a_guess() -> None:
+    rollup = _rollup([_usage(session="s2")])
+    assert _entry(rollup, "codex", "s2")["usage"]["cost_basis"] == "none"
+
+
+def _tool_activity_event(session: str, counts: dict, *, client: str = "codex") -> dict:
+    from agentacct.tool_activity import TOOL_ACTIVITY_EVENT_TYPE
+
+    return {
+        "event_id": f"toolact:{client}:{session}",
+        "created_at": 150.0,
+        "source": client,
+        "event_type": TOOL_ACTIVITY_EVENT_TYPE,
+        "run_id": None,
+        "metadata": {
+            "client": client,
+            "client_session_id": session,
+            "tool_category_counts": counts,
+            "capture_basis": "client_hook_tool_category",
+        },
+    }
+
+
+def test_tool_category_counts_ride_onto_session_rollup_and_task() -> None:
+    ledger = build_work_ledger(
+        [_usage(session="s1"), _tool_activity_event("s1", {"read": 3, "edit": 2})]
+    )
+    entry = _entry(ledger["session_rollup"], "codex", "s1")
+    assert entry["tool_category_counts"] == {"read": 3, "edit": 2}
+    projection = build_task_projection(
+        ledger["session_rollup"]["sessions"], ledger["work_items"]
+    )
+    actions = projection["tasks"][0]["actions"]
+    assert actions["tool_category_counts"] == {"edit": 2, "read": 3}
+    assert actions["tool_category_total"] == 5
+
+
+def test_session_without_captured_activity_gets_no_counts_key() -> None:
+    # Honest Gap, not a fabricated zero: a session the hook never observed
+    # carries no tool_category_counts key at all.
+    ledger = build_work_ledger([_usage(session="quiet")])
+    assert "tool_category_counts" not in _entry(ledger["session_rollup"], "codex", "quiet")

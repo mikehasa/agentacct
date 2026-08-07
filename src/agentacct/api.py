@@ -108,6 +108,12 @@ from .task_continuations import ContinuationTaskStore
 from .task_identity import TaskIdentityCodec
 from .task_outcome import evidence_event_key, finding_check_key, latest_check_events
 from .task_projection import build_task_projection
+from .receipt import (
+    RECEIPT_SCHEMA_VERSION,
+    build_receipt,
+    build_receipt_summary,
+    latest_store_activity,
+)
 from .usage_cube import (
     KNOWN_USAGE_CLIENTS,
     USAGE_CUBE_DAYS_CHOICES,
@@ -2801,6 +2807,7 @@ def create_local_api_app(
             "sessions_schema": V1_SESSIONS_SCHEMA_VERSION,
             "session_detail_schema": V1_SESSION_DETAIL_SCHEMA_VERSION,
             "plan_schema": V1_PLAN_SCHEMA_VERSION,
+            "receipt_schema": RECEIPT_SCHEMA_VERSION,
             "pid": os.getpid(),
             "store_dir": str(store_dir),
             "store_scope": store_scope,
@@ -2902,6 +2909,103 @@ def create_local_api_app(
         v1_plan_cache[days] = (fingerprint, moment, payload)
         return payload
 
+    # The decorated, evidence-attached Task projection, fingerprint + TTL
+    # cached so the receipt list/detail routes stay cheap under app polling.
+    v1_receipt_projection_cache: dict[str, tuple[int, float, dict[str, Any]]] = {}
+
+    def _receipt_projection_cache_key(events: list[dict[str, Any]]) -> int:
+        # The projection also consumes the Evidence v2 client_hook store (hook
+        # mechanical checks + privacy-safe tool-category captures), which changes
+        # WITHOUT a v1 ledger event — so hashing only the event log would serve a
+        # pre-capture projection for the whole TTL and let the Receipt under-claim
+        # proven evidence. Fold a cheap monotonic marker from the evidence store
+        # into the key so any capture/import invalidates the cache immediately.
+        evidence_marker: tuple[int, ...] = (0,)
+        try:
+            if service.evidence.enabled:
+                stats = service.evidence.status()
+                evidence_marker = (stats.logical_events, stats.receipts, stats.duplicate_receipts)
+        except Exception:  # noqa: BLE001 - a stats read must never fail the route.
+            evidence_marker = (0,)
+        return hash((events_fingerprint(events), evidence_marker))
+
+    def _v1_task_projection() -> dict[str, Any]:
+        events = service.list_all_events()
+        cache_key = _receipt_projection_cache_key(events)
+        moment = time.time()
+        cached = v1_receipt_projection_cache.get("projection")
+        if cached is not None and cached[0] == cache_key and (moment - cached[1]) < 30.0:
+            return cached[2]
+        projection = _dashboard_task_projection(_page_data())
+        v1_receipt_projection_cache["projection"] = (cache_key, moment, projection)
+        return projection
+
+    def _visible_tasks(projection: Mapping[str, Any]) -> list[dict[str, Any]]:
+        return [
+            task
+            for task in projection.get("tasks", [])
+            if isinstance(task, Mapping) and str(task.get("public_task_id") or "")
+        ]
+
+    @app.get("/v1/tasks")
+    def v1_tasks(
+        request: Request,
+        limit: int = Query(50, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+    ) -> dict[str, Any]:
+        """The versioned Task list: one compact Receipt summary per Task
+        (the two axes + cost + activity), newest first. A Task is the
+        convergence of a root session with its continuations and subagents —
+        the unit a Receipt is written for. Cheap under polling (cached
+        projection); the per-request work is a summary map + slice."""
+
+        _require_v1_token(request)
+        projection = _v1_task_projection()
+        tasks = _visible_tasks(projection)
+        latest = latest_store_activity(tasks)
+        tasks.sort(key=lambda task: float(task.get("last_activity_at") or 0.0), reverse=True)
+        total = len(tasks)
+        window = tasks[offset : offset + limit]
+        rows = [
+            build_receipt_summary(
+                task,
+                public_task_id=str(task.get("public_task_id")),
+                title=_task_title(task),
+                latest_store_activity_at=latest,
+            )
+            for task in window
+        ]
+        return {
+            "schema": RECEIPT_SCHEMA_VERSION,
+            "tasks": rows,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "truncated": offset + limit < total,
+        }
+
+    @app.get("/v1/receipt")
+    def v1_receipt(
+        request: Request,
+        task: str = Query(..., min_length=1, alias="task"),
+    ) -> dict[str, Any]:
+        """One Task's full Receipt: the 8 questions, the two orthogonal axes,
+        per-field provenance, and the gaps block. 404 when the store has no
+        such Task — never an empty fabrication."""
+
+        _require_v1_token(request)
+        projection = _v1_task_projection()
+        tasks = _visible_tasks(projection)
+        selected = next((row for row in tasks if str(row.get("public_task_id")) == task), None)
+        if selected is None:
+            raise HTTPException(status_code=404, detail="unknown task for this store")
+        return build_receipt(
+            selected,
+            public_task_id=str(selected.get("public_task_id")),
+            title=_task_title(selected),
+            latest_store_activity_at=latest_store_activity(tasks),
+        )
+
     @app.get("/")
     def index() -> dict[str, Any]:
         """A machine-readable front door (the HTML dashboard is retired).
@@ -2929,6 +3033,8 @@ def create_local_api_app(
                 "/v1/sessions (bearer token from the store's local-api.json)",
                 "/v1/session?client=&session_id= (bearer token from the store's local-api.json)",
                 "/v1/plan (bearer token from the store's local-api.json)",
+                "/v1/tasks (bearer token from the store's local-api.json)",
+                "/v1/receipt?task= (bearer token from the store's local-api.json)",
             ],
         }
 
