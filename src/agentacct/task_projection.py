@@ -539,6 +539,7 @@ def _aggregate_usage(
     cost_complete = True
     usage_confidences: set[str] = set()
     cost_confidences: set[str] = set()
+    cost_bases: set[str] = set()
     partial_without_counts = {"cache_creation": False, "cache_read": False}
     # ``set`` is the final guard against callers repeating member keys.
     for key in sorted(set(session_keys)):
@@ -602,10 +603,13 @@ def _aggregate_usage(
             usage_present = True
             usage_confidence = _text(usage.get("usage_confidence"))
             cost_confidence = _text(usage.get("cost_confidence"))
+            cost_basis = _text(usage.get("cost_basis"))
             if usage_confidence:
                 usage_confidences.add(usage_confidence)
             if cost_confidence:
                 cost_confidences.add(cost_confidence)
+            if cost_basis:
+                cost_bases.add(cost_basis)
             if unpriced_rows or usage.get("estimated_cost_usd") is None:
                 cost_complete = False
             else:
@@ -645,6 +649,17 @@ def _aggregate_usage(
         if len(cost_confidences) == 1
         else "mixed"
         if cost_confidences
+        else None
+    )
+    # ``cost_basis`` rides alongside ``cost_confidence`` so a Task's Cost reads
+    # both "how sure" and "what kind of number": one basis if every priced row
+    # agrees, ``mixed`` when they disagree (e.g. some client-reported, some
+    # pricing-table estimate), ``None`` when no additive row carried a basis.
+    totals["cost_basis"] = (
+        next(iter(cost_bases))
+        if len(cost_bases) == 1
+        else "mixed"
+        if cost_bases
         else None
     )
     for prefix in ("cache_creation", "cache_read"):

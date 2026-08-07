@@ -8,7 +8,11 @@ from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .confidence import normalize_cost_confidence, normalize_usage_confidence
+from .confidence import (
+    normalize_cost_basis,
+    normalize_cost_confidence,
+    normalize_usage_confidence,
+)
 from .join_rules import (
     annotate_usage_source_namespace_ambiguity,
     decide_attribution,
@@ -2901,6 +2905,7 @@ def _session_usage_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "turns_total": sum(turn_counts) if turn_counts else None,
         "estimated_cost_usd": sum(priced) if priced else None,
         "cost_confidence": _single_or_mixed(row.get("cost_confidence") for row in rows),
+        "cost_basis": _single_or_mixed(row.get("cost_basis") for row in rows),
         "usage_confidence": _single_or_mixed(row.get("usage_confidence") for row in rows),
         "model_lanes": sorted(
             lanes.values(),
@@ -3727,6 +3732,12 @@ def _usage_event(event: dict[str, Any]) -> dict[str, Any] | None:
         "estimated_cost_usd": _safe_optional_float(event.get("estimated_cost_usd")) if usage_additive else None,
         "usage_confidence": normalize_usage_confidence(event.get("usage_confidence")),
         "cost_confidence": normalize_cost_confidence(event.get("cost_confidence")) if usage_additive else "unknown",
+        # ``cost_basis`` answers "what kind of number is this" (provider invoice /
+        # local client session / pricing-table estimate / subscription). It is
+        # stamped upstream but was historically dropped at this read hop, so the
+        # Cost dimension could show confidence but never basis. Non-additive rows
+        # carry no cost, so they carry no basis.
+        "cost_basis": normalize_cost_basis(event.get("cost_basis") if usage_additive else None),
     }
 
 
@@ -3859,6 +3870,7 @@ def _proxy_usage_event(event: dict[str, Any]) -> dict[str, Any]:
         "estimated_cost_usd": _safe_optional_float(event.get("estimated_cost_usd")),
         "usage_confidence": normalize_usage_confidence(event.get("usage_confidence")),
         "cost_confidence": normalize_cost_confidence(event.get("cost_confidence")),
+        "cost_basis": normalize_cost_basis(event.get("cost_basis")),
     }
 
 

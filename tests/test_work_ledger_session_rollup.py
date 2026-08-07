@@ -39,6 +39,7 @@ def _usage(
     namespace_fingerprint: str | None = None,
     source_namespace_fingerprint: str | None = None,
     parent_source_namespace_fingerprint: str | None = None,
+    cost_basis: str | None = None,
 ) -> dict:
     metadata = {
         "usage_source": "local_client_session_store",
@@ -76,6 +77,7 @@ def _usage(
         "estimated_cost_usd": cost,
         "usage_confidence": "client_reported",
         "cost_confidence": "estimated_from_tokens",
+        "cost_basis": cost_basis,
         "metadata": metadata,
     }
 
@@ -1301,3 +1303,15 @@ def test_rollup_never_contradicts_attributions_property() -> None:
                     if (row["client"], row["client_session_id"]) in child_keys
                 )
                 assert children_usage["total_tokens"] == expected_child_total
+
+
+def test_cost_basis_flows_from_usage_event_into_session_rollup() -> None:
+    # The basis was stamped upstream but historically dropped at the ledger read
+    # hop, so a session could show cost confidence but never its basis.
+    rollup = _rollup([_usage(session="s1", cost_basis="local_client_session")])
+    assert _entry(rollup, "codex", "s1")["usage"]["cost_basis"] == "local_client_session"
+
+
+def test_cost_basis_without_upstream_stamp_reduces_to_none_not_a_guess() -> None:
+    rollup = _rollup([_usage(session="s2")])
+    assert _entry(rollup, "codex", "s2")["usage"]["cost_basis"] == "none"
