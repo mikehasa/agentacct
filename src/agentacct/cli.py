@@ -8945,5 +8945,206 @@ def cost_proxy(
     )
 
 
+def _receipt_cost_text(cost: dict[str, Any]) -> str:
+    amount = cost.get("estimated_cost_usd")
+    if amount is None:
+        return "—"
+    basis = cost.get("cost_basis") or "unknown basis"
+    suffix = "" if cost.get("cost_complete") else " (partial)"
+    return f"${float(amount):.2f} · {basis}{suffix}"
+
+
+def _receipt_category_text(counts: dict[str, Any]) -> str:
+    if not counts:
+        return "not instrumented"
+    return " ".join(f"{name}×{value}" for name, value in sorted(counts.items()))
+
+
+def _find_receipt_task(projection: dict[str, Any], task_id: str) -> dict[str, Any] | None:
+    tasks = [
+        task
+        for task in projection.get("tasks", [])
+        if isinstance(task, dict) and str(task.get("public_task_id") or "")
+    ]
+    exact = next((task for task in tasks if str(task.get("public_task_id")) == task_id), None)
+    if exact is not None:
+        return exact
+    # Convenience: an unambiguous id prefix (e.g. the first 12 chars) resolves.
+    matches = [task for task in tasks if str(task.get("public_task_id")).startswith(task_id)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _render_receipt_text(receipt: dict[str, Any]) -> None:
+    axes = receipt.get("axes", {})
+    dims = receipt.get("dimensions", {})
+    decision = axes.get("decision_status", {})
+    evidence = axes.get("evidence_strength", {})
+
+    console.print(f"[bold]Work Receipt[/bold] · {receipt.get('title') or 'Task'}")
+    console.print(f"[dim]{receipt.get('task_id')}[/dim]\n")
+
+    console.print(
+        f"  Decision status    [bold]{str(decision.get('key') or 'unknown').upper()}[/bold]"
+        f"  (asserted by {decision.get('asserted_by') or 'none'})"
+    )
+    if decision.get("statement"):
+        console.print(f"                     [dim]{decision['statement']}[/dim]")
+    console.print(
+        f"  Evidence strength  [bold]{str(evidence.get('key') or 'none').upper()}[/bold]"
+        f"  ({int(evidence.get('verified_step_count') or 0)}/{int(evidence.get('total_step_count') or 0)}"
+        f" steps verified · {int(evidence.get('checks_total') or 0)} checks,"
+        f" {int(evidence.get('checks_passed') or 0)} passed)"
+    )
+    if evidence.get("strongest_proof"):
+        console.print(f"                     [dim]strongest proof: {evidence['strongest_proof']}[/dim]")
+    if axes.get("orthogonality_note"):
+        console.print(f"  [dim]{axes['orthogonality_note']}[/dim]")
+
+    table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+    table.add_column("Dimension")
+    table.add_column("Summary")
+    table.add_column("Source", style="dim")
+
+    task = dims.get("task", {})
+    objectives = task.get("objectives") or []
+    boundary = task.get("boundary", {})
+    task_summary = "; ".join(objectives[:2]) or "no objective recorded"
+    if boundary.get("project"):
+        task_summary += f"  · project {boundary['project']}"
+    table.add_row("Task", task_summary, ", ".join(task.get("provenance") or []))
+
+    actors = dims.get("actors", {})
+    actor_summary = " · ".join(
+        part
+        for part in (
+            actors.get("primary_agent"),
+            ", ".join(actors.get("models") or []) or None,
+            (f"{actors.get('subagent_session_count')} subagents" if actors.get("subagent_session_count") else None),
+        )
+        if part
+    )
+    table.add_row("Actors", actor_summary or "—", ", ".join(actors.get("provenance") or []))
+
+    actions = dims.get("actions", {})
+    actions_summary = _receipt_category_text(actions.get("tool_category_counts") or {})
+    actions_summary += f"  · touched {int(actions.get('touched_file_count') or 0)} file(s)"
+    table.add_row("Actions", actions_summary, ", ".join(actions.get("provenance") or []))
+
+    cost = dims.get("cost", {})
+    table.add_row("Cost", _receipt_cost_text(cost), ", ".join(cost.get("provenance") or []))
+
+    evidence_dim = dims.get("evidence", {})
+    table.add_row(
+        "Evidence",
+        f"{int(evidence_dim.get('checks_total') or 0)} checks · "
+        f"{int(evidence_dim.get('checks_passed') or 0)} passed · "
+        f"{int(evidence_dim.get('checks_failed') or 0)} failed",
+        ", ".join(evidence_dim.get("provenance") or []),
+    )
+
+    outcome = dims.get("outcome", {})
+    table.add_row(
+        "Outcome",
+        f"{outcome.get('decision_status')} · asserted by {outcome.get('asserted_by')}",
+        ", ".join(outcome.get("provenance") or []),
+    )
+    console.print(table)
+
+    gaps = dims.get("gaps", {})
+    if gaps.get("items"):
+        console.print(f"\n[bold]Gaps[/bold] ({gaps.get('count')}) — what could not be proven")
+        for item in gaps["items"]:
+            console.print(f"  · \\[{item.get('dimension')}] {item.get('reason')}")
+
+    legend = dims.get("provenance", {}).get("legend") or {}
+    if legend:
+        console.print("\n[bold]Provenance[/bold]")
+        for source, description in legend.items():
+            console.print(f"  {source} — [dim]{description}[/dim]")
+
+
+@app.command("receipts")
+def receipts(
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    limit: Annotated[int, typer.Option(help="Maximum number of Tasks to list.")] = 20,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit the raw summary JSON.")] = False,
+) -> None:
+    """List recent Tasks with their Receipt summary (decision × evidence, cost)."""
+
+    from .api import build_store_task_projection, _task_title
+    from .receipt import RECEIPT_SCHEMA_VERSION, build_receipt_summary, latest_store_activity
+
+    resolved = _resolve_cli_store_dir(store_dir).path
+    projection = build_store_task_projection(resolved)
+    tasks = [
+        task
+        for task in projection.get("tasks", [])
+        if isinstance(task, dict) and str(task.get("public_task_id") or "")
+    ]
+    latest = latest_store_activity(tasks)
+    tasks.sort(key=lambda task: float(task.get("last_activity_at") or 0.0), reverse=True)
+    rows = [
+        build_receipt_summary(
+            task,
+            public_task_id=str(task.get("public_task_id")),
+            title=_task_title(task),
+            latest_store_activity_at=latest,
+        )
+        for task in tasks[:limit]
+    ]
+    if json_output:
+        console.print_json(data={"schema": RECEIPT_SCHEMA_VERSION, "tasks": rows})
+        return
+    if not rows:
+        console.print("No Tasks recorded in this store yet.")
+        return
+    table = Table(title="Work Receipts", header_style="bold")
+    table.add_column("Task")
+    table.add_column("Title")
+    table.add_column("Decision")
+    table.add_column("Evidence")
+    table.add_column("Cost")
+    for row in rows:
+        table.add_row(
+            str(row["task_id"])[:16],
+            str(row.get("title") or "")[:48],
+            str(row["decision_status"]["key"]),
+            str(row["evidence_strength"]["key"]),
+            _receipt_cost_text(row.get("cost") or {}),
+        )
+    console.print(table)
+
+
+@app.command("receipt")
+def receipt(
+    task_id: Annotated[str, typer.Argument(help="Public Task id (task_…); an unambiguous prefix works.")],
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit the full agentacct.receipt.v1 JSON.")] = False,
+) -> None:
+    """Print one Task's full Work Receipt: the 8 questions, the two orthogonal
+    axes (decision status × evidence strength), per-field provenance, and gaps."""
+
+    from .api import build_store_task_projection, _task_title
+    from .receipt import build_receipt, latest_store_activity
+
+    resolved = _resolve_cli_store_dir(store_dir).path
+    projection = build_store_task_projection(resolved)
+    task = _find_receipt_task(projection, task_id)
+    if task is None:
+        console.print(f"No Task matches {task_id} in this store.")
+        raise typer.Exit(1)
+    all_tasks = [t for t in projection.get("tasks", []) if isinstance(t, dict)]
+    receipt_payload = build_receipt(
+        task,
+        public_task_id=str(task.get("public_task_id")),
+        title=_task_title(task),
+        latest_store_activity_at=latest_store_activity(all_tasks),
+    )
+    if json_output:
+        console.print_json(data=receipt_payload)
+        return
+    _render_receipt_text(receipt_payload)
+
+
 if __name__ == "__main__":
     app()
