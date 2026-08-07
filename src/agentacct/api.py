@@ -905,20 +905,28 @@ def _dashboard_page_data(
     task_csrf_token: str = "",
     ingestion_health: dict[str, Any] | None = None,
     task_identity: TaskIdentityCodec | None = None,
+    ledger: dict[str, Any] | None = None,
 ) -> _DashboardPageData:
     usage_view = _build_usage_view(list(local_usage_preview or []), events)
     # Built before any table renders: the rollup's collision-safe short
     # session labels are the ONE session-label source for every cell —
     # product pages AND raw page (full ids are href-only, locked decision).
-    ledger = build_work_ledger(
-        events,
-        run_reports=run_reports,
-        cost_events=cost_events,
-        session_observations=session_observations,
-        session_observation_diagnostics=session_observation_diagnostics,
-        store_project_label=store_project_label,
-        store_scope=store_scope,
-    )
+    # A pre-built ``ledger`` may be injected by a caller that already holds
+    # one for THIS event set (the /v1 task lane passes the shared, cached
+    # derived ledger the sessions lane keeps warm) — same builder, same
+    # inputs, so the projection is identical while the multi-second reduce is
+    # paid once and shared. run_reports/cost_events/session_observations are
+    # then unused for the ledger; they still populate the page-data fields.
+    if ledger is None:
+        ledger = build_work_ledger(
+            events,
+            run_reports=run_reports,
+            cost_events=cost_events,
+            session_observations=session_observations,
+            session_observation_diagnostics=session_observation_diagnostics,
+            store_project_label=store_project_label,
+            store_scope=store_scope,
+        )
     # Batch A contract: session_rollup and attention_groups are consumed
     # VERBATIM — grouping/labeling is never reimplemented in api.py.
     session_rollup = ledger.get("session_rollup") if isinstance(ledger.get("session_rollup"), dict) else {}
@@ -2314,7 +2322,19 @@ def _canonical_session_rollup_payload(read: CanonicalSessionListRead) -> dict[st
 # ---------------------------------------------------------------------------
 
 
-def _collect_service_run_reports(service: SentinelService, *, limit: int = 100) -> list[dict[str, Any]]:
+# ONE run-report cap for every ledger build. The self-build path
+# (build_page_data -> /tasks, the CLI, and the /v1 task lane's reference) and
+# the shared derived ledger (the /v1 sessions/tasks lane) MUST pass the same
+# value, or the two would agree only on stores with fewer reports than the
+# smaller cap — the /v1 task lane reuses the derived ledger, so a mismatch
+# would silently change what receipts show once a store accrues run reports.
+# Run reports become work-item evidence, so this is a correctness cap, not a
+# display nicety. (Under the MCP-first layout runs/ is empty and the cap is
+# inert; it matters only for stores fed by the `agentacct run` flow.)
+_LEDGER_RUN_REPORT_LIMIT = 100
+
+
+def _collect_service_run_reports(service: SentinelService, *, limit: int = _LEDGER_RUN_REPORT_LIMIT) -> list[dict[str, Any]]:
     reports = []
     for run in service.list_runs(limit=limit):
         run_id = run.get("run_id")
@@ -2389,6 +2409,8 @@ def build_page_data(
     local_usage_preview: list[ClientUsageEvent] | None = None,
     continuation_snapshot: Mapping[str, Any] | None = None,
     task_csrf_token: str = "",
+    events: list[dict[str, Any]] | None = None,
+    ledger: dict[str, Any] | None = None,
 ) -> _DashboardPageData:
     """The saved-rows page context, buildable directly from a store.
 
@@ -2411,7 +2433,11 @@ def build_page_data(
         else None
     )
     store_display_label = _store_display_label(store_dir, store_scope, store_project_label)
-    events = service.list_all_events()
+    # A caller that already loaded events for THIS build (the /v1 task lane,
+    # which also passes the matching pre-built ``ledger``) hands them in so the
+    # page's usage view and mechanical checks reflect the SAME snapshot the
+    # injected ledger was reduced from — not a second, possibly newer read.
+    events = events if events is not None else service.list_all_events()
     mechanical_envelopes, observation_diagnostics = _mechanical_projection_envelopes_for(service, store_dir)
     session_observations = (
         build_session_observations(
@@ -2426,7 +2452,7 @@ def build_page_data(
     return _dashboard_page_data(
         events=events,
         cost_events=cost_events,
-        run_reports=_collect_service_run_reports(service, limit=20),
+        run_reports=_collect_service_run_reports(service, limit=_LEDGER_RUN_REPORT_LIMIT),
         session_observations=session_observations,
         session_observation_diagnostics=observation_diagnostics,
         mechanical_check_events=build_mechanical_check_events(mechanical_envelopes),
@@ -2443,6 +2469,7 @@ def build_page_data(
         task_csrf_token=task_csrf_token,
         ingestion_health=ingestion_health_store.snapshot(),
         task_identity=task_identity,
+        ledger=ledger,
     )
 
 
@@ -2629,7 +2656,7 @@ def create_local_api_app(
     def _invalid(exc: ValueError) -> HTTPException:
         return HTTPException(status_code=422, detail=str(exc))
 
-    def _collect_run_reports(limit: int = 100) -> list[dict[str, Any]]:
+    def _collect_run_reports(limit: int = _LEDGER_RUN_REPORT_LIMIT) -> list[dict[str, Any]]:
         return _collect_service_run_reports(service, limit=limit)
 
     def _mechanical_projection_envelopes() -> tuple[list[Any], dict[str, int]]:
@@ -2669,7 +2696,7 @@ def create_local_api_app(
             )
             return build_work_ledger(
                 loaded_events,
-                run_reports=_collect_run_reports(limit=100),
+                run_reports=_collect_run_reports(limit=_LEDGER_RUN_REPORT_LIMIT),
                 cost_events=cost_ledger.read_events(),
                 session_observations=session_observations,
                 session_observation_diagnostics=observation_diagnostics,
@@ -2683,8 +2710,14 @@ def create_local_api_app(
         local_usage_preview: list[ClientUsageEvent] | None = None,
         *,
         continuation_snapshot: Mapping[str, Any] | None = None,
+        events: list[dict[str, Any]] | None = None,
+        ledger: dict[str, Any] | None = None,
     ) -> _DashboardPageData:
-        """Saved-rows page context (module-level assembly with cached stores)."""
+        """Saved-rows page context (module-level assembly with cached stores).
+
+        ``events``/``ledger`` let the /v1 task lane assemble the page over the
+        shared, cached derived ledger (kept warm by the sessions lane) instead
+        of paying build_work_ledger's multi-second reduce again."""
 
         return build_page_data(
             store_dir,
@@ -2696,6 +2729,8 @@ def create_local_api_app(
             local_usage_preview=local_usage_preview,
             continuation_snapshot=continuation_snapshot,
             task_csrf_token=task_csrf_token,
+            events=events,
+            ledger=ledger,
         )
 
     @app.get("/api/control")
@@ -2923,7 +2958,11 @@ def create_local_api_app(
         # invalidate this the instant they land; the only writes it does not
         # notice within the TTL are evidence-store-only imports (connector /
         # capture-hook), the same bound every sibling /v1 cache already has —
-        # the real fix for that is materialization, not a hotter key.
+        # the real fix for that is materialization, not a hotter key. Reusing
+        # the shared ledger stacks that ledger's own 30s TTL under this cache's,
+        # so those fingerprint-invisible inputs (cost/run-report/mechanical-obs
+        # imports) can lag up to ~60s here — the SAME staleness class and the
+        # SAME reused-ledger profile the sessions lane already accepts.
         events = service.list_all_events()
         fingerprint = events_fingerprint(events)
         cached = v1_receipt_projection_cache.get("projection")
@@ -2934,7 +2973,20 @@ def create_local_api_app(
             cached = v1_receipt_projection_cache.get("projection")
             if cached is not None and cached[0] == fingerprint and (time.time() - cached[1]) < 30.0:
                 return cached[2]
-            projection = _dashboard_task_projection(_page_data())
+            # Assemble the projection over the SHARED derived ledger instead of
+            # rebuilding the full ledger here. That ledger (WorkLedgerCache,
+            # single-flighted, fingerprint + TTL cached) is the same one the
+            # sessions lane keeps warm under polling, so the tasks/receipts the
+            # app fires alongside it pay the multi-second reduce at most once,
+            # shared — never once per request. The reduce sees the SAME inputs
+            # build_page_data would have used: the run-report cap is the shared
+            # _LEDGER_RUN_REPORT_LIMIT on both paths, and the cost-event order
+            # difference is re-sorted away inside build_proxy_usage_events. So
+            # the projection is byte-identical to the self-built one it
+            # replaces — for any store, not only the MCP-first (runs/ empty)
+            # case verified on the live store.
+            ledger = _derived_work_ledger(events, fingerprint=fingerprint)
+            projection = _dashboard_task_projection(_page_data(events=events, ledger=ledger))
             v1_receipt_projection_cache["projection"] = (fingerprint, time.time(), projection)
             return projection
 
