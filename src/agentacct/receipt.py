@@ -286,7 +286,15 @@ def _boundary(task: Mapping[str, Any]) -> dict[str, Any]:
         (_text(session.get("project")) for session in sessions if isinstance(session, Mapping) and _text(session.get("project"))),
         None,
     )
-    scope = next(
+    project_identity_state = next(
+        (
+            _text(session.get("project_identity_state"))
+            for session in sessions
+            if isinstance(session, Mapping) and _text(session.get("project_identity_state"))
+        ),
+        None,
+    )
+    namespace_scope = next(
         (
             _text(session.get("identity_scope_state"))
             for session in sessions
@@ -294,6 +302,16 @@ def _boundary(task: Mapping[str, Any]) -> dict[str, Any]:
         ),
         None,
     )
+    # An explicitly identified project binds the Task even when it carries no
+    # cryptographic org-namespace fingerprint (only codex / org-scoped sessions
+    # have one). Report the strongest binding, so a claude-code Task in a known
+    # project reads as "project"-scoped rather than "unscoped".
+    if project_identity_state == "explicit":
+        identity_scope = "project"
+    elif namespace_scope:
+        identity_scope = namespace_scope
+    else:
+        identity_scope = "unscoped"
     root_keys = task.get("root_keys") if isinstance(task.get("root_keys"), list) else []
     return {
         "primary_root": _mapping(task.get("primary_root")) or None,
@@ -301,7 +319,8 @@ def _boundary(task: Mapping[str, Any]) -> dict[str, Any]:
         "session_count": int(task.get("session_count") or 0),
         "is_continuation": bool(task.get("continuation_id")),
         "project": project,
-        "identity_scope": scope or "unscoped",
+        "project_identity_state": project_identity_state or None,
+        "identity_scope": identity_scope,
     }
 
 
@@ -318,7 +337,7 @@ def _task_dimension(task: Mapping[str, Any], title: str) -> dict[str, Any]:
     if not objectives:
         gaps.append("No explicit objective was recorded for this Task.")
     if boundary["identity_scope"] == "unscoped":
-        gaps.append("Task identity is unscoped (no org/project namespace to bind it).")
+        gaps.append("This Task could not be bound to a project or namespace.")
     provenance = [SOURCE_MCP] if objectives else []
     if boundary["session_count"]:
         provenance.append(SOURCE_CLIENT_LOG)
@@ -352,10 +371,41 @@ def _actors_dimension(task: Mapping[str, Any], intelligence: Mapping[str, Any]) 
     }
 
 
+def _evidence_touched_files(task: Mapping[str, Any]) -> list[str]:
+    """File paths the Task's machine checks recorded — a section often lists no
+    files of its own while the checks it ran named the exact paths, so those
+    paths would otherwise be dropped from the Actions dimension."""
+
+    paths: list[str] = []
+    seen: set[str] = set()
+    items = task.get("work_items") if isinstance(task.get("work_items"), list) else []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        for event in item.get("evidence_events") or []:
+            if not isinstance(event, Mapping):
+                continue
+            for candidate in event.get("files") or []:
+                path = _text(candidate)
+                if path and path not in seen:
+                    seen.add(path)
+                    paths.append(path)
+    return paths
+
+
 def _actions_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
     actions = _mapping(task.get("actions"))
     counts = _mapping(actions.get("tool_category_counts"))
-    touched = actions.get("touched_files") if isinstance(actions.get("touched_files"), list) else []
+    section_files = actions.get("touched_files") if isinstance(actions.get("touched_files"), list) else []
+    # Union the section-recorded files with the paths the Task's machine checks
+    # named: either source alone routinely misses files the other has.
+    touched: list[str] = []
+    seen: set[str] = set()
+    for candidate in (*section_files, *_evidence_touched_files(task)):
+        path = _text(candidate)
+        if path and path not in seen:
+            seen.add(path)
+            touched.append(path)
     provenance: list[str] = []
     gaps: list[str] = []
     if touched:
@@ -371,8 +421,8 @@ def _actions_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "tool_category_counts": dict(counts),
         "tool_category_total": int(actions.get("tool_category_total") or 0),
-        "touched_files": list(touched),
-        "touched_file_count": int(actions.get("touched_file_count") or len(touched)),
+        "touched_files": touched,
+        "touched_file_count": len(touched),
         "provenance": sorted(set(provenance)) or [SOURCE_NONE],
         "gaps": gaps,
     }
@@ -387,8 +437,9 @@ def _cost_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
     gaps: list[str] = []
     if not cost_complete:
         gaps.append("Cost is incomplete: some usage rows are unpriced or excluded.")
-    if cost_confidence in {"estimated_from_tokens", "estimated"}:
-        gaps.append("Cost is a pricing-table estimate from token counts, not a billed amount.")
+    # A complete pricing-table estimate is not a gap — the estimate is present
+    # and its basis rides cost_basis / cost_confidence. Only genuinely missing
+    # or partial cost is a gap.
     if estimated is None and int(usage.get("rows") or 0) == 0:
         gaps.append("No usage was recorded for this Task.")
     return {
@@ -462,19 +513,14 @@ def _roll_up_gaps(
     for name, dimension in dimensions.items():
         for reason in dimension.get("gaps", []) or []:
             items.append({"dimension": name, "reason": reason})
-    # Coverage rows the intelligence layer already computed that aren't fully
-    # recorded are honest gaps too (kept distinct from the per-dimension ones).
-    for row in coverage:
-        if not isinstance(row, Mapping):
-            continue
-        state = _text(row.get("state"))
-        if state and state not in {"recorded"}:
-            items.append(
-                {
-                    "dimension": "coverage",
-                    "reason": f"{_text(row.get('dimension')) or 'dimension'} is {state}.",
-                }
-            )
+    # The coverage table (recorded / unavailable / not_recorded per dimension)
+    # already ships as its own ``coverage`` block. Folding every non-recorded
+    # row into gaps duplicated the per-dimension gaps and drowned the real,
+    # per-task ones in structural facts (no org control plane, no artifact
+    # store) that are true for every single-machine task — so gaps stay
+    # per-dimension only. ``coverage`` is unused here now but kept in the
+    # signature so callers do not change.
+    _ = coverage
     unlinked = int(task.get("session_unlinked_work_count") or 0)
     if unlinked:
         items.append(

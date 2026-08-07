@@ -145,7 +145,10 @@ private struct WorkDetail: View {
                         }
                     }
                     ForEach(group.members) { member in
-                        SessionDrillRow(member: member)
+                        SessionDrillRow(
+                            member: member,
+                            initiallyExpanded: group.role == "primary" && member.role == "root"
+                        )
                     }
                 }
             }
@@ -159,11 +162,18 @@ private struct WorkDetail: View {
 /// slot would clobber across several expanded sessions).
 private struct SessionDrillRow: View {
     let member: ReceiptSessionMember
+    let initiallyExpanded: Bool
     @EnvironmentObject var dashboard: DashboardStore
-    @State private var expanded = false
+    @State private var expanded: Bool
     @State private var detail: V1SessionDetail?
     @State private var loading = false
     @State private var failed = false
+
+    init(member: ReceiptSessionMember, initiallyExpanded: Bool = false) {
+        self.member = member
+        self.initiallyExpanded = initiallyExpanded
+        _expanded = State(initialValue: initiallyExpanded)
+    }
 
     private var label: String {
         if let title = member.title, !title.isEmpty { return title }
@@ -201,6 +211,11 @@ private struct SessionDrillRow: View {
         }
         .background(Theme.card, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
+        .task {
+            // The root session opens expanded — its step-by-step is the point;
+            // load its steps up front.
+            if expanded, detail == nil, !loading { await load() }
+        }
     }
 
     @ViewBuilder
