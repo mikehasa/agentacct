@@ -7,11 +7,13 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from agentacct.api import (
+    _LEDGER_MECHANICAL_CHECK_EVENTS_KEY,
     _LEDGER_RUN_REPORT_LIMIT,
     _collect_service_run_reports,
     _dashboard_task_projection,
     _mechanical_projection_envelopes_for,
     _store_scope_and_label,
+    build_mechanical_check_events,
     build_page_data,
     create_local_api_app,
 )
@@ -239,6 +241,34 @@ def test_injecting_the_shared_derived_ledger_matches_the_self_built_projection(
     derived_ledger = _derived_style_ledger(service, tmp_path)
     injected = _dashboard_task_projection(
         build_page_data(tmp_path, events=events, ledger=derived_ledger)
+    )
+
+    assert injected == reference
+
+
+def test_injecting_a_ledger_with_stashed_mechanical_checks_matches_self_build(
+    tmp_path: Path,
+) -> None:
+    """The warm /v1 lane reuses the mechanical check events the ledger build
+    stashed instead of re-reading the Evidence store. A ledger carrying that
+    stash must produce the same task projection build_page_data self-builds by
+    reading the Evidence store fresh — this locks that the stashed-events branch
+    of build_page_data attaches the identical evidence."""
+
+    service = SentinelService(tmp_path)
+    _record_usage(service, session_id="s1", at=100.0)
+    _record_section(service, session_id="s1", section_id="sec-1", status="completed", at=101.0)
+    _record_passing_check(service, session_id="s1", section_id="sec-1", at=102.0)
+
+    reference = _dashboard_task_projection(build_page_data(tmp_path))
+
+    events = service.list_all_events()
+    ledger = _derived_style_ledger(service, tmp_path)
+    envelopes, _diagnostics = _mechanical_projection_envelopes_for(service, tmp_path)
+    ledger[_LEDGER_MECHANICAL_CHECK_EVENTS_KEY] = build_mechanical_check_events(envelopes)
+
+    injected = _dashboard_task_projection(
+        build_page_data(tmp_path, events=events, ledger=ledger)
     )
 
     assert injected == reference

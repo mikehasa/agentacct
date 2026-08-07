@@ -1292,9 +1292,20 @@ def _attach_evidence_to_task_projection(
     task_work_items_by_series: dict[tuple[str, str], list[dict[str, Any]]] = {}
     unresolved_items_by_strict_series: dict[str, list[dict[str, Any]]] = {}
 
+    # O(n) dedup instead of O(n^2): each target list gets a companion key set.
+    # The lists live for the whole call and are only ever appended to here, so
+    # id(rows) is a stable handle and the set stays in sync — same membership
+    # test and same append order as the prior all(...) scan.
+    _append_unique_seen: dict[int, set[tuple[str, ...]]] = {}
+
     def append_unique(rows: list[dict[str, Any]], event: Mapping[str, Any]) -> None:
+        seen = _append_unique_seen.get(id(rows))
+        if seen is None:
+            seen = {_evidence_event_key(row) for row in rows}
+            _append_unique_seen[id(rows)] = seen
         key = _evidence_event_key(event)
-        if all(_evidence_event_key(row) != key for row in rows):
+        if key not in seen:
+            seen.add(key)
             rows.append(dict(event))
 
     for task_id, task in task_by_id.items():
@@ -1369,6 +1380,28 @@ def _attach_evidence_to_task_projection(
     allow_legacy_unscoped = not require_namespace_for_client_hook
     event_candidates: dict[tuple[str, ...], set[str]] = {}
     assignment_diagnostics: dict[tuple[str, ...], dict[str, Any]] = {}
+
+    # namespace_join_compatible(event, fact) reads `fact` ONLY through its
+    # namespace fingerprint and identity_scope_state=='explicit' (see
+    # join_rules), so all(...) over a task's facts equals all(...) over its
+    # facts collapsed to distinct (fingerprint, scope-explicit) signatures. A
+    # single task often carries hundreds of same-signature facts; deduping here
+    # turns the per-event all() from O(facts) into O(distinct signatures) with
+    # an identical result. Built once — namespace_facts_by_task is complete.
+    namespace_fact_reps: dict[str, list[Mapping[str, Any]]] = {}
+    for _task_id, _facts in namespace_facts_by_task.items():
+        _seen_signatures: set[tuple[str, bool]] = set()
+        _reps: list[Mapping[str, Any]] = []
+        for _fact in _facts:
+            _signature = (
+                str(_fact.get("namespace_fingerprint") or _fact.get("session_namespace_fingerprint") or "").strip(),
+                str(_fact.get("identity_scope_state") or "").strip() == "explicit",
+            )
+            if _signature in _seen_signatures:
+                continue
+            _seen_signatures.add(_signature)
+            _reps.append(_fact)
+        namespace_fact_reps[_task_id] = _reps
 
     for event in evidence_events:
         if not isinstance(event, dict):
@@ -1464,7 +1497,7 @@ def _attach_evidence_to_task_projection(
             if namespace_facts_by_task.get(task_id)
             and all(
                 namespace_join_compatible(event, fact, allow_legacy_unscoped=allow_legacy_unscoped)
-                for fact in namespace_facts_by_task[task_id]
+                for fact in namespace_fact_reps[task_id]
             )
         }
         event_key = _evidence_event_key(event)
@@ -2333,6 +2366,12 @@ def _canonical_session_rollup_payload(read: CanonicalSessionListRead) -> dict[st
 # inert; it matters only for stores fed by the `agentacct run` flow.)
 _LEDGER_RUN_REPORT_LIMIT = 100
 
+# Ledger dict key under which the derived-ledger builder stashes the mechanical
+# check events it derived from the Evidence store, so the warm /v1 page assembly
+# can attach them without re-reading the Evidence store. Present only on ledgers
+# built by the app's _derived_work_ledger; absent from a bare build_work_ledger.
+_LEDGER_MECHANICAL_CHECK_EVENTS_KEY = "__page_mechanical_check_events__"
+
 
 def _collect_service_run_reports(service: SentinelService, *, limit: int = _LEDGER_RUN_REPORT_LIMIT) -> list[dict[str, Any]]:
     reports = []
@@ -2438,24 +2477,39 @@ def build_page_data(
     # page's usage view and mechanical checks reflect the SAME snapshot the
     # injected ledger was reduced from — not a second, possibly newer read.
     events = events if events is not None else service.list_all_events()
-    mechanical_envelopes, observation_diagnostics = _mechanical_projection_envelopes_for(service, store_dir)
-    session_observations = (
-        build_session_observations(
-            mechanical_envelopes,
-            default_project_label=store_project_label if store_scope == "project" else None,
-            diagnostics=observation_diagnostics,
+    # When a pre-built ledger is injected AND it carries the mechanical check
+    # events its own build derived from the Evidence store (the /v1 task lane),
+    # reuse them instead of reading the Evidence store again (~350ms). The
+    # session observations and run reports only feed build_work_ledger, which is
+    # skipped on an injected ledger, so they are dead work here too. On the
+    # self-build path (ledger is None) everything is computed as before.
+    stashed_checks = ledger.get(_LEDGER_MECHANICAL_CHECK_EVENTS_KEY) if ledger is not None else None
+    if stashed_checks is not None:
+        mechanical_check_events = stashed_checks
+        session_observations = []
+        observation_diagnostics = {}
+        run_reports = []
+    else:
+        mechanical_envelopes, observation_diagnostics = _mechanical_projection_envelopes_for(service, store_dir)
+        session_observations = (
+            build_session_observations(
+                mechanical_envelopes,
+                default_project_label=store_project_label if store_scope == "project" else None,
+                diagnostics=observation_diagnostics,
+            )
+            if mechanical_envelopes
+            else []
         )
-        if mechanical_envelopes
-        else []
-    )
+        run_reports = _collect_service_run_reports(service, limit=_LEDGER_RUN_REPORT_LIMIT)
+        mechanical_check_events = build_mechanical_check_events(mechanical_envelopes)
     cost_events = sorted(cost_ledger.read_events(), key=lambda item: float(item.get("created_at") or 0.0), reverse=True)
     return _dashboard_page_data(
         events=events,
         cost_events=cost_events,
-        run_reports=_collect_service_run_reports(service, limit=_LEDGER_RUN_REPORT_LIMIT),
+        run_reports=run_reports,
         session_observations=session_observations,
         session_observation_diagnostics=observation_diagnostics,
-        mechanical_check_events=build_mechanical_check_events(mechanical_envelopes),
+        mechanical_check_events=mechanical_check_events,
         store_project_label=store_project_label,
         store_project_identity=store_project_identity,
         store_scope=store_scope,
@@ -2694,7 +2748,7 @@ def create_local_api_app(
                 if mechanical_envelopes
                 else []
             )
-            return build_work_ledger(
+            ledger = build_work_ledger(
                 loaded_events,
                 run_reports=_collect_run_reports(limit=_LEDGER_RUN_REPORT_LIMIT),
                 cost_events=cost_ledger.read_events(),
@@ -2703,6 +2757,13 @@ def create_local_api_app(
                 store_project_label=store_project_label,
                 store_scope=store_scope,
             )
+            # Stash the mechanical check events derived from the envelopes this
+            # build already loaded, so build_page_data's warm /v1 path can attach
+            # them without paying the ~350ms Evidence-store read a second time.
+            # Same fingerprint + TTL staleness bound WorkLedgerCache already
+            # applies to its other Evidence-derived secondary inputs.
+            ledger[_LEDGER_MECHANICAL_CHECK_EVENTS_KEY] = build_mechanical_check_events(mechanical_envelopes)
+            return ledger
 
         return ledger_cache.ledger(fingerprint, _build)
 
