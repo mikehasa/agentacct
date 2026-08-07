@@ -23,6 +23,7 @@ struct MainWindow: View {
             Group {
                 switch selection.pane {
                 case .dashboard: DashboardPane()
+                case .receipts: ReceiptsPane()
                 case .sessions: SessionsPane()
                 case .usage: UsagePane()
                 case .limits: LimitsPane()
@@ -163,6 +164,7 @@ extension MainPane {
     var icon: String {
         switch self {
         case .dashboard: return "gauge.with.dots.needle.50percent"
+        case .receipts: return "checklist"
         case .sessions: return "rectangle.stack.fill"
         case .usage: return "chart.bar.fill"
         case .limits: return "gauge.with.needle.fill"
