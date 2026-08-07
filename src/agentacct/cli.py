@@ -32,6 +32,7 @@ _exit_if_unsupported_platform(sys.platform)
 
 import typer
 from rich.console import Console
+from rich.markup import escape as _rich_escape
 from rich.table import Table
 
 from .agent_loop import AgentLoopOptions, run_agent_like_loop
@@ -8980,15 +8981,15 @@ def _render_receipt_text(receipt: dict[str, Any]) -> None:
     decision = axes.get("decision_status", {})
     evidence = axes.get("evidence_strength", {})
 
-    console.print(f"[bold]Work Receipt[/bold] · {receipt.get('title') or 'Task'}")
-    console.print(f"[dim]{receipt.get('task_id')}[/dim]\n")
+    console.print(f"[bold]Work Receipt[/bold] · {_rich_escape(str(receipt.get('title') or 'Task'))}")
+    console.print(f"[dim]{_rich_escape(str(receipt.get('task_id') or ''))}[/dim]\n")
 
     console.print(
         f"  Decision status    [bold]{str(decision.get('key') or 'unknown').upper()}[/bold]"
         f"  (asserted by {decision.get('asserted_by') or 'none'})"
     )
     if decision.get("statement"):
-        console.print(f"                     [dim]{decision['statement']}[/dim]")
+        console.print(f"                     [dim]{_rich_escape(str(decision['statement']))}[/dim]")
     console.print(
         f"  Evidence strength  [bold]{str(evidence.get('key') or 'none').upper()}[/bold]"
         f"  ({int(evidence.get('verified_step_count') or 0)}/{int(evidence.get('total_step_count') or 0)}"
@@ -8996,7 +8997,9 @@ def _render_receipt_text(receipt: dict[str, Any]) -> None:
         f" {int(evidence.get('checks_passed') or 0)} passed)"
     )
     if evidence.get("strongest_proof"):
-        console.print(f"                     [dim]strongest proof: {evidence['strongest_proof']}[/dim]")
+        console.print(
+            f"                     [dim]strongest proof: {_rich_escape(str(evidence['strongest_proof']))}[/dim]"
+        )
     if axes.get("orthogonality_note"):
         console.print(f"  [dim]{axes['orthogonality_note']}[/dim]")
 
@@ -9011,7 +9014,7 @@ def _render_receipt_text(receipt: dict[str, Any]) -> None:
     task_summary = "; ".join(objectives[:2]) or "no objective recorded"
     if boundary.get("project"):
         task_summary += f"  · project {boundary['project']}"
-    table.add_row("Task", task_summary, ", ".join(task.get("provenance") or []))
+    table.add_row("Task", _rich_escape(task_summary), ", ".join(task.get("provenance") or []))
 
     actors = dims.get("actors", {})
     actor_summary = " · ".join(
@@ -9023,12 +9026,12 @@ def _render_receipt_text(receipt: dict[str, Any]) -> None:
         )
         if part
     )
-    table.add_row("Actors", actor_summary or "—", ", ".join(actors.get("provenance") or []))
+    table.add_row("Actors", _rich_escape(actor_summary or "—"), ", ".join(actors.get("provenance") or []))
 
     actions = dims.get("actions", {})
     actions_summary = _receipt_category_text(actions.get("tool_category_counts") or {})
     actions_summary += f"  · touched {int(actions.get('touched_file_count') or 0)} file(s)"
-    table.add_row("Actions", actions_summary, ", ".join(actions.get("provenance") or []))
+    table.add_row("Actions", _rich_escape(actions_summary), ", ".join(actions.get("provenance") or []))
 
     cost = dims.get("cost", {})
     table.add_row("Cost", _receipt_cost_text(cost), ", ".join(cost.get("provenance") or []))
@@ -9054,7 +9057,7 @@ def _render_receipt_text(receipt: dict[str, Any]) -> None:
     if gaps.get("items"):
         console.print(f"\n[bold]Gaps[/bold] ({gaps.get('count')}) — what could not be proven")
         for item in gaps["items"]:
-            console.print(f"  · \\[{item.get('dimension')}] {item.get('reason')}")
+            console.print(f"  · \\[{item.get('dimension')}] {_rich_escape(str(item.get('reason')))}")
 
     legend = dims.get("provenance", {}).get("legend") or {}
     if legend:
@@ -9107,7 +9110,7 @@ def receipts(
     for row in rows:
         table.add_row(
             str(row["task_id"])[:16],
-            str(row.get("title") or "")[:48],
+            _rich_escape(str(row.get("title") or "")[:48]),
             str(row["decision_status"]["key"]),
             str(row["evidence_strength"]["key"]),
             _receipt_cost_text(row.get("cost") or {}),

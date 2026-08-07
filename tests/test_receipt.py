@@ -159,10 +159,15 @@ def test_human_resolved_finding_is_human_asserted_but_not_evidence_verified() ->
 def test_failed_is_distinct_from_blocked() -> None:
     failed = _receipt(_task([{"work_id": "w", "latest_status": "failed", "updated_at": 100.0}]))
     assert failed["axes"]["decision_status"]["key"] == "failed"
+    # A recorded-failed status is an AGENT report, not a machine assertion — its
+    # outcome provenance must never borrow an unrelated passing check's source.
+    assert failed["axes"]["decision_status"]["asserted_by"] == "agent_report"
+    assert failed["dimensions"]["outcome"]["provenance"] == ["mcp"]
     blocked = _receipt(
         _task([{"work_id": "w", "latest_status": "blocked", "updated_at": 100.0, "blocker": "needs a key"}])
     )
     assert blocked["axes"]["decision_status"]["key"] == "blocked"
+    assert blocked["axes"]["decision_status"]["asserted_by"] == "agent_report"
 
 
 def test_actions_shows_touched_files_and_gaps_missing_categories() -> None:
@@ -200,8 +205,36 @@ def test_provenance_rollup_covers_every_dimension_with_a_legend() -> None:
     for name in ("task", "actors", "actions", "cost", "evidence", "outcome"):
         assert name in provenance["by_dimension"]
         assert provenance["by_dimension"][name]  # never empty
+    # The provenance map covers ONLY the six content dimensions; the gaps and
+    # provenance meta-dimensions have no source of their own and must never be
+    # rolled up as a spurious "none".
+    assert "gaps" not in provenance["by_dimension"]
+    assert "provenance" not in provenance["by_dimension"]
     for source in provenance["sources_present"]:
         assert source in provenance["legend"]
+
+
+def test_provenance_never_manufactures_a_none_source_when_all_grounded() -> None:
+    # A verified task with a passing check grounds every content dimension —
+    # the provenance map must not advertise a phantom "none".
+    check = _check("passed", at=200.0)
+    task = _task(
+        [
+            {
+                "work_id": "w",
+                "latest_status": "completed",
+                "updated_at": 100.0,
+                "current_check_events": [check],
+                "files": ["src/a.py"],
+                "objective": "add rate limit",
+            }
+        ],
+        task_checks=[check],
+        actions={"tool_category_counts": {"read": 2}, "tool_category_total": 2, "touched_files": ["src/a.py"], "touched_file_count": 1},
+    )
+    provenance = _receipt(task)["dimensions"]["provenance"]
+    assert "none" not in provenance["sources_present"]
+    assert "none" not in provenance["legend"]
 
 
 def test_gaps_rollup_flattens_dimension_gaps_with_labels() -> None:

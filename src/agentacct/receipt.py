@@ -81,7 +81,9 @@ _DECISION_ASSERTED_BY: dict[str, str] = {
     "verified": "machine",
     "finding": "machine",
     "finding_superseded": "machine",
-    "failed": "machine",
+    # ``failed`` is refined out of ``blocked`` from an agent-recorded work status,
+    # not a machine check — so it is an agent report, exactly like ``blocked``.
+    "failed": "agent_report",
     "blocked": "agent_report",
     "reported": "agent_report",
     "resolved": "agent_report",
@@ -542,8 +544,13 @@ def build_receipt(
         "outcome": _outcome_dimension(decision, verification, decision_brief, checks),
     }
     coverage = intelligence.get("coverage") if isinstance(intelligence.get("coverage"), list) else []
-    dimensions["gaps"] = _roll_up_gaps(dimensions, coverage, task)
-    dimensions["provenance"] = _roll_up_provenance(dimensions)
+    # Roll both meta-dimensions up over ONLY the six content dimensions, before
+    # inserting them — ``gaps`` and ``provenance`` carry no provenance of their
+    # own, so including them would manufacture a spurious ``none`` source.
+    gaps = _roll_up_gaps(dimensions, coverage, task)
+    provenance = _roll_up_provenance(dimensions)
+    dimensions["gaps"] = gaps
+    dimensions["provenance"] = provenance
 
     return {
         "schema_version": RECEIPT_SCHEMA_VERSION,

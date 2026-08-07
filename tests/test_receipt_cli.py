@@ -15,7 +15,7 @@ runner = CliRunner()
 NS = "sha256:receipt-cli-ns"
 
 
-def _seed(store: Path) -> None:
+def _seed(store: Path, *, title: str = "Add rate limit to login") -> None:
     service = SentinelService(store)
     service.record_event(
         {
@@ -67,7 +67,8 @@ def _seed(store: Path) -> None:
                 "identity_scope_state": "explicit",
                 "section_id": "sec-1",
                 "section_status": "completed",
-                "section_title": "Add rate limit to login",
+                "section_title": title,
+                "objective": title,
                 "kind": "implementation",
                 "files": ["src/login.py"],
             },
@@ -117,6 +118,21 @@ def test_receipt_text_render_is_scannable(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     for marker in ("Work Receipt", "Decision status", "Evidence strength", "Provenance"):
         assert marker in result.output
+
+
+def test_receipt_text_survives_rich_markup_in_recorded_titles(tmp_path: Path) -> None:
+    # Agent-recorded titles/objectives are arbitrary text; a bracket-tag title
+    # must never crash the render (MarkupError) or be silently reinterpreted.
+    _seed(tmp_path, title="cleanup [/] wip [red]danger[/red]")
+    listing = runner.invoke(app, ["receipts", "--store-dir", str(tmp_path)])
+    assert listing.exit_code == 0, listing.output
+    task_id = json.loads(
+        runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)]).output
+    )["tasks"][0]["task_id"]
+    detail = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
+    assert detail.exit_code == 0, detail.output
+    # The literal bracket text is preserved (escaped), not interpreted away.
+    assert "[/]" in detail.output
 
 
 def test_receipt_unknown_task_exits_nonzero(tmp_path: Path) -> None:

@@ -2913,15 +2913,31 @@ def create_local_api_app(
     # cached so the receipt list/detail routes stay cheap under app polling.
     v1_receipt_projection_cache: dict[str, tuple[int, float, dict[str, Any]]] = {}
 
+    def _receipt_projection_cache_key(events: list[dict[str, Any]]) -> int:
+        # The projection also consumes the Evidence v2 client_hook store (hook
+        # mechanical checks + privacy-safe tool-category captures), which changes
+        # WITHOUT a v1 ledger event — so hashing only the event log would serve a
+        # pre-capture projection for the whole TTL and let the Receipt under-claim
+        # proven evidence. Fold a cheap monotonic marker from the evidence store
+        # into the key so any capture/import invalidates the cache immediately.
+        evidence_marker: tuple[int, ...] = (0,)
+        try:
+            if service.evidence.enabled:
+                stats = service.evidence.status()
+                evidence_marker = (stats.logical_events, stats.receipts, stats.duplicate_receipts)
+        except Exception:  # noqa: BLE001 - a stats read must never fail the route.
+            evidence_marker = (0,)
+        return hash((events_fingerprint(events), evidence_marker))
+
     def _v1_task_projection() -> dict[str, Any]:
         events = service.list_all_events()
-        fingerprint = events_fingerprint(events)
+        cache_key = _receipt_projection_cache_key(events)
         moment = time.time()
         cached = v1_receipt_projection_cache.get("projection")
-        if cached is not None and cached[0] == fingerprint and (moment - cached[1]) < 30.0:
+        if cached is not None and cached[0] == cache_key and (moment - cached[1]) < 30.0:
             return cached[2]
         projection = _dashboard_task_projection(_page_data())
-        v1_receipt_projection_cache["projection"] = (fingerprint, moment, projection)
+        v1_receipt_projection_cache["projection"] = (cache_key, moment, projection)
         return projection
 
     def _visible_tasks(projection: Mapping[str, Any]) -> list[dict[str, Any]]:
