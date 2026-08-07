@@ -15,6 +15,7 @@ from .confidence import (
 )
 from .tool_activity import build_tool_activity_by_session
 from .join_rules import (
+    JoinCandidateIndex,
     annotate_usage_source_namespace_ambiguity,
     decide_attribution,
     namespace_join_compatible,
@@ -89,6 +90,7 @@ def build_work_ledger(
     session_observation_diagnostics: dict[str, int] | None = None,
     store_project_label: str | None = None,
     store_scope: str | None = None,
+    use_index: bool = True,
 ) -> dict[str, Any]:
     """Build the derived local work ledger from imported facts and MCP meaning.
 
@@ -149,6 +151,7 @@ def build_work_ledger(
         usage_events,
         projectable_work_events,
         allow_legacy_unscoped_namespace=allow_legacy_unscoped_namespace,
+        use_index=use_index,
     )
     work_items = build_work_items(
         projectable_work_events,
@@ -168,6 +171,7 @@ def build_work_ledger(
         work_items,
         attributions,
         allow_legacy_unscoped_namespace=allow_legacy_unscoped_namespace,
+        use_index=use_index,
     )
     _attach_join_explanations(work_items, join_inspector["work_item_join_explanations"])
     usage_reconciliation = build_usage_reconciliation(usage_events, work_items, attributions)
@@ -852,6 +856,7 @@ def build_attributions(
     work_events: list[dict[str, Any]],
     *,
     allow_legacy_unscoped_namespace: bool = False,
+    use_index: bool = True,
 ) -> list[dict[str, Any]]:
     projectable_work_events, _diagnostics = _projectable_work_event_cohorts(
         work_events,
@@ -860,11 +865,18 @@ def build_attributions(
     latest_work_by_id = _latest_work_by_id(projectable_work_events)
     work_candidates = list(latest_work_by_id.values())
     usage_events = annotate_usage_source_namespace_ambiguity(usage_events)
+    # Give each usage row only the candidates that share an id key with it —
+    # the rest return None from pair_match (see JoinCandidateIndex). The subset
+    # preserves work_candidates' order, so decide_attribution sees the identical
+    # match/veto sequence a full scan would. ``use_index=False`` restores the
+    # full scan for the byte-equal golden test.
+    candidate_index = JoinCandidateIndex(work_candidates) if use_index else None
     attributions: list[dict[str, Any]] = []
     for usage in usage_events:
+        candidates = candidate_index.matches(usage) if candidate_index is not None else work_candidates
         decision = decide_attribution(
             usage,
-            work_candidates,
+            candidates,
             allow_legacy_unscoped_namespace=allow_legacy_unscoped_namespace,
         )
         work = decision.get("work")
@@ -1366,6 +1378,7 @@ def build_join_inspector(
     attributions: list[dict[str, Any]],
     *,
     allow_legacy_unscoped_namespace: bool = False,
+    use_index: bool = True,
 ) -> dict[str, Any]:
     """Explain why each work item did or did not receive usage attribution."""
 
@@ -1386,12 +1399,19 @@ def build_join_inspector(
             if candidate_id:
                 ambiguous_work_ids.add(str(candidate_id))
 
+    # Each item only pair_matches the usage rows that share an id key with it
+    # (the rest return None from pair_match); the subset keeps usage_events'
+    # order so the candidate sequence is identical to a full scan. The full
+    # usage_events list is still passed to the explanation/nearest-usage helpers
+    # below unchanged. ``use_index=False`` restores the full scan for the test.
+    usage_index = JoinCandidateIndex(usage_events) if use_index else None
     explanations: dict[str, dict[str, Any]] = {}
     for item in work_items:
         work_id = str(item.get("work_id") or item.get("section_id") or "")
         attributed = attributions_by_work.get(work_id, [])
         candidates = []
-        for usage in usage_events:
+        candidate_usage_rows = usage_index.matches(item) if usage_index is not None else usage_events
+        for usage in candidate_usage_rows:
             match = pair_match(
                 usage,
                 item,

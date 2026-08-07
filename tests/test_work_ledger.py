@@ -1687,3 +1687,51 @@ def test_work_ledger_schema_version_bumped_to_v2() -> None:
     # v2: session_rollup + attention_groups, cache triples, attributed-first
     # reconciliation, diagnostic filtering (release-note item).
     assert build_work_ledger([])["schema_version"] == "agent-sentinel.work-ledger.v2"
+
+
+def _join_index_parity_events() -> list[dict]:
+    """Events that drive every attribution / join-inspector path the join index
+    must preserve: two sibling sections in one session (ambiguity guard), an
+    exact single-section allocation with a superseded check, a transcript-only
+    match, a run_id grouping hint across sessions, and unmatched usage."""
+
+    return [
+        # sess-A: two sibling sections -> usage stays unallocated (ambiguous).
+        _usage_event(session="sess-A", event_id="a", created_at=10),
+        _section_event(session="sess-A", section_id="A1", status="completed", created_at=11),
+        _section_event(session="sess-A", section_id="A2", status="checkpoint", created_at=12),
+        # sess-B: single section -> exact session allocation; failed check then
+        # a later passing check in the same scope (supersession).
+        _usage_event(session="sess-B", event_id="b", created_at=20),
+        _section_event(session="sess-B", section_id="B1", status="completed", created_at=21),
+        _evidence_event(section_id="B1", result="failed"),
+        _evidence_event(section_id="B1", result="passed"),
+        # transcript-only match (section carries no session id).
+        _usage_event(session="sess-C", transcript="tx-C", event_id="c", created_at=30),
+        _section_event(session="", transcript="tx-C", section_id="C1", status="completed", created_at=31),
+        # run_id grouping hint: usage.run_id == section.run_id, different sessions.
+        _usage_event(session="sess-D", event_id="d", created_at=40),
+        _section_event(session="sess-E", section_id="E1", run_id="client_codex_sess-D", status="checkpoint", created_at=41),
+        # usage with no matching section at all.
+        _usage_event(session="sess-Z", event_id="z", created_at=50),
+    ]
+
+
+def test_join_index_matches_a_full_scan_byte_for_byte() -> None:
+    """The id-key index that lets the attribution loops skip non-matching pairs
+    must produce a ledger identical to the full O(usage x work) scan. Build both
+    ways and assert deep equality, on an event set that exercises the ambiguity
+    guard, exact/transcript allocation, run_id grouping, and unmatched usage."""
+
+    events = _join_index_parity_events()
+    indexed = build_work_ledger(events, use_index=True)
+    full = build_work_ledger(events, use_index=False)
+
+    assert indexed == full
+
+    # Non-vacuous: the set must actually drive an ambiguous refusal AND real
+    # allocations, so the parity assertion is proven on the paths that matter.
+    strategies = [attribution["join_strategy"] for attribution in indexed["attributions"]]
+    assert any("ambiguous" in strategy for strategy in strategies)
+    assert "exact_client_session_id" in strategies
+    assert "exact_client_transcript_id" in strategies
