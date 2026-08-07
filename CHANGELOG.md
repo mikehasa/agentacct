@@ -7,6 +7,27 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **The Work Receipt — one canonical answer to "what did this task do, and can I
+  trust it".** A new `agentacct.receipt.v1` projects one converged Task (a root
+  session with its continuations and subagents) into the eight questions a
+  reviewer needs — task, actors, actions, cost, evidence, outcome, gaps, and
+  per-field provenance — each dimension carrying where its data came from
+  (client log / MCP / hook / CI / git / human) and what could **not** be proven.
+  It keeps two axes deliberately separate: *decision status* (what a human or
+  agent SAYS happened) and *evidence strength* (how well that is actually
+  PROVEN). An agent reporting "done" never raises evidence strength, and a human
+  review never counts as machine verification. Read one with
+  `agentacct receipt <task>` (or `agentacct receipts` to list them), over the API
+  at `GET /v1/receipt?task=` and `GET /v1/tasks`, in the macOS app's new Receipts
+  pane, and in the TUI (press `t`). Cost now also carries its *basis* — a local
+  client-session figure vs a pricing-table estimate — not just its confidence.
+- **Privacy-safe tool-category capture for the Actions dimension.** The installed
+  Claude Code PreToolUse hook now records a coarse tool CATEGORY per step
+  (read / edit / execute / search / network / agent / plan / mcp / other),
+  derived from the tool NAME alone — never its arguments, results, or paths —
+  spooled locally and folded into each Task by `agentacct usage import-local`.
+  A session with no captured activity shows an honest gap, never a fabricated
+  zero.
 - **A `/v1` native-shell lane on the local API.** `GET /v1/glance` returns usage
   windows, provider limits, plan-calibration status, and recent sessions in one
   versioned, additive-only payload — computed by the exact same functions
