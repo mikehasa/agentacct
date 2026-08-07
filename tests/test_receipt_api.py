@@ -128,6 +128,36 @@ def test_receipt_routes_require_a_bearer_token(tmp_path: Path) -> None:
     assert client.get("/v1/receipt?task=task_x").status_code == 401
 
 
+def test_receipt_exposes_constituent_sessions_and_summary_carries_primary_root(
+    tmp_path: Path,
+) -> None:
+    """The Work surface nests each session's drill-down under the Receipt, so
+    /v1/receipt exposes the Task's sessions grouped root -> members with
+    primary/continuation + root/subagent roles, and the /v1/tasks list row
+    carries the primary root ref for deep-linking a session to its Task."""
+
+    service = SentinelService(tmp_path)
+    _record_usage(service, session_id="s1", at=100.0)
+    _record_section(service, session_id="s1", section_id="sec-1", status="completed", at=101.0)
+    client = _app(tmp_path)
+
+    row = client.get("/v1/tasks", headers=_auth()).json()["tasks"][0]
+    assert row["primary_root"] == {"client": "claude-code", "client_session_id": "s1"}
+    task_id = row["task_id"]
+
+    receipt = client.get(f"/v1/receipt?task={task_id}", headers=_auth()).json()
+    groups = receipt["sessions"]
+    assert len(groups) == 1
+    group = groups[0]
+    assert group["role"] == "primary"
+    assert group["root"] == {"client": "claude-code", "client_session_id": "s1"}
+    members = group["members"]
+    root_members = [m for m in members if m["role"] == "root"]
+    assert len(root_members) == 1
+    assert root_members[0]["client"] == "claude-code"
+    assert root_members[0]["client_session_id"] == "s1"
+
+
 def test_version_advertises_the_receipt_schema(tmp_path: Path) -> None:
     version = _app(tmp_path).get("/v1/version", headers=_auth()).json()
     assert version["receipt_schema"] == RECEIPT_SCHEMA_VERSION

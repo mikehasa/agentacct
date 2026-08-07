@@ -502,6 +502,66 @@ def _roll_up_provenance(dimensions: Mapping[str, Mapping[str, Any]]) -> dict[str
 
 # --- Public entry point -------------------------------------------------------
 
+def _sessions_block(task: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The Task's constituent sessions, grouped root -> its members, with
+    primary/continuation and root/subagent roles.
+
+    A pure reshape of ``task["root_groups"]`` and ``task["sessions"]`` (no new
+    data) into the drill-down index the Work surface expands: each member ref is
+    a ``{client, client_session_id}`` the app resolves against the existing
+    ``/v1/session`` endpoint for that session's steps/checks/descendants.
+    """
+
+    primary = _mapping(task.get("primary_root"))
+    primary_key = (_text(primary.get("client")), _text(primary.get("client_session_id")))
+    sessions_by_key: dict[tuple[str, str], Mapping[str, Any]] = {}
+    raw_sessions = task.get("sessions") if isinstance(task.get("sessions"), list) else []
+    for session in raw_sessions:
+        if not isinstance(session, Mapping):
+            continue
+        key = (_text(session.get("client")), _text(session.get("client_session_id")))
+        if key[0] and key[1]:
+            sessions_by_key[key] = session
+
+    groups: list[dict[str, Any]] = []
+    raw_groups = task.get("root_groups") if isinstance(task.get("root_groups"), list) else []
+    for group in raw_groups:
+        if not isinstance(group, Mapping):
+            continue
+        root = _mapping(group.get("root"))
+        root_key = (_text(root.get("client")), _text(root.get("client_session_id")))
+        members: list[dict[str, Any]] = []
+        member_refs = group.get("session_keys") if isinstance(group.get("session_keys"), list) else []
+        for ref in member_refs:
+            if not isinstance(ref, Mapping):
+                continue
+            key = (_text(ref.get("client")), _text(ref.get("client_session_id")))
+            if not key[0] or not key[1]:
+                continue
+            session = sessions_by_key.get(key, {})
+            members.append(
+                {
+                    "client": key[0],
+                    "client_session_id": key[1],
+                    "session_kind": _text(session.get("session_kind")) or None,
+                    "role": "root" if key == root_key else "subagent",
+                    "title": _text(session.get("client_session_title")) or None,
+                    "project": _text(session.get("project")) or None,
+                    "last_activity_at": _number(session.get("last_activity_at")) or None,
+                }
+            )
+        groups.append(
+            {
+                "root": {"client": root_key[0], "client_session_id": root_key[1]},
+                "role": "primary" if root_key == primary_key else "continuation",
+                "lineage_state": _text(group.get("lineage_state")) or None,
+                "supporting_count": int(group.get("supporting_count") or 0),
+                "members": members,
+            }
+        )
+    return groups
+
+
 def build_receipt(
     task: Mapping[str, Any],
     *,
@@ -566,6 +626,10 @@ def build_receipt(
             ),
         },
         "dimensions": dimensions,
+        # The Task's constituent sessions, grouped root -> members, so the Work
+        # surface can nest each session's /v1/session drill-down under the
+        # Receipt. Additive; existing consumers ignore it.
+        "sessions": _sessions_block(task),
         # Rich sub-objects reused verbatim by the CLI / app / TUI surfaces.
         "lanes": intelligence.get("lanes"),
         "timeline": intelligence.get("timeline"),
@@ -617,6 +681,9 @@ def build_receipt_summary(
             "cost_complete": bool(usage.get("cost_complete")),
         },
         "session_count": int(task.get("session_count") or 0),
+        # The primary root's {client, client_session_id} — the one id a list row
+        # carries, so the Work surface can deep-link a session to its Task.
+        "primary_root": _mapping(task.get("primary_root")) or None,
         "last_activity_at": _number(task.get("last_activity_at")) or None,
     }
 

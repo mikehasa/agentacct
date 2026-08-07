@@ -163,6 +163,18 @@ final class DashboardStore: ObservableObject {
         }
     }
 
+    /// Load one session's deep view WITHOUT touching the shared `detail` slot —
+    /// the Work drill-down expands several of a Task's sessions independently,
+    /// so each drill row owns its own result. Reuses the same authed endpoint
+    /// as `fetchDetail`; the caller holds the returned value in local state.
+    func loadSession(client clientName: String, sessionId: String) async throws -> V1SessionDetail {
+        let encodedClient = clientName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? clientName
+        let encodedSession = sessionId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? sessionId
+        return try await client.getAuthed(
+            "/v1/session?client=\(encodedClient)&session_id=\(encodedSession)"
+        )
+    }
+
     /// The plan status for one client (three-state honesty), if known.
     func planStatus(for clientName: String) -> V1PlanStatus? {
         planStatuses.first { $0.client == clientName }
@@ -200,8 +212,7 @@ final class AppSelection: ObservableObject {
 
 enum MainPane: String, CaseIterable, Identifiable {
     case dashboard = "Dashboard"
-    case receipts = "Receipts"
-    case sessions = "Sessions"
+    case work = "Work"
     case usage = "Usage"
     case limits = "Limits"
     var id: String { rawValue }

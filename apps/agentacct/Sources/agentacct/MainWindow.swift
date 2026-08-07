@@ -6,8 +6,8 @@ import SwiftUI
 // Theme token with both values. Custom chrome (no system sidebar), like the
 // TUI. The menu bar is the glance; this is where details live.
 //
-// Panes live in their own files: DashboardPane (the home), SessionsPane,
-// UsagePane, LimitsPane.
+// Panes live in their own files: DashboardPane (the home), WorkPane (Tasks +
+// their session drill-down), UsagePane, LimitsPane.
 
 struct MainWindow: View {
     @EnvironmentObject var dashboard: DashboardStore
@@ -23,8 +23,7 @@ struct MainWindow: View {
             Group {
                 switch selection.pane {
                 case .dashboard: DashboardPane()
-                case .receipts: ReceiptsPane()
-                case .sessions: SessionsPane()
+                case .work: WorkPane()
                 case .usage: UsagePane()
                 case .limits: LimitsPane()
                 }
@@ -164,8 +163,7 @@ extension MainPane {
     var icon: String {
         switch self {
         case .dashboard: return "gauge.with.dots.needle.50percent"
-        case .receipts: return "checklist"
-        case .sessions: return "rectangle.stack.fill"
+        case .work: return "checklist"
         case .usage: return "chart.bar.fill"
         case .limits: return "gauge.with.needle.fill"
         }

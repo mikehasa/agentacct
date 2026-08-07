@@ -44,80 +44,10 @@ func receiptSourceTint(_ source: String) -> Color {
     }
 }
 
-struct ReceiptsPane: View {
-    @EnvironmentObject var dashboard: DashboardStore
-    @EnvironmentObject var selection: AppSelection
-    @State private var query = ""
+// Reusable Task-row and Receipt cards for the Work surface (WorkPane.swift).
+// The former standalone Receipts pane was folded into WorkPane.
 
-    private var visibleTasks: [ReceiptSummary] {
-        guard !query.isEmpty else { return dashboard.receiptTasks }
-        let needle = query.lowercased()
-        return dashboard.receiptTasks.filter {
-            ($0.title ?? "").lowercased().contains(needle) || $0.taskId.lowercased().contains(needle)
-        }
-    }
-
-    var body: some View {
-        HStack(spacing: 0) {
-            taskList
-                .frame(width: 320)
-            Rectangle().fill(Theme.border).frame(width: 1)
-            detail
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .task { await dashboard.fetchReceipts() }
-    }
-
-    private var taskList: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Image(systemName: "magnifyingglass").foregroundStyle(Theme.textFaint)
-                TextField("Filter tasks", text: $query)
-                    .textFieldStyle(.plain)
-            }
-            .padding(8)
-            Rectangle().fill(Theme.border.opacity(0.6)).frame(height: 1)
-            if let error = dashboard.receiptError, dashboard.receiptTasks.isEmpty {
-                Text(error).font(.callout).foregroundStyle(Theme.textMuted)
-                    .padding().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollBox {
-                    VStack(spacing: 2) {
-                        ForEach(visibleTasks) { task in
-                            ReceiptRow(task: task, selected: task.taskId == selection.taskId)
-                                .onTapGesture { select(task.taskId) }
-                        }
-                    }
-                    .padding(6)
-                }
-            }
-        }
-        .background(Theme.surface.opacity(0.4))
-    }
-
-    @ViewBuilder
-    private var detail: some View {
-        if let receipt = dashboard.receipt {
-            ReceiptDetail(receipt: receipt)
-        } else if let error = dashboard.receiptError, selection.taskId != nil {
-            Text(error).font(.callout).foregroundStyle(Theme.textMuted).padding()
-        } else {
-            VStack(spacing: 8) {
-                Image(systemName: "checklist").font(.largeTitle).foregroundStyle(Theme.textFaint)
-                Text("Select a Task to read its Work Receipt")
-                    .foregroundStyle(Theme.textMuted)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-
-    private func select(_ taskId: String) {
-        selection.taskId = taskId
-        Task { await dashboard.fetchReceipt(taskId: taskId) }
-    }
-}
-
-private struct ReceiptRow: View {
+struct ReceiptRow: View {
     let task: ReceiptSummary
     let selected: Bool
 
@@ -161,20 +91,19 @@ private struct AxisChip: View {
     }
 }
 
-private struct ReceiptDetail: View {
+/// The Receipt's cards (axes, dimensions, gaps, provenance) as a plain stack —
+/// no ScrollBox of its own, so WorkPane can scroll it together with the session
+/// drill-down that follows it.
+struct ReceiptCards: View {
     let receipt: Receipt
 
     var body: some View {
-        ScrollBox {
-            VStack(alignment: .leading, spacing: 14) {
-                header
-                axesCard
-                dimensionsCard
-                gapsCard
-                provenanceCard
-            }
-            .padding(16)
-            .frame(maxWidth: 720, alignment: .leading)
+        VStack(alignment: .leading, spacing: 14) {
+            header
+            axesCard
+            dimensionsCard
+            gapsCard
+            provenanceCard
         }
     }
 

@@ -120,7 +120,7 @@ struct DashboardPane: View {
                         let rows = Array(snapshot.glance.recentSessions.prefix(6))
                         ForEach(Array(rows.enumerated()), id: \.offset) { index, session in
                             Button {
-                                selection.pane = .sessions
+                                selection.pane = .work
                                 selection.sessionId = "\(session.client)::\(session.sessionId)"
                             } label: {
                                 HStack(spacing: 9) {
@@ -180,7 +180,7 @@ struct DashboardPane: View {
                     VStack(spacing: 0) {
                         ForEach(Array(attentionRows.prefix(5).enumerated()), id: \.element.id) { index, row in
                             Button {
-                                selection.pane = .sessions
+                                selection.pane = .work
                                 selection.sessionId = row.id
                             } label: {
                                 HStack(spacing: 9) {
