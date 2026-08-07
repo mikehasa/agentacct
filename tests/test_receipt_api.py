@@ -158,6 +158,59 @@ def test_receipt_exposes_constituent_sessions_and_summary_carries_primary_root(
     assert root_members[0]["client_session_id"] == "s1"
 
 
+def test_receipt_gaps_are_genuinely_missing_not_structural_noise(tmp_path: Path) -> None:
+    """A Receipt's gaps should mean 'genuinely missing for this Task', not
+    structural facts about the deployment or data we have but failed to roll up.
+    A Task in a known project, whose checks recorded the files they touched,
+    with a complete pricing-table cost estimate, must NOT gap identity, touched
+    files, the coverage table, or the estimate basis."""
+
+    service = SentinelService(tmp_path)
+    _record_usage(service, session_id="s1", at=100.0)
+    _record_section(service, session_id="s1", section_id="sec-1", status="completed", at=101.0)
+    # A passing check that records the files it touched; the section lists none.
+    service.record_event(
+        {
+            "event_id": "evt_check_with_files",
+            "created_at": 102.0,
+            "source": "claude-code",
+            "event_type": "machine_check",
+            "metadata": {
+                "result": "passed",
+                "evidence_type": "test",
+                "summary": "pytest passed",
+                "name": "pytest",
+                "exit_code": 0,
+                "section_id": "sec-1",
+                "client": "claude-code",
+                "client_session_id": "s1",
+                "session_namespace_fingerprint": NS,
+                "identity_scope_state": "explicit",
+                "project_dir": "/tmp/project",
+                "files": ["src/login.py", "tests/test_login.py"],
+            },
+        }
+    )
+    client = _app(tmp_path)
+    task_id = client.get("/v1/tasks", headers=_auth()).json()["tasks"][0]["task_id"]
+    receipt = client.get(f"/v1/receipt?task={task_id}", headers=_auth()).json()
+
+    dims = receipt["dimensions"]
+    reasons = [item["reason"] for item in dims["gaps"]["items"]]
+
+    # Touched files recovered from the check evidence, not gapped.
+    assert "src/login.py" in dims["actions"]["touched_files"]
+    assert not any("No touched files" in r for r in reasons)
+    # A known project is scoped, not "unscoped" — no identity gap.
+    assert dims["task"]["boundary"]["identity_scope"] != "unscoped"
+    assert not any("could not be bound to a project" in r for r in reasons)
+    # The coverage table is no longer folded into gaps.
+    assert not any(item["dimension"] == "coverage" for item in dims["gaps"]["items"])
+    # A complete pricing-table estimate is not a gap.
+    assert dims["cost"]["cost_complete"] is True
+    assert not any("pricing-table estimate" in r for r in reasons)
+
+
 def test_version_advertises_the_receipt_schema(tmp_path: Path) -> None:
     version = _app(tmp_path).get("/v1/version", headers=_auth()).json()
     assert version["receipt_schema"] == RECEIPT_SCHEMA_VERSION

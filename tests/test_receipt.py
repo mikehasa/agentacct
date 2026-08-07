@@ -193,10 +193,14 @@ def test_actions_with_categories_declares_hook_provenance() -> None:
     assert "hook" in actions["provenance"]
 
 
-def test_cost_dimension_carries_basis_and_flags_estimate_gap() -> None:
+def test_cost_dimension_carries_basis_without_gapping_a_complete_estimate() -> None:
     cost = _receipt(_task([{"work_id": "w", "latest_status": "completed", "updated_at": 100.0}]))["dimensions"]["cost"]
     assert cost["cost_basis"] == "pricing_table"
-    assert any("estimate" in reason for reason in cost["gaps"])
+    # The estimate-ness rides cost_basis / cost_confidence; a complete estimate
+    # is provenance, not a gap (only incomplete/missing cost is gapped).
+    assert cost["cost_confidence"] in {"estimated_from_tokens", "estimated"}
+    if cost["cost_complete"]:
+        assert not any("estimate" in reason for reason in cost["gaps"])
 
 
 def test_provenance_rollup_covers_every_dimension_with_a_legend() -> None:
