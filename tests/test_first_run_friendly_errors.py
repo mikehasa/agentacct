@@ -182,6 +182,97 @@ def test_usage_import_local_zero_scan_hint_reflects_actual_scanned_homes(tmp_pat
         assert unscanned not in result.output, (unscanned, result.output)
 
 
+def test_usage_import_local_symlink_does_not_zero_the_import(tmp_path):
+    # issue #84: a directory symlink under ~/.claude/projects (a common shared-
+    # memory sync pattern) used to abort the whole Claude import with a
+    # misleading "No local client session files found", even though real
+    # transcripts sat right beside it. The real session must import, and the
+    # skipped symlink must be surfaced rather than silently swallowing the home.
+    store = tmp_path / "state"
+    claude_home = tmp_path / "claude-home"
+    project = claude_home / "projects" / "-Users-me"
+    project.mkdir(parents=True)
+    session = project / "real-session.jsonl"
+    session.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {"type": "ai-title", "sessionId": "real-session", "aiTitle": "Real work"},
+                {
+                    "type": "assistant",
+                    "sessionId": "real-session",
+                    "message": {
+                        "model": "claude-opus-4-8",
+                        "usage": {"input_tokens": 12, "output_tokens": 4},
+                    },
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    shared_memory = tmp_path / "shared-memory"
+    shared_memory.mkdir()
+    (project / "memory").symlink_to(shared_memory, target_is_directory=True)
+
+    result = runner.invoke(
+        app,
+        [
+            "usage",
+            "import-local",
+            "--store-dir",
+            str(store),
+            "--client",
+            "claude-code",
+            "--claude-home",
+            str(claude_home),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    # The real transcript imports rather than the whole home returning zero.
+    assert "Imported 1 local client usage session(s)" in result.output
+    assert "No local client session files found" not in result.output
+    # The skipped symlink is surfaced, not silently swallowed.
+    assert "Skipped 1 symlinked path(s)" in result.output
+
+
+def test_usage_import_local_all_symlink_home_explains_the_skip_not_just_zero(tmp_path):
+    # issue #84, the pure shape: a home whose ONLY project entry is a directory
+    # symlink and no real transcript. The scan legitimately finds zero sessions,
+    # but the zero-result message must now explain WHY (skipped unsafe symlink)
+    # instead of the bare, misleading "No local client session files found" that
+    # originally sent the reporter down the wrong path.
+    store = tmp_path / "state"
+    claude_home = tmp_path / "claude-home"
+    project = claude_home / "projects" / "-Users-me"
+    project.mkdir(parents=True)
+    shared_memory = tmp_path / "shared-memory"
+    shared_memory.mkdir()
+    (project / "memory").symlink_to(shared_memory, target_is_directory=True)
+
+    result = runner.invoke(
+        app,
+        [
+            "usage",
+            "import-local",
+            "--store-dir",
+            str(store),
+            "--client",
+            "claude-code",
+            "--claude-home",
+            str(claude_home),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    # Zero real sessions in this home — the misleading bare message still appears,
+    # but now carries the reason so it is no longer baffling.
+    assert "No local client session files found" in result.output
+    assert "Skipped 1 symlinked path(s)" in result.output
+    assert "skipped as unsafe symlinks" in result.output
+
+
 def test_runs_command_omits_empty_started_field_for_runner_runs(tmp_path):
     # Runner metadata has no wall-clock started_at, so the human listing must
     # not print a dead empty `started=` column.

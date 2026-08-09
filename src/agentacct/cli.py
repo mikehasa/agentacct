@@ -7182,11 +7182,42 @@ def _print_usage_import_payload(payload: dict[str, object], *, store_dir: Path, 
             f"{reprice_action} {payload.get('repriced_events', 0)} previously unknown-cost row(s) "
             "whose model now resolves in the pricing catalog (unknown→priced only)."
         )
+    source_diagnostics = payload.get("source_diagnostics")
+
+    def _skipped_unsafe_count(row: Mapping[str, object]) -> int:
+        try:
+            value = int(row.get("skipped_unsafe_paths") or 0)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, value)
+
+    skipped_unsafe_total = (
+        sum(
+            _skipped_unsafe_count(row)
+            for row in source_diagnostics.values()
+            if isinstance(row, Mapping)
+        )
+        if isinstance(source_diagnostics, Mapping)
+        else 0
+    )
+    if skipped_unsafe_total:
+        print(
+            f"Skipped {skipped_unsafe_total} symlinked path(s) under a scanned home "
+            "(directory symlinks are never followed for safety; the rest of the "
+            "tree was imported normally). Run `agentacct usage discover-sources` "
+            "to see the full tree."
+        )
     if not payload.get("scanned_sessions"):
         scanned_homes = payload.get("scanned_homes") if isinstance(payload.get("scanned_homes"), list) else []
         checked = "; ".join(str(home) for home in scanned_homes) if scanned_homes else "no client homes"
+        unsafe_hint = (
+            " Some paths under a scanned home were skipped as unsafe symlinks "
+            "(see the line above)."
+            if skipped_unsafe_total
+            else ""
+        )
         print(
-            f"No local client session files found (checked {checked}). "
+            f"No local client session files found (checked {checked}).{unsafe_hint} "
             "Run `agentacct usage discover-sources` to see what was scanned, "
             "or point at a custom location with --claude-home/--codex-home/--cursor-home "
             "or the matching client --*-home option."
