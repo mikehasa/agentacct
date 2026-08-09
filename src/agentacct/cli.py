@@ -8976,6 +8976,8 @@ def _find_receipt_task(projection: dict[str, Any], task_id: str) -> dict[str, An
 
 
 def _render_receipt_text(receipt: dict[str, Any]) -> None:
+    from .receipt import evidence_coverage_headline, evidence_coverage_ledger
+
     axes = receipt.get("axes", {})
     dims = receipt.get("dimensions", {})
     decision = axes.get("decision_status", {})
@@ -8990,16 +8992,12 @@ def _render_receipt_text(receipt: dict[str, Any]) -> None:
     )
     if decision.get("statement"):
         console.print(f"                     [dim]{_rich_escape(str(decision['statement']))}[/dim]")
-    console.print(
-        f"  Evidence strength  [bold]{str(evidence.get('key') or 'none').upper()}[/bold]"
-        f"  ({int(evidence.get('verified_step_count') or 0)}/{int(evidence.get('total_step_count') or 0)}"
-        f" steps verified · {int(evidence.get('checks_total') or 0)} checks,"
-        f" {int(evidence.get('checks_passed') or 0)} passed)"
-    )
-    if evidence.get("strongest_proof"):
-        console.print(
-            f"                     [dim]strongest proof: {_rich_escape(str(evidence['strongest_proof']))}[/dim]"
-        )
+    console.print(f"  Evidence coverage  [bold]{_rich_escape(evidence_coverage_headline(evidence))}[/bold]")
+    ledger = evidence_coverage_ledger(evidence)
+    if ledger:
+        console.print(f"                     [dim]{_rich_escape(ledger)}[/dim]")
+    if evidence.get("definition"):
+        console.print(f"                     [dim]{_rich_escape(str(evidence['definition']))}[/dim]")
     if axes.get("orthogonality_note"):
         console.print(f"  [dim]{axes['orthogonality_note']}[/dim]")
 
@@ -9075,7 +9073,12 @@ def receipts(
     """List recent Tasks with their Receipt summary (decision × evidence, cost)."""
 
     from .api import build_store_task_projection, _task_title
-    from .receipt import RECEIPT_SCHEMA_VERSION, build_receipt_summary, latest_store_activity
+    from .receipt import (
+        RECEIPT_SCHEMA_VERSION,
+        build_receipt_summary,
+        evidence_coverage_headline,
+        latest_store_activity,
+    )
 
     resolved = _resolve_cli_store_dir(store_dir).path
     projection = build_store_task_projection(resolved)
@@ -9105,14 +9108,14 @@ def receipts(
     table.add_column("Task")
     table.add_column("Title")
     table.add_column("Decision")
-    table.add_column("Evidence")
+    table.add_column("Evidence coverage")
     table.add_column("Cost")
     for row in rows:
         table.add_row(
             str(row["task_id"])[:16],
             _rich_escape(str(row.get("title") or "")[:48]),
             str(row["decision_status"]["key"]),
-            str(row["evidence_strength"]["key"]),
+            _rich_escape(evidence_coverage_headline(row.get("evidence_strength") or {})),
             _receipt_cost_text(row.get("cost") or {}),
         )
     console.print(table)

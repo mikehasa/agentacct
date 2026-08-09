@@ -38,6 +38,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   re-claimed automatically if the slot frees up.
 
 ### Changed
+- **The Receipt's evidence axis is now honest COVERAGE, not a single grade word.**
+  Each step carries an evidence grade — none / claimed / self-checked /
+  independently-checked / externally-verified — set by WHO attested it (the
+  agent's own report, then a check the harness observed, then a CI/provider
+  check), with a one-line reason for why. A Task no longer collapses to one
+  categorical grade; it shows the per-tier ratio over its checkable steps
+  (e.g. `3/10 self-checked · 7 unchecked`) — the counts are the headline, never a
+  percentage that implies more than a count. A Task with no machine-verifiable
+  step reads `Not gradeable`, never a fabricated 0. Beneath the ratio an honest
+  ledger discloses what it does not cover: steps that ran in subagents, checks
+  that attach to no step, non-verifiable steps, and still-open steps. The tier is
+  keyed only on a check's trusted source, so an agent naming its own check
+  `github_actions` cannot forge external verification. Rendered across the CLI
+  (`agentacct receipt` / `receipts`), the TUI, the macOS app, and the
+  `/v1/session` per-step wire (each step now carries its grade and each check its
+  source).
 - **The shared usage view builder moved out of the web module** into
   `usage_view.py`, so the data layer (TUI, `now`, plan calibration) no longer
   imports the web server for pure data logic.
@@ -45,6 +61,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fingerprint behind the TUI's caches and the glance cache folds in the
   source-namespace binding fields, so an in-place TOFU bind refreshes live
   totals immediately instead of waiting for an unrelated event.
+
+### Fixed
+- **Subagent sessions in the Work drill-down show a name, not a raw id.** A
+  subagent carries no session title, so its row used to read as a bare session
+  id until expanded; it now falls back to the subagent's first recorded step
+  title.
+- **The Work drill-down no longer lists a Task's subagents twice.** Expanding the
+  root session re-listed the same subagents that already appear as sibling rows
+  in the session tree; the session tree is now the single list.
 
 ### Removed
 - **The HTML browser dashboard.** The web display layer (`/`, `/tokens`, `/raw`,

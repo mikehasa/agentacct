@@ -133,6 +133,8 @@ struct V1Step: Decodable, Identifiable {
     let usage: V1StepUsage?
     let joinConfidence: String?
     let evidenceStatus: String?
+    let evidenceGrade: String?
+    let evidenceGradeReason: String?
     let models: [V1ModelLane]?
     let checks: [V1Check]?
 
@@ -148,6 +150,8 @@ struct V1Step: Decodable, Identifiable {
         case nextStep = "next_step"
         case joinConfidence = "join_confidence"
         case evidenceStatus = "evidence_status"
+        case evidenceGrade = "evidence_grade"
+        case evidenceGradeReason = "evidence_grade_reason"
     }
 }
 
@@ -201,6 +205,7 @@ struct V1Check: Decodable, Identifiable {
     let result: String?
     let summary: String?
     let exitCode: Int?
+    let sourceType: String?
     let checkIdentity: String?
     let supersessionState: String?
     let resolutionScope: String?
@@ -213,6 +218,17 @@ struct V1Check: Decodable, Identifiable {
 
     var id: String { eventId ?? UUID().uuidString }
 
+    /// How independent of the agent this check is — the honest counter to a
+    /// check whose free-text summary claims "CI green" while its source is only
+    /// the agent's own report.
+    var independence: String {
+        switch sourceType {
+        case "ci", "external", "provider": return "CI"
+        case "client_hook": return "hook"
+        default: return "agent-reported"
+        }
+    }
+
     enum CodingKeys: String, CodingKey {
         case summary, files
         case eventId = "event_id"
@@ -220,6 +236,7 @@ struct V1Check: Decodable, Identifiable {
         case evidenceType = "evidence_type"
         case result
         case exitCode = "exit_code"
+        case sourceType = "source_type"
         case checkIdentity = "check_identity"
         case supersessionState = "supersession_state"
         case resolutionScope = "resolution_scope"
@@ -482,24 +499,85 @@ struct ReceiptDecision: Decodable {
     }
 }
 
+struct ReceiptByTier: Decodable {
+    let externallyVerified: Int?
+    let independentlyChecked: Int?
+    let selfChecked: Int?
+    let unchecked: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case externallyVerified = "externally_verified"
+        case independentlyChecked = "independently_checked"
+        case selfChecked = "self_checked"
+        case unchecked
+    }
+}
+
+/// Evidence COVERAGE (M2): per-tier ratios over the checkable steps — the counts
+/// ARE the headline, never a single collapsed grade word. ``key`` is a coarse
+/// tier ordinal used only for colour. Mirrors the daemon's
+/// ``evidence_coverage_headline`` / ``evidence_coverage_ledger`` so no surface
+/// words the same evidence differently.
 struct ReceiptEvidence: Decodable {
     let key: String
-    let label: String?
-    let verifiedStepCount: Int?
-    let totalStepCount: Int?
+    let gradeable: Bool?
+    let strongestTier: String?
+    let checkableTotal: Int?
+    let checkedTotal: Int?
+    let byTier: ReceiptByTier?
+    let notCheckable: Int?
+    let openOrIncomplete: Int?
+    let hiddenInSubagents: Int?
+    let unattributedChecks: Int?
+    let totalSteps: Int?
     let checksTotal: Int?
     let checksPassed: Int?
     let checksFailed: Int?
-    let strongestProof: String?
+    let definition: String?
 
     enum CodingKeys: String, CodingKey {
-        case key, label
-        case verifiedStepCount = "verified_step_count"
-        case totalStepCount = "total_step_count"
+        case key, gradeable, definition
+        case strongestTier = "strongest_tier"
+        case checkableTotal = "checkable_total"
+        case checkedTotal = "checked_total"
+        case byTier = "by_tier"
+        case notCheckable = "not_checkable"
+        case openOrIncomplete = "open_or_incomplete"
+        case hiddenInSubagents = "hidden_in_subagents"
+        case unattributedChecks = "unattributed_checks"
+        case totalSteps = "total_steps"
         case checksTotal = "checks_total"
         case checksPassed = "checks_passed"
         case checksFailed = "checks_failed"
-        case strongestProof = "strongest_proof"
+    }
+
+    /// The coverage ratio, tier by tier. The one non-ratio case is
+    /// ``Not gradeable`` (no checkable step — a 0/0 ratio is meaningless).
+    var headline: String {
+        if gradeable != true { return "Not gradeable (no verifiable steps recorded)" }
+        let total = checkableTotal ?? 0
+        var parts: [String] = []
+        if let value = byTier?.externallyVerified, value > 0 { parts.append("\(value)/\(total) externally-verified") }
+        if let value = byTier?.independentlyChecked, value > 0 { parts.append("\(value)/\(total) independently-checked") }
+        if let value = byTier?.selfChecked, value > 0 { parts.append("\(value)/\(total) self-checked") }
+        if let value = byTier?.unchecked, value > 0 { parts.append("\(value) unchecked") }
+        return parts.isEmpty ? "0/\(total) checked" : parts.joined(separator: " · ")
+    }
+
+    /// A compact list-row form: "checked/checkable" tinted by the strongest tier.
+    var compactHeadline: String {
+        if gradeable != true { return "not gradeable" }
+        return "\(checkedTotal ?? 0)/\(checkableTotal ?? 0) checked"
+    }
+
+    /// The honest ledger: where the evidence is, and what the ratio does not cover.
+    var ledger: String? {
+        var bits: [String] = []
+        if let value = hiddenInSubagents, value > 0 { bits.append("\(value) step(s) ran in subagents") }
+        if let value = notCheckable, value > 0 { bits.append("\(value) non-verifiable (research/docs)") }
+        if let value = unattributedChecks, value > 0 { bits.append("\(value) check(s) attach to no step") }
+        if let value = openOrIncomplete, value > 0 { bits.append("\(value) step(s) still open") }
+        return bits.isEmpty ? nil : bits.joined(separator: " · ")
     }
 }
 

@@ -33,6 +33,8 @@ import time
 from threading import Lock
 from typing import Any, Callable
 
+from .task_outcome import step_evidence_grade
+
 V1_SESSIONS_SCHEMA_VERSION = "agentacct.v1-sessions.v1"
 V1_SESSION_DETAIL_SCHEMA_VERSION = "agentacct.v1-session-detail.v1"
 
@@ -460,6 +462,10 @@ _STEP_CHECK_FIELDS = (
     "result",
     "summary",
     "exit_code",
+    # Independence category (mcp_agent_reported / client_hook / ci) — not
+    # sensitive, and it is what lets a surface show that a check saying "CI
+    # green" in its summary is really only agent-reported.
+    "source_type",
     "check_identity",
     "supersession_state",
     "superseded_by_event_id",
@@ -487,8 +493,14 @@ def _project_step(item: dict[str, Any], models: list[dict[str, Any]]) -> dict[st
         for event in (evidence_events if isinstance(evidence_events, list) else [])
         if isinstance(event, dict)
     ]
+    grade = step_evidence_grade(item)
     return {
         "work_id": item.get("work_id"),
+        # Per-step evidence grade (M2) + a one-line reason ("why strong/weak/
+        # none"). Graded by WHO attested; today every check is agent-reported,
+        # so a step tops out at self_checked until a hook / CI source lands.
+        "evidence_grade": grade.get("grade"),
+        "evidence_grade_reason": grade.get("reason"),
         "section_id": item.get("section_id"),
         "title": item.get("title"),
         "latest_status": item.get("latest_status"),

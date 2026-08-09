@@ -42,8 +42,15 @@ from typing import Any
 
 from .task_intelligence import build_task_intelligence
 from .task_outcome import (
+    EVIDENCE_GRADE_RANK,
+    GRADE_CLAIMED,
+    GRADE_EXTERNALLY_VERIFIED,
+    GRADE_INDEPENDENTLY_CHECKED,
+    GRADE_SELF_CHECKED,
+    NON_CHECK_RELEVANT_KINDS,
     latest_task_checks,
     reduce_task_outcome,
+    step_evidence_grade,
     step_verification_counts,
     task_newest_event_at,
 )
@@ -144,11 +151,13 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 # --- Evidence axis ------------------------------------------------------------
 
 def _check_source(check: Mapping[str, Any]) -> str:
+    # Trust ``source_type`` only. The raw ``source`` is agent-authored and would
+    # let an MCP check forge the CI label; see task_outcome._check_independence,
+    # which is the load-bearing version of this same rule for the evidence tier.
     source_type = _text(check.get("source_type")).lower()
-    source = _text(check.get("source")).lower()
     if source_type == "client_hook":
         return SOURCE_HOOK
-    if source_type in {"ci", "external", "provider"} or source in {"ci", "github_actions"}:
+    if source_type in {"ci", "external", "provider"}:
         return SOURCE_CI
     return SOURCE_MCP
 
@@ -180,45 +189,196 @@ def _project_checks(task: Mapping[str, Any]) -> list[dict[str, Any]]:
     return shaped
 
 
-def _evidence_strength(verification: Mapping[str, Any], checks: list[Mapping[str, Any]]) -> dict[str, Any]:
-    """Grade positive proof ONLY. Never raised by agent claims or human review.
+_TIER_BY_GRADE = {
+    GRADE_EXTERNALLY_VERIFIED: "externally_verified",
+    GRADE_INDEPENDENTLY_CHECKED: "independently_checked",
+    GRADE_SELF_CHECKED: "self_checked",
+}
+# strongest first — the coarse tier used for colour and list sort/filter only.
+_TIER_ORDER = ("externally_verified", "independently_checked", "self_checked")
 
-    A failing check is not positive proof, so it never lifts the grade — it
-    lands on the decision axis as a finding instead.
+
+def _step_passed_check_ids(item: Mapping[str, Any]) -> set[str]:
+    """Event-ids of the passing checks linked to ONE step (its projected latest
+    checks, else its raw evidence events)."""
+
+    raw = (
+        item.get("current_check_events")
+        if isinstance(item.get("current_check_events"), list)
+        else item.get("evidence_events")
+    )
+    ids: set[str] = set()
+    if isinstance(raw, list):
+        for event in raw:
+            if not isinstance(event, Mapping):
+                continue
+            if _text(event.get("result")).lower() != "passed":
+                continue
+            event_id = _text(event.get("event_id"))
+            if event_id:
+                ids.add(event_id)
+    return ids
+
+
+def _evidence_strength(
+    task: Mapping[str, Any],
+    checks: list[Mapping[str, Any]],
+    verification: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Coverage-first evidence: per-tier RATIOS over the checkable steps, plus an
+    honesty LEDGER. There is deliberately NO single collapsed grade word — the
+    counts ARE the headline; a categorical label would re-hide exactly the
+    variation the ladder exists to show. One coarse ``strongest_tier`` is kept
+    for colour + list sort/filter only, never as a headline word.
+
+    Graded from positive proof ONLY (a failing check lands on the decision axis
+    as a finding, never here) and from the same disjoint inputs as before, so it
+    stays orthogonal to ``decision_status``: an agent's "done" or a human review
+    never lifts a tier.
     """
 
-    verified = int(verification.get("verified_step_count") or 0)
-    total = int(verification.get("total_step_count") or 0)
-    reported = int(verification.get("agent_reported_step_count") or 0)
+    items = _items(task)
+    tiers = {
+        "externally_verified": 0,
+        "independently_checked": 0,
+        "self_checked": 0,
+        "unchecked": 0,  # a checkable terminal step with only an agent claim (grade 'claimed')
+    }
+    not_checkable = 0
+    open_or_incomplete = 0
+    checkable = 0
+    # "Hidden in a subagent" means the step ran in a session that is NOT a root —
+    # a genuine subagent. A continuation ROOT (the same agent resuming in a new
+    # session) is a root, not a subagent, so its steps must not be counted here,
+    # or the ledger would falsely say a continued Task's own work "ran in
+    # subagents". root_keys lists every root (primary + continuations).
+    root_session_ids = {
+        _text(ref.get("client_session_id"))
+        for ref in (task.get("root_keys") if isinstance(task.get("root_keys"), list) else [])
+        if isinstance(ref, Mapping) and _text(ref.get("client_session_id"))
+    }
+    primary_session = _text(_mapping(task.get("primary_root")).get("client_session_id"))
+    if primary_session:
+        root_session_ids.add(primary_session)
+    hidden_in_subagents = 0
+    for item in items:
+        status = _text(item.get("latest_status")).lower()
+        if status not in _SUCCESS_STATUSES:
+            open_or_incomplete += 1
+            continue
+        session = _text(item.get("client_session_id"))
+        if session and root_session_ids and session not in root_session_ids:
+            hidden_in_subagents += 1
+        kind = _text(item.get("kind")).lower() or "unknown"
+        if kind in NON_CHECK_RELEVANT_KINDS:
+            not_checkable += 1
+            continue
+        checkable += 1
+        grade = step_evidence_grade(item)["grade"]
+        tiers[_TIER_BY_GRADE.get(grade, "unchecked")] += 1
+
+    strongest_tier = next((tier for tier in _TIER_ORDER if tiers[tier]), None)
+    checked_total = sum(tiers[tier] for tier in _TIER_ORDER)
+
+    # Unattributed checks: task-pool passing checks linked to no visible step —
+    # they still count toward "N passed" but attach to nothing you can see.
+    linked: set[str] = set()
+    for item in items:
+        linked |= _step_passed_check_ids(item)
+    task_passing_ids = {
+        _text(event.get("event_id"))
+        for event in latest_task_checks(task)
+        if isinstance(event, Mapping)
+        and _text(event.get("result")).lower() == "passed"
+        and _text(event.get("event_id"))
+    }
+    unattributed_checks = len(task_passing_ids - linked)
+
     passed = sum(1 for check in checks if _text(check.get("result")).lower() == "passed")
     failed = sum(1 for check in checks if _text(check.get("result")).lower() in {"failed", "error"})
 
-    if total > 0 and verified == total:
-        key = "verified"
-    elif verified > 0 or passed > 0:
-        key = "checked"
-    elif reported > 0:
-        key = "reported"
+    # Coarse key kept ONLY for colour + list sort/filter. It is an ordinal, not a
+    # headline: undefined < unchecked < self_checked < independently < externally.
+    if checkable == 0:
+        key = "undefined"
     else:
-        key = "none"
+        key = strongest_tier or "unchecked"
 
-    strongest = next(
-        (check for check in checks if _text(check.get("result")).lower() == "passed"),
-        None,
-    )
     return {
         "key": key,
-        "label": key.title(),
-        "verified_step_count": verified,
-        "total_step_count": total,
-        "agent_reported_step_count": reported,
+        "gradeable": checkable > 0,
+        "strongest_tier": strongest_tier,
+        # the headline — per-tier ratios over checkable steps
+        "checkable_total": checkable,
+        "checked_total": checked_total,
+        "by_tier": dict(tiers),
+        # the ledger — what makes the ratio trustworthy
+        "not_checkable": not_checkable,
+        "open_or_incomplete": open_or_incomplete,
+        "hidden_in_subagents": hidden_in_subagents,
+        "unattributed_checks": unattributed_checks,
+        "total_steps": len(items),
+        # check-event tallies + continuity fields for existing readers
         "checks_total": len(checks),
         "checks_passed": passed,
         "checks_failed": failed,
-        "strongest_proof": (_text(strongest.get("name") or strongest.get("summary")) or None)
-        if strongest is not None
-        else None,
+        "verified_step_count": int(verification.get("verified_step_count") or 0),
+        "total_step_count": int(verification.get("total_step_count") or 0),
+        "agent_reported_step_count": int(verification.get("agent_reported_step_count") or 0),
+        "definition": (
+            "X of Y checkable steps carry a passing check; the tiers show how independent "
+            "that check is. These are counts, not a probability of correctness."
+        ),
     }
+
+
+# The coverage headline + ledger — ONE formatting shared by CLI / TUI / app, so
+# no two surfaces can word the same evidence differently (the M1 vocabulary rule).
+EVIDENCE_TIER_LABEL = {
+    "externally_verified": "externally-verified",
+    "independently_checked": "independently-checked",
+    "self_checked": "self-checked",
+}
+
+
+def evidence_coverage_headline(evidence: Mapping[str, Any]) -> str:
+    """The coverage ratio, tier by tier — the headline IS the counts, never a
+    single collapsed grade word. The one non-ratio case is ``Not gradeable`` (no
+    checkable step, where a 0/0 ratio would be meaningless)."""
+
+    if not evidence.get("gradeable"):
+        return "Not gradeable (no verifiable steps recorded)"
+    by_tier = evidence.get("by_tier") or {}
+    total = int(evidence.get("checkable_total") or 0)
+    parts = [
+        f"{int(by_tier[tier])}/{total} {label}"
+        for tier, label in EVIDENCE_TIER_LABEL.items()
+        if by_tier.get(tier)
+    ]
+    if by_tier.get("unchecked"):
+        parts.append(f"{int(by_tier['unchecked'])} unchecked")
+    return " · ".join(parts) if parts else f"0/{total} checked"
+
+
+def evidence_coverage_ledger(evidence: Mapping[str, Any]) -> str:
+    """The honest ledger beneath the ratio: where the evidence is, and what the
+    ratio does NOT cover — steps hidden in subagents, checks that attach to no
+    step, non-verifiable steps, and still-open steps."""
+
+    bits: list[str] = []
+    hidden = int(evidence.get("hidden_in_subagents") or 0)
+    if hidden:
+        bits.append(f"{hidden} step(s) ran in subagents")
+    not_checkable = int(evidence.get("not_checkable") or 0)
+    if not_checkable:
+        bits.append(f"{not_checkable} non-verifiable (research/docs)")
+    unattributed = int(evidence.get("unattributed_checks") or 0)
+    if unattributed:
+        bits.append(f"{unattributed} check(s) attach to no step")
+    still_open = int(evidence.get("open_or_incomplete") or 0)
+    if still_open:
+        bits.append(f"{still_open} step(s) still open")
+    return " · ".join(bits)
 
 
 # --- Decision axis ------------------------------------------------------------
@@ -560,6 +720,15 @@ def _sessions_block(task: Mapping[str, Any]) -> list[dict[str, Any]]:
 
     primary = _mapping(task.get("primary_root"))
     primary_key = (_text(primary.get("client")), _text(primary.get("client_session_id")))
+    # Only roots carry a ``client_session_title``; a subagent's is null, so the
+    # drill-down showed a raw session id until you expanded it. Recover a name
+    # from the subagent's FIRST recorded step so the row is legible up front.
+    step_title_by_session: dict[str, str] = {}
+    for item in _items(task):
+        session_id = _text(item.get("client_session_id"))
+        title = _text(item.get("title") or item.get("objective") or item.get("summary"))
+        if session_id and title and session_id not in step_title_by_session:
+            step_title_by_session[session_id] = title
     sessions_by_key: dict[tuple[str, str], Mapping[str, Any]] = {}
     raw_sessions = task.get("sessions") if isinstance(task.get("sessions"), list) else []
     for session in raw_sessions:
@@ -591,7 +760,11 @@ def _sessions_block(task: Mapping[str, Any]) -> list[dict[str, Any]]:
                     "client_session_id": key[1],
                     "session_kind": _text(session.get("session_kind")) or None,
                     "role": "root" if key == root_key else "subagent",
-                    "title": _text(session.get("client_session_title")) or None,
+                    "title": (
+                        _text(session.get("client_session_title"))
+                        or step_title_by_session.get(key[1])
+                        or None
+                    ),
                     "project": _text(session.get("project")) or None,
                     "last_activity_at": _number(session.get("last_activity_at")) or None,
                 }
@@ -637,7 +810,7 @@ def build_receipt(
     )
     verification = step_verification_counts(task)
     checks = _project_checks(task)
-    evidence_strength = _evidence_strength(verification, checks)
+    evidence_strength = _evidence_strength(task, checks, verification)
     decision = _decision_status(task, latest_store_activity_at=latest_store_activity_at)
     decision_brief = _mapping(intelligence.get("decision_brief"))
 
@@ -666,8 +839,8 @@ def build_receipt(
             "decision_status": decision,
             "evidence_strength": evidence_strength,
             "orthogonality_note": (
-                "Evidence strength and decision status are separate axes: an agent reporting "
-                "'done' never raises evidence strength, and a human review or approval never "
+                "Evidence coverage and decision status are separate axes: an agent reporting "
+                "'done' never adds a passing check, and a human review or approval never "
                 "counts as machine verification."
             ),
         },
@@ -704,7 +877,7 @@ def build_receipt_summary(
 
     verification = step_verification_counts(task)
     checks = _project_checks(task)
-    evidence_strength = _evidence_strength(verification, checks)
+    evidence_strength = _evidence_strength(task, checks, verification)
     decision = _decision_status(task, latest_store_activity_at=latest_store_activity_at)
     usage = _mapping(task.get("usage"))
     return {
@@ -717,9 +890,13 @@ def build_receipt_summary(
         },
         "evidence_strength": {
             "key": evidence_strength["key"],
-            "label": evidence_strength["label"],
-            "verified_step_count": evidence_strength["verified_step_count"],
-            "total_step_count": evidence_strength["total_step_count"],
+            "gradeable": evidence_strength["gradeable"],
+            "strongest_tier": evidence_strength["strongest_tier"],
+            "checkable_total": evidence_strength["checkable_total"],
+            "checked_total": evidence_strength["checked_total"],
+            "by_tier": evidence_strength["by_tier"],
+            "hidden_in_subagents": evidence_strength["hidden_in_subagents"],
+            "unattributed_checks": evidence_strength["unattributed_checks"],
         },
         "cost": {
             "estimated_cost_usd": usage.get("estimated_cost_usd"),
@@ -749,7 +926,10 @@ def latest_store_activity(tasks: list[Mapping[str, Any]]) -> float | None:
 __all__ = [
     "RECEIPT_SCHEMA_VERSION",
     "PROVENANCE_LEGEND",
+    "EVIDENCE_TIER_LABEL",
     "build_receipt",
     "build_receipt_summary",
+    "evidence_coverage_headline",
+    "evidence_coverage_ledger",
     "latest_store_activity",
 ]

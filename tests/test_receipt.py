@@ -114,17 +114,24 @@ def test_receipt_has_all_eight_dimensions_and_two_named_axes() -> None:
         assert "gaps" in receipt["dimensions"][name]
 
 
-def test_agent_reported_done_is_never_evidence_verified() -> None:
-    # A completed step with no linked check: the agent SAID done, nothing PROVES it.
+def test_agent_reported_done_is_never_evidence_checked() -> None:
+    # A completed step with no linked check: the agent SAID done, nothing PROVES
+    # it — so it sits in the 'unchecked' tier, never any CHECKED tier.
     receipt = _receipt(_task([{"work_id": "w", "latest_status": "completed", "updated_at": 100.0}]))
     assert receipt["axes"]["decision_status"]["key"] == "reported"
     assert receipt["axes"]["decision_status"]["asserted_by"] == "agent_report"
-    assert receipt["axes"]["evidence_strength"]["key"] != "verified"
-    assert receipt["axes"]["evidence_strength"]["key"] == "reported"
+    evidence = receipt["axes"]["evidence_strength"]
+    assert evidence["strongest_tier"] is None
+    assert evidence["key"] == "unchecked"
+    assert evidence["by_tier"]["unchecked"] == 1
+    assert evidence["by_tier"]["self_checked"] == 0
+    assert evidence["checkable_total"] == 1
 
 
-def test_passing_current_check_verifies_on_both_axes() -> None:
-    check = _check("passed", at=200.0)
+def test_passing_hook_check_is_independently_checked() -> None:
+    # A hook-observed passing check is independent of the agent-under-test — the
+    # only local way to reach 'independently_checked'.
+    check = _check("passed", at=200.0)  # _check defaults source_type=client_hook
     task = _task(
         [{"work_id": "w", "latest_status": "completed", "updated_at": 100.0, "current_check_events": [check]}],
         task_checks=[check],
@@ -132,9 +139,38 @@ def test_passing_current_check_verifies_on_both_axes() -> None:
     receipt = _receipt(task)
     assert receipt["axes"]["decision_status"]["key"] == "verified"
     assert receipt["axes"]["decision_status"]["asserted_by"] == "machine"
-    assert receipt["axes"]["evidence_strength"]["key"] == "verified"
-    assert receipt["axes"]["evidence_strength"]["checks_passed"] == 1
+    evidence = receipt["axes"]["evidence_strength"]
+    assert evidence["strongest_tier"] == "independently_checked"
+    assert evidence["by_tier"]["independently_checked"] == 1
+    assert evidence["checks_passed"] == 1
     assert receipt["dimensions"]["evidence"]["checks"][0]["source"] == "hook"
+
+
+def test_agent_reported_check_is_self_checked_not_independent() -> None:
+    # An mcp_agent_reported passing check is the agent's own word — it is
+    # 'self_checked', never promoted to independent verification, no matter what
+    # the check's free-text summary claims.
+    check = _check("passed", at=200.0, source_type="mcp_agent_reported")
+    task = _task(
+        [{"work_id": "w", "latest_status": "completed", "updated_at": 100.0, "current_check_events": [check]}],
+        task_checks=[check],
+    )
+    evidence = _receipt(task)["axes"]["evidence_strength"]
+    assert evidence["strongest_tier"] == "self_checked"
+    assert evidence["by_tier"]["self_checked"] == 1
+    assert evidence["by_tier"]["independently_checked"] == 0
+
+
+def test_pure_research_task_is_not_gradeable() -> None:
+    # A step that produces no machine-verifiable output is excused from the
+    # ratio; with no checkable step at all, the task is honestly Not gradeable —
+    # never a fabricated 0.
+    task = _task([{"work_id": "w", "latest_status": "completed", "kind": "research", "updated_at": 100.0}])
+    evidence = _receipt(task)["axes"]["evidence_strength"]
+    assert evidence["gradeable"] is False
+    assert evidence["key"] == "undefined"
+    assert evidence["checkable_total"] == 0
+    assert evidence["not_checkable"] == 1
 
 
 def test_human_resolved_finding_is_human_asserted_but_not_evidence_verified() -> None:
@@ -151,7 +187,9 @@ def test_human_resolved_finding_is_human_asserted_but_not_evidence_verified() ->
     assert receipt["axes"]["decision_status"]["key"] == "finding"
     assert receipt["axes"]["decision_status"]["asserted_by"] == "human"
     assert "not machine verification" in receipt["axes"]["decision_status"]["statement"]
-    assert receipt["axes"]["evidence_strength"]["key"] != "verified"
+    # A failing check is not positive proof — evidence reaches no CHECKED tier,
+    # and a human dispositioning it never lifts the evidence axis.
+    assert receipt["axes"]["evidence_strength"]["strongest_tier"] is None
     # Provenance of the outcome field is the human, not a check.
     assert receipt["dimensions"]["outcome"]["provenance"] == ["human"]
 

@@ -257,7 +257,7 @@ def test_unknown_task_is_a_404_not_an_empty_fabrication(tmp_path: Path) -> None:
     assert client.get("/v1/receipt?task=task_deadbeef", headers=_auth()).status_code == 404
 
 
-def test_receipt_reports_verified_when_a_current_check_passes(tmp_path: Path) -> None:
+def test_receipt_self_checked_when_an_agent_reported_check_passes(tmp_path: Path) -> None:
     service = SentinelService(tmp_path)
     _record_usage(service, session_id="s1", at=100.0)
     _record_section(service, session_id="s1", section_id="sec-1", status="completed", at=100.0)
@@ -267,8 +267,12 @@ def test_receipt_reports_verified_when_a_current_check_passes(tmp_path: Path) ->
     task_id = client.get("/v1/tasks", headers=_auth()).json()["tasks"][0]["task_id"]
     receipt = client.get(f"/v1/receipt?task={task_id}", headers=_auth()).json()
     assert receipt["axes"]["decision_status"]["key"] == "verified"
-    assert receipt["axes"]["evidence_strength"]["key"] == "verified"
-    assert receipt["dimensions"]["evidence"]["checks_passed"] == 1
+    # An agent-reported (mcp) check is the agent's OWN word — self_checked, never
+    # promoted to independent/external verification.
+    evidence = receipt["axes"]["evidence_strength"]
+    assert evidence["strongest_tier"] == "self_checked"
+    assert evidence["by_tier"]["self_checked"] == 1
+    assert evidence["checks_passed"] == 1
     # The touched file recorded on the section rides the Actions dimension.
     assert "src/login.py" in receipt["dimensions"]["actions"]["touched_files"]
 

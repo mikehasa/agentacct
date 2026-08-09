@@ -873,6 +873,12 @@ def test_detail_steps_carry_tui_grade_depth(tmp_path):
     assert "command" not in checks[0]
     assert checks[0]["command_redacted"] is True
     assert "pytest -q --token secret" not in str(checks[0])
+    # M2 per-step grade on the wire — the PRIMARY signal the app's StepCard reads.
+    # An agent-reported passing check grades self_checked (never independent), and
+    # the check carries its trusted source_type so a surface can show independence.
+    assert step["evidence_grade"] == "self_checked"
+    assert step["evidence_grade_reason"]
+    assert checks[0]["source_type"] == "mcp_agent_reported"
 
 
 def test_detail_descendants_and_plan_block(tmp_path):

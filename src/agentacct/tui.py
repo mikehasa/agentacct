@@ -1181,7 +1181,13 @@ def _receipt_decision_color(key: str) -> str:
 
 
 def _receipt_evidence_color(key: str) -> str:
-    return {"verified": "green", "checked": "blue", "reported": "yellow"}.get(key, "dim")
+    # The coarse tier ordinal drives colour only; the numbers carry the truth.
+    return {
+        "externally_verified": "green",
+        "independently_checked": "cyan",
+        "self_checked": "blue",
+        "unchecked": "yellow",
+    }.get(key, "dim")
 
 
 def _receipt_summary_cost(cost: dict) -> str:
@@ -1215,14 +1221,14 @@ def _render_receipt_markup(receipt: dict) -> str:
     )
     if decision.get("statement"):
         lines.append(f"                   [dim]{_escape(str(decision['statement']))}[/]")
-    lines.append(
-        f"Evidence strength  [b {ecolor}]{str(evidence.get('key') or '').upper()}[/]"
-        f"  [dim]({evidence.get('verified_step_count', 0)}/{evidence.get('total_step_count', 0)}"
-        f" steps verified · {evidence.get('checks_total', 0)} checks,"
-        f" {evidence.get('checks_passed', 0)} passed)[/]"
-    )
-    if evidence.get("strongest_proof"):
-        lines.append(f"                   [dim]strongest proof: {_escape(str(evidence['strongest_proof']))}[/]")
+    from .receipt import evidence_coverage_headline, evidence_coverage_ledger
+
+    lines.append(f"Evidence coverage  [b {ecolor}]{_escape(evidence_coverage_headline(evidence))}[/]")
+    _ledger = evidence_coverage_ledger(evidence)
+    if _ledger:
+        lines.append(f"                   [dim]{_escape(_ledger)}[/]")
+    if evidence.get("definition"):
+        lines.append(f"                   [dim]{_escape(str(evidence['definition']))}[/]")
     if axes.get("orthogonality_note"):
         lines.append(f"[dim]{_escape(str(axes['orthogonality_note']))}[/]")
     lines.append("")
@@ -1374,6 +1380,8 @@ class ReceiptsScreen(Screen):
     def _populate(self, rows: list) -> None:
         if not self.is_mounted:
             return
+        from .receipt import evidence_coverage_headline
+
         table = self.query_one("#receipts", DataTable)
         table.clear()
         self._by_id.clear()
@@ -1386,7 +1394,7 @@ class ReceiptsScreen(Screen):
             table.add_row(
                 _escape(str(summary.get("title") or task_id))[:46],
                 f"[{_receipt_decision_color(decision['key'])}]{decision['key']}[/]",
-                f"[{_receipt_evidence_color(evidence['key'])}]{evidence['key']}[/]",
+                f"[{_receipt_evidence_color(evidence['key'])}]{_escape(evidence_coverage_headline(evidence))}[/]",
                 _escape(_receipt_summary_cost(summary.get("cost") or {})),
                 _humanize_ago(summary.get("last_activity_at"), now),
                 key=task_id,

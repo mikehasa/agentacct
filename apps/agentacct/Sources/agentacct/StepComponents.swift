@@ -3,38 +3,13 @@ import SwiftUI
 // Shared step / check / subagent-row components for the Work surface session
 // drill-down (WorkPane.swift). Previously part of the Sessions pane.
 
-/// One subagent row: role-aware label (Task first line > title > agent type),
-/// an agent-type chip, plan share and fresh tokens.
-struct DescendantRow: View {
-    let child: V1Descendant
-
-    var body: some View {
-        HStack(spacing: 9) {
-            StatusDot(color: Theme.statusColor(child.status), size: 6)
-            Text(child.displayTitle)
-                .font(Type.body)
-                .foregroundStyle(Theme.text)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            if let agentType = child.agentType {
-                Chip(text: agentType, tint: Theme.purple)
-            }
-            Spacer(minLength: 8)
-            if let pct = Fmt.planPct(child.planPct) {
-                Text(pct)
-                    .font(Type.numeric)
-                    .foregroundStyle(Theme.accent)
-            }
-            if let tokens = child.usage?.freshTokens {
-                Text(UsageTotals.compact(Int(tokens)))
-                    .font(Type.tiny.monospacedDigit())
-                    .foregroundStyle(Theme.textFaint)
-                    .frame(width: 48, alignment: .trailing)
-            }
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 6)
-        .help(child.task ?? child.displayTitle)
+/// Tint for a check's independence: agent-reported is muted (the agent's own
+/// word), hook-observed is cyan, CI/provider is green.
+func checkIndependenceTint(_ sourceType: String?) -> Color {
+    switch sourceType {
+    case "ci", "external", "provider": return Theme.green
+    case "client_hook": return Theme.cyan
+    default: return Theme.textMuted
     }
 }
 
@@ -97,7 +72,12 @@ struct StepCard: View {
                             .font(Type.tiny)
                             .foregroundStyle(Theme.textFaint)
                     }
-                    if let evidence = step.evidenceStatus {
+                    // The M2 per-step grade (self-checked / independent / …) is the
+                    // primary signal; fall back to the older evidence_status only
+                    // if an older daemon did not send a grade.
+                    if let grade = step.evidenceGrade {
+                        Chip(text: stepGradeLabel(grade), tint: stepGradeTint(grade))
+                    } else if let evidence = step.evidenceStatus {
                         Chip(text: evidence, tint: evidenceTint(evidence))
                     }
                 }
@@ -132,7 +112,14 @@ struct StepCard: View {
                                 .foregroundStyle(Theme.purple)
                         }
                     }
-                    if let why = evidenceExplanation {
+                    // "Why this grade" — the daemon-supplied reason for the M2
+                    // grade, else the older evidence_status explanation.
+                    if let why = step.evidenceGradeReason {
+                        Text(why)
+                            .font(Type.tiny)
+                            .foregroundStyle(stepGradeTint(step.evidenceGrade))
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else if let why = evidenceExplanation {
                         Text(why)
                             .font(Type.tiny)
                             .foregroundStyle(evidenceTint(step.evidenceStatus))
@@ -225,6 +212,9 @@ struct CheckRow: View {
                     .font(Type.tiny.monospacedDigit())
                     .foregroundStyle(Theme.textFaint)
             }
+            // Who attested this check — an agent-reported check is the agent's
+            // own word no matter what its summary text claims.
+            Chip(text: check.independence, tint: checkIndependenceTint(check.sourceType))
             if check.supersessionState == "superseded" {
                 Chip(text: "superseded", tint: Theme.textFaint)
             }

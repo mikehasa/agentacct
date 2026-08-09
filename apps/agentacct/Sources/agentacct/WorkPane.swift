@@ -234,10 +234,11 @@ private struct SessionDrillRow: View {
                 } else {
                     ForEach(detail.steps) { StepCard(step: $0) }
                 }
-                if !detail.descendants.isEmpty {
-                    SectionCaption(tone: Theme.textFaint, text: "Subagent sessions · \(detail.descendants.count)")
-                    ForEach(detail.descendants) { DescendantRow(child: $0) }
-                }
+                // The Task's subagents are already listed once, flat and
+                // expandable, as sibling SessionDrillRows in this group's member
+                // list. Re-listing this session's descendants here showed the
+                // same subagents a second time (a confusing "41 and 41"), so the
+                // member list is the single source of truth for the tree.
             }
         }
     }

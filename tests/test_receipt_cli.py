@@ -116,8 +116,10 @@ def test_receipt_text_render_is_scannable(tmp_path: Path) -> None:
     )["tasks"][0]["task_id"]
     result = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
     assert result.exit_code == 0, result.output
-    for marker in ("Work Receipt", "Decision status", "Evidence strength", "Provenance"):
+    for marker in ("Work Receipt", "Decision status", "Evidence coverage", "Provenance"):
         assert marker in result.output
+    # The evidence line is a coverage RATIO, not a categorical grade word.
+    assert "unchecked" in result.output or "checked" in result.output
 
 
 def test_receipt_text_survives_rich_markup_in_recorded_titles(tmp_path: Path) -> None:
