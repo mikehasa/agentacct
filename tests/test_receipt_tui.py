@@ -112,6 +112,33 @@ def test_render_receipt_markup_contains_axes_and_dimensions() -> None:
     assert "unchecked" in markup
 
 
+def test_render_receipt_markup_lists_tool_names_and_escapes_them() -> None:
+    from rich.text import Text
+
+    task = {
+        "task_id": "task_x",
+        "primary_root": {"client": "claude-code", "client_session_id": "s1"},
+        "root_keys": [{"client": "claude-code", "client_session_id": "s1"}],
+        "session_keys": [{"client": "claude-code", "client_session_id": "s1"}],
+        "sessions": [{"client": "claude-code", "client_session_id": "s1", "project": "acme", "identity_scope_state": "explicit", "last_activity_at": 100.0, "usage": {}}],
+        "session_count": 1, "supporting_count": 0, "child_count": 0, "internal_count": 0,
+        "last_activity_at": 100.0,
+        "work_items": [{"work_id": "w", "latest_status": "completed", "updated_at": 100.0}],
+        "work_associations": [],
+        "usage": {"rows": 1, "estimated_cost_usd": 0.5, "cost_complete": True, "cost_basis": "pricing_table", "total_tokens": 1000},
+        "models": ["claude-opus-4-8"],
+        # A user-controlled mcp name with bracket metacharacters must render literally.
+        "actions": {"tool_category_counts": {"execute": 3}, "tool_category_total": 3,
+                    "tool_name_counts": {"Bash": 3, "mcp__[x]__y": 1}, "tool_name_total": 4,
+                    "touched_files": [], "touched_file_count": 0},
+    }
+    markup = _render_receipt_markup(build_receipt(task, public_task_id="task_x", title="t"))
+    assert "tools:" in markup
+    assert "Bash×3" in markup
+    rendered = Text.from_markup(markup)  # must not raise (escaping)
+    assert "mcp__[x]__y×1" in rendered.plain  # metacharacters preserved literally
+
+
 def test_receipts_screen_lists_a_task_and_opens_its_detail(tmp_path: Path) -> None:
     _seed(tmp_path)
 

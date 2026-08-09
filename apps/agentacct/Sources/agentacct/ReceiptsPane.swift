@@ -287,7 +287,16 @@ struct ReceiptCards: View {
         let categories = counts.isEmpty
             ? "not instrumented"
             : counts.sorted { $0.key < $1.key }.map { "\($0.key)×\($0.value)" }.joined(separator: " ")
-        return "\(categories) · touched \(dim.touchedFileCount ?? 0) file(s)"
+        var summary = "\(categories) · touched \(dim.touchedFileCount ?? 0) file(s)"
+        // The specific tools/connectors the agent used (daemon-ranked), with the
+        // disclosed overflow — surfaced beneath the coarse category counts.
+        if let preview = dim.toolNamesPreview, !preview.isEmpty {
+            var tools = preview.map { "\($0.name)×\($0.count)" }.joined(separator: "  ")
+            let elided = dim.toolNamesElided ?? 0
+            if elided > 0 { tools += "  … +\(elided) more" }
+            summary += "\ntools: \(tools)"
+        }
+        return summary
     }
 
     private var costSummary: String {

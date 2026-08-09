@@ -1,12 +1,19 @@
-"""Privacy-safe tool-CATEGORY capture for the Receipt's Actions dimension.
+"""Tool-activity capture for the Receipt's Actions dimension.
 
-The Actions question a Receipt must answer is "what kinds of things did the
-agent do". WorkEvent (``work_events.py``) deliberately excludes tool names,
-arguments, and results, and this module holds that same line: it records only a
-COARSE CATEGORY derived from a tool's NAME (never the name itself, never its
-arguments, never a path). The taxonomy is intentionally derivable from the tool
-name ALONE — we do not try to tell ``git commit`` from ``ls`` inside ``execute``,
+The Actions question a Receipt must answer is "what did the agent reach for".
+This records, per tool call, a COARSE CATEGORY (read/edit/execute/…) AND the
+tool's NAME — a builtin like ``Read``/``Bash``, an ``mcp__server__tool`` name, or
+a custom command. It never records a tool's ARGUMENTS, its output, or any PATH:
+only the name and the category derived from it. The taxonomy is derivable from
+the name ALONE — we do not tell ``git commit`` from ``ls`` inside ``execute``,
 because that would require reading arguments.
+
+Capturing the NAME (a deliberate move from the earlier category-only line) is
+what lets the Receipt answer "which specific tool / connector did the agent
+use" — the raw material a manager or a diagnostic pass needs to reason "this
+tool caused that problem". The name is captured and stored LOCALLY like every
+other field; what to REDACT when a Receipt travels OUTSIDE its origin is a
+separate, later presentation concern, not a capture-time one.
 
 The capture path mirrors the terminal-CLI statusLine spool
 (``rate_limits.write_claude_statusline_spool``): the installed Claude Code
@@ -42,8 +49,9 @@ TOOL_CATEGORIES: frozenset[str] = frozenset(
 
 # Name-only taxonomy. Keys are lower-cased tool names. Only the tool NAME is
 # consulted — never its arguments — so this map can never leak a command, path,
-# or payload. ``mcp__*`` tools are collapsed to ``mcp`` by prefix below so no
-# specific MCP tool name is ever recorded.
+# or payload. ``mcp__*`` tools collapse to ``mcp`` HERE (the coarse category); the
+# specific ``mcp__server__tool`` name is preserved separately by
+# ``normalize_tool_name`` for the Actions tool-name breakdown.
 _CATEGORY_BY_TOOL_NAME: dict[str, str] = {
     "read": "read",
     "notebookread": "read",
@@ -73,7 +81,8 @@ def tool_category(tool_name: Any) -> str:
 
     Unknown names return ``other`` rather than being dropped, so the count of
     what the agent did stays honest. ``mcp__<server>__<tool>`` collapses to
-    ``mcp`` by prefix, so a specific MCP tool name is never recorded.
+    ``mcp`` by prefix for the CATEGORY only; the full name is kept separately by
+    ``normalize_tool_name``.
     """
 
     name = str(tool_name or "").strip().lower()
@@ -82,6 +91,28 @@ def tool_category(tool_name: Any) -> str:
     if name.startswith("mcp__"):
         return "mcp"
     return _CATEGORY_BY_TOOL_NAME.get(name, "other")
+
+
+# A hard bound on the captured NAME. A tool name is short (``Read``,
+# ``mcp__server__tool``); this only stops a pathological value from bloating the
+# spool. It bounds the name, never its content interpretation.
+_TOOL_NAME_MAX = 120
+
+
+def normalize_tool_name(tool_name: Any) -> str | None:
+    """The tiered tool-NAME captured alongside the category.
+
+    Returns the tool's identity verbatim — a builtin (``Read``/``Bash``), an
+    ``mcp__server__tool`` name, or a custom command — trimmed and length-bounded.
+    It reads ONLY the name: never arguments, never a path, never output. Blank in
+    -> ``None`` (nothing to record), so a missing name is an honest gap rather
+    than an empty string in the counts.
+    """
+
+    name = str(tool_name or "").strip()
+    if not name:
+        return None
+    return name[:_TOOL_NAME_MAX]
 
 
 def tool_activity_spool_path(store_dir: Path | str) -> Path:
@@ -94,14 +125,16 @@ def record_tool_activity_tick(
     client: str,
     session_id: str,
     category: str,
+    name: Any = None,
     at: float,
 ) -> None:
-    """Append ONE category tick to the store spool. Best-effort; never raises.
+    """Append ONE tick to the store spool. Best-effort; never raises.
 
-    Only the four small scalars ``{c, s, k, t}`` are written — client, session
-    id, category, and a timestamp. No tool name, no arguments, no path. The line
-    is a single tiny JSON object written with ``O_APPEND`` so concurrent hook
-    processes (many tool calls in flight) never corrupt or interleave lines.
+    Writes the small scalars ``{c, s, k, t}`` — client, session id, category, and
+    a timestamp — plus ``n``, the tool NAME, when one is given. No arguments, no
+    path, no output: only the name and its category. The line is a single tiny
+    JSON object written with ``O_APPEND`` so concurrent hook processes (many tool
+    calls in flight) never corrupt or interleave lines.
     """
 
     try:
@@ -113,8 +146,12 @@ def record_tool_activity_tick(
             return
         target = tool_activity_spool_path(store_dir)
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        payload = {"c": client, "s": session_id, "k": category, "t": float(at)}
+        normalized_name = normalize_tool_name(name)
+        if normalized_name:
+            payload["n"] = normalized_name
         line = json.dumps(
-            {"c": client, "s": session_id, "k": category, "t": float(at)},
+            payload,
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -166,6 +203,7 @@ def drain_tool_activity_spool(
             pass
 
     counts: dict[tuple[str, str], dict[str, int]] = {}
+    name_counts: dict[tuple[str, str], dict[str, int]] = {}
     latest: dict[tuple[str, str], float] = {}
     for line in raw.splitlines():
         line = line.strip()
@@ -187,6 +225,13 @@ def drain_tool_activity_spool(
         key = (client, session)
         bucket = counts.setdefault(key, {})
         bucket[category] = bucket.get(category, 0) + 1
+        # Tool NAME (present only on ticks written after name capture shipped —
+        # older lines simply have no ``n``, an honest undercount of names, never
+        # a wrong one).
+        name = normalize_tool_name(row.get("n"))
+        if name:
+            name_bucket = name_counts.setdefault(key, {})
+            name_bucket[name] = name_bucket.get(name, 0) + 1
         stamp = row.get("t")
         if isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
             latest[key] = max(latest.get(key, 0.0), float(stamp))
@@ -197,6 +242,24 @@ def drain_tool_activity_spool(
         digest = uuid.uuid5(
             uuid.NAMESPACE_URL, f"{batch_token}\0{client}\0{session}"
         ).hex
+        metadata: dict[str, Any] = {
+            "client": client,
+            "client_session_id": session,
+            "tool_category_counts": dict(sorted(bucket.items())),
+            "capture_basis": TOOL_ACTIVITY_CAPTURE_BASIS,
+            "captured_at": created_at,
+            "sentinel_semantic_kind": "tool_activity",
+        }
+        names = name_counts.get((client, session))
+        if names:
+            # Tool names ride as list VALUES, not dict KEYS. The store's secret
+            # redaction blanks the VALUE of any credential-shaped KEY, so a
+            # connector like ``mcp__vault__get_token`` used as a key would be
+            # silently redacted out. As ``{"name": …, "count": …}`` objects the
+            # name is a value under the innocuous key ``name`` and survives.
+            metadata["tool_names"] = [
+                {"name": name, "count": count} for name, count in sorted(names.items())
+            ]
         events.append(
             {
                 "event_id": f"toolact:{digest}",
@@ -204,14 +267,7 @@ def drain_tool_activity_spool(
                 "source": client,
                 "event_type": TOOL_ACTIVITY_EVENT_TYPE,
                 "run_id": None,
-                "metadata": {
-                    "client": client,
-                    "client_session_id": session,
-                    "tool_category_counts": dict(sorted(bucket.items())),
-                    "capture_basis": TOOL_ACTIVITY_CAPTURE_BASIS,
-                    "captured_at": created_at,
-                    "sentinel_semantic_kind": "tool_activity",
-                },
+                "metadata": metadata,
             }
         )
     return events
@@ -280,13 +336,61 @@ def build_tool_activity_by_session(
     return {key: value for key, value in result.items() if value}
 
 
+def build_tool_names_by_session(
+    events: Iterable[Mapping[str, Any]],
+) -> dict[tuple[str, str], dict[str, int]]:
+    """Sum ``tool_activity_observed`` per-NAME counts per (client, session).
+
+    Mirrors ``build_tool_activity_by_session`` for the specific tool names
+    (``Read``, ``Bash``, ``mcp__server__tool``, …). Reads the event's
+    ``tool_names`` list of ``{"name": …, "count": …}`` objects — the name is a
+    VALUE, not a dict key, so a credential-shaped connector name is never
+    redacted out by the store's secret redaction. Batches are additive, so the
+    per-session total is stable across imports. Names are an OPEN set, so unlike
+    categories they are not filtered against a fixed vocabulary — but they are
+    normalized (trimmed, length-bounded) and only positive integer counts are
+    kept. A session recorded before name capture shipped simply has no names — an
+    honest gap, never a fabricated zero.
+    """
+
+    result: dict[tuple[str, str], dict[str, int]] = {}
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        if event.get("event_type") != TOOL_ACTIVITY_EVENT_TYPE:
+            continue
+        metadata = event.get("metadata")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        client = str(metadata.get("client") or "").strip()
+        session = str(metadata.get("client_session_id") or "").strip()
+        if not client or not session:
+            continue
+        names = metadata.get("tool_names")
+        if not isinstance(names, list):
+            continue
+        bucket = result.setdefault((client, session), {})
+        for entry in names:
+            if not isinstance(entry, Mapping):
+                continue
+            name = normalize_tool_name(entry.get("name"))
+            if not name:
+                continue
+            value = entry.get("count")
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                continue
+            bucket[name] = bucket.get(name, 0) + value
+    return {key: value for key, value in result.items() if value}
+
+
 __all__ = [
     "TOOL_ACTIVITY_CAPTURE_BASIS",
     "TOOL_ACTIVITY_EVENT_TYPE",
     "TOOL_CATEGORIES",
     "build_tool_activity_by_session",
+    "build_tool_names_by_session",
     "drain_tool_activity_spool",
     "ingest_tool_activity_spool",
+    "normalize_tool_name",
     "record_tool_activity_tick",
     "tool_activity_spool_path",
     "tool_category",

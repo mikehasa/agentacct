@@ -231,6 +231,36 @@ def test_actions_with_categories_declares_hook_provenance() -> None:
     assert "hook" in actions["provenance"]
 
 
+def test_actions_dimension_exposes_tool_names_ranked_with_overflow() -> None:
+    from agentacct.receipt import RECEIPT_TOOL_NAMES_PREVIEW, tool_names_preview
+
+    # A distinct tool per rank so the top-N-by-count ordering is observable.
+    name_counts = {f"tool_{i:02d}": (100 - i) for i in range(RECEIPT_TOOL_NAMES_PREVIEW + 4)}
+    task = _task(
+        [{"work_id": "w", "latest_status": "completed", "updated_at": 100.0}],
+        actions={
+            "tool_category_counts": {"execute": 1},
+            "tool_category_total": 1,
+            "tool_name_counts": name_counts,
+            "tool_name_total": sum(name_counts.values()),
+            "touched_files": [],
+            "touched_file_count": 0,
+        },
+    )
+    actions = _receipt(task)["dimensions"]["actions"]
+    assert actions["tool_name_counts"] == name_counts  # full dict present
+    preview = actions["tool_names_preview"]
+    assert len(preview) == RECEIPT_TOOL_NAMES_PREVIEW
+    assert preview[0] == {"name": "tool_00", "count": 100}  # highest count first
+    assert actions["tool_names_elided"] == 4  # overflow disclosed, never dropped
+    assert "hook" in actions["provenance"]
+
+    # Unit: ties break by name ascending; blanks/non-positive filtered.
+    p, elided = tool_names_preview({"tool_name_counts": {"b": 2, "a": 2, "c": 0}})
+    assert [x["name"] for x in p] == ["a", "b"]
+    assert elided == 0
+
+
 def test_cost_dimension_carries_basis_without_gapping_a_complete_estimate() -> None:
     cost = _receipt(_task([{"work_id": "w", "latest_status": "completed", "updated_at": 100.0}]))["dimensions"]["cost"]
     assert cost["cost_basis"] == "pricing_table"

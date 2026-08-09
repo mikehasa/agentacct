@@ -76,6 +76,131 @@ def _seed(store: Path, *, title: str = "Add rate limit to login") -> None:
     )
 
 
+def test_receipt_detail_lists_specific_tool_names(tmp_path: Path) -> None:
+    # End-to-end: a captured tool_activity event flows through the projection into
+    # the Actions dimension, and the detail shows the SPECIFIC tools (most-used
+    # first), not merely the coarse category counts.
+    _seed(tmp_path)  # session s1
+    SentinelService(tmp_path).record_event(
+        {
+            "event_id": "toolact:s1-names",
+            "created_at": 100.0,
+            "source": "claude-code",
+            "event_type": "tool_activity_observed",
+            "run_id": None,
+            "metadata": {
+                "client": "claude-code",
+                "client_session_id": "s1",
+                "sentinel_semantic_kind": "tool_activity",
+                "tool_category_counts": {"execute": 3, "mcp": 1},
+                "tool_names": [{"name": "Bash", "count": 3}, {"name": "mcp__acme__deploy", "count": 1}],
+            },
+        }
+    )
+    task_id = json.loads(
+        runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)]).output
+    )["tasks"][0]["task_id"]
+    detail = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
+    assert detail.exit_code == 0, detail.output
+    assert "tools:" in detail.output
+    assert "Bash×3" in detail.output
+    assert "mcp__acme__deploy×1" in detail.output
+
+
+def test_credential_shaped_tool_name_survives_redaction(tmp_path: Path) -> None:
+    # Connector names are user-controlled and some look credential-ish
+    # (mcp__vault__get_token). Because names ride as list VALUES (not dict keys),
+    # the store's secret redaction must NOT blank them out — the exact tools an
+    # operator most wants to see must reach the Receipt, not vanish silently.
+    _seed(tmp_path)
+    SentinelService(tmp_path).record_event(
+        {
+            "event_id": "toolact:s1-secret",
+            "created_at": 100.0,
+            "source": "claude-code",
+            "event_type": "tool_activity_observed",
+            "run_id": None,
+            "metadata": {
+                "client": "claude-code",
+                "client_session_id": "s1",
+                "sentinel_semantic_kind": "tool_activity",
+                "tool_category_counts": {"mcp": 4},
+                "tool_names": [{"name": "mcp__vault__get_token", "count": 4}],
+            },
+        }
+    )
+    task_id = json.loads(
+        runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)]).output
+    )["tasks"][0]["task_id"]
+    detail = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
+    assert detail.exit_code == 0, detail.output
+    assert "mcp__vault__get_token×4" in detail.output
+    assert "REDACTED" not in detail.output
+
+
+def test_receipt_detail_escapes_markup_in_tool_names(tmp_path: Path) -> None:
+    # Tool names are user-controlled; a bracket-tag connector name must render
+    # literally, never be interpreted as markup or crash.
+    _seed(tmp_path)
+    SentinelService(tmp_path).record_event(
+        {
+            "event_id": "toolact:s1-markup",
+            "created_at": 100.0,
+            "source": "claude-code",
+            "event_type": "tool_activity_observed",
+            "run_id": None,
+            "metadata": {
+                "client": "claude-code",
+                "client_session_id": "s1",
+                "sentinel_semantic_kind": "tool_activity",
+                "tool_category_counts": {"mcp": 1},
+                "tool_names": [{"name": "mcp__[bold]x[/bold]__y", "count": 1}],
+            },
+        }
+    )
+    task_id = json.loads(
+        runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)]).output
+    )["tasks"][0]["task_id"]
+    detail = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
+    assert detail.exit_code == 0, detail.output
+    assert "mcp__[bold]x[/bold]__y×1" in detail.output  # literal, not interpreted
+
+
+def test_receipt_detail_discloses_tool_name_overflow(tmp_path: Path) -> None:
+    # >RECEIPT_TOOL_NAMES_PREVIEW distinct tools: the detail shows the top slice
+    # and DISCLOSES the remainder at render time, never silently truncating.
+    from agentacct.receipt import RECEIPT_TOOL_NAMES_PREVIEW
+
+    n = RECEIPT_TOOL_NAMES_PREVIEW + 4
+    names = [{"name": f"tool_{i:02d}", "count": n - i} for i in range(n)]
+    _seed(tmp_path)
+    SentinelService(tmp_path).record_event(
+        {
+            "event_id": "toolact:s1-many",
+            "created_at": 100.0,
+            "source": "claude-code",
+            "event_type": "tool_activity_observed",
+            "run_id": None,
+            "metadata": {
+                "client": "claude-code",
+                "client_session_id": "s1",
+                "sentinel_semantic_kind": "tool_activity",
+                "tool_category_counts": {"execute": 1},
+                "tool_names": names,
+            },
+        }
+    )
+    task_id = json.loads(
+        runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)]).output
+    )["tasks"][0]["task_id"]
+    detail = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
+    assert detail.exit_code == 0, detail.output
+    assert "tool_00×" in detail.output  # highest count shown
+    assert "tool_09×" in detail.output  # 10th shown (cap 10)
+    assert "tool_10×" not in detail.output  # 11th beyond the cap
+    assert "… +4 more" in detail.output  # overflow disclosed
+
+
 def test_receipts_list_json(tmp_path: Path) -> None:
     _seed(tmp_path)
     result = runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)])

@@ -681,6 +681,10 @@ struct ReceiptActionsDim: Decodable {
     let toolCategoryTotal: Int?
     let touchedFiles: [String]?
     let touchedFileCount: Int?
+    // The specific tools the agent used (daemon-ranked, most-used first) + the
+    // disclosed overflow. Optional so an older payload without them still decodes.
+    let toolNamesPreview: [ReceiptToolName]?
+    let toolNamesElided: Int?
     let provenance: [String]?
     let gaps: [String]?
 
@@ -689,8 +693,16 @@ struct ReceiptActionsDim: Decodable {
         case toolCategoryTotal = "tool_category_total"
         case touchedFiles = "touched_files"
         case touchedFileCount = "touched_file_count"
+        case toolNamesPreview = "tool_names_preview"
+        case toolNamesElided = "tool_names_elided"
         case provenance, gaps
     }
+}
+
+struct ReceiptToolName: Decodable, Identifiable {
+    let name: String
+    let count: Int
+    var id: String { name }
 }
 
 struct ReceiptCostDim: Decodable {
