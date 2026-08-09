@@ -221,6 +221,39 @@ def test_actions_shows_touched_files_and_gaps_missing_categories() -> None:
     assert "mcp" in actions["provenance"]
 
 
+def test_touched_files_preview_caps_and_discloses_overflow() -> None:
+    from agentacct.receipt import RECEIPT_TOUCHED_FILES_PREVIEW, touched_files_preview
+
+    files = [f"src/f{i}.py" for i in range(RECEIPT_TOUCHED_FILES_PREVIEW + 5)]
+    shown, elided = touched_files_preview({"touched_files": files})
+    assert shown == files[:RECEIPT_TOUCHED_FILES_PREVIEW]
+    assert elided == 5  # the overflow is disclosed, never silently dropped
+
+    # Under the cap: everything shown, nothing elided; blanks are ignored.
+    shown, elided = touched_files_preview({"touched_files": ["src/a.py", "", "  "]})
+    assert shown == ["src/a.py"]
+    assert elided == 0
+
+    # No files → empty preview, no overflow.
+    assert touched_files_preview({}) == ([], 0)
+
+
+def test_actions_dimension_bakes_the_capped_preview_and_overflow() -> None:
+    # The daemon computes the preview slice + overflow ONCE, so every surface
+    # renders the same values and the cap has a single source of truth.
+    from agentacct.receipt import RECEIPT_TOUCHED_FILES_PREVIEW
+
+    files = [f"src/f{i}.py" for i in range(RECEIPT_TOUCHED_FILES_PREVIEW + 3)]
+    task = _task(
+        [{"work_id": "w", "latest_status": "completed", "updated_at": 100.0, "files": files}],
+        actions={"tool_category_counts": {}, "tool_category_total": 0, "touched_files": files, "touched_file_count": len(files)},
+    )
+    actions = _receipt(task)["dimensions"]["actions"]
+    assert actions["touched_files"] == files  # full list still present
+    assert actions["touched_files_preview"] == files[:RECEIPT_TOUCHED_FILES_PREVIEW]
+    assert actions["touched_files_elided"] == 3
+
+
 def test_actions_with_categories_declares_hook_provenance() -> None:
     task = _task(
         [{"work_id": "w", "latest_status": "completed", "updated_at": 100.0}],

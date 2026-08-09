@@ -9070,7 +9070,17 @@ def _render_receipt_text(receipt: dict[str, Any]) -> None:
     actions = dims.get("actions", {})
     actions_summary = _receipt_category_text(actions.get("tool_category_counts") or {})
     actions_summary += f"  · touched {int(actions.get('touched_file_count') or 0)} file(s)"
-    table.add_row("Actions", _rich_escape(actions_summary), ", ".join(actions.get("provenance") or []))
+    shown_files = actions.get("touched_files_preview") or []
+    elided_files = int(actions.get("touched_files_elided") or 0)
+    if shown_files:
+        # Show the actual artifact paths, not just the count. The daemon already
+        # capped the slice and disclosed the overflow; only the count was ever
+        # surfaced before.
+        lines = "\n".join(str(path) for path in shown_files)
+        if elided_files:
+            lines += f"\n… +{elided_files} more"
+        actions_summary += f"\n[dim]{_rich_escape(lines)}[/dim]"
+    table.add_row("Actions", actions_summary, ", ".join(actions.get("provenance") or []))
 
     cost = dims.get("cost", {})
     table.add_row("Cost", _receipt_cost_text(cost), ", ".join(cost.get("provenance") or []))

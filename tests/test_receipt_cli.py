@@ -122,6 +122,92 @@ def test_receipt_text_render_is_scannable(tmp_path: Path) -> None:
     assert "unchecked" in result.output or "checked" in result.output
 
 
+def test_receipt_detail_discloses_touched_files_overflow(tmp_path: Path) -> None:
+    # >12 touched files: the CLI shows the 12-path preview and DISCLOSES the
+    # remainder ("… +N more"), never silently truncating — exercised at the
+    # acceptance layer, not just the shared unit helper.
+    files = [f"src/f{i:02d}.py" for i in range(15)]
+    SentinelService(tmp_path).record_event(
+        {
+            "event_id": "evt_sec_many",
+            "created_at": 100.0,
+            "source": "claude-code",
+            "event_type": "section_completed",
+            "run_id": None,
+            "metadata": {
+                "sentinel_semantic_kind": "section",
+                "client": "claude-code",
+                "client_session_id": "s1",
+                "client_context_keys_authored": ["client_session_id"],
+                "project_dir": "/tmp/project",
+                "session_namespace_fingerprint": NS,
+                "identity_scope_state": "explicit",
+                "section_id": "sec-many",
+                "section_status": "completed",
+                "section_title": "t",
+                "objective": "t",
+                "kind": "implementation",
+                "files": files,
+            },
+        }
+    )
+    task_id = json.loads(
+        runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)]).output
+    )["tasks"][0]["task_id"]
+    detail = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
+    assert detail.exit_code == 0, detail.output
+    assert "src/f11.py" in detail.output  # 12th path (index 11) is shown
+    assert "src/f12.py" not in detail.output  # 13th is beyond the cap
+    assert "… +3 more" in detail.output  # overflow disclosed
+
+
+def test_receipt_detail_lists_touched_file_paths(tmp_path: Path) -> None:
+    # The seeded section records files=["src/login.py"]; the detail must now show
+    # the actual path, not merely "touched 1 file(s)".
+    _seed(tmp_path)
+    task_id = json.loads(
+        runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)]).output
+    )["tasks"][0]["task_id"]
+    detail = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
+    assert detail.exit_code == 0, detail.output
+    assert "src/login.py" in detail.output
+
+
+def test_receipt_detail_escapes_markup_in_touched_paths(tmp_path: Path) -> None:
+    # File paths are user-controlled; a bracket-tag path must render literally,
+    # never interpreted (no MarkupError, no silent tag drop / injection).
+    SentinelService(tmp_path).record_event(
+        {
+            "event_id": "evt_sec_markup",
+            "created_at": 100.0,
+            "source": "claude-code",
+            "event_type": "section_completed",
+            "run_id": None,
+            "metadata": {
+                "sentinel_semantic_kind": "section",
+                "client": "claude-code",
+                "client_session_id": "s1",
+                "client_context_keys_authored": ["client_session_id"],
+                "project_dir": "/tmp/project",
+                "session_namespace_fingerprint": NS,
+                "identity_scope_state": "explicit",
+                "section_id": "sec-markup",
+                "section_status": "completed",
+                "section_title": "t",
+                "objective": "t",
+                "kind": "implementation",
+                "files": ["src/[red]evil[/red].py"],
+            },
+        }
+    )
+    task_id = json.loads(
+        runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)]).output
+    )["tasks"][0]["task_id"]
+    detail = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
+    assert detail.exit_code == 0, detail.output
+    assert "[red]evil[/red].py" in detail.output  # literal, not interpreted away
+
+
 def test_receipt_text_survives_rich_markup_in_recorded_titles(tmp_path: Path) -> None:
     # Agent-recorded titles/objectives are arbitrary text; a bracket-tag title
     # must never crash the render (MarkupError) or be silently reinterpreted.

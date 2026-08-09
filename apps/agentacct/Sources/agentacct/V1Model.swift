@@ -681,6 +681,12 @@ struct ReceiptActionsDim: Decodable {
     let toolCategoryTotal: Int?
     let touchedFiles: [String]?
     let touchedFileCount: Int?
+    // The daemon-capped preview slice + disclosed overflow — the app renders these
+    // directly so the cap has a single source of truth (the daemon) and can never
+    // drift from the CLI/TUI. Optional so an older payload without them still
+    // decodes (the app then falls back to slicing touchedFiles).
+    let touchedFilesPreview: [String]?
+    let touchedFilesElided: Int?
     let provenance: [String]?
     let gaps: [String]?
 
@@ -689,6 +695,8 @@ struct ReceiptActionsDim: Decodable {
         case toolCategoryTotal = "tool_category_total"
         case touchedFiles = "touched_files"
         case touchedFileCount = "touched_file_count"
+        case touchedFilesPreview = "touched_files_preview"
+        case touchedFilesElided = "touched_files_elided"
         case provenance, gaps
     }
 }
