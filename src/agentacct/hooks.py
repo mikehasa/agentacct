@@ -510,6 +510,77 @@ def capture_tool_activity(raw: str, *, store_dir: Path | str | None = None) -> N
         return
 
 
+def _hook_exit_code(event: dict[str, Any]) -> int | None:
+    """Read the Bash exit code from a PostToolUse event, tolerant of the
+    tool_output/tool_response key and exit_code/exitCode/code spellings. 0 is a
+    valid value, so a missing code (None) is kept distinct from success (0)."""
+
+    for container_key in ("tool_output", "tool_response", "toolOutput"):
+        container = event.get(container_key)
+        if not isinstance(container, dict):
+            continue
+        for code_key in ("exit_code", "exitCode", "returnCode", "code"):
+            value = container.get(code_key)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, int):
+                return value
+    return None
+
+
+def capture_mechanical_check(raw: str, *, store_dir: Path | str | None = None) -> None:
+    """Record ONE mechanical-check tick for this PostToolUse. Never raises.
+
+    When the agent ran a recognized test / build / lint / typecheck command, spool
+    the exit code the HARNESS observed — the only local source of a check that is
+    independent of the agent's own report, and what lifts a step to
+    ``independently_checked``. Only a coarse check kind, the runner name, and a
+    sha256 command DIGEST are spooled — never the command string, its arguments,
+    or its output. The spool lands in the SAME store as the tool-activity and
+    client-context bridges so the usage importer drains them from one place.
+    """
+
+    try:
+        from .mechanical_capture import (
+            classify_command,
+            command_digest,
+            record_mechanical_check_tick,
+        )
+
+        event = json.loads(raw or "{}")
+        if not isinstance(event, dict):
+            return
+        if str(event.get("tool_name") or event.get("tool") or "").lower() != "bash":
+            return
+        session_id = event.get("session_id")
+        if not isinstance(session_id, str) or not session_id or len(session_id) > _MAX_CONTEXT_ID_LENGTH:
+            return
+        tool_input = event.get("tool_input") if isinstance(event.get("tool_input"), dict) else {}
+        command = tool_input.get("command")
+        classified = classify_command(command)
+        if classified is None:
+            return
+        exit_code = _hook_exit_code(event)
+        if exit_code is None:
+            return
+        target = Path(store_dir) if store_dir is not None else _hook_store_dir_from_event(event)
+        if target is None:
+            return
+        check_kind, runner = classified
+        record_mechanical_check_tick(
+            target,
+            client="claude-code",
+            session_id=session_id,
+            check_kind=check_kind,
+            runner=runner,
+            digest=command_digest(str(command or "")),
+            exit_code=exit_code,
+            at=time.time(),
+        )
+    except Exception:  # noqa: BLE001 - capture must never affect the hook.
+        return
+
+
 def is_subagent_session_start(event: Any) -> bool:
     """True when a SessionStart event fired inside a subagent session.
 
@@ -818,12 +889,15 @@ _AGENT_CHRONICLE_EXECUTABLE_NAMES = (
 _CLAUDE_HOOK_WRAPPER_TEMPLATE = '''#!/usr/bin/env python3
 """Project-local Claude Code hook wrapper for agentacct.
 
-One wrapper serves BOTH hook events (dispatch on the event's own
+One wrapper serves all three hook events (dispatch on the event's own
 `hook_event_name`, so a single settings command line covers them):
 - PreToolUse: writes a agentacct allow/checkpoint/block decision JSON and
   captures per-session client context (session/transcript ids) for joins.
 - SessionStart: captures the same client context at session start and returns
   additionalContext directing the agent to record its work as sections.
+- PostToolUse: observes the exit code of test/build/lint/typecheck commands as
+  an independent machine check. Read-only — returns an empty response, never
+  blocks or edits the tool result.
 
 This wrapper intentionally shells out to the installed `agentacct` CLI so
 projects can inspect or customize it before wiring it into their Claude Code
@@ -879,8 +953,9 @@ def resolve_agentacct():
 
 def fail_open(reason, hook_event=""):
     sys.stderr.write("agentacct hook: %s; failing open\\n" % reason)
-    if hook_event == "SessionStart":
-        # The no-op SessionStart response is an empty object (nothing to add).
+    if hook_event in ("SessionStart", "PostToolUse"):
+        # SessionStart / PostToolUse no-op: an empty object. PostToolUse in
+        # particular must never block or edit the tool result on failure.
         sys.stdout.write("{}\\n")
     else:
         # "agent_sentinel" is a frozen wire key (pre-rename): consumers parse it.
@@ -903,12 +978,15 @@ def main():
                 HOOK_EVENT = value
     except ValueError:
         pass
-    subcommand = "session-start" if HOOK_EVENT == "SessionStart" else "pre-tool-use"
+    subcommand = {
+        "SessionStart": "session-start",
+        "PostToolUse": "post-tool-use",
+    }.get(HOOK_EVENT, "pre-tool-use")
     executable = resolve_agentacct()
     if executable is None:
         return fail_open("agentacct executable not found (re-run: agentacct hooks claude-code install --force)", HOOK_EVENT)
     # Equivalent shell command:
-    # agentacct hooks claude-code <pre-tool-use|session-start> [extra args]
+    # agentacct hooks claude-code <pre-tool-use|post-tool-use|session-start> [extra args]
     try:
         proc = subprocess.run(
             [executable, "hooks", "claude-code", subcommand, *AGENT_CHRONICLE_HOOK_ARGS],
@@ -1030,6 +1108,21 @@ def claude_code_settings_example(python_executable: str | None = None, *, hook_p
             ],
             "SessionStart": [
                 {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": command,
+                        }
+                    ],
+                }
+            ],
+            # PostToolUse observes the exit code of test/build/lint/typecheck
+            # commands (source client_hook) — the only local INDEPENDENT check,
+            # what lifts a step to independently_checked. Read-only: the wrapper
+            # returns an empty response and never blocks or edits a tool result.
+            "PostToolUse": [
+                {
+                    "matcher": "*",
                     "hooks": [
                         {
                             "type": "command",

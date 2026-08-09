@@ -107,7 +107,12 @@ from .store_resolution import is_recognized_global_store
 from .supervisor import OwnedSupervisor, SupervisorError
 from .task_continuations import ContinuationTaskStore
 from .task_identity import TaskIdentityCodec
-from .task_outcome import evidence_event_key, finding_check_key, latest_check_events
+from .task_outcome import (
+    NON_CHECK_RELEVANT_KINDS,
+    evidence_event_key,
+    finding_check_key,
+    latest_check_events,
+)
 from .task_projection import build_task_projection
 from .receipt import (
     RECEIPT_SCHEMA_VERSION,
@@ -1269,6 +1274,87 @@ def _evidence_work_fact_compatible(
     return True
 
 
+def _link_mechanical_checks_by_session_time(projection: dict[str, Any]) -> dict[str, Any]:
+    """Option A: credit a PASSING ``client_hook`` check (a hook-observed exit
+    code) to the most recent CHECK-RELEVANT step begun in its session at or
+    before the check's time — the work a test/build/lint actually exercises —
+    which lifts that step from ``self_checked`` to ``independently_checked``.
+
+    A hook check carries a ``client_session_id`` and a timestamp but NO section
+    id (the harness sees the command, not which recorded step it was for), so
+    ``_attach_evidence_to_task_projection`` leaves it at the task level. Two
+    honesty guards keep this from misattributing:
+      * only a PASSING hook check is placed — a failing one is never guessed onto
+        a step (that would falsely demote an unrelated verified step); it stays
+        task-level, visible on the decision axis.
+      * only a check-relevant step (kind not research/review/planning/docs) is a
+        candidate — a test never credits a docs step.
+    A check that fits no eligible step (none had begun in that session yet) stays
+    task-level and is disclosed as an unattributed check in the receipt ledger —
+    never guessed onto an arbitrary step.
+    """
+
+    tasks = projection.get("tasks") if isinstance(projection.get("tasks"), list) else []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        items = [item for item in (task.get("work_items") or []) if isinstance(item, dict)]
+        if not items:
+            continue
+        by_session: dict[str, list[dict[str, Any]]] = {}
+        for item in items:
+            # A test/build/lint only exercises check-relevant work — a docs or
+            # planning step is never a candidate (crediting it would also make the
+            # check vanish from the ledger, since a non-checkable step is excluded
+            # from the tiers).
+            if str(item.get("kind") or "unknown").lower() in NON_CHECK_RELEVANT_KINDS:
+                continue
+            session_id = str(item.get("client_session_id") or "")
+            if session_id:
+                by_session.setdefault(session_id, []).append(item)
+        for group in by_session.values():
+            group.sort(key=lambda item: float(item.get("started_at") or item.get("updated_at") or 0.0))
+        # Gather the task-level hook checks from BOTH pools _attach populates
+        # (a check may land in current_check_events and/or task_evidence_events);
+        # the per-item append dedups, so seeing one twice is harmless.
+        pool: list[Any] = []
+        for pool_key in ("current_check_events", "task_evidence_events"):
+            value = task.get(pool_key)
+            if isinstance(value, list):
+                pool.extend(value)
+        for check in pool:
+            if not isinstance(check, Mapping):
+                continue
+            if str(check.get("source_type") or "") != "client_hook":
+                continue
+            # Only positive proof is placed on a step; a failing hook check is
+            # never guessed onto a step (that would falsely demote an unrelated
+            # verified step) — it stays task-level, visible on the decision axis.
+            if str(check.get("result") or "").lower() != "passed":
+                continue
+            session_id = str(check.get("client_session_id") or "")
+            group = by_session.get(session_id)
+            if not group:
+                continue
+            at = float(check.get("created_at") or check.get("occurred_at") or check.get("time") or 0.0)
+            if at <= 0:
+                continue
+            active: dict[str, Any] | None = None
+            for item in group:  # ascending by started_at
+                if float(item.get("started_at") or item.get("updated_at") or 0.0) <= at:
+                    active = item
+                else:
+                    break
+            if active is None:
+                continue
+            current = active.get("current_check_events") if isinstance(active.get("current_check_events"), list) else []
+            key = _evidence_event_key(check)
+            if all(_evidence_event_key(existing) != key for existing in current):
+                current.append(dict(check))
+                active["current_check_events"] = current
+    return projection
+
+
 def _attach_evidence_to_task_projection(
     projection: dict[str, Any],
     evidence_events: list[dict[str, Any]],
@@ -2053,6 +2139,11 @@ def _dashboard_task_projection(data: _DashboardPageData) -> dict[str, Any]:
         all_evidence_events,
         require_namespace_for_client_hook=data.store_scope != "project",
     )
+    # Option A: place hook-observed checks (no section id) on the step active in
+    # their session at the time they ran, so a real test/build/lint lifts that
+    # step to independently_checked; unplaceable ones stay disclosed as
+    # unattributed in the ledger.
+    projection = _link_mechanical_checks_by_session_time(projection)
     if data.store_scope == "project":
         unassigned = projection.get("unassigned_findings")
         if isinstance(unassigned, list):
