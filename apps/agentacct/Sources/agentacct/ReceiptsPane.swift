@@ -20,14 +20,39 @@ func receiptDecisionTint(_ key: String?) -> Color {
     }
 }
 
-/// Evidence-strength color (how well PROVEN). A failing check is never "strong"
-/// proof — it lands on the decision axis as a finding, not here.
+/// Evidence-coverage color, keyed on the strongest tier present (most
+/// independent is warmest). A failing check is never positive proof — it lands
+/// on the decision axis as a finding, not here.
 func receiptEvidenceTint(_ key: String?) -> Color {
     switch key {
-    case "verified": return Theme.green
-    case "checked": return Theme.blue
-    case "reported": return Theme.orange
-    default: return Theme.textMuted
+    case "externally_verified": return Theme.green
+    case "independently_checked": return Theme.cyan
+    case "self_checked": return Theme.blue
+    case "unchecked": return Theme.orange
+    default: return Theme.textMuted  // undefined / not gradeable
+    }
+}
+
+/// Per-step evidence-grade color (adds ``claimed`` / ``none`` to the tier ramp).
+func stepGradeTint(_ grade: String?) -> Color {
+    switch grade {
+    case "externally_verified": return Theme.green
+    case "independently_checked": return Theme.cyan
+    case "self_checked": return Theme.blue
+    case "claimed": return Theme.orange
+    default: return Theme.textMuted  // none
+    }
+}
+
+/// Short chip label for a per-step grade.
+func stepGradeLabel(_ grade: String?) -> String {
+    switch grade {
+    case "externally_verified": return "external"
+    case "independently_checked": return "independent"
+    case "self_checked": return "self-checked"
+    case "claimed": return "unchecked"
+    case "none": return "none"
+    default: return grade ?? "none"
     }
 }
 
@@ -59,7 +84,7 @@ struct ReceiptRow: View {
                 .lineLimit(2)
             HStack(spacing: 6) {
                 AxisChip(text: task.decisionStatus.key, tint: receiptDecisionTint(task.decisionStatus.key))
-                AxisChip(text: task.evidenceStrength.key, tint: receiptEvidenceTint(task.evidenceStrength.key))
+                AxisChip(text: task.evidenceStrength.compactHeadline, tint: receiptEvidenceTint(task.evidenceStrength.key))
                 Spacer()
                 Text(task.cost.text).font(.caption).foregroundStyle(Theme.textMuted)
             }
@@ -125,13 +150,7 @@ struct ReceiptCards: View {
                     detail: assertedText(receipt.axes.decisionStatus.assertedBy),
                     note: receipt.axes.decisionStatus.statement
                 )
-                axisRow(
-                    label: "Evidence strength",
-                    key: receipt.axes.evidenceStrength.key,
-                    tint: receiptEvidenceTint(receipt.axes.evidenceStrength.key),
-                    detail: evidenceDetail(receipt.axes.evidenceStrength),
-                    note: receipt.axes.evidenceStrength.strongestProof.map { "strongest proof: \($0)" }
-                )
+                evidenceCoverageRow(receipt.axes.evidenceStrength)
                 if let orthogonality = receipt.axes.orthogonalityNote {
                     Text(orthogonality).font(.caption).foregroundStyle(Theme.textFaint)
                 }
@@ -149,6 +168,26 @@ struct ReceiptCards: View {
             if let note {
                 Text(note).font(.caption).foregroundStyle(Theme.textFaint)
                     .padding(.leading, 138)
+            }
+        }
+    }
+
+    /// Evidence coverage: the ratio headline (NOT uppercased — it is counts) with
+    /// the honest ledger and the one-line definition beneath it.
+    private func evidenceCoverageRow(_ evidence: ReceiptEvidence) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("Evidence coverage").font(.caption).foregroundStyle(Theme.textMuted)
+                    .frame(width: 130, alignment: .leading)
+                Text(evidence.headline).font(.callout).fontWeight(.bold)
+                    .foregroundStyle(receiptEvidenceTint(evidence.key))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let ledger = evidence.ledger {
+                Text(ledger).font(.caption).foregroundStyle(Theme.textMuted).padding(.leading, 138)
+            }
+            if let definition = evidence.definition {
+                Text(definition).font(.caption).foregroundStyle(Theme.textFaint).padding(.leading, 138)
             }
         }
     }
@@ -271,10 +310,5 @@ struct ReceiptCards: View {
     private func assertedText(_ assertedBy: String?) -> String? {
         guard let assertedBy else { return nil }
         return "asserted by \(assertedBy)"
-    }
-
-    private func evidenceDetail(_ evidence: ReceiptEvidence) -> String {
-        "\(evidence.verifiedStepCount ?? 0)/\(evidence.totalStepCount ?? 0) steps verified · "
-            + "\(evidence.checksTotal ?? 0) checks, \(evidence.checksPassed ?? 0) passed"
     }
 }

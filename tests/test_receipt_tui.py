@@ -103,8 +103,13 @@ def test_render_receipt_markup_contains_axes_and_dimensions() -> None:
         "actions": {"tool_category_counts": {}, "tool_category_total": 0, "touched_files": [], "touched_file_count": 0},
     }
     markup = _render_receipt_markup(build_receipt(task, public_task_id="task_x", title="Add rate limit"))
-    for marker in ("Decision status", "Evidence strength", "[b]Task[/]", "[b]Cost[/]", "Provenance"):
+    for marker in ("Decision status", "Evidence coverage", "[b]Task[/]", "[b]Cost[/]", "Provenance"):
         assert marker in markup
+    # The evidence line is a coverage RATIO, not a bare axis phrase. Assert the
+    # actual content (one completed no-check step reads "1 unchecked") so a
+    # regression that empties the headline cannot hide behind the orthogonality
+    # note, which also contains the phrase "Evidence coverage".
+    assert "unchecked" in markup
 
 
 def test_receipts_screen_lists_a_task_and_opens_its_detail(tmp_path: Path) -> None:
@@ -132,6 +137,9 @@ def test_receipts_screen_lists_a_task_and_opens_its_detail(tmp_path: Path) -> No
             assert isinstance(app.screen, ReceiptDetailScreen)
             assert app.screen.query_one("#receipt-body", Static) is not None
             assert "Decision status" in app.screen._body_text
-            assert "Evidence strength" in app.screen._body_text
+            assert "Evidence coverage" in app.screen._body_text
+            # Assert the ratio content, not just the axis phrase (which the
+            # orthogonality note also contains).
+            assert "unchecked" in app.screen._body_text
 
     _run(scenario())

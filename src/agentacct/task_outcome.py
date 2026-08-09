@@ -33,6 +33,42 @@ _HANDED_OFF_STATUS = "handed_off"
 # progress" to an equally honest partial state; it never infers completion.
 _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS = 24 * 60 * 60
 
+# --- Per-step evidence grade (M2) --------------------------------------------
+# ONE vocabulary, shared by the per-step grade and the task-level headline,
+# ordered by WHO attested — most independent of the agent-under-test wins. It is
+# derived ONLY from recorded checks + step status, the same disjoint inputs as
+# the task evidence axis, so it never rises on an agent's "done" or a human
+# review. On this machine, and today, every real check is agent-reported, so the
+# top two rungs stay empty until a hook / CI source populates them — that is the
+# honest picture, not a bug.
+GRADE_NONE = "none"
+GRADE_CLAIMED = "claimed"
+GRADE_SELF_CHECKED = "self_checked"
+GRADE_INDEPENDENTLY_CHECKED = "independently_checked"
+GRADE_EXTERNALLY_VERIFIED = "externally_verified"
+
+EVIDENCE_GRADE_RANK: dict[str, int] = {
+    GRADE_NONE: 0,
+    GRADE_CLAIMED: 1,
+    GRADE_SELF_CHECKED: 2,
+    GRADE_INDEPENDENTLY_CHECKED: 3,
+    GRADE_EXTERNALLY_VERIFIED: 4,
+}
+
+# A step is graded as a terminal success on these statuses. ``resolved`` (an
+# evidence-backed blocker resolution) is graded like a completion here, even
+# though ``_step_is_verified`` — kept deliberately untouched for the decision
+# axis — counts only completed/passed. The grade shows evidence per step; the
+# verified-count is the conservative all-or-nothing measure feeding the outcome
+# reducer. They agree on completed/passed steps (asserted by a test).
+_GRADE_SUCCESS_STATUSES = {"completed", "passed", "resolved"}
+
+# A step whose ``kind`` is one of these produces no machine-verifiable artifact,
+# so it is EXCUSED from the task headline (it still carries a per-step grade).
+# Every other kind — including ``unknown``/``other`` — is check-relevant: an
+# unlabeled step does not get a free pass. See the M2 spec (owner decision Q2).
+NON_CHECK_RELEVANT_KINDS = {"research", "review", "planning", "docs"}
+
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
@@ -82,6 +118,95 @@ def _step_is_verified(item: Mapping[str, Any]) -> bool:
     projected_checks = isinstance(item.get("current_check_events"), list)
     evidence_strong = _text(item.get("evidence_status")).lower() == "strong"
     return latest_all_pass or (evidence_strong and not checks and not projected_checks)
+
+
+def _check_independence(event: Mapping[str, Any]) -> str:
+    """How independent of the agent-under-test is this check? ``external`` >
+    ``independent`` > ``self``.
+
+    Keyed ONLY on the trusted ``source_type``. The raw ``source`` is
+    agent-authored — ``agentacct_record_machine_check`` takes it verbatim, and
+    the ledger hard-codes ``source_type='mcp_agent_reported'`` for every MCP
+    check regardless — so trusting ``source`` here would let an agent forge the
+    external tier simply by naming its source ``github_actions``. A real
+    CI/provider check carries a trusted ``source_type`` in {ci, external,
+    provider}; the hook path sets ``client_hook``. Everything else is the
+    agent's own word, no matter what its ``source`` or summary claims.
+    """
+
+    source_type = _text(event.get("source_type")).lower()
+    if source_type in {"ci", "external", "provider"}:
+        return "external"
+    if source_type == "client_hook":
+        return "independent"
+    return "self"
+
+
+_INDEPENDENCE_GRADE = {
+    "external": GRADE_EXTERNALLY_VERIFIED,
+    "independent": GRADE_INDEPENDENTLY_CHECKED,
+    "self": GRADE_SELF_CHECKED,
+}
+_INDEPENDENCE_RANK = {"self": 0, "independent": 1, "external": 2}
+
+
+def step_evidence_grade(item: Mapping[str, Any]) -> dict[str, Any]:
+    """Grade ONE step by the strongest POSITIVE proof for it.
+
+    Positive proof only: a failing check never lifts the grade — it lands on the
+    decision axis as a finding. The grade reads the SAME check series
+    ``_step_is_verified`` reads, so a step graded ``self_checked`` or better is
+    exactly a verified step (on completed/passed statuses), and the grade and the
+    verified-count can never disagree. Returns ``{grade, reason, checks}``.
+    """
+
+    status = _text(item.get("latest_status")).lower()
+    if status not in _GRADE_SUCCESS_STATUSES:
+        detail = status or "no status"
+        return {"grade": GRADE_NONE, "reason": f"{detail}: not a terminal success — nothing proven", "checks": 0}
+    raw = (
+        item.get("current_check_events")
+        if isinstance(item.get("current_check_events"), list)
+        else item.get("evidence_events")
+    )
+    events = [event for event in raw if isinstance(event, Mapping)] if isinstance(raw, list) else []
+    checks = latest_check_events(events, task_scoped=True)
+    latest_all_pass = bool(checks) and all(
+        _text(event.get("result")).lower() == "passed" for event in checks
+    )
+    if latest_all_pass:
+        tier = max(
+            (_check_independence(event) for event in checks),
+            key=lambda name: _INDEPENDENCE_RANK[name],
+        )
+        grade = _INDEPENDENCE_GRADE[tier]
+        proof = _text(
+            next(
+                (
+                    event.get("name") or event.get("summary")
+                    for event in checks
+                    if _check_independence(event) == tier
+                ),
+                "",
+            )
+        ) or "a recorded check"
+        reason = {
+            GRADE_EXTERNALLY_VERIFIED: f"CI/provider check passed ({proof[:60]})",
+            GRADE_INDEPENDENTLY_CHECKED: f"the harness observed a check pass ({proof[:60]}) — independent of the agent",
+            GRADE_SELF_CHECKED: f"the agent reported a check passed ({proof[:60]}) — the agent's own, not independent",
+        }[grade]
+        return {"grade": grade, "reason": reason, "checks": len(checks)}
+    projected_checks = isinstance(item.get("current_check_events"), list)
+    evidence_strong = _text(item.get("evidence_status")).lower() == "strong"
+    if evidence_strong and not checks and not projected_checks:
+        return {"grade": GRADE_SELF_CHECKED, "reason": "agent-reported evidence, no linked check series", "checks": 0}
+    if any(_text(event.get("result")).lower() in {"failed", "error"} for event in checks):
+        return {
+            "grade": GRADE_CLAIMED,
+            "reason": "marked done, but a recorded check is currently failing (see the decision axis)",
+            "checks": len(checks),
+        }
+    return {"grade": GRADE_CLAIMED, "reason": "marked done; no passing machine check for this step", "checks": 0}
 
 
 def step_verification_counts(task: Mapping[str, Any]) -> dict[str, int]:
@@ -502,8 +627,16 @@ __all__ = [
     "evidence_event_key",
     "finding_check_key",
     "step_verification_counts",
+    "step_evidence_grade",
     "latest_check_events",
     "latest_task_checks",
     "task_newest_event_at",
     "reduce_task_outcome",
+    "EVIDENCE_GRADE_RANK",
+    "GRADE_NONE",
+    "GRADE_CLAIMED",
+    "GRADE_SELF_CHECKED",
+    "GRADE_INDEPENDENTLY_CHECKED",
+    "GRADE_EXTERNALLY_VERIFIED",
+    "NON_CHECK_RELEVANT_KINDS",
 ]
