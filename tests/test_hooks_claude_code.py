@@ -764,11 +764,16 @@ def test_render_wrapper_embeds_absolute_path_with_bare_name_fallback():
 
     assert "'/opt/venv/bin/agent-sentinel'" in text
     assert "'agent-chronicle'" in text
-    # The wrapper dispatches on hook_event_name: SessionStart events run the
-    # session-start subcommand, everything else runs pre-tool-use. The parsed
+    # The wrapper dispatches on hook_event_name: SessionStart -> session-start,
+    # PostToolUse -> post-tool-use, everything else -> pre-tool-use. The parsed
     # event name lives in a module-global so the __main__ last-resort handler
     # fails open with the event-appropriate shape too.
-    assert '"session-start" if HOOK_EVENT == "SessionStart" else "pre-tool-use"' in text
+    assert '"SessionStart": "session-start"' in text
+    assert '"PostToolUse": "post-tool-use"' in text
+    assert '.get(HOOK_EVENT, "pre-tool-use")' in text
+    # PostToolUse (like SessionStart) fails open to an empty object, never a
+    # blocking decision.
+    assert 'hook_event in ("SessionStart", "PostToolUse")' in text
     assert '[executable, "hooks", "claude-code", subcommand, *AGENT_CHRONICLE_HOOK_ARGS]' in text
     # Bytes + replace: undecodable stdin can never raise before the event is known.
     assert 'sys.stdin.buffer.read().decode("utf-8", "replace")' in text

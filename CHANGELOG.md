@@ -7,6 +7,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Independent checks from a PostToolUse hook — the only local evidence that is
+  not the agent's own word.** When the agent runs a recognized test / build /
+  lint / typecheck command, the installed Claude Code PostToolUse hook records
+  the exit code the HARNESS observed and projects it as a `client_hook` machine
+  check — which lifts that step from `self-checked` (the agent said so) to
+  `independently-checked`. Privacy holds the WorkEvent line exactly like the
+  tool-category capture: only a coarse check kind, the runner name, and a sha256
+  DIGEST of the command are ever recorded — never the command string, its
+  arguments, its environment, or its output; an unrecognized or ambiguous
+  command is not captured at all. Because the hook sees the command but not which
+  recorded step it was for, each check is attached to the step that was active in
+  its session when it ran; any that cannot be placed is disclosed as an
+  unattributed check in the Receipt's evidence ledger, never guessed onto a step.
+  Read-only: the hook never blocks or edits a tool result. Re-run
+  `agentacct hooks claude-code install --force` (or `agentacct onboard`) to add
+  the PostToolUse entry.
 - **The Work Receipt — one canonical answer to "what did this task do, and can I
   trust it".** A new `agentacct.receipt.v1` projects one converged Task (a root
   session with its continuations and subagents) into the eight questions a

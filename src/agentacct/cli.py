@@ -120,6 +120,7 @@ from .hooks import (
     CLAUDE_HOOK_RELATIVE_PATH,
     capture_claude_code_client_context,
     capture_tool_activity,
+    capture_mechanical_check,
     claude_code_hook_context_status,
     claude_code_hook_doctor_checks,
     claude_code_hook_paths,
@@ -3315,6 +3316,32 @@ def claude_code_pre_tool_use(
         print(json.dumps(decision, ensure_ascii=False))
     except Exception as exc:  # noqa: BLE001 - FAIL OPEN: a PreToolUse hook must NEVER block a tool call, even on an internal agentacct error. An observe-only recorder that can brick every tool call is worse than one that records nothing.
         print(json.dumps({"agent_sentinel": {"decision": "allow", "risk": "low", "reason": f"agentacct hook error ({type(exc).__name__}); failing open"}}, ensure_ascii=False))
+
+
+@claude_code_hooks_app.command("post-tool-use")
+def claude_code_post_tool_use(
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="State directory for the hook context bridge. Defaults to the nearest existing .agent-sentinel/state above the hook event cwd."),
+    ] = None,
+) -> None:
+    """Observe a Claude Code PostToolUse JSON event from stdin.
+
+    Read-only: when the tool was a recognized test / build / lint / typecheck
+    command, spool the exit code the harness observed as an INDEPENDENT machine
+    check (source client_hook) — the only local source that is not the agent's
+    own word. Never blocks or modifies the tool result; always returns an empty
+    response, even on error.
+    """
+    try:
+        raw = sys.stdin.read()
+        try:
+            capture_mechanical_check(raw, store_dir=store_dir)
+        except Exception:  # noqa: BLE001 - capture must never affect the tool result.
+            pass
+        print("{}")
+    except Exception:  # noqa: BLE001 - FAIL OPEN: a PostToolUse hook must never disturb the tool result.
+        print("{}")
 
 
 @claude_code_hooks_app.command("session-start")
@@ -6719,6 +6746,20 @@ def _local_usage_import_payload(
                 ingest_tool_activity_spool(
                     effective_store_dir,
                     record=service.record_event,
+                    now=time.time(),
+                )
+            except Exception:  # noqa: BLE001 - draining the spool must never fail the import.
+                pass
+            # Drain the PostToolUse mechanical-check spool into client_hook
+            # Evidence-v2 envelopes — the independent (harness-observed) checks
+            # that lift a step to independently_checked. Best-effort, same as
+            # above: a spool/evidence error can never fail the usage import.
+            from .mechanical_capture import ingest_mechanical_check_spool
+
+            try:
+                ingest_mechanical_check_spool(
+                    effective_store_dir,
+                    evidence=service.evidence,
                     now=time.time(),
                 )
             except Exception:  # noqa: BLE001 - draining the spool must never fail the import.
