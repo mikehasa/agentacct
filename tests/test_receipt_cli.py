@@ -76,6 +76,88 @@ def _seed(store: Path, *, title: str = "Add rate limit to login") -> None:
     )
 
 
+def _add_section(store: Path, *, section_id: str, status: str, at: float) -> None:
+    SentinelService(store).record_event(
+        {
+            "event_id": f"evt_{section_id}",
+            "created_at": at,
+            "source": "claude-code",
+            "event_type": f"section_{status}",
+            "run_id": None,
+            "metadata": {
+                "sentinel_semantic_kind": "section",
+                "client": "claude-code",
+                "client_session_id": "s1",
+                "client_context_keys_authored": ["client_session_id"],
+                "project_dir": "/tmp/project",
+                "session_namespace_fingerprint": NS,
+                "identity_scope_state": "explicit",
+                "section_id": section_id,
+                "section_status": status,
+                "section_title": "handoff task",
+                "objective": "handoff task",
+                "kind": "implementation",
+            },
+        }
+    )
+
+
+def test_receipts_show_handoff_marker_beside_a_hard_problem(tmp_path: Path) -> None:
+    # End-to-end: a blocked step + a later handoff → the decision word is the hard
+    # problem (BLOCKED) while the deliberate stop rides a parallel marker in both
+    # the list and the detail. This is the dogfood bug the change fixes.
+    _seed(tmp_path)  # session s1 + one completed section
+    _add_section(tmp_path, section_id="sec-blocked", status="blocked", at=150.0)
+    _add_section(tmp_path, section_id="sec-handoff", status="handed_off", at=200.0)
+
+    listing = runner.invoke(app, ["receipts", "--store-dir", str(tmp_path)])
+    assert listing.exit_code == 0, listing.output
+    assert "handed off" in listing.output.lower()
+
+    task_id = json.loads(
+        runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)]).output
+    )["tasks"][0]["task_id"]
+    detail = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
+    assert detail.exit_code == 0, detail.output
+    assert "BLOCKED" in detail.output  # the hard problem is the decision word
+    assert "Handed off" in detail.output  # the parallel marker is still shown
+
+
+def test_receipts_pure_handoff_shows_no_duplicate_marker(tmp_path: Path) -> None:
+    # Invariant #4 end-to-end: a cleanly handed-off task's decision word IS
+    # handed_off, so the parallel "↗ handed off" marker must be suppressed — the
+    # handoff is never stated twice. (Only the completed + handed_off sections;
+    # no open successor, so the decision word is handed_off.)
+    _seed(tmp_path)  # session s1 + one completed section
+    _add_section(tmp_path, section_id="sec-handoff", status="handed_off", at=200.0)
+
+    listing = runner.invoke(app, ["receipts", "--store-dir", str(tmp_path)])
+    assert listing.exit_code == 0, listing.output
+    assert "handed_off" in listing.output  # the decision word itself
+    assert "↗" not in listing.output  # but NOT the parallel marker glyph
+
+    task_id = json.loads(
+        runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)]).output
+    )["tasks"][0]["task_id"]
+    detail = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
+    assert detail.exit_code == 0, detail.output
+    assert "HANDED_OFF" in detail.output
+    assert "Lifecycle" not in detail.output  # no duplicate marker row
+
+
+def test_receipts_list_hides_marker_for_a_resumed_task(tmp_path: Path) -> None:
+    # Invariant #3 end-to-end on the list surface: a task handed off then resumed
+    # (a later open step) must show NO handoff marker anywhere — the exact stale-
+    # marker failure the recency guard prevents.
+    _seed(tmp_path)  # session s1 + one completed section
+    _add_section(tmp_path, section_id="sec-handoff", status="handed_off", at=150.0)
+    _add_section(tmp_path, section_id="sec-open", status="started", at=200.0)
+
+    listing = runner.invoke(app, ["receipts", "--store-dir", str(tmp_path)])
+    assert listing.exit_code == 0, listing.output
+    assert "↗" not in listing.output  # no stale handoff marker
+
+
 def test_receipts_list_json(tmp_path: Path) -> None:
     _seed(tmp_path)
     result = runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)])

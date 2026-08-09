@@ -85,6 +85,12 @@ struct ReceiptRow: View {
             HStack(spacing: 6) {
                 AxisChip(text: task.decisionStatus.key, tint: receiptDecisionTint(task.decisionStatus.key))
                 AxisChip(text: task.evidenceStrength.compactHeadline, tint: receiptEvidenceTint(task.evidenceStrength.key))
+                // Parallel deliberate-stop marker, shown only when it adds info the
+                // decision word does not already state. Purple unifies with the
+                // step-level handoff chip (Theme.statusColor("handed_off")).
+                if task.handedOff == true && task.decisionStatus.key != "handed_off" {
+                    AxisChip(text: "↗ handed off", tint: Theme.purple)
+                }
                 Spacer()
                 Text(task.cost.text).font(.caption).foregroundStyle(Theme.textMuted)
             }
@@ -150,6 +156,18 @@ struct ReceiptCards: View {
                     detail: assertedText(receipt.axes.decisionStatus.assertedBy),
                     note: receipt.axes.decisionStatus.statement
                 )
+                // Lifecycle marker, shown BESIDE the decision word (not instead of
+                // it) when it adds information the decision word does not state.
+                if let handoff = receipt.axes.handoff, handoff.handedOff == true,
+                   receipt.axes.decisionStatus.key != "handed_off" {
+                    axisRow(
+                        label: "Lifecycle",
+                        key: "↗ handed off",
+                        tint: Theme.purple,
+                        detail: assertedText(handoff.assertedBy),
+                        note: handoff.statement
+                    )
+                }
                 evidenceCoverageRow(receipt.axes.evidenceStrength)
                 if let orthogonality = receipt.axes.orthogonalityNote {
                     Text(orthogonality).font(.caption).foregroundStyle(Theme.textFaint)
