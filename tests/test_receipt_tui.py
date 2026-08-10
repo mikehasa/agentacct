@@ -112,6 +112,72 @@ def test_render_receipt_markup_contains_axes_and_dimensions() -> None:
     assert "unchecked" in markup
 
 
+def _handoff_task(items: list[dict]) -> dict:
+    return {
+        "task_id": "task_x",
+        "primary_root": {"client": "claude-code", "client_session_id": "s1"},
+        "root_keys": [{"client": "claude-code", "client_session_id": "s1"}],
+        "session_keys": [{"client": "claude-code", "client_session_id": "s1"}],
+        "sessions": [
+            {"client": "claude-code", "client_session_id": "s1", "project": "acme", "identity_scope_state": "explicit", "last_activity_at": 100.0, "usage": {}}
+        ],
+        "session_count": 1,
+        "supporting_count": 0,
+        "child_count": 0,
+        "internal_count": 0,
+        "last_activity_at": 100.0,
+        "work_items": items,
+        "work_associations": [],
+        "usage": {"rows": 1, "estimated_cost_usd": 0.5, "cost_complete": True, "cost_basis": "pricing_table", "total_tokens": 1000},
+        "models": ["claude-opus-4-8"],
+        "actions": {"tool_category_counts": {}, "tool_category_total": 0, "touched_files": [], "touched_file_count": 0},
+    }
+
+
+def test_render_receipt_markup_shows_handoff_marker_beside_a_hard_problem() -> None:
+    # A blocked headline must still surface the parallel handoff marker.
+    task = _handoff_task(
+        [
+            {"work_id": "a", "latest_status": "blocked", "updated_at": 100.0, "objective": "x"},
+            {"work_id": "b", "latest_status": "handed_off", "updated_at": 200.0, "objective": "y"},
+        ]
+    )
+    markup = _render_receipt_markup(build_receipt(task, public_task_id="task_x", title="t"))
+    assert "Lifecycle" in markup
+    assert "Handed off" in markup
+
+
+def test_render_receipt_markup_no_double_marker_for_pure_handoff() -> None:
+    # Invariant #4: when the decision word IS "handed_off", the parallel marker
+    # must be suppressed — the handoff must never be stated twice. The data flag
+    # is on here (handoff_current True); only the decision-key guard suppresses
+    # the marker, so this pins that guard (a resumed-task test cannot — its flag
+    # is already off).
+    task = _handoff_task(
+        [
+            {"work_id": "a", "latest_status": "completed", "updated_at": 100.0, "objective": "x"},
+            {"work_id": "b", "latest_status": "handed_off", "updated_at": 200.0, "objective": "y"},
+        ]
+    )
+    receipt = build_receipt(task, public_task_id="task_x", title="t")
+    assert receipt["axes"]["decision_status"]["key"] == "handed_off"
+    assert receipt["axes"]["handoff"]["handed_off"] is True  # data flag on...
+    markup = _render_receipt_markup(receipt)
+    assert "Lifecycle" not in markup  # ...but the marker line is suppressed
+
+
+def test_render_receipt_markup_hides_marker_when_task_resumed() -> None:
+    # A later open step postdates the handoff: no stale marker is shown.
+    task = _handoff_task(
+        [
+            {"work_id": "a", "latest_status": "handed_off", "updated_at": 100.0, "objective": "x"},
+            {"work_id": "b", "latest_status": "started", "updated_at": 200.0, "objective": "y"},
+        ]
+    )
+    markup = _render_receipt_markup(build_receipt(task, public_task_id="task_x", title="t"))
+    assert "Lifecycle" not in markup
+
+
 def test_receipts_screen_lists_a_task_and_opens_its_detail(tmp_path: Path) -> None:
     _seed(tmp_path)
 
