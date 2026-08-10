@@ -705,12 +705,16 @@ struct ReceiptActionsDim: Decodable {
     let toolCategoryTotal: Int?
     let touchedFiles: [String]?
     let touchedFileCount: Int?
-    // The daemon-capped preview slice + disclosed overflow — the app renders these
-    // directly so the cap has a single source of truth (the daemon) and can never
-    // drift from the CLI/TUI. Optional so an older payload without them still
-    // decodes (the app then falls back to slicing touchedFiles).
+    // The daemon-capped touched-file preview + disclosed overflow — the app
+    // renders these directly so the cap has a single source of truth (the daemon)
+    // and can never drift from the CLI/TUI. Optional so an older payload without
+    // them still decodes (the app then falls back to slicing touchedFiles).
     let touchedFilesPreview: [String]?
     let touchedFilesElided: Int?
+    // The specific tools the agent used (daemon-ranked, most-used first) + the
+    // disclosed overflow. Optional so an older payload without them still decodes.
+    let toolNamesPreview: [ReceiptToolName]?
+    let toolNamesElided: Int?
     let provenance: [String]?
     let gaps: [String]?
 
@@ -721,8 +725,16 @@ struct ReceiptActionsDim: Decodable {
         case touchedFileCount = "touched_file_count"
         case touchedFilesPreview = "touched_files_preview"
         case touchedFilesElided = "touched_files_elided"
+        case toolNamesPreview = "tool_names_preview"
+        case toolNamesElided = "tool_names_elided"
         case provenance, gaps
     }
+}
+
+struct ReceiptToolName: Decodable, Identifiable {
+    let name: String
+    let count: Int
+    var id: String { name }
 }
 
 struct ReceiptCostDim: Decodable {

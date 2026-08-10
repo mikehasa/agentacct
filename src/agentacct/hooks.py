@@ -475,15 +475,14 @@ def capture_claude_code_client_context(raw: str, *, store_dir: Path | str | None
 
 
 def capture_tool_activity(raw: str, *, store_dir: Path | str | None = None) -> None:
-    """Record ONE coarse tool-category tick for this PreToolUse. Never raises.
+    """Record ONE tool-activity tick for this PreToolUse. Never raises.
 
     The PreToolUse hook already receives the tool name (and fails open), so this
-    is the cheapest honest place to observe what KIND of tool ran. Only a
-    category derived from the tool NAME is spooled — never the name, arguments,
-    or any payload — so this stays strictly inside the WorkEvent privacy line
-    while giving the Receipt's Actions dimension a real source. The spool lands
-    in the SAME store as the client-context bridge so the usage importer drains
-    both from one place.
+    is the cheapest honest place to observe what the agent reached for. The
+    category AND the tool NAME are spooled — never arguments or any payload — so
+    the Receipt's Actions dimension can show both what KIND of tool ran and which
+    SPECIFIC tool/connector. The spool lands in the SAME store as the
+    client-context bridge so the usage importer drains both from one place.
     """
 
     try:
@@ -498,12 +497,14 @@ def capture_tool_activity(raw: str, *, store_dir: Path | str | None = None) -> N
         target = Path(store_dir) if store_dir is not None else _hook_store_dir_from_event(event)
         if target is None:
             return
-        category = tool_category(event.get("tool_name") or event.get("tool"))
+        tool_name = event.get("tool_name") or event.get("tool")
+        category = tool_category(tool_name)
         record_tool_activity_tick(
             target,
             client="claude-code",
             session_id=session_id,
             category=category,
+            name=tool_name,
             at=time.time(),
         )
     except Exception:  # noqa: BLE001 - activity capture must never affect the hook decision.

@@ -1268,6 +1268,14 @@ def _render_receipt_markup(receipt: dict) -> str:
         f"[b]Actions[/]   {_escape(category_text)} · touched {actions.get('touched_file_count', 0)} file(s)"
         f"   [dim]\\[{_prov('actions')}][/]"
     )
+    names_preview = actions.get("tool_names_preview") or []
+    if names_preview:
+        # The specific tools/connectors, most-used first. Names are user-controlled.
+        _tools = "  ".join(f"{_escape(str(p.get('name')))}×{int(p.get('count') or 0)}" for p in names_preview)
+        _names_elided = int(actions.get("tool_names_elided") or 0)
+        if _names_elided:
+            _tools += f"  … +{_names_elided} more"
+        lines.append(f"           [dim]tools: {_tools}[/]")
     for _path in actions.get("touched_files_preview") or []:
         # The actual artifact paths, already captured — previously only the count
         # was shown. The daemon capped the slice and disclosed the overflow.

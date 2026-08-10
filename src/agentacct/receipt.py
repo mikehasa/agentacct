@@ -168,6 +168,34 @@ def touched_files_preview(
     return shown, max(0, len(files) - len(shown))
 
 
+# Tool NAMES are an OPEN set (unlike the 9 fixed categories), so the Actions
+# dimension previews the most-used and discloses the remainder — computed ONCE
+# here so every surface renders the same ranking, the same way the touched-file
+# preview has a single source of truth.
+RECEIPT_TOOL_NAMES_PREVIEW = 10
+
+
+def tool_names_preview(
+    actions: Mapping[str, Any], *, limit: int = RECEIPT_TOOL_NAMES_PREVIEW
+) -> tuple[list[dict[str, Any]], int]:
+    """Return (top tools by count, count of distinct names elided). Sorted by
+    count descending, then name ascending for a stable tie-break."""
+
+    counts = actions.get("tool_name_counts")
+    counts = counts if isinstance(counts, Mapping) else {}
+    ordered = sorted(
+        (
+            (str(name), int(count))
+            for name, count in counts.items()
+            if isinstance(count, int) and not isinstance(count, bool) and count > 0
+        ),
+        key=lambda item: (-item[1], item[0]),
+    )
+    shown = ordered if limit is None or limit < 0 else ordered[:limit]
+    preview = [{"name": name, "count": count} for name, count in shown]
+    return preview, max(0, len(ordered) - len(shown))
+
+
 # --- Evidence axis ------------------------------------------------------------
 
 def _check_source(check: Mapping[str, Any]) -> str:
@@ -599,6 +627,8 @@ def _evidence_touched_files(task: Mapping[str, Any]) -> list[str]:
 def _actions_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
     actions = _mapping(task.get("actions"))
     counts = _mapping(actions.get("tool_category_counts"))
+    name_counts = _mapping(actions.get("tool_name_counts"))
+    names_preview, names_elided = tool_names_preview({"tool_name_counts": name_counts})
     section_files = actions.get("touched_files") if isinstance(actions.get("touched_files"), list) else []
     # Union the section-recorded files with the paths the Task's machine checks
     # named: either source alone routinely misses files the other has.
@@ -615,7 +645,7 @@ def _actions_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
         provenance.append(SOURCE_MCP)
     else:
         gaps.append("No touched files were recorded for this Task's steps.")
-    if counts:
+    if counts or name_counts:
         provenance.append(SOURCE_HOOK)
     else:
         gaps.append(
@@ -628,6 +658,10 @@ def _actions_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "tool_category_counts": dict(counts),
         "tool_category_total": int(actions.get("tool_category_total") or 0),
+        "tool_name_counts": dict(name_counts),
+        "tool_name_total": int(actions.get("tool_name_total") or 0),
+        "tool_names_preview": names_preview,
+        "tool_names_elided": names_elided,
         "touched_files": touched,
         "touched_file_count": len(touched),
         "touched_files_preview": preview,

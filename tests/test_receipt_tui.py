@@ -206,6 +206,23 @@ def test_render_receipt_markup_escapes_bracket_touched_paths() -> None:
     assert unbalanced in rendered.plain
 
 
+def test_render_receipt_markup_lists_tool_names_and_escapes_them() -> None:
+    from rich.text import Text
+
+    task = _handoff_task([{"work_id": "w", "latest_status": "completed", "updated_at": 100.0}])
+    # A user-controlled mcp name with bracket metacharacters must render literally.
+    task["actions"] = {
+        "tool_category_counts": {"execute": 3}, "tool_category_total": 3,
+        "tool_name_counts": {"Bash": 3, "mcp__[x]__y": 1}, "tool_name_total": 4,
+        "touched_files": [], "touched_file_count": 0,
+    }
+    markup = _render_receipt_markup(build_receipt(task, public_task_id="task_x", title="t"))
+    assert "tools:" in markup
+    assert "Bash×3" in markup
+    rendered = Text.from_markup(markup)  # must not raise (escaping)
+    assert "mcp__[x]__y×1" in rendered.plain  # metacharacters preserved literally
+
+
 def test_receipts_screen_lists_a_task_and_opens_its_detail(tmp_path: Path) -> None:
     _seed(tmp_path)
 

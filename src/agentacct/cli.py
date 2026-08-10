@@ -3307,7 +3307,7 @@ def claude_code_pre_tool_use(
         except Exception:  # noqa: BLE001 - context capture must never affect the hook decision.
             pass
         try:
-            # Observe only the tool CATEGORY (never the name/args) for the
+            # Observe the tool CATEGORY and NAME (never arguments/paths) for the
             # Receipt's Actions dimension. Separate try/except so it can never
             # affect the decision or the context capture above.
             capture_tool_activity(raw, store_dir=store_dir)
@@ -9077,6 +9077,15 @@ def _render_receipt_text(receipt: dict[str, Any]) -> None:
     actions = dims.get("actions", {})
     actions_summary = _receipt_category_text(actions.get("tool_category_counts") or {})
     actions_summary += f"  · touched {int(actions.get('touched_file_count') or 0)} file(s)"
+    names_preview = actions.get("tool_names_preview") or []
+    if names_preview:
+        # The SPECIFIC tools/connectors the agent used (most-used first). Names are
+        # user-controlled (e.g. mcp__server__tool) so the line is rich-escaped.
+        tools = "  ".join(f"{p.get('name')}×{int(p.get('count') or 0)}" for p in names_preview)
+        elided = int(actions.get("tool_names_elided") or 0)
+        if elided:
+            tools += f"  … +{elided} more"
+        actions_summary += f"\n[dim]tools: {_rich_escape(tools)}[/dim]"
     shown_files = actions.get("touched_files_preview") or []
     elided_files = int(actions.get("touched_files_elided") or 0)
     if shown_files:

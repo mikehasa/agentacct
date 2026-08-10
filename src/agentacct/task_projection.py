@@ -973,20 +973,27 @@ def build_task_projection(
         task_associations = associations.get(task_key, [])
         supporting_keys = member_keys - root_keys
         # Actions dimension: which KINDS of tools ran (hook-captured category
-        # counts, summed over the Task's sessions) and which repo-relative
-        # artifacts were touched (union of every step's files). Both are pure
-        # aggregates of already-recorded, privacy-reviewed data — no tool names
-        # or arguments ever reach here.
+        # counts), which SPECIFIC tools/connectors (hook-captured tool names), and
+        # which repo-relative artifacts were touched (union of every step's
+        # files) — each summed over the Task's sessions. All are pure aggregates
+        # of already-recorded data; tool NAMES are captured, arguments never are.
         tool_category_counts: dict[str, int] = {}
+        tool_name_counts: dict[str, int] = {}
         for key in ordered_members:
             counts = sessions[key].get("tool_category_counts")
-            if not isinstance(counts, Mapping):
-                continue
-            for category, value in counts.items():
-                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-                    name = _text(category)
-                    if name:
-                        tool_category_counts[name] = tool_category_counts.get(name, 0) + value
+            if isinstance(counts, Mapping):
+                for category, value in counts.items():
+                    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                        name = _text(category)
+                        if name:
+                            tool_category_counts[name] = tool_category_counts.get(name, 0) + value
+            names = sessions[key].get("tool_name_counts")
+            if isinstance(names, Mapping):
+                for tool_name, value in names.items():
+                    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                        label = _text(tool_name)
+                        if label:
+                            tool_name_counts[label] = tool_name_counts.get(label, 0) + value
         touched_files: list[str] = []
         seen_touched_files: set[str] = set()
         for item in task_work:
@@ -999,6 +1006,8 @@ def build_task_projection(
         actions = {
             "tool_category_counts": dict(sorted(tool_category_counts.items())),
             "tool_category_total": sum(tool_category_counts.values()),
+            "tool_name_counts": dict(sorted(tool_name_counts.items())),
+            "tool_name_total": sum(tool_name_counts.values()),
             "touched_files": touched_files,
             "touched_file_count": len(touched_files),
         }
