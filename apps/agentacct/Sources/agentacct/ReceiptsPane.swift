@@ -85,6 +85,12 @@ struct ReceiptRow: View {
             HStack(spacing: 6) {
                 AxisChip(text: task.decisionStatus.key, tint: receiptDecisionTint(task.decisionStatus.key))
                 AxisChip(text: task.evidenceStrength.compactHeadline, tint: receiptEvidenceTint(task.evidenceStrength.key))
+                // Parallel deliberate-stop marker, shown only when it adds info the
+                // decision word does not already state. Purple unifies with the
+                // step-level handoff chip (Theme.statusColor("handed_off")).
+                if task.handedOff == true && task.decisionStatus.key != "handed_off" {
+                    AxisChip(text: "↗ handed off", tint: Theme.purple)
+                }
                 Spacer()
                 Text(task.cost.text).font(.caption).foregroundStyle(Theme.textMuted)
             }
@@ -150,6 +156,18 @@ struct ReceiptCards: View {
                     detail: assertedText(receipt.axes.decisionStatus.assertedBy),
                     note: receipt.axes.decisionStatus.statement
                 )
+                // Lifecycle marker, shown BESIDE the decision word (not instead of
+                // it) when it adds information the decision word does not state.
+                if let handoff = receipt.axes.handoff, handoff.handedOff == true,
+                   receipt.axes.decisionStatus.key != "handed_off" {
+                    axisRow(
+                        label: "Lifecycle",
+                        key: "↗ handed off",
+                        tint: Theme.purple,
+                        detail: assertedText(handoff.assertedBy),
+                        note: handoff.statement
+                    )
+                }
                 evidenceCoverageRow(receipt.axes.evidenceStrength)
                 if let orthogonality = receipt.axes.orthogonalityNote {
                     Text(orthogonality).font(.caption).foregroundStyle(Theme.textFaint)
@@ -197,7 +215,7 @@ struct ReceiptCards: View {
             VStack(alignment: .leading, spacing: 8) {
                 dimensionRow("Task", taskSummary, receipt.dimensions.task.provenance)
                 dimensionRow("Actors", actorsSummary, receipt.dimensions.actors.provenance)
-                dimensionRow("Actions", actionsSummary, receipt.dimensions.actions.provenance)
+                actionsRow
                 dimensionRow("Cost", costSummary, receipt.dimensions.cost.provenance)
                 dimensionRow("Evidence", evidenceSummary, receipt.dimensions.evidence.provenance)
                 dimensionRow("Outcome", outcomeSummary, receipt.dimensions.outcome.provenance)
@@ -220,6 +238,39 @@ struct ReceiptCards: View {
                 }
             }
         }
+    }
+
+    // Actions gets its own row so the touched artifact PATHS render beneath the
+    // category summary. The paths were always captured; only the count was shown.
+    private var actionsRow: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            dimensionRow("Actions", actionsSummary, receipt.dimensions.actions.provenance)
+            let preview = actionsTouchedPreview
+            if !preview.shown.isEmpty {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(preview.shown, id: \.self) { path in
+                        Text(path).font(.caption).foregroundStyle(Theme.textFaint)
+                            .lineLimit(1).truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if preview.elided > 0 {
+                        Text("… +\(preview.elided) more").font(.caption).foregroundStyle(Theme.textFaint)
+                    }
+                }
+                .padding(.leading, 82)  // align under the summary column (74 label + 8 spacing)
+            }
+        }
+    }
+
+    // The daemon computes the preview slice + overflow (the single source of truth
+    // for the cap); the app renders those directly so it can never drift from the
+    // CLI/TUI. Fallback (older payload without the fields): show the full list.
+    private var actionsTouchedPreview: (shown: [String], elided: Int) {
+        let dim = receipt.dimensions.actions
+        if let preview = dim.touchedFilesPreview {
+            return (preview, dim.touchedFilesElided ?? 0)
+        }
+        return (dim.touchedFiles ?? [], 0)
     }
 
     @ViewBuilder

@@ -148,6 +148,26 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+# The Actions dimension already CAPTURES every touched artifact path; surfaces
+# previewed only the COUNT. This previews a capped slice of the actual paths and
+# DISCLOSES the remainder rather than silently truncating (the receipt's honesty
+# rule: a bound on coverage is stated, never hidden).
+RECEIPT_TOUCHED_FILES_PREVIEW = 12
+
+
+def touched_files_preview(
+    actions: Mapping[str, Any], *, limit: int = RECEIPT_TOUCHED_FILES_PREVIEW
+) -> tuple[list[str], int]:
+    """Return (paths to show, count elided). Called ONCE, in ``_actions_dimension``,
+    which bakes the result into the receipt as ``touched_files_preview`` /
+    ``touched_files_elided`` — so every surface (CLI, TUI, macOS app) renders the
+    same daemon-provided slice and the cap has a single source of truth."""
+
+    files = [str(path) for path in (actions.get("touched_files") or []) if str(path).strip()]
+    shown = files if limit is None or limit < 0 else files[:limit]
+    return shown, max(0, len(files) - len(shown))
+
+
 # Tool NAMES are an OPEN set (unlike the 9 fixed categories), so the Actions
 # dimension previews the most-used and discloses the remainder — computed ONCE
 # here so every surface renders the same ranking, the same way the touched-file
@@ -415,8 +435,10 @@ def _decision_status(
     task: Mapping[str, Any],
     *,
     latest_store_activity_at: float | None,
+    canonical: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    canonical = reduce_task_outcome(task, latest_store_activity_at=latest_store_activity_at)
+    if canonical is None:
+        canonical = reduce_task_outcome(task, latest_store_activity_at=latest_store_activity_at)
     key = _text(canonical.get("key")) or "observed"
 
     # Refine ``failed`` out of ``blocked`` at the Receipt layer without changing
@@ -448,6 +470,27 @@ def _decision_status(
         "statement": statement,
         "asserted_by": asserted_by,
         "finding_attention_state": attention or None,
+    }
+
+
+def _handoff_marker(canonical: Mapping[str, Any]) -> dict[str, Any]:
+    """The handoff LIFECYCLE marker — a signal kept deliberately SEPARATE from the
+    decision word, alongside the two axes.
+
+    A Task can read ``finding`` (a red check you must act on) AND still have been
+    cleanly handed off: the decision word carries the louder problem, this marker
+    carries the deliberate stop, and neither hides the other. ``handed_off`` here
+    is the recency-aware disposition from ``reduce_task_outcome`` — true only when
+    the handoff is the frontier (nothing still-open is newer than it), so a Task
+    that was handed off and then RESUMED does not carry the marker. Surfaces show
+    the chip only when it adds information the decision word does not already state
+    (i.e. ``handed_off`` is true AND ``decision_status.key != "handed_off"``)."""
+
+    handed_off = bool(canonical.get("handoff_current"))
+    return {
+        "handed_off": handed_off,
+        "statement": _DECISION_STATEMENTS["handed_off"] if handed_off else None,
+        "asserted_by": "agent_report",
     }
 
 
@@ -608,6 +651,10 @@ def _actions_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
         gaps.append(
             "Tool categories were not instrumented for this session; Actions shows touched files only."
         )
+    # Compute the capped preview + disclosed overflow ONCE, here, so every surface
+    # (CLI, TUI, and the macOS app) renders the daemon-provided slice and never
+    # re-derives the cap client-side — the single source of truth for the cap.
+    preview, elided = touched_files_preview({"touched_files": touched})
     return {
         "tool_category_counts": dict(counts),
         "tool_category_total": int(actions.get("tool_category_total") or 0),
@@ -617,6 +664,8 @@ def _actions_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
         "tool_names_elided": names_elided,
         "touched_files": touched,
         "touched_file_count": len(touched),
+        "touched_files_preview": preview,
+        "touched_files_elided": elided,
         "provenance": sorted(set(provenance)) or [SOURCE_NONE],
         "gaps": gaps,
     }
@@ -845,7 +894,11 @@ def build_receipt(
     verification = step_verification_counts(task)
     checks = _project_checks(task)
     evidence_strength = _evidence_strength(task, checks, verification)
-    decision = _decision_status(task, latest_store_activity_at=latest_store_activity_at)
+    canonical = reduce_task_outcome(task, latest_store_activity_at=latest_store_activity_at)
+    decision = _decision_status(
+        task, latest_store_activity_at=latest_store_activity_at, canonical=canonical
+    )
+    handoff = _handoff_marker(canonical)
     decision_brief = _mapping(intelligence.get("decision_brief"))
 
     dimensions: dict[str, dict[str, Any]] = {
@@ -872,6 +925,10 @@ def build_receipt(
         "axes": {
             "decision_status": decision,
             "evidence_strength": evidence_strength,
+            # A third, orthogonal signal: the deliberate-stop lifecycle marker.
+            # Kept out of ``decision_status`` on purpose so a handoff can be shown
+            # BESIDE a finding/blocked headline instead of being masked by it.
+            "handoff": handoff,
             "orthogonality_note": (
                 "Evidence coverage and decision status are separate axes: an agent reporting "
                 "'done' never adds a passing check, and a human review or approval never "
@@ -912,7 +969,10 @@ def build_receipt_summary(
     verification = step_verification_counts(task)
     checks = _project_checks(task)
     evidence_strength = _evidence_strength(task, checks, verification)
-    decision = _decision_status(task, latest_store_activity_at=latest_store_activity_at)
+    canonical = reduce_task_outcome(task, latest_store_activity_at=latest_store_activity_at)
+    decision = _decision_status(
+        task, latest_store_activity_at=latest_store_activity_at, canonical=canonical
+    )
     usage = _mapping(task.get("usage"))
     return {
         "task_id": public_task_id,
@@ -922,6 +982,11 @@ def build_receipt_summary(
             "label": decision["label"],
             "asserted_by": decision["asserted_by"],
         },
+        # The recency-aware handoff lifecycle marker for the list row's parallel
+        # chip. A flat bool keeps the row compact; the detail Receipt carries the
+        # full ``axes.handoff`` object. Rendered as a chip only when it is not
+        # already the decision word (see ``_handoff_marker``).
+        "handed_off": bool(canonical.get("handoff_current")),
         "evidence_strength": {
             "key": evidence_strength["key"],
             "gradeable": evidence_strength["gradeable"],

@@ -76,6 +76,88 @@ def _seed(store: Path, *, title: str = "Add rate limit to login") -> None:
     )
 
 
+def _add_section(store: Path, *, section_id: str, status: str, at: float) -> None:
+    SentinelService(store).record_event(
+        {
+            "event_id": f"evt_{section_id}",
+            "created_at": at,
+            "source": "claude-code",
+            "event_type": f"section_{status}",
+            "run_id": None,
+            "metadata": {
+                "sentinel_semantic_kind": "section",
+                "client": "claude-code",
+                "client_session_id": "s1",
+                "client_context_keys_authored": ["client_session_id"],
+                "project_dir": "/tmp/project",
+                "session_namespace_fingerprint": NS,
+                "identity_scope_state": "explicit",
+                "section_id": section_id,
+                "section_status": status,
+                "section_title": "handoff task",
+                "objective": "handoff task",
+                "kind": "implementation",
+            },
+        }
+    )
+
+
+def test_receipts_show_handoff_marker_beside_a_hard_problem(tmp_path: Path) -> None:
+    # End-to-end: a blocked step + a later handoff → the decision word is the hard
+    # problem (BLOCKED) while the deliberate stop rides a parallel marker in both
+    # the list and the detail. This is the dogfood bug the change fixes.
+    _seed(tmp_path)  # session s1 + one completed section
+    _add_section(tmp_path, section_id="sec-blocked", status="blocked", at=150.0)
+    _add_section(tmp_path, section_id="sec-handoff", status="handed_off", at=200.0)
+
+    listing = runner.invoke(app, ["receipts", "--store-dir", str(tmp_path)])
+    assert listing.exit_code == 0, listing.output
+    assert "handed off" in listing.output.lower()
+
+    task_id = json.loads(
+        runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)]).output
+    )["tasks"][0]["task_id"]
+    detail = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
+    assert detail.exit_code == 0, detail.output
+    assert "BLOCKED" in detail.output  # the hard problem is the decision word
+    assert "Handed off" in detail.output  # the parallel marker is still shown
+
+
+def test_receipts_pure_handoff_shows_no_duplicate_marker(tmp_path: Path) -> None:
+    # Invariant #4 end-to-end: a cleanly handed-off task's decision word IS
+    # handed_off, so the parallel "↗ handed off" marker must be suppressed — the
+    # handoff is never stated twice. (Only the completed + handed_off sections;
+    # no open successor, so the decision word is handed_off.)
+    _seed(tmp_path)  # session s1 + one completed section
+    _add_section(tmp_path, section_id="sec-handoff", status="handed_off", at=200.0)
+
+    listing = runner.invoke(app, ["receipts", "--store-dir", str(tmp_path)])
+    assert listing.exit_code == 0, listing.output
+    assert "handed_off" in listing.output  # the decision word itself
+    assert "↗" not in listing.output  # but NOT the parallel marker glyph
+
+    task_id = json.loads(
+        runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)]).output
+    )["tasks"][0]["task_id"]
+    detail = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
+    assert detail.exit_code == 0, detail.output
+    assert "HANDED_OFF" in detail.output
+    assert "Lifecycle" not in detail.output  # no duplicate marker row
+
+
+def test_receipts_list_hides_marker_for_a_resumed_task(tmp_path: Path) -> None:
+    # Invariant #3 end-to-end on the list surface: a task handed off then resumed
+    # (a later open step) must show NO handoff marker anywhere — the exact stale-
+    # marker failure the recency guard prevents.
+    _seed(tmp_path)  # session s1 + one completed section
+    _add_section(tmp_path, section_id="sec-handoff", status="handed_off", at=150.0)
+    _add_section(tmp_path, section_id="sec-open", status="started", at=200.0)
+
+    listing = runner.invoke(app, ["receipts", "--store-dir", str(tmp_path)])
+    assert listing.exit_code == 0, listing.output
+    assert "↗" not in listing.output  # no stale handoff marker
+
+
 def test_receipt_detail_lists_specific_tool_names(tmp_path: Path) -> None:
     # End-to-end: a captured tool_activity event flows through the projection into
     # the Actions dimension, and the detail shows the SPECIFIC tools (most-used
@@ -245,6 +327,92 @@ def test_receipt_text_render_is_scannable(tmp_path: Path) -> None:
         assert marker in result.output
     # The evidence line is a coverage RATIO, not a categorical grade word.
     assert "unchecked" in result.output or "checked" in result.output
+
+
+def test_receipt_detail_discloses_touched_files_overflow(tmp_path: Path) -> None:
+    # >12 touched files: the CLI shows the 12-path preview and DISCLOSES the
+    # remainder ("… +N more"), never silently truncating — exercised at the
+    # acceptance layer, not just the shared unit helper.
+    files = [f"src/f{i:02d}.py" for i in range(15)]
+    SentinelService(tmp_path).record_event(
+        {
+            "event_id": "evt_sec_many",
+            "created_at": 100.0,
+            "source": "claude-code",
+            "event_type": "section_completed",
+            "run_id": None,
+            "metadata": {
+                "sentinel_semantic_kind": "section",
+                "client": "claude-code",
+                "client_session_id": "s1",
+                "client_context_keys_authored": ["client_session_id"],
+                "project_dir": "/tmp/project",
+                "session_namespace_fingerprint": NS,
+                "identity_scope_state": "explicit",
+                "section_id": "sec-many",
+                "section_status": "completed",
+                "section_title": "t",
+                "objective": "t",
+                "kind": "implementation",
+                "files": files,
+            },
+        }
+    )
+    task_id = json.loads(
+        runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)]).output
+    )["tasks"][0]["task_id"]
+    detail = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
+    assert detail.exit_code == 0, detail.output
+    assert "src/f11.py" in detail.output  # 12th path (index 11) is shown
+    assert "src/f12.py" not in detail.output  # 13th is beyond the cap
+    assert "… +3 more" in detail.output  # overflow disclosed
+
+
+def test_receipt_detail_lists_touched_file_paths(tmp_path: Path) -> None:
+    # The seeded section records files=["src/login.py"]; the detail must now show
+    # the actual path, not merely "touched 1 file(s)".
+    _seed(tmp_path)
+    task_id = json.loads(
+        runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)]).output
+    )["tasks"][0]["task_id"]
+    detail = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
+    assert detail.exit_code == 0, detail.output
+    assert "src/login.py" in detail.output
+
+
+def test_receipt_detail_escapes_markup_in_touched_paths(tmp_path: Path) -> None:
+    # File paths are user-controlled; a bracket-tag path must render literally,
+    # never interpreted (no MarkupError, no silent tag drop / injection).
+    SentinelService(tmp_path).record_event(
+        {
+            "event_id": "evt_sec_markup",
+            "created_at": 100.0,
+            "source": "claude-code",
+            "event_type": "section_completed",
+            "run_id": None,
+            "metadata": {
+                "sentinel_semantic_kind": "section",
+                "client": "claude-code",
+                "client_session_id": "s1",
+                "client_context_keys_authored": ["client_session_id"],
+                "project_dir": "/tmp/project",
+                "session_namespace_fingerprint": NS,
+                "identity_scope_state": "explicit",
+                "section_id": "sec-markup",
+                "section_status": "completed",
+                "section_title": "t",
+                "objective": "t",
+                "kind": "implementation",
+                "files": ["src/[red]evil[/red].py"],
+            },
+        }
+    )
+    task_id = json.loads(
+        runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)]).output
+    )["tasks"][0]["task_id"]
+    detail = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
+    assert detail.exit_code == 0, detail.output
+    assert "[red]evil[/red].py" in detail.output  # literal, not interpreted away
 
 
 def test_receipt_text_survives_rich_markup_in_recorded_titles(tmp_path: Path) -> None:

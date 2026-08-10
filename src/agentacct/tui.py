@@ -1221,6 +1221,13 @@ def _render_receipt_markup(receipt: dict) -> str:
     )
     if decision.get("statement"):
         lines.append(f"                   [dim]{_escape(str(decision['statement']))}[/]")
+    handoff = axes.get("handoff") or {}
+    if handoff.get("handed_off") and str(decision.get("key") or "") != "handed_off":
+        # Parallel deliberate-stop marker beside the decision word (never instead
+        # of it), so a finding/blocked headline does not hide a clean handoff.
+        lines.append("Lifecycle          [b magenta]↗ Handed off[/]")
+        if handoff.get("statement"):
+            lines.append(f"                   [dim]{_escape(str(handoff['statement']))}[/]")
     from .receipt import evidence_coverage_headline, evidence_coverage_ledger
 
     lines.append(f"Evidence coverage  [b {ecolor}]{_escape(evidence_coverage_headline(evidence))}[/]")
@@ -1269,6 +1276,13 @@ def _render_receipt_markup(receipt: dict) -> str:
         if _names_elided:
             _tools += f"  … +{_names_elided} more"
         lines.append(f"           [dim]tools: {_tools}[/]")
+    for _path in actions.get("touched_files_preview") or []:
+        # The actual artifact paths, already captured — previously only the count
+        # was shown. The daemon capped the slice and disclosed the overflow.
+        lines.append(f"           [dim]{_escape(str(_path))}[/]")
+    _elided_files = int(actions.get("touched_files_elided") or 0)
+    if _elided_files:
+        lines.append(f"           [dim]… +{_elided_files} more[/]")
 
     cost = dims.get("cost") or {}
     lines.append(f"[b]Cost[/]      {_escape(_receipt_summary_cost(cost))}   [dim]\\[{_prov('cost')}][/]")
@@ -1399,9 +1413,13 @@ class ReceiptsScreen(Screen):
             self._by_id[task_id] = task
             decision = summary["decision_status"]
             evidence = summary["evidence_strength"]
+            decision_cell = f"[{_receipt_decision_color(decision['key'])}]{decision['key']}[/]"
+            if summary.get("handed_off") and str(decision["key"]) != "handed_off":
+                # Parallel deliberate-stop marker beside the decision word.
+                decision_cell += " [magenta]↗ handed off[/]"
             table.add_row(
                 _escape(str(summary.get("title") or task_id))[:46],
-                f"[{_receipt_decision_color(decision['key'])}]{decision['key']}[/]",
+                decision_cell,
                 f"[{_receipt_evidence_color(evidence['key'])}]{_escape(evidence_coverage_headline(evidence))}[/]",
                 _escape(_receipt_summary_cost(summary.get("cost") or {})),
                 _humanize_ago(summary.get("last_activity_at"), now),

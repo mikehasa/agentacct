@@ -419,6 +419,9 @@ struct ReceiptSummary: Decodable, Identifiable {
     let sessionCount: Int?
     let primaryRoot: ReceiptSessionRef?
     let lastActivityAt: Double?
+    // Recency-aware handoff lifecycle marker (parallel to the decision word).
+    // Optional so an older daemon payload without the field still decodes.
+    let handedOff: Bool?
 
     var id: String { taskId }
 
@@ -431,6 +434,7 @@ struct ReceiptSummary: Decodable, Identifiable {
         case sessionCount = "session_count"
         case primaryRoot = "primary_root"
         case lastActivityAt = "last_activity_at"
+        case handedOff = "handed_off"
     }
 }
 
@@ -620,12 +624,32 @@ struct Receipt: Decodable {
 struct ReceiptAxes: Decodable {
     let decisionStatus: ReceiptDecision
     let evidenceStrength: ReceiptEvidence
+    // A third, orthogonal signal: the deliberate-stop lifecycle marker, kept out
+    // of decisionStatus so a handoff shows BESIDE a finding/blocked headline.
+    // Optional so an older daemon payload without the field still decodes.
+    let handoff: ReceiptHandoff?
     let orthogonalityNote: String?
 
     enum CodingKeys: String, CodingKey {
         case decisionStatus = "decision_status"
         case evidenceStrength = "evidence_strength"
+        case handoff
         case orthogonalityNote = "orthogonality_note"
+    }
+}
+
+/// The handoff lifecycle marker. ``handedOff`` is the recency-aware disposition
+/// from the daemon — true only when the handoff is the Task's frontier (nothing
+/// still-open is newer), so a resumed Task does not carry it.
+struct ReceiptHandoff: Decodable {
+    let handedOff: Bool?
+    let statement: String?
+    let assertedBy: String?
+
+    enum CodingKeys: String, CodingKey {
+        case handedOff = "handed_off"
+        case statement
+        case assertedBy = "asserted_by"
     }
 }
 
@@ -681,6 +705,12 @@ struct ReceiptActionsDim: Decodable {
     let toolCategoryTotal: Int?
     let touchedFiles: [String]?
     let touchedFileCount: Int?
+    // The daemon-capped touched-file preview + disclosed overflow — the app
+    // renders these directly so the cap has a single source of truth (the daemon)
+    // and can never drift from the CLI/TUI. Optional so an older payload without
+    // them still decodes (the app then falls back to slicing touchedFiles).
+    let touchedFilesPreview: [String]?
+    let touchedFilesElided: Int?
     // The specific tools the agent used (daemon-ranked, most-used first) + the
     // disclosed overflow. Optional so an older payload without them still decodes.
     let toolNamesPreview: [ReceiptToolName]?
@@ -693,6 +723,8 @@ struct ReceiptActionsDim: Decodable {
         case toolCategoryTotal = "tool_category_total"
         case touchedFiles = "touched_files"
         case touchedFileCount = "touched_file_count"
+        case touchedFilesPreview = "touched_files_preview"
+        case touchedFilesElided = "touched_files_elided"
         case toolNamesPreview = "tool_names_preview"
         case toolNamesElided = "tool_names_elided"
         case provenance, gaps
