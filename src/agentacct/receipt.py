@@ -148,6 +148,26 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+# The Actions dimension already CAPTURES every touched artifact path; surfaces
+# previewed only the COUNT. This previews a capped slice of the actual paths and
+# DISCLOSES the remainder rather than silently truncating (the receipt's honesty
+# rule: a bound on coverage is stated, never hidden).
+RECEIPT_TOUCHED_FILES_PREVIEW = 12
+
+
+def touched_files_preview(
+    actions: Mapping[str, Any], *, limit: int = RECEIPT_TOUCHED_FILES_PREVIEW
+) -> tuple[list[str], int]:
+    """Return (paths to show, count elided). Called ONCE, in ``_actions_dimension``,
+    which bakes the result into the receipt as ``touched_files_preview`` /
+    ``touched_files_elided`` — so every surface (CLI, TUI, macOS app) renders the
+    same daemon-provided slice and the cap has a single source of truth."""
+
+    files = [str(path) for path in (actions.get("touched_files") or []) if str(path).strip()]
+    shown = files if limit is None or limit < 0 else files[:limit]
+    return shown, max(0, len(files) - len(shown))
+
+
 # --- Evidence axis ------------------------------------------------------------
 
 def _check_source(check: Mapping[str, Any]) -> str:
@@ -601,11 +621,17 @@ def _actions_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
         gaps.append(
             "Tool categories were not instrumented for this session; Actions shows touched files only."
         )
+    # Compute the capped preview + disclosed overflow ONCE, here, so every surface
+    # (CLI, TUI, and the macOS app) renders the daemon-provided slice and never
+    # re-derives the cap client-side — the single source of truth for the cap.
+    preview, elided = touched_files_preview({"touched_files": touched})
     return {
         "tool_category_counts": dict(counts),
         "tool_category_total": int(actions.get("tool_category_total") or 0),
         "touched_files": touched,
         "touched_file_count": len(touched),
+        "touched_files_preview": preview,
+        "touched_files_elided": elided,
         "provenance": sorted(set(provenance)) or [SOURCE_NONE],
         "gaps": gaps,
     }

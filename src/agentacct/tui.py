@@ -1268,6 +1268,13 @@ def _render_receipt_markup(receipt: dict) -> str:
         f"[b]Actions[/]   {_escape(category_text)} · touched {actions.get('touched_file_count', 0)} file(s)"
         f"   [dim]\\[{_prov('actions')}][/]"
     )
+    for _path in actions.get("touched_files_preview") or []:
+        # The actual artifact paths, already captured — previously only the count
+        # was shown. The daemon capped the slice and disclosed the overflow.
+        lines.append(f"           [dim]{_escape(str(_path))}[/]")
+    _elided_files = int(actions.get("touched_files_elided") or 0)
+    if _elided_files:
+        lines.append(f"           [dim]… +{_elided_files} more[/]")
 
     cost = dims.get("cost") or {}
     lines.append(f"[b]Cost[/]      {_escape(_receipt_summary_cost(cost))}   [dim]\\[{_prov('cost')}][/]")
