@@ -9033,6 +9033,13 @@ def _render_receipt_text(receipt: dict[str, Any]) -> None:
     )
     if decision.get("statement"):
         console.print(f"                     [dim]{_rich_escape(str(decision['statement']))}[/dim]")
+    handoff = axes.get("handoff", {})
+    if handoff.get("handed_off") and str(decision.get("key") or "") != "handed_off":
+        # The deliberate-stop lifecycle marker, shown BESIDE the decision word (not
+        # instead of it) so a finding/blocked headline never hides the handoff.
+        console.print("  Lifecycle          [magenta]↗ Handed off[/magenta]")
+        if handoff.get("statement"):
+            console.print(f"                     [dim]{_rich_escape(str(handoff['statement']))}[/dim]")
     console.print(f"  Evidence coverage  [bold]{_rich_escape(evidence_coverage_headline(evidence))}[/bold]")
     ledger = evidence_coverage_ledger(evidence)
     if ledger:
@@ -9162,10 +9169,16 @@ def receipts(
     table.add_column("Evidence coverage")
     table.add_column("Cost")
     for row in rows:
+        decision_key = str(row["decision_status"]["key"])
+        decision_cell = decision_key
+        if row.get("handed_off") and decision_key != "handed_off":
+            # Parallel lifecycle marker: shown beside a finding/blocked/… word so a
+            # clean handoff is never hidden by the louder problem.
+            decision_cell += "  [magenta]↗ handed off[/magenta]"
         table.add_row(
             str(row["task_id"])[:16],
             _rich_escape(str(row.get("title") or "")[:48]),
-            str(row["decision_status"]["key"]),
+            decision_cell,
             _rich_escape(evidence_coverage_headline(row.get("evidence_strength") or {})),
             _receipt_cost_text(row.get("cost") or {}),
         )

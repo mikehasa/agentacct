@@ -114,6 +114,74 @@ def test_receipt_has_all_eight_dimensions_and_two_named_axes() -> None:
         assert "gaps" in receipt["dimensions"][name]
 
 
+def test_receipt_exposes_handoff_marker_axis_and_summary_flag() -> None:
+    # A handed_off frontier surfaces as BOTH the decision word and the parallel
+    # handoff axis; the compact summary carries the flat bool for the list row.
+    from agentacct.receipt import build_receipt_summary
+
+    task = _task(
+        [
+            {"work_id": "a", "latest_status": "completed", "updated_at": 100.0},
+            {"work_id": "b", "latest_status": "handed_off", "updated_at": 200.0},
+        ]
+    )
+    receipt = _receipt(task)
+    assert receipt["axes"]["handoff"]["handed_off"] is True
+    assert receipt["axes"]["handoff"]["statement"]
+    assert receipt["axes"]["handoff"]["asserted_by"] == "agent_report"
+    assert receipt["axes"]["decision_status"]["key"] == "handed_off"
+
+    summary = build_receipt_summary(task, public_task_id="task_x", title="t")
+    assert summary["handed_off"] is True
+
+
+def test_blocked_receipt_still_carries_the_handoff_marker() -> None:
+    # A hard problem (blocked/finding) outranks the handoff in the decision WORD,
+    # but the handoff fact must not vanish — it rides the parallel axis so a
+    # surface can show it beside the red headline.
+    task = _task(
+        [
+            {"work_id": "a", "latest_status": "blocked", "updated_at": 100.0},
+            {"work_id": "b", "latest_status": "handed_off", "updated_at": 200.0},
+        ]
+    )
+    receipt = _receipt(task)
+    assert receipt["axes"]["decision_status"]["key"] in {"blocked", "failed"}
+    assert receipt["axes"]["handoff"]["handed_off"] is True
+
+
+def test_resumed_task_receipt_shows_no_handoff_marker() -> None:
+    # A later open step postdates the handoff: the Task resumed, so neither the
+    # decision word nor the marker report a handoff. Assert BOTH the detail axis
+    # AND the flat summary flag (the two are independent expressions that drive
+    # the detail view vs the list row) so a non-recency regression of either is
+    # caught — the list row is the exact dogfood surface this PR fixes.
+    from agentacct.receipt import build_receipt_summary
+
+    task = _task(
+        [
+            {"work_id": "a", "latest_status": "handed_off", "updated_at": 100.0},
+            {"work_id": "b", "latest_status": "started", "updated_at": 200.0},
+        ]
+    )
+    receipt = _receipt(task)
+    assert receipt["axes"]["decision_status"]["key"] == "in_progress"
+    assert receipt["axes"]["handoff"]["handed_off"] is False
+    summary = build_receipt_summary(task, public_task_id="task_x", title="t")
+    assert summary["handed_off"] is False
+
+
+def test_summary_handed_off_flag_is_false_without_any_handoff() -> None:
+    # The flat list-row flag must be False for a task that never handed off — a
+    # plain completed task must never paint a handoff chip.
+    from agentacct.receipt import build_receipt_summary
+
+    task = _task([{"work_id": "a", "latest_status": "completed", "updated_at": 100.0}])
+    summary = build_receipt_summary(task, public_task_id="task_x", title="t")
+    assert summary["handed_off"] is False
+    assert _receipt(task)["axes"]["handoff"]["handed_off"] is False
+
+
 def test_agent_reported_done_is_never_evidence_checked() -> None:
     # A completed step with no linked check: the agent SAID done, nothing PROVES
     # it — so it sits in the 'unchecked' tier, never any CHECKED tier.

@@ -407,8 +407,10 @@ def _decision_status(
     task: Mapping[str, Any],
     *,
     latest_store_activity_at: float | None,
+    canonical: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    canonical = reduce_task_outcome(task, latest_store_activity_at=latest_store_activity_at)
+    if canonical is None:
+        canonical = reduce_task_outcome(task, latest_store_activity_at=latest_store_activity_at)
     key = _text(canonical.get("key")) or "observed"
 
     # Refine ``failed`` out of ``blocked`` at the Receipt layer without changing
@@ -440,6 +442,27 @@ def _decision_status(
         "statement": statement,
         "asserted_by": asserted_by,
         "finding_attention_state": attention or None,
+    }
+
+
+def _handoff_marker(canonical: Mapping[str, Any]) -> dict[str, Any]:
+    """The handoff LIFECYCLE marker — a signal kept deliberately SEPARATE from the
+    decision word, alongside the two axes.
+
+    A Task can read ``finding`` (a red check you must act on) AND still have been
+    cleanly handed off: the decision word carries the louder problem, this marker
+    carries the deliberate stop, and neither hides the other. ``handed_off`` here
+    is the recency-aware disposition from ``reduce_task_outcome`` — true only when
+    the handoff is the frontier (nothing still-open is newer than it), so a Task
+    that was handed off and then RESUMED does not carry the marker. Surfaces show
+    the chip only when it adds information the decision word does not already state
+    (i.e. ``handed_off`` is true AND ``decision_status.key != "handed_off"``)."""
+
+    handed_off = bool(canonical.get("handoff_current"))
+    return {
+        "handed_off": handed_off,
+        "statement": _DECISION_STATEMENTS["handed_off"] if handed_off else None,
+        "asserted_by": "agent_report",
     }
 
 
@@ -837,7 +860,11 @@ def build_receipt(
     verification = step_verification_counts(task)
     checks = _project_checks(task)
     evidence_strength = _evidence_strength(task, checks, verification)
-    decision = _decision_status(task, latest_store_activity_at=latest_store_activity_at)
+    canonical = reduce_task_outcome(task, latest_store_activity_at=latest_store_activity_at)
+    decision = _decision_status(
+        task, latest_store_activity_at=latest_store_activity_at, canonical=canonical
+    )
+    handoff = _handoff_marker(canonical)
     decision_brief = _mapping(intelligence.get("decision_brief"))
 
     dimensions: dict[str, dict[str, Any]] = {
@@ -864,6 +891,10 @@ def build_receipt(
         "axes": {
             "decision_status": decision,
             "evidence_strength": evidence_strength,
+            # A third, orthogonal signal: the deliberate-stop lifecycle marker.
+            # Kept out of ``decision_status`` on purpose so a handoff can be shown
+            # BESIDE a finding/blocked headline instead of being masked by it.
+            "handoff": handoff,
             "orthogonality_note": (
                 "Evidence coverage and decision status are separate axes: an agent reporting "
                 "'done' never adds a passing check, and a human review or approval never "
@@ -904,7 +935,10 @@ def build_receipt_summary(
     verification = step_verification_counts(task)
     checks = _project_checks(task)
     evidence_strength = _evidence_strength(task, checks, verification)
-    decision = _decision_status(task, latest_store_activity_at=latest_store_activity_at)
+    canonical = reduce_task_outcome(task, latest_store_activity_at=latest_store_activity_at)
+    decision = _decision_status(
+        task, latest_store_activity_at=latest_store_activity_at, canonical=canonical
+    )
     usage = _mapping(task.get("usage"))
     return {
         "task_id": public_task_id,
@@ -914,6 +948,11 @@ def build_receipt_summary(
             "label": decision["label"],
             "asserted_by": decision["asserted_by"],
         },
+        # The recency-aware handoff lifecycle marker for the list row's parallel
+        # chip. A flat bool keeps the row compact; the detail Receipt carries the
+        # full ``axes.handoff`` object. Rendered as a chip only when it is not
+        # already the decision word (see ``_handoff_marker``).
+        "handed_off": bool(canonical.get("handoff_current")),
         "evidence_strength": {
             "key": evidence_strength["key"],
             "gradeable": evidence_strength["gradeable"],

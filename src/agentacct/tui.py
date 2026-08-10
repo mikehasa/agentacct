@@ -1221,6 +1221,13 @@ def _render_receipt_markup(receipt: dict) -> str:
     )
     if decision.get("statement"):
         lines.append(f"                   [dim]{_escape(str(decision['statement']))}[/]")
+    handoff = axes.get("handoff") or {}
+    if handoff.get("handed_off") and str(decision.get("key") or "") != "handed_off":
+        # Parallel deliberate-stop marker beside the decision word (never instead
+        # of it), so a finding/blocked headline does not hide a clean handoff.
+        lines.append("Lifecycle          [b magenta]↗ Handed off[/]")
+        if handoff.get("statement"):
+            lines.append(f"                   [dim]{_escape(str(handoff['statement']))}[/]")
     from .receipt import evidence_coverage_headline, evidence_coverage_ledger
 
     lines.append(f"Evidence coverage  [b {ecolor}]{_escape(evidence_coverage_headline(evidence))}[/]")
@@ -1398,9 +1405,13 @@ class ReceiptsScreen(Screen):
             self._by_id[task_id] = task
             decision = summary["decision_status"]
             evidence = summary["evidence_strength"]
+            decision_cell = f"[{_receipt_decision_color(decision['key'])}]{decision['key']}[/]"
+            if summary.get("handed_off") and str(decision["key"]) != "handed_off":
+                # Parallel deliberate-stop marker beside the decision word.
+                decision_cell += " [magenta]↗ handed off[/]"
             table.add_row(
                 _escape(str(summary.get("title") or task_id))[:46],
-                f"[{_receipt_decision_color(decision['key'])}]{decision['key']}[/]",
+                decision_cell,
                 f"[{_receipt_evidence_color(evidence['key'])}]{_escape(evidence_coverage_headline(evidence))}[/]",
                 _escape(_receipt_summary_cost(summary.get("cost") or {})),
                 _humanize_ago(summary.get("last_activity_at"), now),

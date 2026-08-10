@@ -464,6 +464,7 @@ def test_every_return_path_carries_open_step_count() -> None:
     # now carries it plus the sibling verification counts.
     count_keys = {
         "open_step_count",
+        "handoff_current",
         "verified_step_count",
         "total_step_count",
         "agent_reported_step_count",
@@ -516,3 +517,69 @@ def test_every_return_path_carries_open_step_count() -> None:
     # fall-through, and still classify as before.
     assert reduce_task_outcome(blocked)["key"] == "blocked"
     assert reduce_task_outcome(finding)["key"] == "finding"
+
+
+# --- Handoff as a recency-aware disposition (a clean stop, not "mostly done") ---
+
+
+def test_handoff_frontier_outranks_a_still_open_step() -> None:
+    # THE FIX: a clean handoff that is the Task's frontier (nothing still-open is
+    # newer) is the disposition even though one step is still open. Before, the
+    # open-step branch was checked first, so a single stray open step buried the
+    # handoff under "in progress"/"mostly done".
+    task = _multi_task(
+        [_step("started", updated_at=_NOW), _step("handed_off", updated_at=_NOW + 100)]
+    )
+    outcome = reduce_task_outcome(task)
+    assert outcome["key"] == "handed_off"
+    assert outcome["handoff_current"] is True
+
+
+def test_handoff_ties_with_open_step_resolve_to_handoff() -> None:
+    # A deliberate stop is a more honest summary than an incidental open step at
+    # the same instant, so an equal-timestamp tie resolves to the handoff.
+    task = _multi_task(
+        [_step("started", updated_at=_NOW), _step("handed_off", updated_at=_NOW)]
+    )
+    outcome = reduce_task_outcome(task)
+    assert outcome["key"] == "handed_off"
+    assert outcome["handoff_current"] is True
+
+
+def test_task_resumed_after_handoff_reads_in_progress_not_handed_off() -> None:
+    # The recency guard: when a later OPEN step postdates the newest handoff, the
+    # Task genuinely resumed — the handoff is history, not the headline, and the
+    # parallel marker is off so no surface shows a stale "handed off".
+    task = _multi_task(
+        [_step("handed_off", updated_at=_NOW), _step("started", updated_at=_NOW + 100)]
+    )
+    outcome = reduce_task_outcome(task)
+    assert outcome["key"] == "in_progress"
+    assert outcome["handoff_current"] is False
+
+
+def test_finding_outranks_handoff_but_the_marker_persists() -> None:
+    # A red check at handoff time must still be the headline (you have to see it),
+    # AND the handoff fact must not vanish — it rides the parallel marker.
+    task = _multi_task([_step("completed"), _step("handed_off", updated_at=_NOW + 100)])
+    task["task_evidence_events"] = [_check("failed", created_at=_NOW + 200, event_id="f")]
+    outcome = reduce_task_outcome(task)
+    assert outcome["key"] == "finding"
+    assert outcome["handoff_current"] is True
+
+
+def test_blocked_outranks_handoff_but_the_marker_persists() -> None:
+    task = _multi_task(
+        [_step("blocked", updated_at=_NOW), _step("handed_off", updated_at=_NOW + 100)]
+    )
+    outcome = reduce_task_outcome(task)
+    assert outcome["key"] == "blocked"
+    assert outcome["handoff_current"] is True
+
+
+def test_task_without_any_handoff_step_carries_handoff_current_false() -> None:
+    # Regression guard for the "byte-identical for non-handoff tasks" property:
+    # a Task with no handed_off step must always report the marker off.
+    for status in ("started", "completed", "checkpoint", "resolved", "blocked"):
+        outcome = reduce_task_outcome(_multi_task([_step(status)]))
+        assert outcome["handoff_current"] is False, status

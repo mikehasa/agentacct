@@ -461,6 +461,32 @@ def reduce_task_outcome(
         ),
         default=0.0,
     )
+    # Handoff DISPOSITION (recency-aware), computed up front so EVERY return path
+    # carries it — even ``blocked``/``finding``, where a red check outranks the
+    # handoff in the decision WORD but the handoff fact must still be shown beside
+    # it. A handoff is the Task's CURRENT disposition only when it is the frontier:
+    # there is a ``handed_off`` step and NO still-open step is newer than the
+    # newest handoff. If a later step reopened the work (an open step postdates the
+    # handoff), the Task genuinely resumed and is in progress — the handoff is
+    # history, not the headline. A tie (equal timestamps) resolves to the handoff:
+    # a deliberate stop is a more honest summary than an incidental open step
+    # beside it. This is what lets the task headline finally agree with the
+    # per-session badge (``v1_sessions``/``glance``), which already ranks
+    # ``handed_off`` above ``in_progress``.
+    _handoff_times = [
+        _number(item.get("updated_at") or item.get("started_at"))
+        for item, status in zip(items, statuses)
+        if status == _HANDED_OFF_STATUS
+    ]
+    _open_times = [
+        _number(item.get("updated_at") or item.get("started_at"))
+        for item, status in zip(items, statuses)
+        if status in _ACTIVE_STATUSES
+    ]
+    newest_handoff_at = max(_handoff_times, default=None)
+    handoff_current = newest_handoff_at is not None and (
+        not _open_times or newest_handoff_at >= max(_open_times)
+    )
     checks = latest_task_checks(task)
     # Explicit work state is the product's user-action contract. A current
     # failed check may explain the blocker, but it must never demote a
@@ -476,6 +502,7 @@ def reduce_task_outcome(
             "latest_checks": checks,
             "max_work_updated_at": max_work_updated_at,
             "open_step_count": open_step_count,
+            "handoff_current": handoff_current,
             **step_counts,
         }
     current_failures = [
@@ -531,6 +558,7 @@ def reduce_task_outcome(
                 "finding_attention_state": attention_state,
                 "max_work_updated_at": max_work_updated_at,
                 "open_step_count": open_step_count,
+                "handoff_current": handoff_current,
                 **step_counts,
             }
         # Every current failure was superseded by a later same-scope pass: the
@@ -545,6 +573,7 @@ def reduce_task_outcome(
             "superseded_findings": superseded_failures,
             "max_work_updated_at": max_work_updated_at,
             "open_step_count": open_step_count,
+            "handoff_current": handoff_current,
             **step_counts,
         }
     if statuses and any(status == _RESOLVED_STATUS for status in statuses) and all(
@@ -554,6 +583,16 @@ def reduce_task_outcome(
         # An explicit blocker resolution is an evidence-backed agent claim,
         # not a completion report and not authoritative verification.
         key = "resolved"
+    elif handoff_current:
+        # DECISION 1 (reordered): a clean handoff is the Task's disposition even
+        # when a step is still open, PROVIDED the handoff is the frontier (see
+        # ``handoff_current`` above — nothing still-open is newer than it). Moved
+        # ABOVE the open-step branch: one stray open step must no longer bury a
+        # deliberate stop. It stays BELOW ``blocked``/``finding`` (the early
+        # returns), so a red check recorded at handoff time is never hidden. A
+        # deliberate stop — never a completed/verified claim, never a
+        # blocker/failure.
+        key = "handed_off"
     elif open_step_count:
         # DECISION 3a: one un-closed step must not drag a mostly-finished Task to
         # plain "in progress" — but silence is NOT evidence of abandonment. The
@@ -578,11 +617,6 @@ def reduce_task_outcome(
         key = "mostly_done" if left_behind else "in_progress"
     elif not items:
         key = "observed"
-    elif any(status == _HANDED_OFF_STATUS for status in statuses):
-        # DECISION 1: every step is terminal and at least one was a clean
-        # handoff. A deliberate stop — never a completed/verified claim, never a
-        # blocker/failure.
-        key = "handed_off"
     else:
         all_successful = all(status in _SUCCESS_STATUSES for status in statuses)
         passing_checks = [event for event in checks if _text(event.get("result")).lower() == "passed"]
@@ -619,6 +653,7 @@ def reduce_task_outcome(
         "latest_checks": checks,
         "max_work_updated_at": max_work_updated_at,
         "open_step_count": open_step_count,
+        "handoff_current": handoff_current,
         **step_counts,
     }
 
