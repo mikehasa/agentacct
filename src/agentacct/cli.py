@@ -876,13 +876,58 @@ def _merge_claude_project_settings(project_dir: Path) -> tuple[Path, str]:
     return _merge_claude_settings_from_example(example_path, target)
 
 
+def _command_wrapper_paths(command: Any) -> set[str]:
+    """The agentacct wrapper-script PATH token(s) in ONE hook command string.
+
+    A wrapper token is one whose basename is the frozen wrapper filename
+    (``CLAUDE_HOOK_RELATIVE_PATH.name``). Returning the PATH (not just the
+    basename) is deliberate: the merge treats two commands as the SAME hook only
+    when they run the same wrapper FILE, so a re-install that changed only the
+    python interpreter collapses, while a wrapper at a DIFFERENT location — a stale
+    pre-relocation path — is left for the doctor to flag, not silently rewritten.
+
+    Tokenization is shell-aware (``shlex``) so the quoting the command is BUILT
+    with is undone: the project form ``"$CLAUDE_PROJECT_DIR/.../wrapper.py"`` and a
+    global path that needs quoting (a space in the home dir) both yield the bare
+    wrapper token. A command shlex cannot parse falls back to whitespace split.
+    """
+    text = command if isinstance(command, str) else ""
+    if not text:
+        return set()
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        tokens = text.split()
+    return {
+        token
+        for token in tokens
+        if token.replace("\\", "/").rsplit("/", 1)[-1] == CLAUDE_HOOK_RELATIVE_PATH.name
+    }
+
+
+def _hook_wrapper_paths(row: Any) -> set[str]:
+    """Union of the wrapper paths across every command in a hook row."""
+    paths: set[str] = set()
+    if not isinstance(row, dict):
+        return paths
+    entry_hooks = row.get("hooks")
+    if not isinstance(entry_hooks, list):
+        return paths
+    for hook in entry_hooks:
+        if isinstance(hook, dict):
+            paths |= _command_wrapper_paths(hook.get("command"))
+    return paths
+
+
 def _merge_claude_settings_from_example(example_path: Path, target: Path) -> tuple[Path, str]:
     """Non-destructively merge a generated hook/env example into a settings file.
 
     Shared by the project install (``.claude/settings.local.json``) and the
     default-global install (user-level ``~/.claude/settings.json``): an env key is
-    never overwritten when the user set a different value, hook rows are deduped
-    by fingerprint, and the write is atomic + 0600.
+    never overwritten when the user set a different value, our hook rows are
+    replaced in place (matched by the wrapper FILE they run, so a second install
+    that differs only by interpreter never accrues a duplicate), the user's own
+    hooks are left untouched, and the write is atomic + 0600.
     """
     try:
         generated = json.loads(example_path.read_text(encoding="utf-8"))
@@ -931,17 +976,63 @@ def _merge_claude_settings_from_example(example_path: Path, target: Path) -> tup
             raise RuntimeManagerError(
                 f"Claude Code setting hooks.{event_name} is not an array; agentacct left it unchanged"
             )
-        fingerprints = {
-            json.dumps(row, sort_keys=True, separators=(",", ":"))
-            for row in existing_rows
-            if isinstance(row, dict)
-        }
+        # Replace rows that run the SAME wrapper file as the generated ones in
+        # place; collapse any pre-existing duplicates of that wrapper; leave the
+        # user's own hooks (and a wrapper at a different path) exactly where they
+        # are. Re-running onboard from the same install is a no-op (identical
+        # rows); onboarding from a second install that differs only by interpreter
+        # UPDATES the row instead of appending a near-duplicate that would
+        # double-fire and double-count tool activity.
+        generated_wrapper_paths: set[str] = set()
         for row in rows:
-            fingerprint = json.dumps(row, sort_keys=True, separators=(",", ":"))
-            if fingerprint not in fingerprints:
-                existing_rows.append(row)
-                fingerprints.add(fingerprint)
-                changed = True
+            generated_wrapper_paths |= _hook_wrapper_paths(row)
+        rebuilt: list[Any]
+        if generated_wrapper_paths:
+            rebuilt = []
+            inserted = False
+            for row in existing_rows:
+                if not (_hook_wrapper_paths(row) & generated_wrapper_paths):
+                    rebuilt.append(row)  # user's own hook / a wrapper elsewhere
+                    continue
+                # This row runs our wrapper. Drop our command(s) from it — but at
+                # COMMAND granularity, so a user command co-located under the same
+                # matcher survives. Insert our canonical rows once, at the first
+                # such position; keep the row only if a non-wrapper command remains.
+                if not inserted:
+                    rebuilt.extend(rows)
+                    inserted = True
+                survivors = [
+                    hook
+                    for hook in (row.get("hooks") or [])
+                    if not (
+                        isinstance(hook, dict)
+                        and _command_wrapper_paths(hook.get("command")) & generated_wrapper_paths
+                    )
+                ]
+                if survivors:
+                    trimmed = dict(row)
+                    trimmed["hooks"] = survivors
+                    rebuilt.append(trimmed)  # the user's co-located command, kept
+            if not inserted:
+                rebuilt = list(existing_rows) + list(rows)  # first install: append
+        else:
+            # A generated hook row that carries no agentacct wrapper path (a
+            # non-standard example) has no stable identity to replace by, so fall
+            # back to exact-fingerprint dedup — enough to keep re-merge idempotent.
+            rebuilt = list(existing_rows)
+            seen = {
+                json.dumps(row, sort_keys=True, separators=(",", ":"))
+                for row in rebuilt
+                if isinstance(row, dict)
+            }
+            for row in rows:
+                fingerprint = json.dumps(row, sort_keys=True, separators=(",", ":"))
+                if fingerprint not in seen:
+                    rebuilt.append(row)
+                    seen.add(fingerprint)
+        if rebuilt != existing_rows:
+            changed = True
+        hooks[event_name] = rebuilt
     target.parent.mkdir(parents=True, exist_ok=True)
     if changed or not target.exists():
         payload = (json.dumps(current, indent=2) + "\n").encode("utf-8")
