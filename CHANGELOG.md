@@ -97,6 +97,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`/work-events`, `/capture/*`, connectors, `/v1/traces`) are untouched. Also
   retires the migration-era `canonical verify-read-canary` command.
 
+### Fixed
+- **`usage import-local --client claude-code` no longer imports zero sessions
+  when a single symlink exists under `~/.claude/projects/`.** A descendant
+  directory symlink (e.g. a shared memory directory linked into a project dir, a
+  common cross-machine sync pattern) previously aborted the entire Claude
+  transcript walk on the first symlinked component, discarding every legitimate
+  transcript in the home — while `usage discover-sources` still reported them,
+  making the failure baffling. The no-follow policy is unchanged (a directory
+  symlink is never traversed, so no foreign subtree is imported); the offending
+  link is now skipped, counted as `skipped_unsafe_paths`, and surfaced in the
+  import summary instead of silently zeroing the import (reported in #84).
+
 ## [0.8.1] - 2026-08-05
 
 ### Fixed

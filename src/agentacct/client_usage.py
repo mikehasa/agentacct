@@ -1455,6 +1455,7 @@ def _initial_claude_discovery_stats() -> dict[str, Any]:
         "sessions_without_usage": 0,
         "error_count": 0,
         "error_codes": [],
+        "skipped_unsafe_paths": 0,
         "source_present": False,
     }
 
@@ -1639,6 +1640,7 @@ def _discover_source_tree_files_no_follow(
     unsafe_code: str,
     traversal_code: str,
     changed_code: str,
+    skipped_dir_symlinks: list[Path] | None = None,
 ) -> list[_NoFollowTreeFile]:
     """Exhaustively enumerate a source tree without following or hiding errors.
 
@@ -1695,14 +1697,25 @@ def _discover_source_tree_files_no_follow(
                 # A non-carrier symlink must not condemn the whole walk: the
                 # previous fwalk-based scanner silently ignored file/broken
                 # symlinks, and a stray "latest"-style link would otherwise
-                # zero out the entire home's discovery forever. Directory
-                # symlinks stay fatal — following one could smuggle an
-                # unbounded foreign subtree into a "complete" scan.
+                # zero out the entire home's discovery forever.
                 try:
                     target = os.stat(name, dir_fd=directory_fd, follow_symlinks=True)
                 except OSError:
                     continue
                 if stat.S_ISDIR(target.st_mode):
+                    # A directory symlink is never FOLLOWED — descending it
+                    # could smuggle an unbounded foreign subtree into a
+                    # "complete" scan. But a single such link must not condemn
+                    # the whole tree either. Callers that pass
+                    # ``skipped_dir_symlinks`` record the skip and keep
+                    # enumerating every legitimate sibling; without it the link
+                    # stays fatal (unchanged for callers that require closure).
+                    # One stray `memory -> <shared dir>` link under
+                    # ~/.claude/projects previously zeroed a home's 6000+
+                    # transcripts on import (issue #84).
+                    if skipped_dir_symlinks is not None:
+                        skipped_dir_symlinks.append(root_path / relative / name)
+                        continue
                     raise _ClientUsageDiscoveryReadError(unsafe_code)
                 continue
             child_relative = relative / name
@@ -1789,6 +1802,7 @@ def _discover_claude_transcript_paths(
     projects_root: Path,
     *,
     projects_root_fd: int,
+    skipped_dir_symlinks: list[Path] | None = None,
 ) -> list[_NoFollowTreeFile]:
     """Enumerate JSONL candidates from the held source-root descriptor."""
 
@@ -1799,6 +1813,7 @@ def _discover_claude_transcript_paths(
         unsafe_code="claude_transcript_unsafe_path",
         traversal_code="claude_transcript_discovery_failed",
         changed_code="claude_transcript_changed_during_scan",
+        skipped_dir_symlinks=skipped_dir_symlinks,
     )
 
 
@@ -1976,10 +1991,12 @@ def _discover_claude_code_usage_from_home(
         raise _ClaudeTranscriptUnsafePathError(
             "claude projects root was not opened from its source boundary"
         )
+    skipped_dir_symlinks: list[Path] = []
     try:
         candidate_files = _discover_claude_transcript_paths(
             projects_root,
             projects_root_fd=projects_root_fd,
+            skipped_dir_symlinks=skipped_dir_symlinks,
         )
     except _ClaudeTranscriptUnsafePathError:
         raise
@@ -2018,6 +2035,14 @@ def _discover_claude_code_usage_from_home(
         error_count += 1
         if code not in error_codes:
             error_codes.append(code)
+
+    # A descendant directory symlink is never followed (no-follow policy), but
+    # it no longer aborts the whole home. Surface each skipped link as an unsafe
+    # path — exactly as a symlinked transcript FILE is — so the skip stays
+    # visible in diagnostics while every legitimate sibling still imports
+    # (issue #84).
+    for _skipped_symlink in skipped_dir_symlinks:
+        record_error("claude_transcript_unsafe_path")
 
     path_entries: list[tuple[Path, float]] = []
     fingerprints: dict[Path, _ClaudeFileFingerprint] = {}
@@ -2341,6 +2366,7 @@ def _discover_claude_code_usage_from_home(
                 ),
                 "error_count": error_count,
                 "error_codes": error_codes,
+                "skipped_unsafe_paths": len(skipped_dir_symlinks),
             }
         )
     return events
@@ -2866,6 +2892,15 @@ def _merge_multi_home_discovery_stats(
             ),
         }
     )
+    # Skipped-symlink accounting is specific to the Claude transcript walk (the
+    # only source that opts into skip-and-continue over abort, issue #84). Add
+    # it only when a per-home stat actually carries it so sources that keep the
+    # stricter fail-closed policy do not gain a spurious always-zero field.
+    if any("skipped_unsafe_paths" in stats for stats in per_home):
+        target["skipped_unsafe_paths"] = sum(
+            _safe_nonnegative_int(stats.get("skipped_unsafe_paths"))
+            for stats in per_home
+        )
 
 
 def _client_session_id_for_file(session_id: str, path: Path) -> str:
@@ -4252,6 +4287,15 @@ def discover_client_usage_with_diagnostics(
                 else None
             ),
         }
+        # Skipped-symlink accounting is specific to the Claude transcript walk
+        # (issue #84): the only source that skips-and-continues over an
+        # unfollowable directory symlink instead of failing the home closed.
+        # Expose it only where it is actually tracked so other sources keep a
+        # stable diagnostic shape.
+        if "skipped_unsafe_paths" in stats:
+            diagnostics[client_name]["skipped_unsafe_paths"] = _safe_nonnegative_int(
+                stats.get("skipped_unsafe_paths")
+            )
     return ClientUsageDiscoveryResult(
         events=candidates,
         diagnostics=diagnostics,

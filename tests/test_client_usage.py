@@ -2156,6 +2156,7 @@ def test_discover_claude_usage_limit_selects_complete_recent_root_group(
         "usage_sessions": 3,
         "sessions_without_usage": 0,
         "source_present": True,
+        "skipped_unsafe_paths": 0,
     }
 
 
@@ -2959,10 +2960,30 @@ def test_claude_projects_root_symlink_is_rejected_as_unsafe(tmp_path):
     ]
 
 
-def test_claude_descendant_directory_symlink_fails_closed(tmp_path):
+def test_claude_descendant_directory_symlink_is_skipped_not_fatal(tmp_path):
+    # issue #84: a descendant directory symlink is never FOLLOWED (that could
+    # smuggle a foreign subtree into a "complete" scan), but it must not abort
+    # the whole home. The link is skipped and surfaced; every legitimate
+    # sibling transcript still imports instead of the home returning zero.
     claude_home = _make_claude_home(tmp_path)
     projects_root = claude_home / "projects"
     foreign_home = _make_claude_home(tmp_path / "foreign")
+    # Plant a distinctly-named transcript behind the symlink so the test proves
+    # no-follow: if the link were traversed, this id would appear in the import.
+    (foreign_home / "projects" / "-tmp-project" / "foreign-only.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "sessionId": "foreign-secret",
+                "message": {
+                    "model": "claude-opus-4-8",
+                    "usage": {"input_tokens": 99, "output_tokens": 9},
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     (projects_root / "linked-project").symlink_to(
         foreign_home / "projects" / "-tmp-project"
     )
@@ -2973,10 +2994,15 @@ def test_claude_descendant_directory_symlink_fails_closed(tmp_path):
         limit_sessions=10,
     )
 
-    assert result.events == []
-    assert result.diagnostics["claude-code"]["error_codes"] == [
-        "claude_transcript_unsafe_path"
-    ]
+    imported_ids = [event.client_session_id for event in result.events]
+    assert imported_ids == ["claude-session"]
+    # The foreign session behind the symlink is NOT imported (no-follow holds).
+    assert "foreign-secret" not in imported_ids
+    assert result.events[0].source_parse_complete is True
+    diagnostic = result.diagnostics["claude-code"]
+    assert diagnostic["error_codes"] == ["claude_transcript_unsafe_path"]
+    assert diagnostic["error_count"] == 1
+    assert diagnostic["skipped_unsafe_paths"] == 1
 
 
 def test_claude_non_carrier_file_symlinks_do_not_block_discovery(tmp_path):
@@ -3003,7 +3029,10 @@ def test_claude_non_carrier_file_symlinks_do_not_block_discovery(tmp_path):
     assert diagnostic["error_codes"] == []
 
 
-def test_claude_non_carrier_symlink_to_directory_still_fails_closed(tmp_path):
+def test_claude_non_carrier_symlink_to_directory_is_skipped_not_fatal(tmp_path):
+    # issue #84: a directory symlink nested beside real transcripts (e.g. a
+    # "current"-style convenience pointer) is skipped and surfaced, but the
+    # sibling transcript in the same project still imports.
     claude_home = _make_claude_home(tmp_path)
     project = claude_home / "projects" / "-tmp-project"
     outside_dir = tmp_path / "outside-dir"
@@ -3016,10 +3045,76 @@ def test_claude_non_carrier_symlink_to_directory_still_fails_closed(tmp_path):
         limit_sessions=10,
     )
 
-    assert result.events == []
-    assert result.diagnostics["claude-code"]["error_codes"] == [
-        "claude_transcript_unsafe_path"
+    assert [event.client_session_id for event in result.events] == [
+        "claude-session"
     ]
+    assert result.events[0].source_parse_complete is True
+    diagnostic = result.diagnostics["claude-code"]
+    assert diagnostic["error_codes"] == ["claude_transcript_unsafe_path"]
+    assert diagnostic["error_count"] == 1
+    assert diagnostic["skipped_unsafe_paths"] == 1
+
+
+def test_claude_shared_memory_symlink_does_not_zero_the_home(tmp_path):
+    # issue #84 reproduction: a shared memory directory symlinked into a project
+    # dir (a common cross-machine sync pattern) used to raise on the first
+    # symlinked component of the O_NOFOLLOW walk, and the caller discarded every
+    # transcript in the home. Now the link is skipped and the real sessions
+    # import. Two projects, each with its own session, plus one shared-memory
+    # symlink apiece.
+    claude_home = tmp_path / "claude-home"
+    projects_root = claude_home / "projects"
+    shared_memory = tmp_path / "shared-memory"
+    shared_memory.mkdir(parents=True)
+    (shared_memory / "MEMORY.md").write_text("shared notes\n", encoding="utf-8")
+
+    for index, project_name in enumerate(("-Users-me", "-Users-me-Downloads")):
+        project = projects_root / project_name
+        project.mkdir(parents=True)
+        session = project / f"session-{index}.jsonl"
+        session.write_text(
+            "\n".join(
+                json.dumps(row)
+                for row in (
+                    {
+                        "type": "ai-title",
+                        "sessionId": f"session-{index}",
+                        "aiTitle": "Real work",
+                    },
+                    {
+                        "type": "assistant",
+                        "sessionId": f"session-{index}",
+                        "message": {
+                            "model": "claude-opus-4-8",
+                            "usage": {
+                                "input_tokens": 11,
+                                "output_tokens": 3,
+                            },
+                        },
+                    },
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (project / "memory").symlink_to(shared_memory, target_is_directory=True)
+
+    result = discover_client_usage_with_diagnostics(
+        client="claude-code",
+        claude_home=claude_home,
+        limit_sessions=10,
+    )
+
+    assert {event.client_session_id for event in result.events} == {
+        "session-0",
+        "session-1",
+    }
+    assert all(event.source_parse_complete is True for event in result.events)
+    diagnostic = result.diagnostics["claude-code"]
+    assert diagnostic["error_codes"] == ["claude_transcript_unsafe_path"]
+    # One skipped memory symlink per project.
+    assert diagnostic["skipped_unsafe_paths"] == 2
+    assert diagnostic["error_count"] == 2
 
 
 def test_claude_non_regular_jsonl_is_rejected_without_blocking(tmp_path):
