@@ -165,9 +165,12 @@ def test_codex_hooks_install_command_fails_honestly_on_non_object(tmp_path: Path
         app, ["hooks", "codex", "install", "--home", str(home), "--store-dir", str(tmp_path / "store")]
     )
     assert result.exit_code == 1
-    assert "LEFT UNCHANGED" in result.output
-    assert "No hook was wired" in result.output
-    assert "trust" not in result.output.lower()  # no false "approve it" line
+    # Normalize: the rich console soft-wraps at ~80 cols with no TTY (CI), which
+    # would split these multi-word phrases across a newline.
+    normalized = " ".join(result.output.split())
+    assert "LEFT UNCHANGED" in normalized
+    assert "No hook was wired" in normalized
+    assert "trust" not in normalized.lower()  # no false "approve it" line
     assert hj.read_text() == "[]"  # never clobbered
 
 

@@ -289,5 +289,8 @@ def test_onboard_global_agent_codex_is_honest_when_hooks_skip(
 
     result = CliRunner().invoke(app, ["onboard", "--scope", "global", "--agent", "codex", "--no-start"])
     assert result.exit_code == 0, result.output
-    assert "NOT wired" in result.output
-    assert "loads the server + hooks" not in result.output  # no false "+ hooks" claim
+    # Normalize whitespace: the rich console soft-wraps at ~80 cols with no TTY
+    # (CI), which would split a multi-word phrase across a newline.
+    normalized = " ".join(result.output.split())
+    assert "NOT wired" in normalized
+    assert "loads the server + hooks" not in normalized  # no false "+ hooks" claim
