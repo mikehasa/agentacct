@@ -283,6 +283,66 @@ def test_receipt_detail_discloses_tool_name_overflow(tmp_path: Path) -> None:
     assert "… +4 more" in detail.output  # overflow disclosed
 
 
+def _record_session_end(store: Path, *, session_id: str, at: float, reason: str = "logout") -> None:
+    SentinelService(store).record_event(
+        {
+            "event_id": f"sessend:{session_id}:{int(at)}",
+            "created_at": at,
+            "source": "claude-code",
+            "event_type": "session_end_observed",
+            "run_id": None,
+            "metadata": {
+                "client": "claude-code",
+                "client_session_id": session_id,
+                "ended_at": at,
+                "reason": reason,
+                "sentinel_semantic_kind": "session_lifecycle",
+            },
+        }
+    )
+
+
+def test_open_section_in_an_ended_session_reads_ended_open_end_to_end(tmp_path: Path) -> None:
+    # End-to-end: a started (open) section whose session then ends (an ambient
+    # session_end_observed event) flows through the store projection — the work
+    # ledger stamps session_ended_at, and the reducer infers ``ended_open``
+    # instead of a perpetual ``in_progress``. This is the dogfood gap the feature
+    # closes: the normal end of a session (agent stops without a terminal record).
+    _seed(tmp_path)  # session s1 + one completed section
+    _add_section(tmp_path, section_id="sec-open", status="started", at=150.0)
+    # The section events are stamped with the store's record time; the SessionEnd
+    # fires AFTER them (its real time.time()), so use a timestamp comfortably after
+    # the record time to express "the session ended after this step's last work".
+    _record_session_end(tmp_path, session_id="s1", at=4_000_000_000.0)
+
+    task_id = json.loads(
+        runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)]).output
+    )["tasks"][0]["task_id"]
+    receipt = json.loads(
+        runner.invoke(app, ["receipt", task_id, "--json", "--store-dir", str(tmp_path)]).output
+    )
+    decision = receipt["axes"]["decision_status"]
+    assert decision["key"] == "ended_open"
+    assert decision["asserted_by"] == "inferred"  # not the agent's word
+
+
+def test_session_end_cli_command_is_fire_and_forget(tmp_path: Path) -> None:
+    # Invariant: the SessionEnd hook path always emits {} and exits 0 — never a
+    # decision, never a non-zero exit — for both well-formed and malformed stdin.
+    ok = runner.invoke(
+        app,
+        ["hooks", "claude-code", "session-end", "--store-dir", str(tmp_path)],
+        input=json.dumps({"hook_event_name": "SessionEnd", "session_id": "s1", "reason": "logout"}),
+    )
+    assert ok.exit_code == 0 and ok.output.strip() == "{}"
+    bad = runner.invoke(
+        app,
+        ["hooks", "claude-code", "session-end", "--store-dir", str(tmp_path)],
+        input="not json at all",
+    )
+    assert bad.exit_code == 0 and bad.output.strip() == "{}"
+
+
 def test_receipts_list_json(tmp_path: Path) -> None:
     _seed(tmp_path)
     result = runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)])

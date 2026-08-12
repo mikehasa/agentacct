@@ -511,6 +511,39 @@ def capture_tool_activity(raw: str, *, store_dir: Path | str | None = None) -> N
         return
 
 
+def capture_session_end(raw: str, *, store_dir: Path | str | None = None) -> None:
+    """Record ONE session-end tick for this SessionEnd hook. Never raises.
+
+    Spools only content-free identity + timing — client, session id, the end
+    ``reason`` (a short enum like ``clear``/``logout``), and a timestamp — so the
+    reducer can infer an ``ended_open`` disposition for a step whose session
+    stopped without a recorded terminal. Never reads conversation content. The
+    SessionEnd hook fires only for a ROOT session, so no subagent-end noise.
+    """
+
+    try:
+        from .session_lifecycle import record_session_end_tick
+
+        event = json.loads(raw or "{}")
+        if not isinstance(event, dict):
+            return
+        session_id = event.get("session_id")
+        if not isinstance(session_id, str) or not session_id or len(session_id) > _MAX_CONTEXT_ID_LENGTH:
+            return
+        target = Path(store_dir) if store_dir is not None else _hook_store_dir_from_event(event)
+        if target is None:
+            return
+        record_session_end_tick(
+            target,
+            client="claude-code",
+            session_id=session_id,
+            reason=event.get("reason"),
+            at=time.time(),
+        )
+    except Exception:  # noqa: BLE001 - session-end capture must never affect the hook.
+        return
+
+
 def _hook_exit_code(event: dict[str, Any]) -> int | None:
     """Read the Bash exit code from a PostToolUse event, tolerant of the
     tool_output/tool_response key and exit_code/exitCode/code spellings. 0 is a
@@ -621,10 +654,21 @@ def claude_session_start_response(raw: str) -> dict[str, Any]:
         return {}
     if is_subagent_session_start(event):
         return {}
+    context = session_start_additional_context()
+    # On a resumed/compacted start — the moment work is most likely mid-handoff —
+    # append a targeted reminder to close the loop with a terminal status. This is
+    # the injection-capable hook (SessionEnd/PreCompact cannot inject); it lifts
+    # the AGENT-asserted quality, while SessionEnd's inferred ``ended_open`` is the
+    # safety net for when the reminder is not acted on.
+    source = event.get("source")
+    if isinstance(source, str) and source in ("resume", "compact"):
+        from .install_guide import session_resume_additional_context
+
+        context = f"{context}\n\n{session_resume_additional_context()}"
     return {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
-            "additionalContext": session_start_additional_context(),
+            "additionalContext": context,
         }
     }
 
@@ -954,9 +998,10 @@ def resolve_agentacct():
 
 def fail_open(reason, hook_event=""):
     sys.stderr.write("agentacct hook: %s; failing open\\n" % reason)
-    if hook_event in ("SessionStart", "PostToolUse"):
-        # SessionStart / PostToolUse no-op: an empty object. PostToolUse in
-        # particular must never block or edit the tool result on failure.
+    if hook_event in ("SessionStart", "PostToolUse", "SessionEnd"):
+        # SessionStart / PostToolUse / SessionEnd no-op: an empty object.
+        # PostToolUse in particular must never block or edit the tool result on
+        # failure; SessionEnd output is ignored by Claude Code either way.
         sys.stdout.write("{}\\n")
     else:
         # "agent_sentinel" is a frozen wire key (pre-rename): consumers parse it.
@@ -982,6 +1027,7 @@ def main():
     subcommand = {
         "SessionStart": "session-start",
         "PostToolUse": "post-tool-use",
+        "SessionEnd": "session-end",
     }.get(HOOK_EVENT, "pre-tool-use")
     executable = resolve_agentacct()
     if executable is None:
@@ -1124,6 +1170,21 @@ def claude_code_settings_example(python_executable: str | None = None, *, hook_p
             "PostToolUse": [
                 {
                     "matcher": "*",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": command,
+                        }
+                    ],
+                }
+            ],
+            # SessionEnd fires once when a root session terminates. The wrapper
+            # spools a content-free session-end fact (client, session id, reason,
+            # time); the reducer later infers an ``ended_open`` disposition for a
+            # step whose session stopped without a recorded terminal. Fire-and-
+            # forget: Claude Code ignores the output, so it never blocks anything.
+            "SessionEnd": [
+                {
                     "hooks": [
                         {
                             "type": "command",

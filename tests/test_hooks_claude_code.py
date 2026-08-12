@@ -770,13 +770,74 @@ def test_render_wrapper_embeds_absolute_path_with_bare_name_fallback():
     # fails open with the event-appropriate shape too.
     assert '"SessionStart": "session-start"' in text
     assert '"PostToolUse": "post-tool-use"' in text
+    assert '"SessionEnd": "session-end"' in text
     assert '.get(HOOK_EVENT, "pre-tool-use")' in text
-    # PostToolUse (like SessionStart) fails open to an empty object, never a
-    # blocking decision.
-    assert 'hook_event in ("SessionStart", "PostToolUse")' in text
+    # PostToolUse / SessionEnd (like SessionStart) fail open to an empty object,
+    # never a blocking decision.
+    assert 'hook_event in ("SessionStart", "PostToolUse", "SessionEnd")' in text
     assert '[executable, "hooks", "claude-code", subcommand, *AGENT_CHRONICLE_HOOK_ARGS]' in text
     # Bytes + replace: undecodable stdin can never raise before the event is known.
     assert 'sys.stdin.buffer.read().decode("utf-8", "replace")' in text
+
+
+def test_settings_example_wires_session_end() -> None:
+    from agentacct.hooks import claude_code_settings_example
+
+    hooks = claude_code_settings_example(python_executable="/usr/bin/python3")["hooks"]
+    assert "SessionEnd" in hooks
+    # one entry, no matcher (fires once on any root-session termination)
+    assert len(hooks["SessionEnd"]) == 1 and "matcher" not in hooks["SessionEnd"][0]
+
+
+def test_session_start_nudge_only_on_resume_or_compact() -> None:
+    import json
+
+    from agentacct.hooks import claude_session_start_response
+
+    def ctx(source):
+        r = claude_session_start_response(json.dumps({"hook_event_name": "SessionStart", "source": source}))
+        return r["hookSpecificOutput"]["additionalContext"]
+
+    startup, compact, resume = ctx("startup"), ctx("compact"), ctx("resume")
+    # the terminal-status reminder is appended only when work is likely mid-handoff
+    assert "handoff point" in compact and "handoff point" in resume
+    assert "handoff point" not in startup
+    assert len(compact) > len(startup) and len(resume) > len(startup)
+    # the base record-your-work directive is still present in every case
+    assert startup and startup in compact
+
+
+def test_capture_session_end_is_content_free(tmp_path) -> None:
+    import json
+
+    from agentacct.hooks import capture_session_end
+    from agentacct.session_lifecycle import drain_session_end_spool
+
+    raw = json.dumps(
+        {
+            "hook_event_name": "SessionEnd",
+            "session_id": "sess-xyz",
+            "reason": "logout",
+            "transcript_path": "/secret/transcript.jsonl",
+            "cwd": "/secret/project",
+        }
+    )
+    capture_session_end(raw, store_dir=tmp_path)
+    [event] = drain_session_end_spool(tmp_path, now=1.0)
+    assert event["metadata"]["client_session_id"] == "sess-xyz"
+    assert event["metadata"]["reason"] == "logout"
+    blob = json.dumps(event)
+    assert "secret" not in blob and "transcript" not in blob and "cwd" not in blob
+
+
+def test_session_end_with_no_session_id_is_a_noop(tmp_path) -> None:
+    import json
+
+    from agentacct.hooks import capture_session_end
+    from agentacct.session_lifecycle import session_end_spool_path
+
+    capture_session_end(json.dumps({"hook_event_name": "SessionEnd", "reason": "clear"}), store_dir=tmp_path)
+    assert not session_end_spool_path(tmp_path).exists()
 
 
 def test_install_embeds_resolved_executable_and_python_paths(tmp_path, monkeypatch):

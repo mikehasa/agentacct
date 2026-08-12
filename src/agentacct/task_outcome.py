@@ -487,6 +487,28 @@ def reduce_task_outcome(
     handoff_current = newest_handoff_at is not None and (
         not _open_times or newest_handoff_at >= max(_open_times)
     )
+    # ENDED-OPEN DISPOSITION (inferred). A still-open step (started/checkpoint)
+    # whose SESSION has ended — a ``session_ended_at`` at/after the step's own last
+    # activity, stamped by the projection from an ambient SessionEnd event — is not
+    # "in progress": the session stopped without the agent recording a terminal.
+    # The Task is ``ended_open`` only when EVERY open step is in an ended session
+    # (if any open step is still in a LIVE session, work genuinely continues
+    # somewhere, so the Task stays in progress) — the same "no live frontier" shape
+    # as the handoff rule. This is agentacct's own inference, not the agent's word,
+    # so it is the weakest disposition (ranked below an agent-asserted handoff) and
+    # never claims completion. A resumed step lands in a newer, still-live session,
+    # so its open step keeps the Task ``in_progress`` here automatically.
+    _open_items = [item for item, status in zip(items, statuses) if status in _ACTIVE_STATUSES]
+
+    def _session_ended_at(item: Mapping[str, Any]) -> float | None:
+        ended = _number(item.get("session_ended_at"))
+        return ended if ended > 0.0 else None
+
+    ended_open_current = bool(_open_items) and all(
+        (_session_ended_at(item) is not None)
+        and (_session_ended_at(item) >= _number(item.get("updated_at") or item.get("started_at")))
+        for item in _open_items
+    )
     checks = latest_task_checks(task)
     # Explicit work state is the product's user-action contract. A current
     # failed check may explain the blocker, but it must never demote a
@@ -593,6 +615,15 @@ def reduce_task_outcome(
         # deliberate stop — never a completed/verified claim, never a
         # blocker/failure.
         key = "handed_off"
+    elif ended_open_current:
+        # INFERRED: every still-open step is in a session that has ended without a
+        # recorded terminal. Ranked BELOW an agent-asserted handoff (the agent's
+        # own word wins) and below blocked/finding (a red check still leads), but
+        # ABOVE plain in_progress: the session stopped, so "in progress" would be a
+        # lie. Not a completion, not a deliberate handoff — agentacct inferred the
+        # stop from the ambient SessionEnd event (asserted_by=inferred, see
+        # receipt). Never fabricates ``completed``.
+        key = "ended_open"
     elif open_step_count:
         # DECISION 3a: one un-closed step must not drag a mostly-finished Task to
         # plain "in progress" — but silence is NOT evidence of abandonment. The

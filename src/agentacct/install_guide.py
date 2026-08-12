@@ -341,6 +341,25 @@ def session_start_additional_context() -> str:
     return SESSION_START_ADDITIONAL_CONTEXT
 
 
+# Appended to the SessionStart context ONLY when the session resumed or just
+# compacted (source in {resume, compact}) — the moment work is most likely being
+# handed off/rolled over. It nudges the agent to close the loop itself
+# (agent-asserted, the highest-quality record); the SessionEnd hook's inferred
+# ``ended_open`` is only the safety net for when this reminder is not acted on.
+SESSION_RESUME_ADDITIONAL_CONTEXT = (
+    "This session resumed or just compacted (its context rolled over — a common "
+    "handoff point). If you are mid-task, record the current section's status now "
+    "so the work state is not lost, and record the TERMINAL status "
+    "(completed / handed_off) when you finish or hand off — a section left open "
+    "reads as unfinished."
+)
+
+
+def session_resume_additional_context() -> str:
+    """The extra directive appended on a resumed/compacted SessionStart."""
+    return SESSION_RESUME_ADDITIONAL_CONTEXT
+
+
 # --- Standing workflow instructions (per-session, user or project level) -------
 # In global mode agentacct installs the MCP server, hooks, and store but NOT any
 # standing "record your work" instruction, so agents never open sections and the

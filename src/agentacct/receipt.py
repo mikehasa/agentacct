@@ -69,6 +69,10 @@ SOURCE_HOOK = "hook"
 SOURCE_CI = "ci"
 SOURCE_GIT = "git"
 SOURCE_HUMAN = "human"
+# agentacct's OWN inference from an ambient signal (e.g. a SessionEnd event) —
+# not the agent's word, not a check, not a person. The weakest source: it may
+# fill a gap honestly but never claims the certainty of a report or a check.
+SOURCE_INFERRED = "inferred"
 SOURCE_NONE = "none"
 
 PROVENANCE_LEGEND: dict[str, str] = {
@@ -78,6 +82,7 @@ PROVENANCE_LEGEND: dict[str, str] = {
     SOURCE_CI: "Reported by external CI or the model provider.",
     SOURCE_GIT: "Derived from the git repository.",
     SOURCE_HUMAN: "Asserted by a person (review, approval, or finding disposition).",
+    SOURCE_INFERRED: "Inferred by agentacct from an ambient signal (e.g. the session ended); not the agent's word.",
     SOURCE_NONE: "Not captured by any source — recorded here as a gap, never guessed.",
 }
 
@@ -96,6 +101,9 @@ _DECISION_ASSERTED_BY: dict[str, str] = {
     "resolved": "agent_report",
     "mostly_done": "agent_report",
     "handed_off": "agent_report",
+    # Inferred by agentacct from an ambient SessionEnd event — the weakest
+    # provenance, deliberately NOT agent_report (the agent never said this).
+    "ended_open": "inferred",
     "in_progress": "agent_report",
     "observed": "none",
     "unknown": "none",
@@ -113,6 +121,10 @@ _DECISION_STATEMENTS: dict[str, str] = {
     "resolved": "A later passed check reports the exact blocker resolved; this is not a verified completion.",
     "reported": "The agent reported completing work; no linked passing check verifies it yet.",
     "handed_off": "The work was cleanly handed off (continued elsewhere); a deliberate stop, not a completion.",
+    "ended_open": (
+        "The session ended with this step still open; agentacct inferred a stop from the session-end "
+        "event — not a recorded completion or a deliberate handoff."
+    ),
     "mostly_done": "Recorded steps completed while one or more were left open; not a claim the Task is finished.",
     "in_progress": "This Task is still in progress.",
     "observed": "agentacct observed this Task but no outcome was recorded.",
@@ -506,6 +518,8 @@ def _asserted_by_source(asserted_by: str, checks: list[Mapping[str, Any]]) -> st
         return SOURCE_MCP
     if asserted_by == "agent_report":
         return SOURCE_MCP
+    if asserted_by == "inferred":
+        return SOURCE_INFERRED
     return SOURCE_NONE
 
 

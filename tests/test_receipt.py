@@ -150,6 +150,32 @@ def test_blocked_receipt_still_carries_the_handoff_marker() -> None:
     assert receipt["axes"]["handoff"]["handed_off"] is True
 
 
+def test_ended_open_is_inferred_and_never_claims_completion() -> None:
+    # A still-open step whose session ended surfaces as the ``ended_open``
+    # decision word, asserted_by=inferred (weaker than the agent's word), with a
+    # statement that never claims completion or a deliberate handoff. The outcome
+    # dimension's provenance must be the inferred source, not mcp/machine/human.
+    task = _task(
+        [
+            {
+                "work_id": "a",
+                "latest_status": "started",
+                "updated_at": 100.0,
+                "client": "claude-code",
+                "client_session_id": "s1",
+                "session_ended_at": 200.0,
+            }
+        ]
+    )
+    receipt = _receipt(task)
+    decision = receipt["axes"]["decision_status"]
+    assert decision["key"] == "ended_open"
+    assert decision["asserted_by"] == "inferred"
+    assert "inferred" in decision["statement"].lower()
+    assert "complet" not in decision["statement"].lower() or "not a recorded completion" in decision["statement"].lower()
+    assert receipt["dimensions"]["outcome"]["provenance"] == ["inferred"]
+
+
 def test_resumed_task_receipt_shows_no_handoff_marker() -> None:
     # A later open step postdates the handoff: the Task resumed, so neither the
     # decision word nor the marker report a handoff. Assert BOTH the detail axis
