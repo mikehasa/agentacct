@@ -474,7 +474,9 @@ def capture_claude_code_client_context(raw: str, *, store_dir: Path | str | None
         return None
 
 
-def capture_tool_activity(raw: str, *, store_dir: Path | str | None = None) -> None:
+def capture_tool_activity(
+    raw: str, *, store_dir: Path | str | None = None, client: str = "claude-code"
+) -> None:
     """Record ONE tool-activity tick for this PreToolUse. Never raises.
 
     The PreToolUse hook already receives the tool name (and fails open), so this
@@ -483,6 +485,11 @@ def capture_tool_activity(raw: str, *, store_dir: Path | str | None = None) -> N
     the Receipt's Actions dimension can show both what KIND of tool ran and which
     SPECIFIC tool/connector. The spool lands in the SAME store as the
     client-context bridge so the usage importer drains both from one place.
+
+    ``client`` labels which agent emitted the tick. Codex's PreToolUse hook uses
+    the same STDIN shape (``session_id``/``tool_name``), and its ``session_id``
+    equals the rollout id the usage importer keys on, so a ``codex`` tick
+    attributes straight to the Codex session with no log pairing.
     """
 
     try:
@@ -501,7 +508,7 @@ def capture_tool_activity(raw: str, *, store_dir: Path | str | None = None) -> N
         category = tool_category(tool_name)
         record_tool_activity_tick(
             target,
-            client="claude-code",
+            client=client,
             session_id=session_id,
             category=category,
             name=tool_name,
@@ -511,7 +518,9 @@ def capture_tool_activity(raw: str, *, store_dir: Path | str | None = None) -> N
         return
 
 
-def capture_session_end(raw: str, *, store_dir: Path | str | None = None) -> None:
+def capture_session_end(
+    raw: str, *, store_dir: Path | str | None = None, client: str = "claude-code"
+) -> None:
     """Record ONE session-end tick for this SessionEnd hook. Never raises.
 
     Spools only content-free identity + timing — client, session id, the end
@@ -519,6 +528,10 @@ def capture_session_end(raw: str, *, store_dir: Path | str | None = None) -> Non
     reducer can infer an ``ended_open`` disposition for a step whose session
     stopped without a recorded terminal. Never reads conversation content. The
     SessionEnd hook fires only for a ROOT session, so no subagent-end noise.
+
+    ``client`` labels the emitting agent. Codex's SessionEnd hook carries the
+    same ``session_id`` (equal to the rollout id), so a ``codex`` end fact keys
+    to the right Codex session for the ``ended_open`` inference.
     """
 
     try:
@@ -535,7 +548,7 @@ def capture_session_end(raw: str, *, store_dir: Path | str | None = None) -> Non
             return
         record_session_end_tick(
             target,
-            client="claude-code",
+            client=client,
             session_id=session_id,
             reason=event.get("reason"),
             at=time.time(),
@@ -1098,6 +1111,139 @@ def render_claude_hook_wrapper(agentacct_executable: str | None = None, *, store
 
 # PATH-lookup-only rendering, kept for callers that used the old constant.
 CLAUDE_HOOK_WRAPPER = render_claude_hook_wrapper()
+
+
+# Codex reads a user-level ``~/.codex/hooks.json``; its wrapper lives beside it
+# under ``~/.codex/hooks/`` (NOT the store), so a store move can never vanish the
+# wrapper and brick Codex tool calls — the same lesson as the Claude Code path.
+CODEX_HOOK_RELATIVE_PATH = Path(".codex/hooks/agentacct_codex_hook.py")
+CODEX_HOOKS_JSON_RELATIVE_PATH = Path(".codex/hooks.json")
+
+_CODEX_HOOK_WRAPPER_TEMPLATE = '''#!/usr/bin/env python3
+"""Codex hook wrapper for agentacct (observe-only).
+
+One wrapper serves the installed Codex hook events (dispatch on the event's own
+`hook_event_name`):
+- PreToolUse: spool the tool NAME + category for the Receipt's Actions dimension
+  (observe-only — agentacct never makes an allow/block decision for Codex; Codex
+  owns its own sandbox/approval layer).
+- SessionEnd: spool a content-free session-end fact for the ended_open inference.
+
+Shells out to the installed `agentacct` CLI. Fail-open: if no agentacct
+executable can be started, or the CLI exits without output, this wrapper prints
+an empty no-op response `{}` and exits 0, so a broken or moved install can never
+block a Codex tool call. Reinstall with: agentacct hooks codex install --force
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+AGENTACCT_CANDIDATES = __AGENTACCT_CANDIDATES__
+AGENTACCT_HOOK_ARGS = __AGENTACCT_HOOK_ARGS__
+
+
+def resolve_agentacct():
+    for candidate in AGENTACCT_CANDIDATES:
+        if not candidate:
+            continue
+        if os.path.basename(candidate) != candidate:
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        else:
+            found = shutil.which(candidate)
+            if found:
+                return found
+    return None
+
+
+def no_op(reason=""):
+    if reason:
+        sys.stderr.write("agentacct codex hook: %s; failing open\\n" % reason)
+    sys.stdout.write("{}\\n")
+    return 0
+
+
+def main():
+    raw = sys.stdin.buffer.read().decode("utf-8", "replace")
+    hook_event = ""
+    try:
+        event = json.loads(raw)
+        if isinstance(event, dict):
+            value = event.get("hook_event_name")
+            if isinstance(value, str):
+                hook_event = value
+    except ValueError:
+        pass
+    subcommand = "session-end" if hook_event == "SessionEnd" else "pre-tool-use"
+    executable = resolve_agentacct()
+    if executable is None:
+        return no_op("agentacct executable not found (re-run: agentacct hooks codex install --force)")
+    try:
+        proc = subprocess.run(
+            [executable, "hooks", "codex", subcommand, *AGENTACCT_HOOK_ARGS],
+            input=raw,
+            text=True,
+            capture_output=True,
+            # A bounded wait is part of the never-block contract: fail-open covers
+            # the CLI RETURNING an error, but a hung child (stalled store mount,
+            # held SQLite lock, cold-import stall) would otherwise block the Codex
+            # tool call forever. A timeout turns that into a no-op {} instead.
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        return no_op("agentacct timed out")
+    except OSError as exc:
+        return no_op("agentacct failed to start (%s)" % exc)
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+    if proc.returncode == 0 and proc.stdout.strip():
+        sys.stdout.write(proc.stdout)
+        return 0
+    return no_op("agentacct exited with code %s without output" % proc.returncode)
+
+
+if __name__ == "__main__":
+    try:
+        exit_code = main()
+    except Exception as exc:  # fail-open: a wrapper bug must never break Codex sessions.
+        exit_code = no_op("unexpected codex hook wrapper error (%s: %s)" % (type(exc).__name__, exc))
+    raise SystemExit(exit_code)
+'''
+
+
+def render_codex_hook_wrapper(agentacct_executable: str | None = None, *, store_dir: Path | str | None = None) -> str:
+    candidates: list[str] = []
+    if agentacct_executable:
+        candidates.append(str(agentacct_executable))
+    for bare_name in ("agentacct", "agent-chronicle", "agent-sentinel"):
+        if bare_name not in candidates:
+            candidates.append(bare_name)
+    hook_args: list[str] = []
+    if store_dir is not None:
+        # GUI-launched Codex (ChatGPT.app) sees neither shell env vars nor a
+        # predictable cwd, so the store binds on the command line.
+        hook_args = ["--store-dir", str(store_dir)]
+    rendered = _CODEX_HOOK_WRAPPER_TEMPLATE.replace("__AGENTACCT_CANDIDATES__", repr(candidates))
+    return rendered.replace("__AGENTACCT_HOOK_ARGS__", repr(hook_args))
+
+
+def codex_hooks_json_block(wrapper_path: Path | str, *, python_executable: str | None = None) -> dict[str, Any]:
+    """The ``~/.codex/hooks.json`` content wiring PreToolUse + SessionEnd to the
+    agentacct Codex wrapper. Codex uses the SAME hooks.json schema as Claude Code
+    (``{"hooks": {"<Event>": [{"matcher"?, "hooks": [{"type": "command", ...}]}]}}``),
+    so this mirrors the Claude settings block shape. One wrapper serves both
+    events (it dispatches on ``hook_event_name``)."""
+    python_command = python_executable or sys.executable or "python3"
+    command = f"{shlex.quote(python_command)} {shlex.quote(str(wrapper_path))}"
+    return {
+        "hooks": {
+            "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": command}]}],
+            "SessionEnd": [{"hooks": [{"type": "command", "command": command}]}],
+        }
+    }
 
 
 def claude_code_settings_example(python_executable: str | None = None, *, hook_path: Path | str | None = None) -> dict[str, Any]:
