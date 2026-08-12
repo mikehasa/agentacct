@@ -121,6 +121,7 @@ from .hooks import (
     CLAUDE_HOOK_RELATIVE_PATH,
     CODEX_HOOK_RELATIVE_PATH,
     CODEX_HOOKS_JSON_RELATIVE_PATH,
+    OPENCODE_PLUGIN_RELATIVE_PATH,
     capture_claude_code_client_context,
     capture_tool_activity,
     capture_mechanical_check,
@@ -132,6 +133,7 @@ from .hooks import (
     evaluate_stdin_json,
     install_claude_code_hook,
     render_codex_hook_wrapper,
+    render_opencode_plugin,
 )
 from .log_evidence import build_log_evidence_index, summarize_log_evidence_donor_rows
 from . import install_guide
@@ -256,6 +258,7 @@ mcp_app = typer.Typer(help="MCP server commands for agent integrations.")
 setup_app = typer.Typer(help="Setup helpers for coding agents and local integrations.")
 claude_code_hooks_app = typer.Typer(help="Claude Code hook helpers.")
 codex_hooks_app = typer.Typer(help="Codex hook helpers (observe-only tool-activity + session-end).")
+opencode_hooks_app = typer.Typer(help="OpenCode hook helpers (observe-only tool-activity plugin).")
 canonical_app = typer.Typer(
     help="Canonical SQLite store operations: health, maintenance, promotion, and cutover verification."
 )
@@ -549,6 +552,7 @@ def finding_dispose(
 app.add_typer(setup_app, name="setup")
 hooks_app.add_typer(claude_code_hooks_app, name="claude-code")
 hooks_app.add_typer(codex_hooks_app, name="codex")
+hooks_app.add_typer(opencode_hooks_app, name="opencode")
 app.add_typer(hooks_app, name="hooks")
 app.add_typer(canonical_app, name="canonical")
 app.add_typer(smoke_app, name="smoke")
@@ -2205,13 +2209,24 @@ def _onboard_global_opencode(store_dir: Path, command: str) -> bool:
     OpenCode's GLOBAL rules file (``AGENTS.md`` under the XDG config dir, injected
     into every session, project or not) AND supports MCP servers in
     ``opencode.jsonc``, so both the standing 'record your work' directive and the
-    agentacct tools are installed the same way codex gets them.
+    agentacct tools are installed the same way codex gets them. The observe-only
+    tool-activity plugin is installed independently of the MCP config, so a config
+    that agentacct can't safely rewrite (e.g. JSONC comments) still gets capture.
     """
     # 1. standing "record your work" instructions -> <xdg>/opencode/AGENTS.md
     setup_instructions(
         agent="opencode", user=True, path=None, remove=False, dry_run=False, store_dir=store_dir
     )
-    # 2. native user-scope MCP registration -> <xdg>/opencode/opencode.jsonc
+    # 2. automatic observe-only tool-activity plugin -> <config>/plugins/agentacct.js.
+    # Installed BEFORE the MCP write: it only writes its own file and must not be
+    # gated out by an unrelated MCP-config parse skip below.
+    config_dir = _opencode_config_dir()
+    try:
+        plugin_action, plugin_path = _install_opencode_plugin(config_dir, store_dir, command)
+        console.print(f"{plugin_action.capitalize()} OpenCode tool-activity plugin ({plugin_path}).")
+    except (OSError, UnicodeError) as exc:
+        console.print(f"OpenCode rules configured, but the tool-activity plugin could not be written ({exc}).")
+    # 3. native user-scope MCP registration -> <xdg>/opencode/opencode.jsonc
     config_path = _resolve_opencode_config_path()
     path, action = _write_opencode_mcp_config_at(config_path, store_dir, command=command)
     if action in {"skipped-unparsed", "skipped-mcp-not-object"}:
@@ -2229,7 +2244,7 @@ def _onboard_global_opencode(store_dir: Path, command: str) -> bool:
         )
         return False
     console.print(f"{action.capitalize()} OpenCode MCP server in {path}")
-    console.print("Start a NEW OpenCode session so it loads the server + rules.")
+    console.print("Start a NEW OpenCode session so it loads the server + rules + plugin.")
     return True
 
 
@@ -4063,6 +4078,81 @@ def codex_hooks_install(
         "Codex needs the hook TRUSTED before it fires — start a new Codex session and approve it "
         "(or vet the wrapper and use --dangerously-bypass-hook-trust)."
     )
+
+
+@opencode_hooks_app.command("tool-activity")
+def opencode_tool_activity(
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="State directory the tick is spooled to (the OpenCode plugin passes the bound store)."),
+    ] = None,
+) -> None:
+    """Observe an OpenCode tool call from stdin (observe-only).
+
+    The OpenCode plugin's ``tool.execute.before`` hook fires the agentacct CLI with
+    ``{tool_name, session_id}`` on stdin. OpenCode's ``session_id`` is the ``ses_...``
+    ``session`` table id the usage importer keys on, so the tick attributes straight
+    to the OpenCode session with no log pairing. Records the tool name + category
+    (never arguments); always returns an empty no-op response.
+    """
+    try:
+        raw = sys.stdin.read()
+        try:
+            capture_tool_activity(raw, store_dir=store_dir, client="opencode")
+        except Exception:  # noqa: BLE001 - activity capture must never affect the tool call.
+            pass
+        print("{}")
+    except Exception:  # noqa: BLE001 - FAIL OPEN: capture must never disturb OpenCode.
+        print("{}")
+
+
+def _install_opencode_plugin(config_dir: Path, store_dir: Path, command: str, *, force: bool = False) -> tuple[str, Path]:
+    """Write the OpenCode tool-activity plugin into ``<config>/plugins/agentacct.js``.
+    Returns (action, plugin_path). Idempotent: an already-correct file is left
+    byte-untouched. OpenCode auto-loads named-export plugins from that directory."""
+    plugin_path = config_dir / OPENCODE_PLUGIN_RELATIVE_PATH
+    plugin_bytes = render_opencode_plugin(command, store_dir=store_dir).encode("utf-8")
+    existing: bytes | None = None
+    if plugin_path.exists():
+        try:
+            # Compare bytes, not decoded text: a pre-existing non-UTF-8 file at the
+            # path would make read_text raise UnicodeDecodeError (a UnicodeError, not
+            # OSError) and escape the callers' guards. Bytes never decode-fail; a
+            # non-matching file is simply overwritten below.
+            existing = plugin_path.read_bytes()
+        except OSError:
+            existing = None
+    if not force and existing == plugin_bytes:
+        return "unchanged", plugin_path
+    action = "updated" if plugin_path.exists() else "wrote"
+    plugin_path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_text(plugin_path, plugin_bytes.decode("utf-8"), mode=0o644)
+    return action, plugin_path
+
+
+@opencode_hooks_app.command("install")
+def opencode_hooks_install(
+    home: Annotated[
+        Optional[Path],
+        typer.Option(help="Home dir whose XDG config holds OpenCode's config (defaults to the user's home)."),
+    ] = None,
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="Store the plugin spools ticks to. Required so a GUI/gateway-launched OpenCode binds the right store."),
+    ] = None,
+    force: Annotated[bool, typer.Option(help="Rewrite the plugin even if it already matches.")] = False,
+) -> None:
+    """Install the OpenCode tool-activity plugin into <config>/plugins/agentacct.js."""
+    resolved_store = store_dir if store_dir is not None else onboard_global_store_dir()[0]
+    command = _resolve_absolute_mcp_command()
+    config_dir = _opencode_config_dir(Path(home) if home is not None else None)
+    try:
+        action, plugin_path = _install_opencode_plugin(config_dir, Path(resolved_store), command, force=force)
+    except (OSError, UnicodeError) as exc:
+        console.print(f"The OpenCode plugin could not be written ({exc}).")
+        raise typer.Exit(1) from exc
+    console.print(f"OpenCode tool-activity plugin: {action} ({plugin_path})")
+    console.print("Start a NEW OpenCode session so it loads the plugin (auto-loaded from the plugins/ directory).")
 
 
 @claude_code_hooks_app.command("install")
