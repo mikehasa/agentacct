@@ -119,6 +119,8 @@ from .cost import (
 from .context_bridge import build_client_context_join_health
 from .hooks import (
     CLAUDE_HOOK_RELATIVE_PATH,
+    CODEX_HOOK_RELATIVE_PATH,
+    CODEX_HOOKS_JSON_RELATIVE_PATH,
     capture_claude_code_client_context,
     capture_tool_activity,
     capture_mechanical_check,
@@ -126,8 +128,10 @@ from .hooks import (
     claude_code_hook_doctor_checks,
     claude_code_hook_paths,
     claude_session_start_response,
+    codex_hooks_json_block,
     evaluate_stdin_json,
     install_claude_code_hook,
+    render_codex_hook_wrapper,
 )
 from .log_evidence import build_log_evidence_index, summarize_log_evidence_donor_rows
 from . import install_guide
@@ -251,6 +255,7 @@ usage_app = typer.Typer(help="Import local client-reported usage from coding age
 mcp_app = typer.Typer(help="MCP server commands for agent integrations.")
 setup_app = typer.Typer(help="Setup helpers for coding agents and local integrations.")
 claude_code_hooks_app = typer.Typer(help="Claude Code hook helpers.")
+codex_hooks_app = typer.Typer(help="Codex hook helpers (observe-only tool-activity + session-end).")
 canonical_app = typer.Typer(
     help="Canonical SQLite store operations: health, maintenance, promotion, and cutover verification."
 )
@@ -543,6 +548,7 @@ def finding_dispose(
 
 app.add_typer(setup_app, name="setup")
 hooks_app.add_typer(claude_code_hooks_app, name="claude-code")
+hooks_app.add_typer(codex_hooks_app, name="codex")
 app.add_typer(hooks_app, name="hooks")
 app.add_typer(canonical_app, name="canonical")
 app.add_typer(smoke_app, name="smoke")
@@ -1731,6 +1737,110 @@ def _write_hermes_mcp_config_at(
     return config_path, "updated"
 
 
+def _codex_command_runs_wrapper(command: object, wrapper_basename: str) -> bool:
+    """True when a hooks.json command token IS the agentacct Codex wrapper file."""
+    text = command if isinstance(command, str) else ""
+    if not text:
+        return False
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        tokens = text.split()
+    return any(token.replace("\\", "/").rsplit("/", 1)[-1] == wrapper_basename for token in tokens)
+
+
+def _codex_row_runs_wrapper(row: object, wrapper_basename: str) -> bool:
+    if not isinstance(row, dict):
+        return False
+    return any(
+        _codex_command_runs_wrapper(hook.get("command"), wrapper_basename)
+        for hook in (row.get("hooks") or [])
+        if isinstance(hook, dict)
+    )
+
+
+def _write_codex_hooks_json_at(
+    hooks_json_path: Path, block: dict[str, Any], *, wrapper_basename: str
+) -> tuple[Path, str]:
+    """Merge the agentacct Codex hook rows into ``~/.codex/hooks.json``.
+
+    Codex uses the SAME hooks.json schema as Claude Code settings. Our rows are
+    matched by the wrapper FILE they run (so a second install differing only by
+    interpreter updates in place instead of duplicating — a duplicate would
+    double-fire and double-count tool activity); the user's own hooks under the
+    same event are preserved; a non-object hooks.json is refused rather than
+    clobbered. Idempotent: an already-correct file is left byte-untouched.
+    """
+    existing: dict[str, Any] = {}
+    if hooks_json_path.exists():
+        try:
+            loaded = json.loads(hooks_json_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return hooks_json_path, "skipped-unparsed"
+        if not isinstance(loaded, dict):
+            return hooks_json_path, "skipped-unparsed"
+        existing = loaded
+    hooks = existing.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        return hooks_json_path, "skipped-unparsed"
+    before = json.dumps(existing, sort_keys=True)
+    for event_name, rows in (block.get("hooks") or {}).items():
+        existing_rows = hooks.setdefault(event_name, [])
+        if not isinstance(existing_rows, list):
+            return hooks_json_path, "skipped-unparsed"
+        # Dedupe our prior rows at HOOK-ENTRY granularity, mirroring the Claude
+        # settings merge: drop only the wrapper command(s) from a row, keep any
+        # user command co-located under the same matcher, and insert our fresh
+        # row once where the first of ours stood. A row that carries none of ours
+        # is the user's and is left exactly as-is.
+        rebuilt: list[Any] = []
+        inserted = False
+        for row in existing_rows:
+            if not isinstance(row, dict):
+                rebuilt.append(row)
+                continue
+            row_hooks = row.get("hooks") if isinstance(row.get("hooks"), list) else []
+            survivors = [
+                hook
+                for hook in row_hooks
+                if not (isinstance(hook, dict) and _codex_command_runs_wrapper(hook.get("command"), wrapper_basename))
+            ]
+            if len(survivors) == len(row_hooks):
+                rebuilt.append(row)  # no agentacct entry in this row — the user's own
+                continue
+            if not inserted:
+                rebuilt.extend(rows)
+                inserted = True
+            if survivors:
+                trimmed = dict(row)
+                trimmed["hooks"] = survivors
+                rebuilt.append(trimmed)  # a co-located user command, kept
+        if not inserted:
+            rebuilt = list(existing_rows) + list(rows)  # first install: append
+        hooks[event_name] = rebuilt
+    if json.dumps(existing, sort_keys=True) == before and hooks_json_path.exists():
+        return hooks_json_path, "unchanged"
+    action = "updated" if hooks_json_path.exists() else "wrote"
+    _atomic_write_text(hooks_json_path, json.dumps(existing, indent=2) + "\n", mode=0o600)
+    return hooks_json_path, action
+
+
+def _install_codex_hook(home: Path, store_dir: Path, command: str, *, force: bool = False) -> tuple[str, Path]:
+    """Write the Codex hook wrapper + merge ~/.codex/hooks.json. Returns
+    (hooks_json_action, wrapper_path)."""
+    wrapper_path = home / CODEX_HOOK_RELATIVE_PATH
+    wrapper_path.parent.mkdir(parents=True, exist_ok=True)
+    wrapper_source = render_codex_hook_wrapper(command, store_dir=store_dir)
+    if force or not wrapper_path.exists() or wrapper_path.read_text(encoding="utf-8") != wrapper_source:
+        _atomic_write_text(wrapper_path, wrapper_source, mode=0o755)
+    block = codex_hooks_json_block(wrapper_path)
+    hooks_json_path = home / CODEX_HOOKS_JSON_RELATIVE_PATH
+    _path, action = _write_codex_hooks_json_at(
+        hooks_json_path, block, wrapper_basename=CODEX_HOOK_RELATIVE_PATH.name
+    )
+    return action, wrapper_path
+
+
 def _print_claude_mcp_setup(config_store_dir: Path | str, *, command: str = "agentacct") -> None:
     quoted_store_dir = shlex.quote(str(config_store_dir))
     quoted_command = shlex.quote(command)
@@ -2040,7 +2150,16 @@ def _onboard_global_claude(store_dir: Path, command: str, *, assume_yes: bool) -
 
 
 def _onboard_global_codex(store_dir: Path, command: str) -> bool:
-    """Configure Codex at USER scope (zero repo files). Returns readiness."""
+    """Configure Codex at USER scope (zero repo files). Returns readiness.
+
+    Two layers: the MCP server + AGENTS.md directive give Codex SEMANTIC section
+    recording (as before); the hooks add AUTOMATIC observe-only capture of every
+    tool call (PreToolUse) and session end (SessionEnd), keyed by Codex's own
+    session_id (which equals the rollout id the usage importer keys on, so tool
+    activity attributes straight to the session). Codex requires the user to
+    TRUST the hook before it fires, so onboarding installs it and prints the
+    one-time trust step.
+    """
     home = Path.home()
     setup_instructions(
         agent="codex", user=True, path=None, remove=False, dry_run=False, store_dir=store_dir
@@ -2049,7 +2168,33 @@ def _onboard_global_codex(store_dir: Path, command: str) -> bool:
     if action == "skipped":
         return False
     console.print(f"{action.capitalize()} Codex MCP server block in {path}")
-    console.print("Start a NEW Codex session so it loads the server.")
+    # Automatic tool-activity + session-end hooks (observe-only).
+    try:
+        hooks_action, wrapper_path = _install_codex_hook(home, store_dir, command)
+    except OSError as exc:
+        console.print(f"Codex MCP configured, but the hook could not be written ({exc}).")
+        hooks_action = "skipped-unparsed"
+        wrapper_path = home / CODEX_HOOK_RELATIVE_PATH
+    if hooks_action == "skipped-unparsed":
+        console.print(
+            f"Left {home / CODEX_HOOKS_JSON_RELATIVE_PATH} unchanged (not a JSON object); the "
+            "automatic tool-activity hook was NOT wired — add the agentacct PreToolUse + SessionEnd "
+            "hooks yourself to capture tool activity."
+        )
+        # MCP still works, so the session still records semantic sections; just no
+        # automatic tool-activity/session-end capture. Say exactly that.
+        console.print("Start a NEW Codex session so it loads the server.")
+    else:
+        console.print(
+            f"{hooks_action.capitalize()} Codex tool-activity + session-end hooks "
+            f"({home / CODEX_HOOKS_JSON_RELATIVE_PATH})."
+        )
+        console.print(
+            "Codex requires trusting a hook before it runs: start a NEW Codex session and approve "
+            "the agentacct hook when prompted (or run codex once with --dangerously-bypass-hook-trust "
+            "if you vet the wrapper yourself)."
+        )
+        console.print("Start a NEW Codex session so it loads the server + hooks.")
     return True
 
 
@@ -3831,6 +3976,93 @@ def claude_code_session_start(
         print(json.dumps(response, ensure_ascii=False))
     except Exception:  # noqa: BLE001 - FAIL OPEN: a SessionStart error must never break session startup; emit the empty no-op response and exit 0.
         print("{}")
+
+
+@codex_hooks_app.command("pre-tool-use")
+def codex_pre_tool_use(
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="State directory the tick is spooled to (the codex wrapper passes the global store)."),
+    ] = None,
+) -> None:
+    """Observe a Codex PreToolUse JSON event from stdin (observe-only).
+
+    Codex's PreToolUse STDIN carries the same ``session_id``/``tool_name`` shape
+    as Claude Code, and its ``session_id`` equals the rollout id the usage
+    importer keys on, so the tick attributes straight to the Codex session. This
+    is OBSERVE-ONLY: agentacct never makes an allow/block decision for Codex
+    (Codex owns its own sandbox/approval layer) — it records the tool name +
+    category (never arguments) and returns an empty no-op response.
+    """
+    try:
+        raw = sys.stdin.read()
+        try:
+            capture_tool_activity(raw, store_dir=store_dir, client="codex")
+        except Exception:  # noqa: BLE001 - activity capture must never affect the tool call.
+            pass
+        print("{}")
+    except Exception:  # noqa: BLE001 - FAIL OPEN: a PreToolUse hook must never block a Codex tool call.
+        print("{}")
+
+
+@codex_hooks_app.command("session-end")
+def codex_session_end(
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="State directory the session-end fact is spooled to (the codex wrapper passes the global store)."),
+    ] = None,
+) -> None:
+    """Observe a Codex SessionEnd JSON event from stdin.
+
+    Spools the same content-free ``(client, session_id, reason, time)`` fact as
+    the Claude Code path (client ``codex``) so the reducer can infer an
+    ``ended_open`` disposition for a Codex step whose session stopped without a
+    recorded terminal. Never reads conversation content; always returns empty.
+    """
+    from .hooks import capture_session_end
+
+    try:
+        raw = sys.stdin.read()
+        try:
+            capture_session_end(raw, store_dir=store_dir, client="codex")
+        except Exception:  # noqa: BLE001 - capture must never affect anything.
+            pass
+        print("{}")
+    except Exception:  # noqa: BLE001 - FAIL OPEN: a SessionEnd hook must never disturb shutdown.
+        print("{}")
+
+
+@codex_hooks_app.command("install")
+def codex_hooks_install(
+    home: Annotated[Path, typer.Option(help="Home dir to install into (~/.codex/hooks*). Defaults to the user's home.")] = Path.home(),
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="Store the hooks spool ticks to. Required so GUI-launched Codex binds the right store on the command line."),
+    ] = None,
+    force: Annotated[bool, typer.Option(help="Rewrite the wrapper even if it already matches.")] = False,
+) -> None:
+    """Install the Codex observe-only hooks: the wrapper + ~/.codex/hooks.json
+    entries (PreToolUse tool-activity, SessionEnd) pointing at it."""
+    resolved_store = store_dir if store_dir is not None else onboard_global_store_dir()[0]
+    command = _resolve_absolute_mcp_command()
+    action, wrapper_path = _install_codex_hook(Path(home), Path(resolved_store), command, force=force)
+    console.print(f"Codex hook wrapper: {wrapper_path}")
+    hooks_json = Path(home) / CODEX_HOOKS_JSON_RELATIVE_PATH
+    if action == "skipped-unparsed":
+        # The wrapper is on disk but nothing references it: be honest that no
+        # hook was wired, and do NOT tell the user to "trust it" (there is
+        # nothing to fire). Non-zero exit so scripts see the skip.
+        console.print(
+            f"Codex hooks.json: LEFT UNCHANGED ({hooks_json}) — it is not a JSON object. "
+            "No hook was wired. Fix or remove that file, or add the agentacct PreToolUse + "
+            "SessionEnd entries yourself, then re-run."
+        )
+        raise typer.Exit(1)
+    console.print(f"Codex hooks.json: {action} ({hooks_json})")
+    console.print(
+        "Codex needs the hook TRUSTED before it fires — start a new Codex session and approve it "
+        "(or vet the wrapper and use --dangerously-bypass-hook-trust)."
+    )
 
 
 @claude_code_hooks_app.command("install")

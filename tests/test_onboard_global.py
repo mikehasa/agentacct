@@ -240,3 +240,49 @@ def test_onboard_global_agent_hermes_registers_mcp_only_no_directive(
     assert not (isolated_home / "AGENTS.md").exists()
     assert "tools registered" in result.output
     assert "hook adapter" in result.output
+
+
+def test_onboard_global_agent_codex_installs_tool_activity_hooks(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    result = CliRunner().invoke(app, ["onboard", "--scope", "global", "--agent", "codex", "--no-start"])
+    assert result.exit_code == 0, result.output
+
+    store = isolated_home / ".local" / "state" / "agentacct" / "state"
+    # MCP block still written (the semantic layer).
+    assert "[mcp_servers.agentacct]" in (isolated_home / ".codex" / "config.toml").read_text()
+    # Automatic hook layer: wrapper + hooks.json wiring PreToolUse + SessionEnd.
+    wrapper = isolated_home / ".codex" / "hooks" / "agentacct_codex_hook.py"
+    assert wrapper.exists()
+    assert str(store) in wrapper.read_text()  # store bound on the command line
+    hooks = json.loads((isolated_home / ".codex" / "hooks.json").read_text())
+    assert set(hooks["hooks"].keys()) == {"PreToolUse", "SessionEnd"}
+    assert "agentacct_codex_hook.py" in hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    # The one-time trust step is surfaced.
+    assert "trust" in result.output.lower()
+    # Zero files leaked into the repo.
+    for leaked in ("hooks.json", ".codex", "AGENTS.md"):
+        assert not (repo / leaked).exists()
+
+
+def test_onboard_global_agent_codex_non_object_hooks_json_is_honest(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A pre-existing non-object ~/.codex/hooks.json is left untouched, and the
+    # summary must NOT claim the session loads hooks that were never wired.
+    codex_dir = isolated_home / ".codex"
+    codex_dir.mkdir(parents=True)
+    (codex_dir / "hooks.json").write_text("[]")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    result = CliRunner().invoke(app, ["onboard", "--scope", "global", "--agent", "codex", "--no-start"])
+    assert result.exit_code == 0, result.output
+    assert (codex_dir / "hooks.json").read_text() == "[]"  # never clobbered
+    assert "NOT wired" in result.output
+    assert "loads the server + hooks" not in result.output  # no false "+ hooks" claim
