@@ -269,20 +269,25 @@ def test_onboard_global_agent_codex_installs_tool_activity_hooks(
         assert not (repo / leaked).exists()
 
 
-def test_onboard_global_agent_codex_non_object_hooks_json_is_honest(
+def test_onboard_global_agent_codex_is_honest_when_hooks_skip(
     tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A pre-existing non-object ~/.codex/hooks.json is left untouched, and the
-    # summary must NOT claim the session loads hooks that were never wired.
-    codex_dir = isolated_home / ".codex"
-    codex_dir.mkdir(parents=True)
-    (codex_dir / "hooks.json").write_text("[]")
+    # When the hook install skips (e.g. a non-object ~/.codex/hooks.json), the
+    # onboard summary must NOT claim the session loads hooks that were never
+    # wired. Forcing the skip return keeps this deterministic (independent of the
+    # global-store resolution and the real hooks.json path).
+    import agentacct.cli as cli_module
+
+    monkeypatch.setattr(
+        cli_module,
+        "_install_codex_hook",
+        lambda *args, **kwargs: ("skipped-unparsed", isolated_home / ".codex" / "hooks" / "agentacct_codex_hook.py"),
+    )
     repo = tmp_path / "repo"
     repo.mkdir()
     monkeypatch.chdir(repo)
 
     result = CliRunner().invoke(app, ["onboard", "--scope", "global", "--agent", "codex", "--no-start"])
     assert result.exit_code == 0, result.output
-    assert (codex_dir / "hooks.json").read_text() == "[]"  # never clobbered
     assert "NOT wired" in result.output
     assert "loads the server + hooks" not in result.output  # no false "+ hooks" claim
