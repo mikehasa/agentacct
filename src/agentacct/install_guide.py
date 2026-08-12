@@ -433,15 +433,27 @@ def workflow_instruction_block() -> str:
 
 # Default user-level instruction file per agent (resolved against the user's
 # home at call time; tests and non-standard setups override with --path).
+#
+# opencode reads ``~/.config/opencode/AGENTS.md`` as its GLOBAL rules file (the
+# default ``instructions`` config includes ``AGENTS.md``), so a user-level block
+# there is injected into every opencode session regardless of the working
+# directory — the same always-on guarantee codex gets from ``~/.codex/AGENTS.md``
+# and Claude Code from ``~/.claude/CLAUDE.md``. hermes is deliberately absent:
+# it injects ``AGENTS.md`` only from a project/workspace root (``$HOME`` itself is
+# skipped as a root), so there is no reliable always-on home-level slot for a
+# standing directive — hermes recording is wired through its own hook system, not
+# a global instruction file.
 INSTRUCTION_USER_FILES = {
     "claude-code": ".claude/CLAUDE.md",
     "codex": ".codex/AGENTS.md",
+    "opencode": ".config/opencode/AGENTS.md",
 }
 
 # Default project-level instruction file per agent (relative to the repo root).
 INSTRUCTION_PROJECT_FILES = {
     "claude-code": "CLAUDE.md",
     "codex": "AGENTS.md",
+    "opencode": "AGENTS.md",
 }
 
 INSTRUCTION_AGENTS = tuple(INSTRUCTION_USER_FILES)
