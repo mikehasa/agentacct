@@ -583,3 +583,79 @@ def test_task_without_any_handoff_step_carries_handoff_current_false() -> None:
     for status in ("started", "completed", "checkpoint", "resolved", "blocked"):
         outcome = reduce_task_outcome(_multi_task([_step(status)]))
         assert outcome["handoff_current"] is False, status
+
+
+# --- ended_open: inferred disposition when a session stops with a step open ----
+
+
+def _sitem(status, t, *, ended=None, sid="s1"):
+    d = {
+        "latest_status": status,
+        "updated_at": t,
+        "started_at": t,
+        "client": "claude-code",
+        "client_session_id": sid,
+        "kind": "implementation",
+    }
+    if ended is not None:
+        d["session_ended_at"] = ended
+    return d
+
+
+def test_open_step_in_ended_session_reads_ended_open() -> None:
+    # THE FIX: a still-open step whose session ended (SessionEnd at/after the
+    # step) is not "in progress" — the session stopped without a terminal.
+    o = reduce_task_outcome(_multi_task([_sitem("started", 100, ended=200)]))
+    assert o["key"] == "ended_open"
+
+
+def test_open_step_in_a_live_session_stays_in_progress() -> None:
+    # No session-end signal (session still live / never observed ending): the
+    # inference never fires; behavior is byte-identical to before this feature.
+    assert reduce_task_outcome(_multi_task([_sitem("started", 100)]))["key"] == "in_progress"
+
+
+def test_one_live_open_step_keeps_the_task_in_progress() -> None:
+    # ended_open requires EVERY open step to be in an ended session; a single
+    # still-live open step means work genuinely continues somewhere.
+    task = _multi_task([_sitem("started", 100, ended=200, sid="s1"), _sitem("checkpoint", 150, sid="s2")])
+    assert reduce_task_outcome(task)["key"] == "in_progress"
+
+
+def test_resumed_after_session_end_reads_in_progress() -> None:
+    # A newer, still-live open step (a later session resumed the work) keeps the
+    # Task in progress; the earlier ended session is history.
+    task = _multi_task([_sitem("started", 100, ended=150, sid="s1"), _sitem("started", 200, sid="s2")])
+    assert reduce_task_outcome(task)["key"] == "in_progress"
+
+
+def test_agent_handoff_outranks_inferred_ended_open() -> None:
+    # The agent's own word (handed_off) beats agentacct's inference (ended_open).
+    task = _multi_task([_step("handed_off", updated_at=200), _sitem("started", 100, ended=150, sid="s2")])
+    assert reduce_task_outcome(task)["key"] == "handed_off"
+
+
+def test_blocked_and_finding_outrank_ended_open() -> None:
+    assert reduce_task_outcome(_multi_task([_sitem("blocked", 100, ended=200)]))["key"] == "blocked"
+    finding = _multi_task([_sitem("started", 100, ended=200)])
+    finding["task_evidence_events"] = [_check("failed", created_at=300, event_id="f")]
+    assert reduce_task_outcome(finding)["key"] == "finding"
+
+
+def test_completed_step_in_ended_session_is_never_ended_open() -> None:
+    # ended_open is only for OPEN steps; a completed step whose session ended is
+    # reported/verified, never dressed down to ended_open or fabricated done.
+    assert reduce_task_outcome(_multi_task([_sitem("completed", 100, ended=200)]))["key"] == "reported"
+
+
+def test_stale_session_end_before_the_step_does_not_fire() -> None:
+    # A session-end that PREDATES the step's last activity is not the step's end
+    # (the step was touched afterward) — stays in progress.
+    assert reduce_task_outcome(_multi_task([_sitem("started", 200, ended=100)]))["key"] == "in_progress"
+
+
+def test_session_end_at_the_exact_step_time_reads_ended_open() -> None:
+    # The documented "at/after" boundary: a SessionEnd stamped at exactly the
+    # step's last-activity time still infers ended_open (>= not >). Pins the tie
+    # so a >=-to-> regression is caught.
+    assert reduce_task_outcome(_multi_task([_sitem("started", 100, ended=100)]))["key"] == "ended_open"

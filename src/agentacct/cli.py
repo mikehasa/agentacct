@@ -3435,6 +3435,34 @@ def claude_code_post_tool_use(
         print("{}")
 
 
+@claude_code_hooks_app.command("session-end")
+def claude_code_session_end(
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="State directory for the hook context bridge. Defaults to the nearest existing .agent-sentinel/state above the hook event cwd."),
+    ] = None,
+) -> None:
+    """Observe a Claude Code SessionEnd JSON event from stdin.
+
+    Spools a content-free session-end fact (client, session id, the end reason, a
+    timestamp) so the reducer can infer an ``ended_open`` disposition for a step
+    whose session stopped without a recorded terminal. Never reads conversation
+    content; SessionEnd output is ignored by Claude Code, so this always returns
+    an empty response and never blocks anything.
+    """
+    from .hooks import capture_session_end
+
+    try:
+        raw = sys.stdin.read()
+        try:
+            capture_session_end(raw, store_dir=store_dir)
+        except Exception:  # noqa: BLE001 - capture must never affect anything.
+            pass
+        print("{}")
+    except Exception:  # noqa: BLE001 - FAIL OPEN: a SessionEnd hook must never disturb shutdown.
+        print("{}")
+
+
 @claude_code_hooks_app.command("session-start")
 def claude_code_session_start(
     store_dir: Annotated[
@@ -6851,6 +6879,20 @@ def _local_usage_import_payload(
                 ingest_mechanical_check_spool(
                     effective_store_dir,
                     evidence=service.evidence,
+                    now=time.time(),
+                )
+            except Exception:  # noqa: BLE001 - draining the spool must never fail the import.
+                pass
+            # Drain the SessionEnd spool into content-free session_end_observed
+            # events. The reducer stamps each work item with its session's end
+            # time to derive the honest ``ended_open`` disposition. Best-effort,
+            # additive + content-idded, same as the two spools above.
+            from .session_lifecycle import ingest_session_end_spool
+
+            try:
+                ingest_session_end_spool(
+                    effective_store_dir,
+                    record=service.record_event,
                     now=time.time(),
                 )
             except Exception:  # noqa: BLE001 - draining the spool must never fail the import.

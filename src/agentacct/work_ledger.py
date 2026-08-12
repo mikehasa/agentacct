@@ -13,6 +13,7 @@ from .confidence import (
     normalize_cost_confidence,
     normalize_usage_confidence,
 )
+from .session_lifecycle import build_session_end_by_session
 from .tool_activity import build_tool_activity_by_session, build_tool_names_by_session
 from .join_rules import (
     JoinCandidateIndex,
@@ -219,6 +220,18 @@ def build_work_ledger(
             names = tool_names_by_session.get(entry_key)
             if names:
                 entry["tool_name_counts"] = dict(names)
+    # Ambient session-end (SessionEnd hook): stamp each work item with the end
+    # time of its OWN session so the outcome reducer can honestly derive the
+    # ``ended_open`` disposition — an open step whose session stopped without a
+    # recorded terminal. A step with no session-end simply carries no key (its
+    # session is still live / never observed ending), so nothing is inferred.
+    session_end_by_session = build_session_end_by_session(events)
+    if session_end_by_session:
+        for item in work_items:
+            item_key = (str(item.get("client") or ""), str(item.get("client_session_id") or ""))
+            ended_at = session_end_by_session.get(item_key)
+            if ended_at is not None:
+                item["session_ended_at"] = ended_at
     rollup_summary = session_rollup.get("summary")
     if isinstance(rollup_summary, dict):
         rollup_summary["mechanical_projection"] = dict(session_observation_diagnostics or {})
