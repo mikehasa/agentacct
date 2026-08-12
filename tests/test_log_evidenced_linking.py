@@ -1270,6 +1270,41 @@ def test_multi_session_evidence_refuses_with_counter() -> None:
     assert ledger["session_rollup"]["summary"]["unassigned_work_items"] == 1
 
 
+def test_opencode_evidenced_section_attaches_to_its_session() -> None:
+    # End-to-end: an opencode section recorded via MCP carries no session id of
+    # its own (session=None), but the opencode usage row evidences its event id
+    # from the part log, so it attaches to that session — the flip from a task
+    # with NO items (observed) to a task with a real step (reported).
+    target = "evt_0bc0de000001"
+    events = [
+        _usage_row(event_id="evt_usage_oc", session="ses_oc_a", client="opencode", evidenced=[target]),
+        _section_event(event_id=target, section_id="notes", client="opencode", session=None),
+    ]
+
+    ledger = build_work_ledger(events)
+
+    item = ledger["work_items"][0]
+    assert item["client_session_id"] == "ses_oc_a"
+    assert item.get("log_evidence_ambiguous") is None
+
+
+def test_opencode_multi_session_evidence_refuses() -> None:
+    # The generic >1-donor guard reaches opencode too: one event evidenced by two
+    # opencode sessions links to neither (no guessed session).
+    target = "evt_0bc0de000002"
+    events = [
+        _usage_row(event_id="evt_usage_a", session="ses_oc_a", client="opencode", evidenced=[target]),
+        _usage_row(event_id="evt_usage_b", session="ses_oc_b", client="opencode", evidenced=[target], created_at=105.0),
+        _section_event(event_id=target, section_id="sec-1", client="opencode", session=None),
+    ]
+
+    ledger = build_work_ledger(events)
+
+    item = ledger["work_items"][0]
+    assert item["client_session_id"] is None  # >1 donor -> links to none
+    assert item["log_evidence_ambiguous"] == {"session_count": 2}
+
+
 def test_cross_session_idless_section_id_collision_item_level_refusal() -> None:
     events = [
         _usage_row(event_id="evt_usage_a", session=SESSION, evidenced=["evt_5a4ed000000a"]),

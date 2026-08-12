@@ -521,6 +521,30 @@ def claude_tool_use_creation_tool(name: Any) -> str | None:
     return tool
 
 
+def opencode_tool_creation_tool(name: Any) -> str | None:
+    """Bare creation-tool name of an OpenCode ``part.data.tool`` string, else None.
+
+    OpenCode names an MCP tool ``<server>_<tool>`` (single-underscore join), so
+    the agentacct record tools arrive as e.g.
+    ``agentacct_agentacct_record_section``. Accept ONLY when the name is exactly
+    an allowlisted server key joined to an allowlisted creation tool — the
+    remainder after the server prefix must equal a creation tool, never merely
+    contain one. Read/list tools (which echo OTHER sessions' ids) and any
+    non-creation name return None and are structurally excluded, exactly as the
+    codex/claude classifiers exclude them.
+    """
+
+    if not isinstance(name, str):
+        return None
+    for server in ACCEPTED_SERVER_KEYS:
+        prefix = f"{server}_"
+        if name.startswith(prefix):
+            tool = name[len(prefix):]
+            if tool in SENTINEL_CREATION_TOOLS:
+                return tool
+    return None
+
+
 def classify_codex_mcp_invocation(server: Any, tool: Any) -> str | None:
     """"accepted" / "rejected" / None for a codex mcp_tool_call_end invocation.
 

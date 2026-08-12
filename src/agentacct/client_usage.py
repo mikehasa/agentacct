@@ -22,12 +22,14 @@ from .confidence import COST_BASIS_CLIENT_SESSION, COST_BASIS_PRICING_TABLE, COS
 from .env_compat import read_env_alias
 from .cost import estimate_model_cost_breakdown_usd, has_model_price, model_pricing_entry
 from .log_evidence import (
+    ACCEPTED_SERVER_KEYS,
     LogEvidenceAccumulator,
     classify_claude_tool_use,
     classify_codex_function_call,
     classify_codex_mcp_invocation,
     claude_tool_use_creation_tool,
     extract_created_event_id,
+    opencode_tool_creation_tool,
     refused_recording_rows,
     unwrap_codex_mcp_error,
     unwrap_codex_mcp_result,
@@ -3190,18 +3192,94 @@ def _opencode_model_fields(raw_model: Any) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _scan_opencode_part_evidence(
+    con: sqlite3.Connection, session_ids: list[str]
+) -> dict[str, LogEvidenceAccumulator]:
+    """Client-log evidence for the OpenCode sessions being imported.
+
+    Scans the ``part`` table for the agentacct MCP creation-tool calls those
+    sessions made and returns one accumulator per session, so the recorded
+    events (sections, checks) can be attributed back to the session that created
+    them — the OpenCode analogue of the codex/claude client-log pairing.
+
+    Privacy + cost boundary (identical in spirit to the codex/claude readers over
+    their own transcripts): the ``part`` table is read ONLY for the
+    ≤``limit_sessions`` sessions being imported AND ONLY for rows whose ``data``
+    names an agentacct MCP server — a cheap SQL prefilter (``session_id`` set +
+    a server-name ``LIKE``) keeps every other tool's payload, every prompt, and
+    every message body out of the process entirely; they are never SELECTed,
+    parsed, read, or retained. Rows are streamed (no ``fetchall`` of the part
+    table). From each matching row ONLY an agentacct ``evt_`` id is extracted,
+    and ONLY out of an agentacct CREATION-tool response (allowlist + strict
+    single-event shape check in ``log_evidence``). Read/list tools that echo
+    other sessions' ids are structurally excluded; a tool's INPUT args are never
+    read. A part still in flight (no string output) donates nothing and is
+    counted as an honest skip.
+    """
+
+    evidence: dict[str, LogEvidenceAccumulator] = {}
+    if not session_ids:
+        return evidence
+    if not {"session_id", "data"} <= _sqlite_table_columns(con, "part"):
+        return evidence
+    session_placeholders = ", ".join("?" for _ in session_ids)
+    # Coarse SQL prefilter: only rows whose data references an agentacct-family
+    # server name reach Python. The server keys carry no LIKE metacharacters, so
+    # a bare ``%key%`` is exact-enough; the strict Python allowlist below is the
+    # real gate (a stray non-agentacct row that merely mentions the name is
+    # dropped without ever being retained). This bounds the scan to the handful
+    # of agentacct parts even on the 500-session dashboard path and lets SQLite
+    # apply the filter without materializing every tool payload in memory.
+    server_keys = sorted(ACCEPTED_SERVER_KEYS)
+    server_like = " or ".join("data like ?" for _ in server_keys)
+    params = [*session_ids, *(f"%{key}%" for key in server_keys)]
+    cursor = con.execute(
+        f"select session_id, data from part "
+        f"where session_id in ({session_placeholders}) and ({server_like})",
+        params,
+    )
+    for prow in cursor:
+        sid = str(prow["session_id"] or "").strip()
+        if not sid:
+            continue
+        raw = prow["data"]
+        if not isinstance(raw, str):
+            continue
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(data, dict) or data.get("type") != "tool":
+            continue
+        tool = opencode_tool_creation_tool(data.get("tool"))
+        if tool is None:
+            continue
+        state = data.get("state")
+        output = state.get("output") if isinstance(state, dict) else None
+        acc = evidence.get(sid)
+        if acc is None:
+            acc = LogEvidenceAccumulator()
+            evidence[sid] = acc
+        acc.add_output_text(output if isinstance(output, str) else None, tool=tool)
+    return evidence
+
+
 def _read_opencode_session_db_usage(
     db_source: _RegularSourceFile,
     *,
     limit_sessions: int,
-) -> tuple[int, list[dict[str, Any]]]:
+) -> tuple[int, list[dict[str, Any]], dict[str, LogEvidenceAccumulator]]:
     """Read the authoritative ``session`` rollup from one ``opencode*.db``.
 
-    Returns ``(discovered_rows, selected_rows)``. Only the per-session token,
-    cost, model, lineage, directory, and timestamp columns are read; message
-    bodies, prompts, and tool payloads are never touched. Raises on a corrupt
-    or unreadable database so discovery fails closed rather than reporting the
-    store as silently absent.
+    Returns ``(discovered_rows, selected_rows, evidence_by_session)``. Only the
+    per-session token, cost, model, lineage, directory, and timestamp columns of
+    the ``session`` table are read for usage; the ``part`` table is read
+    SEPARATELY and, via a server-name SQL prefilter, ONLY for rows that name the
+    agentacct MCP server — to pair the session's own agentacct creation-tool
+    event ids (see ``_scan_opencode_part_evidence`` for the boundary). Other
+    tools' payloads, prompts, and message bodies are never SELECTed or parsed.
+    Raises on a corrupt or unreadable database so discovery fails closed rather
+    than reporting the store as silently absent.
     """
 
     con = _connect_regular_source_sqlite_read_only(db_source)
@@ -3247,6 +3325,10 @@ def _read_opencode_session_db_usage(
             """,
             (max(0, limit_sessions),),
         ).fetchall()
+        session_ids = [
+            sid for sid in (str(row["id"] or "").strip() for row in rows) if sid
+        ]
+        evidence_by_session = _scan_opencode_part_evidence(con, session_ids)
     finally:
         con.close()
     selected: list[dict[str, Any]] = []
@@ -3261,7 +3343,7 @@ def _read_opencode_session_db_usage(
         usage["cache_read_tokens_reported"] = "tokens_cache_read" in columns
         usage["cache_write_tokens_reported"] = "tokens_cache_write" in columns
         selected.append(usage)
-    return max(0, discovered_rows), selected
+    return max(0, discovered_rows), selected, evidence_by_session
 
 
 def discover_opencode_usage_from_db(
@@ -3283,7 +3365,7 @@ def discover_opencode_usage_from_db(
     seen_sessions: set[tuple[str, str]] = set()
     for db_source in db_sources:
         namespace = _source_home_namespace(db_source.root)
-        _discovered, selected_rows = _read_opencode_session_db_usage(
+        _discovered, selected_rows, evidence_by_session = _read_opencode_session_db_usage(
             db_source,
             limit_sessions=limit_sessions,
         )
@@ -3291,6 +3373,11 @@ def discover_opencode_usage_from_db(
             session_id = str(usage.get("id") or "").strip()
             if not session_id:
                 continue
+            evidence_fields = (
+                evidence_by_session[session_id].as_usage_fields()
+                if session_id in evidence_by_session
+                else {}
+            )
             identity = (namespace, session_id)
             if identity in seen_sessions:
                 continue
@@ -3344,8 +3431,16 @@ def discover_opencode_usage_from_db(
                 source_revision_at=source_revision_ms * 1000 if source_revision_ms is not None else None,
                 source_revision_basis="opencode_session_time_updated_us" if source_revision_ms is not None else None,
                 source_namespace_fingerprint=namespace,
+                evidenced_event_ids=tuple(evidence_fields.get("evidenced_event_ids", ())),
+                evidenced_event_id_total=int(evidence_fields.get("evidenced_event_id_total", 0)),
+                evidenced_outputs_skipped=int(evidence_fields.get("evidenced_outputs_skipped", 0)),
             )
-            if _event_has_usage_or_cost(event):
+            # A session that recorded agentacct work is worth emitting even if the
+            # session table carries no token/cost yet (the recorded work IS the
+            # signal), so evidence counts as a reason to keep the row alongside
+            # usage/cost. Without this an evidenced-but-tokenless session would be
+            # dropped and its sections would never attach.
+            if _event_has_usage_or_cost(event) or event.evidenced_event_id_total:
                 seen_sessions.add(identity)
                 events.append(event)
     return events
