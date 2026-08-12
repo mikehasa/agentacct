@@ -440,6 +440,117 @@ def test_discover_opencode_usage_reads_native_session_db(tmp_path):
     assert payload["metadata"]["usage_update_semantics"] == "opencode_session_rollup"
 
 
+def _agentacct_record_output(event_id: str, *, event_type: str = "section_started") -> str:
+    """The JSON string OpenCode stores as an agentacct tool ``state.output``."""
+    return json.dumps(
+        {"event": {"created_at": 1.0, "event_id": event_id, "event_type": event_type,
+                   "metadata": {"section_id": "s1"}}}
+    )
+
+
+def _add_opencode_parts(opencode_home: Path, parts: list[dict[str, object]], *, db_name: str = "opencode.db") -> None:
+    """Add a ``part`` table (OpenCode's tool-call log) to an existing db home.
+
+    Each entry is ``{"session_id": ..., "tool": ..., "output": <str|None>,
+    "status": ...}``; the row's ``data`` is assembled into OpenCode's real
+    ``{"type":"tool","tool":...,"state":{...}}`` shape.
+    """
+    con = sqlite3.connect(opencode_home / db_name)
+    try:
+        con.execute(
+            "create table part (id text primary key, message_id text, session_id text, "
+            "time_created integer, time_updated integer, data text)"
+        )
+        for index, part in enumerate(parts):
+            state: dict[str, object] = {"status": part.get("status", "completed")}
+            if "output" in part:
+                state["output"] = part["output"]
+            data = {"type": part.get("type", "tool"), "tool": part.get("tool"), "state": state}
+            con.execute(
+                "insert into part (id, message_id, session_id, time_created, time_updated, data) "
+                "values (?, ?, ?, ?, ?, ?)",
+                (f"prt_{index}", f"msg_{index}", part.get("session_id"), index, index, json.dumps(data)),
+            )
+        con.commit()
+    finally:
+        con.close()
+
+
+def test_discover_opencode_usage_pairs_recorded_section_to_session(tmp_path):
+    # An agentacct record_section call in the opencode part log donates its
+    # created event id to the session that made it (the observed->reported fix).
+    opencode_home = _make_opencode_db_home(tmp_path)
+    _add_opencode_parts(
+        opencode_home,
+        [
+            {"session_id": "ses_alpha", "tool": "agentacct_agentacct_record_section",
+             "output": _agentacct_record_output("evt_aaaaaaaaaaaa")},
+            {"session_id": "ses_alpha", "tool": "agentacct_agentacct_record_machine_check",
+             "output": _agentacct_record_output("evt_bbbbbbbbbbbb", event_type="machine_check")},
+        ],
+    )
+
+    events = discover_opencode_usage(opencode_home=opencode_home, limit_sessions=10)
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.client_session_id == "ses_alpha"
+    assert set(event.evidenced_event_ids) == {"evt_aaaaaaaaaaaa", "evt_bbbbbbbbbbbb"}
+    assert event.evidenced_event_id_total == 2
+    # And it rides into the emitted event metadata for the reducer to consume.
+    payload = event.to_sentinel_event()
+    assert set(payload["metadata"]["evidenced_event_ids"]) == {"evt_aaaaaaaaaaaa", "evt_bbbbbbbbbbbb"}
+
+
+def test_discover_opencode_usage_read_tool_and_inflight_donate_nothing(tmp_path):
+    # A READ tool echoes OTHER sessions' ids and must never donate; an in-flight
+    # call (no output) donates nothing and is counted as an honest skip.
+    opencode_home = _make_opencode_db_home(tmp_path)
+    _add_opencode_parts(
+        opencode_home,
+        [
+            {"session_id": "ses_alpha", "tool": "agentacct_agentacct_list_events",
+             "output": json.dumps({"events": [{"event_id": "evt_ffffffffffff"}]})},
+            {"session_id": "ses_alpha", "tool": "agentacct_agentacct_record_section",
+             "status": "running"},  # no output key at all
+        ],
+    )
+
+    events = discover_opencode_usage(opencode_home=opencode_home, limit_sessions=10)
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.evidenced_event_ids == ()  # read-tool echo excluded, in-flight skipped
+    assert "evt_ffffffffffff" not in event.evidenced_event_ids
+    assert event.evidenced_outputs_skipped >= 1
+    # No evidence -> metadata stays byte-clean (no evidenced_event_ids key).
+    assert "evidenced_event_ids" not in event.to_sentinel_event()["metadata"]
+
+
+def test_discover_opencode_usage_ignores_non_agentacct_tool_payloads(tmp_path):
+    # A foreign tool's payload (bash output, file reads) that never names the
+    # agentacct server is excluded by the SQL prefilter — it is not SELECTed,
+    # not parsed, and cannot donate an id even if its text happens to contain an
+    # evt_-shaped string. It is not even counted as a skip (never reaches Python).
+    opencode_home = _make_opencode_db_home(tmp_path)
+    _add_opencode_parts(
+        opencode_home,
+        [
+            {"session_id": "ses_alpha", "tool": "bash",
+             "output": "ran a command; log line evt_deadbeefcafe here"},
+            {"session_id": "ses_alpha", "type": "text",
+             "output": "user prompt mentioning nothing relevant"},
+        ],
+    )
+
+    events = discover_opencode_usage(opencode_home=opencode_home, limit_sessions=10)
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.evidenced_event_ids == ()
+    assert event.evidenced_outputs_skipped == 0  # foreign rows never reached the scanner
+
+
 def test_discover_opencode_usage_recomputes_cost_from_tokens_when_stored_zero(tmp_path):
     opencode_home = _make_opencode_db_home(tmp_path)
 
