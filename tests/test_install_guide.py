@@ -615,3 +615,22 @@ def test_os_claims_say_posix_only_everywhere() -> None:
     # The CLI-path note carries the same requirement; INSTALL.md mirrors it
     # verbatim (enforced by test_install_md_embeds_every_shared_command_block_verbatim).
     assert "Requires Python >= 3.11 on macOS or Linux (Windows via WSL)." in install_guide.CLI_PATH_CHECK_NOTE
+
+
+# --- opencode global rules file + hermes deliberate absence ---------------------
+
+
+def test_opencode_user_instruction_file_is_opencode_global_rules() -> None:
+    # OpenCode reads ~/.config/opencode/AGENTS.md as an always-on global rules
+    # file, so a user-scope directive there is injected into every session.
+    assert install_guide.INSTRUCTION_USER_FILES["opencode"] == ".config/opencode/AGENTS.md"
+    assert install_guide.INSTRUCTION_PROJECT_FILES["opencode"] == "AGENTS.md"
+    assert "opencode" in install_guide.INSTRUCTION_AGENTS
+
+
+def test_hermes_is_not_an_instruction_agent() -> None:
+    # Hermes injects AGENTS.md only from a project/workspace root ($HOME is
+    # skipped), so there is no reliable always-on global slot for a standing
+    # directive; recording is wired through its hook adapter instead.
+    assert "hermes" not in install_guide.INSTRUCTION_USER_FILES
+    assert "hermes" not in install_guide.INSTRUCTION_AGENTS

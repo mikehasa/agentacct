@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -1467,6 +1468,269 @@ def _write_user_claude_mcp_config(
     return config_path, action
 
 
+def _opencode_mcp_entry(store_dir: Path | str, *, command: str = "agentacct") -> dict[str, object]:
+    """OpenCode's local-MCP server shape: a ``type: "local"`` entry whose
+    ``command`` is a single argv ARRAY (binary + args), plus ``enabled: true``.
+    Different from the Claude/Codex shape (command + separate args), so it needs
+    its own generator."""
+    return {
+        "type": "local",
+        "command": [command, "mcp", "serve", "--store-dir", str(store_dir)],
+        "enabled": True,
+    }
+
+
+def _looks_like_agentacct_opencode_entry(entry: object) -> bool:
+    """True when an OpenCode ``mcp.<name>`` entry is a standard agentacct install
+    (this tool's own current or prior name) rather than the user's own server —
+    the only case where collapsing a pre-rename key into ``agentacct`` is safe.
+    Keyed on the argv array: first element is an agentacct-family binary and the
+    args carry ``mcp serve``."""
+    if not isinstance(entry, dict):
+        return False
+    command = entry.get("command")
+    if not isinstance(command, list) or not command:
+        return False
+    binary = str(command[0])
+    if not any(binary.endswith(name) for name in ("agentacct", "agent-chronicle", "agent-sentinel")):
+        return False
+    tokens = [str(part) for part in command]
+    return "mcp" in tokens and "serve" in tokens
+
+
+def _write_opencode_mcp_config_at(
+    config_path: Path, config_store_dir: Path | str, *, command: str = "agentacct"
+) -> tuple[Path, str]:
+    """Merge the agentacct server into OpenCode's user-level ``opencode.jsonc``.
+
+    OpenCode's config is JSON(C) with a top-level ``mcp`` object. We PRESERVE
+    every other top-level key (``$schema``, ``model``, other ``mcp`` servers) and
+    every extra key on an existing ``agentacct`` entry, setting only
+    type/command/enabled. Idempotent: a config already carrying the generated
+    entry is left byte-untouched (``unchanged``, no write).
+
+    Safety: if the file cannot be parsed as strict JSON — it uses ``//`` /
+    ``/* */`` comments (legal JSONC) or is malformed — we do NOT rewrite it
+    (that would silently drop the user's comments or corrupt a broken file) and
+    return ``skipped-unparsed`` so the caller can print the manual command.
+    """
+    generated = _opencode_mcp_entry(config_store_dir, command=command)
+    if not config_path.exists():
+        payload = {
+            "$schema": "https://opencode.ai/config.json",
+            "mcp": {"agentacct": generated},
+        }
+        _atomic_write_text(config_path, json.dumps(payload, indent=2) + "\n", mode=0o644)
+        return config_path, "wrote"
+    text = config_path.read_text(encoding="utf-8")
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, UnicodeError):
+        return config_path, "skipped-unparsed"
+    if not isinstance(parsed, dict):
+        return config_path, "skipped-unparsed"
+    servers = parsed.get("mcp")
+    if servers is None:
+        servers = {}
+        parsed["mcp"] = servers
+    if not isinstance(servers, dict):
+        # A non-object ``mcp`` is the user's structure; never clobber it.
+        return config_path, "skipped-mcp-not-object"
+    # Collapse a prior-generation agentacct server (this tool's own old names)
+    # into the one new-name key — leaving it alive launches a command that no
+    # longer ships (ENOENT) and can split the ledger. A CUSTOM same-named server
+    # is not touched (the heuristic requires an agentacct-family argv). Track
+    # whether a stale entry was ACTUALLY popped: the idempotency short-circuit
+    # below must key on that fact, not on the post-pop key set (a just-popped key
+    # is trivially "not in servers", which would drop the pop by returning
+    # "unchanged"; and a user's custom same-named key would otherwise defeat the
+    # short-circuit forever).
+    stale_collapsed = False
+    for old_name in ("agent-chronicle", "agent-sentinel"):
+        if _looks_like_agentacct_opencode_entry(servers.get(old_name)):
+            servers.pop(old_name, None)
+            stale_collapsed = True
+    existing_entry = servers.get("agentacct") if isinstance(servers.get("agentacct"), dict) else None
+    merged = {**(existing_entry or {}), **generated}
+    if existing_entry is not None and merged == existing_entry and not stale_collapsed:
+        # Byte-identical to what we would write and no stale key to drop.
+        return config_path, "unchanged"
+    action = "updated" if existing_entry is not None else "wrote"
+    servers["agentacct"] = merged
+    mode = (config_path.stat().st_mode & 0o777) or 0o644
+    _atomic_write_text(config_path, json.dumps(parsed, indent=2) + "\n", mode=mode)
+    return config_path, action
+
+
+def _opencode_config_dir(home: Path | None = None) -> Path:
+    """OpenCode's user config directory, honoring ``XDG_CONFIG_HOME``.
+
+    OpenCode is XDG-compliant: with ``XDG_CONFIG_HOME`` set it reads
+    ``$XDG_CONFIG_HOME/opencode`` (standard on many Linux setups), NOT
+    ``~/.config/opencode``. Writing the MCP registration and the global rules
+    file to the wrong directory would silently capture nothing while onboarding
+    reports success, so the config path AND the instruction path must both
+    resolve through here. Mirrors the XDG handling in ``source_paths``.
+    """
+    base = Path.home() if home is None else home
+    value = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    root = Path(value) if value else base / ".config"
+    return root / "opencode"
+
+
+def _resolve_opencode_config_path(home: Path | None = None) -> Path:
+    """The OpenCode user config file to write: prefer an existing
+    ``opencode.jsonc`` / ``opencode.json`` (OpenCode reads either), else default
+    to ``opencode.jsonc``. Resolved under the XDG-aware config dir."""
+    config_dir = _opencode_config_dir(home)
+    for name in ("opencode.jsonc", "opencode.json"):
+        candidate = config_dir / name
+        if candidate.is_file():
+            return candidate
+    return config_dir / "opencode.jsonc"
+
+
+def _hermes_mcp_yaml_block(store_dir: Path | str, *, command: str = "agentacct", header: bool, child_indent: str) -> str:
+    """Render the Hermes ``mcp_servers.agentacct`` YAML block.
+
+    Scalars are emitted as JSON strings — a JSON string is a valid double-quoted
+    YAML scalar, so a store path or command containing spaces/colons is quoted
+    correctly without a YAML dumper (which would reflow the whole file and drop
+    the user's comments). ``header`` prepends the top-level ``mcp_servers:`` line;
+    ``child_indent`` is the indent of the ``agentacct:`` key.
+    """
+    args = ["mcp", "serve", "--store-dir", str(store_dir)]
+    lines: list[str] = []
+    if header:
+        lines.append("mcp_servers:")
+    lines.append(f"{child_indent}agentacct:")
+    lines.append(f"{child_indent}  command: {json.dumps(command)}")
+    lines.append(f"{child_indent}  args:")
+    lines.extend(f"{child_indent}    - {json.dumps(arg)}" for arg in args)
+    return "\n".join(lines) + "\n"
+
+
+def _write_hermes_mcp_config_at(
+    config_path: Path, config_store_dir: Path | str, *, command: str = "agentacct"
+) -> tuple[Path, str]:
+    """Upsert the agentacct server into Hermes' ``~/.hermes/config.yaml``.
+
+    Hermes reads external MCP servers from the top-level ``mcp_servers`` mapping
+    and auto-reloads on the file's mtime change. The file is large and heavily
+    commented, and only PyYAML (no round-trip loader) is available, so a
+    parse+dump would destroy the user's comments and ordering. Instead this is a
+    TEXTUAL upsert: it never reflows the file — it appends a fresh
+    ``mcp_servers:`` block when absent, or replaces ONLY the ``agentacct`` child
+    when present. A read-only parse decides idempotency. An inline/flow
+    ``mcp_servers: {...}`` (not block style) is left untouched (``skipped-unparsed``).
+    """
+    import yaml
+
+    store = str(config_store_dir)
+    generated_args = ["mcp", "serve", "--store-dir", store]
+
+    def _entry_matches(existing: object) -> bool:
+        return (
+            isinstance(existing, dict)
+            and existing.get("command") == command
+            and list(existing.get("args") or []) == generated_args
+        )
+
+    if not config_path.exists():
+        block = _hermes_mcp_yaml_block(store, command=command, header=True, child_indent="  ")
+        _atomic_write_text(config_path, block, mode=0o600)
+        return config_path, "wrote"
+
+    # Read RAW bytes (not read_text): universal-newline translation would rewrite
+    # CRLF to LF before we could detect it, defeating the never-reflow promise.
+    text = config_path.read_bytes().decode("utf-8")
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        data = None
+    if isinstance(data, dict):
+        servers = data.get("mcp_servers")
+        if isinstance(servers, dict) and _entry_matches(servers.get("agentacct")):
+            return config_path, "unchanged"
+
+    mode = (config_path.stat().st_mode & 0o777) or 0o600
+    # Preserve the file's existing line terminator (never reflow CRLF -> LF).
+    newline = "\r\n" if "\r\n" in text else "\n"
+    lines = text.splitlines()
+
+    def _indent_width(line: str) -> int:
+        return len(line) - len(line.lstrip())
+
+    def _to_newline(block: str) -> str:
+        return block if newline == "\n" else block.replace("\n", newline)
+
+    header_re = re.compile(r"^mcp_servers:[ \t]*(#.*)?$")
+    inline_re = re.compile(r"^mcp_servers:[ \t]*\S")
+    header_idx = next((i for i, ln in enumerate(lines) if header_re.match(ln)), None)
+    if header_idx is None:
+        if any(inline_re.match(ln) for ln in lines):
+            # An inline/flow mcp_servers mapping — editing it textually is unsafe.
+            return config_path, "skipped-unparsed"
+        block = _to_newline(_hermes_mcp_yaml_block(store, command=command, header=True, child_indent="  "))
+        separator = "" if text == "" or text.endswith(("\n", "\r")) else newline
+        _atomic_write_text(config_path, text + separator + block, mode=mode)
+        return config_path, "wrote"
+
+    # Region owned by mcp_servers: from the header to the next column-0 key or EOF.
+    region_end = len(lines)
+    for j in range(header_idx + 1, len(lines)):
+        stripped = lines[j].strip()
+        if stripped == "" or stripped.startswith("#"):
+            continue
+        if _indent_width(lines[j]) == 0:
+            region_end = j
+            break
+
+    child_indent = "  "
+    for j in range(header_idx + 1, region_end):
+        stripped = lines[j].strip()
+        if stripped == "" or stripped.startswith("#"):
+            continue
+        child_indent = lines[j][: _indent_width(lines[j])]
+        break
+    if "\t" in child_indent:
+        # Tab-indented YAML: our space-based block would misalign (or land the key
+        # at column 0, outside mcp_servers, where Hermes silently ignores it).
+        # Refuse rather than emit a config that reads as installed but is not.
+        return config_path, "skipped-unparsed"
+
+    child_depth = len(child_indent)
+    child_re = re.compile(rf"^{re.escape(child_indent)}agentacct:[ \t]*(#.*)?$")
+    child_idx = next((j for j in range(header_idx + 1, region_end) if child_re.match(lines[j])), None)
+    new_block = _hermes_mcp_yaml_block(store, command=command, header=False, child_indent=child_indent).splitlines()
+
+    if child_idx is None:
+        new_lines = lines[: header_idx + 1] + new_block + lines[header_idx + 1 :]
+    else:
+        # The agentacct child owns exactly its deeper-indented content lines. A
+        # blank line, or a comment at the child's own indent or shallower, that
+        # FOLLOWS the block belongs to what comes after it (e.g. a comment
+        # documenting the next server) — it must never be absorbed into the
+        # replaced span. So the span ends right after the last deeper-indented
+        # line, not at the next sibling key.
+        last_content = child_idx
+        for j in range(child_idx + 1, region_end):
+            if lines[j].strip() == "":
+                continue  # blank: neither content nor a boundary — keep scanning
+            if _indent_width(lines[j]) > child_depth:
+                last_content = j  # deeper line (incl. an in-block comment) is child content
+            else:
+                break  # sibling key / shallower comment: boundary
+        span_end = last_content + 1
+        new_lines = lines[:child_idx] + new_block + lines[span_end:]
+
+    result = newline.join(new_lines)
+    if text.endswith(("\n", "\r")):
+        result += newline
+    _atomic_write_text(config_path, result, mode=mode)
+    return config_path, "updated"
+
+
 def _print_claude_mcp_setup(config_store_dir: Path | str, *, command: str = "agentacct") -> None:
     quoted_store_dir = shlex.quote(str(config_store_dir))
     quoted_command = shlex.quote(command)
@@ -1789,17 +2053,68 @@ def _onboard_global_codex(store_dir: Path, command: str) -> bool:
     return True
 
 
-def _print_opencode_global_preview(store_dir: Path, command: str) -> None:
+def _onboard_global_opencode(store_dir: Path, command: str) -> bool:
+    """Configure OpenCode at USER scope (zero repo files). Returns readiness.
+
+    OpenCode reaches Claude-Code-level parity for semantic recording: it reads
+    OpenCode's GLOBAL rules file (``AGENTS.md`` under the XDG config dir, injected
+    into every session, project or not) AND supports MCP servers in
+    ``opencode.jsonc``, so both the standing 'record your work' directive and the
+    agentacct tools are installed the same way codex gets them.
+    """
+    # 1. standing "record your work" instructions -> <xdg>/opencode/AGENTS.md
+    setup_instructions(
+        agent="opencode", user=True, path=None, remove=False, dry_run=False, store_dir=store_dir
+    )
+    # 2. native user-scope MCP registration -> <xdg>/opencode/opencode.jsonc
+    config_path = _resolve_opencode_config_path()
+    path, action = _write_opencode_mcp_config_at(config_path, store_dir, command=command)
+    if action in {"skipped-unparsed", "skipped-mcp-not-object"}:
+        reason = (
+            "it is not strict JSON (JSONC comments or malformed)"
+            if action == "skipped-unparsed"
+            else "its top-level `mcp` value is not an object"
+        )
+        console.print(
+            f"Left {path} unchanged: {reason}, so agentacct did not rewrite it. Register the server yourself:"
+        )
+        print(
+            f"opencode mcp add agentacct -- {shlex.quote(command)} mcp serve "
+            f"--store-dir {shlex.quote(str(store_dir))}"
+        )
+        return False
+    console.print(f"{action.capitalize()} OpenCode MCP server in {path}")
+    console.print("Start a NEW OpenCode session so it loads the server + rules.")
+    return True
+
+
+def _onboard_global_hermes(store_dir: Path, command: str) -> bool:
+    """Register the agentacct MCP server for Hermes at USER scope. Returns readiness.
+
+    Hermes reads external MCP servers from the top-level ``mcp_servers`` block of
+    ``~/.hermes/config.yaml`` and auto-reloads on that file's mtime change, so the
+    agentacct tools become available in Hermes sessions. Unlike codex/opencode,
+    Hermes has NO reliable always-on GLOBAL instruction slot (it injects
+    ``AGENTS.md`` only from a project/workspace root, and ``$HOME`` is skipped), so
+    the standing 'record your work' directive is NOT installed here — Hermes
+    recording is driven by its own hook system in a separate step. This makes the
+    tools present now; the directive lands with the hooks.
+    """
+    home = Path.home()
+    config_path = home / ".hermes" / "config.yaml"
+    path, action = _write_hermes_mcp_config_at(config_path, store_dir, command=command)
+    if action == "skipped-unparsed":
+        console.print(
+            f"Left {path} unchanged: its mcp_servers block could not be parsed safely, so agentacct did "
+            "not modify it. Add an mcp_servers.agentacct entry yourself, or re-run after fixing the file."
+        )
+        return False
+    console.print(f"{action.capitalize()} Hermes MCP server in {path}")
     console.print(
-        "OpenCode detected. agentacct does not write OpenCode config; run this to register the server:"
+        "Hermes auto-reloads config.yaml; its agentacct tools are available now. "
+        "Semantic recording still needs the Hermes hook adapter (installed separately)."
     )
-    print(
-        f"opencode mcp add agentacct -- {shlex.quote(command)} mcp serve "
-        f"--store-dir {shlex.quote(str(store_dir))}"
-    )
-    console.print(
-        "OpenCode gets the 'record your work' instruction from the MCP server on connect (no AGENTS.md needed)."
-    )
+    return True
 
 
 def _warn_global_store_mismatches(store_dir: Path, command: str) -> None:
@@ -1815,14 +2130,17 @@ def _warn_global_store_mismatches(store_dir: Path, command: str) -> None:
 
     target = str(store_dir)
 
-    opencode_config = Path.home() / ".config" / "opencode" / "opencode.jsonc"
+    opencode_config = _resolve_opencode_config_path(Path.home())
     try:
         if opencode_config.is_file():
             text = opencode_config.read_text(encoding="utf-8")
             if "agentacct" in text and target not in text:
+                # After a successful write the store would match; a lingering
+                # mismatch means the writer skipped the file (JSONC comments or
+                # malformed), so it still points at another store.
                 console.print(
-                    "OpenCode is registered against a DIFFERENT store than this install. "
-                    "agentacct cannot rewrite OpenCode config — re-register it:"
+                    "OpenCode is registered against a DIFFERENT store than this install, and agentacct did "
+                    "not rewrite the file (it is not strict JSON). Re-register it:"
                 )
                 print(
                     f"opencode mcp remove agentacct; opencode mcp add agentacct -- "
@@ -1899,6 +2217,18 @@ def _resync_integration(
                 resynced.append("codex")
         except Exception:  # noqa: BLE001
             errored.append("codex")
+    if "opencode" in client_set:
+        try:
+            if _onboard_global_opencode(store_dir, command):
+                resynced.append("opencode")
+        except Exception:  # noqa: BLE001
+            errored.append("opencode")
+    if "hermes" in client_set:
+        try:
+            if _onboard_global_hermes(store_dir, command):
+                resynced.append("hermes")
+        except Exception:  # noqa: BLE001
+            errored.append("hermes")
     return resynced, errored
 
 
@@ -1974,21 +2304,19 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
     command = _resolve_absolute_mcp_command()
 
     found = {row.client for row in discover_usage_sources() if row.status == "found"}
+    # Clients agentacct can configure at USER scope by writing their own config
+    # files directly (no client CLI required): claude-code + codex + opencode get
+    # full semantic recording (MCP + an always-on global instruction file); hermes
+    # gets MCP tools registered but no standing directive (it has no reliable
+    # global instruction slot — recording is driven by its hook adapter).
+    configurable = ("claude-code", "codex", "opencode", "hermes")
     if agent in {"auto", "all"}:
-        targets = [client for client in ("claude-code", "codex") if client in found] or [
-            "claude-code",
-            "codex",
-        ]
-        opencode_detected = "opencode" in found
-    elif agent in {"claude-code", "codex"}:
+        targets = [client for client in configurable if client in found] or ["claude-code", "codex"]
+    elif agent in configurable:
         targets = [agent]
-        opencode_detected = False
-    elif agent == "opencode":
-        targets = []
-        opencode_detected = True
     else:
         raise typer.BadParameter(
-            "global scope configures claude-code and codex (opencode is previewed). "
+            "global scope configures claude-code, codex, opencode, or hermes. "
             "Use --scope project for other clients."
         )
 
@@ -1996,18 +2324,23 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
     console.print(f"- global store: {store_dir}")
     if store_pre_existing:
         console.print("  (existing global store with recorded history — reusing it, not starting a new one)")
-    console.print(f"- clients: {', '.join(targets) if targets else '(opencode preview only)'}")
+    console.print(f"- clients: {', '.join(targets)}")
     console.print("- writes user-level MCP + hooks + instructions; merges ~/.claude/settings.json only with your ok")
 
     recording_clients: list[str] = []
+    tools_only_clients: list[str] = []
     if mcp and "claude-code" in targets:
         if _onboard_global_claude(store_dir, command, assume_yes=assume_yes):
             recording_clients.append("claude-code")
     if mcp and "codex" in targets:
         if _onboard_global_codex(store_dir, command):
             recording_clients.append("codex")
-    if opencode_detected:
-        _print_opencode_global_preview(store_dir, command)
+    if mcp and "opencode" in targets:
+        if _onboard_global_opencode(store_dir, command):
+            recording_clients.append("opencode")
+    if mcp and "hermes" in targets:
+        if _onboard_global_hermes(store_dir, command):
+            tools_only_clients.append("hermes")
 
     imported = _local_usage_import_payload(
         store_dir=store_dir,
@@ -2052,14 +2385,20 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
             raise typer.Exit(1) from exc
         console.print(f"Local API: {runtime_payload['dashboard_url']}")
 
-    # Surfaces agentacct does NOT rewrite (OpenCode config, an already-merged
-    # hook command) can still point at another store — say so loudly rather than
-    # let recording silently split across two ledgers.
+    # Surfaces agentacct may leave pointed elsewhere (an OpenCode config it could
+    # not parse, an already-merged Claude hook command) can still point at another
+    # store — say so loudly rather than let recording silently split across two
+    # ledgers.
     _warn_global_store_mismatches(store_dir, command)
 
+    if tools_only_clients:
+        console.print(
+            f"{', '.join(tools_only_clients)}: agentacct MCP tools registered. Semantic recording needs the "
+            "client's hook adapter (installed separately)."
+        )
     if recording_clients:
         console.print("Ready. Open a NEW agent session (in ANY repo) — recording is machine-wide now.")
-    else:
+    elif not tools_only_clients:
         console.print("Local usage capture is ready; no semantic recording client was configured.")
 
 
@@ -4108,18 +4447,24 @@ def _instruction_target_path(agent: str, *, user: bool, path: Path | None) -> Pa
     if path is not None:
         return path.expanduser()
     if user:
+        # OpenCode's global rules file lives under the XDG config dir, which is
+        # NOT ~/.config when XDG_CONFIG_HOME is set — resolve it the same way the
+        # MCP writer resolves the config dir so the directive and the server land
+        # in the ONE directory OpenCode actually reads.
+        if agent == "opencode":
+            return _opencode_config_dir() / "AGENTS.md"
         return Path.home() / install_guide.INSTRUCTION_USER_FILES[agent]
     return Path.cwd() / install_guide.INSTRUCTION_PROJECT_FILES[agent]
 
 
 @setup_app.command("instructions")
 def setup_instructions(
-    agent: Annotated[str, typer.Option(help="Agent whose instruction file to edit: claude-code or codex.")],
+    agent: Annotated[str, typer.Option(help="Agent whose instruction file to edit: claude-code, codex, or opencode.")],
     user: Annotated[
         bool,
         typer.Option(
             "--user",
-            help="Target the user-level instruction file (~/.claude/CLAUDE.md or ~/.codex/AGENTS.md) instead of the project-level file in the current directory.",
+            help="Target the user-level instruction file (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, or ~/.config/opencode/AGENTS.md) instead of the project-level file in the current directory.",
         ),
     ] = False,
     path: Annotated[
@@ -4147,7 +4492,9 @@ def setup_instructions(
     (especially in global mode) fills with work context instead of tokens alone.
     """
     if agent not in install_guide.INSTRUCTION_AGENTS:
-        raise typer.BadParameter("agent must be one of: claude-code, codex")
+        raise typer.BadParameter(
+            "agent must be one of: " + ", ".join(install_guide.INSTRUCTION_AGENTS)
+        )
     target = _instruction_target_path(agent, user=user, path=path)
     # The marker records the honest fact "instructions are installed from this
     # moment": it is written only on a FRESH install (the target did not carry

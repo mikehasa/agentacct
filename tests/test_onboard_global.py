@@ -191,3 +191,52 @@ def test_onboard_global_warns_when_hook_wrapper_lives_outside_claude_hooks(
     result = CliRunner().invoke(app, ["onboard", "--scope", "global", "--yes", "--no-start"])
     assert result.exit_code == 0, result.output
     assert "outside ~/.claude/hooks/" in result.output
+
+
+def test_onboard_global_agent_opencode_writes_mcp_and_global_rules(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    result = CliRunner().invoke(app, ["onboard", "--scope", "global", "--agent", "opencode", "--no-start"])
+    assert result.exit_code == 0, result.output
+
+    store = isolated_home / ".local" / "state" / "agentacct" / "state"
+    # MCP registered in the real OpenCode config shape (command is an argv array).
+    opencode_cfg = json.loads((isolated_home / ".config" / "opencode" / "opencode.jsonc").read_text())
+    entry = opencode_cfg["mcp"]["agentacct"]
+    assert entry["type"] == "local"
+    assert entry["enabled"] is True
+    assert str(store) in entry["command"]
+    assert Path(entry["command"][0]).is_absolute()
+    # Standing 'record your work' rules land in OpenCode's GLOBAL rules file.
+    rules = isolated_home / ".config" / "opencode" / "AGENTS.md"
+    assert rules.exists()
+    assert "agentacct" in rules.read_text()
+    # Zero files leaked into the repo.
+    for leaked in ("AGENTS.md", ".mcp.json", ".agent-sentinel"):
+        assert not (repo / leaked).exists()
+
+
+def test_onboard_global_agent_hermes_registers_mcp_only_no_directive(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import yaml
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    result = CliRunner().invoke(app, ["onboard", "--scope", "global", "--agent", "hermes", "--no-start"])
+    assert result.exit_code == 0, result.output
+
+    store = isolated_home / ".local" / "state" / "agentacct" / "state"
+    hermes_cfg = yaml.safe_load((isolated_home / ".hermes" / "config.yaml").read_text())
+    assert hermes_cfg["mcp_servers"]["agentacct"]["args"][-1] == str(store)
+    # Hermes has no reliable global instruction slot, so NO standing directive is
+    # installed here (recording rides its hook adapter, added separately).
+    assert not (isolated_home / "AGENTS.md").exists()
+    assert "tools registered" in result.output
+    assert "hook adapter" in result.output
