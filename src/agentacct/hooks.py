@@ -1531,6 +1531,93 @@ def capture_hermes_turn_boundary(raw: str, *, store_dir: Path | str | None = Non
         return
 
 
+# ---------------------------------------------------------------------------
+# OpenCode tool-activity plugin (observe-only)
+# ---------------------------------------------------------------------------
+#
+# OpenCode (sst/opencode, a Bun runtime) auto-loads named-export plugins from
+# ``<config>/plugins/*.js``. Its ``tool.execute.before`` hook receives the tool
+# name and the OpenCode session id (``ses_...``), which is exactly the ``session``
+# table id the agentacct usage importer keys on — so a tick attributes straight to
+# the OpenCode session with no log pairing. The plugin only ever spools the tool
+# NAME + session id (never arguments or output), and it fires the agentacct CLI
+# fire-and-forget so it can never add latency to, block, or fail a tool call.
+
+OPENCODE_PLUGIN_RELATIVE_PATH = Path("plugins/agentacct.js")
+
+_OPENCODE_PLUGIN_TEMPLATE = '''// agentacct OpenCode tool-activity plugin (observe-only, auto-generated).
+//
+// Records the tool NAME + OpenCode session id for each tool call so the agentacct
+// Receipt's Actions dimension shows what OpenCode reached for. Never reads tool
+// arguments or output. The agentacct CLI is fired fire-and-forget, so a slow or
+// broken install can never add latency to, block, or fail an OpenCode tool call.
+// Reinstall with: agentacct hooks opencode install --force
+import { existsSync } from "node:fs";
+
+const AGENTACCT_CANDIDATES = __AGENTACCT_CANDIDATES__;
+const STORE_DIR = __STORE_DIR__;
+
+function resolveAgentacct() {
+  for (const candidate of AGENTACCT_CANDIDATES) {
+    if (!candidate) continue;
+    if (candidate.includes("/")) {
+      if (existsSync(candidate)) return candidate;
+    } else {
+      try {
+        const found = Bun.which(candidate);
+        if (found) return found;
+      } catch (e) {}
+    }
+  }
+  return null;
+}
+
+export const AgentacctToolActivity = async () => ({
+  "tool.execute.before": async (input) => {
+    try {
+      const executable = resolveAgentacct();
+      if (!executable) return;
+      const args = [executable, "hooks", "opencode", "tool-activity"];
+      if (STORE_DIR) args.push("--store-dir", STORE_DIR);
+      const proc = Bun.spawn(args, { stdin: "pipe", stdout: "ignore", stderr: "ignore" });
+      proc.stdin.write(JSON.stringify({ tool_name: input.tool, session_id: input.sessionID }));
+      proc.stdin.end();
+      // fire-and-forget: never await — a tool call must not wait on capture.
+      try { proc.unref(); } catch (e) {}
+    } catch (e) {
+      // observe-only: a plugin error must never affect the tool call.
+    }
+  },
+});
+'''
+
+
+def render_opencode_plugin(agentacct_executable: str | None = None, *, store_dir: Path | str | None = None) -> str:
+    """Render the OpenCode tool-activity plugin JS with the agentacct executable
+    candidates and the store dir bound at install time (OpenCode plugins run in the
+    OpenCode process, which sees neither agentacct's env nor a predictable cwd)."""
+    candidates: list[str] = []
+    if agentacct_executable:
+        candidates.append(str(agentacct_executable))
+    for bare_name in ("agentacct", "agent-chronicle", "agent-sentinel"):
+        if bare_name not in candidates:
+            candidates.append(bare_name)
+    store_literal = json.dumps(str(store_dir)) if store_dir is not None else "null"
+    # Single-pass substitution: a sequential str.replace would rescan the text it
+    # just inserted, so an agentacct path that happened to contain the literal
+    # ``__STORE_DIR__`` token would corrupt the candidates array. re.sub replaces
+    # each sentinel once, left to right, and never revisits substituted text.
+    substitutions = {
+        "__AGENTACCT_CANDIDATES__": json.dumps(candidates),
+        "__STORE_DIR__": store_literal,
+    }
+    return re.sub(
+        r"__AGENTACCT_CANDIDATES__|__STORE_DIR__",
+        lambda match: substitutions[match.group(0)],
+        _OPENCODE_PLUGIN_TEMPLATE,
+    )
+
+
 def claude_code_settings_example(python_executable: str | None = None, *, hook_path: Path | str | None = None) -> dict[str, Any]:
     """Example Claude Code settings block invoking the agentacct hook wrapper.
 
