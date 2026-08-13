@@ -121,9 +121,14 @@ from .hooks import (
     CLAUDE_HOOK_RELATIVE_PATH,
     CODEX_HOOK_RELATIVE_PATH,
     CODEX_HOOKS_JSON_RELATIVE_PATH,
+    HERMES_CONFIG_RELATIVE_PATH,
+    HERMES_HOOK_EVENT_SUBCOMMANDS,
+    HERMES_HOOK_RELATIVE_PATH,
     OPENCODE_PLUGIN_RELATIVE_PATH,
     capture_claude_code_client_context,
     capture_tool_activity,
+    capture_hermes_tool_check,
+    capture_hermes_turn_boundary,
     capture_mechanical_check,
     claude_code_hook_context_status,
     claude_code_hook_doctor_checks,
@@ -133,6 +138,7 @@ from .hooks import (
     evaluate_stdin_json,
     install_claude_code_hook,
     render_codex_hook_wrapper,
+    render_hermes_hook_wrapper,
     render_opencode_plugin,
 )
 from .log_evidence import build_log_evidence_index, summarize_log_evidence_donor_rows
@@ -258,6 +264,7 @@ mcp_app = typer.Typer(help="MCP server commands for agent integrations.")
 setup_app = typer.Typer(help="Setup helpers for coding agents and local integrations.")
 claude_code_hooks_app = typer.Typer(help="Claude Code hook helpers.")
 codex_hooks_app = typer.Typer(help="Codex hook helpers (observe-only tool-activity + session-end).")
+hermes_hooks_app = typer.Typer(help="Hermes hook helpers (observe-only tool-activity + exit-code + turn-boundary).")
 opencode_hooks_app = typer.Typer(help="OpenCode hook helpers (observe-only tool-activity plugin).")
 canonical_app = typer.Typer(
     help="Canonical SQLite store operations: health, maintenance, promotion, and cutover verification."
@@ -552,6 +559,7 @@ def finding_dispose(
 app.add_typer(setup_app, name="setup")
 hooks_app.add_typer(claude_code_hooks_app, name="claude-code")
 hooks_app.add_typer(codex_hooks_app, name="codex")
+hooks_app.add_typer(hermes_hooks_app, name="hermes")
 hooks_app.add_typer(opencode_hooks_app, name="opencode")
 app.add_typer(hooks_app, name="hooks")
 app.add_typer(canonical_app, name="canonical")
@@ -2249,16 +2257,19 @@ def _onboard_global_opencode(store_dir: Path, command: str) -> bool:
 
 
 def _onboard_global_hermes(store_dir: Path, command: str) -> bool:
-    """Register the agentacct MCP server for Hermes at USER scope. Returns readiness.
+    """Configure Hermes at USER scope (zero repo files). Returns readiness.
 
-    Hermes reads external MCP servers from the top-level ``mcp_servers`` block of
-    ``~/.hermes/config.yaml`` and auto-reloads on that file's mtime change, so the
-    agentacct tools become available in Hermes sessions. Unlike codex/opencode,
+    Two layers: the MCP server gives Hermes the agentacct tools (semantic section
+    recording when an agent calls them); the shell hooks add AUTOMATIC observe-only
+    capture — tool activity (pre_tool_call), the harness exit code of recognized
+    checks (post_tool_call), and a turn-boundary heartbeat (on_session_end) — keyed
+    by Hermes' own session_id (which equals the state.db sessions.id the usage
+    importer keys on, so tool activity attributes straight to the session). Hermes
+    gates shell hooks on a one-time consent allowlist, so onboarding installs them
+    and prints the one-time approve + gateway-restart steps. Unlike codex/opencode,
     Hermes has NO reliable always-on GLOBAL instruction slot (it injects
     ``AGENTS.md`` only from a project/workspace root, and ``$HOME`` is skipped), so
-    the standing 'record your work' directive is NOT installed here — Hermes
-    recording is driven by its own hook system in a separate step. This makes the
-    tools present now; the directive lands with the hooks.
+    the standing 'record your work' directive is NOT installed here.
     """
     home = Path.home()
     config_path = home / ".hermes" / "config.yaml"
@@ -2270,10 +2281,23 @@ def _onboard_global_hermes(store_dir: Path, command: str) -> bool:
         )
         return False
     console.print(f"{action.capitalize()} Hermes MCP server in {path}")
-    console.print(
-        "Hermes auto-reloads config.yaml; its agentacct tools are available now. "
-        "Semantic recording still needs the Hermes hook adapter (installed separately)."
-    )
+    # Automatic observe-only tool-activity + exit-code + turn-boundary hooks.
+    try:
+        hooks_action, wrapper_path = _install_hermes_hook(home, store_dir, command)
+    except OSError as exc:
+        console.print(f"Hermes MCP configured, but the hook could not be written ({exc}).")
+        hooks_action = "skipped-unparsed"
+        wrapper_path = home / HERMES_HOOK_RELATIVE_PATH
+    if hooks_action == "skipped-unparsed":
+        console.print(
+            f"Left {config_path} hooks: block unchanged (inline or tab-indented); the automatic "
+            "tool-activity hooks were NOT wired — add the agentacct pre_tool_call / post_tool_call / "
+            "on_session_end entries under hooks: yourself to capture tool activity."
+        )
+        console.print("Hermes auto-reloads config.yaml; its agentacct tools are available now.")
+    else:
+        console.print(f"{hooks_action.capitalize()} Hermes tool-activity hooks in {config_path} ({wrapper_path}).")
+        _print_hermes_hook_consent_steps()
     return True
 
 
@@ -4078,6 +4102,466 @@ def codex_hooks_install(
         "Codex needs the hook TRUSTED before it fires — start a new Codex session and approve it "
         "(or vet the wrapper and use --dangerously-bypass-hook-trust)."
     )
+
+
+@hermes_hooks_app.command("pre-tool-call")
+def hermes_pre_tool_call(
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="State directory the tick is spooled to (the hermes wrapper passes the bound store)."),
+    ] = None,
+) -> None:
+    """Observe a Hermes ``pre_tool_call`` JSON event from stdin (observe-only).
+
+    Hermes' shell-hook STDIN carries the same ``session_id``/``tool_name`` shape as
+    Claude Code + Codex, and its ``session_id`` equals the ``state.db`` sessions.id
+    the usage importer keys on, so the tick attributes straight to the Hermes
+    session. OBSERVE-ONLY: agentacct never makes an allow/block decision for Hermes
+    (Hermes owns its own approval layer) — it records the tool name + category
+    (never arguments) and returns an empty no-op response.
+    """
+    try:
+        raw = sys.stdin.read()
+        try:
+            capture_tool_activity(raw, store_dir=store_dir, client="hermes")
+        except Exception:  # noqa: BLE001 - activity capture must never affect the tool call.
+            pass
+        print("{}")
+    except Exception:  # noqa: BLE001 - FAIL OPEN: a pre_tool_call hook must never block a Hermes tool call.
+        print("{}")
+
+
+@hermes_hooks_app.command("post-tool-call")
+def hermes_post_tool_call(
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="State directory the mechanical-check tick is spooled to (the hermes wrapper passes the bound store)."),
+    ] = None,
+) -> None:
+    """Observe a Hermes ``post_tool_call`` JSON event from stdin (exit-code check).
+
+    When the terminal tool ran a recognized test/build/lint command, spool the exit
+    code the HARNESS observed (from ``extra.result``) — the independent signal that
+    lifts a step to ``independently_checked``. Only a coarse check kind, the runner
+    name, and a sha256 command DIGEST are spooled — never the command or its output.
+    Always returns an empty no-op response.
+    """
+    try:
+        raw = sys.stdin.read()
+        try:
+            capture_hermes_tool_check(raw, store_dir=store_dir)
+        except Exception:  # noqa: BLE001 - capture must never affect the tool call.
+            pass
+        print("{}")
+    except Exception:  # noqa: BLE001 - FAIL OPEN: a post_tool_call hook must never disturb Hermes.
+        print("{}")
+
+
+@hermes_hooks_app.command("session-end")
+def hermes_session_end(
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="State directory the turn-boundary fact is spooled to (the hermes wrapper passes the bound store)."),
+    ] = None,
+) -> None:
+    """Observe a Hermes ``on_session_end`` JSON event from stdin (turn heartbeat).
+
+    Hermes fires ``on_session_end`` at the end of EVERY turn (once per user
+    message), not at real session close, so this spools a content-free
+    ``turn_boundary_observed`` liveness fact — never fed into the ``ended_open``
+    inference (a per-turn end would falsely close a still-live session between
+    turns). Never reads conversation content; always returns empty.
+    """
+    try:
+        raw = sys.stdin.read()
+        try:
+            capture_hermes_turn_boundary(raw, store_dir=store_dir)
+        except Exception:  # noqa: BLE001 - capture must never affect anything.
+            pass
+        print("{}")
+    except Exception:  # noqa: BLE001 - FAIL OPEN: a session-end hook must never disturb shutdown.
+        print("{}")
+
+
+def _hermes_hook_command(wrapper_path: Path, *, python_executable: str | None = None) -> str:
+    """The shell command Hermes runs for our wrapper (python + wrapper path).
+
+    Shell-quoted so Hermes' ``shlex.split`` keeps paths-with-spaces as single
+    tokens (mirrors ``codex_hooks_json_block``'s command)."""
+    python_command = python_executable or sys.executable or "python3"
+    return f"{shlex.quote(python_command)} {shlex.quote(str(wrapper_path))}"
+
+
+def _hermes_command_runs_wrapper(command: object, wrapper_basename: str) -> bool:
+    """True when a config.yaml hook command RUNS the agentacct Hermes wrapper as its
+    script — the bare wrapper (``<wrapper>``) or a python interpreter invoking it
+    (``python3 <wrapper>``, our own form). A command that merely names the wrapper
+    file as an ARGUMENT to some other program (``watchdog --watch <wrapper>``) is NOT
+    ours and must be left alone."""
+    text = command if isinstance(command, str) else ""
+    if not text:
+        return False
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        tokens = text.split()
+    if not tokens:
+        return False
+
+    def _base(token: str) -> str:
+        return token.replace("\\", "/").rsplit("/", 1)[-1]
+
+    if _base(tokens[0]) == wrapper_basename:
+        return True  # bare wrapper as the executable
+    if len(tokens) >= 2 and _base(tokens[1]) == wrapper_basename and _base(tokens[0]).startswith("python"):
+        return True  # a python interpreter running the wrapper as its script
+    return False
+
+
+def _hermes_item_command_text(span: list[str]) -> str | None:
+    """Extract the ``command`` value from a YAML list-item span, tolerating any scalar
+    form (plain, quoted, folded ``>-``, literal ``|-``, multi-line). The span is
+    parsed as YAML so this textual matcher agrees with the parser used for the
+    idempotency decision. Returns None if the span is not a single ``{command: ...}``
+    item."""
+    import textwrap
+
+    import yaml
+
+    try:
+        loaded = yaml.safe_load(textwrap.dedent("\n".join(span)))
+    except yaml.YAMLError:
+        return None
+    if isinstance(loaded, list) and len(loaded) == 1 and isinstance(loaded[0], dict):
+        cmd = loaded[0].get("command")
+        return cmd if isinstance(cmd, str) else None
+    return None
+
+
+def _hermes_hooks_yaml_block(command: str, events: list[str], *, timeout: int, child_indent: str) -> str:
+    """A fresh top-level ``hooks:`` block wiring every event to our wrapper command.
+
+    The command is written as a JSON-encoded (double-quoted) YAML scalar so a path
+    with spaces or YAML-special characters round-trips exactly and Hermes'
+    ``shlex.split`` still recovers the individual tokens."""
+    lines = ["hooks:"]
+    for event in events:
+        lines.append(f"{child_indent}{event}:")
+        lines.append(f"{child_indent}- command: {json.dumps(command)}")
+        lines.append(f"{child_indent}  timeout: {int(timeout)}")
+    return "\n".join(lines) + "\n"
+
+
+def _write_hermes_hooks_config_at(
+    config_path: Path, command: str, wrapper_basename: str, *, timeout: int = 10
+) -> tuple[Path, str]:
+    """Upsert the observe-only hook entries into Hermes' config.yaml ``hooks:`` block.
+
+    TEXTUAL upsert (mirrors ``_write_hermes_mcp_config_at``): the file is large and
+    heavily commented and only PyYAML (no round-trip) is available, so it is never
+    reflowed. For each of the three events, ONLY our own prior entry — matched by the
+    wrapper FILE it runs, so a reinstall differing by interpreter updates in place
+    instead of double-firing — is replaced; the user's own entries under those events
+    and every other event are preserved. A read-only parse decides idempotency. An
+    inline/flow ``hooks: {...}`` or tab-indented children are left untouched
+    (``skipped-unparsed``)."""
+    import yaml
+
+    events = list(HERMES_HOOK_EVENT_SUBCOMMANDS.keys())
+
+    def _event_is_current(existing_list: object) -> bool:
+        if not isinstance(existing_list, list):
+            return False
+        ours = [
+            entry for entry in existing_list
+            if isinstance(entry, dict) and _hermes_command_runs_wrapper(entry.get("command"), wrapper_basename)
+        ]
+        return len(ours) == 1 and ours[0].get("command") == command
+
+    if not config_path.exists():
+        block = _hermes_hooks_yaml_block(command, events, timeout=timeout, child_indent="  ")
+        _atomic_write_text(config_path, block, mode=0o600)
+        return config_path, "wrote"
+
+    # Read RAW bytes (not read_text): universal-newline translation would rewrite
+    # CRLF to LF before we could detect it, defeating the never-reflow promise.
+    text = config_path.read_bytes().decode("utf-8")
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        data = None
+    if isinstance(data, dict):
+        hooks = data.get("hooks")
+        if isinstance(hooks, dict) and all(_event_is_current(hooks.get(event)) for event in events):
+            return config_path, "unchanged"
+
+    mode = (config_path.stat().st_mode & 0o777) or 0o600
+    newline = "\r\n" if "\r\n" in text else "\n"
+    lines = text.splitlines()
+
+    def _indent_width(line: str) -> int:
+        return len(line) - len(line.lstrip())
+
+    header_re = re.compile(r"^hooks:[ \t]*(#.*)?$")
+    inline_re = re.compile(r"^hooks:[ \t]*\S")
+
+    def _region_end(header_index: int) -> int:
+        for j in range(header_index + 1, len(lines)):
+            stripped = lines[j].strip()
+            if stripped == "" or stripped.startswith("#"):
+                continue
+            if _indent_width(lines[j]) == 0:
+                return j
+        return len(lines)
+
+    header_idx = next((i for i, ln in enumerate(lines) if header_re.match(ln)), None)
+    if header_idx is None:
+        # A hooks: key we cannot locate textually still parses as a top-level hooks
+        # mapping: an inline ``hooks: {...}``, a space before the colon (``hooks :``),
+        # or a quoted ``"hooks":`` all load as ``hooks`` but do not match header_re.
+        # Appending a second ``hooks:`` block would create a duplicate top-level key
+        # that clobbers the user's hooks (last-wins) — refuse instead of corrupting.
+        if any(inline_re.match(ln) for ln in lines) or (isinstance(data, dict) and "hooks" in data):
+            return config_path, "skipped-unparsed"
+        block = _hermes_hooks_yaml_block(command, events, timeout=timeout, child_indent="  ")
+        if newline != "\n":
+            block = block.replace("\n", newline)
+        separator = "" if text == "" or text.endswith(("\n", "\r")) else newline
+        _atomic_write_text(config_path, text + separator + block, mode=mode)
+        return config_path, "updated"
+
+    # Child indent is read from the first existing hooks child; default two spaces.
+    region_end = _region_end(header_idx)
+    child_indent = "  "
+    for j in range(header_idx + 1, region_end):
+        stripped = lines[j].strip()
+        if stripped == "" or stripped.startswith("#"):
+            continue
+        child_indent = lines[j][: _indent_width(lines[j])]
+        break
+    if "\t" in child_indent:
+        # Tab-indented YAML: a space-based block would misalign (or land the key
+        # outside hooks:, where Hermes silently ignores it). Refuse rather than
+        # emit a config that reads as installed but is not.
+        return config_path, "skipped-unparsed"
+    child_depth = len(child_indent)
+    # Default entry style for a brand-new event: the block-list dash sits at the
+    # key's own indent (``  - ...``).
+    default_entry = [
+        f"{child_indent}- command: {json.dumps(command)}",
+        f"{child_indent}  timeout: {int(timeout)}",
+    ]
+    at_key_item_re = re.compile(rf"^{re.escape(child_indent)}-[ \t]")
+    parsed_hooks = data.get("hooks") if isinstance(data, dict) else None
+
+    # One event at a time; the header/region are re-derived each pass because a
+    # prior event's insert shifts every later index. Nothing is written until the
+    # whole pass succeeds, so an early ``skipped-unparsed`` leaves the file untouched.
+    for event in events:
+        header_idx = next((i for i, ln in enumerate(lines) if header_re.match(ln)), None)
+        if header_idx is None:  # defensive: cannot happen once found above
+            break
+        region_end = _region_end(header_idx)
+        event_re = re.compile(rf"^{re.escape(child_indent)}{re.escape(event)}:[ \t]*(#.*)?$")
+        event_idx = next((j for j in range(header_idx + 1, region_end) if event_re.match(lines[j])), None)
+        if event_idx is None:
+            # The parse says this event already exists but we cannot find it as an
+            # editable block key (an inline ``event: [...]`` value, a quoted key, or
+            # a space before the colon): inserting our own key would duplicate it.
+            # Refuse rather than corrupt — nothing has been written yet.
+            if isinstance(parsed_hooks, dict) and event in parsed_hooks:
+                return config_path, "skipped-unparsed"
+            insert = [f"{child_indent}{event}:"] + default_entry
+            lines = lines[: header_idx + 1] + insert + lines[header_idx + 1 :]
+            continue
+        # The event is located as a block key, but its VALUE must be a sequence for
+        # our list upsert to be safe. A block MAPPING or scalar value (e.g. an event
+        # holding ``mode: strict``) would have its children misread as our list-item
+        # continuations and corrupt the file — refuse it. ``None`` (an empty event)
+        # is safe to populate. File untouched; nothing written yet.
+        existing_value = parsed_hooks.get(event) if isinstance(parsed_hooks, dict) else None
+        if existing_value is not None and not isinstance(existing_value, list):
+            return config_path, "skipped-unparsed"
+        # The event exists as a block key. Its region runs until the next sibling
+        # KEY at the child indent (or shallower); block-list items (at the child
+        # indent OR indented deeper) and their continuations stay in the region.
+        event_end = region_end
+        for j in range(event_idx + 1, region_end):
+            stripped = lines[j].strip()
+            if stripped == "" or stripped.startswith("#"):
+                continue
+            if _indent_width(lines[j]) > child_depth or at_key_item_re.match(lines[j]):
+                continue
+            event_end = j
+            break
+        # A YAML block sequence may be written with the dash AT the key indent
+        # (``  - ...``) or one level DEEPER (``    - ...``); both are valid and must
+        # not be mixed under one key. Detect the indent this event actually uses and
+        # write our entry — and match the user's items — at that SAME indent, so we
+        # never emit an inconsistent sequence that PyYAML would reject.
+        item_indent = child_indent
+        for j in range(event_idx + 1, event_end):
+            match = re.match(r"^(\s*)-[ \t]", lines[j])
+            if match and len(match.group(1)) >= child_depth:
+                item_indent = match.group(1)
+                break
+        item_depth = len(item_indent)
+        item_re = re.compile(rf"^{re.escape(item_indent)}-[ \t]")
+        event_entry = [
+            f"{item_indent}- command: {json.dumps(command)}",
+            f"{item_indent}  timeout: {int(timeout)}",
+        ]
+        # Keep every list item EXCEPT our own prior entries; a user's co-located
+        # entry under the same event is preserved verbatim at its own indent.
+        kept: list[str] = []
+        j = event_idx + 1
+        while j < event_end:
+            line = lines[j]
+            if item_re.match(line):
+                span = [line]
+                k = j + 1
+                while k < event_end and lines[k].strip() != "" and _indent_width(lines[k]) > item_depth:
+                    span.append(lines[k])
+                    k += 1
+                if not _hermes_command_runs_wrapper(_hermes_item_command_text(span), wrapper_basename):
+                    kept.extend(span)  # the user's own entry — keep it
+                j = k
+            else:
+                kept.append(line)  # blank/comment inside the event list — preserve
+                j += 1
+        new_region = [lines[event_idx]] + event_entry + kept
+        lines = lines[:event_idx] + new_region + lines[event_end:]
+
+    result = newline.join(lines)
+    if text.endswith(("\n", "\r")):
+        result += newline
+    # Safety net over the whole textual edit: never write a result we cannot prove
+    # preserves the user's data. Re-parse and verify the file still parses, every
+    # non-hooks section and non-agentacct event is semantically unchanged, and each
+    # of our events carries exactly our command plus every entry the user already had.
+    # Any textual-editing bug (present or future) fails this and refuses instead of
+    # corrupting the user's live config.
+    if not _hermes_hooks_result_is_safe(text, result, command=command, events=events, wrapper_basename=wrapper_basename):
+        return config_path, "skipped-unparsed"
+    _atomic_write_text(config_path, result, mode=mode)
+    return config_path, "updated"
+
+
+def _hermes_hooks_result_is_safe(
+    before_text: str, after_text: str, *, command: str, events: list[str], wrapper_basename: str
+) -> bool:
+    """Semantic guard for the config.yaml hooks upsert: True only when the edit
+    preserves everything it must and wired exactly our entries."""
+    import yaml
+
+    try:
+        before = yaml.safe_load(before_text)
+        after = yaml.safe_load(after_text)
+    except yaml.YAMLError:
+        return False
+    if not isinstance(after, dict):
+        return False
+    before = before if isinstance(before, dict) else {}
+    before_hooks = before.get("hooks") if isinstance(before.get("hooks"), dict) else {}
+    after_hooks = after.get("hooks")
+    if not isinstance(after_hooks, dict):
+        return False
+    ours = set(events)
+
+    # (a) every non-hooks top-level key is byte-for-byte semantically unchanged.
+    if (set(before.keys()) - {"hooks"}) != (set(after.keys()) - {"hooks"}):
+        return False
+    for key in before.keys():
+        if key != "hooks" and after.get(key) != before.get(key):
+            return False
+
+    # (b) no non-agentacct event is added, dropped, or changed.
+    if (set(before_hooks.keys()) - ours) != (set(after_hooks.keys()) - ours):
+        return False
+    for event in set(before_hooks.keys()) - ours:
+        if after_hooks.get(event) != before_hooks.get(event):
+            return False
+
+    # (c) each of our events carries exactly our command once, and every entry the
+    # user already had under it (that was not a prior agentacct entry) still survives.
+    for event in ours:
+        entries = after_hooks.get(event)
+        if not isinstance(entries, list):
+            return False
+        mine = [
+            entry for entry in entries
+            if isinstance(entry, dict) and _hermes_command_runs_wrapper(entry.get("command"), wrapper_basename)
+        ]
+        if len(mine) != 1 or mine[0].get("command") != command:
+            return False
+        prior = before_hooks.get(event)
+        for entry in prior if isinstance(prior, list) else []:
+            if isinstance(entry, dict) and _hermes_command_runs_wrapper(entry.get("command"), wrapper_basename):
+                continue  # a prior agentacct entry — legitimately replaced
+            if entry not in entries:
+                return False
+    return True
+
+
+def _install_hermes_hook(home: Path, store_dir: Path, command: str, *, force: bool = False) -> tuple[str, Path]:
+    """Write the Hermes hook wrapper + upsert config.yaml ``hooks:``. Returns
+    (config_action, wrapper_path). ``command`` is the absolute agentacct executable
+    embedded in the wrapper's candidate list."""
+    wrapper_path = home / HERMES_HOOK_RELATIVE_PATH
+    wrapper_path.parent.mkdir(parents=True, exist_ok=True)
+    wrapper_source = render_hermes_hook_wrapper(command, store_dir=store_dir)
+    if force or not wrapper_path.exists() or wrapper_path.read_text(encoding="utf-8") != wrapper_source:
+        _atomic_write_text(wrapper_path, wrapper_source, mode=0o755)
+    hook_command = _hermes_hook_command(wrapper_path)
+    config_path = home / HERMES_CONFIG_RELATIVE_PATH
+    _path, action = _write_hermes_hooks_config_at(config_path, hook_command, HERMES_HOOK_RELATIVE_PATH.name)
+    return action, wrapper_path
+
+
+def _print_hermes_hook_consent_steps() -> None:
+    """The one-time consent + restart steps Hermes shell hooks require."""
+    console.print(
+        "Hermes gates shell hooks on a one-time consent allowlist "
+        "(~/.hermes/shell-hooks-allowlist.json): approve the agentacct hook ONCE — run a hermes "
+        "CLI/TUI session with --accept-hooks (or export HERMES_ACCEPT_HOOKS=1), or set "
+        "hooks_auto_accept: true in config.yaml (needed for the non-interactive gateway)."
+    )
+    console.print(
+        "RESTART the running gateway so it registers the new hook: a long-running gateway keeps its "
+        "old hooks until it restarts (hermes gateway run --replace)."
+    )
+
+
+@hermes_hooks_app.command("install")
+def hermes_hooks_install(
+    home: Annotated[Path, typer.Option(help="Home dir to install into (~/.hermes/*). Defaults to the user's home.")] = Path.home(),
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="Store the hooks spool ticks to. Required so gateway/GUI-launched Hermes binds the right store on the command line."),
+    ] = None,
+    force: Annotated[bool, typer.Option(help="Rewrite the wrapper even if it already matches.")] = False,
+) -> None:
+    """Install the Hermes observe-only hooks: the wrapper + config.yaml ``hooks:``
+    entries (pre_tool_call tool-activity, post_tool_call exit-code, on_session_end
+    turn-boundary) pointing at it."""
+    resolved_store = store_dir if store_dir is not None else onboard_global_store_dir()[0]
+    command = _resolve_absolute_mcp_command()
+    try:
+        action, wrapper_path = _install_hermes_hook(Path(home), Path(resolved_store), command, force=force)
+    except OSError as exc:
+        console.print(f"The Hermes hook could not be written ({exc}).")
+        raise typer.Exit(1) from exc
+    console.print(f"Hermes hook wrapper: {wrapper_path}")
+    config_path = Path(home) / HERMES_CONFIG_RELATIVE_PATH
+    if action == "skipped-unparsed":
+        console.print(
+            f"Hermes config.yaml: LEFT UNCHANGED ({config_path}) — its hooks: block is not a safely "
+            "editable block mapping (inline hooks: {{...}} or tab-indented). No hook was wired. Add the "
+            "agentacct pre_tool_call / post_tool_call / on_session_end entries under hooks: yourself, then re-run."
+        )
+        raise typer.Exit(1)
+    console.print(f"Hermes config.yaml hooks: {action} ({config_path})")
+    _print_hermes_hook_consent_steps()
 
 
 @opencode_hooks_app.command("tool-activity")
@@ -7560,6 +8044,21 @@ def _local_usage_import_payload(
 
             try:
                 ingest_session_end_spool(
+                    effective_store_dir,
+                    record=service.record_event,
+                    now=time.time(),
+                )
+            except Exception:  # noqa: BLE001 - draining the spool must never fail the import.
+                pass
+            # Drain the Hermes turn-boundary spool into content-free
+            # turn_boundary_observed liveness events. Distinct from SessionEnd:
+            # hermes fires on_session_end per TURN, so these are NEVER consumed as
+            # a session close (no ended_open) — they only contribute to a session's
+            # latest activity. Best-effort, additive + content-idded, same as above.
+            from .session_lifecycle import ingest_turn_boundary_spool
+
+            try:
+                ingest_turn_boundary_spool(
                     effective_store_dir,
                     record=service.record_event,
                     now=time.time(),

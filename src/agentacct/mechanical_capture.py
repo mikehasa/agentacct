@@ -329,6 +329,12 @@ def _build_envelope(tick: Mapping[str, Any]) -> Any | None:
         return None
     if not _SAFE_RUNNER.fullmatch(runner) or not _SHA256.fullmatch(digest):
         return None
+    # Name the wire the check came from honestly, per client: a hermes check
+    # arrives on a hermes post_tool_call, not a Claude Code PostToolUse.
+    if client == "hermes":
+        source_schema, adapter = "hermes_post_tool_call.v1", "hermes_post_tool_call"
+    else:
+        source_schema, adapter = "claude_code_post_tool_use.v1", "claude_code_post_tool_use"
     try:
         return EvidenceEnvelope.create(
             assertion="observed",
@@ -336,8 +342,8 @@ def _build_envelope(tick: Mapping[str, Any]) -> Any | None:
             source_type="client_hook",
             source_system=client,
             source_instance=session,
-            source_schema="claude_code_post_tool_use.v1",
-            adapter="claude_code_post_tool_use",
+            source_schema=source_schema,
+            adapter=adapter,
             event_timestamp=float(at),
             dimensions=["machine_check"],
             measurement_basis="hook_exit_code",
