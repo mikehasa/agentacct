@@ -36,6 +36,17 @@ SESSION_END_EVENT_TYPE = "session_end_observed"
 SESSION_END_CAPTURE_BASIS = "client_hook_session_end"
 _SPOOL_RELATIVE_PATH = Path("spool") / "claude-session-end.jsonl"
 
+# frozen: stored ``turn_boundary_observed`` events carry this event_type forever.
+# Distinct from SESSION_END because a hermes ``on_session_end`` fires per TURN
+# (once per user message), not at real session close. It is a pure liveness
+# heartbeat: ``build_session_end_by_session`` never treats it as an end (that
+# check keys on SESSION_END_EVENT_TYPE), so it contributes to a session's latest
+# activity but can NEVER derive an ``ended_open`` disposition. Mapping a per-turn
+# end to ``ended_open`` would falsely close a still-live session between turns.
+TURN_BOUNDARY_EVENT_TYPE = "turn_boundary_observed"
+TURN_BOUNDARY_CAPTURE_BASIS = "client_hook_turn_boundary"
+_TURN_BOUNDARY_SPOOL_RELATIVE_PATH = Path("spool") / "hermes-turn-boundary.jsonl"
+
 # A hard bound on the captured reason (a short enum like ``clear``/``logout``).
 _REASON_MAX = 64
 
@@ -257,6 +268,171 @@ def ingest_session_end_spool(
 
     try:
         events = drain_session_end_spool(store_dir, now=now, token=token)
+    except Exception:  # noqa: BLE001 - a spool drain must never fail the import.
+        return 0
+    written = 0
+    for event in events:
+        try:
+            record(event)
+            written += 1
+        except Exception:  # noqa: BLE001 - one bad event must not abort the rest.
+            continue
+    return written
+
+
+# ---------------------------------------------------------------------------
+# Turn-boundary heartbeat (hermes on_session_end — a per-turn liveness fact)
+# ---------------------------------------------------------------------------
+
+
+def turn_boundary_spool_path(store_dir: Path | str) -> Path:
+    return Path(store_dir) / _TURN_BOUNDARY_SPOOL_RELATIVE_PATH
+
+
+def record_turn_boundary_tick(
+    store_dir: Path | str,
+    *,
+    client: str,
+    session_id: str,
+    at: float,
+    completed: bool | None = None,
+    interrupted: bool | None = None,
+) -> None:
+    """Append ONE turn-boundary tick to the store spool. Best-effort; never raises.
+
+    Writes only the scalars ``{c, s, t}`` — client, session id, timestamp — plus
+    the terminal ``co`` (completed) / ``ir`` (interrupted) booleans when known. No
+    conversation content, no path, no payload. ``O_APPEND`` so concurrent hook
+    processes never interleave.
+    """
+
+    try:
+        client = str(client or "").strip()
+        session_id = str(session_id or "").strip()
+        if not client or not session_id:
+            return
+        target = turn_boundary_spool_path(store_dir)
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        payload: dict[str, Any] = {"c": client, "s": session_id, "t": float(at)}
+        if isinstance(completed, bool):
+            payload["co"] = completed
+        if isinstance(interrupted, bool):
+            payload["ir"] = interrupted
+        line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, (line + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
+    except Exception:  # noqa: BLE001 - capture must never affect the hook.
+        return
+
+
+def drain_turn_boundary_spool(
+    store_dir: Path | str,
+    *,
+    now: float | None = None,
+    token: str | None = None,
+) -> list[dict[str, Any]]:
+    """Consume the spool and return additive ``turn_boundary_observed`` events.
+
+    The spool is atomically renamed aside before being read, so ticks that land
+    during the drain go to a freshly recreated spool and are picked up next time.
+    One event per (client, session): the LATEST turn-boundary timestamp wins (a
+    session fires this every turn — only the most recent boundary matters for
+    liveness). Each event carries a deterministic id so re-reducing is idempotent.
+    """
+
+    spool = turn_boundary_spool_path(store_dir)
+    if not spool.exists():
+        return []
+    batch_token = token or uuid.uuid4().hex
+    consuming = spool.with_name(f".{spool.name}.consuming-{os.getpid()}-{batch_token}")
+    try:
+        os.replace(spool, consuming)
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return []
+    try:
+        raw = consuming.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    finally:
+        try:
+            consuming.unlink()
+        except OSError:
+            pass
+
+    latest: dict[tuple[str, str], float] = {}
+    flags: dict[tuple[str, str], dict[str, bool]] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, Mapping):
+            continue
+        client = str(row.get("c") or "").strip()
+        session = str(row.get("s") or "").strip()
+        if not client or not session:
+            continue
+        stamp = row.get("t")
+        if not isinstance(stamp, (int, float)) or isinstance(stamp, bool):
+            continue
+        key = (client, session)
+        stamp = float(stamp)
+        if stamp >= latest.get(key, float("-inf")):
+            latest[key] = stamp
+            row_flags: dict[str, bool] = {}
+            if isinstance(row.get("co"), bool):
+                row_flags["completed"] = row["co"]
+            if isinstance(row.get("ir"), bool):
+                row_flags["interrupted"] = row["ir"]
+            flags[key] = row_flags
+
+    events: list[dict[str, Any]] = []
+    for (client, session), observed_at in sorted(latest.items()):
+        digest = uuid.uuid5(uuid.NAMESPACE_URL, f"{batch_token}\0{client}\0{session}").hex
+        metadata: dict[str, Any] = {
+            "client": client,
+            "client_session_id": session,
+            "observed_at": observed_at,
+            "capture_basis": TURN_BOUNDARY_CAPTURE_BASIS,
+            "sentinel_semantic_kind": "session_lifecycle",
+        }
+        metadata.update(flags.get((client, session), {}))
+        events.append(
+            {
+                "event_id": f"turnboundary:{digest}",
+                "created_at": observed_at,
+                "source": client,
+                "event_type": TURN_BOUNDARY_EVENT_TYPE,
+                "run_id": None,
+                "metadata": metadata,
+            }
+        )
+    return events
+
+
+def ingest_turn_boundary_spool(
+    store_dir: Path | str,
+    *,
+    record: Callable[[dict[str, Any]], Any],
+    now: float | None = None,
+    token: str | None = None,
+) -> int:
+    """Drain the turn-boundary spool and hand each event to ``record``. Never raises.
+
+    Mirrors ``ingest_session_end_spool`` so the usage importer drains turn
+    boundaries the same way it drains session-end and tool activity.
+    """
+
+    try:
+        events = drain_turn_boundary_spool(store_dir, now=now, token=token)
     except Exception:  # noqa: BLE001 - a spool drain must never fail the import.
         return 0
     written = 0

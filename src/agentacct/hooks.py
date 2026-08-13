@@ -1254,6 +1254,283 @@ def codex_hooks_json_block(wrapper_path: Path | str, *, python_executable: str |
     }
 
 
+# ---------------------------------------------------------------------------
+# Hermes shell-hook adapter (observe-only)
+# ---------------------------------------------------------------------------
+#
+# Hermes (Nous Research personal agent) dispatches shell hooks from the
+# ``hooks:`` block of ``~/.hermes/config.yaml`` for both its CLI/TUI and its
+# gateway. Its wire STDIN is a single serialization point
+# (``agent/shell_hooks.py:_serialize_payload``) whose top-level keys
+# ``hook_event_name`` / ``tool_name`` / ``session_id`` are the SAME snake_case as
+# Claude Code + Codex, and its hook ``session_id`` EQUALS the ``state.db``
+# sessions.id the usage importer keys on — so hermes ticks attribute straight to
+# the session with no log pairing (verified on the real machine 2026-08-13).
+#
+# Three events are wired, all observe-only (agentacct never blocks a hermes tool
+# call — hermes owns its own approval layer):
+#   pre_tool_call  -> tool NAME + category (Receipt Actions dimension)          [#1]
+#   post_tool_call -> the harness exit code of a recognized check command       [#3]
+#   on_session_end -> a TURN-boundary heartbeat (see below)                     [#4]
+#
+# NOTE on #4: hermes fires ``on_session_end`` at the end of EVERY turn
+# (``run_conversation`` runs once per user message), NOT at real session close.
+# So it is captured as a distinct ``turn_boundary_observed`` liveness heartbeat,
+# never fed into the ``ended_open`` inference (a per-turn end would falsely close
+# a still-live session between turns). See session_lifecycle.record_turn_boundary_tick.
+
+HERMES_HOOK_RELATIVE_PATH = Path(".hermes/hooks/agentacct_hermes_hook.py")
+HERMES_CONFIG_RELATIVE_PATH = Path(".hermes/config.yaml")
+
+# The hermes shell-hook event names this adapter wires, mapped to the agentacct
+# CLI subcommand each dispatches to. The wrapper routes on ``hook_event_name``.
+HERMES_HOOK_EVENT_SUBCOMMANDS: dict[str, str] = {
+    "pre_tool_call": "pre-tool-call",
+    "post_tool_call": "post-tool-call",
+    "on_session_end": "session-end",
+}
+
+# hermes's shell/terminal tool name (its exit-code-bearing command tool). The #3
+# exit-code check only observes this tool, mirroring the Claude Code path gating
+# on ``bash``.
+_HERMES_SHELL_TOOL_NAMES = frozenset({"terminal"})
+
+_HERMES_HOOK_WRAPPER_TEMPLATE = '''#!/usr/bin/env python3
+"""Hermes shell-hook wrapper for agentacct (observe-only).
+
+One wrapper serves the installed Hermes hook events (dispatch on the event's own
+`hook_event_name`):
+- pre_tool_call:  spool the tool NAME + category for the Receipt's Actions dimension.
+- post_tool_call: spool the harness exit code of a recognized check command.
+- on_session_end: spool a content-free turn-boundary heartbeat.
+
+All observe-only — agentacct never makes an allow/block decision for Hermes
+(Hermes owns its own approval layer). Shells out to the installed `agentacct`
+CLI. Fail-open: on any error, a hung child, or an unknown event, this wrapper
+writes an empty JSON object `{}` (Hermes reads that as "hook contributed nothing")
+and exits 0, so a broken or moved install can never block a Hermes tool call.
+Reinstall with: agentacct hooks hermes install --force
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+AGENTACCT_CANDIDATES = __AGENTACCT_CANDIDATES__
+AGENTACCT_HOOK_ARGS = __AGENTACCT_HOOK_ARGS__
+EVENT_SUBCOMMANDS = __EVENT_SUBCOMMANDS__
+
+
+def resolve_agentacct():
+    for candidate in AGENTACCT_CANDIDATES:
+        if not candidate:
+            continue
+        if os.path.basename(candidate) != candidate:
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        else:
+            found = shutil.which(candidate)
+            if found:
+                return found
+    return None
+
+
+def no_op(reason=""):
+    if reason:
+        sys.stderr.write("agentacct hermes hook: %s; failing open\\n" % reason)
+    # Hermes observe-only contract: an empty JSON object contributes nothing to
+    # the dispatcher (never a block, never injected context).
+    sys.stdout.write("{}\\n")
+    return 0
+
+
+def main():
+    raw = sys.stdin.buffer.read().decode("utf-8", "replace")
+    hook_event = ""
+    try:
+        event = json.loads(raw)
+        if isinstance(event, dict):
+            value = event.get("hook_event_name")
+            if isinstance(value, str):
+                hook_event = value
+    except ValueError:
+        pass
+    subcommand = EVENT_SUBCOMMANDS.get(hook_event)
+    if subcommand is None:
+        return no_op()  # not one of ours (or unparseable): silent no-op
+    executable = resolve_agentacct()
+    if executable is None:
+        return no_op("agentacct executable not found (re-run: agentacct hooks hermes install --force)")
+    try:
+        proc = subprocess.run(
+            [executable, "hooks", "hermes", subcommand, *AGENTACCT_HOOK_ARGS],
+            input=raw,
+            text=True,
+            capture_output=True,
+            # A bounded wait is part of the never-block contract: a hung child
+            # (stalled store mount, held SQLite lock, cold-import stall) would
+            # otherwise stall the Hermes tool call up to hermes's own hook
+            # timeout. 5s < the installed per-hook timeout, so we fail-open first.
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        return no_op("agentacct timed out")
+    except OSError as exc:
+        return no_op("agentacct failed to start (%s)" % exc)
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+    if proc.returncode == 0 and proc.stdout.strip():
+        sys.stdout.write(proc.stdout)
+        return 0
+    return no_op("agentacct exited with code %s without output" % proc.returncode)
+
+
+if __name__ == "__main__":
+    try:
+        exit_code = main()
+    except Exception as exc:  # fail-open: a wrapper bug must never break Hermes sessions.
+        exit_code = no_op("unexpected hermes hook wrapper error (%s: %s)" % (type(exc).__name__, exc))
+    raise SystemExit(exit_code)
+'''
+
+
+def render_hermes_hook_wrapper(agentacct_executable: str | None = None, *, store_dir: Path | str | None = None) -> str:
+    candidates: list[str] = []
+    if agentacct_executable:
+        candidates.append(str(agentacct_executable))
+    for bare_name in ("agentacct", "agent-chronicle", "agent-sentinel"):
+        if bare_name not in candidates:
+            candidates.append(bare_name)
+    hook_args: list[str] = []
+    if store_dir is not None:
+        # Hermes hooks fire from the CLI/TUI and the gateway, neither of which
+        # guarantees agentacct's env vars or cwd, so the store binds on the
+        # command line (mirrors the Codex wrapper).
+        hook_args = ["--store-dir", str(store_dir)]
+    rendered = _HERMES_HOOK_WRAPPER_TEMPLATE.replace("__AGENTACCT_CANDIDATES__", repr(candidates))
+    rendered = rendered.replace("__AGENTACCT_HOOK_ARGS__", repr(hook_args))
+    return rendered.replace("__EVENT_SUBCOMMANDS__", repr(dict(HERMES_HOOK_EVENT_SUBCOMMANDS)))
+
+
+def _hermes_tool_exit_code(event: dict[str, Any]) -> int | None:
+    """Read the terminal exit code from a hermes ``post_tool_call`` payload.
+
+    Hermes nests the result under ``extra.result`` — a dict
+    ``{"output", "exit_code", "error"}`` for the terminal tool, or a JSON string
+    for some tools. 0 is a valid value, so a missing/unusable code returns None
+    (kept distinct from success) so the check is only recorded when real."""
+
+    extra = event.get("extra")
+    result = extra.get("result") if isinstance(extra, dict) else None
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except ValueError:
+            return None
+    if not isinstance(result, dict):
+        return None
+    value = result.get("exit_code")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def capture_hermes_tool_check(raw: str, *, store_dir: Path | str | None = None) -> None:
+    """Record ONE mechanical-check tick for a hermes ``post_tool_call``. Never raises.
+
+    Mirrors ``capture_mechanical_check`` for hermes's wire shape: the check runs
+    only for the terminal tool, the command comes from top-level ``tool_input``,
+    and the harness exit code from ``extra.result`` (see ``_hermes_tool_exit_code``).
+    When the command is a recognized test/build/lint runner, the exit code the
+    HARNESS observed is spooled (client ``hermes``) — the local signal that lifts a
+    step to ``independently_checked``. Only a coarse check kind, the runner name,
+    and a sha256 command DIGEST are spooled — never the command, arguments, or output.
+    """
+
+    try:
+        from .mechanical_capture import (
+            classify_command,
+            command_digest,
+            record_mechanical_check_tick,
+        )
+
+        event = json.loads(raw or "{}")
+        if not isinstance(event, dict):
+            return
+        tool_name = event.get("tool_name") or event.get("tool")
+        if str(tool_name or "").strip() not in _HERMES_SHELL_TOOL_NAMES:
+            return
+        session_id = event.get("session_id")
+        if not isinstance(session_id, str) or not session_id or len(session_id) > _MAX_CONTEXT_ID_LENGTH:
+            return
+        tool_input = event.get("tool_input") if isinstance(event.get("tool_input"), dict) else {}
+        command = tool_input.get("command")
+        classified = classify_command(command)
+        if classified is None:
+            return
+        exit_code = _hermes_tool_exit_code(event)
+        if exit_code is None:
+            return
+        target = Path(store_dir) if store_dir is not None else _hook_store_dir_from_event(event)
+        if target is None:
+            return
+        check_kind, runner = classified
+        record_mechanical_check_tick(
+            target,
+            client="hermes",
+            session_id=session_id,
+            check_kind=check_kind,
+            runner=runner,
+            digest=command_digest(str(command or "")),
+            exit_code=exit_code,
+            at=time.time(),
+        )
+    except Exception:  # noqa: BLE001 - capture must never affect the hook.
+        return
+
+
+def capture_hermes_turn_boundary(raw: str, *, store_dir: Path | str | None = None) -> None:
+    """Record ONE turn-boundary heartbeat for a hermes ``on_session_end``. Never raises.
+
+    Hermes fires ``on_session_end`` at the end of EVERY turn, not at session
+    close, so this is spooled as a content-free ``turn_boundary_observed``
+    liveness fact — client, session id, timestamp, and the terminal ``completed`` /
+    ``interrupted`` flags — and is NEVER consumed as a session close (the reducer
+    would otherwise falsely infer ``ended_open`` between turns). No conversation
+    content. Latest-per-session wins on drain.
+    """
+
+    try:
+        from .session_lifecycle import record_turn_boundary_tick
+
+        event = json.loads(raw or "{}")
+        if not isinstance(event, dict):
+            return
+        session_id = event.get("session_id")
+        if not isinstance(session_id, str) or not session_id or len(session_id) > _MAX_CONTEXT_ID_LENGTH:
+            return
+        target = Path(store_dir) if store_dir is not None else _hook_store_dir_from_event(event)
+        if target is None:
+            return
+        extra = event.get("extra") if isinstance(event.get("extra"), dict) else {}
+        completed = extra.get("completed")
+        interrupted = extra.get("interrupted")
+        record_turn_boundary_tick(
+            target,
+            client="hermes",
+            session_id=session_id,
+            at=time.time(),
+            completed=completed if isinstance(completed, bool) else None,
+            interrupted=interrupted if isinstance(interrupted, bool) else None,
+        )
+    except Exception:  # noqa: BLE001 - capture must never affect the hook.
+        return
+
+
 def claude_code_settings_example(python_executable: str | None = None, *, hook_path: Path | str | None = None) -> dict[str, Any]:
     """Example Claude Code settings block invoking the agentacct hook wrapper.
 
