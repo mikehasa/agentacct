@@ -1053,7 +1053,15 @@ def main():
             input=raw,
             text=True,
             capture_output=True,
+            # A bounded wait is part of the never-block contract: fail-open covers
+            # the CLI RETURNING an error, but a hung child (stalled store mount,
+            # held SQLite lock, cold-import stall) would otherwise block the tool
+            # call up to Claude Code's own hook timeout. 5s turns that into a
+            # fail-open no-op first (matches the codex + hermes wrappers).
+            timeout=5,
         )
+    except subprocess.TimeoutExpired:
+        return fail_open("agentacct timed out", HOOK_EVENT)
     except OSError as exc:
         return fail_open("agentacct failed to start (%s)" % exc, HOOK_EVENT)
     if proc.stderr:

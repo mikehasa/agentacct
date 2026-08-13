@@ -948,6 +948,40 @@ def test_wrapper_fails_open_when_cli_crashes_or_returns_no_decision(tmp_path):
     assert json.loads(result.stdout)["agent_sentinel"]["decision"] == "allow"
 
 
+def test_claude_wrapper_bounds_subprocess_with_timeout():
+    # A hung CLI must not block a Claude Code tool call forever (matches the codex +
+    # hermes wrappers): the wrapper bounds the subprocess and catches the timeout.
+    from agentacct.hooks import render_claude_hook_wrapper
+
+    src = render_claude_hook_wrapper("/abs/agentacct")
+    assert "timeout=5" in src
+    assert "TimeoutExpired" in src
+
+
+def test_wrapper_fails_open_when_cli_hangs(tmp_path):
+    # Behavioral proof: a hung CLI is killed at the 5s bound and the wrapper fails
+    # open (allow) rather than blocking the tool call.
+    from agentacct.hooks import render_claude_hook_wrapper
+
+    hanging = tmp_path / "hang" / "agent-chronicle"
+    hanging.parent.mkdir(parents=True)
+    # Absolute /bin/sleep: the wrapper is run with an empty PATH, so a bare `sleep`
+    # would not resolve and the stub would never actually hang.
+    hanging.write_text("#!/bin/sh\n/bin/sleep 30\nprintf '%s' '{}'\n")
+    hanging.chmod(0o755)
+    empty_bin = tmp_path / "emptybin_hang"
+    empty_bin.mkdir()
+    wrapper = tmp_path / "hang_wrapper.py"
+    wrapper.write_text(render_claude_hook_wrapper(str(hanging)))
+
+    result = _run_wrapper(
+        wrapper, {"tool_name": "Bash", "tool_input": {"command": "echo ok"}}, path_env=str(empty_bin)
+    )
+    assert result.returncode == 0  # fail-open, tool call not blocked
+    assert json.loads(result.stdout)["agent_sentinel"]["decision"] == "allow"
+    assert "timed out" in result.stderr
+
+
 def test_installed_wrapper_end_to_end_without_shell_path(tmp_path):
     """The exact dogfood scenario: a fresh install must survive a PATH-less hook environment."""
     from agentacct.hooks import resolve_agentacct_executable
