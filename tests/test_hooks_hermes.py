@@ -34,6 +34,7 @@ from agentacct.hooks import (
     capture_hermes_tool_check,
     capture_hermes_turn_boundary,
     capture_tool_activity,
+    hermes_first_turn_nudge,
     render_hermes_hook_wrapper,
 )
 from agentacct.mechanical_capture import drain_mechanical_check_spool
@@ -544,7 +545,7 @@ def test_session_end_subcommand_spools_turn_boundary(tmp_path: Path) -> None:
     assert len(drain_turn_boundary_spool(tmp_path)) == 1
 
 
-@pytest.mark.parametrize("subcommand", ["pre-tool-call", "post-tool-call", "session-end"])
+@pytest.mark.parametrize("subcommand", ["pre-tool-call", "post-tool-call", "session-end", "pre-llm-call"])
 def test_subcommands_fail_open_on_garbage(subcommand: str, tmp_path: Path) -> None:
     result = CliRunner().invoke(
         app,
@@ -553,3 +554,83 @@ def test_subcommands_fail_open_on_garbage(subcommand: str, tmp_path: Path) -> No
     )
     assert result.exit_code == 0
     assert result.stdout.strip() == "{}"
+
+
+# ---------------------------------------------------------------------------
+# #5 first-turn record-your-work nudge (pre_llm_call)
+# ---------------------------------------------------------------------------
+
+_DIRECTIVE = "## agentacct — record your work\n\ncall agentacct_record_section to record work."
+
+
+def _pre_llm(is_first: object, *, top_level: bool = False) -> str:
+    payload: dict = {"hook_event_name": "pre_llm_call", "session_id": "s1"}
+    if top_level:
+        payload["is_first_turn"] = is_first
+    else:
+        payload["extra"] = {"is_first_turn": is_first}
+    return json.dumps(payload)
+
+
+def test_nudge_injects_directive_on_first_turn() -> None:
+    resp = hermes_first_turn_nudge(_pre_llm(True), directive=_DIRECTIVE)
+    assert "context" in resp
+    assert _DIRECTIVE in resp["context"]
+    assert "not a message from the user" in resp["context"]  # framed as ambient
+
+
+def test_nudge_tolerates_top_level_is_first_turn() -> None:
+    assert "context" in hermes_first_turn_nudge(_pre_llm(True, top_level=True), directive=_DIRECTIVE)
+
+
+def test_nudge_empty_on_later_turns() -> None:
+    assert hermes_first_turn_nudge(_pre_llm(False), directive=_DIRECTIVE) == {}
+
+
+def test_nudge_empty_when_is_first_turn_absent() -> None:
+    payload = json.dumps({"hook_event_name": "pre_llm_call", "session_id": "s1", "extra": {}})
+    assert hermes_first_turn_nudge(payload, directive=_DIRECTIVE) == {}
+
+
+def test_nudge_empty_on_blank_directive() -> None:
+    assert hermes_first_turn_nudge(_pre_llm(True), directive="   ") == {}
+
+
+def test_nudge_never_raises_on_garbage() -> None:
+    assert hermes_first_turn_nudge("not json", directive=_DIRECTIVE) == {}
+    assert hermes_first_turn_nudge(json.dumps([1, 2]), directive=_DIRECTIVE) == {}
+
+
+def test_pre_llm_call_subcommand_injects_on_first_turn() -> None:
+    result = CliRunner().invoke(app, ["hooks", "hermes", "pre-llm-call", "--store-dir", "/tmp/x"], input=_pre_llm(True))
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert "context" in payload
+    assert "agentacct_record_section" in payload["context"]  # the real directive
+
+
+def test_pre_llm_call_subcommand_empty_on_later_turn() -> None:
+    result = CliRunner().invoke(app, ["hooks", "hermes", "pre-llm-call", "--store-dir", "/tmp/x"], input=_pre_llm(False))
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {}
+
+
+def test_pre_llm_call_is_wired_into_events_wrapper_and_writer(tmp_path: Path) -> None:
+    assert HERMES_HOOK_EVENT_SUBCOMMANDS.get("pre_llm_call") == "pre-llm-call"
+    wrapper = render_hermes_hook_wrapper("/abs/agentacct", store_dir="/store")
+    assert "pre_llm_call" in wrapper and "pre-llm-call" in wrapper
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(_BASE_CONFIG, encoding="utf-8")
+    _write_hermes_hooks_config_at(cfg, _COMMAND, WRAPPER_BASENAME)
+    assert "pre_llm_call" in _load(cfg)["hooks"]
+
+
+def test_wrapper_short_circuits_later_pre_llm_call_without_spawning() -> None:
+    # pre_llm_call fires before EVERY inference; the wrapper must read is_first_turn
+    # itself and skip the CLI subprocess on later turns (no per-turn LLM-path latency).
+    src = render_hermes_hook_wrapper("/abs/agentacct", store_dir="/store")
+    import ast
+
+    ast.parse(src)  # still valid python
+    assert "_is_first_turn" in src
+    assert 'hook_event == "pre_llm_call"' in src  # gated before resolve/spawn

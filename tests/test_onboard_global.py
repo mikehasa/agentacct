@@ -220,7 +220,7 @@ def test_onboard_global_agent_opencode_writes_mcp_and_global_rules(
         assert not (repo / leaked).exists()
 
 
-def test_onboard_global_agent_hermes_registers_mcp_only_no_directive(
+def test_onboard_global_agent_hermes_installs_record_your_work_hook(
     tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import yaml
@@ -235,11 +235,40 @@ def test_onboard_global_agent_hermes_registers_mcp_only_no_directive(
     store = isolated_home / ".local" / "state" / "agentacct" / "state"
     hermes_cfg = yaml.safe_load((isolated_home / ".hermes" / "config.yaml").read_text())
     assert hermes_cfg["mcp_servers"]["agentacct"]["args"][-1] == str(store)
-    # Hermes has no reliable global instruction slot, so NO standing directive is
-    # installed here (recording rides its hook adapter, added separately).
+    # Hermes has no reliable global instruction slot, so the standing directive is not
+    # a FILE — it rides the pre_llm_call hook (injected on each session's first turn).
     assert not (isolated_home / "AGENTS.md").exists()
-    assert "tools registered" in result.output
-    assert "hook adapter" in result.output
+    assert "pre_llm_call" in hermes_cfg["hooks"]  # the record-your-work nudge hook is wired
+    normalized = " ".join(result.output.split())
+    assert "record-your-work" in normalized  # hermes now records, not tools-only
+    assert "tools registered" not in normalized
+
+
+def test_onboard_global_hermes_reported_tools_only_when_hooks_block_uneditable(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import yaml
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+    # A pre-existing inline (flow-style) hooks block agentacct cannot safely edit: the
+    # MCP server is still added, but the record-your-work nudge hook is NOT wired.
+    hermes_dir = isolated_home / ".hermes"
+    hermes_dir.mkdir(parents=True)
+    (hermes_dir / "config.yaml").write_text("hooks: {pre_tool_call: []}\n", encoding="utf-8")
+
+    result = CliRunner().invoke(app, ["onboard", "--scope", "global", "--agent", "hermes", "--no-start"])
+    assert result.exit_code == 0, result.output
+
+    cfg = yaml.safe_load((hermes_dir / "config.yaml").read_text())
+    assert "agentacct" in cfg["mcp_servers"]  # MCP got configured
+    assert "pre_llm_call" not in (cfg.get("hooks") or {})  # but the nudge was NOT wired
+    normalized = " ".join(result.output.split())
+    # Honest: NOT reported as recording — it says the hooks were not wired and records
+    # nothing, and the tools-only caveat is shown instead of a false "recording" claim.
+    assert "records nothing" in normalized
+    assert "MCP tools registered" in normalized
 
 
 def test_onboard_global_agent_codex_installs_tool_activity_hooks(

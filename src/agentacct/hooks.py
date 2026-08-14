@@ -1267,11 +1267,13 @@ def codex_hooks_json_block(wrapper_path: Path | str, *, python_executable: str |
 # sessions.id the usage importer keys on — so hermes ticks attribute straight to
 # the session with no log pairing (verified on the real machine 2026-08-13).
 #
-# Three events are wired, all observe-only (agentacct never blocks a hermes tool
-# call — hermes owns its own approval layer):
+# Four events are wired. The first three are observe-only (agentacct never blocks a
+# hermes tool call — hermes owns its own approval layer); pre_llm_call is the ONE
+# event that returns content (a first-turn nudge, see below), not a block:
 #   pre_tool_call  -> tool NAME + category (Receipt Actions dimension)          [#1]
 #   post_tool_call -> the harness exit code of a recognized check command       [#3]
 #   on_session_end -> a TURN-boundary heartbeat (see below)                     [#4]
+#   pre_llm_call   -> first-turn 'record your work' directive (see below)       [#5]
 #
 # NOTE on #4: hermes fires ``on_session_end`` at the end of EVERY turn
 # (``run_conversation`` runs once per user message), NOT at real session close.
@@ -1284,10 +1286,19 @@ HERMES_CONFIG_RELATIVE_PATH = Path(".hermes/config.yaml")
 
 # The hermes shell-hook event names this adapter wires, mapped to the agentacct
 # CLI subcommand each dispatches to. The wrapper routes on ``hook_event_name``.
+#
+# ``pre_llm_call`` is the ONE non-observe-only event: hermes has no always-on global
+# instruction slot (no $HOME AGENTS.md), so the agent never learns to record its
+# work the way codex/opencode do. This hook injects the standing 'record your work'
+# directive into the FIRST turn's user message (hermes appends a pre_llm_call hook's
+# ``{"context": ...}`` return to the user message, API-call-time only, never
+# persisted — see agent/turn_context.py), giving hermes the same #5 nudge. It fires
+# only when ``is_first_turn`` is set, so it injects once per session, not every turn.
 HERMES_HOOK_EVENT_SUBCOMMANDS: dict[str, str] = {
     "pre_tool_call": "pre-tool-call",
     "post_tool_call": "post-tool-call",
     "on_session_end": "session-end",
+    "pre_llm_call": "pre-llm-call",
 }
 
 # hermes's shell/terminal tool name (its exit-code-bearing command tool). The #3
@@ -1296,20 +1307,25 @@ HERMES_HOOK_EVENT_SUBCOMMANDS: dict[str, str] = {
 _HERMES_SHELL_TOOL_NAMES = frozenset({"terminal"})
 
 _HERMES_HOOK_WRAPPER_TEMPLATE = '''#!/usr/bin/env python3
-"""Hermes shell-hook wrapper for agentacct (observe-only).
+"""Hermes shell-hook wrapper for agentacct.
 
 One wrapper serves the installed Hermes hook events (dispatch on the event's own
 `hook_event_name`):
 - pre_tool_call:  spool the tool NAME + category for the Receipt's Actions dimension.
 - post_tool_call: spool the harness exit code of a recognized check command.
 - on_session_end: spool a content-free turn-boundary heartbeat.
+- pre_llm_call:   on the FIRST turn only, return the standing 'record your work'
+                  directive as `{"context": ...}` so Hermes injects it into the user
+                  message (Hermes has no always-on instruction slot). Later turns are
+                  short-circuited here WITHOUT spawning the CLI, so this hook adds no
+                  per-turn latency to the LLM call.
 
-All observe-only — agentacct never makes an allow/block decision for Hermes
-(Hermes owns its own approval layer). Shells out to the installed `agentacct`
-CLI. Fail-open: on any error, a hung child, or an unknown event, this wrapper
-writes an empty JSON object `{}` (Hermes reads that as "hook contributed nothing")
-and exits 0, so a broken or moved install can never block a Hermes tool call.
-Reinstall with: agentacct hooks hermes install --force
+Every event EXCEPT the pre_llm_call first-turn nudge is observe-only — agentacct
+never makes an allow/block decision for Hermes (Hermes owns its own approval layer).
+Shells out to the installed `agentacct` CLI. Fail-open: on any error, a hung child,
+or an unknown event, this wrapper writes an empty JSON object `{}` (Hermes reads that
+as "hook contributed nothing") and exits 0, so a broken or moved install can never
+block a Hermes tool call. Reinstall with: agentacct hooks hermes install --force
 """
 
 import json
@@ -1346,9 +1362,19 @@ def no_op(reason=""):
     return 0
 
 
+def _is_first_turn(event):
+    if not isinstance(event, dict):
+        return None
+    value = event.get("is_first_turn")
+    if value is None and isinstance(event.get("extra"), dict):
+        value = event["extra"].get("is_first_turn")
+    return value
+
+
 def main():
     raw = sys.stdin.buffer.read().decode("utf-8", "replace")
     hook_event = ""
+    event = None
     try:
         event = json.loads(raw)
         if isinstance(event, dict):
@@ -1360,6 +1386,11 @@ def main():
     subcommand = EVENT_SUBCOMMANDS.get(hook_event)
     if subcommand is None:
         return no_op()  # not one of ours (or unparseable): silent no-op
+    # pre_llm_call fires before EVERY inference but only the FIRST turn needs the CLI
+    # (to inject the record-your-work nudge). Short-circuit later turns here so the
+    # LLM critical path never pays a per-turn CLI cold-start for a {} result.
+    if hook_event == "pre_llm_call" and _is_first_turn(event) is not True:
+        return no_op()
     executable = resolve_agentacct()
     if executable is None:
         return no_op("agentacct executable not found (re-run: agentacct hooks hermes install --force)")
@@ -1529,6 +1560,41 @@ def capture_hermes_turn_boundary(raw: str, *, store_dir: Path | str | None = Non
         )
     except Exception:  # noqa: BLE001 - capture must never affect the hook.
         return
+
+
+def hermes_first_turn_nudge(raw: str, *, directive: str) -> dict[str, Any]:
+    """Return the hermes ``pre_llm_call`` response that gives hermes the #5 nudge.
+
+    Hermes appends a ``pre_llm_call`` hook's ``{"context": ...}`` return to the
+    current turn's user message (API-call-time only, never persisted — see
+    ``agent/turn_context.py``). On the FIRST turn of a session this returns the
+    standing 'record your work' ``directive`` (framed as ambient setup context, not
+    a user request) so the hermes agent learns to call ``agentacct_record_section``,
+    the same way codex/opencode learn it from an always-on AGENTS.md. Every later
+    turn returns ``{}`` so the nudge fires once per session. Never raises: on any
+    error it returns ``{}`` (no nudge, never blocks the LLM call).
+    """
+    try:
+        event = json.loads(raw or "{}")
+        if not isinstance(event, dict):
+            return {}
+        extra = event.get("extra") if isinstance(event.get("extra"), dict) else {}
+        # hermes nests non-top-level payload keys under ``extra``; tolerate both.
+        is_first = event.get("is_first_turn")
+        if is_first is None:
+            is_first = extra.get("is_first_turn")
+        if is_first is not True:
+            return {}
+        text = str(directive or "").strip()
+        if not text:
+            return {}
+        framed = (
+            "[agentacct — standing setup instruction for this session, not a message from the user]\n"
+            + text
+        )
+        return {"context": framed}
+    except Exception:  # noqa: BLE001 - a nudge must never block or break the LLM call.
+        return {}
 
 
 # ---------------------------------------------------------------------------
