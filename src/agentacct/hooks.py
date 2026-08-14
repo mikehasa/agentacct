@@ -1545,12 +1545,15 @@ def capture_hermes_turn_boundary(raw: str, *, store_dir: Path | str | None = Non
 
 OPENCODE_PLUGIN_RELATIVE_PATH = Path("plugins/agentacct.js")
 
-_OPENCODE_PLUGIN_TEMPLATE = '''// agentacct OpenCode tool-activity plugin (observe-only, auto-generated).
+_OPENCODE_PLUGIN_TEMPLATE = '''// agentacct OpenCode capture plugin (observe-only, auto-generated).
 //
-// Records the tool NAME + OpenCode session id for each tool call so the agentacct
-// Receipt's Actions dimension shows what OpenCode reached for. Never reads tool
-// arguments or output. The agentacct CLI is fired fire-and-forget, so a slow or
-// broken install can never add latency to, block, or fail an OpenCode tool call.
+// Two observe-only signals:
+//  - tool.execute.before -> the tool NAME + OpenCode session id (Receipt Actions).
+//  - tool.execute.after  -> for a recognized test/build/lint bash command, the
+//    harness EXIT CODE (lifts a step to independently_checked). The shell command is
+//    read only to classify the runner and is stored ONLY as a sha256 digest, never
+//    raw; tool OUTPUT is never read. The agentacct CLI is fired fire-and-forget, so a
+//    slow or broken install can never add latency to, block, or fail a tool call.
 // Reinstall with: agentacct hooks opencode install --force
 import { existsSync } from "node:fs";
 
@@ -1572,21 +1575,44 @@ function resolveAgentacct() {
   return null;
 }
 
+function spawnCapture(subcommand, payload) {
+  // fire-and-forget: never await — a tool call must not wait on capture, and any
+  // error here must never affect the tool call.
+  try {
+    const executable = resolveAgentacct();
+    if (!executable) return;
+    const args = [executable, "hooks", "opencode", subcommand];
+    if (STORE_DIR) args.push("--store-dir", STORE_DIR);
+    const proc = Bun.spawn(args, { stdin: "pipe", stdout: "ignore", stderr: "ignore" });
+    proc.stdin.write(JSON.stringify(payload));
+    proc.stdin.end();
+    try { proc.unref(); } catch (e) {}
+  } catch (e) {}
+}
+
 export const AgentacctToolActivity = async () => ({
   "tool.execute.before": async (input) => {
     try {
-      const executable = resolveAgentacct();
-      if (!executable) return;
-      const args = [executable, "hooks", "opencode", "tool-activity"];
-      if (STORE_DIR) args.push("--store-dir", STORE_DIR);
-      const proc = Bun.spawn(args, { stdin: "pipe", stdout: "ignore", stderr: "ignore" });
-      proc.stdin.write(JSON.stringify({ tool_name: input.tool, session_id: input.sessionID }));
-      proc.stdin.end();
-      // fire-and-forget: never await — a tool call must not wait on capture.
-      try { proc.unref(); } catch (e) {}
+      if (!input) return;
+      spawnCapture("tool-activity", { tool_name: input.tool, session_id: input.sessionID });
     } catch (e) {
       // observe-only: a plugin error must never affect the tool call.
     }
+  },
+  "tool.execute.after": async (input, output) => {
+    try {
+      // Only the bash/shell tool carries a command + exit code.
+      if (!input || input.tool !== "bash") return;
+      const command = input.args ? input.args.command : undefined;
+      const exit = output && output.metadata ? output.metadata.exit : undefined;
+      if (typeof exit !== "number") return;  // 0 is valid; a missing code is not
+      spawnCapture("tool-check", {
+        tool_name: input.tool,
+        session_id: input.sessionID,
+        command: command,
+        exit_code: exit,
+      });
+    } catch (e) {}
   },
 });
 '''
@@ -1616,6 +1642,63 @@ def render_opencode_plugin(agentacct_executable: str | None = None, *, store_dir
         lambda match: substitutions[match.group(0)],
         _OPENCODE_PLUGIN_TEMPLATE,
     )
+
+
+# opencode's shell/command tool name (its exit-code-bearing tool). The #3 exit-code
+# check only observes this tool, mirroring the Claude Code (bash) / hermes (terminal) paths.
+_OPENCODE_SHELL_TOOL_NAMES = frozenset({"bash"})
+
+
+def capture_opencode_tool_check(raw: str, *, store_dir: Path | str | None = None) -> None:
+    """Record ONE mechanical-check tick for an OpenCode ``tool.execute.after``. Never raises.
+
+    The plugin sends ``{tool_name, session_id, command, exit_code}`` for the bash tool
+    (command from ``input.args.command``, exit from ``output.metadata.exit``). When the
+    command is a recognized test/build/lint runner, the exit code the HARNESS observed is
+    spooled (client ``opencode``) — the local signal that lifts a step to
+    ``independently_checked``. Only a coarse check kind, the runner name, and a sha256
+    command DIGEST are spooled — never the command, arguments, or output.
+    """
+
+    try:
+        from .mechanical_capture import (
+            classify_command,
+            command_digest,
+            record_mechanical_check_tick,
+        )
+
+        event = json.loads(raw or "{}")
+        if not isinstance(event, dict):
+            return
+        tool_name = event.get("tool_name") or event.get("tool")
+        if str(tool_name or "").strip() not in _OPENCODE_SHELL_TOOL_NAMES:
+            return
+        session_id = event.get("session_id")
+        if not isinstance(session_id, str) or not session_id or len(session_id) > _MAX_CONTEXT_ID_LENGTH:
+            return
+        command = event.get("command")
+        classified = classify_command(command)
+        if classified is None:
+            return
+        exit_code = event.get("exit_code")
+        if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+            return  # 0 is valid; a missing/non-int code is not recorded
+        target = Path(store_dir) if store_dir is not None else _hook_store_dir_from_event(event)
+        if target is None:
+            return
+        check_kind, runner = classified
+        record_mechanical_check_tick(
+            target,
+            client="opencode",
+            session_id=session_id,
+            check_kind=check_kind,
+            runner=runner,
+            digest=command_digest(str(command or "")),
+            exit_code=exit_code,
+            at=time.time(),
+        )
+    except Exception:  # noqa: BLE001 - capture must never affect the hook.
+        return
 
 
 def claude_code_settings_example(python_executable: str | None = None, *, hook_path: Path | str | None = None) -> dict[str, Any]:

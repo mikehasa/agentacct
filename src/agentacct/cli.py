@@ -130,6 +130,7 @@ from .hooks import (
     capture_hermes_tool_check,
     capture_hermes_turn_boundary,
     capture_mechanical_check,
+    capture_opencode_tool_check,
     claude_code_hook_context_status,
     claude_code_hook_doctor_checks,
     claude_code_hook_paths,
@@ -4584,6 +4585,32 @@ def opencode_tool_activity(
         try:
             capture_tool_activity(raw, store_dir=store_dir, client="opencode")
         except Exception:  # noqa: BLE001 - activity capture must never affect the tool call.
+            pass
+        print("{}")
+    except Exception:  # noqa: BLE001 - FAIL OPEN: capture must never disturb OpenCode.
+        print("{}")
+
+
+@opencode_hooks_app.command("tool-check")
+def opencode_tool_check(
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="State directory the mechanical-check tick is spooled to (the OpenCode plugin passes the bound store)."),
+    ] = None,
+) -> None:
+    """Observe an OpenCode ``tool.execute.after`` from stdin (exit-code check).
+
+    The plugin sends ``{tool_name, session_id, command, exit_code}`` for the bash tool.
+    When the command is a recognized test/build/lint runner, the exit code the HARNESS
+    observed is spooled (client ``opencode``) — the local signal that lifts a step to
+    ``independently_checked``. Only a coarse check kind, the runner name, and a sha256
+    command DIGEST are spooled — never the command or its output. Always returns empty.
+    """
+    try:
+        raw = sys.stdin.read()
+        try:
+            capture_opencode_tool_check(raw, store_dir=store_dir)
+        except Exception:  # noqa: BLE001 - capture must never affect the tool call.
             pass
         print("{}")
     except Exception:  # noqa: BLE001 - FAIL OPEN: capture must never disturb OpenCode.
