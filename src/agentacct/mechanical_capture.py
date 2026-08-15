@@ -329,10 +329,13 @@ def _build_envelope(tick: Mapping[str, Any]) -> Any | None:
         return None
     if not _SAFE_RUNNER.fullmatch(runner) or not _SHA256.fullmatch(digest):
         return None
-    # Name the wire the check came from honestly, per client: a hermes check
-    # arrives on a hermes post_tool_call, not a Claude Code PostToolUse.
+    # Name the wire the check came from honestly, per client: a hermes check arrives
+    # on a hermes post_tool_call and an opencode check on a tool.execute.after — not a
+    # Claude Code PostToolUse.
     if client == "hermes":
         source_schema, adapter = "hermes_post_tool_call.v1", "hermes_post_tool_call"
+    elif client == "opencode":
+        source_schema, adapter = "opencode_tool_execute_after.v1", "opencode_tool_execute_after"
     else:
         source_schema, adapter = "claude_code_post_tool_use.v1", "claude_code_post_tool_use"
     try:
