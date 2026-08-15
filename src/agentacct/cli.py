@@ -129,6 +129,7 @@ from .hooks import (
     capture_tool_activity,
     capture_hermes_tool_check,
     capture_hermes_turn_boundary,
+    hermes_first_turn_nudge,
     capture_mechanical_check,
     claude_code_hook_context_status,
     claude_code_hook_doctor_checks,
@@ -2256,20 +2257,24 @@ def _onboard_global_opencode(store_dir: Path, command: str) -> bool:
     return True
 
 
-def _onboard_global_hermes(store_dir: Path, command: str) -> bool:
-    """Configure Hermes at USER scope (zero repo files). Returns readiness.
+def _onboard_global_hermes(store_dir: Path, command: str) -> str | bool:
+    """Configure Hermes at USER scope (zero repo files). Returns a readiness status.
 
     Two layers: the MCP server gives Hermes the agentacct tools (semantic section
-    recording when an agent calls them); the shell hooks add AUTOMATIC observe-only
-    capture — tool activity (pre_tool_call), the harness exit code of recognized
-    checks (post_tool_call), and a turn-boundary heartbeat (on_session_end) — keyed
-    by Hermes' own session_id (which equals the state.db sessions.id the usage
-    importer keys on, so tool activity attributes straight to the session). Hermes
-    gates shell hooks on a one-time consent allowlist, so onboarding installs them
-    and prints the one-time approve + gateway-restart steps. Unlike codex/opencode,
-    Hermes has NO reliable always-on GLOBAL instruction slot (it injects
-    ``AGENTS.md`` only from a project/workspace root, and ``$HOME`` is skipped), so
-    the standing 'record your work' directive is NOT installed here.
+    recording when an agent calls them); the shell hooks add automatic capture —
+    tool activity (pre_tool_call), the harness exit code of recognized checks
+    (post_tool_call), a turn-boundary heartbeat (on_session_end), and — because
+    Hermes has NO always-on global instruction slot ($HOME AGENTS.md is skipped) —
+    the standing 'record your work' directive injected on each session's FIRST turn
+    (pre_llm_call), so the agent actually records its work. All keyed by Hermes' own
+    session_id (which equals the state.db sessions.id the usage importer keys on).
+    Hermes gates shell hooks on a one-time consent allowlist, so onboarding installs
+    them and prints the one-time approve + gateway-restart steps.
+
+    Returns ``"recording"`` when the hooks (incl. the pre_llm_call record-your-work
+    nudge) were wired, ``"tools-only"`` when the MCP server is configured but the
+    hooks block could not be written (so nothing records), or ``False`` when even the
+    MCP server could not be configured.
     """
     home = Path.home()
     config_path = home / ".hermes" / "config.yaml"
@@ -2281,7 +2286,8 @@ def _onboard_global_hermes(store_dir: Path, command: str) -> bool:
         )
         return False
     console.print(f"{action.capitalize()} Hermes MCP server in {path}")
-    # Automatic observe-only tool-activity + exit-code + turn-boundary hooks.
+    # Automatic capture: observe-only tool-activity + exit-code + turn-boundary, plus
+    # the pre_llm_call record-your-work nudge.
     try:
         hooks_action, wrapper_path = _install_hermes_hook(home, store_dir, command)
     except OSError as exc:
@@ -2290,15 +2296,17 @@ def _onboard_global_hermes(store_dir: Path, command: str) -> bool:
         wrapper_path = home / HERMES_HOOK_RELATIVE_PATH
     if hooks_action == "skipped-unparsed":
         console.print(
-            f"Left {config_path} hooks: block unchanged (inline or tab-indented); the automatic "
-            "tool-activity hooks were NOT wired — add the agentacct pre_tool_call / post_tool_call / "
-            "on_session_end entries under hooks: yourself to capture tool activity."
+            f"Left {config_path} hooks: block unchanged (inline or tab-indented); the agentacct hooks "
+            "were NOT wired, so Hermes records nothing — add the agentacct pre_tool_call / post_tool_call / "
+            "on_session_end / pre_llm_call entries under hooks: yourself to capture work, or fix the block and re-run."
         )
         console.print("Hermes auto-reloads config.yaml; its agentacct tools are available now.")
-    else:
-        console.print(f"{hooks_action.capitalize()} Hermes tool-activity hooks in {config_path} ({wrapper_path}).")
-        _print_hermes_hook_consent_steps()
-    return True
+        return "tools-only"
+    console.print(
+        f"{hooks_action.capitalize()} Hermes tool-activity + record-your-work hooks in {config_path} ({wrapper_path})."
+    )
+    _print_hermes_hook_consent_steps()
+    return "recording"
 
 
 def _warn_global_store_mismatches(store_dir: Path, command: str) -> None:
@@ -2491,8 +2499,9 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
     # Clients agentacct can configure at USER scope by writing their own config
     # files directly (no client CLI required): claude-code + codex + opencode get
     # full semantic recording (MCP + an always-on global instruction file); hermes
-    # gets MCP tools registered but no standing directive (it has no reliable
-    # global instruction slot — recording is driven by its hook adapter).
+    # has no always-on global instruction slot, so its hook adapter injects the same
+    # standing 'record your work' directive on each session's first turn (pre_llm_call)
+    # — so hermes records too, once its one-time hook consent is granted.
     configurable = ("claude-code", "codex", "opencode", "hermes")
     if agent in {"auto", "all"}:
         targets = [client for client in configurable if client in found] or ["claude-code", "codex"]
@@ -2523,7 +2532,15 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
         if _onboard_global_opencode(store_dir, command):
             recording_clients.append("opencode")
     if mcp and "hermes" in targets:
-        if _onboard_global_hermes(store_dir, command):
+        # hermes records via its hook adapter (the pre_llm_call record-your-work nudge
+        # on each session's first turn), so a fully-wired hermes joins the recording
+        # clients (like codex, its capture fires after a one-time hook consent). But if
+        # the hooks block could not be written, ONLY the MCP tools are present and it
+        # records nothing — report that honestly as tools-only, not recording.
+        hermes_status = _onboard_global_hermes(store_dir, command)
+        if hermes_status == "recording":
+            recording_clients.append("hermes")
+        elif hermes_status == "tools-only":
             tools_only_clients.append("hermes")
 
     imported = _local_usage_import_payload(
@@ -4183,6 +4200,35 @@ def hermes_session_end(
         print("{}")
 
 
+@hermes_hooks_app.command("pre-llm-call")
+def hermes_pre_llm_call(
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="Unused (accepted for wrapper-arg compatibility; this hook spools nothing)."),
+    ] = None,
+) -> None:
+    """Inject the standing 'record your work' directive into a Hermes session's FIRST
+    turn — the #5 nudge hermes otherwise lacks (no always-on global instruction slot).
+
+    Hermes appends a ``pre_llm_call`` hook's ``{"context": ...}`` return to the current
+    turn's user message (API-call-time only, never persisted). This prints that
+    directive on the first turn and ``{}`` on every later turn, so the agent is nudged
+    once per session to record its work via ``agentacct_record_section``. Fail-open: any
+    error prints ``{}`` so a broken install can never block or alter a hermes LLM call.
+    """
+    from .install_guide import workflow_instruction_body
+
+    try:
+        raw = sys.stdin.read()
+        try:
+            response = hermes_first_turn_nudge(raw, directive=workflow_instruction_body())
+        except Exception:  # noqa: BLE001 - the nudge must never break the LLM call.
+            response = {}
+        print(json.dumps(response))
+    except Exception:  # noqa: BLE001 - FAIL OPEN: never block a hermes LLM call.
+        print("{}")
+
+
 def _hermes_hook_command(wrapper_path: Path, *, python_executable: str | None = None) -> str:
     """The shell command Hermes runs for our wrapper (python + wrapper path).
 
@@ -4541,9 +4587,9 @@ def hermes_hooks_install(
     ] = None,
     force: Annotated[bool, typer.Option(help="Rewrite the wrapper even if it already matches.")] = False,
 ) -> None:
-    """Install the Hermes observe-only hooks: the wrapper + config.yaml ``hooks:``
-    entries (pre_tool_call tool-activity, post_tool_call exit-code, on_session_end
-    turn-boundary) pointing at it."""
+    """Install the Hermes hooks: the wrapper + config.yaml ``hooks:`` entries
+    (pre_tool_call tool-activity, post_tool_call exit-code, on_session_end
+    turn-boundary, pre_llm_call record-your-work nudge) pointing at it."""
     resolved_store = store_dir if store_dir is not None else onboard_global_store_dir()[0]
     command = _resolve_absolute_mcp_command()
     try:
@@ -4557,7 +4603,8 @@ def hermes_hooks_install(
         console.print(
             f"Hermes config.yaml: LEFT UNCHANGED ({config_path}) — its hooks: block is not a safely "
             "editable block mapping (inline hooks: {{...}} or tab-indented). No hook was wired. Add the "
-            "agentacct pre_tool_call / post_tool_call / on_session_end entries under hooks: yourself, then re-run."
+            "agentacct pre_tool_call / post_tool_call / on_session_end / pre_llm_call entries under hooks: "
+            "yourself, then re-run."
         )
         raise typer.Exit(1)
     console.print(f"Hermes config.yaml hooks: {action} ({config_path})")
