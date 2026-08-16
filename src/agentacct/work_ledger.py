@@ -225,9 +225,12 @@ def build_work_ledger(
             names = tool_names_by_session.get(entry_key)
             if names:
                 entry["tool_name_counts"] = dict(names)
-            # Repo-relative paths a file-edit tool wrote (hook-captured). Each was
-            # already gated by _normalize_touched_path at the tick, the drain, and
-            # build_touched_files_by_session (safety-equivalent to _safe_relative_posix_path).
+            # Paths a file-edit tool wrote (hook-captured), cwd-relative — an out-of-tree
+            # edit rides as ``../`` and a home-file edit as ``~/…`` (no username). Each was
+            # gated by _normalize_touched_path at the tick, the drain, and
+            # build_touched_files_by_session (which blocks every absolute-prefix leak;
+            # unlike _safe_relative_posix_path it additionally keeps a ``..`` escape —
+            # both keep a ``~`` home segment).
             touched = touched_files_by_session.get(entry_key)
             if touched:
                 entry["touched_files"] = list(touched)

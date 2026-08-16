@@ -480,14 +480,89 @@ def capture_claude_code_client_context(raw: str, *, store_dir: Path | str | None
 _EDIT_PATH_KEYS = ("file_path", "notebook_path", "filePath", "path", "target_file", "file")
 
 
-def _edit_target_relpath(event: Mapping[str, Any], category: str) -> str | None:
-    """The repo-relative path a file-EDIT tool wrote, or ``None``.
+def _clean_touched_rel(rel: str) -> str | None:
+    """POSIX-normalize a relative touched path; drop it if it is somehow STILL
+    absolute — an absolute prefix (home dir, username) must never reach the store. A
+    leading ``/`` OR ``\\`` (a Windows drive-relative absolute ``os.path`` misses on
+    POSIX) is treated as absolute; the tick's _normalize_touched_path re-checks this."""
+    rel = rel.replace(os.sep, "/")
+    if rel.startswith(("/", "\\")):
+        return None
+    return rel
 
-    Reads ONLY the destination path from ``tool_input`` for an ``edit``-category
-    tool and relativizes it to the session ``cwd``, so nothing outside the working
-    tree — and no absolute prefix, home dir, or username — is ever captured. Never
-    reads the file content, the edit/diff, or any other argument. A path that
-    escapes the cwd (``../``) or cannot be relativized is dropped."""
+
+def _path_is_under(path: str, base: str) -> bool:
+    """True if ``path`` is at or under ``base`` (both absolute, normalized). Uses
+    ``commonpath`` so ``/home/bob-evil`` is NOT mistaken for under ``/home/bob``."""
+    try:
+        return os.path.commonpath([path, base]) == base
+    except (ValueError, OSError):
+        return False
+
+
+# Well-known parents of user home directories. When the home dir is UNKNOWN we cannot
+# detect a home boundary, so a cwd-relative descent from one of these (or from the
+# filesystem root, the parent of ``/root`` etc.) can retain a ``/Users/<user>/`` or
+# ``/home/<user>/`` segment. A normal project dir (``/app``, ``/workspace``, ``/srv``)
+# is NOT one, so its in-tree edits are still captured under a degenerate HOME.
+_HOME_PARENT_DIRS = frozenset({"/Users", "/home"})
+
+
+def _cwd_may_hide_home(path: str) -> bool:
+    """True if a cwd-relative descent from ``path`` could retain a home dir / username
+    when the home dir is UNKNOWN — i.e. ``path`` is the filesystem ROOT or a well-known
+    parent of user homes (``/Users``, ``/home``). A normal project cwd returns False so
+    its in-tree edits stay captured under a degenerate HOME (containerized CI)."""
+    if os.path.dirname(path) == path:  # the filesystem root — parent of every home
+        return True
+    return path in _HOME_PARENT_DIRS
+
+
+def _user_home_abs() -> str | None:
+    """The user's home directory as an absolute, normalized path — or ``None`` when it
+    cannot be determined SAFELY. Reads ``$HOME`` (with ``expanduser``'s passwd-database
+    fallback); it never stats a path, so the hook stays fast and side-effect free.
+
+    Returns ``None`` for a home that is unusable as a privacy boundary: unset /
+    unresolvable (``expanduser`` returns ``~``), relative, or the filesystem ROOT
+    (``/`` — what ``expanduser`` yields for ``HOME=""`` or ``HOME="/"``, common in
+    root/daemon/container contexts). A root "home" is not a boundary — EVERY absolute
+    path is "under" it, so treating it as home would tag every edit ``~/…`` and
+    re-embed the username. A ``None`` home makes the caller DROP out-of-tree edits
+    rather than risk a leak."""
+    try:
+        home = os.path.expanduser("~")
+    except Exception:  # noqa: BLE001
+        return None
+    if not home or home == "~" or not os.path.isabs(home):
+        return None
+    home = os.path.normpath(home)
+    if os.path.dirname(home) == home:  # the filesystem root is its own parent — not a home
+        return None
+    return home
+
+
+def _edit_target_relpath(event: Mapping[str, Any], category: str) -> str | None:
+    """The path a file-EDIT tool wrote, relative and free of any home dir/username, or ``None``.
+
+    Reads ONLY the destination path from ``tool_input`` for an ``edit``-category tool
+    and represents it in the LEAST-revealing form that still identifies the file:
+      * under the session ``cwd`` (and cwd not above home) -> a clean cwd-relative path
+        (``src/foo.py``);
+      * under the user's HOME -> a ``~``-relative path (``~/.claude/x``) that names a
+        home-file edit WITHOUT the home dir or username. This form WINS over the
+        cwd-relative one whenever cwd sits AT OR ABOVE home (a daemon/container cwd of
+        ``/`` or ``/Users``), where the cwd-relative form would re-descend through
+        ``/Users/<username>/`` and embed the username;
+      * else (out-of-tree, non-home) -> a cwd-relative ``../`` path (``../sib/x.py``),
+        emitted only when the home dir is KNOWN. When home cannot be determined
+        (unset/root/relative HOME) an out-of-tree edit is DROPPED rather than risk a leak.
+    An absolute prefix, the home dir, or the username is NEVER captured. All resolution
+    is pure string math on the LITERAL path — the hook never touches the filesystem, so
+    aliasing it cannot see without I/O (a symlink into home, a non-canonically CASED path
+    on a case-insensitive FS, or a Unicode NFC/NFD variant) may fall through to the
+    ``../`` form; the result is still a relative path, never an absolute prefix. Never
+    reads the file content, the edit/diff, or any other argument."""
     if category != "edit":
         return None
     tool_input = event.get("tool_input") if isinstance(event.get("tool_input"), dict) else None
@@ -503,21 +578,53 @@ def _edit_target_relpath(event: Mapping[str, Any], category: str) -> str | None:
         return None
     cwd = event.get("cwd")
     cwd = cwd.strip() if isinstance(cwd, str) and cwd.strip() else None
+    cwd_abs = os.path.normpath(cwd) if cwd and os.path.isabs(cwd) else None
     try:
+        # Resolve to an absolute target with pure string ops (never touches the fs).
         if os.path.isabs(raw_path):
-            if not cwd:
-                return None  # never store an absolute path we cannot relativize
-            rel = os.path.relpath(raw_path, cwd)
+            target_abs = os.path.normpath(raw_path)
+        elif cwd_abs:
+            target_abs = os.path.normpath(os.path.join(cwd_abs, raw_path))
         else:
-            rel = raw_path
+            # A relative path with no absolute cwd carries no absolute prefix — keep it.
+            return _clean_touched_rel(raw_path)
+        home_abs = _user_home_abs()
+        under_home = home_abs is not None and _path_is_under(target_abs, home_abs)
+        # The cwd-relative form re-descends through the home dir (leaking the username)
+        # exactly when the target is under home AND cwd sits AT OR ABOVE home — e.g. a
+        # daemon/container cwd of "/" or "/Users" editing ~/.claude/x. There the ``~``
+        # form (step 2) must WIN over the cwd-relative form (step 1).
+        cwd_at_or_above_home = (
+            home_abs is not None and cwd_abs is not None and _path_is_under(home_abs, cwd_abs)
+        )
+        # 1. In-tree (under cwd) — with two guards. (a) If cwd is at/above home, step 2's
+        #    ``~`` form is the only leak-free representation of a home target. (b) If home
+        #    is UNKNOWN, a cwd-relative path from a home-PARENT cwd (``/``, ``/Users``,
+        #    ``/home``) can retain a ``/Users/<username>/`` segment — so drop there. A normal
+        #    project cwd (``/app``, ``/workspace``, ``/workspace/repo``) is still captured,
+        #    so the feature is not silently lost in containerized CI with a degenerate HOME.
+        if (
+            cwd_abs
+            and _path_is_under(target_abs, cwd_abs)
+            and not (under_home and cwd_at_or_above_home)
+            and (home_abs is not None or not _cwd_may_hide_home(cwd_abs))
+        ):
+            return _clean_touched_rel(os.path.relpath(target_abs, cwd_abs))
+        # 2. Under the user's HOME: a ``~``-relative path — captures a home-file edit
+        #    WITHOUT the home dir/username, and closes the relpath re-descent leak.
+        if under_home:
+            rel_home = os.path.relpath(target_abs, home_abs)
+            return "~" if rel_home == "." else _clean_touched_rel(os.path.join("~", rel_home))
+        # 3. Out-of-tree, non-home: a cwd-relative ``../`` path. Emit it ONLY when the
+        #    home dir is KNOWN — step 2 has then proven the target is not under home, so
+        #    the relpath cannot re-descend through ``/Users/<username>/``. If home is
+        #    UNKNOWN we cannot rule out that re-descent, so we DROP rather than risk
+        #    embedding the username (in-tree step-1 edits, which need no home, are unaffected).
+        if cwd_abs and home_abs is not None:
+            return _clean_touched_rel(os.path.relpath(target_abs, cwd_abs))
+        return None
     except (ValueError, OSError):
         return None
-    rel = rel.replace(os.sep, "/")
-    # Drop anything that escapes the working tree or is still absolute — the tick's
-    # _normalize_touched_path re-checks this, but never emit it in the first place.
-    if rel.startswith("/") or rel.split("/", 1)[0] == "..":
-        return None
-    return rel
 
 
 def capture_tool_activity(
@@ -528,8 +635,9 @@ def capture_tool_activity(
     The PreToolUse hook already receives the tool name (and fails open), so this
     is the cheapest honest place to observe what the agent reached for. The
     category AND the tool NAME are spooled — never arguments or any payload — plus,
-    for a file-EDIT tool, the repo-relative DESTINATION path (see
-    ``_edit_target_relpath``: relativized to cwd, never content/args) so the
+    for a file-EDIT tool, the cwd-relative destination path (see
+    ``_edit_target_relpath``: relativized to cwd — or ``~/…`` for a home file — never
+    an absolute prefix/home dir/username, never content/args) so the
     Receipt's Actions dimension can show which artifacts were touched. The spool
     lands in the SAME store as the client-context bridge so the usage importer
     drains both from one place.
