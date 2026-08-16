@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -115,6 +116,39 @@ def normalize_tool_name(tool_name: Any) -> str | None:
     return name[:_TOOL_NAME_MAX]
 
 
+_TOUCHED_PATH_MAX = 240
+# Hard cap on the number of distinct touched paths carried per drained batch, so a
+# pathological session can never bloat one event. "At least this much", never more.
+_TOUCHED_FILES_PER_BATCH_MAX = 200
+
+
+def _normalize_touched_path(path: Any) -> str | None:
+    """Defensive normalization of a caller-supplied touched-file path.
+
+    The CALLER (the hook) already relativizes the edited file to the session cwd;
+    this is the belt-and-suspenders gate that GUARANTEES the store never holds an
+    absolute path, a Windows drive/UNC path, a ``..`` escape, or an over-long
+    string — so even a buggy caller can never leak an absolute prefix (home dir,
+    username). Blank / unsafe -> ``None`` (nothing recorded)."""
+
+    text = str(path or "").strip()
+    if not text or "\x00" in text:
+        return None
+    if re.match(r"^[A-Za-z]:", text):  # Windows drive (C:\...)
+        return None
+    # A leading slash OR backslash is absolute — one backslash is a Windows
+    # drive-relative absolute (``\Users\bob\...``) that ``os.path.isabs`` misses on
+    # POSIX, so it must be caught here before ``replace("\\","/")`` turns it into a
+    # ``/…`` path whose empty leading segment would be silently dropped.
+    if text.startswith(("\\", "/")):  # single/UNC backslash, or / and //
+        return None
+    normalized = text.replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part not in {"", "."}]
+    if not parts or ".." in parts:
+        return None
+    return "/".join(parts)[:_TOUCHED_PATH_MAX]
+
+
 def tool_activity_spool_path(store_dir: Path | str) -> Path:
     return Path(store_dir) / _SPOOL_RELATIVE_PATH
 
@@ -126,15 +160,20 @@ def record_tool_activity_tick(
     session_id: str,
     category: str,
     name: Any = None,
+    path: Any = None,
     at: float,
 ) -> None:
     """Append ONE tick to the store spool. Best-effort; never raises.
 
     Writes the small scalars ``{c, s, k, t}`` — client, session id, category, and
-    a timestamp — plus ``n``, the tool NAME, when one is given. No arguments, no
-    path, no output: only the name and its category. The line is a single tiny
-    JSON object written with ``O_APPEND`` so concurrent hook processes (many tool
-    calls in flight) never corrupt or interleave lines.
+    a timestamp — plus ``n``, the tool NAME, when one is given, and ``p``, the
+    repo-relative path a file-EDIT tool wrote, when the caller extracted one (the
+    Actions dimension's "which artifacts were touched" — the caller relativizes it
+    to the session cwd and drops anything outside, so no absolute prefix, home dir,
+    or username is ever stored; arguments, content and output are still never
+    recorded). The line is a single tiny JSON object written with ``O_APPEND`` so
+    concurrent hook processes (many tool calls in flight) never corrupt or
+    interleave lines.
     """
 
     try:
@@ -150,6 +189,9 @@ def record_tool_activity_tick(
         normalized_name = normalize_tool_name(name)
         if normalized_name:
             payload["n"] = normalized_name
+        touched = _normalize_touched_path(path)
+        if touched:
+            payload["p"] = touched
         line = json.dumps(
             payload,
             ensure_ascii=False,
@@ -204,6 +246,7 @@ def drain_tool_activity_spool(
 
     counts: dict[tuple[str, str], dict[str, int]] = {}
     name_counts: dict[tuple[str, str], dict[str, int]] = {}
+    touched_paths: dict[tuple[str, str], list[str]] = {}
     latest: dict[tuple[str, str], float] = {}
     for line in raw.splitlines():
         line = line.strip()
@@ -232,6 +275,13 @@ def drain_tool_activity_spool(
         if name:
             name_bucket = name_counts.setdefault(key, {})
             name_bucket[name] = name_bucket.get(name, 0) + 1
+        # Touched file path (present only on edit-tool ticks written after path
+        # capture shipped). Deduped, insertion-ordered, and hard-capped per batch.
+        touched = _normalize_touched_path(row.get("p"))
+        if touched:
+            path_bucket = touched_paths.setdefault(key, [])
+            if touched not in path_bucket and len(path_bucket) < _TOUCHED_FILES_PER_BATCH_MAX:
+                path_bucket.append(touched)
         stamp = row.get("t")
         if isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
             latest[key] = max(latest.get(key, 0.0), float(stamp))
@@ -260,6 +310,12 @@ def drain_tool_activity_spool(
             metadata["tool_names"] = [
                 {"name": name, "count": count} for name, count in sorted(names.items())
             ]
+        touched = touched_paths.get((client, session))
+        if touched:
+            # Paths ride as a plain list of string VALUES (same redaction-safe shape
+            # rationale as tool_names): a path is never a dict KEY, so the store's
+            # secret redaction can never blank it.
+            metadata["touched_files"] = list(touched)
         events.append(
             {
                 "event_id": f"toolact:{digest}",
@@ -382,12 +438,50 @@ def build_tool_names_by_session(
     return {key: value for key, value in result.items() if value}
 
 
+def build_touched_files_by_session(
+    events: Iterable[Mapping[str, Any]],
+) -> dict[tuple[str, str], list[str]]:
+    """Collect ``tool_activity_observed`` touched-file paths per (client, session).
+
+    Mirrors ``build_tool_names_by_session``: reads each event's ``touched_files``
+    list (repo-relative paths a file-edit tool wrote). Batches are additive and the
+    union is deduped (insertion-ordered) across imports. A session recorded before
+    path capture shipped simply has none — an honest gap, never a fabricated entry.
+    Every path is re-run through ``_normalize_touched_path`` here (the third gate,
+    after the tick and the drain), which is safety-equivalent to the projection's
+    ``_safe_relative_posix_path`` — both reject any absolute/drive/UNC/``..``/NUL path.
+    """
+
+    result: dict[tuple[str, str], list[str]] = {}
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        if event.get("event_type") != TOOL_ACTIVITY_EVENT_TYPE:
+            continue
+        metadata = event.get("metadata")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        client = str(metadata.get("client") or "").strip()
+        session = str(metadata.get("client_session_id") or "").strip()
+        if not client or not session:
+            continue
+        paths = metadata.get("touched_files")
+        if not isinstance(paths, list):
+            continue
+        bucket = result.setdefault((client, session), [])
+        for candidate in paths:
+            normalized = _normalize_touched_path(candidate)
+            if normalized and normalized not in bucket:
+                bucket.append(normalized)
+    return {key: value for key, value in result.items() if value}
+
+
 __all__ = [
     "TOOL_ACTIVITY_CAPTURE_BASIS",
     "TOOL_ACTIVITY_EVENT_TYPE",
     "TOOL_CATEGORIES",
     "build_tool_activity_by_session",
     "build_tool_names_by_session",
+    "build_touched_files_by_session",
     "drain_tool_activity_spool",
     "ingest_tool_activity_spool",
     "normalize_tool_name",

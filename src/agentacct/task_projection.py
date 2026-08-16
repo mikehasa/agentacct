@@ -996,8 +996,17 @@ def build_task_projection(
                             tool_name_counts[label] = tool_name_counts.get(label, 0) + value
         touched_files: list[str] = []
         seen_touched_files: set[str] = set()
-        for item in task_work:
-            files = item.get("files") if isinstance(item.get("files"), list) else []
+        # (a) agent-reported section/check files, and (b) the repo-relative paths a
+        # file-edit tool wrote (hook-captured, per session) — either source alone
+        # routinely misses files the other has. Both are already repo-relative-safe.
+        touched_sources: list[Any] = [
+            item.get("files") if isinstance(item.get("files"), list) else [] for item in task_work
+        ]
+        touched_sources.extend(
+            sessions[key].get("touched_files") if isinstance(sessions[key].get("touched_files"), list) else []
+            for key in ordered_members
+        )
+        for files in touched_sources:
             for candidate in files:
                 path = _text(candidate)
                 if path and path not in seen_touched_files:
