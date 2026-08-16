@@ -1,12 +1,12 @@
 """Tool-activity capture for the Receipt's Actions dimension.
 
 The Actions question a Receipt must answer is "what did the agent reach for".
-This records, per tool call, a COARSE CATEGORY (read/edit/execute/…) AND the
+This records, per tool call, a COARSE CATEGORY (read/edit/execute/…), the
 tool's NAME — a builtin like ``Read``/``Bash``, an ``mcp__server__tool`` name, or
-a custom command. It never records a tool's ARGUMENTS, its output, or any PATH:
-only the name and the category derived from it. The taxonomy is derivable from
-the name ALONE — we do not tell ``git commit`` from ``ls`` inside ``execute``,
-because that would require reading arguments.
+a custom command — and, for a file-EDIT tool, the repo-relative DESTINATION PATH it
+wrote. It never records a tool's OTHER arguments, the file content or diff, or the
+tool's output. The CATEGORY is derivable from the name ALONE — we do not tell ``git
+commit`` from ``ls`` inside ``execute``, because that would require reading arguments.
 
 Capturing the NAME (a deliberate move from the earlier category-only line) is
 what lets the Receipt answer "which specific tool / connector did the agent

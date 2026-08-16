@@ -1654,16 +1654,19 @@ def hermes_first_turn_nudge(raw: str, *, directive: str) -> dict[str, Any]:
 # ``<config>/plugins/*.js``. Its ``tool.execute.before`` hook receives the tool
 # name and the OpenCode session id (``ses_...``), which is exactly the ``session``
 # table id the agentacct usage importer keys on — so a tick attributes straight to
-# the OpenCode session with no log pairing. The plugin only ever spools the tool
-# NAME + session id (never arguments or output), and it fires the agentacct CLI
-# fire-and-forget so it can never add latency to, block, or fail a tool call.
+# the OpenCode session with no log pairing. The plugin spools the tool NAME + session
+# id and, for a file-edit tool, the destination path it wrote (never the file content,
+# the diff, or any other argument), and it fires the agentacct CLI fire-and-forget so
+# it can never add latency to, block, or fail a tool call.
 
 OPENCODE_PLUGIN_RELATIVE_PATH = Path("plugins/agentacct.js")
 
 _OPENCODE_PLUGIN_TEMPLATE = '''// agentacct OpenCode capture plugin (observe-only, auto-generated).
 //
 // Two observe-only signals:
-//  - tool.execute.before -> the tool NAME + OpenCode session id (Receipt Actions).
+//  - tool.execute.before -> the tool NAME + OpenCode session id, plus (for a file-edit
+//    tool) the DESTINATION path it wrote — never the content, the diff, or any other
+//    argument; the CLI relativizes it to the project/worktree root (Receipt Actions).
 //  - tool.execute.after  -> for a recognized test/build/lint bash command, the
 //    harness EXIT CODE (lifts a step to independently_checked). The shell command is
 //    read only to classify the runner and is stored ONLY as a sha256 digest, never
@@ -1705,11 +1708,45 @@ function spawnCapture(subcommand, payload) {
   } catch (e) {}
 }
 
-export const AgentacctToolActivity = async () => ({
-  "tool.execute.before": async (input) => {
+// Keys an OpenCode file-edit tool uses for its DESTINATION path (edit/write use
+// ``filePath``). Only the destination path is read — never the content or the diff.
+const EDIT_PATH_KEYS = ["filePath", "file_path", "path", "notebook_path", "target_file", "file"];
+
+// Tool names the CLI counts as a file EDIT (mirrors _CATEGORY_BY_TOOL_NAME's edit set),
+// so a path is forwarded ONLY for these — a read/search tool's target path is never
+// sent, and the CLI's category gate is a second, independent check.
+const EDIT_TOOLS = new Set(["edit", "write", "multiedit", "notebookedit"]);
+
+function editTargetPath(args) {
+  if (!args || typeof args !== "object") return undefined;
+  for (const key of EDIT_PATH_KEYS) {
+    const value = args[key];
+    if (typeof value === "string" && value) return value;
+  }
+  return undefined;
+}
+
+export const AgentacctToolActivity = async ({ directory, worktree } = {}) => {
+  // The project/worktree root, so the CLI can relativize an absolute edit path to a
+  // repo-relative one (it never stores an absolute prefix, home dir, or username).
+  const PROJECT_CWD = worktree || directory || null;
+  return {
+  "tool.execute.before": async (input, output) => {
     try {
       if (!input) return;
-      spawnCapture("tool-activity", { tool_name: input.tool, session_id: input.sessionID });
+      const payload = { tool_name: input.tool, session_id: input.sessionID };
+      // For a file-EDIT tool ONLY, forward the DESTINATION path (never content or any
+      // other arg) as tool_input, so the CLI's shared extractor relativizes it. Gating
+      // on the same tool set the CLI counts as 'edit' keeps the wire edit-only (a
+      // read/search tool's target path is never sent) and mirrors the Claude Code path.
+      if (EDIT_TOOLS.has(String(input.tool || "").toLowerCase())) {
+        const editPath = editTargetPath(output && output.args);
+        if (editPath) {
+          payload.tool_input = { filePath: editPath };
+          if (PROJECT_CWD) payload.cwd = PROJECT_CWD;
+        }
+      }
+      spawnCapture("tool-activity", payload);
     } catch (e) {
       // observe-only: a plugin error must never affect the tool call.
     }
@@ -1729,7 +1766,8 @@ export const AgentacctToolActivity = async () => ({
       });
     } catch (e) {}
   },
-});
+  };
+};
 '''
 
 

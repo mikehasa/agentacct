@@ -4622,10 +4622,12 @@ def opencode_tool_activity(
     """Observe an OpenCode tool call from stdin (observe-only).
 
     The OpenCode plugin's ``tool.execute.before`` hook fires the agentacct CLI with
-    ``{tool_name, session_id}`` on stdin. OpenCode's ``session_id`` is the ``ses_...``
-    ``session`` table id the usage importer keys on, so the tick attributes straight
-    to the OpenCode session with no log pairing. Records the tool name + category
-    (never arguments); always returns an empty no-op response.
+    ``{tool_name, session_id}`` on stdin — plus, for a file-edit tool, ``tool_input``
+    (the destination path only) and ``cwd`` (the project/worktree root), so the shared
+    extractor can relativize the touched path. OpenCode's ``session_id`` is the
+    ``ses_...`` ``session`` table id the usage importer keys on, so the tick attributes
+    straight to the OpenCode session with no log pairing. Records the tool name +
+    category + destination path (never other arguments); always returns an empty no-op.
     """
     try:
         raw = sys.stdin.read()
