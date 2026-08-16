@@ -1454,6 +1454,124 @@ def test_discover_codex_usage_marks_subagent_thread_without_spawn_parent(tmp_pat
     assert payload["metadata"]["client_thread_source"] == "subagent"
 
 
+def test_codex_session_meta_spawn_source_excludes_fork_and_resume():
+    # The narrow spawn detector recognizes ONLY a concurrent-spawn carrier.
+    spawn = {"source": {"subagent": {"thread_spawn": {"parent_thread_id": "p"}}}}
+    fork = {"source": {"forked_from_id": "p"}}
+    resume = {"source": {"resumed": True}}
+    assert client_usage_module._codex_session_meta_has_spawn_source(spawn) is True
+    assert client_usage_module._codex_session_meta_has_spawn_source(fork) is False
+    assert client_usage_module._codex_session_meta_has_spawn_source(resume) is False
+    # The broad replay detector still flags the fork (it drives token-replay
+    # accounting, not Task grouping) — proving the two axes are distinct.
+    assert client_usage_module._codex_session_meta_has_replay_source(spawn) is True
+    assert client_usage_module._codex_session_meta_has_replay_source(fork) is True
+
+
+def test_discover_codex_usage_splits_bare_lineage_parent_into_own_root(tmp_path):
+    # A fork / resume / compaction rollout carries the seed thread's id as a
+    # bare session_meta.parent_thread_id, with no spawn edge and no subagent
+    # marker: the SAME conversation continued, not a spawned child. It must
+    # become its own root Task instead of transitively merging under the seed.
+    codex_home = _make_codex_home(tmp_path)
+    _add_codex_thread(
+        codex_home,
+        session_id="resumed-conversation",
+        updated_at=300,
+        model="gpt-5.5",
+        parent_session_id="session-abc",
+    )
+
+    observations: list[ClientSessionObservation] = []
+    events = discover_codex_usage(
+        codex_home=codex_home,
+        limit_sessions=10,
+        _session_observations=observations,
+    )
+
+    # Task grouping (observation): the bare lineage edge is dropped, so the
+    # continued conversation is its own clean root, never nested under the seed.
+    resumed_obs = {obs.client_session_id: obs for obs in observations}[
+        "resumed-conversation"
+    ]
+    assert resumed_obs.parent_client_session_id is None
+    assert resumed_obs.client_session_kind == "root"
+
+    # The usage event mirrors the dropped grouping parent — the session rollup
+    # unions parent pointers across events AND observations, so both must drop
+    # for the row to become its own Task.
+    resumed_event = {event.client_session_id: event for event in events}[
+        "resumed-conversation"
+    ]
+    payload = resumed_event.to_sentinel_event()
+    assert payload["metadata"]["parent_client_session_id"] is None
+    assert payload["metadata"]["client_session_kind"] == "root"
+
+    # Token lineage rides a SEPARATE axis: the exact recorded parent still
+    # governs additivity, so a resumed row whose raw counter may replay the
+    # parent prefix stays quarantined rather than double-counting the tokens.
+    assert resumed_event.token_lineage_parent_client_session_id == "session-abc"
+    assert payload["metadata"]["usage_additive"] is False
+
+    # The live preview / dashboard additivity lane must agree with the stored
+    # lane: both quarantine the split fork so its replayed cumulative counter is
+    # never double-counted in /usage/preview totals or dashboard local records.
+    from agentacct.usage_view import _record_from_client_usage
+
+    preview_record = _record_from_client_usage(resumed_event)
+    assert preview_record.usage_additive is False
+    assert preview_record.input_tokens == 0
+    assert preview_record.output_tokens == 0
+
+
+def test_discover_codex_usage_keeps_real_spawn_child_nested_under_root(tmp_path):
+    # Contrast with the bare-lineage split: a rollout that recorded a genuine
+    # source.subagent.thread_spawn is a distinct concurrent child and keeps its
+    # grouping parent, nesting under the spawning root exactly as before.
+    codex_home = _make_codex_home(tmp_path)
+    _add_codex_thread(
+        codex_home,
+        session_id="spawned-child",
+        updated_at=300,
+        model="gpt-5.5",
+        parent_session_id="session-abc",
+    )
+    _rewrite_codex_rollout(
+        codex_home,
+        "spawned-child",
+        [
+            {
+                "timestamp": "2026-06-27T00:01:00.000Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "spawned-child",
+                    "parent_thread_id": "session-abc",
+                    "source": {
+                        "subagent": {
+                            "thread_spawn": {"parent_thread_id": "session-abc"}
+                        }
+                    },
+                },
+            },
+            _codex_token_count(
+                "2026-06-27T00:02:00.000Z",
+                _codex_counters(100, 40, 10, 2),
+            ),
+        ],
+    )
+
+    observations: list[ClientSessionObservation] = []
+    discover_codex_usage(
+        codex_home=codex_home,
+        limit_sessions=10,
+        _session_observations=observations,
+    )
+
+    child_obs = {obs.client_session_id: obs for obs in observations}["spawned-child"]
+    assert child_obs.parent_client_session_id == "session-abc"
+    assert child_obs.client_session_kind == "child"
+
+
 def test_discover_codex_usage_counts_only_child_delta_after_replayed_parent_prefix(tmp_path):
     codex_home = _make_codex_home(tmp_path)
     _add_codex_thread(

@@ -342,6 +342,15 @@ class ClientUsageEvent:
     # that predate this field are counted without any backfill. Carries no
     # message text, value, length, or path.
     refused_recording_attempts: tuple[Mapping[str, Any], ...] = ()
+    # Token-additivity inputs, kept distinct from the Task-grouping fields
+    # (``client_session_kind`` / ``parent_client_session_id``). Codex splits a
+    # fork/resume/compaction into its own root Task, but its raw counter may
+    # still carry a replayed parent prefix, so the additivity guard must judge
+    # it against the EXACT recorded lineage, not the grouping view. When unset
+    # (every non-Codex client), additivity falls back to the grouping fields —
+    # byte-identical to the pre-split behavior.
+    token_lineage_session_kind: str | None = None
+    token_lineage_parent_client_session_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.client not in USAGE_EVENT_CLIENTS:
@@ -421,14 +430,30 @@ class ClientUsageEvent:
     def to_sentinel_event(self) -> dict[str, Any]:
         cost_confidence = COST_CLIENT_REPORTED if self.client_reported_cost_usd is not None else COST_UNKNOWN
         session_title = _sanitized_session_title(self.title)
+        # Additivity judges the TOKEN lineage, not the Task grouping: a Codex
+        # fork/resume split into its own root Task still carries a replayed
+        # parent prefix in its raw counter. Prefer the exact-lineage fields;
+        # fall back to the grouping fields for clients that never set them.
+        additivity_session_kind = (
+            self.token_lineage_session_kind
+            if self.token_lineage_session_kind is not None
+            else self.client_session_kind
+        )
+        additivity_parent_session_id = (
+            self.token_lineage_parent_client_session_id
+            if self.token_lineage_parent_client_session_id is not None
+            else self.parent_client_session_id
+        )
         usage_additive, usage_normalization_state = local_usage_additivity(
             client=self.client,
-            session_kind=self.client_session_kind,
-            parent_client_session_id=self.parent_client_session_id,
+            session_kind=additivity_session_kind,
+            parent_client_session_id=additivity_parent_session_id,
             usage_update_semantics=self.usage_update_semantics,
             source_namespace_fingerprint=self.source_namespace_fingerprint,
             parent_source_namespace_fingerprint=(
-                self.source_namespace_fingerprint if self.parent_client_session_id else None
+                self.source_namespace_fingerprint
+                if additivity_parent_session_id
+                else None
             ),
         )
         event: dict[str, Any] = {
@@ -1127,24 +1152,48 @@ def _discover_codex_usage_from_home(
         # back to the rollout file's own session_meta.parent_thread_id — the
         # id Codex wrote at thread creation. In practice spawn_edges is often
         # empty, which left every internal auto-review thread parentless.
+        #
+        # This exact-recorded parent still drives token-delta counting and
+        # discovery grouping (``parent_by_session``, above). It must NOT double
+        # as the Task-grouping edge: Codex writes the same parent_thread_id on
+        # fork / resume / compaction rollouts, which are the SAME conversation
+        # continued, and chaining those transitively merges unrelated work into
+        # one mega-Task. The Task boundary carries a parent ONLY for a proven
+        # concurrent spawn (or an auto-review child); every other row becomes
+        # its own root Task while keeping its token lineage intact.
         parent_session_id = parent_by_session.get(row_id)
-        session_kind = _codex_session_kind(row, parent_session_id=parent_session_id)
-        if (
-            parent_session_id is None
-            and isinstance(usage, dict)
-            and (
-                usage.get("_replay_source_detected")
-                or usage.get("_replayed_parent_session_meta")
-            )
-        ):
-            # A structured fork/replay carrier without an exact parent id is
-            # an unproven descendant, never a root. This matters for
-            # rollout-only rows where sqlite cannot supply the missing edge.
-            session_kind = "child"
         usage_model = (usage or {}).get("model") or row.get("model")
         is_internal_review = _is_codex_internal_review_model(usage_model)
-        if is_internal_review:
-            session_kind = "internal"
+        # Token-lineage kind: the EXACT recorded parent decides token
+        # additivity, because a descendant's raw counter may still carry a
+        # replayed parent prefix. It stays keyed on the full lineage parent and
+        # is never softened by the Task-grouping split below.
+        lineage_session_kind = _codex_apply_session_kind_overrides(
+            _codex_session_kind(row, parent_session_id=parent_session_id),
+            lineage_parent_session_id=parent_session_id,
+            usage=usage,
+            is_internal_review=is_internal_review,
+        )
+        # Task-grouping parent + kind: carry a parent (and read as a child)
+        # ONLY for a proven concurrent spawn or an auto-review child. A bare
+        # fork/resume/compaction lineage edge is dropped so the row becomes its
+        # own clean root Task without disturbing its token lineage above.
+        carries_grouping_parent = is_internal_review or _codex_edge_is_real_spawn(
+            row,
+            spawn_edge=spawn_edge,
+            usage=usage,
+        )
+        grouping_parent_session_id = (
+            parent_session_id
+            if parent_session_id is not None and carries_grouping_parent
+            else None
+        )
+        session_kind = _codex_apply_session_kind_overrides(
+            _codex_session_kind(row, parent_session_id=grouping_parent_session_id),
+            lineage_parent_session_id=parent_session_id,
+            usage=usage,
+            is_internal_review=is_internal_review,
+        )
         model = direct_model_by_session.get(row_id)
         model_source: str | None = None
         model_inherited_from_session_id: str | None = None
@@ -1198,7 +1247,11 @@ def _discover_codex_usage_from_home(
                         else "client_metadata"
                     ),
                     client_session_kind=session_kind,
-                    parent_client_session_id=parent_session_id,
+                    # Task-grouping parent only: a bare fork/resume/compaction
+                    # lineage edge is dropped here so it becomes its own root
+                    # Task. The full lineage parent stays on the usage event
+                    # below (token delta + usage windowing).
+                    parent_client_session_id=grouping_parent_session_id,
                     client_transcript_id=row_id or rollout_path.stem,
                     client_spawn_status=_limited_optional_text(
                         spawn_edge.get("status"),
@@ -1323,7 +1376,14 @@ def _discover_codex_usage_from_home(
                 updated_at=_optional_int(row.get("updated_at")),
                 turn_count=_safe_nonnegative_int(usage.get("turn_count")),
                 client_session_kind=session_kind,
-                parent_client_session_id=parent_session_id,
+                # Task-grouping parent, mirroring the observation above: the
+                # session rollup unions this field across usage rows AND
+                # observations, so a bare fork/resume/compaction lineage edge
+                # must be dropped on BOTH to become its own root Task. Token
+                # deltas were already resolved against the full lineage parent
+                # (``parent_by_session``) before this event was built, so
+                # dropping the downstream field never disturbs the numbers.
+                parent_client_session_id=grouping_parent_session_id,
                 client_transcript_id=row_id or source_path.stem,
                 client_spawn_status=_limited_optional_text(spawn_edge.get("status"), 80),
                 client_thread_source=_limited_optional_text(row.get("thread_source") or row.get("source"), 120),
@@ -1376,6 +1436,8 @@ def _discover_codex_usage_from_home(
                 ),
                 usage_representation=usage_representation,
                 usage_precedence_role=usage_precedence_role,
+                token_lineage_session_kind=lineage_session_kind,
+                token_lineage_parent_client_session_id=parent_session_id,
             )
         )
     if _discovery_stats is not None:
@@ -6138,6 +6200,69 @@ def _codex_session_kind(row: dict[str, Any], *, parent_session_id: str | None) -
     return "root"
 
 
+def _codex_edge_is_real_spawn(
+    row: dict[str, Any],
+    *,
+    spawn_edge: dict[str, Any],
+    usage: dict[str, Any] | None,
+) -> bool:
+    """Whether a recorded parent is a concurrent spawn, not continued lineage.
+
+    Codex writes a ``parent_thread_id`` on fork / resume / compaction rollouts
+    — the SAME conversation continued — exactly as it does on a genuinely
+    spawned child. Only a proven spawn may carry a Task-grouping parent;
+    otherwise transitively chaining those lineage pointers merges unrelated
+    conversations into one mega-Task. The signals that prove a distinct
+    concurrent child are:
+      * a ``thread_spawn_edges`` row (Codex's canonical spawn table),
+      * a subagent thread (its own thread_source / source marker), or
+      * a rollout that recorded ``source.subagent.thread_spawn``.
+    Internal auto-review threads are spawned children too; the caller carries
+    them via ``is_internal_review``. A bare lineage ``parent_thread_id`` from
+    fork / resume / compaction matches none of these and becomes its own root.
+    """
+
+    if _limited_optional_text(spawn_edge.get("parent_thread_id"), 240):
+        return True
+    thread_source = str(row.get("thread_source") or "").lower()
+    source = str(row.get("source") or "").lower()
+    if thread_source == "subagent" or '"subagent"' in source:
+        return True
+    if isinstance(usage, dict) and usage.get("_spawn_source_detected"):
+        return True
+    return False
+
+
+def _codex_apply_session_kind_overrides(
+    kind: str,
+    *,
+    lineage_parent_session_id: str | None,
+    usage: dict[str, Any] | None,
+    is_internal_review: bool,
+) -> str:
+    """Apply the replay-carrier and internal-review overrides to a base kind.
+
+    Both the token-lineage kind and the Task-grouping kind share these two
+    corrections, and both gate the replay override on the EXACT recorded
+    (lineage) parent: a fork/resume that carries an exact parent is a clean
+    root, so only a replay carrier with no exact parent at all is forced to
+    ``child``. An internal auto-review label always wins last.
+    """
+
+    if (
+        lineage_parent_session_id is None
+        and isinstance(usage, dict)
+        and (
+            usage.get("_replay_source_detected")
+            or usage.get("_replayed_parent_session_meta")
+        )
+    ):
+        kind = "child"
+    if is_internal_review:
+        kind = "internal"
+    return kind
+
+
 def _codex_row_session_id(row: dict[str, Any]) -> str:
     row_id = str(row.get("id") or "")
     if row_id:
@@ -6358,6 +6483,30 @@ def _codex_session_meta_has_replay_source(payload: dict[str, Any]) -> bool:
         visited += 1
         if isinstance(value, dict):
             if any(key in value for key in ("thread_spawn", "forked_from_id")):
+                return True
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    return False
+
+
+def _codex_session_meta_has_spawn_source(payload: dict[str, Any]) -> bool:
+    """Detect a Codex concurrent-spawn carrier (``source.subagent.thread_spawn``).
+
+    Strictly narrower than :func:`_codex_session_meta_has_replay_source`: a
+    fork records ``forked_from_id`` and a resume / compaction records neither,
+    and both merely continue the SAME conversation — they must not carry a
+    Task-grouping parent. Only a ``thread_spawn`` marker denotes a distinct
+    concurrent child that legitimately nests under its spawning root.
+    """
+
+    pending: list[object] = [payload.get("source"), payload.get("originator")]
+    visited = 0
+    while pending and visited < 64:
+        value = pending.pop()
+        visited += 1
+        if isinstance(value, dict):
+            if "thread_spawn" in value:
                 return True
             pending.extend(value.values())
         elif isinstance(value, list):
@@ -7131,6 +7280,7 @@ def _read_codex_rollout_usage_uncached(
     session_meta_cwd: str | None = None
     session_meta_seen = False
     replay_source_detected = False
+    spawn_source_detected = False
     replayed_parent_session_meta = False
     first_activity_at: int | None = None
     last_activity_at: int | None = None
@@ -7247,6 +7397,9 @@ def _read_codex_rollout_usage_uncached(
                 meta_payload = obj.get("payload")
                 if isinstance(meta_payload, dict):
                     replay_source_detected = _codex_session_meta_has_replay_source(
+                        meta_payload
+                    )
+                    spawn_source_detected = _codex_session_meta_has_spawn_source(
                         meta_payload
                     )
                     own_id_value = meta_payload.get("id")
@@ -7468,6 +7621,8 @@ def _read_codex_rollout_usage_uncached(
         result: dict[str, Any] = evidence.as_usage_fields()
         if saw_token_usage_schema_drift:
             result["_token_usage_schema_drift"] = True
+        if spawn_source_detected:
+            result["_spawn_source_detected"] = True
         if session_meta_parent:
             result["session_meta_parent_thread_id"] = session_meta_parent
         return result
@@ -7482,6 +7637,7 @@ def _read_codex_rollout_usage_uncached(
     latest["_raw_token_event_count"] = raw_token_event_count
     latest["_replay_prefix_token_events"] = replay_prefix_token_events
     latest["_replay_source_detected"] = replay_source_detected
+    latest["_spawn_source_detected"] = spawn_source_detected
     latest["_replayed_parent_session_meta"] = replayed_parent_session_meta
     if saw_token_usage_schema_drift:
         latest["_token_usage_schema_drift"] = True
