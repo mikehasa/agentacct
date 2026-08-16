@@ -47,6 +47,39 @@ def test_capture_tool_activity_labels_opencode_client(tmp_path: Path) -> None:
     assert {"name": "bash", "count": 1} in meta["tool_names"]
 
 
+def test_capture_tool_activity_opencode_records_edit_path(tmp_path: Path) -> None:
+    # The plugin forwards an edit's DESTINATION path as ``tool_input`` plus the project
+    # ``cwd``, so the shared extractor relativizes it exactly as it does for Claude Code.
+    event = {
+        "tool_name": "edit",
+        "session_id": "ses_x",
+        "cwd": "/proj",
+        "tool_input": {"filePath": "/proj/src/a.py"},
+    }
+    capture_tool_activity(json.dumps(event), store_dir=tmp_path, client="opencode")
+    meta = drain_tool_activity_spool(tmp_path)[0]["metadata"]
+    assert meta["touched_files"] == ["src/a.py"]
+    assert {"name": "edit", "count": 1} in meta["tool_names"]
+
+
+def test_capture_tool_activity_opencode_drops_non_edit_carried_path(tmp_path: Path) -> None:
+    # Defense in depth: even if a non-edit tool's path reached the CLI, the shared
+    # extractor gates on CATEGORY, so a ``read`` carrying a filePath records no touched
+    # file. (The plugin also gates in JS, so this payload should not arrive — but the
+    # CLI must drop it regardless, and this exercises a non-edit tool that DOES carry a
+    # path rather than a bash tick that carries none.)
+    event = {
+        "tool_name": "read",
+        "session_id": "ses_x",
+        "cwd": "/proj",
+        "tool_input": {"filePath": "/proj/src/secret.py"},
+    }
+    capture_tool_activity(json.dumps(event), store_dir=tmp_path, client="opencode")
+    meta = drain_tool_activity_spool(tmp_path)[0]["metadata"]
+    assert "touched_files" not in meta
+    assert {"name": "read", "count": 1} in meta["tool_names"]
+
+
 def test_tool_activity_subcommand_spools_tick(tmp_path: Path) -> None:
     result = CliRunner().invoke(
         app,
@@ -93,6 +126,64 @@ def test_render_opencode_plugin_shape() -> None:
     # fire-and-forget: it must not await the spawned CLI (never add tool-call latency)
     assert "await Bun.spawn" not in src
     assert "Bun.spawn" in src
+
+
+def test_render_opencode_plugin_forwards_edit_path() -> None:
+    src = render_opencode_plugin("/abs/agentacct", store_dir="/store/x")
+    # OpenCode puts a tool's args in the SECOND before-hook param (``output.args``);
+    # the plugin reads the edit destination from there and forwards it + the cwd.
+    assert "output.args" in src
+    assert "editTargetPath" in src and '"filePath"' in src
+    # the path is forwarded only for edit-category tools (a read/search target is not)
+    assert "EDIT_TOOLS" in src
+    # cwd comes from the plugin factory's worktree/directory context
+    assert "PROJECT_CWD" in src
+    assert "worktree" in src and "directory" in src
+    # the destination path rides as tool_input (the shared extractor relativizes it)
+    assert "tool_input" in src
+
+
+def test_before_hook_forwards_edit_path_and_drops_content(tmp_path: Path) -> None:
+    # Drive the real generated JS under node. The before-hook must: forward an EDIT
+    # tool's destination path (as tool_input) + the project cwd, never the file content;
+    # forward NOTHING extra for a non-edit tool that CARRIES a path (read); and omit cwd
+    # when the plugin factory received no directory/worktree.
+    if shutil.which("node") is None:
+        pytest.skip("node not available to run the plugin hook")
+    exe = tmp_path / "agentacct"
+    exe.write_text("#!/bin/sh\n", encoding="utf-8")  # a real path so resolveAgentacct() resolves
+    plugin = tmp_path / "p.mjs"
+    plugin.write_text(render_opencode_plugin(str(exe), store_dir=str(tmp_path / "store")), encoding="utf-8")
+    harness = tmp_path / "h.mjs"
+    harness.write_text(
+        "let captured = [];\n"
+        "globalThis.Bun = { which: () => null, spawn: () => ({ stdin: { write: (s) => captured.push(s), end: () => {} }, unref: () => {} }) };\n"
+        "const { AgentacctToolActivity } = await import('./p.mjs');\n"
+        "const h = await AgentacctToolActivity({ directory: '/proj', worktree: '/proj' });\n"
+        "await h['tool.execute.before']({ tool: 'edit', sessionID: 'ses_x' }, { args: { filePath: '/proj/src/a.py', content: 'SECRET' } });\n"
+        "await h['tool.execute.before']({ tool: 'read', sessionID: 'ses_x' }, { args: { filePath: '/proj/src/secret.py' } });\n"
+        "await h['tool.execute.before']({ tool: 'bash', sessionID: 'ses_x' }, { args: { command: 'pytest -q' } });\n"
+        "const hNoCwd = await AgentacctToolActivity();\n"
+        "await hNoCwd['tool.execute.before']({ tool: 'write', sessionID: 'ses_x' }, { args: { filePath: 'rel/b.py' } });\n"
+        "console.log(JSON.stringify(captured.map((s) => JSON.parse(s))));\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(["node", str(harness)], capture_output=True, text=True, cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    edit_p, read_p, bash_p, nocwd_p = json.loads(result.stdout.strip())
+    # edit tool: destination path + cwd, never the file content sitting beside it
+    assert edit_p["tool_name"] == "edit" and edit_p["session_id"] == "ses_x"
+    assert edit_p["tool_input"] == {"filePath": "/proj/src/a.py"}
+    assert edit_p["cwd"] == "/proj"
+    assert "SECRET" not in result.stdout  # the file content is never forwarded
+    # read tool CARRIES a filePath but is not an edit -> the JS gate forwards no path
+    assert read_p["tool_name"] == "read"
+    assert "tool_input" not in read_p and "cwd" not in read_p
+    # bash: no path key at all
+    assert "tool_input" not in bash_p
+    # no factory cwd -> path still forwarded (relativized later), but cwd omitted
+    assert nocwd_p["tool_input"] == {"filePath": "rel/b.py"}
+    assert "cwd" not in nocwd_p
 
 
 def test_render_opencode_plugin_no_store_binding() -> None:

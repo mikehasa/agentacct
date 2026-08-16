@@ -1,12 +1,12 @@
 """Tool-activity capture for the Receipt's Actions dimension.
 
 The Actions question a Receipt must answer is "what did the agent reach for".
-This records, per tool call, a COARSE CATEGORY (read/edit/execute/…) AND the
+This records, per tool call, a COARSE CATEGORY (read/edit/execute/…), the
 tool's NAME — a builtin like ``Read``/``Bash``, an ``mcp__server__tool`` name, or
-a custom command. It never records a tool's ARGUMENTS, its output, or any PATH:
-only the name and the category derived from it. The taxonomy is derivable from
-the name ALONE — we do not tell ``git commit`` from ``ls`` inside ``execute``,
-because that would require reading arguments.
+a custom command — and, for a file-EDIT tool, the repo-relative DESTINATION PATH it
+wrote. It never records a tool's OTHER arguments, the file content or diff, or the
+tool's output. The CATEGORY is derivable from the name ALONE — we do not tell ``git
+commit`` from ``ls`` inside ``execute``, because that would require reading arguments.
 
 Capturing the NAME (a deliberate move from the earlier category-only line) is
 what lets the Receipt answer "which specific tool / connector did the agent
@@ -127,9 +127,11 @@ def _normalize_touched_path(path: Any) -> str | None:
 
     The CALLER (the hook) already relativizes the edited file to the session cwd;
     this is the belt-and-suspenders gate that GUARANTEES the store never holds an
-    absolute path, a Windows drive/UNC path, a ``..`` escape, or an over-long
-    string — so even a buggy caller can never leak an absolute prefix (home dir,
-    username). Blank / unsafe -> ``None`` (nothing recorded)."""
+    absolute path, a Windows drive/UNC path, or an over-long string — so even a buggy
+    caller can never leak an absolute prefix (home dir, username). A ``..`` escape and
+    a ``~/`` home path are KEPT: the hook writes an out-of-tree edit as a ``../``-relative
+    path and a home-file edit as ``~/…`` (no username), and neither carries an absolute
+    prefix. Blank / unsafe -> ``None``."""
 
     text = str(path or "").strip()
     if not text or "\x00" in text:
@@ -143,8 +145,10 @@ def _normalize_touched_path(path: Any) -> str | None:
     if text.startswith(("\\", "/")):  # single/UNC backslash, or / and //
         return None
     normalized = text.replace("\\", "/")
+    # ``..`` segments are kept (an out-of-tree edit is a legitimate ``../`` path); the
+    # absolute/drive/UNC guards above already blocked every absolute-prefix leak.
     parts = [part for part in normalized.split("/") if part not in {"", "."}]
-    if not parts or ".." in parts:
+    if not parts:
         return None
     return "/".join(parts)[:_TOUCHED_PATH_MAX]
 
@@ -286,8 +290,9 @@ def record_tool_activity_tick(
     """Append ONE tick to the store spool. Best-effort; never raises.
 
     Writes the small scalars ``{c, s, k, t}`` — client, session id, category, and
-    a timestamp — plus ``n``, the tool NAME, when one is given; ``p``, the repo-relative
-    path a file-EDIT tool wrote (relativized to cwd, never an absolute prefix); and
+    a timestamp — plus ``n``, the tool NAME, when one is given; ``p``, the cwd-relative
+    path a file-EDIT tool wrote (relativized to cwd, keeping an out-of-tree edit as a
+    ``../`` path, so no absolute prefix, home dir, or username is ever stored); and
     ``cmd``, the command an EXECUTE tool ran, when the caller extracted one (the Actions
     dimension's "what did the agent actually run" — single-line, length-bounded, and
     best-effort scrubbed of obvious credential values by ``_normalize_command``; the raw
@@ -582,12 +587,15 @@ def build_touched_files_by_session(
     """Collect ``tool_activity_observed`` touched-file paths per (client, session).
 
     Mirrors ``build_tool_names_by_session``: reads each event's ``touched_files``
-    list (repo-relative paths a file-edit tool wrote). Batches are additive and the
+    list (cwd-relative paths a file-edit tool wrote, or ``~/…`` for a home file).
+    Batches are additive and the
     union is deduped (insertion-ordered) across imports. A session recorded before
     path capture shipped simply has none — an honest gap, never a fabricated entry.
     Every path is re-run through ``_normalize_touched_path`` here (the third gate,
-    after the tick and the drain), which is safety-equivalent to the projection's
-    ``_safe_relative_posix_path`` — both reject any absolute/drive/UNC/``..``/NUL path.
+    after the tick and the drain): it rejects any absolute/drive/UNC/NUL path (never an
+    absolute prefix), but KEEPS a ``../`` escape so an out-of-tree edit survives — the
+    projection's ``_safe_relative_posix_path`` is stricter and drops ``..`` (it guards a
+    different, section-reported input).
     """
 
     result: dict[tuple[str, str], list[str]] = {}

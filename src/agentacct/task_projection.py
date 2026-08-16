@@ -974,9 +974,10 @@ def build_task_projection(
         supporting_keys = member_keys - root_keys
         # Actions dimension: which KINDS of tools ran (hook-captured category
         # counts), which SPECIFIC tools/connectors (hook-captured tool names), and
-        # which repo-relative artifacts were touched (union of every step's
-        # files) — each summed over the Task's sessions. All are pure aggregates
-        # of already-recorded data; tool NAMES are captured, arguments never are.
+        # which artifacts were touched (union of every step's files — each path
+        # relative: cwd-relative, or ``~/…``/``../`` for a home/out-of-tree edit)
+        # — each summed over the Task's sessions. All are pure aggregates of
+        # already-recorded data; tool NAMES are captured, arguments never are.
         tool_category_counts: dict[str, int] = {}
         tool_name_counts: dict[str, int] = {}
         for key in ordered_members:
@@ -996,9 +997,10 @@ def build_task_projection(
                             tool_name_counts[label] = tool_name_counts.get(label, 0) + value
         touched_files: list[str] = []
         seen_touched_files: set[str] = set()
-        # (a) agent-reported section/check files, and (b) the repo-relative paths a
-        # file-edit tool wrote (hook-captured, per session) — either source alone
-        # routinely misses files the other has. Both are already repo-relative-safe.
+        # (a) agent-reported section/check files, and (b) the paths a file-edit tool
+        # wrote (hook-captured, per session; cwd-relative, or ``~/…``/``../`` for a
+        # home/out-of-tree edit) — either source alone routinely misses files the
+        # other has. Both are already relative, free of any absolute prefix.
         touched_sources: list[Any] = [
             item.get("files") if isinstance(item.get("files"), list) else [] for item in task_work
         ]
