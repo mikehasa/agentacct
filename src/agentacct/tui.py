@@ -1264,8 +1264,10 @@ def _render_receipt_markup(receipt: dict) -> str:
     actions = dims.get("actions") or {}
     counts = actions.get("tool_category_counts") or {}
     category_text = " ".join(f"{k}×{v}" for k, v in sorted(counts.items())) if counts else "not instrumented"
+    _cmd_n = int(actions.get("command_count") or 0)
+    _cmd_txt = f" · ran {_cmd_n} command(s)" if _cmd_n else ""
     lines.append(
-        f"[b]Actions[/]   {_escape(category_text)} · touched {actions.get('touched_file_count', 0)} file(s)"
+        f"[b]Actions[/]   {_escape(category_text)} · touched {actions.get('touched_file_count', 0)} file(s){_cmd_txt}"
         f"   [dim]\\[{_prov('actions')}][/]"
     )
     names_preview = actions.get("tool_names_preview") or []
@@ -1283,6 +1285,12 @@ def _render_receipt_markup(receipt: dict) -> str:
     _elided_files = int(actions.get("touched_files_elided") or 0)
     if _elided_files:
         lines.append(f"           [dim]… +{_elided_files} more[/]")
+    for _cmd in actions.get("commands_preview") or []:
+        # The actual commands the agent ran (single-line, credential-scrubbed).
+        lines.append(f"           [dim]$ {_escape(str(_cmd))}[/]")
+    _elided_commands = int(actions.get("commands_elided") or 0)
+    if _elided_commands:
+        lines.append(f"           [dim]… +{_elided_commands} more[/]")
 
     cost = dims.get("cost") or {}
     lines.append(f"[b]Cost[/]      {_escape(_receipt_summary_cost(cost))}   [dim]\\[{_prov('cost')}][/]")

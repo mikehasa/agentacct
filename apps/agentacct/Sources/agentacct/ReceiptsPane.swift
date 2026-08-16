@@ -259,6 +259,22 @@ struct ReceiptCards: View {
                 }
                 .padding(.leading, 82)  // align under the summary column (74 label + 8 spacing)
             }
+            let commands = actionsCommandsPreview
+            if !commands.shown.isEmpty {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(commands.shown, id: \.self) { cmd in
+                        // verbatim: a command is untrusted text — never interpret it as
+                        // markdown (Text's default LocalizedStringKey init would).
+                        Text(verbatim: "$ \(cmd)").font(.caption).foregroundStyle(Theme.textFaint)
+                            .lineLimit(1).truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if commands.elided > 0 {
+                        Text("… +\(commands.elided) more").font(.caption).foregroundStyle(Theme.textFaint)
+                    }
+                }
+                .padding(.leading, 82)  // align the commands under the summary column
+            }
         }
     }
 
@@ -271,6 +287,16 @@ struct ReceiptCards: View {
             return (preview, dim.touchedFilesElided ?? 0)
         }
         return (dim.touchedFiles ?? [], 0)
+    }
+
+    // Same daemon-capped preview + disclosed overflow for the commands an execute tool
+    // ran (fallback to the full list for an older payload without the preview fields).
+    private var actionsCommandsPreview: (shown: [String], elided: Int) {
+        let dim = receipt.dimensions.actions
+        if let preview = dim.commandsPreview {
+            return (preview, dim.commandsElided ?? 0)
+        }
+        return (dim.commands ?? [], 0)
     }
 
     @ViewBuilder
@@ -339,6 +365,9 @@ struct ReceiptCards: View {
             ? "not instrumented"
             : counts.sorted { $0.key < $1.key }.map { "\($0.key)×\($0.value)" }.joined(separator: " ")
         var summary = "\(categories) · touched \(dim.touchedFileCount ?? 0) file(s)"
+        if let commandCount = dim.commandCount, commandCount > 0 {
+            summary += " · ran \(commandCount) command(s)"
+        }
         // The specific tools/connectors the agent used (daemon-ranked), with the
         // disclosed overflow — surfaced beneath the coarse category counts.
         if let preview = dim.toolNamesPreview, !preview.isEmpty {

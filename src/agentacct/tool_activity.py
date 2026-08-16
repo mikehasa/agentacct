@@ -149,6 +149,125 @@ def _normalize_touched_path(path: Any) -> str | None:
     return "/".join(parts)[:_TOUCHED_PATH_MAX]
 
 
+# A captured command is length-bounded (a pathological one-liner should not bloat the
+# spool) and the number of DISTINCT commands per drained batch is capped — "at least
+# this much", never more.
+_COMMAND_MAX = 400
+_COMMANDS_PER_BATCH_MAX = 100
+
+_REDACTED = "‹redacted›"  # ‹redacted›
+# Control / ANSI-escape bytes are stripped from a captured command so a crafted command
+# cannot inject terminal escapes into the CLI/TUI Receipt render (\x00 already drops the
+# whole command earlier). Whitespace is collapsed separately, so only non-space controls
+# remain here to remove.
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")  # C0 controls, DEL, and the C1 range (CSI/OSC)
+
+
+def _is_nonsecret_value(value: str) -> bool:
+    """A value that is definitionally NOT an inline secret: a shell variable reference
+    (``$FOO`` / ``${FOO}``) is an indirection, never a literal token."""
+    return value.startswith("$")
+
+
+# Env-var NAMES that contain a credential keyword but whose VALUE is definitionally a
+# path/handle (``GOOGLE_APPLICATION_CREDENTIALS``, ``*_TOKEN_FILE``, …), so must not be
+# redacted — masking the path hides what the agent ran and protects nothing.
+_NONSECRET_NAME_SUFFIXES = ("_FILE", "_PATH", "_DIR", "_CREDENTIALS", "_CREDENTIAL")
+# A credential keyword must be a WHOLE ``_``-delimited name segment (``GITHUB_TOKEN``) —
+# NOT a substring of a config name (``MAX_TOKENS``, ``TOKENIZERS_PARALLELISM``).
+# (``PWD`` is deliberately excluded — it collides with the shell working-dir env ``PWD``/
+# ``OLDPWD``; the common ``*_PASSWORD``/``PASSWD`` forms are covered instead.)
+_CREDENTIAL_SEGMENTS = frozenset({"PASSWORD", "PASSWD", "TOKEN", "SECRET", "APIKEY", "CREDENTIAL", "CREDENTIALS"})
+_CREDENTIAL_NAME_PARTS = ("API_KEY", "ACCESS_KEY", "AUTH_TOKEN", "SECRET_KEY", "SECRET_ACCESS_KEY")
+# A value that is a config SCALAR (number/bool/null) is not a secret — masking it would
+# corrupt common config like ``MAX_TOKENS=4096`` or ``token_count=5``.
+_SCALAR_VALUE = re.compile(r"(?i)(?:\d+|true|false|none|null|yes|no)$")
+
+
+def _redact_flag(match: re.Match[str]) -> str:
+    flag, value = match.group(1), match.group(2)
+    return match.group(0) if _is_nonsecret_value(value) else flag + _REDACTED
+
+
+def _redact_env(match: re.Match[str]) -> str:
+    name, value = match.group(1), match.group(2)  # name includes the trailing '='
+    bare = name[:-1].upper()
+    if bare.endswith(_NONSECRET_NAME_SUFFIXES) or _is_nonsecret_value(value) or _SCALAR_VALUE.match(value):
+        return match.group(0)
+    # A real credential name has the keyword as a whole ``_`` segment (GITHUB_TOKEN),
+    # as a name SUFFIX (PGPASSWORD), or as a known two-word part (API_KEY) — not merely a
+    # substring of a config name (MAX_TOKENS, TOKENIZERS_PARALLELISM).
+    is_credential = (
+        any(bare.endswith(kw) for kw in _CREDENTIAL_SEGMENTS)
+        or bool(_CREDENTIAL_SEGMENTS & set(bare.split("_")))
+        or any(part in bare for part in _CREDENTIAL_NAME_PARTS)
+    )
+    return name + _REDACTED if is_credential else match.group(0)
+
+
+# Best-effort credential masking for a captured command. LOCAL capture keeps the command
+# for readability (the owner's model: capture detailed locally, redact when a Receipt is
+# SHARED); this only masks obvious secret VALUES in RECOGNIZABLE positions so a live token
+# is not persisted verbatim. It is NOT a guarantee — share-time redaction is the real
+# safety net — and it deliberately errs toward keeping the command legible. Each sub runs
+# once; a ``repl`` may be a string or a function (to skip a non-secret value).
+_SECRET_SUBS: tuple[tuple[re.Pattern[str], Any], ...] = (
+    # Known token shapes (prefix-anchored), masked whole.
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{12,}"), _REDACTED),
+    (re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9]{12,}"), _REDACTED),
+    (re.compile(r"\bgh[posru]_[A-Za-z0-9]{20,}"), _REDACTED),  # ghp/gho/ghr/ghs/ghu
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"), _REDACTED),
+    (re.compile(r"\bglpat-[A-Za-z0-9_-]{16,}"), _REDACTED),
+    (re.compile(r"\bpypi-[A-Za-z0-9_-]{16,}"), _REDACTED),
+    (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}"), _REDACTED),
+    (re.compile(r"\bAKIA[A-Z0-9]{16}\b"), _REDACTED),
+    (re.compile(r"\bAIza[A-Za-z0-9_-]{35}\b"), _REDACTED),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}"), _REDACTED),  # JWT
+    # A credential in an inline JSON/quoted body ({"password": "…"} / {"api_key":"…"}).
+    (re.compile(r'(?i)("(?:password|passwd|pwd|secret|token|api[-_]?key|access[-_]?key|auth[-_]?token|credential)"\s*:\s*")[^"]*'), r"\1" + _REDACTED),
+    # An Authorization / api-key header VALUE passed via curl ``-H``/``--header`` (quoted,
+    # non-empty). Anchoring on the header FLAG + quote avoids corrupting a bare
+    # ``authorization:`` grep pattern or an echoed header NAME, and the ``+`` (non-empty
+    # value) avoids fabricating a redaction where the quoted string has no value at all.
+    (re.compile(r"""(?i)(-H|--header)(=?\s*)(["'])(authorization|proxy-authorization|x-api-key|x-auth-token)(\s*:\s*)[^"']+"""), r"\1\2\3\4\5" + _REDACTED),
+    # --flag=value or --flag value for credential-ish flags (a $var reference is kept).
+    (re.compile(r"(?i)(--?(?:password|passwd|pwd|token|secret|api[-_]?key|apikey|access[-_]?key|auth[-_]?token|credential)[=\s])(\S+)"), _redact_flag),
+    # KEY=VALUE env style for credential-ish names (a *_FILE/_PATH/… name or a $var value
+    # is kept — its value is a path/handle, not an inline secret).
+    (re.compile(r"(?i)\b([A-Za-z0-9_]*(?:PASSWORD|PASSWD|TOKEN|SECRET|APIKEY|API_KEY|ACCESS_KEY|AUTH_TOKEN|CREDENTIAL)[A-Za-z0-9_]*=)(\S+)"), _redact_env),
+    # URL userinfo password (scheme://user:pass@host, or scheme://:pass@host).
+    (re.compile(r"(://[^:/?\s@]*:)([^@/?\s]+)(@)"), r"\1" + _REDACTED + r"\3"),
+)
+
+
+def _scrub_command(command: str) -> str:
+    """Mask obvious credential VALUES in a command (best-effort — see ``_SECRET_SUBS``)."""
+    for pattern, repl in _SECRET_SUBS:
+        command = pattern.sub(repl, command)
+    return command
+
+
+def _normalize_command(command: Any) -> str | None:
+    """The scrubbed, single-line, length-bounded command an EXECUTE tool ran, or ``None``.
+
+    Collapses whitespace to single spaces (a spool line is one line; the Actions summary
+    wants one line too), masks obvious credential values, and bounds the length. It is
+    NOT a promise that no secret survives — share-time redaction is the real safety net —
+    only that a live token in a recognizable shape is not persisted verbatim. Blank ->
+    ``None``."""
+
+    text = str(command or "").strip()
+    if not text or "\x00" in text:
+        return None
+    # Collapse whitespace (keeps words apart), then strip any remaining control/ANSI
+    # bytes so a crafted command cannot inject terminal escapes into the Receipt render.
+    text = _CONTROL_RE.sub("", " ".join(text.split()))
+    # Bound the scrub INPUT before running the credential regexes: a few patterns can
+    # backtrack superlinearly on a pathologically long token run, and only the first
+    # ``_COMMAND_MAX`` chars are stored anyway, so scrubbing a modest lead is enough.
+    return _scrub_command(text[: _COMMAND_MAX * 4])[:_COMMAND_MAX] or None
+
+
 def tool_activity_spool_path(store_dir: Path | str) -> Path:
     return Path(store_dir) / _SPOOL_RELATIVE_PATH
 
@@ -161,19 +280,21 @@ def record_tool_activity_tick(
     category: str,
     name: Any = None,
     path: Any = None,
+    command: Any = None,
     at: float,
 ) -> None:
     """Append ONE tick to the store spool. Best-effort; never raises.
 
     Writes the small scalars ``{c, s, k, t}`` — client, session id, category, and
-    a timestamp — plus ``n``, the tool NAME, when one is given, and ``p``, the
-    repo-relative path a file-EDIT tool wrote, when the caller extracted one (the
-    Actions dimension's "which artifacts were touched" — the caller relativizes it
-    to the session cwd and drops anything outside, so no absolute prefix, home dir,
-    or username is ever stored; arguments, content and output are still never
-    recorded). The line is a single tiny JSON object written with ``O_APPEND`` so
-    concurrent hook processes (many tool calls in flight) never corrupt or
-    interleave lines.
+    a timestamp — plus ``n``, the tool NAME, when one is given; ``p``, the repo-relative
+    path a file-EDIT tool wrote (relativized to cwd, never an absolute prefix); and
+    ``cmd``, the command an EXECUTE tool ran, when the caller extracted one (the Actions
+    dimension's "what did the agent actually run" — single-line, length-bounded, and
+    best-effort scrubbed of obvious credential values by ``_normalize_command``; the raw
+    command is kept for readability per the local-capture model, but a live token in a
+    recognizable shape is not persisted verbatim). Tool OUTPUT and non-command arguments
+    are still never recorded. The line is a single tiny JSON object written with
+    ``O_APPEND`` so concurrent hook processes never corrupt or interleave lines.
     """
 
     try:
@@ -192,6 +313,9 @@ def record_tool_activity_tick(
         touched = _normalize_touched_path(path)
         if touched:
             payload["p"] = touched
+        normalized_command = _normalize_command(command)
+        if normalized_command:
+            payload["cmd"] = normalized_command
         line = json.dumps(
             payload,
             ensure_ascii=False,
@@ -247,6 +371,7 @@ def drain_tool_activity_spool(
     counts: dict[tuple[str, str], dict[str, int]] = {}
     name_counts: dict[tuple[str, str], dict[str, int]] = {}
     touched_paths: dict[tuple[str, str], list[str]] = {}
+    commands: dict[tuple[str, str], list[str]] = {}
     latest: dict[tuple[str, str], float] = {}
     for line in raw.splitlines():
         line = line.strip()
@@ -282,6 +407,13 @@ def drain_tool_activity_spool(
             path_bucket = touched_paths.setdefault(key, [])
             if touched not in path_bucket and len(path_bucket) < _TOUCHED_FILES_PER_BATCH_MAX:
                 path_bucket.append(touched)
+        # Command an execute tool ran (present only on ticks written after command
+        # capture shipped). Deduped, insertion-ordered, hard-capped per batch.
+        command = _normalize_command(row.get("cmd"))
+        if command:
+            cmd_bucket = commands.setdefault(key, [])
+            if command not in cmd_bucket and len(cmd_bucket) < _COMMANDS_PER_BATCH_MAX:
+                cmd_bucket.append(command)
         stamp = row.get("t")
         if isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
             latest[key] = max(latest.get(key, 0.0), float(stamp))
@@ -316,6 +448,12 @@ def drain_tool_activity_spool(
             # rationale as tool_names): a path is never a dict KEY, so the store's
             # secret redaction can never blank it.
             metadata["touched_files"] = list(touched)
+        cmds = commands.get((client, session))
+        if cmds:
+            # Commands ride as a plain list of string VALUES too — the store's secret
+            # redaction is KEY-based, so a command placed under a value never triggers it
+            # (the command was already best-effort scrubbed at ``_normalize_command``).
+            metadata["commands"] = list(cmds)
         events.append(
             {
                 "event_id": f"toolact:{digest}",
@@ -475,10 +613,46 @@ def build_touched_files_by_session(
     return {key: value for key, value in result.items() if value}
 
 
+def build_commands_by_session(
+    events: Iterable[Mapping[str, Any]],
+) -> dict[tuple[str, str], list[str]]:
+    """Collect ``tool_activity_observed`` commands per (client, session).
+
+    Mirrors ``build_touched_files_by_session``: reads each event's ``commands`` list
+    (single-line, best-effort-scrubbed command strings an execute tool ran). Batches are
+    additive and the union is deduped (insertion-ordered) across imports. Each command is
+    re-run through ``_normalize_command`` here (a second scrub + bound), so a command
+    recorded before a scrub rule shipped is re-masked on read. A session recorded before
+    command capture shipped simply has none — an honest gap, never a fabricated entry."""
+
+    result: dict[tuple[str, str], list[str]] = {}
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        if event.get("event_type") != TOOL_ACTIVITY_EVENT_TYPE:
+            continue
+        metadata = event.get("metadata")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        client = str(metadata.get("client") or "").strip()
+        session = str(metadata.get("client_session_id") or "").strip()
+        if not client or not session:
+            continue
+        cmds = metadata.get("commands")
+        if not isinstance(cmds, list):
+            continue
+        bucket = result.setdefault((client, session), [])
+        for candidate in cmds:
+            normalized = _normalize_command(candidate)
+            if normalized and normalized not in bucket:
+                bucket.append(normalized)
+    return {key: value for key, value in result.items() if value}
+
+
 __all__ = [
     "TOOL_ACTIVITY_CAPTURE_BASIS",
     "TOOL_ACTIVITY_EVENT_TYPE",
     "TOOL_CATEGORIES",
+    "build_commands_by_session",
     "build_tool_activity_by_session",
     "build_tool_names_by_session",
     "build_touched_files_by_session",

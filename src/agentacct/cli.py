@@ -10483,6 +10483,9 @@ def _render_receipt_text(receipt: dict[str, Any]) -> None:
     actions = dims.get("actions", {})
     actions_summary = _receipt_category_text(actions.get("tool_category_counts") or {})
     actions_summary += f"  · touched {int(actions.get('touched_file_count') or 0)} file(s)"
+    _command_count = int(actions.get("command_count") or 0)
+    if _command_count:
+        actions_summary += f"  · ran {_command_count} command(s)"
     names_preview = actions.get("tool_names_preview") or []
     if names_preview:
         # The SPECIFIC tools/connectors the agent used (most-used first). Names are
@@ -10502,6 +10505,15 @@ def _render_receipt_text(receipt: dict[str, Any]) -> None:
         if elided_files:
             lines += f"\n… +{elided_files} more"
         actions_summary += f"\n[dim]{_rich_escape(lines)}[/dim]"
+    shown_commands = actions.get("commands_preview") or []
+    elided_commands = int(actions.get("commands_elided") or 0)
+    if shown_commands:
+        # The actual commands the agent ran (single-line, credential-scrubbed), not just
+        # the count. The daemon capped the slice and disclosed the overflow.
+        cmd_lines = "\n".join(f"$ {cmd}" for cmd in shown_commands)
+        if elided_commands:
+            cmd_lines += f"\n… +{elided_commands} more"
+        actions_summary += f"\n[dim]{_rich_escape(cmd_lines)}[/dim]"
     table.add_row("Actions", actions_summary, ", ".join(actions.get("provenance") or []))
 
     cost = dims.get("cost", {})

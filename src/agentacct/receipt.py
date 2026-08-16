@@ -180,6 +180,24 @@ def touched_files_preview(
     return shown, max(0, len(files) - len(shown))
 
 
+# The Actions dimension captures every command an execute tool ran; surfaces preview a
+# capped slice and disclose the remainder (same honesty rule + single-source-of-truth as
+# the touched-file preview). Commands are already single-line + best-effort scrubbed.
+RECEIPT_COMMANDS_PREVIEW = 12
+
+
+def commands_preview(
+    actions: Mapping[str, Any], *, limit: int = RECEIPT_COMMANDS_PREVIEW
+) -> tuple[list[str], int]:
+    """Return (commands to show, count elided). Called ONCE, in ``_actions_dimension``,
+    which bakes the result into the receipt as ``commands_preview`` / ``commands_elided``
+    so every surface (CLI, TUI, macOS app) renders the same daemon-provided slice."""
+
+    commands = [str(cmd) for cmd in (actions.get("commands") or []) if str(cmd).strip()]
+    shown = commands if limit is None or limit < 0 else commands[:limit]
+    return shown, max(0, len(commands) - len(shown))
+
+
 # Tool NAMES are an OPEN set (unlike the 9 fixed categories), so the Actions
 # dimension previews the most-used and discloses the remainder — computed ONCE
 # here so every surface renders the same ranking, the same way the touched-file
@@ -644,6 +662,8 @@ def _actions_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
     name_counts = _mapping(actions.get("tool_name_counts"))
     names_preview, names_elided = tool_names_preview({"tool_name_counts": name_counts})
     section_files = actions.get("touched_files") if isinstance(actions.get("touched_files"), list) else []
+    # Commands an execute tool ran (hook-captured; single-line, best-effort scrubbed).
+    commands = [cmd for cmd in (_text(x) for x in (actions.get("commands") or [])) if cmd]
     # Union the section-recorded files with the paths the Task's machine checks
     # named: either source alone routinely misses files the other has.
     touched: list[str] = []
@@ -659,7 +679,7 @@ def _actions_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
         provenance.append(SOURCE_MCP)
     else:
         gaps.append("No touched files were recorded for this Task's steps.")
-    if counts or name_counts:
+    if counts or name_counts or commands:
         provenance.append(SOURCE_HOOK)
     else:
         gaps.append(
@@ -669,6 +689,7 @@ def _actions_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
     # (CLI, TUI, and the macOS app) renders the daemon-provided slice and never
     # re-derives the cap client-side — the single source of truth for the cap.
     preview, elided = touched_files_preview({"touched_files": touched})
+    commands_shown, commands_elided = commands_preview({"commands": commands})
     return {
         "tool_category_counts": dict(counts),
         "tool_category_total": int(actions.get("tool_category_total") or 0),
@@ -680,6 +701,10 @@ def _actions_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
         "touched_file_count": len(touched),
         "touched_files_preview": preview,
         "touched_files_elided": elided,
+        "commands": commands,
+        "command_count": len(commands),
+        "commands_preview": commands_shown,
+        "commands_elided": commands_elided,
         "provenance": sorted(set(provenance)) or [SOURCE_NONE],
         "gaps": gaps,
     }

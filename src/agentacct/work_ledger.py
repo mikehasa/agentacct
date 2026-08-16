@@ -15,6 +15,7 @@ from .confidence import (
 )
 from .session_lifecycle import build_session_end_by_session
 from .tool_activity import (
+    build_commands_by_session,
     build_tool_activity_by_session,
     build_tool_names_by_session,
     build_touched_files_by_session,
@@ -216,7 +217,8 @@ def build_work_ledger(
     tool_activity_by_session = build_tool_activity_by_session(events)
     tool_names_by_session = build_tool_names_by_session(events)
     touched_files_by_session = build_touched_files_by_session(events)
-    if tool_activity_by_session or tool_names_by_session or touched_files_by_session:
+    commands_by_session = build_commands_by_session(events)
+    if tool_activity_by_session or tool_names_by_session or touched_files_by_session or commands_by_session:
         for entry in session_rollup.get("sessions", []):
             entry_key = (str(entry.get("client") or ""), str(entry.get("client_session_id") or ""))
             counts = tool_activity_by_session.get(entry_key)
@@ -231,6 +233,11 @@ def build_work_ledger(
             touched = touched_files_by_session.get(entry_key)
             if touched:
                 entry["touched_files"] = list(touched)
+            # Commands an execute tool ran (hook-captured, single-line, best-effort
+            # scrubbed of obvious credential values at capture and re-scrubbed on read).
+            commands = commands_by_session.get(entry_key)
+            if commands:
+                entry["commands"] = list(commands)
     # Ambient session-end (SessionEnd hook): stamp each work item with the end
     # time of its OWN session so the outcome reducer can honestly derive the
     # ``ended_open`` disposition — an open step whose session stopped without a
