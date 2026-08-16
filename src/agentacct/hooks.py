@@ -627,20 +627,36 @@ def _edit_target_relpath(event: Mapping[str, Any], category: str) -> str | None:
         return None
 
 
+def _execute_command(event: Mapping[str, Any], category: str) -> str | None:
+    """The raw command an EXECUTE-category tool ran, or ``None``.
+
+    Reads ONLY the ``command`` arg from ``tool_input`` (a Bash/shell tool), never any
+    other argument or the output. The raw command is returned as-is; the tick's
+    ``_normalize_command`` single-lines it, best-effort scrubs obvious credential values,
+    and bounds its length before it is ever stored."""
+    if category != "execute":
+        return None
+    tool_input = event.get("tool_input") if isinstance(event.get("tool_input"), dict) else None
+    if not tool_input:
+        return None
+    command = tool_input.get("command")
+    return command if isinstance(command, str) and command.strip() else None
+
+
 def capture_tool_activity(
     raw: str, *, store_dir: Path | str | None = None, client: str = "claude-code"
 ) -> None:
     """Record ONE tool-activity tick for this PreToolUse. Never raises.
 
     The PreToolUse hook already receives the tool name (and fails open), so this
-    is the cheapest honest place to observe what the agent reached for. The
-    category AND the tool NAME are spooled — never arguments or any payload — plus,
-    for a file-EDIT tool, the cwd-relative destination path (see
-    ``_edit_target_relpath``: relativized to cwd — or ``~/…`` for a home file — never
-    an absolute prefix/home dir/username, never content/args) so the
-    Receipt's Actions dimension can show which artifacts were touched. The spool
-    lands in the SAME store as the client-context bridge so the usage importer
-    drains both from one place.
+    is the cheapest honest place to observe what the agent reached for. The category
+    AND the tool NAME are spooled — plus, for a file-EDIT tool, the cwd-relative
+    destination path (see ``_edit_target_relpath``: relativized to cwd — or ``~/…`` for
+    a home file — never an absolute prefix/home dir/username, never content), and for
+    an EXECUTE tool, the COMMAND it ran (see ``_execute_command``: single-lined,
+    best-effort scrubbed of obvious credential values, length-bounded). Non-command
+    arguments and tool output are never spooled. The spool lands in the SAME store as
+    the client-context bridge so the usage importer drains both from one place.
 
     ``client`` labels which agent emitted the tick. Codex's PreToolUse hook uses
     the same STDIN shape (``session_id``/``tool_name``), and its ``session_id``
@@ -669,6 +685,7 @@ def capture_tool_activity(
             category=category,
             name=tool_name,
             path=_edit_target_relpath(event, category),
+            command=_execute_command(event, category),
             at=time.time(),
         )
     except Exception:  # noqa: BLE001 - activity capture must never affect the hook decision.

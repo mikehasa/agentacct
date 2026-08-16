@@ -1014,6 +1014,20 @@ def build_task_projection(
                 if path and path not in seen_touched_files:
                     seen_touched_files.add(path)
                     touched_files.append(path)
+        # Commands an execute tool ran (hook-captured, per session; single-line and
+        # best-effort scrubbed of obvious credential values) — the union across the
+        # Task's sessions, deduped and insertion-ordered.
+        commands: list[str] = []
+        seen_commands: set[str] = set()
+        for key in ordered_members:
+            session_commands = sessions[key].get("commands")
+            if not isinstance(session_commands, list):
+                continue
+            for candidate in session_commands:
+                command = _text(candidate)
+                if command and command not in seen_commands:
+                    seen_commands.add(command)
+                    commands.append(command)
         actions = {
             "tool_category_counts": dict(sorted(tool_category_counts.items())),
             "tool_category_total": sum(tool_category_counts.values()),
@@ -1021,6 +1035,8 @@ def build_task_projection(
             "tool_name_total": sum(tool_name_counts.values()),
             "touched_files": touched_files,
             "touched_file_count": len(touched_files),
+            "commands": commands,
+            "command_count": len(commands),
         }
         tasks.append(
             {

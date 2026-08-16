@@ -711,6 +711,12 @@ struct ReceiptActionsDim: Decodable {
     // them still decodes (the app then falls back to slicing touchedFiles).
     let touchedFilesPreview: [String]?
     let touchedFilesElided: Int?
+    // The commands an execute tool ran (daemon-capped preview + disclosed overflow;
+    // single-line, credential-scrubbed). Optional so an older payload still decodes.
+    let commands: [String]?
+    let commandCount: Int?
+    let commandsPreview: [String]?
+    let commandsElided: Int?
     // The specific tools the agent used (daemon-ranked, most-used first) + the
     // disclosed overflow. Optional so an older payload without them still decodes.
     let toolNamesPreview: [ReceiptToolName]?
@@ -725,6 +731,10 @@ struct ReceiptActionsDim: Decodable {
         case touchedFileCount = "touched_file_count"
         case touchedFilesPreview = "touched_files_preview"
         case touchedFilesElided = "touched_files_elided"
+        case commands
+        case commandCount = "command_count"
+        case commandsPreview = "commands_preview"
+        case commandsElided = "commands_elided"
         case toolNamesPreview = "tool_names_preview"
         case toolNamesElided = "tool_names_elided"
         case provenance, gaps
