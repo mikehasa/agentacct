@@ -175,14 +175,31 @@ def _estimated_equivalent_cost(event: ClientUsageEvent) -> float | None:
 
 def _record_from_client_usage(event: ClientUsageEvent) -> DashboardUsageRecord:
     estimated_cost = _estimated_equivalent_cost(event)
+    # Additivity judges the TOKEN lineage, not the Task grouping — mirroring
+    # ClientUsageEvent.to_sentinel_event. A Codex fork/resume/compaction split
+    # into its own root Task keeps its exact lineage on the token_lineage_*
+    # fields, so its replayed cumulative counter stays quarantined in this live
+    # preview/dashboard lane too instead of double-counting the parent prefix.
+    # Fall back to the grouping fields for clients that never set the lineage
+    # fields (byte-identical to the pre-split behavior for them).
+    additivity_session_kind = (
+        event.token_lineage_session_kind
+        if event.token_lineage_session_kind is not None
+        else event.client_session_kind
+    )
+    additivity_parent_session_id = (
+        event.token_lineage_parent_client_session_id
+        if event.token_lineage_parent_client_session_id is not None
+        else event.parent_client_session_id
+    )
     usage_additive, normalization_state = local_usage_additivity(
         client=event.client,
-        session_kind=event.client_session_kind,
-        parent_client_session_id=event.parent_client_session_id,
+        session_kind=additivity_session_kind,
+        parent_client_session_id=additivity_parent_session_id,
         usage_update_semantics=event.usage_update_semantics,
         source_namespace_fingerprint=event.source_namespace_fingerprint,
         parent_source_namespace_fingerprint=(
-            event.source_namespace_fingerprint if event.parent_client_session_id else None
+            event.source_namespace_fingerprint if additivity_parent_session_id else None
         ),
     )
     return DashboardUsageRecord(
