@@ -14,7 +14,11 @@ from .confidence import (
     normalize_usage_confidence,
 )
 from .session_lifecycle import build_session_end_by_session
-from .tool_activity import build_tool_activity_by_session, build_tool_names_by_session
+from .tool_activity import (
+    build_tool_activity_by_session,
+    build_tool_names_by_session,
+    build_touched_files_by_session,
+)
 from .join_rules import (
     JoinCandidateIndex,
     annotate_usage_source_namespace_ambiguity,
@@ -211,7 +215,8 @@ def build_work_ledger(
     # gets NO key, so the Receipt shows an honest Gap, never a fabricated zero.
     tool_activity_by_session = build_tool_activity_by_session(events)
     tool_names_by_session = build_tool_names_by_session(events)
-    if tool_activity_by_session or tool_names_by_session:
+    touched_files_by_session = build_touched_files_by_session(events)
+    if tool_activity_by_session or tool_names_by_session or touched_files_by_session:
         for entry in session_rollup.get("sessions", []):
             entry_key = (str(entry.get("client") or ""), str(entry.get("client_session_id") or ""))
             counts = tool_activity_by_session.get(entry_key)
@@ -220,6 +225,12 @@ def build_work_ledger(
             names = tool_names_by_session.get(entry_key)
             if names:
                 entry["tool_name_counts"] = dict(names)
+            # Repo-relative paths a file-edit tool wrote (hook-captured). Each was
+            # already gated by _normalize_touched_path at the tick, the drain, and
+            # build_touched_files_by_session (safety-equivalent to _safe_relative_posix_path).
+            touched = touched_files_by_session.get(entry_key)
+            if touched:
+                entry["touched_files"] = list(touched)
     # Ambient session-end (SessionEnd hook): stamp each work item with the end
     # time of its OWN session so the outcome reducer can honestly derive the
     # ``ended_open`` disposition — an open step whose session stopped without a

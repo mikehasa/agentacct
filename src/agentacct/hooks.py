@@ -474,6 +474,52 @@ def capture_claude_code_client_context(raw: str, *, store_dir: Path | str | None
         return None
 
 
+# Keys a file-edit tool uses for its DESTINATION path, across agents (Claude Code
+# Edit/Write use ``file_path`` / ``notebook_path``; others vary). Only the
+# destination path is ever read — never the content, the diff, or any other arg.
+_EDIT_PATH_KEYS = ("file_path", "notebook_path", "filePath", "path", "target_file", "file")
+
+
+def _edit_target_relpath(event: Mapping[str, Any], category: str) -> str | None:
+    """The repo-relative path a file-EDIT tool wrote, or ``None``.
+
+    Reads ONLY the destination path from ``tool_input`` for an ``edit``-category
+    tool and relativizes it to the session ``cwd``, so nothing outside the working
+    tree — and no absolute prefix, home dir, or username — is ever captured. Never
+    reads the file content, the edit/diff, or any other argument. A path that
+    escapes the cwd (``../``) or cannot be relativized is dropped."""
+    if category != "edit":
+        return None
+    tool_input = event.get("tool_input") if isinstance(event.get("tool_input"), dict) else None
+    if not tool_input:
+        return None
+    raw_path = None
+    for key in _EDIT_PATH_KEYS:
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            raw_path = value.strip()
+            break
+    if not raw_path:
+        return None
+    cwd = event.get("cwd")
+    cwd = cwd.strip() if isinstance(cwd, str) and cwd.strip() else None
+    try:
+        if os.path.isabs(raw_path):
+            if not cwd:
+                return None  # never store an absolute path we cannot relativize
+            rel = os.path.relpath(raw_path, cwd)
+        else:
+            rel = raw_path
+    except (ValueError, OSError):
+        return None
+    rel = rel.replace(os.sep, "/")
+    # Drop anything that escapes the working tree or is still absolute — the tick's
+    # _normalize_touched_path re-checks this, but never emit it in the first place.
+    if rel.startswith("/") or rel.split("/", 1)[0] == "..":
+        return None
+    return rel
+
+
 def capture_tool_activity(
     raw: str, *, store_dir: Path | str | None = None, client: str = "claude-code"
 ) -> None:
@@ -481,10 +527,12 @@ def capture_tool_activity(
 
     The PreToolUse hook already receives the tool name (and fails open), so this
     is the cheapest honest place to observe what the agent reached for. The
-    category AND the tool NAME are spooled — never arguments or any payload — so
-    the Receipt's Actions dimension can show both what KIND of tool ran and which
-    SPECIFIC tool/connector. The spool lands in the SAME store as the
-    client-context bridge so the usage importer drains both from one place.
+    category AND the tool NAME are spooled — never arguments or any payload — plus,
+    for a file-EDIT tool, the repo-relative DESTINATION path (see
+    ``_edit_target_relpath``: relativized to cwd, never content/args) so the
+    Receipt's Actions dimension can show which artifacts were touched. The spool
+    lands in the SAME store as the client-context bridge so the usage importer
+    drains both from one place.
 
     ``client`` labels which agent emitted the tick. Codex's PreToolUse hook uses
     the same STDIN shape (``session_id``/``tool_name``), and its ``session_id``
@@ -512,6 +560,7 @@ def capture_tool_activity(
             session_id=session_id,
             category=category,
             name=tool_name,
+            path=_edit_target_relpath(event, category),
             at=time.time(),
         )
     except Exception:  # noqa: BLE001 - activity capture must never affect the hook decision.
