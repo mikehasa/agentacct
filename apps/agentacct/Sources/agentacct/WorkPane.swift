@@ -59,11 +59,19 @@ struct WorkPane: View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundStyle(Theme.textFaint)
-                TextField("Filter tasks", text: $query).textFieldStyle(.plain).font(Type.body)
-                Picker("", selection: $sort) {
-                    ForEach(WorkSort.allCases) { Text($0.rawValue).tag($0) }
+                if SnapshotMode.enabled {
+                    // ImageRenderer draws a TextField / .menu Picker as a yellow
+                    // placeholder; a snapshot shows plain stand-ins instead.
+                    Text("Filter tasks").font(Type.body).foregroundStyle(Theme.textFaint)
+                    Spacer()
+                    Chip(text: sort.rawValue, tint: Theme.accent)
+                } else {
+                    TextField("Filter tasks", text: $query).textFieldStyle(.plain).font(Type.body)
+                    Picker("", selection: $sort) {
+                        ForEach(WorkSort.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.menu).fixedSize()
                 }
-                .pickerStyle(.menu).fixedSize()
             }
             .padding(.horizontal, 8).padding(.vertical, 7)
             Rectangle().fill(Theme.border.opacity(0.6)).frame(height: 1)
@@ -175,9 +183,15 @@ private struct SessionDrillRow: View {
         _expanded = State(initialValue: initiallyExpanded)
     }
 
+    /// The lazily-loaded detail, or a snapshot-preloaded one (the offscreen
+    /// renderer never runs the `.task` that would load it live).
+    private var effectiveDetail: V1SessionDetail? {
+        detail ?? dashboard.preloadedSessions["\(member.client)::\(member.clientSessionId)"]
+    }
+
     private var label: String {
         if let title = member.title, !title.isEmpty { return title }
-        if let loaded = detail?.session.displayTitle, !loaded.isEmpty { return loaded }
+        if let loaded = effectiveDetail?.session.displayTitle, !loaded.isEmpty { return loaded }
         return "\(member.client) · \(String(member.clientSessionId.prefix(8)))"
     }
 
@@ -220,19 +234,24 @@ private struct SessionDrillRow: View {
 
     @ViewBuilder
     private var expandedBody: some View {
-        if loading {
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("loading steps…").font(Type.small).foregroundStyle(Theme.textFaint)
-            }
-        } else if failed {
-            Text("couldn't load this session").font(Type.small).foregroundStyle(Theme.orange)
-        } else if let detail {
+        if let detail = effectiveDetail {
             VStack(alignment: .leading, spacing: 6) {
                 if detail.steps.isEmpty {
                     Text("no recorded steps for this session").font(Type.small).foregroundStyle(Theme.textFaint)
                 } else {
-                    ForEach(detail.steps) { StepCard(step: $0) }
+                    // A snapshot opens the first couple of check-bearing steps
+                    // (so their check evidence — command + exit code — shows) plus
+                    // one un-checked step (so an honest "no passing check" step is
+                    // visible too); the live app opens every step collapsed.
+                    let opened: Set<String> = SnapshotMode.enabled
+                        ? Set(
+                            detail.steps.filter { !($0.checks?.isEmpty ?? true) }.prefix(2).map(\.id)
+                            + detail.steps.filter { ($0.checks?.isEmpty ?? true) }.prefix(1).map(\.id)
+                          )
+                        : []
+                    ForEach(detail.steps) { step in
+                        StepCard(step: step, initiallyExpanded: opened.contains(step.id))
+                    }
                 }
                 // The Task's subagents are already listed once, flat and
                 // expandable, as sibling SessionDrillRows in this group's member
@@ -240,6 +259,13 @@ private struct SessionDrillRow: View {
                 // same subagents a second time (a confusing "41 and 41"), so the
                 // member list is the single source of truth for the tree.
             }
+        } else if loading {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("loading steps…").font(Type.small).foregroundStyle(Theme.textFaint)
+            }
+        } else if failed {
+            Text("couldn't load this session").font(Type.small).foregroundStyle(Theme.orange)
         }
     }
 

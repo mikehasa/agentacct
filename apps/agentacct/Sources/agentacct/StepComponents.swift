@@ -17,7 +17,12 @@ func checkIndependenceTint(_ sourceType: String?) -> Color {
 
 struct StepCard: View {
     let step: V1Step
-    @State private var expanded = false
+    @State private var expanded: Bool
+
+    init(step: V1Step, initiallyExpanded: Bool = false) {
+        self.step = step
+        _expanded = State(initialValue: initiallyExpanded)
+    }
 
     /// WHY this confidence level — mirrors the daemon's evidence_status
     /// derivation (failed: any live failing check; strong: any pass; weak:
