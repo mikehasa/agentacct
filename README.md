@@ -5,9 +5,9 @@
 [![Python](https://img.shields.io/pypi/pyversions/agentacct.svg)](https://pypi.org/project/agentacct/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
-**See what your coding agents actually did — and what it cost — in a live terminal dashboard that never leaves your machine.**
+**See what your coding agents actually did — and whether you can trust it — across Claude Code, Codex, OpenCode, and Hermes, without any of it leaving your machine.**
 
-agentacct is local-first Agent Work Intelligence for coding agents. It reads the session logs that Claude Code and Codex already write on your machine, joins them with the work each session records as it goes, and shows the result — usage, estimated cost, provider limits, and the work itself — in **`agentacct tui`**, a live terminal dashboard. No browser, no server, no account.
+agentacct is local-first Agent Work Intelligence for coding agents. It reads the session logs your agents already write on disk — Claude Code, Codex, OpenCode, and Hermes — joins them with the work each session records as it goes, and turns the result into one honest **Work Receipt** per task: what it did (the commands it ran, the files it touched, the tools it used), what it cost, and how well that is actually proven. Read it in **`agentacct tui`** (a live terminal dashboard), over a local JSON API, or in the **macOS app**. No browser tab, no server, no account.
 
 ![agentacct tui — live usage, cost, provider rate-limit bars, and recent sessions with per-session weekly-plan-cost estimates](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-home.png)
 
@@ -19,6 +19,7 @@ agentacct is local-first Agent Work Intelligence for coding agents. It reads the
 
 Run **`agentacct tui`** for a live, in-terminal view — usage windows, provider rate-limit bars with reset countdowns, and your recent sessions. Press `s` to drill into the sessions, `u` for the usage screen, `p` to save a shareable snapshot of the current view (an SVG that renders anywhere), `q` to quit.
 
+- **One Work Receipt per task — what it did, and whether you can trust it.** Every task rolls up into eight questions a reviewer needs: what it was, who ran it, the **actions** it took (the commands it ran and the files it touched — read straight from each agent's own store), the cost, the **evidence** (how much of the work carries a real passing check), the outcome, the gaps, and per-field provenance — each fact labelled with where it came from (a client hook, a transcript scan, the agent's MCP records, CI). It keeps two things deliberately separate: what a human or agent *says* happened, and how well that is actually *proven* — an agent reporting "done" never raises the evidence bar. Read one with `agentacct receipt <task>`.
 - **Honest usage and cost.** Tokens per agent, model, and day — read from the clients' own local session files and labeled `client_reported`; costs are clearly marked pricing-table estimates, never invoices.
 - **The work, not just the tokens.** Every session rolls up its recorded work steps and machine checks — a passing test is `Verified` evidence, an agent's own claim stays labeled `Agent reported`. Open a session to see each step, its status (`in progress` / `handed off` / `done` / `blocked`), and its check results with exit codes:
 
@@ -41,6 +42,8 @@ agentacct tui       # the live terminal dashboard
 ```
 
 No `pipx` yet? Install it first with `brew install pipx` (macOS) or `python3 -m pip install --user pipx` — or skip pipx entirely and use `uv tool install agentacct`. See [INSTALL.md](INSTALL.md) for a plain-`venv` fallback.
+
+**Prefer not to touch Python?** The signed, notarized **macOS app** bundles everything. Download the `.dmg` from the [latest release](https://github.com/mikehasa/agentacct/releases/latest), drag agentacct to Applications, and open it — on first launch it installs the bundled CLI, instruments the agents it finds, and shows your Work Receipts in a native window. Requires macOS 14+.
 
 `onboard` installs agentacct once per machine (global by default, writing zero files into your repo): it detects your local coding-agent logs, sets up a global store, and runs a first usage sync. Then run **`agentacct tui`** for the live terminal dashboard (onboarding also starts the managed background sync plus a local JSON API on `http://127.0.0.1:8765` — the machine-readable lane native shells and scripts poll). Open a **new** agent session in any repo — MCP servers and hooks bind at session start, so the session that ran onboarding cannot become the first recorded Task. (Prefer a per-repo install? Run `agentacct onboard --scope project` instead.)
 
@@ -83,7 +86,7 @@ agentacct is early alpha, and it would rather show you a gap than a guess:
 - **No hosted anything.** No hosted dashboard, no phone-home telemetry, no automatic cloud account sync. agentacct can *receive* telemetry locally when you explicitly point an OTLP exporter at it.
 - **Estimates are labeled as estimates.** There is no exact Claude Code/Codex subscription invoice access; costs come from a local pricing table and are labeled accordingly. See [docs/usage-truth-table.md](docs/usage-truth-table.md) for what each path can and cannot prove.
 - **No silent monitoring.** agentacct only reads the local session files of detected clients and never watches unrelated processes started outside agentacct/integrations. Hard stops apply only to runs agentacct itself launched or the opt-in proxy path.
-- **Support is per-capability, not per-logo.** Claude Code and Codex have live-observed usage paths today; other clients (Hermes, OpenCode, OpenClaw, Cursor) have narrower, explicitly-scoped paths. The per-client claims are pinned in the capability matrix in [INSTALL.md](INSTALL.md) and [docs/reference.md](docs/reference.md), and `agentacct capabilities agents` prints the same truth for your machine.
+- **Support is per-capability, not per-logo.** Claude Code, Codex, and OpenCode carry a full Work Receipt today — usage, cost, and the actions each session took (commands, edited files, tools); OpenCode also contributes independent exit-code checks. Hermes has a live usage path plus a narrower capture surface; OpenClaw and Cursor are usage-focused and explicitly scoped. How each fact is captured differs honestly — a live hook, or a scan of the client's own store — and the Receipt says which. Every per-client claim is pinned in the capability matrix in [INSTALL.md](INSTALL.md) and [docs/reference.md](docs/reference.md), and `agentacct capabilities agents` prints the same truth for your machine.
 
 Interfaces may change while agentacct is alpha.
 
@@ -93,7 +96,7 @@ agentacct keeps two evidence streams separate and joins them on real client ids 
 
 - **Usage truth** comes from the client's own local session files: imported tokens are labeled `client_reported`, and costs are pricing-table estimates — never provider invoices.
 - **Work meaning** comes from the sections and events the agent records over MCP while it works (`agentacct_record_section`, `agentacct_record_machine_check`), plus machine checks like test runs.
-- **The join** links the two through session/transcript ids and labels every attribution `exact`, `high`, `medium`, or `low`. For Claude Code, an installed hook bridge captures real session/transcript ids at session start and on every tool call; for Codex, the link is evidenced from the client's own session logs at import time.
+- **The join** links the two through session/transcript ids and labels every attribution `exact`, `high`, `medium`, or `low`. Claude Code binds real session/transcript ids through an installed hook bridge at session start and on every tool call; Codex, OpenCode, and Hermes are evidenced from each client's own session store at import time. Where a client's hook does not fire for its built-in tools, agentacct derives the same Actions — commands, edited files, tool categories and names — from that store directly, so the Receipt is populated with or without a live hook, and always says which.
 
 The per-client join mechanics, confidence-label glossary, daily workflow, MCP tool list, and optional enforcement extras are in [docs/reference.md](docs/reference.md).
 
