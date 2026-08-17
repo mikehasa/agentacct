@@ -980,6 +980,10 @@ def build_task_projection(
         # already-recorded data; tool NAMES are captured, arguments never are.
         tool_category_counts: dict[str, int] = {}
         tool_name_counts: dict[str, int] = {}
+        # Which SOURCE(s) captured this Task's Actions — a client hook, a transcript
+        # scan, or both across its sessions — so the Receipt names Actions provenance
+        # honestly instead of assuming a hook.
+        capture_bases: set[str] = set()
         for key in ordered_members:
             counts = sessions[key].get("tool_category_counts")
             if isinstance(counts, Mapping):
@@ -995,6 +999,12 @@ def build_task_projection(
                         label = _text(tool_name)
                         if label:
                             tool_name_counts[label] = tool_name_counts.get(label, 0) + value
+            bases = sessions[key].get("tool_activity_capture_bases")
+            if isinstance(bases, list):
+                for basis in bases:
+                    token = _text(basis)
+                    if token:
+                        capture_bases.add(token)
         touched_files: list[str] = []
         seen_touched_files: set[str] = set()
         # (a) agent-reported section/check files, and (b) the paths a file-edit tool
@@ -1037,6 +1047,7 @@ def build_task_projection(
             "touched_file_count": len(touched_files),
             "commands": commands,
             "command_count": len(commands),
+            "capture_bases": sorted(capture_bases),
         }
         tasks.append(
             {

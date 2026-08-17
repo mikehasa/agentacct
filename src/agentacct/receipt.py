@@ -66,6 +66,11 @@ RECEIPT_SCHEMA_VERSION = "agentacct.receipt.v1"
 SOURCE_CLIENT_LOG = "client_log"
 SOURCE_MCP = "mcp"
 SOURCE_HOOK = "hook"
+# Derived by agentacct from the client's OWN transcript/DB at import time, for a
+# client whose hook does not fire (Codex from the rollout, OpenCode from the part
+# table). Distinct from ``hook``: no live hook observed it — agentacct read it back
+# from what the client already recorded on disk.
+SOURCE_TRANSCRIPT_SCAN = "transcript_scan"
 SOURCE_CI = "ci"
 SOURCE_GIT = "git"
 SOURCE_HUMAN = "human"
@@ -79,6 +84,7 @@ PROVENANCE_LEGEND: dict[str, str] = {
     SOURCE_CLIENT_LOG: "Observed in the agent's own local session / usage log.",
     SOURCE_MCP: "Recorded by the agent through agentacct's MCP tools (sections, files, checks).",
     SOURCE_HOOK: "Captured by an agentacct client hook (tool categories, mechanical checks).",
+    SOURCE_TRANSCRIPT_SCAN: "Derived by agentacct from the client's own transcript / session store on disk (no live hook).",
     SOURCE_CI: "Reported by external CI or the model provider.",
     SOURCE_GIT: "Derived from the git repository.",
     SOURCE_HUMAN: "Asserted by a person (review, approval, or finding disposition).",
@@ -680,7 +686,21 @@ def _actions_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
     else:
         gaps.append("No touched files were recorded for this Task's steps.")
     if counts or name_counts or commands:
-        provenance.append(SOURCE_HOOK)
+        # Tool categories, names, and commands come from a client hook OR from a
+        # transcript scan of the client's own store (Codex/OpenCode, whose hooks do
+        # not fire) — name the ACTUAL source(s), never an assumed hook. A row
+        # recorded before capture-basis tracking shipped (or a malformed non-list)
+        # has no usable ``capture_bases`` and honestly falls back to hook, its
+        # historical source. Gate on ``isinstance(list)`` like the projection that
+        # writes it, so a corrupted scalar/string can never crash the receipt or be
+        # iterated character-by-character into a silent mislabel.
+        raw_bases = actions.get("capture_bases")
+        capture_bases = [
+            basis
+            for basis in (raw_bases if isinstance(raw_bases, list) else [])
+            if basis in (SOURCE_HOOK, SOURCE_TRANSCRIPT_SCAN)
+        ]
+        provenance.extend(capture_bases or [SOURCE_HOOK])
     else:
         gaps.append(
             "Tool categories were not instrumented for this session; Actions shows touched files only."
