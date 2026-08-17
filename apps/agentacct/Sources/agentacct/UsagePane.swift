@@ -24,7 +24,13 @@ struct UsagePane: View {
     }
 
     private var mode: UsageMode {
-        chosenMode ?? (calibratedClients.isEmpty ? .dollars : .plan)
+        // The live pane opens on the plan view when a client is calibrated (the
+        // subscription user's real question). The README snapshot instead shows
+        // the dollars view — the by-agent / by-model / cache-read breakdown the
+        // docs describe; the plan view is single-client by design (only a
+        // clean-meter client calibrates), so it can't fill a marketing shot.
+        if SnapshotMode.enabled { return chosenMode ?? .dollars }
+        return chosenMode ?? (calibratedClients.isEmpty ? .dollars : .plan)
     }
 
     var body: some View {

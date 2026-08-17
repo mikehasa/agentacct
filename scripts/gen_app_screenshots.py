@@ -42,23 +42,32 @@ CURATE = {
 
 sys.path.insert(0, str(REPO_ROOT / "src"))
 from agentacct.client_usage import ClientUsageEvent  # noqa: E402
-from agentacct.plan_cost import BASELINE_MODEL_WEIGHTS  # noqa: E402
+from agentacct.plan_cost import BASELINE_MODEL_WEIGHTS, baseline_weight_fresh  # noqa: E402
 from agentacct.service import SentinelService  # noqa: E402
 
 NOW = time.time()
 DAY = 86400
 OPUS = "claude-opus-4-8"
-OPUS_W = BASELINE_MODEL_WEIGHTS[OPUS]
+# Re-anchored FRESH-component weekly-plan weight (% of plan per 1M fresh tokens).
+# The plan-cost calibrator predicts each interval's movement against THIS weight,
+# so the seeded 7-day readings must use it too (a raw-weight series fits a scale
+# ~8x below the trusted band and never calibrates).
+FRESH_W = baseline_weight_fresh(OPUS)
 
 
 # --- event helpers (mirror the shapes the receipt/glance projections read) ----
 
-def _usage(svc, *, client, model, session, title, tokens, at, cost, project):
+def _usage(svc, *, client, model, session, title, tokens, at, cost, project, cache_read=None):
+    # Agents with prompt caching read far more from cache than they spend fresh;
+    # default the cache-read tokens to a realistic multiple of the fresh tokens so
+    # the Usage pane's CACHE READ stat reflects real usage instead of a bare 0.
+    if cache_read is None:
+        cache_read = int(tokens * 4)
     ev = ClientUsageEvent(
         client=client, client_session_id=session,
         source_path=Path(f"/demo/{client}/{session}.jsonl"), title=title, cwd=f"/demo/{project}",
         model=model, input_tokens=tokens, output_tokens=0, cached_input_tokens=0,
-        cache_creation_input_tokens=0, cache_read_input_tokens=0,
+        cache_creation_input_tokens=0, cache_read_input_tokens=cache_read,
         cache_creation_tokens_reported=True, cache_read_tokens_reported=True,
         reasoning_output_tokens=0, provider_name=client, started_at=int(at), updated_at=int(at),
         turn_count=1, usage_row_lane=f"model:{model}", source_namespace_fingerprint=f"sha256:{client}",
@@ -139,26 +148,26 @@ def build_store():
     # FRESH TOKENS chart has bars every day, not just today. Sorted oldest-first
     # below so the weekly-plan % series climbs monotonically and each reading's
     # delta matches the tokens since the last — a clean calibration.
+    # claude-code fresh-token volumes are kept modest on purpose: the calibrated
+    # weekly-plan weight (FRESH_W) times the TOTAL cc fresh tokens this week is the
+    # attributed "% of this week", and that must stay well under 100% to read as a
+    # healthy meter. Backdrop (~250M) + tunes (~155M) + flagship (210M) => ~65%.
     cc_sessions = [
-        ("cc-sqlite",  "Migrate the event log to SQLite",   300_000_000, 228.0, "handed_off", "agentacct",   6),
-        ("cc-auth",    "Refactor the auth session store",   120_000_000,  92.0, "checkpoint", "acme-web",    6),
-        ("cc-metrics", "Emit OTLP metrics from the API",    130_000_000,  99.0, "completed",  "billing-svc", 5),
-        ("cc-search",  "Add full-text search to the docs",  180_000_000, 137.0, "completed",  "acme-web",    4),
-        ("cc-webhook", "Wire the Stripe webhook handler",   140_000_000, 106.0, "checkpoint", "billing-svc", 3),
-        ("cc-cache",   "Cache the dashboard queries",        75_000_000,  57.0, "completed",  "acme-web",    2),
-        ("cc-report",  "Add the weekly usage report",        60_000_000,  46.0, "completed",  "agentacct",   1),
-        ("cc-pay",     "Fix the flaky payment test",         90_000_000,  70.0, "blocked",    "billing-svc", 1),
+        ("cc-sqlite",  "Migrate the event log to SQLite",    50_000_000, 38.0, "handed_off", "agentacct",   6),
+        ("cc-auth",    "Refactor the auth session store",    28_000_000, 21.0, "checkpoint", "acme-web",    6),
+        ("cc-metrics", "Emit OTLP metrics from the API",     32_000_000, 24.0, "completed",  "billing-svc", 5),
+        ("cc-search",  "Add full-text search to the docs",   40_000_000, 30.0, "completed",  "acme-web",    4),
+        ("cc-webhook", "Wire the Stripe webhook handler",    30_000_000, 23.0, "checkpoint", "billing-svc", 3),
+        ("cc-cache",   "Cache the dashboard queries",        26_000_000, 20.0, "completed",  "acme-web",    2),
+        ("cc-report",  "Add the weekly usage report",        22_000_000, 17.0, "completed",  "agentacct",   1),
+        ("cc-pay",     "Fix the flaky payment test",         22_000_000, 17.0, "blocked",    "billing-svc", 1),
     ]
     cc_sessions.sort(key=lambda s: -s[6])  # oldest (largest days_ago) first
-    cum_m = 0.0
     at_by: dict[str, float] = {}
-    _limit7d(svc, captured=NOW - 7 * DAY, pct=0.0, index=0)
     for i, (sid, title, tokens, cost, status, project, days_ago) in enumerate(cc_sessions):
         at = NOW - days_ago * DAY - 5 * 3600 + (i % 3) * 2400
         at_by[sid] = at
         _usage(svc, client="claude-code", model=OPUS, session=sid, title=title, tokens=tokens, at=at, cost=cost, project=project)
-        cum_m += tokens / 1_000_000.0
-        _limit7d(svc, captured=at + 120, pct=round(cum_m * OPUS_W, 2), index=i + 1)
         _section(svc, session=sid, title="Plan & write the tests", section_id=f"{sid}-plan",
                  status="completed", at=at - 300, project=project, kind="planning",
                  summary="Scoped the change and the tests to add.")
@@ -170,18 +179,52 @@ def build_store():
     _check(svc, session="cc-pay", section_id="cc-pay-impl", result="failed", at=at_by["cc-pay"] + 120,
            summary="1 failed, 7 passed", command="pytest tests/test_payment.py -q", exit_code=1)
 
-    # The current 5h + 7d reading (includes today's flagship, +210M below), so the
+    # ---- Weekly-plan calibration chain (claude-code) -------------------------
+    # The plan-cost estimator only calibrates from consecutive 7-day-limit
+    # readings <=12h apart with tracked tokens between them, and only trusts a fit
+    # whose scale lands in [0.5, 2.5]. So seed a short, self-consistent chain over
+    # the last ~14h: a few small claude-code runs, each followed by a reading whose
+    # delta is exactly the re-anchored fresh weight times that run's tokens (=>
+    # scale 1.0, cache-read discount 0). The flagship (+210M, below) is the last
+    # link, so the meter reads calibrated and TODAY - TRACKED PLAN shows a real
+    # number instead of "calibration pending". These runs are usage-only (no
+    # sections), so they add plan history without cluttering the Work list.
+    HOUR = 3600.0
+    tune = [
+        ("cc-tune-fmt",   "Format + type-check the API package",  55, 12.0, 11.0),
+        ("cc-tune-deps",  "Bump the pinned dependencies",         48,  9.0,  8.0),
+        ("cc-tune-flaky", "Quarantine a flaky integration test",  52,  6.0,  5.0),
+    ]
+    # Start the chain at the plan % the backdrop sessions (all older than this
+    # window) already consumed, so the final reading = FRESH_W x TOTAL cc fresh
+    # tokens = the attributed "% of this week" the ring shows (no >100% overflow).
+    backdrop_m = sum(s[2] for s in cc_sessions) / 1_000_000.0
+    pct = FRESH_W * backdrop_m
+    _limit7d(svc, captured=NOW - 14 * HOUR, pct=round(pct, 2), index=200)
+    for j, (sid, title, mtok, use_h, read_h) in enumerate(tune):
+        _usage(svc, client="claude-code", model=OPUS, session=sid, title=title,
+               tokens=mtok * 1_000_000, at=NOW - use_h * HOUR, cost=round(mtok * 0.76, 2), project="agentacct")
+        pct += FRESH_W * mtok
+        _limit7d(svc, captured=NOW - read_h * HOUR, pct=round(pct, 2), index=201 + j)
+    pct += FRESH_W * 210  # the flagship's 210M fresh tokens close the chain
+
+    # The current 5h + 7d reading (the flagship interval's endpoint), so the
     # Limits pane shows both windows and the weekly meter reads calibrated.
     _rl(svc, client="claude-code", captured=NOW - 120, index=99, windows=[
         {"kind": "5h", "window_minutes": 300, "used_percent": 34.0, "resets_at": int(NOW + 9000)},
-        {"kind": "7d", "window_minutes": 10080, "used_percent": round((cum_m + 210) * OPUS_W, 1),
+        {"kind": "7d", "window_minutes": 10080, "used_percent": round(pct, 1),
          "resets_at": int(NOW + 300000)},
     ])
 
-    # ---- Codex (2 days ago; big run so an earlier day has a tall bar too) ----
+    # ---- Codex — three runs spread across the week, each a comparable bar so no
+    # single session dwarfs the daily chart (the old single 1.4B run did) ----
     cx_at = NOW - 2 * DAY - 3 * 3600
     _usage(svc, client="codex", model="gpt-5.6-sol", session="cx-perf", title="Investigate the perf regression",
-           tokens=1_400_000_000, at=cx_at, cost=6.20, project="acme-web")
+           tokens=520_000_000, at=cx_at, cost=2.30, project="acme-web")
+    _usage(svc, client="codex", model="gpt-5.6-sol", session="cx-index", title="Rebuild the search index",
+           tokens=480_000_000, at=NOW - 4 * DAY - 3 * 3600, cost=2.13, project="acme-web")
+    _usage(svc, client="codex", model="gpt-5.6-sol", session="cx-trace", title="Trace the slow query path",
+           tokens=400_000_000, at=NOW - 5 * DAY - 3 * 3600, cost=1.77, project="billing-svc")
     _rl(svc, client="codex", captured=NOW - 300, index=0, windows=[
         {"kind": "5h", "window_minutes": 300, "used_percent": 12.0, "resets_at": int(NOW + 9000)},
         {"kind": "7d", "window_minutes": 10080, "used_percent": 63.0, "resets_at": int(NOW + 300000)},
@@ -189,6 +232,12 @@ def build_store():
     _section(svc, session="cx-perf", title="Trace the N+1 query", section_id="cx-perf-1",
              status="completed", at=cx_at, client="codex", project="acme-web", kind="debugging",
              summary="Traced the N+1 in the order loader and cached it.")
+    _section(svc, session="cx-index", title="Rebuild the search index nightly", section_id="cx-index-1",
+             status="completed", at=NOW - 4 * DAY - 3 * 3600, client="codex", project="acme-web", kind="implementation",
+             summary="Moved the index rebuild to an incremental nightly job.")
+    _section(svc, session="cx-trace", title="Trace the slow invoice query", section_id="cx-trace-1",
+             status="completed", at=NOW - 5 * DAY - 3 * 3600, client="codex", project="billing-svc", kind="debugging",
+             summary="Found the missing index on invoices(account_id, created_at).")
     _tool_activity(svc, session="cx-perf", at=cx_at + 100, client="codex", basis="transcript_scan_tool_activity",
                    categories={"read": 14, "edit": 3, "execute": 6, "search": 5},
                    names=[("read_file", 14), ("apply_patch", 3), ("exec_command", 6), ("grep", 5)],
@@ -210,6 +259,13 @@ def build_store():
                    commands=["npm test", "npm run build"])
     _check(svc, session="oc-export", section_id="oc-export-1", result="passed", at=oc_at + 150,
            summary="6 passed", command="npm test", exit_code=0, client="opencode")
+    # A second OpenCode run mid-week (a 5th model, and a bar on an otherwise thin day).
+    _usage(svc, client="opencode", model="gpt-5.6-nova", session="oc-invoices", title="Paginate the invoices API",
+           tokens=220_000_000, at=NOW - 3 * DAY - 4 * 3600, cost=0.97, project="billing-svc")
+    _section(svc, session="oc-invoices", title="Add cursor pagination to /invoices", section_id="oc-invoices-1",
+             status="completed", at=NOW - 3 * DAY - 4 * 3600, client="opencode", project="billing-svc",
+             summary="Cursor pagination + a covering index; p95 down 40%.",
+             files=["src/billing/invoices.py"])
 
     # ---- Hermes (recent) ----
     _usage(svc, client="hermes", model="claude-sonnet-5", session="hm-infra", title="Add a health-check probe",
