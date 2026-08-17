@@ -8,6 +8,7 @@ import json
 import math
 import os
 import pickle
+import re
 import sqlite3
 import stat
 import time
@@ -51,6 +52,14 @@ from .usage_truth import (
     normalized_local_usage_session_id,
     recognized_local_usage_row_identity,
     sanitize_session_key_component,
+)
+from .tool_activity import (
+    _COMMANDS_PER_BATCH_MAX,
+    _TOUCHED_FILES_PER_BATCH_MAX,
+    _normalize_command,
+    _normalize_touched_path,
+    normalize_tool_name,
+    tool_category,
 )
 
 UsageClientName = Literal["codex", "claude-code", "opencode", "hermes", "openclaw"]
@@ -630,6 +639,13 @@ class ClientSessionObservation:
     source_parse_complete: bool = True
     # Same read-time refusal diagnostic as ClientUsageEvent; never persisted.
     refused_recording_attempts: tuple[Mapping[str, Any], ...] = ()
+    # Discovery-side Actions signals (tool_category_counts / tool_names /
+    # touched_files / commands) derived from the client's own transcript when its
+    # hook does not capture them — currently Codex, from the rollout's tool calls.
+    # An INTERNAL carrier: it rides to the import orchestrator, which emits it as a
+    # separate ``tool_activity_observed`` event; it is NOT part of the session
+    # observation's own sentinel event (to_sentinel_event never reads it).
+    rollout_tool_activity: Mapping[str, Any] | None = None
 
     @property
     def session_identity(self) -> tuple[str, str]:
@@ -1286,6 +1302,9 @@ def _discover_codex_usage_from_home(
                     source_parse_complete=parse_complete_by_session.get(
                         row_id,
                         False,
+                    ),
+                    rollout_tool_activity=(
+                        observation_metadata.get("tool_activity") or None
                     ),
                 )
             )
@@ -7188,6 +7207,148 @@ def _emit_scan_phase(label: str) -> None:
         pass
 
 
+# --- Codex Actions extraction (discovery-side) ------------------------------
+# Codex's PreToolUse hook barely fires for its built-in tools, but the rollout
+# on disk already records every tool call. These pure helpers derive the same
+# Actions signals the claude-code hook path produces (tool categories + names,
+# touched files, commands), so a Codex Task's Receipt shows WHAT it did —
+# retroactively, from data already scanned for tokens, with no hook dependency.
+# Only tool NAMES, cwd-relative touched PATHS, and best-effort-scrubbed COMMANDS
+# are derived; never tool output, never an absolute path prefix.
+
+_CODEX_TOOL_CALLS_SCAN_MAX = 5000  # bound accumulation on a pathological rollout
+_CODEX_APPLY_PATCH_FILE_RE = re.compile(
+    r"^\*\*\*\s+(?:Add|Update|Delete)\s+File:\s*(.+?)\s*$", re.MULTILINE
+)
+_CODEX_APPLY_PATCH_MOVE_RE = re.compile(
+    r"^\*\*\*\s+Move\s+to:\s*(.+?)\s*$", re.MULTILINE
+)
+# Best-effort ``cmd`` extraction from Codex's JS ``exec`` runtime call, e.g.
+# ``tools.exec_command({cmd:"pytest -q", workdir:"…"})``. Matches the FIRST single-
+# or double-quoted ``cmd`` literal, honoring backslash escapes (so an embedded
+# ``\"`` does not truncate the command mid-string). A template-literal (backtick)
+# or otherwise unquoted cmd is SKIPPED — an honest undercount, never a half-parsed
+# capture. The clean ``exec_command`` function_call channel (exact JSON ``cmd``)
+# is read precisely instead.
+_CODEX_EXEC_JS_CMD_RE = re.compile(
+    r"""cmd\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')"""
+)
+
+
+def _codex_apply_patch_paths(patch_text: Any) -> list[str]:
+    """The file paths an ``apply_patch`` touched, parsed from its patch body."""
+
+    if not isinstance(patch_text, str) or "*** " not in patch_text:
+        return []
+    paths = [m.group(1) for m in _CODEX_APPLY_PATCH_FILE_RE.finditer(patch_text)]
+    paths.extend(m.group(1) for m in _CODEX_APPLY_PATCH_MOVE_RE.finditer(patch_text))
+    return paths
+
+
+def _codex_command_text(name: str, raw_arg: Any) -> str | None:
+    """The shell command a Codex exec tool ran — exact for ``exec_command`` (JSON
+    ``cmd``), best-effort for the JS ``exec`` runtime. Never returns tool output."""
+
+    if not isinstance(raw_arg, str) or not raw_arg:
+        return None
+    if name == "exec_command":
+        try:
+            parsed = json.loads(raw_arg)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if isinstance(parsed, dict):
+            cmd = parsed.get("cmd") or parsed.get("command")
+            return cmd if isinstance(cmd, str) and cmd.strip() else None
+        return None
+    if name == "exec":
+        match = _CODEX_EXEC_JS_CMD_RE.search(raw_arg)
+        if match:
+            return match.group(1) if match.group(1) is not None else match.group(2)
+    return None
+
+
+def _codex_relativize_touched_path(raw_path: str, cwd: str | None) -> str | None:
+    """A cwd-relative form of an apply_patch path, or ``None`` if it would carry an
+    absolute prefix. Codex writes cwd-relative paths in practice; an absolute path
+    is relativized when under cwd and otherwise DROPPED (missing beats a leaked home
+    dir / username). Pure string math — never touches the filesystem."""
+
+    text = str(raw_path or "").strip()
+    if not text:
+        return None
+    if not os.path.isabs(text):
+        return text  # already relative — _normalize_touched_path is the final gate
+    cwd_abs = (
+        os.path.normpath(cwd)
+        if isinstance(cwd, str) and os.path.isabs(cwd)
+        else None
+    )
+    if cwd_abs is None:
+        return None
+    try:
+        target_abs = os.path.normpath(text)
+        if target_abs == cwd_abs or target_abs.startswith(cwd_abs + os.sep):
+            rel = os.path.relpath(target_abs, cwd_abs)
+            return rel if rel and not rel.startswith("..") else None
+    except (ValueError, OSError):
+        return None
+    return None
+
+
+def _codex_tool_activity_from_calls(
+    tool_calls: list[tuple[str, Any]],
+    *,
+    cwd: str | None,
+) -> dict[str, Any]:
+    """Derive Actions signals from a rollout's collected ``(name, raw_arg)`` tool
+    calls, in the SAME metadata shape the hook drain emits (values, not keys, so the
+    store's key-based secret redaction can't blank a credential-shaped name/path)."""
+
+    name_counts: dict[str, int] = {}
+    category_counts: dict[str, int] = {}
+    commands: list[str] = []
+    touched: list[str] = []
+    for raw_name, raw_arg in tool_calls:
+        name = normalize_tool_name(raw_name)
+        if name:
+            name_counts[name] = name_counts.get(name, 0) + 1
+            category = tool_category(name)
+            category_counts[category] = category_counts.get(category, 0) + 1
+        lowered = str(raw_name or "").strip().lower()
+        if lowered in ("exec", "exec_command"):
+            command = _normalize_command(_codex_command_text(lowered, raw_arg))
+            if (
+                command
+                and command not in commands
+                and len(commands) < _COMMANDS_PER_BATCH_MAX
+            ):
+                commands.append(command)
+        elif lowered == "apply_patch":
+            for raw_path in _codex_apply_patch_paths(raw_arg):
+                touched_path = _normalize_touched_path(
+                    _codex_relativize_touched_path(raw_path, cwd)
+                )
+                if (
+                    touched_path
+                    and touched_path not in touched
+                    and len(touched) < _TOUCHED_FILES_PER_BATCH_MAX
+                ):
+                    touched.append(touched_path)
+    activity: dict[str, Any] = {}
+    if category_counts:
+        activity["tool_category_counts"] = dict(sorted(category_counts.items()))
+    if name_counts:
+        activity["tool_names"] = [
+            {"name": name, "count": count}
+            for name, count in sorted(name_counts.items())
+        ]
+    if touched:
+        activity["touched_files"] = touched
+    if commands:
+        activity["commands"] = commands
+    return activity
+
+
 def _read_codex_rollout_usage(
     source: _RegularSourceFile | Path,
     *,
@@ -7284,6 +7445,10 @@ def _read_codex_rollout_usage_uncached(
     replayed_parent_session_meta = False
     first_activity_at: int | None = None
     last_activity_at: int | None = None
+    # Tool calls (name, raw_arg) for the discovery-side Actions extraction. The
+    # raw arg is read ONLY by _codex_tool_activity_from_calls (command text /
+    # apply_patch paths); tool output is never collected here.
+    tool_calls: list[tuple[str, Any]] = []
     token_usage_events: list[tuple[Any, ...]] = []
     raw_token_event_count = 0
     replay_prefix_token_events = 0
@@ -7424,6 +7589,22 @@ def _read_codex_rollout_usage_uncached(
             if not isinstance(payload, dict):
                 continue
             payload_type = payload.get("type")
+            # Collect tool calls for the discovery-side Actions extraction. A
+            # function_call carries its args as a JSON string under ``arguments``;
+            # a custom_tool_call (Codex's ``exec`` runtime and ``apply_patch``)
+            # carries them as a string under ``input``.
+            if (
+                payload_type in ("function_call", "custom_tool_call")
+                and len(tool_calls) < _CODEX_TOOL_CALLS_SCAN_MAX
+            ):
+                call_name = payload.get("name")
+                if isinstance(call_name, str) and call_name:
+                    call_arg = (
+                        payload.get("arguments")
+                        if payload_type == "function_call"
+                        else payload.get("input")
+                    )
+                    tool_calls.append((call_name, call_arg))
             if payload_type == "function_call":
                 # Pairing is strictly by call_id (never the response-item id).
                 call_id = payload.get("call_id")
@@ -7602,6 +7783,9 @@ def _read_codex_rollout_usage_uncached(
         _parse_stats["schema_drift_rollouts"] = _safe_nonnegative_int(
             _parse_stats.get("schema_drift_rollouts")
         ) + 1
+    rollout_tool_activity = _codex_tool_activity_from_calls(
+        tool_calls, cwd=session_meta_cwd
+    )
     if _observation_metadata is not None:
         _observation_metadata.update(
             {
@@ -7612,6 +7796,7 @@ def _read_codex_rollout_usage_uncached(
                 "last_activity_at": last_activity_at,
                 "observed_models": [model] if model else [],
                 "valid_object_count": int(saw_valid_object),
+                "tool_activity": rollout_tool_activity,
                 **evidence.as_usage_fields(),
             }
         )

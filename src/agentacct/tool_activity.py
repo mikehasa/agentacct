@@ -74,6 +74,26 @@ _CATEGORY_BY_TOOL_NAME: dict[str, str] = {
     "todowrite": "plan",
     "exitplanmode": "plan",
     "enterplanmode": "plan",
+    # Codex tool names (verified from real ~/.codex rollouts). Codex runs shell
+    # through a JS ``exec`` runtime and a plain ``exec_command``, edits through
+    # ``apply_patch`` (a patch body, not a file_path arg), and coordinates work
+    # through the agent tools. Without these, every core Codex tool collapsed to
+    # ``other``, so its Actions category breakdown was uninformative.
+    "exec": "execute",
+    "exec_command": "execute",
+    "local_shell": "execute",
+    "shell": "execute",
+    "js": "execute",
+    "apply_patch": "edit",
+    "spawn_agent": "agent",
+    "wait_agent": "agent",
+    "list_agents": "agent",
+    "interrupt_agent": "agent",
+    "followup_task": "agent",
+    "send_message": "agent",
+    "update_plan": "plan",
+    # Generic shell aliases other agents use (e.g. Hermes' ``terminal``).
+    "terminal": "execute",
 }
 
 
@@ -472,6 +492,87 @@ def drain_tool_activity_spool(
     return events
 
 
+# A client whose hook does not capture tool activity can still have it derived
+# from its own transcript at discovery time (currently Codex, from the rollout).
+# These events carry a DISTINCT capture_basis so they are honestly labelled as
+# transcript-scan-derived (not hook-observed) and can be refreshed as a scoped
+# cohort — replaced per (client, session) on each import instead of accumulated.
+DISCOVERY_TOOL_ACTIVITY_CAPTURE_BASIS = "transcript_scan_tool_activity"
+
+
+def is_discovery_tool_activity_event(event: Mapping[str, Any]) -> bool:
+    """Whether an event is a discovery-derived (transcript-scan) tool-activity row."""
+
+    if event.get("event_type") != TOOL_ACTIVITY_EVENT_TYPE:
+        return False
+    metadata = event.get("metadata")
+    return (
+        isinstance(metadata, Mapping)
+        and metadata.get("capture_basis") == DISCOVERY_TOOL_ACTIVITY_CAPTURE_BASIS
+    )
+
+
+def build_discovery_tool_activity_event(
+    *,
+    client: str,
+    session_id: str,
+    activity: Mapping[str, Any] | None,
+    captured_at: float,
+) -> dict[str, Any] | None:
+    """Build ONE ``tool_activity_observed`` event from transcript-scan-derived
+    Actions signals, in the exact shape the hook drain emits so it flows through
+    the same client-agnostic Actions build. Returns ``None`` when there is no real
+    signal. The event_id is stable per (client, session): a scoped ``replace_events``
+    refreshes it on each import, so a still-growing session is never frozen and a
+    re-import never double-counts."""
+
+    if not activity:
+        return None
+    metadata: dict[str, Any] = {
+        "client": client,
+        "client_session_id": session_id,
+        "capture_basis": DISCOVERY_TOOL_ACTIVITY_CAPTURE_BASIS,
+        "captured_at": captured_at,
+        "sentinel_semantic_kind": "tool_activity",
+    }
+    category_counts = activity.get("tool_category_counts")
+    if isinstance(category_counts, Mapping) and category_counts:
+        metadata["tool_category_counts"] = {
+            str(key): int(value)
+            for key, value in sorted(category_counts.items())
+            if isinstance(value, int) and not isinstance(value, bool)
+        }
+    names = activity.get("tool_names")
+    if isinstance(names, list) and names:
+        # Same redaction-safe shape as the drain: names ride as list VALUES.
+        metadata["tool_names"] = [
+            {"name": str(entry.get("name")), "count": int(entry.get("count") or 0)}
+            for entry in names
+            if isinstance(entry, Mapping) and entry.get("name")
+        ]
+    touched = activity.get("touched_files")
+    if isinstance(touched, list) and touched:
+        metadata["touched_files"] = [str(path) for path in touched if str(path).strip()]
+    commands = activity.get("commands")
+    if isinstance(commands, list) and commands:
+        metadata["commands"] = [str(cmd) for cmd in commands if str(cmd).strip()]
+    # Only the five base keys means nothing survived normalization → no event.
+    if len(metadata) <= 5:
+        return None
+    digest = uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"{DISCOVERY_TOOL_ACTIVITY_CAPTURE_BASIS}\0{client}\0{session_id}",
+    ).hex
+    return {
+        "event_id": f"toolact:{digest}",
+        "created_at": captured_at,
+        "source": client,
+        "event_type": TOOL_ACTIVITY_EVENT_TYPE,
+        "run_id": None,
+        "metadata": metadata,
+    }
+
+
 def ingest_tool_activity_spool(
     store_dir: Path | str,
     *,
@@ -500,17 +601,25 @@ def ingest_tool_activity_spool(
     return written
 
 
-def build_tool_activity_by_session(
+def _sum_additive_tool_activity(
     events: Iterable[Mapping[str, Any]],
+    *,
+    extract: Callable[[Mapping[str, Any]], Iterable[tuple[str, int]]],
 ) -> dict[tuple[str, str], dict[str, int]]:
-    """Sum ``tool_activity_observed`` batch counts per (client, session).
+    """Sum a per-(client, session) additive tool-activity field across events.
 
-    Batches are additive: reducing the whole event log sums every recorded
-    batch, so the per-session total is stable no matter how many import runs
-    produced it. Only known categories and positive integer counts are kept.
+    Batches are additive, so the per-session total is stable across import runs.
+    ONE exception keeps the sum honest: a transcript-scan-derived event (a
+    client whose hook does not capture tool activity, so it is scanned from the
+    transcript — currently Codex) is the FULL-transcript SUPERSET of whatever the
+    same session's PreToolUse hook also observed, so summing both would
+    double-count the overlapping calls. For a session that has any transcript-scan
+    event, only its transcript-scan events contribute; the hook events for that
+    session are dropped (regardless of event order in the log).
     """
 
     result: dict[tuple[str, str], dict[str, int]] = {}
+    scan_superseded: set[tuple[str, str]] = set()
     for event in events:
         if not isinstance(event, Mapping):
             continue
@@ -522,17 +631,65 @@ def build_tool_activity_by_session(
         session = str(metadata.get("client_session_id") or "").strip()
         if not client or not session:
             continue
-        counts = metadata.get("tool_category_counts")
-        if not isinstance(counts, Mapping):
+        key = (client, session)
+        is_scan = (
+            metadata.get("capture_basis") == DISCOVERY_TOOL_ACTIVITY_CAPTURE_BASIS
+        )
+        if key in scan_superseded and not is_scan:
+            # A transcript scan already covers this session's full tool activity;
+            # its hook events would double-count the overlap.
             continue
-        bucket = result.setdefault((client, session), {})
-        for category, value in counts.items():
-            if category not in TOOL_CATEGORIES:
-                continue
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                continue
-            bucket[category] = bucket.get(category, 0) + value
+        if is_scan and key not in scan_superseded:
+            # Drop any hook contributions accumulated before the scan was seen.
+            result.pop(key, None)
+            scan_superseded.add(key)
+        bucket = result.setdefault(key, {})
+        for name, value in extract(metadata):
+            bucket[name] = bucket.get(name, 0) + value
     return {key: value for key, value in result.items() if value}
+
+
+def _category_count_pairs(metadata: Mapping[str, Any]) -> Iterable[tuple[str, int]]:
+    counts = metadata.get("tool_category_counts")
+    if not isinstance(counts, Mapping):
+        return
+    for category, value in counts.items():
+        if category not in TOOL_CATEGORIES:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            continue
+        yield str(category), value
+
+
+def _tool_name_count_pairs(metadata: Mapping[str, Any]) -> Iterable[tuple[str, int]]:
+    names = metadata.get("tool_names")
+    if not isinstance(names, list):
+        return
+    for entry in names:
+        if not isinstance(entry, Mapping):
+            continue
+        name = normalize_tool_name(entry.get("name"))
+        if not name:
+            continue
+        value = entry.get("count")
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            continue
+        yield name, value
+
+
+def build_tool_activity_by_session(
+    events: Iterable[Mapping[str, Any]],
+) -> dict[tuple[str, str], dict[str, int]]:
+    """Sum ``tool_activity_observed`` batch counts per (client, session).
+
+    Batches are additive: reducing the whole event log sums every recorded
+    batch, so the per-session total is stable no matter how many import runs
+    produced it. Only known categories and positive integer counts are kept. A
+    transcript-scan event supersedes the same session's hook events (see
+    ``_sum_additive_tool_activity``) so the two sources never double-count.
+    """
+
+    return _sum_additive_tool_activity(events, extract=_category_count_pairs)
 
 
 def build_tool_names_by_session(
@@ -545,40 +702,15 @@ def build_tool_names_by_session(
     ``tool_names`` list of ``{"name": …, "count": …}`` objects — the name is a
     VALUE, not a dict key, so a credential-shaped connector name is never
     redacted out by the store's secret redaction. Batches are additive, so the
-    per-session total is stable across imports. Names are an OPEN set, so unlike
-    categories they are not filtered against a fixed vocabulary — but they are
-    normalized (trimmed, length-bounded) and only positive integer counts are
-    kept. A session recorded before name capture shipped simply has no names — an
-    honest gap, never a fabricated zero.
+    per-session total is stable across imports (a transcript scan supersedes the
+    session's hook events, as above). Names are an OPEN set, so unlike categories
+    they are not filtered against a fixed vocabulary — but they are normalized
+    (trimmed, length-bounded) and only positive integer counts are kept. A
+    session recorded before name capture shipped simply has no names — an honest
+    gap, never a fabricated zero.
     """
 
-    result: dict[tuple[str, str], dict[str, int]] = {}
-    for event in events:
-        if not isinstance(event, Mapping):
-            continue
-        if event.get("event_type") != TOOL_ACTIVITY_EVENT_TYPE:
-            continue
-        metadata = event.get("metadata")
-        metadata = metadata if isinstance(metadata, Mapping) else {}
-        client = str(metadata.get("client") or "").strip()
-        session = str(metadata.get("client_session_id") or "").strip()
-        if not client or not session:
-            continue
-        names = metadata.get("tool_names")
-        if not isinstance(names, list):
-            continue
-        bucket = result.setdefault((client, session), {})
-        for entry in names:
-            if not isinstance(entry, Mapping):
-                continue
-            name = normalize_tool_name(entry.get("name"))
-            if not name:
-                continue
-            value = entry.get("count")
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                continue
-            bucket[name] = bucket.get(name, 0) + value
-    return {key: value for key, value in result.items() if value}
+    return _sum_additive_tool_activity(events, extract=_tool_name_count_pairs)
 
 
 def build_touched_files_by_session(
