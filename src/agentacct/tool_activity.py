@@ -499,6 +499,17 @@ def drain_tool_activity_spool(
 # cohort — replaced per (client, session) on each import instead of accumulated.
 DISCOVERY_TOOL_ACTIVITY_CAPTURE_BASIS = "transcript_scan_tool_activity"
 
+# A tool-activity event's ``capture_basis`` -> the Receipt provenance TOKEN naming
+# where the Actions came from. The tokens are the receipt ``SOURCE_*`` values
+# (``hook`` / ``transcript_scan``); an unknown basis maps to nothing so the Receipt
+# falls back to its own default rather than inventing a source. This is the single
+# place the two capture bases are translated to the user-facing provenance word, so
+# a scan-derived Action is never mislabelled as hook-observed.
+TOOL_ACTIVITY_CAPTURE_SOURCE: dict[str, str] = {
+    TOOL_ACTIVITY_CAPTURE_BASIS: "hook",
+    DISCOVERY_TOOL_ACTIVITY_CAPTURE_BASIS: "transcript_scan",
+}
+
 
 def is_discovery_tool_activity_event(event: Mapping[str, Any]) -> bool:
     """Whether an event is a discovery-derived (transcript-scan) tool-activity row."""
@@ -788,12 +799,49 @@ def build_commands_by_session(
     return {key: value for key, value in result.items() if value}
 
 
+def build_tool_activity_capture_basis_by_session(
+    events: Iterable[Mapping[str, Any]],
+) -> dict[tuple[str, str], list[str]]:
+    """The SET of tool-activity CAPTURE BASES present per (client, session).
+
+    Which source captured a session's Actions — a client hook, a transcript scan,
+    or (rarely) both — so the Receipt can name Actions provenance HONESTLY instead
+    of assuming a hook. The sibling ``build_*_by_session`` reducers drop the
+    ``capture_basis`` (they only need the counts/paths); this keeps it. Unlike the
+    additive counters it is NOT superseded: it reports every basis that contributed
+    a signal, which is the honest answer for the dimension (a scan supersedes a
+    hook's category counts, but the hook's commands/paths still unioned in). Each
+    basis is translated once, here, to its user-facing provenance token
+    (``hook`` / ``transcript_scan``) via ``TOOL_ACTIVITY_CAPTURE_SOURCE``; an
+    unrecognised basis contributes nothing. Returned as a sorted, deduped list."""
+
+    result: dict[tuple[str, str], set[str]] = {}
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        if event.get("event_type") != TOOL_ACTIVITY_EVENT_TYPE:
+            continue
+        metadata = event.get("metadata")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        client = str(metadata.get("client") or "").strip()
+        session = str(metadata.get("client_session_id") or "").strip()
+        if not client or not session:
+            continue
+        source = TOOL_ACTIVITY_CAPTURE_SOURCE.get(str(metadata.get("capture_basis") or ""))
+        if source is None:
+            continue
+        result.setdefault((client, session), set()).add(source)
+    return {key: sorted(value) for key, value in result.items() if value}
+
+
 __all__ = [
     "TOOL_ACTIVITY_CAPTURE_BASIS",
+    "TOOL_ACTIVITY_CAPTURE_SOURCE",
     "TOOL_ACTIVITY_EVENT_TYPE",
     "TOOL_CATEGORIES",
     "build_commands_by_session",
     "build_tool_activity_by_session",
+    "build_tool_activity_capture_basis_by_session",
     "build_tool_names_by_session",
     "build_touched_files_by_session",
     "drain_tool_activity_spool",

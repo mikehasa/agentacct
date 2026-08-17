@@ -17,6 +17,7 @@ from .session_lifecycle import build_session_end_by_session
 from .tool_activity import (
     build_commands_by_session,
     build_tool_activity_by_session,
+    build_tool_activity_capture_basis_by_session,
     build_tool_names_by_session,
     build_touched_files_by_session,
 )
@@ -218,6 +219,10 @@ def build_work_ledger(
     tool_names_by_session = build_tool_names_by_session(events)
     touched_files_by_session = build_touched_files_by_session(events)
     commands_by_session = build_commands_by_session(events)
+    # Which SOURCE captured each session's Actions (a client hook vs a transcript
+    # scan). Carried so the Receipt names Actions provenance honestly instead of
+    # assuming a hook — Codex/OpenCode Actions are transcript-scan-derived.
+    capture_basis_by_session = build_tool_activity_capture_basis_by_session(events)
     if tool_activity_by_session or tool_names_by_session or touched_files_by_session or commands_by_session:
         for entry in session_rollup.get("sessions", []):
             entry_key = (str(entry.get("client") or ""), str(entry.get("client_session_id") or ""))
@@ -227,6 +232,9 @@ def build_work_ledger(
             names = tool_names_by_session.get(entry_key)
             if names:
                 entry["tool_name_counts"] = dict(names)
+            bases = capture_basis_by_session.get(entry_key)
+            if bases:
+                entry["tool_activity_capture_bases"] = list(bases)
             # Paths a file-edit tool wrote (hook-captured), cwd-relative — an out-of-tree
             # edit rides as ``../`` and a home-file edit as ``~/…`` (no username). Each was
             # gated by _normalize_touched_path at the tick, the drain, and
