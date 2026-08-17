@@ -8141,6 +8141,56 @@ def _local_usage_import_payload(
                 )
             except Exception:  # noqa: BLE001 - draining the spool must never fail the import.
                 pass
+            # Emit transcript-scan-derived tool activity (Receipt Actions) for a
+            # client whose hook does not capture it — currently Codex, from its
+            # rollout tool calls collected during discovery. Scoped-replace per
+            # (client, session): a re-import REFRESHES a scanned session's Actions
+            # (so a still-growing session is never frozen and never double-counts)
+            # and never touches a session this scan did not cover. Best-effort,
+            # like the spool drains above.
+            try:
+                from .tool_activity import (
+                    build_discovery_tool_activity_event,
+                    is_discovery_tool_activity_event,
+                )
+
+                scan_captured_at = time.time()
+                discovery_activity_events: list[dict[str, Any]] = []
+                for observation in discovery.session_observations:
+                    built = build_discovery_tool_activity_event(
+                        client=observation.client,
+                        session_id=observation.client_session_id,
+                        activity=getattr(observation, "rollout_tool_activity", None),
+                        captured_at=scan_captured_at,
+                    )
+                    if built is not None:
+                        discovery_activity_events.append(built)
+                if discovery_activity_events:
+                    scanned_activity_keys = {
+                        (
+                            event["metadata"]["client"],
+                            event["metadata"]["client_session_id"],
+                        )
+                        for event in discovery_activity_events
+                    }
+
+                    def _should_replace_discovery_activity(
+                        existing_event: dict[str, Any],
+                    ) -> bool:
+                        if not is_discovery_tool_activity_event(existing_event):
+                            return False
+                        metadata = existing_event.get("metadata") or {}
+                        return (
+                            metadata.get("client"),
+                            metadata.get("client_session_id"),
+                        ) in scanned_activity_keys
+
+                    service.replace_events(
+                        _should_replace_discovery_activity,
+                        discovery_activity_events,
+                    )
+            except Exception:  # noqa: BLE001 - deriving Actions must never fail the import.
+                pass
         if dry_run:
             projectable_observation_identities: set[tuple[str, str, str]] = set()
             observation_conflict_identities = 0
