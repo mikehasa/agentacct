@@ -28,6 +28,24 @@ enum SnapshotRunner {
                     // must render the loaded state, not the spinner.
                     await dashboard.fetchDetail(client: first.client, sessionId: first.clientSessionId)
                 }
+                // The Work pane loads its Task list + Receipt from a SwiftUI
+                // `.task`, which ImageRenderer does not run — so preload them here
+                // (as with the deep view above), or the Work pane renders empty.
+                // Selecting the first Task (server order = recency) shows a full
+                // Receipt; make the flagship demo Task the most recent one.
+                await dashboard.fetchReceipts()
+                if let flagship = dashboard.receiptTasks.first {
+                    selection.taskId = flagship.taskId
+                    await dashboard.fetchReceipt(taskId: flagship.taskId)
+                }
+                // The Receipt's "Sessions & steps" drill-down loads each session's
+                // steps through a per-row `.task` too — preload the Task's root
+                // sessions so those steps render in the snapshot.
+                for group in dashboard.receipt?.sessions ?? [] {
+                    for member in group.members where member.role == "root" {
+                        await dashboard.preloadSession(client: member.client, sessionId: member.clientSessionId)
+                    }
+                }
 
                 // Light AND dark of every surface: the theme is adaptive, so
                 // a design pass must see both. SnapshotScheme pins the Theme
@@ -38,11 +56,14 @@ enum SnapshotRunner {
 
                     for pane in MainPane.allCases {
                         selection.pane = pane
+                        // The Work pane shows the Receipt cards AND the steps
+                        // drill-down below them; render it taller so both fit.
+                        let height: CGFloat = pane == .work ? 1420 : 680
                         let window = MainWindow()
                             .environmentObject(glance)
                             .environmentObject(dashboard)
                             .environmentObject(selection)
-                            .frame(width: 1120, height: 680)
+                            .frame(width: 1120, height: height)
                             .environment(\.colorScheme, scheme)
                         try render(
                             window,

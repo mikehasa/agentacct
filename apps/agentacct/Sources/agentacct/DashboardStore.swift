@@ -21,6 +21,11 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var receiptTasks: [ReceiptSummary] = []
     @Published private(set) var receipt: Receipt?
     @Published private(set) var receiptError: String?
+    /// Session deep views preloaded by key ("client::session"). Only the offscreen
+    /// snapshot path fills this (the live app loads each drill row lazily via a
+    /// SwiftUI `.task`, which ImageRenderer does not run); a drill row reads it as
+    /// a fallback so its steps render in a snapshot.
+    @Published private(set) var preloadedSessions: [String: V1SessionDetail] = [:]
     @Published private(set) var errorText: String?
     @Published private(set) var isRefreshing = false
     @Published private(set) var isLoadingMore = false
@@ -173,6 +178,13 @@ final class DashboardStore: ObservableObject {
         return try await client.getAuthed(
             "/v1/session?client=\(encodedClient)&session_id=\(encodedSession)"
         )
+    }
+
+    /// Preload one session's deep view into `preloadedSessions` (snapshot support).
+    func preloadSession(client clientName: String, sessionId: String) async {
+        if let detail = try? await loadSession(client: clientName, sessionId: sessionId) {
+            preloadedSessions["\(clientName)::\(sessionId)"] = detail
+        }
     }
 
     /// The plan status for one client (three-state honesty), if known.

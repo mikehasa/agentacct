@@ -36,21 +36,29 @@ struct UsagePane: View {
                     // One range control for the whole pane: it drives the daily
                     // bars AND the per-model breakdown depth. The today/7d
                     // headline windows stay fixed regardless.
-                    Picker("", selection: Binding(get: { dashboard.usageDays },
-                                                  set: { days in Task { await dashboard.setUsageDays(days) } })) {
-                        Text("7d").tag(7)
-                        Text("30d").tag(30)
-                        Text("90d").tag(90)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 130)
-                    Picker("", selection: Binding(get: { mode }, set: { chosenMode = $0 })) {
-                        ForEach(UsageMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
+                    if SnapshotMode.enabled {
+                        // ImageRenderer can't draw a segmented Picker (it comes out a
+                        // yellow placeholder), so a snapshot shows the current
+                        // selection as plain chips instead.
+                        Chip(text: "\(dashboard.usageDays)d", tint: Theme.accent)
+                        Chip(text: mode.rawValue, tint: Theme.accent)
+                    } else {
+                        Picker("", selection: Binding(get: { dashboard.usageDays },
+                                                      set: { days in Task { await dashboard.setUsageDays(days) } })) {
+                            Text("7d").tag(7)
+                            Text("30d").tag(30)
+                            Text("90d").tag(90)
                         }
+                        .pickerStyle(.segmented)
+                        .frame(width: 130)
+                        Picker("", selection: Binding(get: { mode }, set: { chosenMode = $0 })) {
+                            ForEach(UsageMode.allCases) { mode in
+                                Text(mode.rawValue).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 110)
                     }
-                    .pickerStyle(.segmented)
-                    .frame(width: 110)
                 }
                 if mode == .plan {
                     planView

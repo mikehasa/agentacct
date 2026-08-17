@@ -6,7 +6,51 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-08-17
+
+The multi-agent release: agentacct now reads and instruments **four** coding
+agents — Claude Code, Codex, OpenCode, and Hermes — and the Work Receipt works
+across all of them. Ships alongside the first signed, notarized macOS app.
+
 ### Added
+- **Four coding agents, one Work Receipt.** agentacct now understands Claude
+  Code, Codex, OpenCode, and Hermes from their own on-disk stores — tokens, cost,
+  sessions, the recorded work, and now WHAT each session did (its commands,
+  edited files, and tools) — projected through one client-agnostic Task and
+  Receipt model. `agentacct onboard` instruments each installed agent it finds:
+  the agentacct MCP tools everywhere, plus each client's native capture surface
+  (Claude Code Pre/PostToolUse hooks, a Codex tool-activity + session-end hook, an
+  OpenCode observe-only plugin, and Hermes observe-only shell hooks).
+- **Receipt Actions derived from a client's OWN transcript — no hook required.**
+  A coding agent whose hook does not fire for its built-in tools (Codex, OpenCode)
+  now has its Actions recovered at import time from the store agentacct already
+  scans for tokens: commands (from Codex's `exec`/`exec_command` and OpenCode's
+  `bash`), edited files (from `apply_patch` bodies and OpenCode edit targets,
+  cwd-relative — never an absolute prefix), and tool categories + names. Only tool
+  names, relative paths, and credential-scrubbed commands are derived; never tool
+  output or a file preview. A re-import refreshes a still-growing session in place.
+- **Independent checks for OpenCode, from its recorded exit codes.** OpenCode
+  records a bash tool's harness exit code on disk, so a recognized test / build /
+  lint run is turned into a `client_hook` machine check at import time — lifting a
+  check-relevant step from `self-checked` to `independently-checked`, the one
+  local signal that is not the agent's own word. A check that fits no eligible
+  step stays honestly unattributed rather than credited to unrelated work.
+- **Honest Actions provenance — `transcript scan` vs `hook`.** The Receipt now
+  names where each session's Actions actually came from: a live client hook, or a
+  scan of the client's own transcript/store on disk (Codex/OpenCode, whose hooks
+  do not fire). A session captured by both reads both; nothing scan-derived is
+  labelled as hook-observed.
+- **The Actions dimension: commands, edited files, and specific tool names.**
+  Every Receipt now answers "what did this session touch and run" — the paths a
+  file-edit tool wrote (cwd-relative, or `~/…` / `../` for a home / out-of-tree
+  edit, never an absolute prefix), the single-line credential-scrubbed commands an
+  execute tool ran, and the specific tool / connector names (not just coarse
+  categories), each capped with an honest overflow disclosure.
+- **`handed off` as a first-class lifecycle disposition.** A step whose session
+  stopped cleanly at a handoff — or an open step whose session ended without a
+  recorded terminal (`ended_open`, inferred from an ambient SessionEnd, the
+  weakest provenance and never the agent's word) — is now distinguished from a
+  genuine completion on the decision axis.
 - **Independent checks from a PostToolUse hook — the only local evidence that is
   not the agent's own word.** When the agent runs a recognized test / build /
   lint / typecheck command, the installed Claude Code PostToolUse hook records
@@ -86,18 +130,6 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **The Work drill-down no longer lists a Task's subagents twice.** Expanding the
   root session re-listed the same subagents that already appear as sibling rows
   in the session tree; the session tree is now the single list.
-
-### Removed
-- **The HTML browser dashboard.** The web display layer (`/`, `/tokens`, `/raw`,
-  `/advanced`, `/control`, the task pages, and their form handlers) is retired in
-  favor of `agentacct tui` and the local JSON API — every derived view stays
-  available as JSON (`/overview`, `/timeline`, `/sessions`, `/attention`,
-  `/usage/summary`, `/evidence/*`, `GET /tasks`, `GET /api/control`), and the
-  control plane keeps its full CLI (`agentacct control …`). The recording lanes
-  (`/work-events`, `/capture/*`, connectors, `/v1/traces`) are untouched. Also
-  retires the migration-era `canonical verify-read-canary` command.
-
-### Fixed
 - **`usage import-local --client claude-code` no longer imports zero sessions
   when a single symlink exists under `~/.claude/projects/`.** A descendant
   directory symlink (e.g. a shared memory directory linked into a project dir, a
@@ -108,6 +140,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   symlink is never traversed, so no foreign subtree is imported); the offending
   link is now skipped, counted as `skipped_unsafe_paths`, and surfaced in the
   import summary instead of silently zeroing the import (reported in #84).
+
+### Removed
+- **The HTML browser dashboard.** The web display layer (`/`, `/tokens`, `/raw`,
+  `/advanced`, `/control`, the task pages, and their form handlers) is retired in
+  favor of `agentacct tui` and the local JSON API — every derived view stays
+  available as JSON (`/overview`, `/timeline`, `/sessions`, `/attention`,
+  `/usage/summary`, `/evidence/*`, `GET /tasks`, `GET /api/control`), and the
+  control plane keeps its full CLI (`agentacct control …`). The recording lanes
+  (`/work-events`, `/capture/*`, connectors, `/v1/traces`) are untouched. Also
+  retires the migration-era `canonical verify-read-canary` command.
 
 ## [0.8.1] - 2026-08-05
 

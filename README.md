@@ -5,32 +5,39 @@
 [![Python](https://img.shields.io/pypi/pyversions/agentacct.svg)](https://pypi.org/project/agentacct/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
-**See what your coding agents actually did — and what it cost — in a live terminal dashboard that never leaves your machine.**
+**See what your coding agents actually did — and whether you can trust it — across Claude Code, Codex, OpenCode, and Hermes, without any of it leaving your machine.**
 
-agentacct is local-first Agent Work Intelligence for coding agents. It reads the session logs that Claude Code and Codex already write on your machine, joins them with the work each session records as it goes, and shows the result — usage, estimated cost, provider limits, and the work itself — in **`agentacct tui`**, a live terminal dashboard. No browser, no server, no account.
+agentacct is local-first Agent Work Intelligence for coding agents. It reads the session logs your agents already write on disk — Claude Code, Codex, OpenCode, and Hermes — joins them with the work each session records as it goes, and turns the result into one honest **Work Receipt** per task: what it did (the commands it ran, the files it touched, the tools it used), what it cost, and how well that is actually proven. See it in the **macOS app**, a live terminal dashboard (**`agentacct tui`**), or over a local JSON API. No browser tab, no server, no account.
 
-![agentacct tui — live usage, cost, provider rate-limit bars, and recent sessions with per-session weekly-plan-cost estimates](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-home.png)
+![A Work Receipt in the macOS app — decision status, evidence coverage, the actions taken (commands + files), cost, evidence, gaps, and per-field provenance for one task](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-work-receipt.png)
 
 **Private by design.** Everything stays on your machine: state is plain local files, nothing binds a network port, and there is no phone-home telemetry, no account, no cloud sync. agentacct never stores or requests a provider API key.
 
-<sub>Screenshots show a synthetic demo workspace; your dashboard renders your machine's real local data.</sub>
+<sub>Screenshots show a synthetic demo workspace; your own dashboard renders your machine's real local data.</sub>
 
 ## What you get
 
-Run **`agentacct tui`** for a live, in-terminal view — usage windows, provider rate-limit bars with reset countdowns, and your recent sessions. Press `s` to drill into the sessions, `u` for the usage screen, `p` to save a shareable snapshot of the current view (an SVG that renders anywhere), `q` to quit.
+The same Task-primary view of your agents' work in the macOS app, in **`agentacct tui`** (a live terminal dashboard), and over a local JSON API — everything at a glance across all four agents:
 
-- **Honest usage and cost.** Tokens per agent, model, and day — read from the clients' own local session files and labeled `client_reported`; costs are clearly marked pricing-table estimates, never invoices.
-- **The work, not just the tokens.** Every session rolls up its recorded work steps and machine checks — a passing test is `Verified` evidence, an agent's own claim stays labeled `Agent reported`. Open a session to see each step, its status (`in progress` / `handed off` / `done` / `blocked`), and its check results with exit codes:
+![agentacct — the macOS app dashboard: provider limit rings, daily tokens by agent, cost, and recent sessions across Claude Code, Codex, OpenCode, and Hermes](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-dashboard.png)
 
-  ![agentacct tui session detail — the per-step work ledger with pass/fail check evidence and a weekly-plan-cost estimate](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-session-detail.png)
+- **One Work Receipt per task — what it did, and whether you can trust it.** Every task rolls up into eight questions a reviewer needs: what it was, who ran it, the **actions** it took (the commands it ran and the files it touched — read straight from each agent's own store), the cost, the **evidence** (how much of the work carries a real passing check), the outcome, the gaps, and per-field provenance — each fact labelled with where it came from (a client hook, a transcript scan, the agent's MCP records, CI). It keeps two things deliberately separate: what a human or agent *says* happened, and how well that is actually *proven* — an agent reporting "done" never raises the evidence bar. Read one in the app (above), or with `agentacct receipt <task>`.
 
-- **Attribution you can trust.** Every join between usage and recorded work carries a confidence label (`exact`/`high`/`medium`/`low`). Missing attribution beats wrong attribution: when agentacct cannot prove a link, it shows the gap instead of a guess. Press `s` for the honest per-session roll-up — tokens, cost, and steps, joined to the session that actually ran them:
+- **Honest usage and cost — per agent, model, and day.** Tokens read from the clients' own local session files and labeled `client_reported`; costs are clearly marked pricing-table estimates, never invoices.
 
-  ![agentacct tui sessions list — per-session tokens, cost, status, and step counts](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-sessions.png)
+  ![Usage by agent and by model across Claude Code, Codex, OpenCode, and Hermes](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-usage.png)
 
+- **The work, not just the tokens.** Every session rolls up its recorded work steps and machine checks — a passing test is `Verified` evidence, an agent's own claim stays labeled `Agent reported`. Open a task to see each step, its status (`in progress` / `handed off` / `done` / `blocked`), and its check results with exit codes.
+- **Attribution you can trust.** Every join between usage and recorded work carries a confidence label (`exact`/`high`/`medium`/`low`). Missing attribution beats wrong attribution: when agentacct cannot prove a link, it shows the gap instead of a guess.
 - **What a task cost your plan (beta).** agentacct estimates what fraction of your **weekly Claude plan** each task consumed — a `plan` column on the home panel *and* the sessions list, and an `≈ X% of your weekly plan` line on the session detail. This is the number the raw token count can't give you: different models burn the plan at very different rates, so agentacct learns the rate **from your own recorded limit history** and shows a figure only once it can calibrate to your account — until then it says it's still calibrating, rather than showing a guess. Always labeled an estimate.
 
 ## Install
+
+### The macOS app — no Python required
+
+The signed, notarized **macOS app** bundles everything. Download the `.dmg` from the [latest release](https://github.com/mikehasa/agentacct/releases/latest), drag agentacct to Applications, and open it — on first launch it installs the bundled CLI, instruments the coding agents it finds, and shows your Work Receipts in a native window. Requires macOS 14+.
+
+### The CLI
 
 Requires Python >= 3.11 on macOS or Linux; Windows is supported only via WSL.
 
@@ -44,7 +51,9 @@ No `pipx` yet? Install it first with `brew install pipx` (macOS) or `python3 -m 
 
 `onboard` installs agentacct once per machine (global by default, writing zero files into your repo): it detects your local coding-agent logs, sets up a global store, and runs a first usage sync. Then run **`agentacct tui`** for the live terminal dashboard (onboarding also starts the managed background sync plus a local JSON API on `http://127.0.0.1:8765` — the machine-readable lane native shells and scripts poll). Open a **new** agent session in any repo — MCP servers and hooks bind at session start, so the session that ran onboarding cannot become the first recorded Task. (Prefer a per-repo install? Run `agentacct onboard --scope project` instead.)
 
-Prefer to let the agent do it? Paste this into your coding agent:
+### Let your coding agent install it
+
+Paste this into your coding agent:
 
 ```text
 Install and set up agentacct — a local-first tool that reads my
@@ -76,6 +85,12 @@ pipx uninstall agentacct
 
 Then remove what onboarding added. For a global install (the default): delete the global store (`~/.local/state/agentacct/state` — keep it if you want the history) and the agentacct entries in your user config (`~/.claude.json`, the merged blocks in `~/.claude/settings.json`, the `~/.claude/hooks/` wrapper, and `~/.codex/config.toml`). For a `--scope project` install: delete that repo's `.agent-sentinel/` directory (that project's local ledger) and the agentacct entries onboarding added to `.mcp.json` / `.claude/settings.local.json` / `~/.codex/config.toml`. If you installed the standing instruction block, remove it first with `agentacct setup instructions --agent <client> --user --remove`.
 
+## The terminal dashboard
+
+Prefer the terminal? `agentacct tui` is the full dashboard in your shell — usage windows, provider rate-limit bars with reset countdowns, and your recent sessions across every agent. Press `s` to drill into the sessions, `u` for the usage screen, `t` for a task's Work Receipt, `p` to save a shareable snapshot of the current view (an SVG that renders anywhere), `q` to quit.
+
+![agentacct tui — live usage, cost, provider rate-limit bars, and recent sessions with per-session weekly-plan-cost estimates](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-home.png)
+
 ## What it is honest about
 
 agentacct is early alpha, and it would rather show you a gap than a guess:
@@ -83,7 +98,7 @@ agentacct is early alpha, and it would rather show you a gap than a guess:
 - **No hosted anything.** No hosted dashboard, no phone-home telemetry, no automatic cloud account sync. agentacct can *receive* telemetry locally when you explicitly point an OTLP exporter at it.
 - **Estimates are labeled as estimates.** There is no exact Claude Code/Codex subscription invoice access; costs come from a local pricing table and are labeled accordingly. See [docs/usage-truth-table.md](docs/usage-truth-table.md) for what each path can and cannot prove.
 - **No silent monitoring.** agentacct only reads the local session files of detected clients and never watches unrelated processes started outside agentacct/integrations. Hard stops apply only to runs agentacct itself launched or the opt-in proxy path.
-- **Support is per-capability, not per-logo.** Claude Code and Codex have live-observed usage paths today; other clients (Hermes, OpenCode, OpenClaw, Cursor) have narrower, explicitly-scoped paths. The per-client claims are pinned in the capability matrix in [INSTALL.md](INSTALL.md) and [docs/reference.md](docs/reference.md), and `agentacct capabilities agents` prints the same truth for your machine.
+- **Support is per-capability, not per-logo.** Claude Code, Codex, and OpenCode carry a full Work Receipt today — usage, cost, and the actions each session took (commands, edited files, tools); OpenCode also contributes independent exit-code checks. Hermes has a live usage path plus a narrower capture surface; OpenClaw and Cursor are usage-focused and explicitly scoped. How each fact is captured differs honestly — a live hook, or a scan of the client's own store — and the Receipt says which. Every per-client claim is pinned in the capability matrix in [INSTALL.md](INSTALL.md) and [docs/reference.md](docs/reference.md), and `agentacct capabilities agents` prints the same truth for your machine.
 
 Interfaces may change while agentacct is alpha.
 
@@ -93,7 +108,7 @@ agentacct keeps two evidence streams separate and joins them on real client ids 
 
 - **Usage truth** comes from the client's own local session files: imported tokens are labeled `client_reported`, and costs are pricing-table estimates — never provider invoices.
 - **Work meaning** comes from the sections and events the agent records over MCP while it works (`agentacct_record_section`, `agentacct_record_machine_check`), plus machine checks like test runs.
-- **The join** links the two through session/transcript ids and labels every attribution `exact`, `high`, `medium`, or `low`. For Claude Code, an installed hook bridge captures real session/transcript ids at session start and on every tool call; for Codex, the link is evidenced from the client's own session logs at import time.
+- **The join** links the two through session/transcript ids and labels every attribution `exact`, `high`, `medium`, or `low`. Claude Code binds real session/transcript ids through an installed hook bridge at session start and on every tool call; Codex, OpenCode, and Hermes are evidenced from each client's own session store at import time. Where a client's hook does not fire for its built-in tools, agentacct derives the same Actions — commands, edited files, tool categories and names — from that store directly, so the Receipt is populated with or without a live hook, and always says which.
 
 The per-client join mechanics, confidence-label glossary, daily workflow, MCP tool list, and optional enforcement extras are in [docs/reference.md](docs/reference.md).
 
