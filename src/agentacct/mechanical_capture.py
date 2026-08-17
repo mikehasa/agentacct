@@ -417,6 +417,34 @@ def drain_mechanical_check_spool(
     return envelopes
 
 
+def build_discovery_mechanical_check_envelopes(
+    ticks: Iterable[Mapping[str, Any]],
+) -> list[Any]:
+    """Build ``machine_check_observed`` envelopes from discovery-derived ticks.
+
+    A client whose observe-only hook does not fire (OpenCode, whose plugin barely
+    records) can still have its checks recovered from its own transcript/DB at
+    import time. Each tick has the SAME ``{c, s, k, r, d, x, t}`` shape the spool
+    holds, so this reuses ``_build_envelope`` — the per-client adapter/schema and
+    EVERY validator (safe runner, sha256 digest, exit-code bounds) are byte-
+    identical to the hook path, and there is no second wire format to keep in sync.
+
+    The caller MUST stamp each tick's ``t`` with a STABLE source time (e.g. the
+    DB's recorded call-end time in epoch seconds), never a fresh clock: the
+    envelope's idempotency key is content+``event_timestamp`` derived, so a stable
+    timestamp dedupes a re-imported check in the Evidence store instead of double-
+    recording it. Returns the built envelopes (invalid ticks are dropped)."""
+
+    envelopes: list[Any] = []
+    for tick in ticks:
+        if not isinstance(tick, Mapping):
+            continue
+        envelope = _build_envelope(tick)
+        if envelope is not None:
+            envelopes.append(envelope)
+    return envelopes
+
+
 def ingest_mechanical_check_spool(
     store_dir: Path | str,
     *,
@@ -450,4 +478,5 @@ __all__ = [
     "record_mechanical_check_tick",
     "drain_mechanical_check_spool",
     "ingest_mechanical_check_spool",
+    "build_discovery_mechanical_check_envelopes",
 ]

@@ -61,6 +61,7 @@ from .tool_activity import (
     normalize_tool_name,
     tool_category,
 )
+from .mechanical_capture import classify_command, command_digest
 
 UsageClientName = Literal["codex", "claude-code", "opencode", "hermes", "openclaw"]
 ObservedClientName = Literal[
@@ -360,6 +361,22 @@ class ClientUsageEvent:
     # byte-identical to the pre-split behavior.
     token_lineage_session_kind: str | None = None
     token_lineage_parent_client_session_id: str | None = None
+    # Discovery-side Actions signals derived from the client's own transcript/DB
+    # when its hook does not capture them — currently OpenCode, from the ``part``
+    # table's tool calls (Codex rides the analogous carrier on its
+    # ClientSessionObservation). ``rollout_tool_activity`` holds the same
+    # {tool_category_counts / tool_names / touched_files / commands} shape the hook
+    # drain emits; ``rollout_mechanical_checks`` holds spool-shaped check ticks (a
+    # bash exit code the harness observed, which lifts a step to
+    # ``independently_checked``). INTERNAL carriers: the import orchestrator emits
+    # them as separate tool_activity_observed / machine_check_observed events;
+    # ``to_sentinel_event`` never reads them, and ``compare=False`` keeps them out
+    # of the frozen dataclass's identity/hash and every stored-row equality (a usage
+    # row differing only in what tools it ran is the same row).
+    rollout_tool_activity: Mapping[str, Any] | None = field(default=None, compare=False)
+    rollout_mechanical_checks: tuple[Mapping[str, Any], ...] = field(
+        default=(), compare=False
+    )
 
     def __post_init__(self) -> None:
         if self.client not in USAGE_EVENT_CLIENTS:
@@ -3345,22 +3362,269 @@ def _scan_opencode_part_evidence(
     return evidence
 
 
+# --- OpenCode Actions + verification extraction (discovery-side) -------------
+# OpenCode's observe-only plugin barely fires for its built-in tools (real store
+# evidence: ~0 hook ticks), but every tool call it made is on disk in the
+# ``part`` table. These pure helpers derive the SAME Actions signals the hook
+# path produces (tool categories + names, cwd-relative touched files, best-effort-
+# scrubbed commands) AND the one signal OpenCode uniquely affords at discovery
+# time: a bash tool's harness ``exit`` code, turned into a mechanical-check tick
+# that lifts a step to ``independently_checked`` (Codex's rollout has no clean
+# exit code, so its discovery-side verification is deferred). Only tool NAMES,
+# cwd-relative touched PATHS, best-effort-scrubbed COMMANDS, and a coarse check
+# kind/runner/sha256 digest/exit are derived; never tool output, never a preview,
+# never an absolute path prefix.
+
+_OPENCODE_TOOL_PARTS_SCAN_MAX = 5000  # bound accumulation per pathological session
+_OPENCODE_CHECK_TICKS_MAX = 200  # bound checks carried per session
+
+
+def _opencode_edit_paths(part: Mapping[str, Any]) -> list[str]:
+    """Every edit-target path one OpenCode edit-family tool part names, as written
+    (absolute or relative). Reads three shapes: the direct ``filePath`` (native
+    edit/write), the structured ``apply_patch`` metadata ``files[].filePath``, and
+    the raw ``apply_patch`` body (same ``*** Add/Update/Delete File:`` grammar the
+    Codex reader parses). Relativization and normalization are the caller's final
+    gate; a ``read`` (which touches nothing) is never routed here."""
+
+    paths: list[str] = []
+    file_path = part.get("file_path")
+    if isinstance(file_path, str) and file_path.strip():
+        paths.append(file_path)
+    files_json = part.get("files_json")
+    if isinstance(files_json, str) and files_json.strip():
+        try:
+            files = json.loads(files_json)
+        except (json.JSONDecodeError, ValueError):
+            files = None
+        if isinstance(files, list):
+            for entry in files:
+                if not isinstance(entry, Mapping):
+                    continue
+                candidate = entry.get("filePath") or entry.get("path")
+                if isinstance(candidate, str) and candidate.strip():
+                    paths.append(candidate)
+    paths.extend(_codex_apply_patch_paths(part.get("patch_text")))
+    return paths
+
+
+def _opencode_check_tick(
+    part: Mapping[str, Any],
+    *,
+    session_id: str,
+) -> dict[str, Any] | None:
+    """A spool-shaped mechanical-check tick from ONE completed OpenCode execute
+    part, or ``None`` when the part is not an unambiguous check whose harness exit
+    code is trustworthy. Recognizes a check runner with the SAME ``classify_command``
+    the hook path uses, and reads the harness ``exit`` code plus a STABLE end
+    timestamp from the DB (so the content-derived idempotency key dedupes a
+    re-imported check instead of double-recording it). Stores only the coarse check
+    kind, runner, and a sha256 digest of the command — never the command text."""
+
+    raw_command = part.get("command")
+    if not isinstance(raw_command, str) or not raw_command.strip():
+        return None
+    if str(part.get("status") or "").strip().lower() != "completed":
+        return None
+    exit_code = part.get("exit_code")
+    if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+        return None
+    classified = classify_command(raw_command)
+    if classified is None:
+        return None
+    check_kind, runner = classified
+    # OpenCode stamps tool times in MILLISECONDS; the tick timestamp is epoch
+    # SECONDS (matching the hook's ``time.time()``), so the check attaches to the
+    # step active when it ran and normalize_timestamp does not read year ~58500.
+    at_ms = part.get("time_end")
+    if isinstance(at_ms, bool) or not isinstance(at_ms, (int, float)):
+        at_ms = part.get("row_time")
+    if isinstance(at_ms, bool) or not isinstance(at_ms, (int, float)) or float(at_ms) <= 0:
+        return None
+    return {
+        "c": "opencode",
+        "s": session_id,
+        "k": check_kind,
+        "r": runner,
+        "d": command_digest(raw_command),
+        "x": int(exit_code),
+        "t": float(at_ms) / 1000.0,
+    }
+
+
+def _opencode_actions_from_parts(
+    parts: list[Mapping[str, Any]],
+    *,
+    cwd: str | None,
+    session_id: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Derive ``(activity, check_ticks)`` for ONE OpenCode session from its tool
+    parts. ``activity`` is the exact metadata shape the hook drain emits (values,
+    not keys, so the store's key-based secret redaction can't blank a
+    credential-shaped name/path). ``parts`` are ``{tool, status, command,
+    exit_code, file_path, patch_text, files_json, time_end, row_time}`` dicts
+    already json-extracted from the ``part`` table (never the output/preview blob).
+    Pure — no DB, no filesystem."""
+
+    name_counts: dict[str, int] = {}
+    category_counts: dict[str, int] = {}
+    commands: list[str] = []
+    touched: list[str] = []
+    check_ticks: list[dict[str, Any]] = []
+    for part in parts:
+        name = normalize_tool_name(part.get("tool"))
+        category: str | None = None
+        if name:
+            name_counts[name] = name_counts.get(name, 0) + 1
+            category = tool_category(name)
+            category_counts[category] = category_counts.get(category, 0) + 1
+        # Commands + verification checks ride on an execute part's ``command``
+        # (OpenCode's ``bash``); a non-execute tool never carries one.
+        if isinstance(part.get("command"), str) and part.get("command").strip():
+            command = _normalize_command(part.get("command"))
+            if (
+                command
+                and command not in commands
+                and len(commands) < _COMMANDS_PER_BATCH_MAX
+            ):
+                commands.append(command)
+            tick = _opencode_check_tick(part, session_id=session_id)
+            if tick is not None and len(check_ticks) < _OPENCODE_CHECK_TICKS_MAX:
+                check_ticks.append(tick)
+        if category == "edit":
+            for raw_path in _opencode_edit_paths(part):
+                touched_path = _normalize_touched_path(
+                    _codex_relativize_touched_path(raw_path, cwd)
+                )
+                if (
+                    touched_path
+                    and touched_path not in touched
+                    and len(touched) < _TOUCHED_FILES_PER_BATCH_MAX
+                ):
+                    touched.append(touched_path)
+    activity: dict[str, Any] = {}
+    if category_counts:
+        activity["tool_category_counts"] = dict(sorted(category_counts.items()))
+    if name_counts:
+        activity["tool_names"] = [
+            {"name": name, "count": count}
+            for name, count in sorted(name_counts.items())
+        ]
+    if touched:
+        activity["touched_files"] = touched
+    if commands:
+        activity["commands"] = commands
+    return activity, check_ticks
+
+
+def _scan_opencode_part_actions(
+    con: sqlite3.Connection,
+    session_ids: list[str],
+    cwd_by_session: Mapping[str, str | None],
+) -> dict[str, dict[str, Any]]:
+    """Derive per-session discovery-side Actions + mechanical checks from the
+    ``part`` table for the sessions being imported.
+
+    Privacy + cost boundary: the row's ``data`` blob also holds tool OUTPUT and
+    file previews, which are NEVER SELECTed. SQL ``json_extract`` pulls ONLY the
+    whitelisted scalar fields — tool name, status, the bash command + its exit, the
+    edit target path / patch body / structured file list, and the call end time —
+    so output, previews, message bodies, and every other tool's payload never enter
+    the process. Rows are streamed (no ``fetchall`` of the part table) and bounded
+    per session (``_OPENCODE_TOOL_PARTS_SCAN_MAX``).
+
+    Malformed-JSON tolerance: the OpenCode store is read while OpenCode may be
+    mid-write, so a ``data`` cell can be a truncated/partial write. A bare
+    ``json_extract`` in the WHERE would RAISE ``OperationalError`` (a
+    ``sqlite3.DatabaseError``) on such a row and abort the whole scan — which, being
+    uncaught in this path, would zero the client's already-read token/cost/evidence
+    rows. So the ``type`` filter is guarded by ``json_valid`` inside a CASE
+    (whose evaluation order SQL guarantees, unlike a WHERE AND-term): a malformed or
+    NULL ``data`` row yields NULL, fails ``= 'tool'``, and is skipped — matching the
+    deliberately-tolerant sibling ``_scan_opencode_part_evidence``. Every surviving
+    row is valid JSON, so the SELECT ``json_extract`` fields cannot raise. Returns
+    ``{session_id: {"activity": {...}, "checks": [...]}}`` for sessions with a signal.
+    """
+
+    result: dict[str, dict[str, Any]] = {}
+    if not session_ids:
+        return result
+    if not {"session_id", "data"} <= _sqlite_table_columns(con, "part"):
+        return result
+    placeholders = ", ".join("?" for _ in session_ids)
+    cursor = con.execute(
+        f"""
+        select
+            session_id                                   as session_id,
+            json_extract(data, '$.tool')                 as tool,
+            json_extract(data, '$.state.status')         as status,
+            json_extract(data, '$.state.input.command')  as command,
+            json_extract(data, '$.state.metadata.exit')  as exit_code,
+            json_extract(data, '$.state.input.filePath') as file_path,
+            json_extract(data, '$.state.input.patchText') as patch_text,
+            json_extract(data, '$.state.metadata.files') as files_json,
+            json_extract(data, '$.state.time.end')       as time_end,
+            time_updated                                 as row_time
+        from part
+        where session_id in ({placeholders})
+          and (
+              case when json_valid(data) then json_extract(data, '$.type') end
+          ) = 'tool'
+        """,
+        session_ids,
+    )
+    parts_by_session: dict[str, list[Mapping[str, Any]]] = {}
+    for row in cursor:
+        sid = str(row["session_id"] or "").strip()
+        if not sid:
+            continue
+        bucket = parts_by_session.setdefault(sid, [])
+        if len(bucket) >= _OPENCODE_TOOL_PARTS_SCAN_MAX:
+            continue
+        bucket.append(
+            {
+                "tool": row["tool"],
+                "status": row["status"],
+                "command": row["command"],
+                "exit_code": row["exit_code"],
+                "file_path": row["file_path"],
+                "patch_text": row["patch_text"],
+                "files_json": row["files_json"],
+                "time_end": row["time_end"],
+                "row_time": row["row_time"],
+            }
+        )
+    for sid, parts in parts_by_session.items():
+        activity, checks = _opencode_actions_from_parts(
+            parts, cwd=cwd_by_session.get(sid), session_id=sid
+        )
+        if activity or checks:
+            result[sid] = {"activity": activity, "checks": checks}
+    return result
+
+
 def _read_opencode_session_db_usage(
     db_source: _RegularSourceFile,
     *,
     limit_sessions: int,
-) -> tuple[int, list[dict[str, Any]], dict[str, LogEvidenceAccumulator]]:
+) -> tuple[
+    int,
+    list[dict[str, Any]],
+    dict[str, LogEvidenceAccumulator],
+    dict[str, dict[str, Any]],
+]:
     """Read the authoritative ``session`` rollup from one ``opencode*.db``.
 
-    Returns ``(discovered_rows, selected_rows, evidence_by_session)``. Only the
-    per-session token, cost, model, lineage, directory, and timestamp columns of
-    the ``session`` table are read for usage; the ``part`` table is read
-    SEPARATELY and, via a server-name SQL prefilter, ONLY for rows that name the
-    agentacct MCP server — to pair the session's own agentacct creation-tool
-    event ids (see ``_scan_opencode_part_evidence`` for the boundary). Other
-    tools' payloads, prompts, and message bodies are never SELECTed or parsed.
-    Raises on a corrupt or unreadable database so discovery fails closed rather
-    than reporting the store as silently absent.
+    Returns ``(discovered_rows, selected_rows, evidence_by_session,
+    actions_by_session)``. The per-session token, cost, model, lineage, directory,
+    and timestamp columns of the ``session`` table are read for usage; the ``part``
+    table is read SEPARATELY, twice, each with its own whitelist: once via a
+    server-name SQL prefilter for the agentacct creation-tool event ids only (see
+    ``_scan_opencode_part_evidence``), and once via ``json_extract`` for the
+    discovery-side Actions + check fields only (see ``_scan_opencode_part_actions``).
+    Neither scan SELECTs tool output, previews, prompts, or message bodies. Raises
+    on a corrupt or unreadable database so discovery fails closed rather than
+    reporting the store as silently absent.
     """
 
     con = _connect_regular_source_sqlite_read_only(db_source)
@@ -3410,6 +3674,19 @@ def _read_opencode_session_db_usage(
             sid for sid in (str(row["id"] or "").strip() for row in rows) if sid
         ]
         evidence_by_session = _scan_opencode_part_evidence(con, session_ids)
+        # The session ``directory`` is the cwd an edit target is relativized
+        # against; absent (older/degraded schema) it is None and an absolute path
+        # is dropped rather than leaked.
+        cwd_by_session: dict[str, str | None] = {
+            str(row["id"] or "").strip(): (
+                row["directory"] if "directory" in columns else None
+            )
+            for row in rows
+            if str(row["id"] or "").strip()
+        }
+        actions_by_session = _scan_opencode_part_actions(
+            con, session_ids, cwd_by_session
+        )
     finally:
         con.close()
     selected: list[dict[str, Any]] = []
@@ -3424,7 +3701,7 @@ def _read_opencode_session_db_usage(
         usage["cache_read_tokens_reported"] = "tokens_cache_read" in columns
         usage["cache_write_tokens_reported"] = "tokens_cache_write" in columns
         selected.append(usage)
-    return max(0, discovered_rows), selected, evidence_by_session
+    return max(0, discovered_rows), selected, evidence_by_session, actions_by_session
 
 
 def discover_opencode_usage_from_db(
@@ -3446,7 +3723,12 @@ def discover_opencode_usage_from_db(
     seen_sessions: set[tuple[str, str]] = set()
     for db_source in db_sources:
         namespace = _source_home_namespace(db_source.root)
-        _discovered, selected_rows, evidence_by_session = _read_opencode_session_db_usage(
+        (
+            _discovered,
+            selected_rows,
+            evidence_by_session,
+            actions_by_session,
+        ) = _read_opencode_session_db_usage(
             db_source,
             limit_sessions=limit_sessions,
         )
@@ -3479,6 +3761,7 @@ def discover_opencode_usage_from_db(
             parent_id = _limited_optional_text(usage.get("parent_id"), 512)
             if parent_id == session_id:
                 parent_id = None
+            session_actions = actions_by_session.get(session_id)
             event = ClientUsageEvent(
                 client="opencode",
                 client_session_id=session_id,
@@ -3515,6 +3798,20 @@ def discover_opencode_usage_from_db(
                 evidenced_event_ids=tuple(evidence_fields.get("evidenced_event_ids", ())),
                 evidenced_event_id_total=int(evidence_fields.get("evidenced_event_id_total", 0)),
                 evidenced_outputs_skipped=int(evidence_fields.get("evidenced_outputs_skipped", 0)),
+                # Discovery-side Actions + verification carriers (part-table scan).
+                # INTERNAL: the import orchestrator emits them as separate
+                # tool_activity_observed / machine_check_observed events; they never
+                # enter this event's own sentinel serialization.
+                rollout_tool_activity=(
+                    (session_actions.get("activity") or None)
+                    if session_actions
+                    else None
+                ),
+                rollout_mechanical_checks=(
+                    tuple(session_actions.get("checks") or ())
+                    if session_actions
+                    else ()
+                ),
             )
             # A session that recorded agentacct work is worth emitting even if the
             # session table carries no token/cost yet (the recorded work IS the

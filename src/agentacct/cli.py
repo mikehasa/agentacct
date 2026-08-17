@@ -8142,12 +8142,14 @@ def _local_usage_import_payload(
             except Exception:  # noqa: BLE001 - draining the spool must never fail the import.
                 pass
             # Emit transcript-scan-derived tool activity (Receipt Actions) for a
-            # client whose hook does not capture it — currently Codex, from its
-            # rollout tool calls collected during discovery. Scoped-replace per
-            # (client, session): a re-import REFRESHES a scanned session's Actions
-            # (so a still-growing session is never frozen and never double-counts)
-            # and never touches a session this scan did not cover. Best-effort,
-            # like the spool drains above.
+            # client whose hook does not capture it. The carrier rides on whichever
+            # discovery lane the client produces: Codex on its session OBSERVATION
+            # (from the rollout), OpenCode on its usage EVENT (from the part table).
+            # Scoped-replace per (client, session): a re-import REFRESHES a scanned
+            # session's Actions (so a still-growing session is never frozen and never
+            # double-counts) and never touches a session this scan did not cover. The
+            # event_id is stable per (client, session), so the two lanes can never
+            # double-emit one session. Best-effort, like the spool drains above.
             try:
                 from .tool_activity import (
                     build_discovery_tool_activity_event,
@@ -8155,16 +8157,28 @@ def _local_usage_import_payload(
                 )
 
                 scan_captured_at = time.time()
-                discovery_activity_events: list[dict[str, Any]] = []
-                for observation in discovery.session_observations:
+                activity_carriers = [
+                    (
+                        carrier.client,
+                        carrier.client_session_id,
+                        getattr(carrier, "rollout_tool_activity", None),
+                    )
+                    for carrier in (
+                        *discovery.session_observations,
+                        *discovery.events,
+                    )
+                ]
+                discovery_activity_by_id: dict[str, dict[str, Any]] = {}
+                for client_name, session_id, activity in activity_carriers:
                     built = build_discovery_tool_activity_event(
-                        client=observation.client,
-                        session_id=observation.client_session_id,
-                        activity=getattr(observation, "rollout_tool_activity", None),
+                        client=client_name,
+                        session_id=session_id,
+                        activity=activity,
                         captured_at=scan_captured_at,
                     )
                     if built is not None:
-                        discovery_activity_events.append(built)
+                        discovery_activity_by_id[built["event_id"]] = built
+                discovery_activity_events = list(discovery_activity_by_id.values())
                 if discovery_activity_events:
                     scanned_activity_keys = {
                         (
@@ -8190,6 +8204,32 @@ def _local_usage_import_payload(
                         discovery_activity_events,
                     )
             except Exception:  # noqa: BLE001 - deriving Actions must never fail the import.
+                pass
+            # Emit transcript-scan-derived mechanical checks — the independent
+            # (harness-observed) exit codes that lift a step to
+            # ``independently_checked`` — for a client whose hook does not fire.
+            # Currently OpenCode, from a bash tool's DB-recorded exit code. Each
+            # envelope's idempotency key is content+event_timestamp derived and the
+            # tick carries a STABLE DB timestamp, so a re-import dedupes in the
+            # Evidence store rather than double-recording. Best-effort, like the
+            # mechanical-check spool drain above.
+            try:
+                from .mechanical_capture import (
+                    build_discovery_mechanical_check_envelopes,
+                )
+
+                discovery_check_ticks: list[Any] = []
+                for carrier in discovery.events:
+                    ticks = getattr(carrier, "rollout_mechanical_checks", ()) or ()
+                    discovery_check_ticks.extend(ticks)
+                for envelope in build_discovery_mechanical_check_envelopes(
+                    discovery_check_ticks
+                ):
+                    try:
+                        service.evidence.append(envelope)
+                    except Exception:  # noqa: BLE001 - one bad append must not abort the rest.
+                        continue
+            except Exception:  # noqa: BLE001 - deriving checks must never fail the import.
                 pass
         if dry_run:
             projectable_observation_identities: set[tuple[str, str, str]] = set()
