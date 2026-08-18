@@ -701,6 +701,51 @@ def test_equal_source_order_divergence_records_one_stable_conflict(tmp_path: Pat
     assert (_stats(runtime), _spool_size(runtime)) == after_first_conflict
 
 
+def test_equal_source_order_evidence_link_drift_refreshes_without_conflict(tmp_path: Path) -> None:
+    """Provenance-only drift — identical usage material, different client-log
+    evidence links, equal source-order watermark — refreshes as a no-op instead
+    of parking a permanent conflict. Regression for opencode session_total slots
+    stuck when an older import recorded no source-event ids and the current
+    importer populates them at the same watermark."""
+
+    runtime = EvidenceRuntime(tmp_path, enabled=True)
+    incumbent = _usage_event(
+        event_id="evt_incumbent",
+        source_order=100.0,
+        input_tokens=100,
+        evidenced_event_ids=(),  # an older import cited no source events
+    )
+    _assert_counts(
+        runtime.reconcile_refreshable_usage_snapshot([incumbent], complete=True),
+        inserted=1,
+        spool_written=1,
+    )
+
+    enriched = _usage_event(
+        event_id="evt_enriched",
+        created_at=2_000.0,
+        source_order=100.0,
+        input_tokens=100,  # identical usage material
+        evidenced_event_ids=("evt_evidence_a", "evt_evidence_b"),  # now populated
+    )
+    outcome = _assert_counts(
+        runtime.reconcile_refreshable_usage_snapshot([enriched], complete=True),
+        noop=1,
+    )
+    assert _error_count(outcome) == 0
+    stats = _stats(runtime)
+    assert stats["conflict_groups"] == 0
+    assert stats["conflict_versions"] == 0
+
+    # Deterministic: re-issuing the enriched snapshot stays a no-op, never a
+    # conflict, so a watcher never re-flags it as unhealthy.
+    _assert_counts(
+        runtime.reconcile_refreshable_usage_snapshot([enriched], complete=True),
+        noop=1,
+    )
+    assert _stats(runtime)["conflict_groups"] == 0
+
+
 def test_identical_concurrent_snapshots_commit_one_physical_revision(tmp_path: Path) -> None:
     runtime_a = EvidenceRuntime(tmp_path, enabled=True)
     runtime_b = EvidenceRuntime(tmp_path, enabled=True)

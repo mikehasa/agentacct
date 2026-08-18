@@ -27,6 +27,7 @@ from .refreshable_usage import (
     refreshable_usage_source_order,
     refreshable_usage_truth_digest,
     refreshable_usage_truth_material,
+    refreshable_usage_usage_material_digest_from_material,
 )
 from .usage_truth import (
     LOCAL_USAGE_PROVENANCE,
@@ -301,6 +302,10 @@ class EvidenceRuntime:
                 source_order=source_order,
                 revision_id=revision_id,
                 envelope=envelope,
+                # Tokens-only digest (evidence links excluded): lets the store
+                # tell a real usage change from mere provenance drift at an equal
+                # source-order watermark.
+                usage_material_hash=refreshable_usage_usage_material_digest_from_material(truth),
             ),
             revision_id,
         )

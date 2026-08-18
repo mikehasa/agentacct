@@ -8812,10 +8812,15 @@ def _print_evidence_refreshable_usage_warning(
             else int(bool(errors))
         )
         conflict_count = int(outcome_map.get("conflicts") or 0)
+        # existing_conflicts (prior unresolved conflicts re-detected this pass)
+        # can be the sole reason the reconcile is unhealthy, so surface it too —
+        # a bare "conflicts=0" otherwise hides the actual cause.
+        existing_conflict_count = int(outcome_map.get("existing_conflicts") or 0)
         print(
             f"{prefix}WARNING: the local usage ledger was saved, but Evidence v2 "
             "current-usage reconciliation is not healthy "
-            f"(errors={error_count} conflicts={conflict_count}). "
+            f"(errors={error_count} conflicts={conflict_count} "
+            f"existing_conflicts={existing_conflict_count}). "
             "Retry usage refresh and inspect "
             "ingestion health before any Evidence rebuild or cleanup.",
             file=sys.stderr,
