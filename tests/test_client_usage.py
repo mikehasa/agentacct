@@ -6231,6 +6231,29 @@ def test_usage_reconcile_failure_is_fail_open_degraded_then_noop_self_heals(
     assert "Evidence v2 current-usage reconciliation is not healthy" in watch.output
 
 
+def test_evidence_refreshable_usage_warning_surfaces_existing_conflicts(capsys):
+    # existing_conflicts alone can make the reconcile unhealthy; the warning must
+    # print that count, not just conflicts (which is 0 here), so the degraded
+    # cause is not hidden.
+    from agentacct.cli import _print_evidence_refreshable_usage_warning
+
+    _print_evidence_refreshable_usage_warning(
+        {
+            "evidence_refreshable_usage": {
+                "complete_requested": True,
+                "complete_applied": True,
+                "errors": [],
+                "conflicts": 0,
+                "existing_conflicts": 2,
+            }
+        }
+    )
+    err = capsys.readouterr().err
+    assert "current-usage reconciliation is not healthy" in err
+    assert "conflicts=0" in err
+    assert "existing_conflicts=2" in err
+
+
 def test_usage_import_refresh_preserves_prior_estimate_on_unchanged_session(tmp_path):
     # D1: a prior --estimate-costs run leaves an estimated_from_tokens cost; a
     # later --refresh WITHOUT --estimate-costs over the unchanged session must

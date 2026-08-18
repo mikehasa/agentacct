@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 from .evidence import ClaimedLink, EvidenceEnvelope, canonical_digest, canonical_json_bytes, normalize_timestamp
+from .refreshable_usage import refreshable_usage_usage_material_digest_from_material
 
 
 EVIDENCE_STORE_SCHEMA_VERSION = "agent-chronicle.evidence-store.v1"
@@ -174,6 +175,10 @@ class RefreshableUsageItem:
     usage adapter.  The store deliberately does not derive them from the full
     envelope because refresh observations may legitimately remint transport
     timestamps and evidence ids while describing the same current fact.
+
+    ``usage_material_hash`` is the tokens-only digest (client-log evidence links
+    excluded).  When two revisions share it but differ on ``content_hash``, only
+    provenance drifted and the reconcile must not treat that as usage divergence.
     """
 
     slot_key: str
@@ -182,6 +187,7 @@ class RefreshableUsageItem:
     revision_id: str
     source_order: int | None
     envelope: EvidenceEnvelope
+    usage_material_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -789,6 +795,53 @@ class EvidenceStore:
             validated.append((item, identity_json))
         return tuple(validated)
 
+    def _head_usage_material_hash(
+        self, connection: sqlite3.Connection, head: sqlite3.Row
+    ) -> str | None:
+        """Tokens-only digest of the stored head's usage, or ``None`` if it
+        cannot be recomputed.  Fetched lazily (only when a conflict would
+        otherwise be recorded), so the reconcile hot path pays nothing."""
+
+        try:
+            evidence_id = head["evidence_id"]
+        except (IndexError, KeyError):
+            return None
+        if not evidence_id:
+            return None
+        row = connection.execute(
+            "SELECT envelope_json FROM evidence_versions WHERE evidence_id = ?",
+            (str(evidence_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            envelope = json.loads(row["envelope_json"])
+            truth = envelope["payload"]["refreshable_usage"]["truth"]
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not isinstance(truth, Mapping):
+            return None
+        try:
+            return refreshable_usage_usage_material_digest_from_material(truth)
+        except Exception:  # noqa: BLE001 - a bad stored truth simply falls back to conflict.
+            return None
+
+    def _refreshable_usage_provenance_only_drift(
+        self,
+        connection: sqlite3.Connection,
+        head: sqlite3.Row,
+        item: "RefreshableUsageItem",
+    ) -> bool:
+        """True when the incoming item and the stored head carry the SAME usage
+        material and differ only in client-log evidence links.  Callers gate
+        this behind an already-established content-hash mismatch and the absence
+        of a reliable source-order ordering."""
+
+        if item.usage_material_hash is None:
+            return False
+        head_material = self._head_usage_material_hash(connection, head)
+        return head_material is not None and head_material == item.usage_material_hash
+
     @staticmethod
     def _refreshable_usage_conflict_key(
         *,
@@ -1025,6 +1078,17 @@ class EvidenceStore:
                         counts["updated"] += 1
                     elif reliable_older:
                         counts["stale"] += 1
+                    elif self._refreshable_usage_provenance_only_drift(
+                        connection, head, item
+                    ):
+                        # Same usage material; only the client-log evidence links
+                        # drifted (e.g. an older import cited no source events).
+                        # Equal-source-order evidence-link drift is not usage
+                        # divergence, so refresh it as unchanged rather than
+                        # parking a permanent conflict. Scoped to the live head;
+                        # a tombstoned head keeps the stricter conflict path,
+                        # where resurrection semantics are the concern.
+                        counts["unchanged"] += 1
                     else:
                         conflict_key = self._refreshable_usage_conflict_key(
                             head=head,
