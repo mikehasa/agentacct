@@ -36,14 +36,14 @@ For reusable per-agent instructions, see [agentacct workflow instructions](agent
 
 MCP setup gives a coding agent access to local agentacct tools such as:
 
-- `sentinel_record_event`
-- `sentinel_attach_client_context`
-- `sentinel_record_section`
-- `sentinel_record_agent_usage_debug`
-- `sentinel_list_events`
-- `sentinel_get_event_summary`
-- `sentinel_list_runs`
-- `sentinel_get_report`
+- `agentacct_record_event`
+- `agentacct_attach_client_context`
+- `agentacct_record_section`
+- `agentacct_record_agent_usage_debug`
+- `agentacct_list_events`
+- `agentacct_get_event_summary`
+- `agentacct_list_runs`
+- `agentacct_get_report`
 
 This lets the agent record checkpoints, notes, machine-check evidence, semantic work sections, local client join keys such as session id, parent session id, turn id, request id, and message id, plus debug-only snapshots of usage that the agent can see about itself. It does not automatically parse that agent's private session logs, and it does not give agentacct provider-billed cost control.
 

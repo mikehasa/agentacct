@@ -1,10 +1,10 @@
-# Contributing to Agent Chronicle
+# Contributing to agentacct
 
-Thanks for helping improve Agent Chronicle. The project is early alpha, so the most useful contributions are small, well-tested improvements to local developer workflows.
+Thanks for helping improve agentacct. The project is early alpha, so the most useful contributions are small, well-tested improvements to local developer workflows.
 
 ## Product scope
 
-Agent Chronicle is currently focused on being local-first Agent Work Intelligence for coding-agent runs: it records real token usage and the work a session actually did, and joins them honestly. Run-safety features (process ownership, budgets, checkpoints) are secondary and observe-only by default.
+agentacct is currently focused on being local-first Agent Work Intelligence for coding-agent runs: it records real token usage and the work a session actually did, and joins them honestly. Run-safety features (process ownership, budgets, checkpoints) are secondary and observe-only by default.
 
 Good contribution areas:
 
@@ -26,7 +26,7 @@ Changes should preserve these defaults:
 - No telemetry: do not add phone-home behavior.
 - No stored API keys: provider keys should come from environment variables for commands that explicitly need them.
 - Observe-only by default: basic setup should not require provider keys or paid API calls.
-- Process ownership: Agent Chronicle should only control processes it starts and records as Chronicle-owned.
+- Process ownership: agentacct should only control processes it starts and records as agentacct-owned.
 - Localhost by default: dashboard/API services should not bind to public interfaces by default.
 - Provider forwarding is opt-in and budget-gated.
 
@@ -37,7 +37,7 @@ If your change weakens any of these, call it out clearly in the PR and explain t
 The repository is currently private and unpublished. Obtain an authorized checkout from the owner; do not redistribute its location as a public install path.
 
 ```bash
-cd /absolute/path/to/authorized/agent-chronicle-checkout
+cd /absolute/path/to/authorized/agentacct-checkout
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e . pytest
@@ -52,7 +52,7 @@ Run tests:
 Run a local smoke demo:
 
 ```bash
-agent-chronicle demo
+agentacct demo
 ```
 
 ## Before opening a PR
@@ -94,7 +94,7 @@ Keep the PR in draft while the product is still being iterated. Do not merge it 
 
 For MCP tools, update all of these together:
 
-- tool schema in `src/agent_chronicle/mcp.py`
+- tool schema in `src/agentacct/mcp.py`
 - handler in `SentinelMCPServer.call_tool`
 - README MCP tool list
 - tests in `tests/test_mcp.py`

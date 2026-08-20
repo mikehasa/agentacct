@@ -16,8 +16,8 @@ compliance record, not legal advice.
 | Paperclip orchestration | `paperclipai/paperclip` at `c36f1a4afd91e4ddf0e5c7224b288ce722c7404f` | MIT, Copyright 2025 Paperclip AI | Read-only exported/API snapshot mapping | None |
 
 The repository currently contains no copied or modified upstream source from
-these projects. Their license texts therefore are not added to the Chronicle
-distribution merely because Chronicle speaks compatible public protocols or
+these projects. Their license texts therefore are not added to the agentacct
+distribution merely because agentacct speaks compatible public protocols or
 parses public data formats. This BOM and connector-level upstream notes retain
 the engineering provenance of the design.
 
@@ -35,7 +35,7 @@ If code is copied, modified, linked, or bundled later:
 - dependencies and bundled assets have their own licenses and must be audited
   independently of the repository's top-level license;
 - project names, logos, and trademarks are not automatically licensed for
-  Chronicle branding;
+  agentacct branding;
 - hosted services, datasets, model outputs, and third-party APIs may have terms
   separate from source-code licenses.
 
@@ -63,10 +63,10 @@ No integration may silently introduce:
 - AGPL, SSPL, BUSL, Commons Clause, or another source-available restriction;
 - a binary dependency without its bundled notice and redistribution analysis;
 - a font, icon, logo, or sample dataset without asset-level terms;
-- a transitive dependency tree solely to consume a format Chronicle can parse
+- a transitive dependency tree solely to consume a format agentacct can parse
   with its existing runtime.
 
-If Chronicle later bundles Paperclip UI assets, OpenLIT platform components, or
+If agentacct later bundles Paperclip UI assets, OpenLIT platform components, or
 Entire binaries, this table is insufficient: audit the full shipped artifact,
 including fonts and native libraries, and generate an SPDX or CycloneDX SBOM.
 
@@ -81,5 +81,5 @@ An upstream integration update must:
 5. document schema and behavior changes;
 6. confirm that no upstream source entered the distribution accidentally.
 
-Protocol compatibility is not a claim of upstream endorsement. Chronicle UI
+Protocol compatibility is not a claim of upstream endorsement. agentacct UI
 and docs should use project names only to identify compatible evidence sources.

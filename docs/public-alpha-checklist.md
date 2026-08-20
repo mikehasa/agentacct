@@ -180,11 +180,11 @@ agentacct smoke codex
 agentacct smoke all --json
 ```
 
-`agentacct smoke ...` is a maintainer/release-gate command, not a default CI step. Run it only when real Claude Code/Codex credentials and a small paid-token budget are available. See [`docs/live-agent-smoke.md`](live-agent-smoke.md) for evidence fields, equivalent explicit commands, and troubleshooting. See [`docs/live-smoke-results.md`](live-smoke-results.md) for sanitized maintainer evidence.
+`agentacct smoke ...` is a maintainer/release-gate command, not a default CI step. Run it only when real Claude Code/Codex credentials and a small paid-token budget are available. See [`docs/live-agent-smoke.md`](live-agent-smoke.md) for evidence fields, equivalent explicit commands, and troubleshooting.
 
-- [ ] Rerun the paid live smoke gate (`agentacct smoke all --json`) at the Phase 4 release gate; the last recorded pass lives in [`docs/live-smoke-results.md`](live-smoke-results.md).
+- [ ] Rerun the paid live smoke gate (`agentacct smoke all --json`) at the Phase 4 release gate.
 
-MCP-inside-agent support needs a separate live-client release gate: real Claude Code/Codex must discover agentacct MCP tools, call event/semantic tools such as `sentinel_record_event`, `sentinel_attach_client_context`, `sentinel_record_section`, `sentinel_record_agent_usage_debug`, or `sentinel_get_event_summary`, and the local dashboard must aggregate those usage/context/debug events. See [`docs/live-mcp-client-smoke-results.md`](live-mcp-client-smoke-results.md) for sanitized evidence. As of the latest attempt, interactive Claude Code and Codex sessions exposed and successfully called Sentinel MCP tools after user approval, including usage-debug snapshots that correctly recorded unavailable visible usage instead of guessed token/cost numbers.
+MCP-inside-agent support needs a separate live-client release gate: real Claude Code/Codex must discover agentacct MCP tools, call event/semantic tools such as `agentacct_record_event`, `agentacct_attach_client_context`, `agentacct_record_section`, `agentacct_record_agent_usage_debug`, or `agentacct_get_event_summary`, and the local dashboard must aggregate those usage/context/debug events. As of the latest attempt, interactive Claude Code and Codex sessions exposed and successfully called Sentinel MCP tools after user approval, including usage-debug snapshots that correctly recorded unavailable visible usage instead of guessed token/cost numbers.
 
 - [x] Claude Code records MCP work context reliably with the documented three-lever recipe: the SessionStart hook delivers the record-your-work directive, `ENABLE_TOOL_SEARCH=auto` in the settings `env` block keeps the agentacct tools directly callable, and the hook bridge supplies real session/transcript join ids. — Phase 2.10 (PR #60); proven live by the owner compliance test (un-primed neutral-project session recorded a section, rendered Attributed on the dashboard).
 - [x] Codex sessions gain session-linked work context via client-log evidence at usage import: agentacct pairs recorded events with the Codex session log that created them (creation responses only; high confidence, never `exact`; multi-session evidence refuses). — Phase 2.7.
@@ -245,7 +245,7 @@ A public-alpha recommendation is appropriate only when all of the following hold
 - [x] Tests pass locally and in GitHub Actions. — `.github/workflows/tests.yml` + README badge; re-verify at the gate.
 - [x] Security policy and contribution guidance exist. — SECURITY.md, CONTRIBUTING.md at the repo root.
 - [x] Provider/integration claims are accurate and caveated. — sections 5–6 above (Phase 3 sweep).
-- [x] Claude Code and Codex live smoke tests have passed or the README clearly labels them as pending. — last pass recorded in docs/live-smoke-results.md; paid rerun at the gate.
+- [x] Claude Code and Codex live smoke tests have passed or the README clearly labels them as pending. — last pass captured by the maintainer smoke gate; paid rerun at the gate.
 - [x] Public docs contain no private strategy or secret material. — section 7 scan (Phase 3 sweep); re-verify at the gate.
 - [x] Known limitations are explicit. — README "What it does not claim yet".
 - [ ] Final public product name, public repository identity, and distribution channel are explicitly chosen and published. Until then the private checkout is the only release authority and no public install URL is advertised.

@@ -1,14 +1,14 @@
 # Architecture
 
-Agent Chronicle is local-first Agent Work Intelligence for autonomous coding-agent runs: it records real token usage and the work a session actually did, and joins them honestly. Run-safety features (process ownership, budgets, checkpoints) are secondary. The additive multi-source design is specified in [multi-source-evidence-architecture.md](multi-source-evidence-architecture.md); the Task and Chronicle-owned execution contract is specified in [task-control-plane.md](task-control-plane.md).
+agentacct is local-first Agent Work Intelligence for autonomous coding-agent runs: it records real token usage and the work a session actually did, and joins them honestly. Run-safety features (process ownership, budgets, checkpoints) are secondary. The additive multi-source design is specified in [multi-source-evidence-architecture.md](multi-source-evidence-architecture.md); the Task and agentacct-owned execution contract is specified in [task-control-plane.md](task-control-plane.md).
 
 It is designed around one principle:
 
 ```text
-Observe and control only the work Agent Chronicle owns.
+Observe and control only the work agentacct owns.
 ```
 
-In the early alpha, Chronicle does not scan or attach to arbitrary existing agent processes. It records runs it starts and accepts evidence only from explicitly configured local sources: client-log import, MCP, host hooks, OTLP, read-only connectors, local API, and CI.
+In the early alpha, agentacct does not scan or attach to arbitrary existing agent processes. It records runs it starts and accepts evidence only from explicitly configured local sources: client-log import, MCP, host hooks, OTLP, read-only connectors, local API, and CI.
 
 ## High-level flow
 
@@ -30,7 +30,7 @@ active beside this additive evidence plane.
 ```
 
 Observed sessions and planned work project into stable Tasks. A separate
-append-only Control Store records Chronicle-owned attempts, approvals, policies,
+append-only Control Store records agentacct-owned attempts, approvals, policies,
 schedules, registered workspaces, and audit events. Evidence can inform control;
 it cannot grant itself dispatch authority.
 
@@ -42,10 +42,10 @@ The CLI is the primary development and debugging interface.
 
 It can:
 
-- run a command under Chronicle ownership
+- run a command under agentacct ownership
 - onboard a known local usage source and manage the dashboard/sync runtime
 - inspect a Task decision brief and its evidence timeline
-- create and govern Chronicle-owned local Task attempts
+- create and govern agentacct-owned local Task attempts
 - initialize and validate project-local policy
 - show run reports
 - record outcome evidence
@@ -88,7 +88,7 @@ records without rewriting them or inventing missing joins.
 The Control Store is append-only operational authority, separate from Evidence
 v2. It records versioned Task contracts, agent specs, registered workspaces,
 attempts, approvals, budget policies, schedules, and immutable control actions.
-A single leased supervisor dispatches only Chronicle-owned processes and
+A single leased supervisor dispatches only agentacct-owned processes and
 reconciles them after restart using a complete process fingerprint and launch
 nonce.
 
@@ -108,13 +108,13 @@ Reports summarize what happened during a run.
 The JSON report is meant for machines:
 
 ```bash
-agent-chronicle report latest --json
+agentacct report latest --json
 ```
 
 The markdown report is meant for humans:
 
 ```bash
-agent-chronicle report latest
+agentacct report latest
 ```
 
 ### Outcome evidence
@@ -132,16 +132,16 @@ This is deliberately separate from subjective value judgment.
 
 ### Judge package and judge scoring
 
-Chronicle can prepare an isolated judge package without spending money.
+agentacct can prepare an isolated judge package without spending money.
 
 ```bash
-agent-chronicle judge prepare latest
+agentacct judge prepare latest
 ```
 
 A paid LLM judge call is opt-in and budget-gated.
 
 ```bash
-agent-chronicle judge run latest --max-total-usd 0.01
+agentacct judge run latest --max-total-usd 0.01
 ```
 
 The judge output is advisory. It is one signal, not ground truth.
@@ -176,7 +176,7 @@ The local API is for sidecar dashboards and local integrations.
 It binds to localhost by default:
 
 ```bash
-agent-chronicle api serve --host 127.0.0.1 --port 8789
+agentacct api serve --host 127.0.0.1 --port 8789
 ```
 
 It exposes report/outcome/value primitives, Evidence v2 inspection, bounded
@@ -190,7 +190,7 @@ The API validates basic local inputs such as run IDs, list limits, and positive 
 The MCP server is for agent integrations.
 
 ```bash
-agent-chronicle mcp serve
+agentacct mcp serve
 ```
 
 Current MCP tools are safe/local:
@@ -209,7 +209,7 @@ Current MCP tools are safe/local:
 The event tools read and write the v1 event ledger — by default the SQLite event
 log (`events.sqlite3`); set `AGENTACCT_EVENT_LOG_AUTHORITATIVE=0` for the legacy
 flat `events.jsonl` — and shadow normalized claims into Evidence v2. Public
-`sentinel_*` names do not change. Local usage
+`agentacct_*` names do not change. Local usage
 import remains the token/cost source of truth; MCP remains the highest-value
 source for semantic context and join keys such as client session, parent
 session, turn id, request id, and message id. It is not treated as provider
@@ -246,7 +246,7 @@ Integration:
 
 ## Non-goals in the early alpha
 
-Agent Chronicle is not currently:
+agentacct is not currently:
 
 - a hosted cloud service
 - a replacement for model-provider billing dashboards
@@ -256,4 +256,4 @@ Agent Chronicle is not currently:
 - a controller for external Paperclip, Codex, or Claude processes
 - a guarantee that an agent produced a useful outcome
 
-It is a local safety and evidence layer for agent runs you explicitly put under Chronicle control.
+It is a local safety and evidence layer for agent runs you explicitly put under agentacct control.

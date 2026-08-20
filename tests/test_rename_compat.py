@@ -782,8 +782,6 @@ def test_bare_brand_word_is_gone_from_python_sources() -> None:
 # which it was observed, forever (see test_dated_evidence_* below), and
 # PROGRESS.md is preserved history.
 _DATED_EVIDENCE_DOCS = {
-    "docs/live-smoke-results.md",
-    "docs/live-mcp-client-smoke-results.md",
     "docs/coding-agent-integrations.md",
     "docs/public-alpha-checklist.md",
 }
@@ -828,29 +826,19 @@ def test_bare_brand_word_is_gone_from_public_docs() -> None:
 
 
 def test_dated_evidence_keeps_the_observed_pre_rename_names() -> None:
-    """The AGENT_CHRONICLE_* markers and the agent-chronicle registration key
-    did not exist when the recorded release-gate runs happened, so the
-    preserved evidence can only truthfully name their AGENT_SENTINEL_* /
-    agent-sentinel forms. A sweep that modernizes a dated observation
-    falsifies the release-gate audit trail and must fail here."""
-    smoke = (REPO_ROOT / "docs" / "live-smoke-results.md").read_text(encoding="utf-8")
-    assert "AGENT_SENTINEL_CLAUDE_WRAP_OK" in smoke
-    assert "AGENT_SENTINEL_CODEX_WRAP_OK" in smoke
-    assert "AGENT_CHRONICLE_CLAUDE_WRAP_OK" not in smoke
-    assert "AGENT_CHRONICLE_CODEX_WRAP_OK" not in smoke
+    """The dated maintainer evidence still carried in
+    docs/coding-agent-integrations.md predates the rename, so it can only
+    truthfully name its AGENT_SENTINEL_* / agent-sentinel forms. A sweep that
+    modernizes a dated observation falsifies the release-gate audit trail and
+    must fail here.
 
-    mcp_page = (REPO_ROOT / "docs" / "live-mcp-client-smoke-results.md").read_text(encoding="utf-8")
-    assert "agent-sentinel-sentinel_get_event_summary" in mcp_page  # Claude tool name
-    assert "agent-sentinel.sentinel_get_event_summary" in mcp_page  # Codex tool name
-    assert "[mcp_servers.agent-sentinel]" in mcp_page  # the codex config used
-    assert '"agent-sentinel"' in mcp_page  # the .mcp.json key used
-    assert "agent-chronicle-sentinel_get_event_summary" not in mcp_page
-
+    (docs/live-smoke-results.md and docs/live-mcp-client-smoke-results.md were
+    retired as stale pre-rename smoke logs; their dated evidence is no longer
+    carried in the repo.)"""
     integrations = (REPO_ROOT / "docs" / "coding-agent-integrations.md").read_text(encoding="utf-8")
     assert "`agent-sentinel mcp serve`" in integrations  # Hermes probe record
     assert "agent-sentinel_sentinel_record_event" in integrations  # OpenCode call
     assert "agent-sentinel__sentinel_record_event" in integrations  # OpenClaw call
 
-    # Each restored page says the preservation is deliberate.
-    for text in (smoke, mcp_page, integrations):
-        assert "pre-rename" in text
+    # The restored page says the preservation is deliberate.
+    assert "pre-rename" in integrations

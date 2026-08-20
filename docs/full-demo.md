@@ -3,17 +3,17 @@
 For the shortest no-key demo, run:
 
 ```bash
-agent-chronicle demo
+agentacct demo
 ```
 
-That command creates a local Chronicle-owned run, writes report/evidence/value artifacts, and prints follow-up report/dashboard commands. Without `--store-dir` (or `AGENTACCT_STORE_DIR`), the demo always runs in a throwaway temporary store and says so — even from inside an initialized project. Pass `--store-dir .agent-sentinel/state` after `init` to keep demo runs. The longer walkthrough below shows the individual primitives behind that flow.
+That command creates a local agentacct-owned run, writes report/evidence/value artifacts, and prints follow-up report/dashboard commands. Without `--store-dir` (or `AGENTACCT_STORE_DIR`), the demo always runs in a throwaway temporary store and says so — even from inside an initialized project. Pass `--store-dir .agent-sentinel/state` after `init` to keep demo runs. The longer walkthrough below shows the individual primitives behind that flow.
 
-This demo validates Agent Chronicle's current product loop without touching real
+This demo validates agentacct's current product loop without touching real
 Hermes, Claude Code, Codex, or other existing agent processes.
 
 It exercises:
 
-- Chronicle-owned command execution
+- agentacct-owned command execution
 - JSON reports
 - local HTTP API
 - MCP tools over stdio
@@ -34,12 +34,12 @@ python -m pip install -e . pytest
 
 ## 2. Run a short smoke demo
 
-Use a temporary store so the demo does not mix with your normal Chronicle state.
+Use a temporary store so the demo does not mix with your normal agentacct state.
 
 ```bash
 export STORE_DIR=$(mktemp -d)
 
-agent-chronicle run \
+agentacct run \
   --store-dir "$STORE_DIR" \
   -- python examples/full_demo_task.py --steps 6 --sleep-seconds 1
 ```
@@ -60,7 +60,7 @@ echo "$RUN_ID"
 Show the JSON report:
 
 ```bash
-agent-chronicle report "$RUN_ID" --store-dir "$STORE_DIR" --json
+agentacct report "$RUN_ID" --store-dir "$STORE_DIR" --json
 ```
 
 ## 3. Record objective machine-check evidence
@@ -69,7 +69,7 @@ This records a before/after signal such as "tests failed before, passed after".
 It does not call any paid API.
 
 ```bash
-agent-chronicle outcome record-machine-check "$RUN_ID" \
+agentacct outcome record-machine-check "$RUN_ID" \
   --store-dir "$STORE_DIR" \
   --name demo-check \
   --before-exit-code 1 \
@@ -84,9 +84,9 @@ This creates an isolated prompt/package for an LLM judge. It does not call the
 LLM by itself.
 
 ```bash
-agent-chronicle judge prepare "$RUN_ID" \
+agentacct judge prepare "$RUN_ID" \
   --store-dir "$STORE_DIR" \
-  --task-goal "Validate the Agent Chronicle full-flow demo." \
+  --task-goal "Validate the agentacct full-flow demo." \
   --rubric "Score whether the run completed safely and produced useful evidence."
 ```
 
@@ -97,18 +97,18 @@ This is the only paid step. Use a low-limit test key and a small hard budget.
 ```bash
 export AGENTACCT_OPENROUTER_API_KEY=<OPENROUTER_API_KEY>
 
-agent-chronicle judge run "$RUN_ID" \
+agentacct judge run "$RUN_ID" \
   --store-dir "$STORE_DIR" \
   --model openai/gpt-4o-mini \
   --max-total-usd 0.01 \
-  --task-goal "Validate the Agent Chronicle full-flow demo." \
+  --task-goal "Validate the agentacct full-flow demo." \
   --rubric "Score whether the run completed safely and produced useful evidence."
 ```
 
 ## 6. Compute advisory value score
 
 ```bash
-agent-chronicle value compute "$RUN_ID" \
+agentacct value compute "$RUN_ID" \
   --store-dir "$STORE_DIR" \
   --budget-usd 0.01 \
   --json
@@ -126,7 +126,7 @@ The value score is advisory. It combines:
 The local API binds to `127.0.0.1` by default.
 
 ```bash
-agent-chronicle api serve --store-dir "$STORE_DIR" --host 127.0.0.1 --port 8789
+agentacct api serve --store-dir "$STORE_DIR" --host 127.0.0.1 --port 8789
 ```
 
 In another terminal:
@@ -140,10 +140,10 @@ curl http://127.0.0.1:8789/runs/$RUN_ID/report
 ## 8. Verify MCP tools
 
 The MCP server exposes safe local tools only. It does not expose a paid
-`sentinel_run_judge` tool.
+`agentacct_run_judge` tool.
 
 ```bash
-agent-chronicle mcp serve --store-dir "$STORE_DIR"
+agentacct mcp serve --store-dir "$STORE_DIR"
 ```
 
 Current tools:
@@ -163,7 +163,7 @@ For a longer validation similar to a real agent session:
 ```bash
 export STORE_DIR=$(mktemp -d)
 
-agent-chronicle run \
+agentacct run \
   --store-dir "$STORE_DIR" \
   -- python examples/full_demo_task.py --steps 18 --sleep-seconds 30
 ```
