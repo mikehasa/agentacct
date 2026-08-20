@@ -59,15 +59,7 @@ from .usage_view import (
     _record_from_client_usage,
     _usage_record_time,
 )
-from .connector_runtime import import_connector_records
-from .connectors import (
-    ConnectorError,
-    ControlSignal,
-    EntireGitConnector,
-    OpenLITOTLPConnector,
-    PaperclipSnapshotConnector,
-    evaluate_control_signal,
-)
+from .connectors import ControlSignal, evaluate_control_signal
 from .connectors.control import normalize_supporting_evidence_ids, validate_supporting_evidence
 from .control_plane import (
     ControlPlaneError,
@@ -326,13 +318,6 @@ class WorkEventRecordRequest(BaseModel):
         if value is not None:
             validate_run_id(value)
         return value
-
-
-class EntireImportRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    repository: str = Field(min_length=1, max_length=2000)
-    max_commits: int = Field(default=100, ge=1, le=1000)
 
 
 class ControlSignalRequest(BaseModel):
@@ -3597,25 +3582,6 @@ def create_local_api_app(
             "v1_event": recorded,
         }
 
-    async def _bounded_json_body(request: Request, *, maximum_bytes: int = 4 * 1024 * 1024) -> dict[str, Any]:
-        content_length = request.headers.get("content-length")
-        if content_length:
-            try:
-                if int(content_length) > maximum_bytes:
-                    raise HTTPException(status_code=413, detail="connector JSON payload is too large")
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail="invalid content-length") from exc
-        body = await request.body()
-        if len(body) > maximum_bytes:
-            raise HTTPException(status_code=413, detail="connector JSON payload is too large")
-        try:
-            payload = json.loads(body)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise HTTPException(status_code=422, detail="connector body must be valid JSON") from exc
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=422, detail="connector body must be a JSON object")
-        return payload
-
     async def _bounded_raw_body(request: Request, *, maximum_bytes: int) -> bytes:
         content_length = request.headers.get("content-length")
         if content_length:
@@ -3632,15 +3598,6 @@ def create_local_api_app(
                 raise HTTPException(status_code=413, detail="capture payload is too large")
             chunks.append(chunk)
         return b"".join(chunks)
-
-    def _import_connector(records: Any, *, connector: str) -> dict[str, Any]:
-        result = import_connector_records(service.evidence, records, connector=connector)
-        payload = result.to_dict()
-        if result.error_count:
-            # A committed prefix is still reported in the response. Do not hide
-            # partial durable progress behind a generic 500.
-            payload["partial"] = True
-        return payload
 
     @app.get("/capture/capabilities")
     def capture_capabilities(vendor: str | None = None) -> dict[str, Any]:
@@ -3691,41 +3648,6 @@ def create_local_api_app(
             payload=payload,
             context=CaptureContext(host_event=host_event),
         )
-
-    @app.post("/v1/traces")
-    async def ingest_otlp_traces(request: Request) -> dict[str, Any]:
-        """Local OTLP/HTTP JSON receiver for OpenLIT and native agent spans."""
-
-        payload = await _bounded_json_body(request)
-        try:
-            result = _import_connector(OpenLITOTLPConnector().read(payload), connector="openlit")
-        except ConnectorError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"partialSuccess": {}, "chronicle": result}
-
-    @app.post("/connectors/openlit/import")
-    async def import_openlit(request: Request) -> dict[str, Any]:
-        payload = await _bounded_json_body(request)
-        try:
-            return _import_connector(OpenLITOTLPConnector().read(payload), connector="openlit")
-        except ConnectorError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    @app.post("/connectors/paperclip/import")
-    async def import_paperclip(request: Request) -> dict[str, Any]:
-        payload = await _bounded_json_body(request)
-        try:
-            return _import_connector(PaperclipSnapshotConnector().read(payload), connector="paperclip")
-        except ConnectorError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    @app.post("/connectors/entire/import")
-    def import_entire(request: EntireImportRequest) -> dict[str, Any]:
-        try:
-            records = EntireGitConnector(request.repository, max_commits=request.max_commits).read()
-            return _import_connector(records, connector="entire")
-        except (ConnectorError, OSError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/control/evaluate")
     def evaluate_control(request: ControlSignalRequest) -> dict[str, Any]:

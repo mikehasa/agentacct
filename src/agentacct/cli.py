@@ -86,15 +86,7 @@ from .ingestion_health import (
 from .capture import CaptureContext, DEFAULT_CAPTURE_REGISTRY, render_hook_manifest
 from .capture.registry import DEFAULT_MAX_PAYLOAD_BYTES
 from .capture_runtime import capture_hook_payload
-from .connector_runtime import import_connector_records
-from .connectors import (
-    ConnectorError,
-    ControlSignal,
-    EntireGitConnector,
-    OpenLITOTLPConnector,
-    PaperclipSnapshotConnector,
-    evaluate_control_signal,
-)
+from .connectors import ControlSignal, evaluate_control_signal
 from .connectors.control import validate_supporting_evidence
 from .control_plane import (
     ControlPlaneError,
@@ -255,7 +247,6 @@ value_app = typer.Typer(help="Advisory value scoring commands.")
 api_app = typer.Typer(help="Local API commands for sidecar/MCP integrations.")
 event_app = typer.Typer(help="Record and list local integration events.")
 evidence_app = typer.Typer(help="Inspect and replay the additive multi-source Evidence v2 store.")
-connector_app = typer.Typer(help="Import read-only Paperclip, OpenLIT OTLP, and Entire Git evidence.")
 control_app = typer.Typer(
     help="Inspect control state and operate only agentacct-owned local attempts; external agents remain read-only."
 )
@@ -280,7 +271,6 @@ app.add_typer(value_app, name="value")
 app.add_typer(api_app, name="api")
 app.add_typer(event_app, name="event")
 app.add_typer(evidence_app, name="evidence")
-app.add_typer(connector_app, name="connector")
 app.add_typer(control_app, name="control")
 app.add_typer(capture_app, name="capture")
 app.add_typer(capabilities_app, name="capabilities")
@@ -6664,110 +6654,6 @@ def capture_hook(
     # or control JSON by some hosts. Diagnostics are explicit and body-free.
     if json_output:
         print(json.dumps(payload, sort_keys=True))
-
-
-def _emit_connector_result(payload: dict[str, Any], *, json_output: bool) -> None:
-    if json_output:
-        print(json.dumps(payload, indent=2, sort_keys=True))
-    else:
-        print(f"Connector: {payload['connector']}")
-        print(f"Records: {payload['record_count']}")
-        print(f"Inserted: {payload['inserted_count']}")
-        print(f"Duplicates: {payload['duplicate_count']}")
-        print(f"Conflicts: {payload['conflict_count']}")
-        print(f"Errors: {payload['error_count']}")
-        print(f"Dry run: {str(payload['dry_run']).lower()}")
-    if int(payload.get("error_count") or 0) > 0:
-        raise typer.Exit(1)
-
-
-@connector_app.command("list")
-def connector_list(
-    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
-) -> None:
-    """List connector capabilities and their upstream mutation boundary."""
-
-    payload = {
-        "connectors": [
-            {"name": "paperclip", "input": "exported JSON snapshot", "upstream_access": "read_only"},
-            {"name": "openlit", "input": "OTLP HTTP JSON", "upstream_access": "read_only"},
-            {"name": "entire", "input": "public Git refs and metadata", "upstream_access": "read_only"},
-        ],
-        "external_writes": False,
-    }
-    if json_output:
-        print(json.dumps(payload, indent=2, sort_keys=True))
-        return
-    print("Read-only evidence connectors")
-    for connector in payload["connectors"]:
-        print(f"- {connector['name']}: {connector['input']} ({connector['upstream_access']})")
-
-
-@connector_app.command("paperclip")
-def connector_paperclip(
-    snapshot: Annotated[Path, typer.Argument(help="Paperclip exported JSON snapshot.")],
-    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
-    dry_run: Annotated[bool, typer.Option("--dry-run", help="Parse and normalize without writing agentacct evidence.")] = False,
-    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
-) -> None:
-    """Import Paperclip control-plane records as orchestrator claims."""
-
-    try:
-        records = PaperclipSnapshotConnector().read(snapshot)
-        result = import_connector_records(
-            EvidenceRuntime(_resolve_cli_store_dir(store_dir).path),
-            records,
-            connector="paperclip",
-            dry_run=dry_run,
-        )
-    except (ConnectorError, OSError, ValueError) as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    _emit_connector_result(result.to_dict(), json_output=json_output)
-
-
-@connector_app.command("openlit")
-def connector_openlit(
-    otlp_json: Annotated[Path, typer.Argument(help="OpenLIT/OpenTelemetry OTLP trace JSON export.")],
-    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
-    dry_run: Annotated[bool, typer.Option("--dry-run", help="Parse and normalize without writing agentacct evidence.")] = False,
-    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
-) -> None:
-    """Import metadata-only OpenLIT/OTLP spans into the durable v2 spool."""
-
-    try:
-        records = OpenLITOTLPConnector().read(otlp_json)
-        result = import_connector_records(
-            EvidenceRuntime(_resolve_cli_store_dir(store_dir).path),
-            records,
-            connector="openlit",
-            dry_run=dry_run,
-        )
-    except (ConnectorError, OSError, ValueError) as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    _emit_connector_result(result.to_dict(), json_output=json_output)
-
-
-@connector_app.command("entire")
-def connector_entire(
-    repository: Annotated[Path, typer.Argument(help="Local Git repository containing Entire public checkpoint refs.")],
-    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
-    max_commits: Annotated[int, typer.Option(help="Maximum commits read from known Entire refs (1-1000).")] = 100,
-    dry_run: Annotated[bool, typer.Option("--dry-run", help="Read and normalize Git metadata without writing agentacct evidence.")] = False,
-    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
-) -> None:
-    """Read Entire checkpoint metadata without mutating refs, index, or worktree."""
-
-    try:
-        records = EntireGitConnector(repository, max_commits=max_commits).read()
-        result = import_connector_records(
-            EvidenceRuntime(_resolve_cli_store_dir(store_dir).path),
-            records,
-            connector="entire",
-            dry_run=dry_run,
-        )
-    except (ConnectorError, OSError, ValueError) as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    _emit_connector_result(result.to_dict(), json_output=json_output)
 
 
 def _strict_control_json(value: str, *, option: str, expected: type) -> Any:
