@@ -5,10 +5,8 @@ from typer.testing import CliRunner
 
 from agentacct.cli import app
 from agentacct.mcp import SentinelMCPServer, read_mcp_message, run_mcp_event_workflow_smoke, serve_stdio, write_mcp_message
-from agentacct.outcome import apply_judge_result, write_outcome
-from agentacct.reports import build_run_report_payload
 from agentacct.runner import RunOptions, start_guarded_run
-from agentacct.storage import RunStore, json_utf8_size
+from agentacct.storage import json_utf8_size
 from agentacct.work_ledger import build_work_ledger
 
 
@@ -45,8 +43,6 @@ def test_mcp_initialize_and_tools_list(tmp_path):
     assert "agentacct_record_section" in names
     assert "agentacct_list_events" in names
     assert "agentacct_get_event_summary" in names
-    assert "agentacct_prepare_judge" in names
-    assert "agentacct_compute_value" in names
     assert "sentinel_run_judge" not in names
 
 
@@ -103,7 +99,7 @@ def test_workflow_smoke_initialize_carries_instructions(tmp_path):
     assert result["initialize"]["protocolVersion"] == "2024-11-05"
 
 
-def test_mcp_tools_call_report_machine_check_judge_prepare_and_value(tmp_path):
+def test_mcp_tools_call_list_runs_record_machine_check_and_get_report(tmp_path):
     store_root, result = _make_run(tmp_path)
     server = SentinelMCPServer(store_dir=store_root)
 
@@ -132,50 +128,15 @@ def test_mcp_tools_call_report_machine_check_judge_prepare_and_value(tmp_path):
     )
     assert _tool_payload(check_response)["outcome"]["machine_checks"]["resolved_failures"] == 1
 
-    package_response = server.handle_message(
+    report_response = server.handle_message(
         {
             "jsonrpc": "2.0",
             "id": 3,
             "method": "tools/call",
-            "params": {
-                "name": "agentacct_prepare_judge",
-                "arguments": {"run_id": result.run_id, "task_goal": "Fix tests", "rubric": "Score test improvement."},
-            },
-        }
-    )
-    assert _tool_payload(package_response)["schema_version"] == "agent-sentinel.judge-package.v1"
-
-    store = RunStore(store_root)
-    report = build_run_report_payload(store, result.run_id)
-    outcome = report["outcome"]
-    outcome = apply_judge_result(
-        outcome,
-        {"deliverable_score": 85, "confidence": "medium", "reason": "useful", "risks": []},
-        source="openrouter",
-        model="openai/gpt-4o-mini",
-        cost_event_id="cost_test",
-    )
-    write_outcome(store, result.run_id, outcome)
-
-    value_response = server.handle_message(
-        {
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "tools/call",
-            "params": {"name": "agentacct_compute_value", "arguments": {"run_id": result.run_id, "budget_usd": 0.01}},
-        }
-    )
-    assert _tool_payload(value_response)["value"]["score"] == 90
-
-    report_response = server.handle_message(
-        {
-            "jsonrpc": "2.0",
-            "id": 5,
-            "method": "tools/call",
             "params": {"name": "agentacct_get_report", "arguments": {"run_id": result.run_id}},
         }
     )
-    assert _tool_payload(report_response)["outcome"]["value"]["score"] == 90
+    assert _tool_payload(report_response)["outcome"]["machine_checks"]["resolved_failures"] == 1
 
 
 def test_mcp_records_and_lists_redacted_events(tmp_path):
@@ -1092,23 +1053,6 @@ def test_mcp_rejects_invalid_tool_arguments(tmp_path):
     assert bad_limit["error"]["code"] == -32602
     assert "limit" in bad_limit["error"]["message"]
 
-    missing_required = server.handle_message(
-        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "agentacct_prepare_judge", "arguments": {}}}
-    )
-    assert missing_required["error"]["code"] == -32602
-    assert "task_goal" in missing_required["error"]["message"]
-
-    bad_budget = server.handle_message(
-        {
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "tools/call",
-            "params": {"name": "agentacct_compute_value", "arguments": {"run_id": "latest", "budget_usd": -0.01}},
-        }
-    )
-    assert bad_budget["error"]["code"] == -32602
-    assert "budget_usd" in bad_budget["error"]["message"]
-
 
 def test_mcp_rejects_unknown_keys_and_bad_optional_types(tmp_path):
     server = SentinelMCPServer(store_dir=tmp_path / "state")
@@ -1123,20 +1067,6 @@ def test_mcp_rejects_unknown_keys_and_bad_optional_types(tmp_path):
     )
     assert unknown["error"]["code"] == -32602
     assert "unexpected" in unknown["error"]["message"]
-
-    bad_bool = server.handle_message(
-        {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {
-                "name": "agentacct_prepare_judge",
-                "arguments": {"run_id": "latest", "task_goal": "Fix tests", "rubric": "Score results", "write_package": "false"},
-            },
-        }
-    )
-    assert bad_bool["error"]["code"] == -32602
-    assert "write_package" in bad_bool["error"]["message"]
 
     bad_summary = server.handle_message(
         {

@@ -193,13 +193,12 @@ def _allow_test_client_host(monkeypatch: pytest.MonkeyPatch) -> None:
     ``testserver`` hostname (it has no place in a production allowlist). The
     suite re-injects it through the SAME ``extra_allowed_hosts`` seam real
     deployments use for ``--allow-host``, so every TestClient call site keeps
-    passing without the prod default trusting a test hostname. Both app
-    factories reference ``install_localhost_guard`` as a module global, so
-    patching those two references covers create_local_api_app and
-    proxy.create_app (including the apps the CLI serve commands build).
+    passing without the prod default trusting a test hostname. The app
+    factory references ``install_localhost_guard`` as a module global, so
+    patching that reference covers create_local_api_app (including the apps
+    the CLI serve commands build).
     """
     import agentacct.api as api_module
-    import agentacct.proxy as proxy_module
     from agentacct import localhost_guard
 
     real_install = localhost_guard.install_localhost_guard
@@ -208,7 +207,6 @@ def _allow_test_client_host(monkeypatch: pytest.MonkeyPatch) -> None:
         real_install(app, (*tuple(extra_allowed_hosts), "testserver"))
 
     monkeypatch.setattr(api_module, "install_localhost_guard", _install_with_testserver)
-    monkeypatch.setattr(proxy_module, "install_localhost_guard", _install_with_testserver)
 
 
 @pytest.fixture(autouse=True, scope="session")

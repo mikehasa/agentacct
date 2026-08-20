@@ -36,8 +36,6 @@ from rich.console import Console
 from rich.markup import escape as _rich_escape
 from rich.table import Table
 
-from .agent_loop import AgentLoopOptions, run_agent_like_loop
-from .agent_smoke import AgentSmokeError, LiveAgent, assert_live_agent_smoke_passed, run_live_agent_smoke
 from .activation import ActivationStateError, ActivationStateStore, RuntimeManager, RuntimeManagerError
 from . import autostart as autostart_mod
 from .autostart import AutostartError
@@ -106,7 +104,6 @@ from .control_plane import (
 from .cost import (
     PRICING_CATALOG_PATH_ENV,
     CostLedger,
-    CostPolicy,
     SubscriptionPlan,
     SubscriptionStore,
     activate_pricing_catalog_for_store,
@@ -147,19 +144,12 @@ from .log_evidence import build_log_evidence_index, summarize_log_evidence_donor
 from . import install_guide
 from .install_guide import full_prompt as install_guide_full_prompt, one_line_prompt as install_guide_one_line_prompt
 from .mcp import DEGRADED_NO_STORE_MESSAGE, TOOLS, SentinelMCPServer, run_mcp_event_workflow_smoke, serve_stdio
-from .mcp_client_smoke import MCPClientSmokeError, assert_mcp_client_smoke_passed, run_mcp_client_smoke
 from .outcome import (
-    apply_judge_result,
-    apply_value_score,
-    build_judge_package,
     build_machine_check_outcome,
-    compute_advisory_value_score,
     read_outcome,
-    run_openrouter_judge,
     write_outcome,
 )
 from .policy import DEFAULT_POLICY_FILE, default_policy_path, load_and_validate_policy, write_default_policy
-from .proxy import create_app
 from .pricing_catalog import (
     LITELLM_MODEL_COST_MAP_URL,
     ensure_fresh_pricing_snapshot,
@@ -246,12 +236,10 @@ def _app_main(
     # No docstring: Typer falls back to the app-level help= above, so adding this
     # callback for --version does not change `agentacct --help` output.
     return
-cost_app = typer.Typer(help="Cost proxy and usage ledger commands.")
+cost_app = typer.Typer(help="Usage cost ledger and subscription commands.")
 hooks_app = typer.Typer(help="Hook pack commands for agent runtimes.")
 policy_app = typer.Typer(help="Project policy commands.")
 outcome_app = typer.Typer(help="Outcome evidence commands.")
-judge_app = typer.Typer(help="LLM judge package commands.")
-value_app = typer.Typer(help="Advisory value scoring commands.")
 api_app = typer.Typer(help="Local API commands for sidecar/MCP integrations.")
 event_app = typer.Typer(help="Record and list local integration events.")
 evidence_app = typer.Typer(help="Inspect and replay the additive multi-source Evidence v2 store.")
@@ -271,12 +259,9 @@ opencode_hooks_app = typer.Typer(help="OpenCode hook helpers (observe-only tool-
 canonical_app = typer.Typer(
     help="Canonical SQLite store operations: health, maintenance, promotion, and cutover verification."
 )
-smoke_app = typer.Typer(help="Optional real-agent smoke tests. Not intended for default CI.")
 app.add_typer(cost_app, name="cost")
 app.add_typer(policy_app, name="policy")
 app.add_typer(outcome_app, name="outcome")
-app.add_typer(judge_app, name="judge")
-app.add_typer(value_app, name="value")
 app.add_typer(api_app, name="api")
 app.add_typer(event_app, name="event")
 app.add_typer(evidence_app, name="evidence")
@@ -565,7 +550,6 @@ hooks_app.add_typer(hermes_hooks_app, name="hermes")
 hooks_app.add_typer(opencode_hooks_app, name="opencode")
 app.add_typer(hooks_app, name="hooks")
 app.add_typer(canonical_app, name="canonical")
-app.add_typer(smoke_app, name="smoke")
 console = Console()
 
 
@@ -654,7 +638,7 @@ Use agentacct in observe-only mode.
 
 - Prefer `agentacct run -- <command>` for tracked local commands.
 - If a project-local store exists, keep `.agent-sentinel/state/` and local env files gitignored (a global install keeps its store outside any repo, so there is nothing to ignore).
-- Do not connect provider API keys unless the user explicitly asks for provider cost proxy/forwarding.
+- Do not connect provider API keys; agentacct runs in observe-only mode and needs none.
 - If the agentacct MCP tools are available, use them as the normal workflow ledger:
   - call `agentacct_attach_client_context` when local session, parent session, turn, request, or message IDs are known;
   - open a section with `agentacct_record_section` (`section_status=started`) before meaningful work; use `section_status=checkpoint` while it progresses;
@@ -3360,135 +3344,6 @@ def run(
     console.print(f"Report: {_display_path(result.run_dir / 'report.md')}")
 
 
-def _emit_agent_smoke_summary(summary, *, json_output: bool) -> None:
-    payload = summary.to_dict()
-    if json_output:
-        print(json.dumps(payload, indent=2, sort_keys=True))
-        return
-    table = Table(title=f"Live agent smoke: {payload['agent']}")
-    table.add_column("Check")
-    table.add_column("Value")
-    table.add_row("status", str(payload["status"]))
-    table.add_row("exit_code", str(payload["exit_code"]))
-    table.add_row("marker_found", str(payload["marker_found"]))
-    table.add_row("metadata_ok", str(payload["metadata_ok"]))
-    table.add_row("run_dir", str(payload["run_dir"]))
-    table.add_row("work_dir", str(payload["work_dir"]))
-    console.print(table)
-
-
-def _run_agent_smoke_command(agent: LiveAgent, *, store_dir: Path | None, work_dir: Path | None, json_output: bool) -> None:
-    try:
-        summary = run_live_agent_smoke(agent, store_dir=store_dir, work_dir=work_dir)
-        assert_live_agent_smoke_passed(summary)
-    except AgentSmokeError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    _emit_agent_smoke_summary(summary, json_output=json_output)
-
-
-@smoke_app.command("claude-code")
-def smoke_claude_code(
-    store_dir: Annotated[Optional[Path], typer.Option(help="State directory for smoke artifacts. Defaults to a temporary directory.")] = None,
-    work_dir: Annotated[Optional[Path], typer.Option(help="Isolated work directory. Defaults to a temporary directory.")] = None,
-    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
-) -> None:
-    """Run a tiny real Claude Code smoke test through `agentacct run`."""
-    _run_agent_smoke_command(LiveAgent.CLAUDE_CODE, store_dir=store_dir, work_dir=work_dir, json_output=json_output)
-
-
-@smoke_app.command("codex")
-def smoke_codex(
-    store_dir: Annotated[Optional[Path], typer.Option(help="State directory for smoke artifacts. Defaults to a temporary directory.")] = None,
-    work_dir: Annotated[Optional[Path], typer.Option(help="Isolated work directory. Defaults to a temporary directory.")] = None,
-    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
-) -> None:
-    """Run a tiny real Codex smoke test through `agentacct run`."""
-    _run_agent_smoke_command(LiveAgent.CODEX, store_dir=store_dir, work_dir=work_dir, json_output=json_output)
-
-
-@smoke_app.command("all")
-def smoke_all(
-    store_dir: Annotated[Optional[Path], typer.Option(help="State directory for smoke artifacts. Defaults to a temporary directory per agent.")] = None,
-    work_dir: Annotated[Optional[Path], typer.Option(help="Isolated work directory. Defaults to a temporary directory per agent.")] = None,
-    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
-) -> None:
-    """Run tiny real Claude Code and Codex smoke tests through agentacct."""
-    summaries = []
-    for agent in (LiveAgent.CLAUDE_CODE, LiveAgent.CODEX):
-        try:
-            summary = run_live_agent_smoke(agent, store_dir=store_dir, work_dir=work_dir)
-            assert_live_agent_smoke_passed(summary)
-        except AgentSmokeError as exc:
-            raise typer.BadParameter(f"{agent.value}: {exc}") from exc
-        summaries.append(summary)
-    if json_output:
-        print(json.dumps([summary.to_dict() for summary in summaries], indent=2, sort_keys=True))
-        return
-    for summary in summaries:
-        _emit_agent_smoke_summary(summary, json_output=False)
-
-
-@smoke_app.command("mcp-client")
-def smoke_mcp_client(
-    client: Annotated[str, typer.Option(help="Client to test: hermes, opencode, openclaw, or all.")] = "all",
-    provider: Annotated[str, typer.Option(help="Provider: deepseek (default) or openai (opencode only).")] = "deepseek",
-    model: Annotated[Optional[str], typer.Option(help="Override the model id, e.g. openai/gpt-5.4-mini-fast.")] = None,
-    store_dir: Annotated[Optional[Path], typer.Option(help="State directory for smoke artifacts. Defaults to a temporary directory per client.")] = None,
-    deepseek_key_env: Annotated[str, typer.Option(help="Environment variable containing the DeepSeek API key.")] = "DEEPSEEK_API_KEY",
-    reuse_opencode_auth: Annotated[
-        bool,
-        typer.Option(
-            "--reuse-opencode-auth",
-            help="Let opencode authenticate with its OWN stored auth (~/.local/share/opencode/auth.json) "
-            "instead of an env API key. Needed for OAuth providers that have no plain API key.",
-        ),
-    ] = False,
-    acknowledge_real_api: Annotated[bool, typer.Option("--i-understand-this-uses-real-api", help="Required acknowledgement: this command can spend real provider credits.")] = False,
-    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
-) -> None:
-    """Run real provider-backed MCP client smokes for Hermes/OpenCode/OpenClaw."""
-    if provider not in {"deepseek", "openai"}:
-        raise typer.BadParameter("provider must be deepseek or openai")
-    if client == "all":
-        clients = ["opencode"] if provider != "deepseek" else ["hermes", "opencode", "openclaw"]
-    else:
-        clients = [client]
-    key_env = deepseek_key_env if provider == "deepseek" else None
-    results = []
-    for item in clients:
-        if item not in {"hermes", "opencode", "openclaw"}:
-            raise typer.BadParameter("client must be hermes, opencode, openclaw, or all")
-        try:
-            result = run_mcp_client_smoke(
-                item,  # type: ignore[arg-type]
-                provider=provider,
-                model=model,
-                key_env=key_env,
-                reuse_client_auth=reuse_opencode_auth and item == "opencode",
-                store_dir=store_dir,
-                acknowledge_real_api=acknowledge_real_api,
-            )
-            assert_mcp_client_smoke_passed(result)
-        except MCPClientSmokeError as exc:
-            raise typer.BadParameter(f"{item}: {exc}") from exc
-        results.append(result)
-    if json_output:
-        print(json.dumps([result.to_dict() for result in results], indent=2, sort_keys=True))
-        return
-    for result in results:
-        table = Table(title=f"MCP client smoke: {result.client}")
-        table.add_column("Check")
-        table.add_column("Value")
-        table.add_row("status", result.status)
-        table.add_row("provider", result.provider)
-        table.add_row("model", result.model)
-        table.add_row("marker_found", str(result.marker_found))
-        table.add_row("event_count", str(result.event_count))
-        table.add_row("token_cost_observed", str(result.token_cost_observed))
-        table.add_row("store_dir", result.store_dir)
-        console.print(table)
-
-
 def _format_cost_summary(ledger: CostLedger, run_id: str) -> str:
     events = ledger.read_events(run_id=run_id)
     total = ledger.total_estimated_cost_usd(run_id=run_id)
@@ -3571,10 +3426,10 @@ def demo(
         Optional[Path],
         typer.Option(help="State directory for demo artifacts. Defaults to a THROWAWAY temporary store; pass --store-dir (e.g. .agent-sentinel/state after `agentacct init`) to keep demo runs in a persistent store."),
     ] = None,
-    budget_usd: Annotated[float, typer.Option(help="Demo budget used for advisory value scoring. No paid API is called.")] = 0.01,
+    budget_usd: Annotated[float, typer.Option(help="Demo budget parameter (validated > 0). No paid API is called.")] = 0.01,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON summary.")] = False,
 ) -> None:
-    """Run a safe local demo that creates a report, evidence, and value score without provider keys."""
+    """Run a safe local demo that creates a report and machine-check evidence without provider keys."""
     if not math.isfinite(budget_usd) or budget_usd <= 0:
         raise typer.BadParameter("--budget-usd must be a finite value > 0")
     resolved_store_dir, store_is_temporary = _resolve_scratch_store_dir(store_dir, label="demo")
@@ -3596,21 +3451,7 @@ def demo(
         before_summary=f"deliverable file did not exist before the run: {deliverable_path}",
         after_summary=f"deliverable file exists with expected content after the run: {deliverable_path}",
     )
-    outcome = apply_judge_result(
-        outcome,
-        {
-            "deliverable_score": 88,
-            "confidence": "high",
-            "reason": "Local demo run completed, produced logs, and recorded objective evidence without provider API calls.",
-            "risks": ["Synthetic local demo score; use a real review for production work."],
-        },
-        source="local_demo",
-        model="deterministic-local-demo",
-        cost_event_id=None,
-    )
     write_outcome(store, result.run_id, outcome)
-    value = compute_advisory_value_score(build_run_report_payload(store, result.run_id), budget_usd=budget_usd)
-    write_outcome(store, result.run_id, apply_value_score(read_outcome(store, result.run_id) or outcome, value))
     payload = build_run_report_payload(store, result.run_id)
     summary = {
         "run_id": result.run_id,
@@ -3622,7 +3463,6 @@ def demo(
         "stdout_log": payload["artifacts"]["stdout_log"],
         "stderr_log": payload["artifacts"]["stderr_log"],
         "deliverable_path": str(deliverable_path),
-        "value": payload["outcome"]["value"],
         "dashboard_command": f"agentacct serve --store-dir {shlex.quote(str(store.root))}",
         "dashboard_url": "http://127.0.0.1:8765",
         "report_json_command": f"agentacct report {shlex.quote(result.run_id)} --store-dir {shlex.quote(str(store.root))} --json",
@@ -3636,7 +3476,6 @@ def demo(
         print(f"Demo store is temporary and will vanish on cleanup/reboot: {store.root}")
         print("Run `agentacct init` and pass --store-dir .agent-sentinel/state to keep demo runs in a persistent project store.")
     print(f"Report: {summary['report_md']}")
-    print(f"Demo value score: {summary['value'].get('score')} rating={summary['value'].get('rating')} (synthetic local_demo score for walkthrough)")
     print("This was a demo run: no provider API keys were used, and no paid API calls were made.")
     print("Next: start the local JSON API (or run `agentacct tui`) with:")
     print(f"  {summary['dashboard_command']}")
@@ -3744,97 +3583,6 @@ def outcome_record_machine_check(
         )
 
 
-@judge_app.command("prepare")
-def judge_prepare(
-    run_id: Annotated[str, typer.Argument(help="Run ID to package, or 'latest'.")],
-    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
-    task_goal: Annotated[str, typer.Option(help="What the agent was trying to accomplish.")] = "Evaluate this run's deliverable quality.",
-    rubric: Annotated[str, typer.Option(help="How the judge should score the deliverable.")] = "Score whether the run produced a useful, relevant, low-risk deliverable for the task goal.",
-    output: Annotated[Optional[Path], typer.Option(help="Optional path to write judge_package.json. Defaults to the run directory.")] = None,
-) -> None:
-    """Prepare an isolated judge package without calling any LLM API."""
-    with _friendly_run_lookup_errors(run_id):
-        store = RunStore(_resolve_cli_store_dir(store_dir).path, create=False)
-        if run_id == "latest":
-            run_id = store.latest_run_id()
-        report_payload = build_run_report_payload(store, run_id)
-        package = build_judge_package(report=report_payload, task_goal=task_goal, rubric=rubric)
-        output_path = output or (store.run_dir(run_id) / "judge_package.json")
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(package, indent=2, sort_keys=True), encoding="utf-8")
-        console.print(f"Wrote judge package: {output_path}")
-
-
-@judge_app.command("run")
-def judge_run(
-    run_id: Annotated[str, typer.Argument(help="Run ID to judge, or 'latest'.")],
-    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
-    task_goal: Annotated[str, typer.Option(help="What the agent was trying to accomplish.")] = "Evaluate this run's deliverable quality.",
-    rubric: Annotated[str, typer.Option(help="How the judge should score the deliverable.")] = "Score whether the run produced a useful, relevant, low-risk deliverable for the task goal.",
-    provider: Annotated[str, typer.Option(help="Judge provider. v0 supports openrouter only.")] = "openrouter",
-    model: Annotated[str, typer.Option(help="OpenRouter judge model.")] = "openai/gpt-4o-mini",
-    max_total_usd: Annotated[float, typer.Option(help="Hard budget for the judge request.")] = 0.01,
-    max_tokens: Annotated[int, typer.Option(help="Max judge output tokens.")] = 256,
-) -> None:
-    """Run an opt-in LLM judge and write its deliverable score into outcome.json."""
-    if provider != "openrouter":
-        raise typer.BadParameter("v0 judge run supports --provider openrouter only")
-    if max_total_usd <= 0:
-        raise typer.BadParameter("--max-total-usd must be > 0")
-    if max_tokens <= 0:
-        raise typer.BadParameter("--max-tokens must be > 0")
-    api_key = read_env_alias("AGENTACCT_OPENROUTER_API_KEY")
-    if not api_key:
-        raise typer.BadParameter("judge run requires AGENTACCT_OPENROUTER_API_KEY")
-    with _friendly_run_lookup_errors(run_id):
-        store = RunStore(_resolve_cli_store_dir(store_dir).path, create=False)
-        if run_id == "latest":
-            run_id = store.latest_run_id()
-        report_payload = build_run_report_payload(store, run_id)
-        package = build_judge_package(report=report_payload, task_goal=task_goal, rubric=rubric)
-        package_path = store.run_dir(run_id) / "judge_package.json"
-        package_path.write_text(json.dumps(package, indent=2, sort_keys=True), encoding="utf-8")
-        result, event, _ = run_openrouter_judge(
-            package=package,
-            api_key=api_key,
-            model=model,
-            ledger=CostLedger(store.root),
-            max_total_usd=max_total_usd,
-            max_tokens=max_tokens,
-        )
-        existing = read_outcome(store, run_id) or report_payload["outcome"]
-        outcome = apply_judge_result(existing, result, source="openrouter", model=model, cost_event_id=event.get("event_id"))
-        write_outcome(store, run_id, outcome)
-        console.print(
-            f"Judge score for {run_id}: {result['deliverable_score']} "
-            f"confidence={result['confidence']} model={model}"
-        )
-
-
-@value_app.command("compute")
-def value_compute(
-    run_id: Annotated[str, typer.Argument(help="Run ID to score, or 'latest'.")],
-    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
-    budget_usd: Annotated[Optional[float], typer.Option(help="Optional budget for cost-pressure adjustment.")] = None,
-    json_output: Annotated[bool, typer.Option("--json", help="Print the value object as JSON.")] = False,
-) -> None:
-    """Compute a transparent advisory value score from judge, cost, and machine checks."""
-    with _friendly_run_lookup_errors(run_id):
-        store = RunStore(_resolve_cli_store_dir(store_dir).path, create=False)
-        if run_id == "latest":
-            run_id = store.latest_run_id()
-        report_payload = build_run_report_payload(store, run_id)
-        value = compute_advisory_value_score(report_payload, budget_usd=budget_usd)
-        existing = read_outcome(store, run_id) or report_payload["outcome"]
-        outcome = apply_value_score(existing, value)
-        write_outcome(store, run_id, outcome)
-        if json_output:
-            print(json.dumps(value, indent=2, sort_keys=True))
-        else:
-            console.print(f"Value score for {run_id}: {value.get('score')} rating={value.get('rating')} confidence={value.get('confidence')}")
-            console.print(str(value.get("reason")))
-
-
 @app.command()
 def pause(run_id: str, store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None) -> None:
     with _friendly_run_lookup_errors(run_id):
@@ -3871,52 +3619,6 @@ def scan() -> None:
     table.add_row("real agent processes", "not inspected in v0 without explicit future approval")
     table.add_row("sentinel-owned runs", "use report/pause/resume/kill by run_id")
     console.print(table)
-
-
-@app.command("agent-loop-demo")
-def agent_loop_demo(
-    store_dir: Annotated[Optional[Path], typer.Option(help="State directory for the demo summary. Defaults to a THROWAWAY temporary store; pass --store-dir to keep the summary.")] = None,
-    run_id: Annotated[str, typer.Option(help="Run ID for the demo summary.")] = "run_agent_loop_demo",
-    checkpoint_every_steps: Annotated[int, typer.Option(help="Pause/report after N visible outer-loop agent steps.")] = 3,
-    on_checkpoint: Annotated[str, typer.Option(help="pause or report; pause stops at checkpoint, report continues.")] = "pause",
-) -> None:
-    """Run a local mock agent-loop demo that uses checkpoint language instead of hard max-steps."""
-    if on_checkpoint not in {"pause", "report"}:
-        raise typer.BadParameter("on-checkpoint must be 'pause' or 'report'")
-    resolved_store_dir, store_is_temporary = _resolve_scratch_store_dir(store_dir, label="agent-loop-demo")
-
-    instructions = [
-        "Break the Agent FinOps idea into product requirements.",
-        "Sketch the minimum architecture.",
-        "List budget/cutoff policies.",
-        "Draft a developer CLI UX.",
-    ]
-
-    def request_step(step_number: int, state: str, instruction: str) -> dict[str, object]:
-        return {
-            "status_code": 200,
-            "forwarded": True,
-            "content": f"Mock step {step_number}: {instruction}",
-            "actual_provider_cost_usd": 0.0,
-        }
-
-    result = run_agent_like_loop(
-        task="Demonstrate checkpoint-based external agent loop control.",
-        step_instructions=instructions,
-        request_step=request_step,
-        options=AgentLoopOptions(
-            store_dir=resolved_store_dir,
-            run_id=run_id,
-            checkpoint_every_steps=checkpoint_every_steps,
-            on_checkpoint=on_checkpoint,  # type: ignore[arg-type]
-        ),
-    )
-    if store_is_temporary:
-        console.print(f"Demo store is temporary and will vanish on cleanup/reboot: {resolved_store_dir}")
-    console.print(f"Status: {result.status}")
-    console.print(f"Reason: {result.reason}")
-    console.print(f"Visible steps attempted: {result.steps_attempted}")
-    console.print(f"Summary: {result.summary_path}")
 
 
 @claude_code_hooks_app.command("pre-tool-use")
@@ -10409,84 +10111,6 @@ def api_serve(
         host=host,
         port=port,
         log_level="info",
-    )
-
-
-@cost_app.command("proxy")
-def cost_proxy(
-    host: Annotated[str, typer.Option(help="Bind host for the local dry-run proxy.")] = "127.0.0.1",
-    port: Annotated[int, typer.Option(help="Bind port for the local dry-run proxy.")] = 8787,
-    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
-    allow_host: Annotated[Optional[list[str]], typer.Option("--allow-host", help=_ALLOW_HOST_HELP)] = None,
-    max_total_usd: Annotated[Optional[float], typer.Option(help="Block if best-known billable ledger total would exceed this budget.")] = None,
-    max_total_tokens: Annotated[Optional[int], typer.Option(help="Block if estimated total tokens would exceed this budget.")] = None,
-    max_input_tokens: Annotated[Optional[int], typer.Option(help="Block if estimated input tokens would exceed this budget.")] = None,
-    max_output_tokens: Annotated[Optional[int], typer.Option(help="Block if estimated output tokens would exceed this budget.")] = None,
-    enable_forwarding: Annotated[bool, typer.Option(help="Actually forward allowlisted provider requests upstream. Default is dry-run only.")] = False,
-    forward_provider: Annotated[list[str] | None, typer.Option(help="Provider allowed for forwarding. Supports openrouter, openai, and deepseek.")] = None,
-    dry_run_only: Annotated[bool, typer.Option(help="Validate forwarding options and exit without starting a server.")] = False,
-) -> None:
-    """Start the v0 cost proxy. Forwarding is disabled unless explicitly enabled."""
-    if host not in {"127.0.0.1", "localhost"}:
-        console.print("Refusing non-local bind by default. Do not expose the cost proxy without authentication.")
-        raise typer.Exit(1)
-    allowed_forward_providers = set(forward_provider or [])
-    if enable_forwarding:
-        supported_forward_providers = {"openrouter", "openai", "deepseek"}
-        unsupported = sorted(allowed_forward_providers - supported_forward_providers)
-        if unsupported:
-            raise typer.BadParameter(f"unsupported forward provider(s): {', '.join(unsupported)}")
-        if not allowed_forward_providers:
-            raise typer.BadParameter("forwarding requires at least one --forward-provider")
-        if max_total_usd is None:
-            raise typer.BadParameter("forwarding requires --max-total-usd local budget cap")
-        # New AGENTACCT_* names win; pre-rename AGENT_CHRONICLE_* / AGENT_SENTINEL_* aliases
-        # are accepted silently.
-        openrouter_api_key = read_env_alias("AGENTACCT_OPENROUTER_API_KEY")
-        openai_api_key = read_env_alias("AGENTACCT_OPENAI_API_KEY")
-        deepseek_api_key = read_env_alias("AGENTACCT_DEEPSEEK_API_KEY")
-        if "openrouter" in allowed_forward_providers and not openrouter_api_key:
-            raise typer.BadParameter("OpenRouter forwarding requires AGENTACCT_OPENROUTER_API_KEY")
-        if "openrouter" in allowed_forward_providers and openrouter_api_key and not openrouter_api_key.startswith("sk-or-v1-"):
-            raise typer.BadParameter("AGENTACCT_OPENROUTER_API_KEY does not look like a full OpenRouter key")
-        if "openai" in allowed_forward_providers and not openai_api_key:
-            raise typer.BadParameter("OpenAI forwarding requires AGENTACCT_OPENAI_API_KEY")
-        if "deepseek" in allowed_forward_providers and not deepseek_api_key:
-            raise typer.BadParameter("DeepSeek forwarding requires AGENTACCT_DEEPSEEK_API_KEY")
-    else:
-        openrouter_api_key = None
-        openai_api_key = None
-        deepseek_api_key = None
-    if dry_run_only:
-        console.print("Dry-run-only validation passed; server not started.")
-        return
-    # Resolve after the dry-run-only shortcut (which touches no store) and
-    # before starting the server, so a missing store is an actionable exit(2).
-    effective_store_dir = _resolve_cli_store_dir(store_dir).path
-    try:
-        import uvicorn
-    except ImportError as exc:
-        raise typer.BadParameter("uvicorn is required to run the proxy server: pip install uvicorn") from exc
-    console.print("Starting cost proxy. Forwarding is enabled only for explicitly allowlisted providers.")
-    uvicorn.run(
-        create_app(
-            store_dir=effective_store_dir,
-            policy=CostPolicy(
-                max_total_usd=max_total_usd,
-                max_total_tokens=max_total_tokens,
-                max_input_tokens=max_input_tokens,
-                max_output_tokens=max_output_tokens,
-            ),
-            dry_run=not enable_forwarding,
-            enable_forwarding=enable_forwarding,
-            allowed_forward_providers=allowed_forward_providers,
-            openrouter_api_key=openrouter_api_key,
-            openai_api_key=openai_api_key,
-            deepseek_api_key=deepseek_api_key,
-            extra_allowed_hosts=tuple(allow_host or ()),
-        ),
-        host=host,
-        port=port,
     )
 
 

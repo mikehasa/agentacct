@@ -6,7 +6,6 @@ from typer.testing import CliRunner
 
 from agentacct.cli import app
 from agentacct.cost import CostLedger, CostPolicy, estimate_openai_chat_usage, estimate_subscription_cost
-from agentacct.proxy import create_app
 
 
 def test_usage_estimates_default_to_estimated_confidence():
@@ -64,23 +63,6 @@ def test_policy_classifies_cost_budget_confidence_tiers():
     assert policy.classify_cost_budget(estimated).tier == "estimated_cost"
     assert policy.classify_cost_budget(estimated).default_action == "warn_or_pause"
     assert policy.classify_cost_budget(unknown).tier == "token_runtime_only"
-
-
-def test_proxy_blocks_on_token_budget_and_records_confidence(tmp_path):
-    from fastapi.testclient import TestClient
-
-    client = TestClient(create_app(store_dir=tmp_path, policy=CostPolicy(max_total_tokens=1), dry_run=True))
-    response = client.post(
-        "/openai/v1/chat/completions",
-        json={"model": "gpt-5-mini", "messages": [{"role": "user", "content": "hello token budget"}]},
-    )
-
-    assert response.status_code == 402
-    body = response.json()
-    assert body["agent_sentinel"]["usage_confidence"] == "estimated"
-    events = CostLedger(tmp_path).read_events()
-    assert events[0]["usage_confidence"] == "estimated"
-    assert events[0]["decision"] == "blocked"
 
 
 def test_cost_status_shows_confidence_counts(tmp_path):

@@ -316,33 +316,6 @@ TOOLS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
-    {
-        "name": "agentacct_prepare_judge",
-        "description": "Prepare an isolated judge package/prompt. This does not call an LLM or spend money.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "run_id": {"type": "string", "default": "latest"},
-                "task_goal": {"type": "string"},
-                "rubric": {"type": "string"},
-                "write_package": {"type": "boolean", "default": True},
-            },
-            "required": ["task_goal", "rubric"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "agentacct_compute_value",
-        "description": "Compute advisory cost-efficiency value score from existing report, machine checks, and judge score. Does not call an LLM.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "run_id": {"type": "string", "default": "latest"},
-                "budget_usd": {"type": ["number", "null"]},
-            },
-            "additionalProperties": False,
-        },
-    },
 ]
 
 
@@ -379,12 +352,6 @@ def _optional_str(args: dict[str, Any], key: str, default: str) -> str:
     if not isinstance(value, str) or not value:
         raise InvalidParams(f"{key} must be a non-empty string")
     return value
-
-
-def _required_str(args: dict[str, Any], key: str) -> str:
-    if key not in args:
-        raise InvalidParams(f"missing required argument: {key}")
-    return _optional_str(args, key, "")
 
 
 def _optional_int(args: dict[str, Any], key: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
@@ -966,25 +933,6 @@ def _machine_result_from_exit_code(exit_code: int | None) -> str:
     if exit_code is None:
         return "unknown"
     return "passed" if exit_code == 0 else "failed"
-
-
-def _optional_bool(args: dict[str, Any], key: str, default: bool) -> bool:
-    value = args.get(key, default)
-    if not isinstance(value, bool):
-        raise InvalidParams(f"{key} must be a boolean")
-    return value
-
-
-def _optional_positive_float(args: dict[str, Any], key: str) -> float | None:
-    value = args.get(key)
-    if value is None:
-        return None
-    if not isinstance(value, int | float) or isinstance(value, bool):
-        raise InvalidParams(f"{key} must be a positive number or null")
-    value = float(value)
-    if value <= 0:
-        raise InvalidParams(f"{key} must be > 0")
-    return value
 
 
 # sentinel-object default (the programming pattern, not the old brand)
@@ -1735,22 +1683,6 @@ class SentinelMCPServer:
             limit = _optional_int(arguments, "limit", 200, minimum=1, maximum=200)
             run_id = _optional_run_id(arguments, "run_id")
             payload = {"summary": self.service.summarize_events(limit=limit, run_id=run_id)}
-        elif name == "agentacct_prepare_judge":
-            _reject_unknown_keys(arguments, {"run_id", "task_goal", "rubric", "write_package"})
-            payload = self.service.prepare_judge(
-                _optional_str(arguments, "run_id", "latest"),
-                task_goal=_required_str(arguments, "task_goal"),
-                rubric=_required_str(arguments, "rubric"),
-                write_package=_optional_bool(arguments, "write_package", True),
-            )
-        elif name == "agentacct_compute_value":
-            _reject_unknown_keys(arguments, {"run_id", "budget_usd"})
-            payload = {
-                "value": self.service.compute_value(
-                    _optional_str(arguments, "run_id", "latest"),
-                    budget_usd=_optional_positive_float(arguments, "budget_usd"),
-                )
-            }
         else:
             raise ValueError(f"Unknown tool: {name}")
         return {"content": [{"type": "text", "text": json.dumps(payload, indent=2, sort_keys=True)}]}

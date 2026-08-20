@@ -63,9 +63,9 @@ def test_report_outside_project_fails_with_guidance(tmp_path, monkeypatch) -> No
     assert not (fake_home / ".agent-sentinel").exists()
 
 
-def test_outcome_and_value_default_to_project_store(tmp_path, monkeypatch) -> None:
-    """Regression for the report-vs-outcome split-brain: `run`, `outcome`, and
-    `value` now resolve to the SAME project store without --store-dir."""
+def test_outcome_defaults_to_project_store(tmp_path, monkeypatch) -> None:
+    """Regression for the report-vs-outcome split-brain: `run` and `outcome`
+    now resolve to the SAME project store without --store-dir."""
     project, fake_home = _init_project(monkeypatch, tmp_path)
 
     run = runner.invoke(app, ["run", "--", sys.executable, "-c", "print('joined store')"])
@@ -76,9 +76,6 @@ def test_outcome_and_value_default_to_project_store(tmp_path, monkeypatch) -> No
         ["outcome", "record-machine-check", "latest", "--name", "pytest", "--before-exit-code", "1", "--after-exit-code", "0"],
     )
     assert outcome.exit_code == 0, outcome.output
-
-    value = runner.invoke(app, ["value", "compute", "latest", "--json"])
-    assert value.exit_code == 0, value.output
 
     state = project / ".agent-sentinel" / "state"
     run_dirs = [path for path in (state / "runs").iterdir() if path.is_dir()]

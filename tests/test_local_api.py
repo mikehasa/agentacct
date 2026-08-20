@@ -12,12 +12,9 @@ from agentacct.cli import _local_usage_import_payload, app
 from agentacct.cost import CostLedger, UsageEstimate
 from agentacct.event_log import RAW_EVENT_LOG_FILENAME, RawEventLog
 from agentacct.mcp import SentinelMCPServer
-from agentacct.outcome import apply_judge_result, write_outcome
 from agentacct.pricing_catalog import default_pricing_catalog_snapshot_path
-from agentacct.reports import build_run_report_payload
 from agentacct.runner import RunOptions, start_guarded_run
 from agentacct.service import SentinelService
-from agentacct.storage import RunStore
 
 
 def _make_home_usage_sources(home):
@@ -247,7 +244,7 @@ def test_local_api_lists_runs_and_returns_report(tmp_path):
     assert report.json()["run"]["run_id"] == result.run_id
 
 
-def test_local_api_records_machine_check_and_prepares_judge(tmp_path):
+def test_local_api_records_machine_check(tmp_path):
     store_root, result = _make_run(tmp_path)
     client = TestClient(create_local_api_app(store_dir=store_root))
 
@@ -264,46 +261,6 @@ def test_local_api_records_machine_check_and_prepares_judge(tmp_path):
     assert check.status_code == 200
     assert check.json()["outcome"]["machine_checks"]["resolved_failures"] == 1
 
-    package = client.post(
-        f"/runs/{result.run_id}/judge/prepare",
-        json={"task_goal": "Fix tests", "rubric": "Score test improvement.", "write_package": True},
-    )
-    assert package.status_code == 200
-    assert package.json()["schema_version"] == "agent-sentinel.judge-package.v1"
-    assert package.json()["task_goal"] == "Fix tests"
-    assert (store_root / "runs" / result.run_id / "judge_package.json").exists()
-
-
-def test_local_api_computes_value_without_paid_judge_call(tmp_path):
-    store_root, result = _make_run(tmp_path)
-    store = RunStore(store_root)
-    report = build_run_report_payload(store, result.run_id)
-    outcome = report["outcome"]
-    outcome["machine_checks"] = {
-        "configured": True,
-        "before": "failed",
-        "after": "passed",
-        "resolved_failures": 1,
-        "introduced_failures": 0,
-    }
-    outcome = apply_judge_result(
-        outcome,
-        {"deliverable_score": 85, "confidence": "medium", "reason": "useful", "risks": []},
-        source="openrouter",
-        model="openai/gpt-4o-mini",
-        cost_event_id="cost_test",
-    )
-    write_outcome(store, result.run_id, outcome)
-
-    client = TestClient(create_local_api_app(store_dir=store_root))
-    value = client.post(f"/runs/{result.run_id}/value/compute", json={"budget_usd": 0.01})
-
-    assert value.status_code == 200
-    assert value.json()["value"]["score"] == 90
-    assert value.json()["value"]["components"]["cost_efficiency_score"] == 100
-    report_after = client.get(f"/runs/{result.run_id}/report").json()
-    assert report_after["outcome"]["value"]["score"] == 90
-
 
 def test_local_api_returns_404_for_unknown_run(tmp_path):
     client = TestClient(create_local_api_app(store_dir=tmp_path / "state"))
@@ -313,13 +270,12 @@ def test_local_api_returns_404_for_unknown_run(tmp_path):
     assert response.status_code == 404
 
 
-def test_local_api_validates_limit_and_budget_inputs(tmp_path):
-    store_root, result = _make_run(tmp_path)
+def test_local_api_validates_limit_inputs(tmp_path):
+    store_root, _ = _make_run(tmp_path)
     client = TestClient(create_local_api_app(store_dir=store_root))
 
     assert client.get("/runs?limit=0").status_code == 422
     assert client.get("/runs?limit=101").status_code == 422
-    assert client.post(f"/runs/{result.run_id}/value/compute", json={"budget_usd": -0.01}).status_code == 422
 
 
 def test_local_api_returns_422_for_invalid_run_id(tmp_path):

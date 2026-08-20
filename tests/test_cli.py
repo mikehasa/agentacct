@@ -30,24 +30,6 @@ def test_posix_platforms_pass_the_platform_guard():
     assert _exit_if_unsupported_platform("linux") is None
 
 
-def test_wrapper_entry_points_fail_fast_on_win32(monkeypatch, capsys):
-    # agentacct-claude / agentacct-codex never import cli, so they carry their own
-    # copy of the same guard: on native Windows they must exit 2 with the WSL
-    # pointer, not reach runner.py's POSIX process-group calls as a traceback.
-    import agentacct.wrappers as wrappers
-
-    monkeypatch.setattr(wrappers.sys, "platform", "win32")
-
-    for entry in (wrappers.sentinel_claude_main, wrappers.sentinel_codex_main):
-        with pytest.raises(SystemExit) as excinfo:
-            entry()
-        assert excinfo.value.code == 2
-    err = capsys.readouterr().err
-    assert "macOS or Linux" in err
-    assert "WSL" in err
-    assert "Traceback" not in err
-
-
 def test_report_accepts_latest_argument_when_store_has_run(tmp_path):
     run_dir = tmp_path / "runs" / "run_demo"
     run_dir.mkdir(parents=True)
@@ -66,7 +48,7 @@ def test_scan_is_safe_placeholder_not_real_process_inspector():
     assert "not inspected in v0" in result.output
 
 
-def test_demo_command_creates_report_evidence_and_value_score(tmp_path):
+def test_demo_command_creates_report_and_machine_check_evidence(tmp_path):
     store_dir = tmp_path / "state"
 
     result = CliRunner().invoke(app, ["demo", "--store-dir", str(store_dir), "--json"])
@@ -76,7 +58,6 @@ def test_demo_command_creates_report_evidence_and_value_score(tmp_path):
     assert summary["status"] == "completed"
     assert summary["exit_code"] == 0
     assert summary["store_dir"] == str(store_dir)
-    assert summary["value"]["rating"] == "excellent"
     assert "agentacct serve --store-dir" in summary["dashboard_command"]
     assert summary["dashboard_url"] == "http://127.0.0.1:8765"
     assert summary["report_json_command"].endswith(" --json")
@@ -98,8 +79,6 @@ def test_demo_command_creates_report_evidence_and_value_score(tmp_path):
     assert payload["outcome"]["machine_checks"]["checks"][0]["before"]["exit_code"] == 1
     assert payload["outcome"]["machine_checks"]["checks"][0]["after"]["exit_code"] == 0
     assert payload["outcome"]["machine_checks"]["resolved_failures"] == 1
-    assert payload["outcome"]["judge"]["source"] == "local_demo"
-    assert payload["outcome"]["value"]["score"] is not None
 
 
 def test_demo_rejects_non_positive_budget(tmp_path):
