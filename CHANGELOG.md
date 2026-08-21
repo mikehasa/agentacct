@@ -6,6 +6,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.2] — 2026-08-22
+
+A documentation release: the docs now match the surface 0.9.1 actually ships.
+No code or behavior changes.
+
+### Changed
+- Removed internal maintainer docs and docs for already-removed features (the
+  public-alpha checklist, the canonical-store design draft, the live-smoke
+  guide, the historical-usage-truth policy record, and the connector license
+  BOM), and scrubbed the remaining docs, `README.md`, and `INSTALL.md` of
+  references to the third-party evidence connectors, the judge/value scoring,
+  the `agentacct-claude` / `agentacct-codex` wrappers, the cost proxy, and the
+  `agentacct smoke` harness — all removed in 0.9.1 — along with the
+  pre-publication "unpublished" framing now that agentacct ships on PyPI.
+
 ## [0.9.1] — 2026-08-21
 
 A cleanup release that removes dead code from earlier product pivots. There is
@@ -636,7 +651,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.2
 [0.9.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.1
 [0.9.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.0
 [0.8.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.8.1
