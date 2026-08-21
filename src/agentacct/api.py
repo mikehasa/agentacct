@@ -10,7 +10,7 @@ import secrets
 import time
 # ``field`` is aliased: several helpers below use ``field`` as a loop variable.
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -23,18 +23,6 @@ from .client_usage import (
     ClientUsageDiscoveryResult,
     ClientUsageEvent,
     discover_client_usage_with_diagnostics,
-)
-from .canonical_day_cube import (
-    CANONICAL_USAGE_SUMMARY_SCHEMA_VERSION,
-    build_canonical_day_cube,
-)
-from .canonical_read import (
-    FIRST_DATED_DAY,
-    LAST_DATED_DAY,
-    CanonicalReadUnavailable,
-    CanonicalSessionListRead,
-    CanonicalTaskListRead,
-    CanonicalUsageDayRead,
 )
 from .capture import CaptureContext, DEFAULT_CAPTURE_REGISTRY, render_hook_manifest
 from .capture.registry import DEFAULT_MAX_PAYLOAD_BYTES
@@ -2191,254 +2179,6 @@ def _dashboard_task_projection(data: _DashboardPageData) -> dict[str, Any]:
 # _session_display_sort_key so changing the browse order never moves other views.
 # Optional lens: only sessions with recorded agentacct work (sections/checks).
 # The browse can page past the default slice; "Show more" raises the cap.
-# --- canonical read-mode payloads (migration phase 4.2) ---------------------
-#
-# Work/Task/Sessions JSON surfaces served from the canonical store when the
-# read flag is on. The canonical model deliberately represents a SUBSET of v1
-# (work claims, sessions, lineage, usage): every field it cannot represent is
-# absent or None here with the gap NAMED in ``model_gaps`` — never synthesized
-# from v1, never coerced to 0.
-
-CANONICAL_TASK_PROJECTION_SCHEMA_VERSION = "agent-chronicle.task-projection.v2-canonical"
-CANONICAL_SESSION_ROLLUP_SCHEMA_VERSION = "agent-sentinel.session-rollup.v2-canonical"
-
-# Whitelisted staleness label for projection-backed canonical surfaces (the
-# 4.1 usage surface pins the same keys).
-_CANONICAL_PROJECTION_LABEL_KEYS = (
-    "projection_name",
-    "projection_version",
-    "built_through_sequence",
-    "canonical_sequence",
-    "state",
-    "built_at_us",
-    "stale",
-    "pending_writes",
-)
-
-_CANONICAL_TASK_MODEL_GAPS: dict[str, Any] = {
-    "not_represented": [
-        # No canonical writer records findings at all today (the shadow
-        # writer skips finding lanes visibly), so the whole finding surface —
-        # inventory AND dispositions — is a gap, and rm_task_current's
-        # finding_count (a count over a table nothing populates) is
-        # deliberately NOT served: its 0 would impersonate "no findings".
-        "findings",
-        "finding_dispositions",
-        "continuation_memberships",
-        "planned_control_tasks",
-        "machine_check_evidence",
-        "run_reports",
-        "generic_notes",
-        "work_item_metadata",
-        "estimated_cost",
-        "usage_confidence_provenance",
-        "per_session_breakdown",
-        "project_attribution",
-    ],
-    "reason": (
-        "the canonical model represents work claims, sessions, lineage, and "
-        "usage; fields it cannot represent are absent or None here — never "
-        "synthesized from the v1 ledger"
-    ),
-    "projected_state_basis": (
-        "latest non-superseded work claim; reported_complete is a claim, "
-        "not a verification"
-    ),
-}
-
-_CANONICAL_SESSION_MODEL_GAPS: dict[str, Any] = {
-    "not_represented": [
-        "usage_rollup",
-        "estimated_cost",
-        "join_attribution",
-        "work_associations",
-        "project_attribution",
-        "session_titles",
-        "instrumentation_state",
-        "mechanical_capture_detail",
-        "child_session_rollups",
-    ],
-    "not_served": [
-        # In the model but pre-validation state: the raw observed-lineage
-        # claim is deliberately withheld; only VALIDATED parent edges serve.
-        "observed_unvalidated_lineage",
-    ],
-    "reason": (
-        "the canonical model represents work claims, sessions, lineage, and "
-        "usage; fields it cannot represent are absent or None here — never "
-        "synthesized from the v1 ledger"
-    ),
-}
-
-# The Overview page composes three canonical reads (tasks, usage, sessions).
-# Its honest bounded slice caps each list; the source note labels truncation.
-# The Overview's model-gaps note is the UNION of the task and session gaps
-# (usage labels its own exclusions inline in the day cube). Computed from the
-# sub-constants so it can never drift out of sync with them.
-def _canonical_us_iso(value: int | None) -> str | None:
-    """Microsecond epoch → UTC ISO-8601, exactly (no float rounding)."""
-
-    if value is None:
-        return None
-    base = datetime.fromtimestamp(int(value) // 1_000_000, tz=timezone.utc)
-    return (base + timedelta(microseconds=int(value) % 1_000_000)).isoformat()
-
-
-def _canonical_fallback_label(failure: CanonicalReadUnavailable) -> dict[str, Any]:
-    return {
-        "active": False,
-        "source": "v1_fallback",
-        "reason": failure.reason,
-        "detail": failure.detail,
-    }
-
-
-def _canonical_projection_label(projection: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        key: projection[key] for key in _CANONICAL_PROJECTION_LABEL_KEYS if key in projection
-    }
-
-
-def _canonical_session_identity(
-    session: Any, sources: Mapping[int, Any]
-) -> dict[str, Any]:
-    """Presentation identity for one canonical session row. An unresolvable
-    source keeps ``client`` None and says so — never guessed."""
-
-    source = sources.get(session.source_instance_id)
-    return {
-        "canonical_session_id": session.session_id,
-        "client": source.client if source is not None else None,
-        "client_session_id": session.client_session_id,
-        "session_kind": session.session_kind,
-        "representation": source.representation if source is not None else None,
-        "client_identity_resolved": source is not None,
-    }
-
-
-def _canonical_task_entry(
-    task: Any, sessions: Mapping[int, Any], sources: Mapping[int, Any]
-) -> dict[str, Any]:
-    primary = sessions.get(task.primary_session_id)
-    return {
-        "public_task_id": task.public_task_id,
-        "title": task.title,
-        "projected_state": task.projected_state,
-        "last_activity_at": _canonical_us_iso(task.last_activity_at_us),
-        "last_activity_at_us": task.last_activity_at_us,
-        "session_count": task.session_count,
-        "usage_measurement_count": task.usage_measurement_count,
-        # Token fields are the projection's honest nulls: None means "not
-        # reported", never 0.
-        "input_tokens": task.input_tokens,
-        "output_tokens": task.output_tokens,
-        "total_tokens": task.total_tokens,
-        "usage_missing_field_count": task.usage_missing_field_count,
-        # rm_task_current.finding_count is intentionally absent: no canonical
-        # writer populates finding_actions yet, so serving its 0 would let
-        # missing data impersonate "no findings" (see model_gaps).
-        "primary_session": (
-            _canonical_session_identity(primary, sources) if primary is not None else None
-        ),
-    }
-
-
-def _canonical_task_projection_payload(read: CanonicalTaskListRead) -> dict[str, Any]:
-    return {
-        "schema_version": CANONICAL_TASK_PROJECTION_SCHEMA_VERSION,
-        "canonical_read": {
-            "active": True,
-            "source": "canonical",
-            "store": dict(read.store),
-            "projection": _canonical_projection_label(read.projection),
-            "truncated": bool(read.truncated),
-        },
-        "summary": {
-            "task_count_shown": len(read.tasks),
-            "truncated": bool(read.truncated),
-        },
-        "tasks": [
-            _canonical_task_entry(task, read.sessions, read.sources) for task in read.tasks
-        ],
-        "model_gaps": _CANONICAL_TASK_MODEL_GAPS,
-    }
-
-
-def _canonical_session_entry(
-    session: Any, read: CanonicalSessionListRead, page_sessions: Mapping[int, Any]
-) -> dict[str, Any]:
-    entry = _canonical_session_identity(session, read.sources)
-    source = read.sources.get(session.source_instance_id)
-    entry["namespace_scheme"] = source.namespace_scheme if source is not None else None
-    entry["started_at"] = _canonical_us_iso(session.started_at_us)
-    entry["started_at_us"] = session.started_at_us
-    entry["last_activity_at"] = _canonical_us_iso(session.last_activity_at_us)
-    entry["last_activity_at_us"] = session.last_activity_at_us
-    edge = read.lineage_edges.get(session.session_id)
-    if edge is None:
-        entry["parent"] = None
-    else:
-        parent_id, relation = edge
-        parent = page_sessions.get(parent_id) or read.parent_sessions.get(parent_id)
-        if parent is None:
-            # The edge names a parent the lookups could not resolve; say so
-            # rather than dropping the validated relation.
-            entry["parent"] = {
-                "canonical_session_id": parent_id,
-                "relation": relation,
-                "client": None,
-                "client_session_id": None,
-                "identity_resolved": False,
-            }
-        else:
-            entry["parent"] = {
-                "canonical_session_id": parent_id,
-                "relation": relation,
-                "client": (
-                    read.sources[parent.source_instance_id].client
-                    if parent.source_instance_id in read.sources
-                    else None
-                ),
-                "client_session_id": parent.client_session_id,
-                "identity_resolved": parent.source_instance_id in read.sources,
-            }
-    return entry
-
-
-def _canonical_session_rollup_payload(read: CanonicalSessionListRead) -> dict[str, Any]:
-    page_sessions = {session.session_id: session for session in read.sessions}
-    return {
-        "schema_version": CANONICAL_SESSION_ROLLUP_SCHEMA_VERSION,
-        "canonical_read": {
-            "active": True,
-            "source": "canonical",
-            "store": dict(read.store),
-            "truncated": bool(read.truncated),
-        },
-        # The full-store count is not computed on this path; None means "not
-        # computed", never 0 (the shown count is exact for the page).
-        "total_sessions": None,
-        "total_sessions_reason": "not_computed_in_canonical_read",
-        "session_count_shown": len(read.sessions),
-        "sessions": [
-            _canonical_session_entry(session, read, page_sessions)
-            for session in read.sessions
-        ],
-        "model_gaps": _CANONICAL_SESSION_MODEL_GAPS,
-    }
-
-
-# --- canonical read-mode HTML bodies (migration phase 4.4 / P1) -------------
-#
-# The HTML analog of the phase-4.1/4.2 canonical JSON payload builders above.
-# When the read flag is on and the canonical store serves, these render the
-# HONEST SUBSET the canonical model represents — never the v1 ledger, never a
-# synthesized field. Everything the model cannot represent is named in the
-# model-gaps note; the projection staleness and store identity ride visible in
-# the source note. When the flag is on but the store cannot serve, the handler
-# renders the v1 body under the VISIBLE fallback banner below instead (locked
-# principle: any v1 fallback must be labeled; silent wrong data is forbidden).
-
 
 
 # ---------------------------------------------------------------------------
@@ -2926,32 +2666,12 @@ def create_local_api_app(
 
     @app.get("/tasks")
     def tasks_projection() -> dict[str, Any]:
-        """Task list JSON: canonical mode when the read flag is on (schema
-        v2-canonical from rm_task_current, three-gate projection staleness
-        labels, model gaps named); every unavailability is the labeled v1
-        fallback — never silent wrong data, never a crash."""
+        """Task list JSON served from the v1 projection."""
 
-        canonical_fallback: dict[str, Any] | None = None
-        if service.canonical_read.enabled:
-            try:
-                read = service.canonical_read.task_list_read()
-            except CanonicalReadUnavailable as unavailable:
-                canonical_fallback = _canonical_fallback_label(unavailable)
-            else:
-                try:
-                    return _canonical_task_projection_payload(read)
-                except Exception as exc:  # noqa: BLE001 - the reader must never crash this surface.
-                    failure = service.canonical_read.surface_failure(
-                        f"{type(exc).__name__}: {exc}", surface="task_list"
-                    )
-                    canonical_fallback = _canonical_fallback_label(failure)
         # The former top-level csrf_token key is gone with the HTML form flows;
         # per-episode finding tokens remain (they identify findings to local
         # write lanes like `agentacct finding dispose`).
-        result = dict(_dashboard_task_projection(_page_data()))
-        if canonical_fallback is not None:
-            result["canonical_read"] = canonical_fallback
-        return result
+        return dict(_dashboard_task_projection(_page_data()))
 
     # ---- /v1 native-shell lane (menu bar app / SwiftBar / widgets) --------
     glance_cache = GlanceCache()
@@ -3252,20 +2972,6 @@ def create_local_api_app(
             "service": "agentacct-local-api",
             "ingestion_status": sync_health["state"],
             "ingestion": sync_health,
-            # Canonical live shadow (migration phase 3): in-process counters
-            # for THIS dashboard process only — MCP servers and the watcher
-            # keep their own runtimes. Enough to see a silently failing
-            # shadow lane; per-process aggregation is a cutover concern.
-            "canonical_live": service.canonical_live.status(),
-            # Canonical read path (migration phase 4): same in-process scope.
-            # A read flag that silently falls back to v1 forever must be
-            # discoverable here, not only in individual response labels.
-            "canonical_read": service.canonical_read.status(),
-            # Canonical STORE diagnostics (phase 4.3): flag-independent
-            # read-only probe — store presence/role/schema plus per-projection
-            # built/stale state. This is the operator's cutover-readiness
-            # evidence while production reads still serve v1; never raises.
-            "canonical_store": service.canonical_read.health_probe(),
         }
 
     @app.get("/ingestion/health")
@@ -3385,27 +3091,6 @@ def create_local_api_app(
             for name in ("client", "project", "join", "kind", "days", "sort", "work", "show")
             if name in request.query_params
         )
-        # Canonical read path (migration phase 4.2): the sessions table is a
-        # base fact table (always current — no projection gate); the HTML
-        # filter params are ignored with the same additive wire honesty as
-        # the v1 rollup, and any unavailability is the labeled v1 fallback.
-        canonical_fallback: dict[str, Any] | None = None
-        if service.canonical_read.enabled:
-            try:
-                canonical_sessions = service.canonical_read.session_list_read(limit=limit)
-            except CanonicalReadUnavailable as unavailable:
-                canonical_fallback = _canonical_fallback_label(unavailable)
-            else:
-                try:
-                    canonical_payload = _canonical_session_rollup_payload(canonical_sessions)
-                    if ignored:
-                        canonical_payload["ignored_html_params"] = ignored
-                    return canonical_payload
-                except Exception as exc:  # noqa: BLE001 - the reader must never crash this surface.
-                    failure = service.canonical_read.surface_failure(
-                        f"{type(exc).__name__}: {exc}", surface="session_list"
-                    )
-                    canonical_fallback = _canonical_fallback_label(failure)
         ledger = _derived_work_ledger()
         rollup = ledger["session_rollup"]
         rollup_sessions = rollup.get("sessions") if isinstance(rollup, dict) else []
@@ -3420,8 +3105,6 @@ def create_local_api_app(
         if ignored:
             # Additive wire honesty: these params filter the HTML page only.
             payload["ignored_html_params"] = ignored
-        if canonical_fallback is not None:
-            payload["canonical_read"] = canonical_fallback
         return payload
 
     @app.get("/attention")
@@ -3783,76 +3466,6 @@ def create_local_api_app(
         preview = _discover_local_usage(usage_discovery, limit_sessions=limit_sessions)
         return {"totals": _usage_event_totals(preview), "events": [event.to_sentinel_event() for event in preview]}
 
-    def _canonical_usage_summary_payload(
-        *,
-        read: CanonicalUsageDayRead,
-        client: str,
-        model: str,
-        days: str,
-        granularity_requested: str,
-        effective_granularity: str,
-        days_int: int | None,
-        today_utc: date,
-    ) -> dict[str, Any]:
-        """The canonical-mode /usage/summary body (schema v2-canonical).
-
-        Same surface shape as the v1 cube where semantics genuinely match;
-        fields the day model cannot represent are explicit None (never 0),
-        and the epoch-sentinel rows ride in ``undated`` / the "unknown"
-        period — never as a real 1970 date.
-        """
-
-        cube = build_canonical_day_cube(
-            read.rows,
-            read.undated_rows,
-            granularity=effective_granularity,
-            days=days_int,
-            today=today_utc,
-        )
-        projection = _canonical_projection_label(read.projection)
-        return {
-            "schema_version": CANONICAL_USAGE_SUMMARY_SCHEMA_VERSION,
-            "canonical_read": {
-                "active": True,
-                "source": "canonical",
-                "day_basis": read.day_basis,
-                "store": dict(read.store),
-                "projection": projection,
-                "truncated": bool(read.truncated),
-                "undated_truncated": bool(read.undated_truncated),
-            },
-            "filters_echo": {
-                "client": client,
-                "model": model,
-                "days": days,
-                "granularity": effective_granularity,
-                "granularity_requested": granularity_requested,
-                "model_matches_saved_rows": (
-                    True if model == "all" else bool(read.model_matches_store)
-                ),
-            },
-            "totals": cube["totals"],
-            "usage_exclusions": {
-                "held_measurement_days": cube["totals"]["held_measurement_days"],
-                "undated_measurement_days": cube["undated"]["measurement_days"],
-                "reason": (
-                    "held rows are non-additive usage the canonical model refuses "
-                    "to sum; undated rows carried no usable source timestamp"
-                ),
-                "raw_evidence_preserved": True,
-            },
-            "range_context": {
-                # Not computed on the canonical path yet (phase 4.1); null
-                # means "not computed", never "no history outside range".
-                "history_outside_range": None,
-                "reason": "not_computed_in_canonical_read_v1",
-            },
-            "by_client": cube["by_client"],
-            "by_model": cube["by_model"],
-            "by_period": cube["by_period"],
-            "undated": cube["undated"],
-        }
-
     @app.get("/usage/summary")
     def usage_summary(
         client: str = "all",
@@ -3886,48 +3499,6 @@ def create_local_api_app(
             raise HTTPException(status_code=422, detail=f"unknown days filter: {days}")
         if granularity not in {"auto", *USAGE_CUBE_GRANULARITY_CHOICES}:
             raise HTTPException(status_code=422, detail=f"unknown granularity: {granularity}")
-        # Canonical read path (migration phase 4.1): default OFF. Enabled, it
-        # serves this surface from rm_usage_day with stale/pending labels;
-        # when the store cannot honestly serve, the v1 response below carries
-        # the labeled fallback — never silent wrong data, never a crash.
-        canonical_fallback: dict[str, Any] | None = None
-        if service.canonical_read.enabled:
-            days_int = days_choice_to_int(days)
-            effective_granularity = resolve_granularity(days, granularity)
-            # rm_usage_day labels days in UTC (labeled in the response);
-            # deriving the range from a local today would misalign the window.
-            today_utc = datetime.now(timezone.utc).date()
-            if days_int is None:
-                start_day, end_day = FIRST_DATED_DAY, LAST_DATED_DAY
-            else:
-                start_day = (today_utc - timedelta(days=days_int - 1)).isoformat()
-                end_day = today_utc.isoformat()
-            try:
-                canonical_read = service.canonical_read.usage_day_read(
-                    start_day=start_day,
-                    end_day=end_day,
-                    client=None if client == "all" else client,
-                    model=None if model == "all" else model,
-                )
-            except CanonicalReadUnavailable as unavailable:
-                canonical_fallback = _canonical_fallback_label(unavailable)
-            else:
-                try:
-                    return _canonical_usage_summary_payload(
-                        read=canonical_read,
-                        client=client,
-                        model=model,
-                        days=days,
-                        granularity_requested=granularity,
-                        effective_granularity=effective_granularity,
-                        days_int=days_int,
-                        today_utc=today_utc,
-                    )
-                except Exception as exc:  # noqa: BLE001 - the reader must never crash this surface.
-                    failure = service.canonical_read.surface_failure(
-                        f"{type(exc).__name__}: {exc}", surface="usage_days"
-                    )
-                    canonical_fallback = _canonical_fallback_label(failure)
         usage_view = _build_usage_view([], service.list_all_events())
         records = usage_view.saved_records
         cube_records = [*records, *usage_view.excluded_saved_records]
@@ -4005,8 +3576,6 @@ def create_local_api_app(
             "by_model": cube["by_model"],
             "by_period": cube["by_period"],
         }
-        if canonical_fallback is not None:
-            payload["canonical_read"] = canonical_fallback
         return payload
 
     @app.post("/events")

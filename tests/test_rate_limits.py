@@ -338,20 +338,10 @@ def test_read_codex_rollout_without_rate_limits_is_ignored(tmp_path):
 
 
 def test_event_classification_is_safe():
-    from agentacct.canonical.lane_inventory import (
-        canonical_lanes_for_event,
-        must_retain_in_v1,
-        retention_reason,
-    )
     from agentacct.usage_truth import is_local_usage_import_event
 
     event = rl.snapshot_to_event(_codex_snapshot())
     assert is_local_usage_import_event(event) is False  # never counted as usage
-    assert must_retain_in_v1(event) is True  # stored, never dropped
-    assert retention_reason("rate_limit_observed")  # honestly registered
-    lanes = canonical_lanes_for_event(event)
-    assert "usage" not in lanes
-    assert "work_claim" not in lanes
 
 
 def test_not_swept_into_work_feed():

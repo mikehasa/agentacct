@@ -15,8 +15,6 @@ from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
-from .canonical_live import CanonicalLiveRuntime
-from .canonical_read import CanonicalReadRuntime
 from .confidence import normalize_cost_confidence, normalize_usage_confidence
 from .context_bridge import build_usage_context_bridge
 from .evidence import is_sensitive_metadata_key
@@ -945,8 +943,6 @@ class SentinelService:
         *,
         create: bool = True,
         evidence_v2_enabled: bool | None = None,
-        canonical_live_enabled: bool | None = None,
-        canonical_read_enabled: bool | None = None,
     ) -> None:
         self.store = RunStore(store_dir, create=create)
         self.events_path = self.store.root / "events.jsonl"
@@ -954,17 +950,6 @@ class SentinelService:
         # Evidence v2 is an additive shadow boundary. Construction is lazy and
         # disabling it leaves the historical events.jsonl behavior untouched.
         self.evidence = EvidenceRuntime(self.store.root, enabled=evidence_v2_enabled)
-        # Canonical live shadow (migration phase 3): same contract, default
-        # OFF — nothing is opened or created until the flag enables it.
-        self.canonical_live = CanonicalLiveRuntime(
-            self.store.root, enabled=canonical_live_enabled
-        )
-        # Canonical read path (migration phase 4): independently gated from
-        # the write flag, default OFF — with the flag off every read surface
-        # stays on the proven v1 path, byte-identical.
-        self.canonical_read = CanonicalReadRuntime(
-            self.store.root, enabled=canonical_read_enabled
-        )
         # SQLite raw event log — the substrate that will replace events.jsonl.
         # A faithful mirror during the transition: constructed and reconciled
         # best-effort so a mirror problem never blocks the store, and healed
@@ -1384,9 +1369,6 @@ class SentinelService:
         # Never hold the v1 ledger lock while fsyncing/projecting v2. The
         # shadow call is idempotent, local-only, and fail-open by contract.
         self.evidence.shadow_v1_event(recorded, transport=transport)
-        # Canonical live shadow (phase 3.1): same placement and contract as
-        # the Evidence-v2 shadow — after the proven v1 write, off the lock.
-        self.canonical_live.shadow_v1_event(recorded, transport=transport)
         return recorded
 
     def _trusted_session_observation_candidate(self, event: dict[str, Any]) -> dict[str, Any]:
@@ -1505,15 +1487,9 @@ class SentinelService:
                     conflict_rows,
                     transport=transport,
                 )
-                # Quarantined conflict rows shadow too: the canonical
-                # absorb/tie machinery keeps the incumbent and the fork stays
-                # visible instead of vanishing from the shadow store.
-                for conflict_row in conflict_rows:
-                    self.canonical_live.shadow_v1_event(conflict_row, transport=transport)
             raise conflict_error
         if recorded is not None:
             self.evidence.shadow_v1_event(recorded, transport=transport)
-            self.canonical_live.shadow_v1_event(recorded, transport=transport)
             return recorded
         assert existing_result is not None
         return existing_result
@@ -1611,8 +1587,6 @@ class SentinelService:
                 )
         if recorded:
             self.evidence.shadow_v1_events(recorded, transport=transport)
-            for resolved in recorded:
-                self.canonical_live.shadow_v1_event(resolved, transport=transport)
         return recorded
 
     def trusted_session_observation_conflict_snapshot(
@@ -1858,11 +1832,6 @@ class SentinelService:
                 self._append_ledger_events([recorded], fsync=True)
 
         self.evidence.shadow_v1_event(recorded, transport=transport)
-        # Canonical shadow (phase 3.4): finding dispositions are not yet
-        # represented in the canonical model (the importer skips them the
-        # same way), so this records a visible skip — the point is that
-        # EVERY v1 write flows through one funnel with one contract.
-        self.canonical_live.shadow_v1_event(recorded, transport=transport)
         return recorded
 
     def replay_finding_disposition(
@@ -2006,11 +1975,9 @@ class SentinelService:
         fingerprint alongside — otherwise live views serve stale totals until
         an unrelated event lands.
 
-        Deliberately NOT shadowed to the canonical store (nor to Evidence
-        v2): canonical source identity is immutable, so rewriting historical
-        rows' namespaces cannot be expressed there — rows written after the
-        binding land under the resolved namespace naturally, and the cutover
-        import reads the final bound v1 state.
+        Deliberately NOT shadowed to Evidence v2: rewriting historical rows'
+        namespaces cannot be expressed there — rows written after the binding
+        land under the resolved namespace naturally.
         """
 
         normalized_bindings: dict[tuple[str, str], str] = {}
@@ -2355,11 +2322,6 @@ class SentinelService:
             else:
                 recorded = conflict_recorded
         self.evidence.shadow_v1_events(recorded, transport="internal")
-        # Canonical usage lane (phase 3.3): every freshly written usage row
-        # shadows through the same fail-open contract; the repository's
-        # content hash keeps unchanged re-observations physical no-ops.
-        for replacement in recorded:
-            self.canonical_live.shadow_v1_event(replacement, transport="internal")
         if conflict_error is not None:
             raise conflict_error
         return recorded
@@ -2444,11 +2406,6 @@ class SentinelService:
                 appended.append(event)
             self._append_ledger_events(appended)
         self.evidence.shadow_v1_events(appended, transport="internal")
-        # Canonical shadow (phase 3.3): merged rows keep their foreign
-        # event_ids, which the canonical lanes key naturally (facts by
-        # source_event_id, usage by session/lane/representation).
-        for event in appended:
-            self.canonical_live.shadow_v1_event(event, transport="internal")
         return plan, appended
 
     def append_events_preserving_identity(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2490,9 +2447,6 @@ class SentinelService:
                 appended.append(event)
             self._append_ledger_events(appended)
         self.evidence.shadow_v1_events(appended, transport="internal")
-        # Canonical shadow (phase 3.3): same contract as the merge lane.
-        for event in appended:
-            self.canonical_live.shadow_v1_event(event, transport="internal")
         return appended
 
     def list_events(self, *, limit: int = 50, run_id: str | None = None) -> list[dict[str, Any]]:
