@@ -13,7 +13,7 @@
 - [ ] Preserves local-first behavior
 - [ ] Does not store API keys or secrets
 - [ ] Does not expose localhost services publicly by default
-- [ ] Does not control processes Agent Chronicle did not start
+- [ ] Does not control processes agentacct did not start
 - [ ] Provider/API forwarding remains opt-in and budget-gated
 - [ ] JSON output paths remain machine-readable when `--json` is used
 

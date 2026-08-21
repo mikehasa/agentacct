@@ -514,7 +514,6 @@ def test_retired_framings_gone_from_all_public_docs_the_checklist_claims() -> No
         Path("README.md"),
         Path("CONTRIBUTING.md"),
         Path("docs/architecture.md"),
-        Path("docs/prompt-budget-optimizer.md"),
     ]
     offenders: list[str] = []
     for doc in public_docs:
@@ -789,8 +788,6 @@ def test_public_docs_include_live_agent_smoke_gate() -> None:
     reference = Path("docs/reference.md").read_text()
     checklist = Path("docs/public-alpha-checklist.md").read_text()
     guide = Path("docs/live-agent-smoke.md").read_text()
-    results = Path("docs/live-smoke-results.md").read_text()
-
     # The reference, the maintainer checklist, and the smoke guide are all
     # rebranded to the public agentacct CLI for current recommendations.
     assert "agentacct smoke claude-code" in reference
@@ -802,19 +799,11 @@ def test_public_docs_include_live_agent_smoke_gate() -> None:
         assert "agentacct smoke all --json" in text
     for text in (reference, checklist, guide):
         assert "automatically monitors" in text
-    # The results page is preserved dated evidence: its 2026-06-27 run used
-    # the pre-rename binary, and dated evidence keeps the name it was
-    # observed under (see the page's own historical note).
-    assert "agent-sentinel smoke claude-code" in results
-    assert "agent-sentinel smoke codex" in results
-    assert "agent-sentinel smoke all --json" in results
-    assert "automatically monitors" in results
 
+    # docs/live-smoke-results.md (the pre-rename dated results page) was retired;
+    # the smoke guide is now the single linked smoke surface.
     assert "live-agent-smoke.md" in reference
     assert "docs/live-agent-smoke.md" in checklist
-    assert "live-smoke-results.md" in reference
-    assert "docs/live-smoke-results.md" in checklist
-    assert "docs/live-smoke-results.md" in guide
     assert "claude -p 'Reply with exactly: AGENT_CHRONICLE_CLAUDE_WRAP_OK'" in guide
     assert "--max-turns" not in guide
     assert "codex exec --sandbox read-only --ephemeral --skip-git-repo-check" in guide
@@ -822,18 +811,6 @@ def test_public_docs_include_live_agent_smoke_gate() -> None:
     assert "metadata.json" in guide
     assert "marker_found" in guide
     assert "metadata_ok" in guide
-    assert "Claude Code: passed" in results
-    assert "Codex: passed" in results
-    # Dated-evidence honesty: the recorded 2026-06-27 markers predate the
-    # rename, so the preserved observations MUST keep the AGENT_SENTINEL_*
-    # spelling (the AGENT_CHRONICLE_* markers did not exist yet).
-    assert "AGENT_SENTINEL_CLAUDE_WRAP_OK" in results
-    assert "AGENT_SENTINEL_CODEX_WRAP_OK" in results
-    assert "AGENT_CHRONICLE_CLAUDE_WRAP_OK" not in results
-    assert "AGENT_CHRONICLE_CODEX_WRAP_OK" not in results
-    assert "automatically monitors Claude Code or Codex sessions launched outside Chronicle" in results
-    assert "/tmp/agent-" not in results
-    assert "session id" not in results.lower()
 
 
 def test_public_docs_include_explicit_command_wrappers_without_overclaiming() -> None:
@@ -857,34 +834,16 @@ def test_public_docs_record_mcp_client_smoke_success_without_overclaiming() -> N
     # docs/, without the "docs/" prefix).
     reference = Path("docs/reference.md").read_text()
     checklist = Path("docs/public-alpha-checklist.md").read_text()
-    results = Path("docs/live-mcp-client-smoke-results.md").read_text()
-
+    # docs/live-mcp-client-smoke-results.md (the pre-rename dated results page)
+    # was retired; the current-voice claims below stay in reference/checklist.
     for text in (reference, checklist):
-        assert "live-mcp-client-smoke-results.md" in text
         assert "successfully called Sentinel MCP tools" in text or "smoke-tested as an MCP tool" in text
-    assert "sentinel_record_event" in checklist
-    assert "sentinel_attach_client_context" in checklist
-    assert "sentinel_record_section" in checklist
-    assert "sentinel_record_agent_usage_debug" in checklist
-    assert "sentinel_get_event_summary" in checklist
+    assert "agentacct_record_event" in checklist
+    assert "agentacct_attach_client_context" in checklist
+    assert "agentacct_record_section" in checklist
+    assert "agentacct_record_agent_usage_debug" in checklist
+    assert "agentacct_get_event_summary" in checklist
     assert "local dashboard must aggregate those usage/context/debug events" in checklist
-
-    assert "Live MCP Client Smoke Results" in results
-    assert "Claude Code interactive MCP client: passed" in results
-    assert "Codex interactive MCP client: passed" in results
-    assert "2026-07-02 semantic context dogfood result" in results
-    assert "Codex semantic MCP transport: passed" in results
-    assert "Claude Code semantic MCP transport: passed" in results
-    assert "client_context_attached" in results
-    assert "section_checkpoint" in results
-    assert "raw JSON-RPC objects over stdio" in results
-    assert "Content-Length framed JSON-RPC" in results
-    assert "Agent Chronicle has been smoke-tested as an MCP tool inside real interactive Claude Code and Codex sessions" in results
-    assert "Agent Chronicle automatically tracks every Claude Code/Codex session without configuration" in results
-    assert "reads exact Claude Code/Codex/ChatGPT subscription billing" in results
-    assert "/tmp/agent-" not in results
-    assert "session id" not in results.lower()
-    assert "session IDs" not in results
 
 
 def test_mcp_doctor_warns_when_client_context_is_not_joinable(tmp_path: Path) -> None:

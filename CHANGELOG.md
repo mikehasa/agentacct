@@ -610,7 +610,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.0
 [0.8.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.8.1
 [0.8.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.8.0
 [0.7.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.7.0

@@ -1,22 +1,22 @@
 # Safety Boundaries
 
-Agent Chronicle is intentionally conservative in the early alpha.
+agentacct is intentionally conservative in the early alpha.
 
 The core rule is:
 
 ```text
-Only control work that Chronicle explicitly starts and records.
+Only control work that agentacct explicitly starts and records.
 ```
 
-## What Chronicle does
+## What agentacct does
 
-Chronicle can:
+agentacct can:
 
-- start a command under Chronicle ownership
+- start a command under agentacct ownership
 - record stdout, stderr, runtime metadata, and reports
-- pause/resume/kill Chronicle-owned process groups
+- pause/resume/kill agentacct-owned process groups
 - detect simple repeated-error and timeout patterns
-- record cost events for model/API calls routed through Chronicle surfaces
+- record cost events for model/API calls routed through agentacct surfaces
 - prepare isolated judge packages
 - run opt-in, budget-gated OpenRouter judge scoring
 - compute advisory value scores from existing evidence
@@ -24,9 +24,9 @@ Chronicle can:
 - append metadata-only multi-source evidence to a local durable spool
 - parse explicitly supplied OpenLIT/OTLP, Paperclip, and Entire Git evidence through read-only adapters
 
-## What Chronicle does not do
+## What agentacct does not do
 
-Chronicle does not:
+agentacct does not:
 
 - scan your machine for existing agent processes
 - attach to existing Hermes, Claude Code, Codex, Cursor, OpenCode, or other agent sessions
@@ -46,7 +46,7 @@ Paid model calls are opt-in.
 For provider forwarding or judge scoring, use a low-limit key and a local budget cap:
 
 ```bash
-agent-chronicle judge run latest \
+agentacct judge run latest \
   --model openai/gpt-4o-mini \
   --max-total-usd 0.01
 ```
@@ -55,11 +55,11 @@ Recommended safeguards:
 
 - use a dedicated test key
 - set a provider-side account cap
-- set a Chronicle-side per-request or per-run budget depending on the surface
+- set a agentacct-side per-request or per-run budget depending on the surface
 - start with cheap or free models
 - review generated judge packages before using them for important decisions
 
-For `agent-chronicle judge run`, `--max-total-usd` is a per-request preflight budget for that judge call. It checks the estimated judge request before sending it upstream; historical cost events in the same local store do not consume this per-request limit.
+For `agentacct judge run`, `--max-total-usd` is a per-request preflight budget for that judge call. It checks the estimated judge request before sending it upstream; historical cost events in the same local store do not consume this per-request limit.
 
 The cost proxy is local-only by default and refuses non-local bind hosts. Do not expose it on `0.0.0.0` or a public interface without adding authentication and an intentionally reviewed deployment boundary.
 
@@ -73,7 +73,7 @@ AGENTACCT_OPENROUTER_API_KEY
 
 Do not paste real keys into docs, reports, issues, or PR comments.
 
-Chronicle reports and ledgers should contain metadata and cost events, not raw secrets.
+agentacct reports and ledgers should contain metadata and cost events, not raw secrets.
 
 ## Report sharing safety
 
@@ -98,7 +98,7 @@ The MCP server currently exposes safe local tools only:
 - prepare judge package
 - compute value score from existing evidence
 
-It does not expose a paid `sentinel_run_judge` tool.
+It does not expose a paid `agentacct_run_judge` tool.
 
 This is intentional: agent integrations should be able to inspect evidence without silently spending money.
 
@@ -124,9 +124,9 @@ The Claude Code hook installer writes project-local files:
 
 Review the example settings before copying them into any active agent runtime configuration.
 
-Hook commands must work without your shell profile PATH. Claude Code sessions (especially the desktop app) often run hook commands in a minimal environment where a virtualenv-only `agent-chronicle` or a bare `python` is not resolvable. The installer therefore embeds absolute paths resolved at install time: the wrapper records the absolute path of the running `agent-chronicle` executable (with a bare-name PATH fallback for relocated projects), and the example settings invoke the wrapper with the absolute path of the installing Python interpreter. The default project install addresses the wrapper via `$CLAUDE_PROJECT_DIR`; with `--user-settings-example` (the global-install path) the printed and written example settings instead address the wrapper by its absolute path — `$CLAUDE_PROJECT_DIR` is a project-scope variable that does not exist for user-level `~/.claude/settings.json`.
+Hook commands must work without your shell profile PATH. Claude Code sessions (especially the desktop app) often run hook commands in a minimal environment where a virtualenv-only `agentacct` or a bare `python` is not resolvable. The installer therefore embeds absolute paths resolved at install time: the wrapper records the absolute path of the running `agentacct` executable (with a bare-name PATH fallback for relocated projects), and the example settings invoke the wrapper with the absolute path of the installing Python interpreter. The default project install addresses the wrapper via `$CLAUDE_PROJECT_DIR`; with `--user-settings-example` (the global-install path) the printed and written example settings instead address the wrapper by its absolute path — `$CLAUDE_PROJECT_DIR` is a project-scope variable that does not exist for user-level `~/.claude/settings.json`.
 
-The wrapper fails open: if no `agent-chronicle` executable can be started, or the CLI exits without producing a decision, or the wrapper itself hits an unexpected error, the wrapper prints an explicit `allow` decision and exits 0. A broken or moved Chronicle install must never break — or silently block — the user's tool calls; the capture layer is an adapter, not a gate. `agent-chronicle hooks claude-code doctor` reports hook executables that cannot resolve, covering the wrapper, the example settings, and any active `.claude/settings.json` / `.claude/settings.local.json`. The generated hook command and the doctor's command analysis assume a POSIX shell (macOS, Linux, WSL); doctor flags Windows-style commands as unverifiable rather than guessing.
+The wrapper fails open: if no `agentacct` executable can be started, or the CLI exits without producing a decision, or the wrapper itself hits an unexpected error, the wrapper prints an explicit `allow` decision and exits 0. A broken or moved agentacct install must never break — or silently block — the user's tool calls; the capture layer is an adapter, not a gate. `agentacct hooks claude-code doctor` reports hook executables that cannot resolve, covering the wrapper, the example settings, and any active `.claude/settings.json` / `.claude/settings.local.json`. The generated hook command and the doctor's command analysis assume a POSIX shell (macOS, Linux, WSL); doctor flags Windows-style commands as unverifiable rather than guessing.
 
 ## Connector and OTLP safety
 
@@ -134,7 +134,7 @@ The wrapper fails open: if no `agent-chronicle` executable can be started, or th
 - Capture payloads are bounded to 1 MiB; connector JSON is bounded to 4 MiB.
 - OpenLIT/OTLP attributes pass through a metadata allowlist; OTLP is a
   transport, not automatic billing authority.
-- Paperclip input is an exported snapshot. Chronicle has no Paperclip
+- Paperclip input is an exported snapshot. agentacct has no Paperclip
   credential or mutation method.
 - Entire reads only known public refs, commit metadata/trailers, and allowlisted
   metadata scalars using non-mutating Git commands. It does not change refs,
@@ -143,7 +143,7 @@ The wrapper fails open: if no `agent-chronicle` executable can be started, or th
   `external_action_dispatched=false`.
 
 OpenLIT is Apache-2.0; Paperclip and Entire are MIT at the pinned commits in
-[integration-license-bom.md](integration-license-bom.md). Chronicle copies no
+[integration-license-bom.md](integration-license-bom.md). agentacct copies no
 upstream implementation code in these adapters.
 
 ## Value-score safety

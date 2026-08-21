@@ -65,9 +65,6 @@ agentacct = "agentacct.cli:app"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.setuptools.package-data]
-"agentacct.canonical" = ["schema.sql"]
-
 [tool.pytest.ini_options]
 # Include the repo root ("." after src) so cross-test helper imports like
 # `from tests.test_client_usage import ...` resolve under a plain `pytest -q`

@@ -1,10 +1,13 @@
-# agentacct — the menu bar app (skeleton)
+# agentacct — the macOS app
 
-A thin SwiftUI `MenuBarExtra` shell over the daemon's `/v1` lane: today's cost
-in the menu bar; usage windows, provider limit bars, plan-calibration status,
-and recent sessions (with per-session weekly-plan share where calibrated) in
-the dropdown. All aggregation and honesty logic stays in the Python daemon —
-this app only renders what `/v1/glance` vouches for.
+A SwiftUI macOS app over the daemon's `/v1` lane. The menu bar shows today's
+cost at a glance; its dropdown carries usage windows, provider limit bars,
+plan-calibration status, and recent sessions (with per-session weekly-plan
+share where calibrated). Click through to the full window: a **Dashboard**
+home, a Task-primary **Work** pane whose centerpiece is the **Work Receipt**
+for each task, a **Usage** pane (by agent and by model), and a **Limits** pane.
+All aggregation and honesty logic stays in the Python daemon — the app only
+renders what `/v1` vouches for.
 
 ## How it connects
 
@@ -37,9 +40,10 @@ Or during development: `swift run` (menu bar item appears; Ctrl-C to quit).
       root-only recent sessions with status glyphs and calibrated-only plan
       shares · refresh spinner + updated-ago · click a session to open the
       full window
-- [x] the full window: Sessions (root list → detail: usage, work items with
-      check evidence, attribution, subagent rollup) · Usage by agent and by
-      model (30d cube) · Limits with a show-stale toggle
+- [x] the full window: a Dashboard home · a Task-primary Work pane (root task
+      list → Work Receipt detail: what ran, files touched, tools, usage, work
+      items with check evidence, attribution, subagent rollup) · Usage by agent
+      and by model (30d cube) · Limits with a show-stale toggle
 - [ ] adaptive poll cadence (menu-open recency / Low Power Mode — CodexBar's
       2–30 min policy)
 - [ ] usage window picker (7d/30d/all), per-session plan share in the window

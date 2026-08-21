@@ -93,36 +93,6 @@ def _disable_pricing_auto_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _pin_canonical_live_flag_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the suite deterministic under an ambient canonical-live flag.
-
-    A developer shell exporting AGENT_CHRONICLE_CANONICAL_LIVE_WRITE=1 would
-    otherwise flip every SentinelService in the suite into shadow-writing
-    (and fail the flag-off byte-identity tests). Tests exercise the shadow
-    through the constructor override or an explicit ``monkeypatch.setenv``.
-    """
-
-    monkeypatch.delenv("AGENTACCT_CANONICAL_LIVE_WRITE", raising=False)
-    monkeypatch.delenv("AGENT_CHRONICLE_CANONICAL_LIVE_WRITE", raising=False)
-    monkeypatch.delenv("AGENT_SENTINEL_CANONICAL_LIVE_WRITE", raising=False)
-
-
-@pytest.fixture(autouse=True)
-def _pin_canonical_read_flag_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Same determinism guard for the phase-4 canonical READ flag.
-
-    An ambient AGENT_CHRONICLE_CANONICAL_READ export would flip every read
-    surface in the suite onto the canonical path (and fail the flag-off
-    byte-identity tests). Tests exercise the reader through the constructor
-    override or an explicit ``monkeypatch.setenv``.
-    """
-
-    monkeypatch.delenv("AGENTACCT_CANONICAL_READ", raising=False)
-    monkeypatch.delenv("AGENT_CHRONICLE_CANONICAL_READ", raising=False)
-    monkeypatch.delenv("AGENT_SENTINEL_CANONICAL_READ", raising=False)
-
-
-@pytest.fixture(autouse=True)
 def _pin_event_log_authoritative_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """Start every test at the product default: the SQLite log is authoritative.
 

@@ -179,7 +179,7 @@ agentacct wrote artifacts, but the metadata did not prove ownership and successf
 
 ## Latest sanitized result
 
-The latest maintainer release-gate run is recorded in [`docs/live-smoke-results.md`](live-smoke-results.md). Keep that page sanitized: no local temp paths, process IDs, agent session IDs, account identifiers, or raw credential-bearing logs.
+Record each maintainer release-gate run as a sanitized local note: no local temp paths, process IDs, agent session IDs, account identifiers, or raw credential-bearing logs.
 
 ## Release checklist
 

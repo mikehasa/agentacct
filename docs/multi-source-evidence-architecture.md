@@ -6,8 +6,8 @@ Last updated: 2026-07-23
 
 ## Decision
 
-Agent Chronicle will present one evidence product while keeping a federated
-implementation. Chronicle remains the evidence and reconciliation kernel.
+agentacct will present one evidence product while keeping a federated
+implementation. agentacct remains the evidence and reconciliation kernel.
 Mechanical client hooks, native client logs, OTLP, orchestrators, Git, CI, MCP,
 and provider records are independent sources which make bounded claims.
 
@@ -46,7 +46,7 @@ This architecture follows four rules:
 
 ## Product boundaries
 
-### Chronicle owns
+### agentacct owns
 
 - stable local Task identity and explicit continuation/merge history;
 - immutable evidence envelopes and source provenance;
@@ -56,7 +56,7 @@ This architecture follows four rules:
 - cost, usage, outcome, and artifact basis labels;
 - local-first privacy defaults;
 - advisory policy signals derived from reconciled evidence;
-- a local control plane for Tasks and execution processes Chronicle itself
+- a local control plane for Tasks and execution processes agentacct itself
   launches, including attempts, approvals, budgets, schedules, and registered
   workspaces.
 
@@ -70,8 +70,8 @@ This architecture follows four rules:
 - CI systems: objective check execution and status;
 - host agents: lifecycle hooks and local transcripts/rollouts.
 
-Chronicle does not take over or mutate their processes. Its local control plane
-is not a Paperclip clone: Chronicle controls only Chronicle-owned executions
+agentacct does not take over or mutate their processes. Its local control plane
+is not a Paperclip clone: agentacct controls only agentacct-owned executions
 and projects their actions into the same Task/evidence model. It does not copy
 multi-tenant organization charts, RBAC, generic project management, tracing
 backends, code review workflows, or provider billing portals.
@@ -111,7 +111,7 @@ The envelope distinguishes facts from assertions:
 
 - `observation`: a source mechanically measured or saw something;
 - `claim`: a source or agent asserted meaning, ownership, completion, or cost;
-- `derived`: Chronicle produced a reversible projection from immutable inputs.
+- `derived`: agentacct produced a reversible projection from immutable inputs.
 
 An adapter may not label an event `observation` when it only received a user or
 agent assertion. The store rejects invalid combinations rather than silently
@@ -161,13 +161,13 @@ Hard invariants:
 | CI check | corroborating | unavailable | unavailable | unavailable | corroborating | primary machine result | unavailable |
 | Provider response | unavailable | unavailable | primary provider-reported | primary only when explicitly billed | unavailable | unavailable | unavailable |
 | Provider invoice | unavailable | unavailable | aggregate/limited | primary billed | unavailable | unavailable | unavailable |
-| Chronicle wrapper | primary for owned process | unavailable | unavailable | unavailable | corroborating | primary exit result | primary only for owned process |
+| agentacct wrapper | primary for owned process | unavailable | unavailable | unavailable | corroborating | primary exit result | primary only for owned process |
 
-When two sources disagree about the same narrowly identified fact Chronicle
+When two sources disagree about the same narrowly identified fact agentacct
 preserves both envelopes and creates a discrepancy. A whole session or run is
 not one immutable fact: sequential usage totals, changing lifecycle states,
 and repeated checks are compared only when they share a request/span/tool fact,
-an explicit measurement window, or the exact same event point. Chronicle does
+an explicit measurement window, or the exact same event point. agentacct does
 not choose a winner outside the declared dimension policy.
 
 ## Capture contract
@@ -193,7 +193,7 @@ Hook execution follows a local-first hot-path contract:
 4. append to the local durable spool;
 5. return without rebuilding the dashboard or making a network request.
 
-Capture is fail-open for the host. A broken Chronicle adapter must not block the
+Capture is fail-open for the host. A broken agentacct adapter must not block the
 developer's agent. The failure is recorded locally when possible and exposed by
 doctor/status commands.
 
@@ -211,7 +211,7 @@ command category is recognized as test, build, lint, or typecheck. Text such as
 
 ## Work Event contract
 
-The semantic model is transport-neutral. Existing `sentinel_*` MCP tools remain
+The semantic model is transport-neutral. Existing `agentacct_*` MCP tools remain
 compatible and write Work Events through the same normalization boundary as
 HTTP or orchestrator imports.
 
@@ -292,7 +292,7 @@ does not manufacture a new client-usage fact, while changed client-reported
 cost or changed evidence lineage does.
 
 Transitions are ordered only by a source-native revision/update watermark,
-never by the random v1 event id, Chronicle scan time, or server write time. A
+never by the random v1 event id, agentacct scan time, or server write time. A
 different revision with no comparable source order is retained as a conflict
 rather than guessed into sequence:
 
@@ -313,7 +313,7 @@ a complete, successful, authoritative snapshot of the current trusted v1
 ledger. A partial, limited, failed, or corrupt scan may project observed rows,
 but absence in that scan is never deletion evidence.
 
-After every successful persisted watcher tick, Chronicle reconciles the full
+After every successful persisted watcher tick, agentacct reconciles the full
 current trusted usage slice in `events.jsonl`, not only rows rewritten during
 that tick. This makes a prior fail-open Evidence shadow error self-healing on
 the next good tick. Broken ticks retain the previous head and cannot create
@@ -341,12 +341,12 @@ archives until an owner accepts the rebuilt store.
 
 The first connector is read-only. Exported/API snapshots map company, agent,
 issue, task, run, work product, and reported cost into orchestrator claims.
-`null` cost remains missing; it is never rendered as zero. Chronicle sends no
+`null` cost remains missing; it is never rendered as zero. agentacct sends no
 pause, cancel, approval, or machine-check update by default.
 
 ### OpenLIT / OTLP
 
-Chronicle accepts OTLP JSON traces and maps only allowlisted resource/span
+agentacct accepts OTLP JSON traces and maps only allowlisted resource/span
 attributes. Prompt, response, thought, tool arguments, and tool results are
 dropped by default. OpenLIT-specific fields are handled in the adapter, while
 standard OpenTelemetry identity is preserved. Duplicate and out-of-order spans
@@ -408,7 +408,7 @@ The primary projection follows additional honesty rules:
 
 ## Control bridge
 
-Phase 6 is advisory by default. Chronicle emits a structured `ControlSignal`
+Phase 6 is advisory by default. agentacct emits a structured `ControlSignal`
 with its supporting evidence, basis, confidence, expiry, and recommended action.
 Paperclip or another controller decides whether to act.
 
@@ -421,7 +421,7 @@ Hard enforcement is not eligible unless:
 - the target controller owns the execution; and
 - the signal is fresh, non-conflicting, and idempotent.
 
-Chronicle never pauses or cancels an external run merely because an orchestrator
+agentacct never pauses or cancels an external run merely because an orchestrator
 reported cost, an agent claimed completion, or an estimated price crossed a
 threshold.
 
@@ -447,7 +447,7 @@ capture adapter; current local import/MCP paths remain intact.
 ### Phase 3: transport-neutral Work Events
 
 Route semantic events through a common normalization service while preserving
-all public `sentinel_*` names and v1 writes. Disable shadow normalization to use
+all public `agentacct_*` names and v1 writes. Disable shadow normalization to use
 only the existing MCP/API path.
 
 ### Phase 4: read-only connectors
@@ -519,8 +519,8 @@ work meaning when it fires; the bridge does not synthesize it.
 - replacing MCP with hooks;
 - copying OpenLIT's storage/dashboard platform;
 - copying Paperclip's multi-tenant scheduler, RBAC, organization hierarchy, or
-  generic project-management UI. Chronicle may implement local approvals,
-  registered workspaces, and bounded schedules for Chronicle-owned attempts;
+  generic project-management UI. agentacct may implement local approvals,
+  registered workspaces, and bounded schedules for agentacct-owned attempts;
 - copying Entire's resume, Trails, or transcript archive workflows;
 - storing full prompts, responses, thoughts, transcripts, or tool bodies by
   default;

@@ -124,7 +124,7 @@ The per-client join mechanics, confidence-label glossary, daily workflow, MCP to
 - [Multi-source privacy threat model](docs/multi-source-privacy-threat-model.md)
 - [Safety boundaries](docs/safety-boundaries.md)
 - [Full flow demo](docs/full-demo.md)
-- [Live smoke evidence](docs/live-smoke-results.md)
+- [Live smoke test guide](docs/live-agent-smoke.md)
 - [Public alpha checklist](docs/public-alpha-checklist.md)
 
 ## Development
