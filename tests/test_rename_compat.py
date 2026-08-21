@@ -721,9 +721,6 @@ _ALLOWED_BARE_BRAND_TOKENS = (
     '"# Agent Sentinel"',
     '"Agent Sentinel"',  # comments naming the legacy section spelling
     "Agent Sentinel to Agent Chronicle",  # the rename note itself (env_compat)
-    # Quoted preserved dated evidence (docs/public-alpha-checklist.md keeps
-    # the observed wording of the pre-rename MCP client probe).
-    "successfully called Sentinel MCP tools",
 )
 
 
@@ -750,7 +747,6 @@ def test_bare_brand_word_is_gone_from_python_sources() -> None:
 # PROGRESS.md is preserved history.
 _DATED_EVIDENCE_DOCS = {
     "docs/coding-agent-integrations.md",
-    "docs/public-alpha-checklist.md",
 }
 
 _ALLOWED_DOC_BRAND_TOKENS = (

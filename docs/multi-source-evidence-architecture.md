@@ -8,8 +8,8 @@ Last updated: 2026-07-23
 
 agentacct will present one evidence product while keeping a federated
 implementation. agentacct remains the evidence and reconciliation kernel.
-Mechanical client hooks, native client logs, OTLP, orchestrators, Git, CI, MCP,
-and provider records are independent sources which make bounded claims.
+Mechanical client hooks, native client logs, CI, MCP, and provider records are
+independent sources which make bounded claims.
 
 MCP remains a first-class, high-value semantic source. It is not removed or
 replaced. It also is not required for a client session, tool call, usage record,
@@ -17,23 +17,23 @@ or machine result to exist. When MCP is unavailable, the product must still show
 the mechanically observed activity and explicitly mark work meaning as missing.
 
 ```text
-native logs       host hooks       OTLP       orchestrator       Git / CI
-     |                 |             |              |                |
-     +-----------------+-------------+--------------+----------------+
-                                       |
-                              durable raw spool
-                                       |
-                              versioned adapters
-                                       |
-                         immutable EvidenceEnvelope v2
-                                       |
-                      source policy + identity reconciliation
-                                       ^
-                                       |
-                           MCP / Work Event semantics
-                                       |
-                                       v
-       Work Graph | Evidence Matrix | Discrepancies | Cost & Outcome Basis
+native logs       host hooks       CI
+     |                 |            |
+     +-----------------+------------+
+                       |
+              durable raw spool
+                       |
+              versioned adapters
+                       |
+         immutable EvidenceEnvelope v2
+                       |
+    source policy + identity reconciliation
+                       ^
+                       |
+           MCP / Work Event semantics
+                       |
+                       v
+   Work Graph | Evidence Matrix | Discrepancies | Cost & Outcome Basis
 ```
 
 This architecture follows four rules:
@@ -62,24 +62,19 @@ This architecture follows four rules:
 
 ### Integrated systems keep owning
 
-- Paperclip: its own task assignment, run control, approvals, budgets, and
-  workspaces. The Paperclip connector remains read-only;
-- OpenLIT and native telemetry: runtime observation and OTLP transport;
-- Entire: Git checkpoints, artifacts, trails, and resume workflows;
 - model providers: provider usage and billing records;
 - CI systems: objective check execution and status;
 - host agents: lifecycle hooks and local transcripts/rollouts.
 
 agentacct does not take over or mutate their processes. Its local control plane
-is not a Paperclip clone: agentacct controls only agentacct-owned executions
-and projects their actions into the same Task/evidence model. It does not copy
+controls only agentacct-owned executions and projects their actions into the
+same Task/evidence model. It does not copy
 multi-tenant organization charts, RBAC, generic project management, tracing
 backends, code review workflows, or provider billing portals.
 
 ## EvidenceEnvelope v2 contract
 
-Every source normalizes into a vendor-neutral envelope. The core schema never
-adds `paperclip_*`, `openlit_*`, or `entire_*` fields.
+Every source normalizes into a vendor-neutral envelope.
 
 Required identity and provenance:
 
@@ -103,9 +98,8 @@ work item, execution, client session, turn, tool call, trace, span, artifact,
 commit, pull request, machine check, provider account, or billing record.
 An identifier is never global by spelling alone. Product projections namespace
 it by its issuing system, organization/project scope, and (except for native
-client-issued ids) source instance. Equal raw ids from Paperclip, OpenLIT, a
-provider, or another project remain separate until a validated `ClaimedLink`
-connects their evidence.
+client-issued ids) source instance. Equal raw ids from a provider or another
+project remain separate until a validated `ClaimedLink` connects their evidence.
 
 The envelope distinguishes facts from assertions:
 
@@ -138,10 +132,7 @@ Hard invariants:
 - a conflict vetoes exact attribution;
 - candidate count greater than one is ambiguous unless an independent exact key
   disambiguates it;
-- an orchestrator can prove its own task-to-run assignment but not the complete
-  provider cost of that run;
 - a native usage log can prove session usage but not the business goal;
-- Git proves that an object exists, not which prompt caused each line;
 - MCP proves an agent-reported semantic statement, not provider billing.
 
 ## Source authority by dimension
@@ -154,14 +145,10 @@ Hard invariants:
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Native host hook | primary | unavailable | unavailable | unavailable | corroborating | corroborating when exit status is observed | unavailable |
 | Native client log | primary | limited | primary client-reported | estimated or client-reported | corroborating | unavailable | unavailable |
-| Native/provider OTLP | primary | limited | primary when provider/client measured | basis-specific | corroborating | corroborating | unavailable |
 | MCP Work Event | corroborating | primary claim | debug-only unless independently measured | debug-only | claim-only | claim-only unless linked to machine evidence | unavailable |
-| Paperclip | primary for its assignment | primary orchestrator claim | claim-only | claim-only | claim-only | claim-only | primary for its own runtime |
-| Entire Git | unavailable | heuristic | unavailable | unavailable | primary Git object | corroborating | unavailable |
 | CI check | corroborating | unavailable | unavailable | unavailable | corroborating | primary machine result | unavailable |
 | Provider response | unavailable | unavailable | primary provider-reported | primary only when explicitly billed | unavailable | unavailable | unavailable |
 | Provider invoice | unavailable | unavailable | aggregate/limited | primary billed | unavailable | unavailable | unavailable |
-| agentacct wrapper | primary for owned process | unavailable | unavailable | unavailable | corroborating | primary exit result | primary only for owned process |
 
 When two sources disagree about the same narrowly identified fact agentacct
 preserves both envelopes and creates a discrepancy. A whole session or run is
@@ -181,7 +168,6 @@ Each adapter declares capabilities independently:
 - subagents;
 - machine results;
 - usage and cost;
-- native OTLP;
 - stable event identity;
 - completeness and truncation reporting.
 
@@ -213,7 +199,7 @@ command category is recognized as test, build, lint, or typecheck. Text such as
 
 The semantic model is transport-neutral. Existing `agentacct_*` MCP tools remain
 compatible and write Work Events through the same normalization boundary as
-HTTP or orchestrator imports.
+HTTP imports.
 
 A Work Event may express:
 
@@ -225,7 +211,7 @@ A Work Event may express:
 
 The transport is part of provenance. An HTTP event does not become MCP evidence,
 and an MCP event does not become a mechanical observation. No generic writer can
-mint trusted local-usage, hook-observed, CI, provider-billed, or Git provenance.
+mint trusted local-usage, hook-observed, CI, or provider-billed provenance.
 
 ## Storage and projection
 
@@ -242,7 +228,7 @@ Evidence v2 is a shadow layer during migration:
 - derived views can be deleted and rebuilt from the spool;
 - disabling v2 stops shadow writes without modifying v1 behavior.
 
-High-volume hook or OTLP events must never be appended directly to the current
+High-volume hook events must never be appended directly to the current
 v1 ledger. Retention and future downsampling apply to raw activity, never to
 provider billing or machine-outcome evidence without an explicit policy.
 
@@ -256,8 +242,8 @@ refresh turns an unchanged cumulative fact into unbounded raw Evidence versions.
 Evidence v2 therefore has one narrowly gated reconciliation lane for
 **trusted refreshable usage**. Only an allowlisted local usage importer may
 enter this lane, and only for cumulative current-state rows whose provenance
-and measurement basis pass source policy. A generic MCP, HTTP, connector, or
-Work Event cannot opt itself into this authority by copying metadata.
+and measurement basis pass source policy. A generic MCP, HTTP, or Work Event
+cannot opt itself into this authority by copying metadata.
 
 The stable slot key contains all of:
 
@@ -329,35 +315,11 @@ same-identity/different-content conflicts, and it does not use refreshable-slot
 coalescing.
 
 For a clean rebuild, original Codex, Claude, and Hermes logs plus the trusted
-`events.jsonl` ledger are the usage recovery inputs. Retained raw connector or
+`events.jsonl` ledger are the usage recovery inputs. Retained raw
 mechanical-capture inputs remain the recovery basis for their own evidence.
 Neither the inflated refresh history nor the SQLite projection is promoted to
 source truth merely because it is large; both old spools remain immutable
 archives until an owner accepts the rebuilt store.
-
-## Connector contracts
-
-### Paperclip
-
-The first connector is read-only. Exported/API snapshots map company, agent,
-issue, task, run, work product, and reported cost into orchestrator claims.
-`null` cost remains missing; it is never rendered as zero. agentacct sends no
-pause, cancel, approval, or machine-check update by default.
-
-### OpenLIT / OTLP
-
-agentacct accepts OTLP JSON traces and maps only allowlisted resource/span
-attributes. Prompt, response, thought, tool arguments, and tool results are
-dropped by default. OpenLIT-specific fields are handled in the adapter, while
-standard OpenTelemetry identity is preserved. Duplicate and out-of-order spans
-are expected.
-
-### Entire / Git
-
-The connector reads public Git objects, known refs, and commit trailers. It does
-not mutate refs or the worktree. Transcript ingestion has a separate opt-in and
-is off. Line/prompt attribution is heuristic. A session with no code change is
-not inferred to be complete merely because no checkpoint exists.
 
 ## Unified product views
 
@@ -371,8 +333,8 @@ dashboards:
 3. **Discrepancies**: duplicate, conflict, missing-basis, and completion/outcome
    mismatches without automatic coalescing.
 4. **Cost & Outcome Basis**: displayed numbers and statuses grouped by client
-   reported, estimated, provider reported, provider billed, orchestrator claim,
-   and objective machine evidence.
+   reported, estimated, provider reported, provider billed, and objective
+   machine evidence.
 
 The v1 dashboard remains available during the shadow period. The v2 views read
 the indexed projection and do not rebuild the entire event history per request.
@@ -394,7 +356,7 @@ navigation.
 
 The primary projection follows additional honesty rules:
 
-- source evidence proves historical coverage, never current connector health;
+- source evidence proves historical coverage, never current source health;
 - `connection_state=not_verified` is neither connected nor disconnected;
 - agent/MCP work meaning remains a claim until linked mechanical evidence
   supports it;
@@ -410,7 +372,7 @@ The primary projection follows additional honesty rules:
 
 Phase 6 is advisory by default. agentacct emits a structured `ControlSignal`
 with its supporting evidence, basis, confidence, expiry, and recommended action.
-Paperclip or another controller decides whether to act.
+Another controller decides whether to act.
 
 Hard enforcement is not eligible unless:
 
@@ -421,15 +383,16 @@ Hard enforcement is not eligible unless:
 - the target controller owns the execution; and
 - the signal is fresh, non-conflicting, and idempotent.
 
-agentacct never pauses or cancels an external run merely because an orchestrator
-reported cost, an agent claimed completion, or an estimated price crossed a
-threshold.
+agentacct never pauses or cancels an external run merely because an agent
+claimed completion or an estimated price crossed a threshold.
 
 ## Phase delivery and rollback
 
+> Phase 4 (read-only connectors) was removed in 0.9.1; the remaining phase numbers are unchanged.
+
 ### Phase 0: contracts
 
-Deliver this RFC, the privacy threat model, license BOM, and golden scenarios.
+Deliver this RFC, the privacy threat model, and golden scenarios.
 Rollback is documentation rejection; no runtime state changes.
 
 ### Phase 1: evidence shadow kernel
@@ -450,11 +413,6 @@ Route semantic events through a common normalization service while preserving
 all public `agentacct_*` names and v1 writes. Disable shadow normalization to use
 only the existing MCP/API path.
 
-### Phase 4: read-only connectors
-
-Deliver Paperclip snapshot, OpenLIT OTLP JSON, and Entire Git adapters. Each is
-independently disabled and has no upstream write permission.
-
 ### Phase 5: evidence product
 
 Deliver the four API/UI projections. A feature flag returns to the v1 dashboard;
@@ -472,7 +430,7 @@ Deliver the Work-first dashboard, actionable attention cards, human-readable
 work summaries with closed evidence explainers, honest historical source
 coverage, the Advanced inspection hub, and bounded evidence-event pagination.
 Rollback is presentation-only: all stable legacy routes and immutable evidence
-remain available, and no upstream connector or host configuration is changed.
+remain available, and no upstream host configuration is changed.
 
 ### Phase 7.1: product home and action ownership
 
@@ -511,17 +469,14 @@ work meaning when it fires; the bridge does not synthesize it.
 - MCP absence never means that work or usage did not exist;
 - an adapter cannot grant itself authority outside source policy;
 - disabling all v2 flags leaves v1 behavior and storage unchanged;
-- connector disablement does not affect the upstream system;
 - no integration introduces unknown or incompatible license material.
 
 ## Deliberate non-goals
 
 - replacing MCP with hooks;
-- copying OpenLIT's storage/dashboard platform;
-- copying Paperclip's multi-tenant scheduler, RBAC, organization hierarchy, or
+- building a multi-tenant scheduler, RBAC, organization hierarchy, or
   generic project-management UI. agentacct may implement local approvals,
   registered workspaces, and bounded schedules for agentacct-owned attempts;
-- copying Entire's resume, Trails, or transcript archive workflows;
 - storing full prompts, responses, thoughts, transcripts, or tool bodies by
   default;
 - treating telemetry volume as product value;

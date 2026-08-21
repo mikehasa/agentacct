@@ -4,7 +4,7 @@ agentacct is meant to fit inside normal coding-agent workflows. Most users run s
 
 This page separates the integration promises so the product does not imply more control or precision than it has.
 
-The current build is private and unpublished. Client support is capability-based, not a binary badge:
+Client support is capability-based, not a binary badge:
 
 | Client | MCP semantics | Local usage path | Mechanical activity | Current product result |
 | --- | --- | --- | --- | --- |
@@ -74,15 +74,11 @@ When both tiers are available, agentacct should use local usage import for token
 
 agentacct has metadata-only normalizers for selected Claude Code, Codex, and Cursor hook payloads. They remain adapter primitives, not automatic product integrations: onboarding does not install the generic manifests. When manually activated, successful capture writes Evidence v2 and a bounded session observation can appear as an activity-only homepage Task, including observed models and recognized checks. It never fabricates named work, token usage, or cost. The installed Claude Code context/directive bridge is a separate legacy path used for MCP joins.
 
-### Tier 4: provider/API proxy
-
-Provider/API proxy paths can enforce hard budget checks only when traffic flows through agentacct or when a provider returns reliable usage/cost data. This is opt-in and separate from MCP setup.
-
 ## Setup helpers
 
 All examples keep agentacct state project-local under `.agent-sentinel/state`.
 
-For a first project setup, the owner must provide an authorized local source checkout. Paste the private-build prompt into the coding agent already working in the target repo, and let it follow that checkout's local `INSTALL.md`. There is intentionally no public fetch URL yet.
+For a first project setup, install agentacct with `pipx install agentacct` and follow [`INSTALL.md`](../INSTALL.md), or paste the setup prompt into the coding agent already working in the target repo and let it follow the same runbook.
 
 Print the prompt for any recognized setup target (the short line is identical for all of them; `--full` prints the self-contained version):
 
@@ -201,16 +197,6 @@ Use the previewed stdio server definition in the agent's own project-local MCP c
 
 ## Maintainer real-client smoke results
 
-Repeatable command shape:
-
-```bash
-agentacct smoke mcp-client --client hermes --provider deepseek --i-understand-this-uses-real-api --json
-agentacct smoke mcp-client --client opencode --provider deepseek --i-understand-this-uses-real-api --json
-agentacct smoke mcp-client --client openclaw --provider deepseek --i-understand-this-uses-real-api --json
-```
-
-The acknowledgement flag is required because these smokes can spend real provider credits.
-
 Sanitized smoke results from 2026-06-28 on the maintainer VPS (observed pre-rename: the registration key and tool prefixes were `agent-sentinel`, preserved exactly as recorded):
 
 | Client | Provider credential path | Result | What was verified |
@@ -226,14 +212,14 @@ Blocked or not tested:
 - OpenClaw with Claude CLI was probed but blocked by OpenClaw isolated-profile gateway secret resolution, not by Sentinel MCP.
 - Raw OpenAI and Anthropic API-key tests were not run because no `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` was configured for these clients.
 
-These are MCP/event smokes. They prove the agents can discover/call agentacct MCP tools under the tested auth paths. They do not prove local token import for those clients, exact subscription billing, or hard budget enforcement outside agentacct-owned/proxy paths.
+These are MCP/event smokes. They prove the agents can discover/call agentacct MCP tools under the tested auth paths. They do not prove local token import for those clients, exact subscription billing, or hard budget enforcement outside agentacct-owned paths.
 
 ## What this does not claim
 
 - MCP setup does not automatically monitor all agent sessions.
 - MCP setup does not parse local token usage unless a client-specific importer exists.
 - MCP setup does not provide exact subscription billing.
-- agentacct can only pause/kill processes it launched and recorded as agentacct-owned, or enforce budgets on opt-in proxy paths.
+- agentacct can only pause/kill processes it launched and recorded as agentacct-owned.
 
 For normal Claude Code/Codex sessions, use local usage import for token summaries:
 
@@ -280,4 +266,4 @@ The import/watch contract, stated exactly:
 - **`--refresh` opts the CLI into the same replace semantics.** With `--refresh`, `usage import-local` and `usage watch` also replace re-observed rows with fresh totals on every scan — use it on a watch daemon when you want growing sessions' totals to stay current without the dashboard.
 - **One watch daemon per store is the recommended setup.** Concurrent importers (extra daemons, manual imports, dashboard clicks) are crash-safe — every writer serializes on an advisory file lock and replaces rather than duplicates — but they are redundant.
 - **Upgrade note:** a long-running `usage watch` daemon started on a build that predates `--refresh` keeps the once-only default behavior until restarted — harmless (totals and evidence links only lag; nothing is double-counted), but restart daemons on upgrade as usual.
-- **Upgrade note (localhost guard):** the local dashboard/API and cost proxy now reject any request whose `Host` header is not loopback (`localhost`/`127.0.0.1`/`[::1]`), to close DNS-rebinding and cross-site POSTs from the user's own browser. Non-browser clients are unaffected — they send no `Origin` — but a client that reaches the server through a NON-loopback hostname (for example a Docker container calling the host's proxy via `host.docker.internal`, or a custom hosts-file alias) now gets a `403` that names the fix: add that hostname with `--allow-host <name>` on `serve`/`api serve`/`cost proxy`.
+- **Upgrade note (localhost guard):** the local dashboard/API now rejects any request whose `Host` header is not loopback (`localhost`/`127.0.0.1`/`[::1]`), to close DNS-rebinding and cross-site POSTs from the user's own browser. Non-browser clients are unaffected — they send no `Origin` — but a client that reaches the server through a NON-loopback hostname (for example a Docker container calling the host via `host.docker.internal`, or a custom hosts-file alias) now gets a `403` that names the fix: add that hostname with `--allow-host <name>` on `serve`/`api serve`.

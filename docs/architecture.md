@@ -8,14 +8,14 @@ It is designed around one principle:
 Observe and control only the work agentacct owns.
 ```
 
-In the early alpha, agentacct does not scan or attach to arbitrary existing agent processes. It records runs it starts and accepts evidence only from explicitly configured local sources: client-log import, MCP, host hooks, OTLP, read-only connectors, local API, and CI.
+In the early alpha, agentacct does not scan or attach to arbitrary existing agent processes. It records runs it starts and accepts evidence only from explicitly configured local sources: client-log import, MCP, host hooks, local API, and CI.
 
 ## High-level flow
 
 ```text
-client logs  MCP claims  host hooks  OTLP  Paperclip  Entire Git  provider/CI
-     \          |          |          |       |           |           /
-      +---------+----------+----------+-------+-----------+----------+
+           client logs MCP claims  host hooks  provider/CI
+                \           |           |           /
+                +-----------+-----+-----+-----------+
                                   |
                        normalize + redact + preserve source
                                   |
@@ -49,13 +49,9 @@ It can:
 - initialize and validate project-local policy
 - show run reports
 - record outcome evidence
-- prepare isolated judge packages
-- run an opt-in OpenRouter judge
-- compute advisory value scores
 - serve the local API
 - serve MCP tools over stdio
 - render metadata-only Claude Code, Codex, and Cursor hook fragments without activating them
-- import OpenLIT/OTLP, Paperclip exports, and Entire Git checkpoints through read-only adapters
 - inspect/replay Evidence v2 through the Work-first dashboard, Advanced hub,
   and four stable evidence projections
 
@@ -73,7 +69,6 @@ The run store is a local directory of run artifacts. It contains files such as:
 - stdout/stderr logs
 - markdown reports
 - outcome evidence
-- judge packages
 - cost events
 
 By default this is local state, not a cloud service.
@@ -130,44 +125,9 @@ Examples:
 
 This is deliberately separate from subjective value judgment.
 
-### Judge package and judge scoring
+### Cost ledger
 
-agentacct can prepare an isolated judge package without spending money.
-
-```bash
-agentacct judge prepare latest
-```
-
-A paid LLM judge call is opt-in and budget-gated.
-
-```bash
-agentacct judge run latest --max-total-usd 0.01
-```
-
-The judge output is advisory. It is one signal, not ground truth.
-
-### Advisory value scoring
-
-Value scoring combines:
-
-- deliverable score
-- cost efficiency relative to the user's budget
-- machine-check evidence
-- risk penalties for introduced failures
-
-The score is meant to answer:
-
-```text
-Was this run worth it relative to what it cost?
-```
-
-It is transparent and human-overridable.
-
-### Cost proxy and ledger
-
-The cost proxy records local estimates, exact token usage when a provider returns it, and provider-reported dollar costs when available.
-
-Real forwarding is disabled by default. In this alpha, OpenRouter, OpenAI, and DeepSeek forwarding require explicit provider allowlists, provider keys, and a local `--max-total-usd` budget cap. Anthropic and Gemini have validation coverage but are not forwarding paths yet.
+The cost ledger records local estimates, exact token usage when a provider returns it, and provider-reported dollar costs when available.
 
 ### Local API
 
@@ -179,11 +139,10 @@ It binds to localhost by default:
 agentacct api serve --host 127.0.0.1 --port 8789
 ```
 
-It exposes report/outcome/value primitives, Evidence v2 inspection, bounded
-local capture, read-only connector ingestion, and an OTLP/HTTP JSON receiver.
-It does not call paid judge APIs.
+It exposes report/outcome primitives, Evidence v2 inspection, and bounded
+local capture. It does not call paid APIs.
 
-The API validates basic local inputs such as run IDs, list limits, and positive value-score budgets. Invalid client inputs return 422 responses.
+The API validates basic local inputs such as run IDs and list limits. Invalid client inputs return 422 responses.
 
 ### MCP server
 
@@ -203,8 +162,6 @@ Current MCP tools are safe/local:
 - `agentacct_record_agent_usage_debug`
 - `agentacct_list_events`
 - `agentacct_record_machine_check`
-- `agentacct_prepare_judge`
-- `agentacct_compute_value`
 
 The event tools read and write the v1 event ledger — by default the SQLite event
 log (`events.sqlite3`); set `AGENTACCT_EVENT_LOG_AUTHORITATIVE=0` for the legacy
@@ -253,7 +210,7 @@ agentacct is not currently:
 - a replacement for Claude Code/Codex permission systems
 - a system-wide process monitor
 - a multi-tenant organization/RBAC or generic project-management system
-- a controller for external Paperclip, Codex, or Claude processes
+- a controller for external Codex or Claude processes
 - a guarantee that an agent produced a useful outcome
 
 It is a local safety and evidence layer for agent runs you explicitly put under agentacct control.

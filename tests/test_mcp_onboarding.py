@@ -465,12 +465,8 @@ def test_public_docs_recommend_read_only_mcp_doctor() -> None:
 
 
 def test_docs_no_longer_claim_doctor_writes() -> None:
-    checklist = Path("docs/public-alpha-checklist.md").read_text()
     workflow = Path("docs/agentacct-workflow-instructions.md").read_text()
 
-    assert "`mcp doctor` is read-only by default" in checklist
-    assert "throwaway temp store" in checklist
-    assert "should write/read a safe local test event" not in checklist
     assert "read-only; it never writes to the ledger" in workflow
 
 
@@ -503,13 +499,11 @@ def test_readme_leads_with_work_intelligence_not_retired_framings() -> None:
 
 
 def test_retired_framings_gone_from_all_public_docs_the_checklist_claims() -> None:
-    # docs/public-alpha-checklist.md ticks "the retired 'black box recorder /
-    # circuit breaker' framing is gone from public docs". That evidence-cited
-    # checkbox is only true if the framing is gone from EVERY first-touch public
-    # doc a reader reaches from the README — not just the README first screen.
+    # The retired "black box recorder / circuit breaker / flight recorder"
+    # framings must be gone from EVERY first-touch public doc a reader reaches
+    # from the README — not just the README first screen.
     retired = ("circuit breaker", "circuit-breaker", "black box", "black-box", "flight recorder", "electric meter")
-    # The checklist itself NAMES the retired phrases when it claims they are
-    # gone; every OTHER public doc must be free of them.
+    # Every public doc must be free of them.
     public_docs = [
         Path("README.md"),
         Path("CONTRIBUTING.md"),
@@ -771,79 +765,6 @@ def test_full_demo_docs_list_event_mcp_tools() -> None:
     text = Path("docs/full-demo.md").read_text()
     assert "agentacct_record_event" in text
     assert "agentacct_list_events" in text
-
-
-def test_readme_links_public_alpha_checklist() -> None:
-    readme = Path("README.md").read_text()
-    checklist = Path("docs/public-alpha-checklist.md").read_text()
-
-    assert "docs/public-alpha-checklist.md" in readme
-    assert "Public Alpha Checklist" in checklist
-    assert "not include private strategy" in checklist
-
-
-def test_public_docs_include_live_agent_smoke_gate() -> None:
-    # The smoke-gate commands moved from the README to docs/reference.md in the
-    # value-first README rewrite.
-    reference = Path("docs/reference.md").read_text()
-    checklist = Path("docs/public-alpha-checklist.md").read_text()
-    guide = Path("docs/live-agent-smoke.md").read_text()
-    # The reference, the maintainer checklist, and the smoke guide are all
-    # rebranded to the public agentacct CLI for current recommendations.
-    assert "agentacct smoke claude-code" in reference
-    assert "agentacct smoke codex" in reference
-    assert "agentacct smoke all --json" in reference
-    for text in (checklist, guide):
-        assert "agentacct smoke claude-code" in text
-        assert "agentacct smoke codex" in text
-        assert "agentacct smoke all --json" in text
-    for text in (reference, checklist, guide):
-        assert "automatically monitors" in text
-
-    # docs/live-smoke-results.md (the pre-rename dated results page) was retired;
-    # the smoke guide is now the single linked smoke surface.
-    assert "live-agent-smoke.md" in reference
-    assert "docs/live-agent-smoke.md" in checklist
-    assert "claude -p 'Reply with exactly: AGENT_CHRONICLE_CLAUDE_WRAP_OK'" in guide
-    assert "--max-turns" not in guide
-    assert "codex exec --sandbox read-only --ephemeral --skip-git-repo-check" in guide
-    assert "stdout.log" in guide
-    assert "metadata.json" in guide
-    assert "marker_found" in guide
-    assert "metadata_ok" in guide
-
-
-def test_public_docs_include_explicit_command_wrappers_without_overclaiming() -> None:
-    # The wrapper-command reference moved from the README to docs/reference.md
-    # in the value-first README rewrite.
-    reference = Path("docs/reference.md").read_text()
-    checklist = Path("docs/public-alpha-checklist.md").read_text()
-
-    for text in (reference, checklist):
-        assert "agentacct-claude" in text
-        assert "agentacct-codex" in text
-    assert "explicit wrapper commands" in reference
-    assert "They do not automatically monitor Claude Code/Codex sessions started outside these wrapper commands" in reference
-    assert "do not provide exact subscription billing by themselves" in reference
-    assert "explicit opt-in wrappers" in checklist
-
-
-def test_public_docs_record_mcp_client_smoke_success_without_overclaiming() -> None:
-    # The smoke-evidence pointers moved from the README to docs/reference.md in
-    # the value-first README rewrite (which links the results page relative to
-    # docs/, without the "docs/" prefix).
-    reference = Path("docs/reference.md").read_text()
-    checklist = Path("docs/public-alpha-checklist.md").read_text()
-    # docs/live-mcp-client-smoke-results.md (the pre-rename dated results page)
-    # was retired; the current-voice claims below stay in reference/checklist.
-    for text in (reference, checklist):
-        assert "successfully called Sentinel MCP tools" in text or "smoke-tested as an MCP tool" in text
-    assert "agentacct_record_event" in checklist
-    assert "agentacct_attach_client_context" in checklist
-    assert "agentacct_record_section" in checklist
-    assert "agentacct_record_agent_usage_debug" in checklist
-    assert "agentacct_get_event_summary" in checklist
-    assert "local dashboard must aggregate those usage/context/debug events" in checklist
 
 
 def test_mcp_doctor_warns_when_client_context_is_not_joinable(tmp_path: Path) -> None:

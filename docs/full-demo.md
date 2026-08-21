@@ -6,7 +6,7 @@ For the shortest no-key demo, run:
 agentacct demo
 ```
 
-That command creates a local agentacct-owned run, writes report/evidence/value artifacts, and prints follow-up report/dashboard commands. Without `--store-dir` (or `AGENTACCT_STORE_DIR`), the demo always runs in a throwaway temporary store and says so — even from inside an initialized project. Pass `--store-dir .agent-sentinel/state` after `init` to keep demo runs. The longer walkthrough below shows the individual primitives behind that flow.
+That command creates a local agentacct-owned run, writes report/evidence artifacts, and prints follow-up report/dashboard commands. Without `--store-dir` (or `AGENTACCT_STORE_DIR`), the demo always runs in a throwaway temporary store and says so — even from inside an initialized project. Pass `--store-dir .agent-sentinel/state` after `init` to keep demo runs. The longer walkthrough below shows the individual primitives behind that flow.
 
 This demo validates agentacct's current product loop without touching real
 Hermes, Claude Code, Codex, or other existing agent processes.
@@ -18,9 +18,6 @@ It exercises:
 - local HTTP API
 - MCP tools over stdio
 - objective machine-check evidence
-- isolated judge-package preparation
-- optional OpenRouter judge scoring
-- advisory cost-adjusted value scoring
 
 The demo task is deterministic and safe: it prints progress, sleeps, and exits 0.
 
@@ -78,50 +75,7 @@ agentacct outcome record-machine-check "$RUN_ID" \
   --after-summary "demo check passed after the run"
 ```
 
-## 4. Prepare a judge package without spending money
-
-This creates an isolated prompt/package for an LLM judge. It does not call the
-LLM by itself.
-
-```bash
-agentacct judge prepare "$RUN_ID" \
-  --store-dir "$STORE_DIR" \
-  --task-goal "Validate the agentacct full-flow demo." \
-  --rubric "Score whether the run completed safely and produced useful evidence."
-```
-
-## 5. Optional: run the OpenRouter judge
-
-This is the only paid step. Use a low-limit test key and a small hard budget.
-
-```bash
-export AGENTACCT_OPENROUTER_API_KEY=<OPENROUTER_API_KEY>
-
-agentacct judge run "$RUN_ID" \
-  --store-dir "$STORE_DIR" \
-  --model openai/gpt-4o-mini \
-  --max-total-usd 0.01 \
-  --task-goal "Validate the agentacct full-flow demo." \
-  --rubric "Score whether the run completed safely and produced useful evidence."
-```
-
-## 6. Compute advisory value score
-
-```bash
-agentacct value compute "$RUN_ID" \
-  --store-dir "$STORE_DIR" \
-  --budget-usd 0.01 \
-  --json
-```
-
-The value score is advisory. It combines:
-
-- deliverable score from the judge
-- machine-check evidence
-- cost efficiency relative to your budget
-- risk penalties for introduced failures
-
-## 7. Verify the local API
+## 4. Verify the local API
 
 The local API binds to `127.0.0.1` by default.
 
@@ -137,10 +91,9 @@ curl http://127.0.0.1:8789/runs
 curl http://127.0.0.1:8789/runs/$RUN_ID/report
 ```
 
-## 8. Verify MCP tools
+## 5. Verify MCP tools
 
-The MCP server exposes safe local tools only. It does not expose a paid
-`agentacct_run_judge` tool.
+The MCP server exposes safe local tools only.
 
 ```bash
 agentacct mcp serve --store-dir "$STORE_DIR"
@@ -151,12 +104,12 @@ Current tools:
 - `agentacct_list_runs`
 - `agentacct_get_report`
 - `agentacct_record_event`
+- `agentacct_record_section`
 - `agentacct_list_events`
+- `agentacct_get_event_summary`
 - `agentacct_record_machine_check`
-- `agentacct_prepare_judge`
-- `agentacct_compute_value`
 
-## 9. Longer 10-minute-style run
+## 6. Longer 10-minute-style run
 
 For a longer validation similar to a real agent session:
 
@@ -168,4 +121,4 @@ agentacct run \
   -- python examples/full_demo_task.py --steps 18 --sleep-seconds 30
 ```
 
-That runs for about 9 minutes before report/API/MCP/judge/value follow-up steps.
+That runs for about 9 minutes before report/API/MCP follow-up steps.

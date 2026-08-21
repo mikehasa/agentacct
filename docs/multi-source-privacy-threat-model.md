@@ -19,7 +19,7 @@ The highest-risk data is:
 - source file contents and patches;
 - shell commands containing secrets;
 - transcript/rollout paths and raw logs;
-- provider API keys, cookies, auth headers, and connector tokens;
+- provider API keys, cookies, and auth headers;
 - user names, absolute home paths, repository remotes, and issue text;
 - billing account identifiers and invoice details.
 
@@ -32,8 +32,7 @@ evidence views.
 2. **Local adapter**: parses bounded input and removes non-allowlisted fields.
 3. **Raw spool**: local append-only metadata evidence, not raw host payloads.
 4. **Projection/API**: derived, queryable views with additional path redaction.
-5. **External connector**: untrusted schema and potentially compromised server.
-6. **Controller**: may act on a signal and therefore requires a stronger basis
+5. **Controller**: may act on a signal and therefore requires a stronger basis
    than an ordinary display claim.
 
 Provider and orchestrator records are trusted only for declared dimensions, not
@@ -59,7 +58,6 @@ Denied by default:
 - prompt, response, thought, transcript, tool input, or tool output;
 - source code, patch body, command stdout/stderr, or environment values;
 - authorization, cookie, secret, and token fields;
-- arbitrary OTLP attributes outside the adapter allowlist;
 - absolute paths when a repository-relative or basename representation exists.
 
 Unknown fields are denied. An upstream schema update cannot expand capture by
@@ -72,32 +70,27 @@ the caller opts in, but it never admits credential, header, cookie, secret, or
 | Threat | Consequence | Required mitigation |
 | --- | --- | --- |
 | Hook payload contains prompt/tool content | Private content persists locally or appears in UI | Per-adapter allowlist, deny unknown fields, privacy snapshot tests |
-| OTLP attributes contain headers or request bodies | Secrets enter the spool | Resource/span allowlist; key-pattern denylist; reject sensitive-field declaration mismatch |
-| External connector returns path traversal in IDs/refs | Read/write outside the local store | Treat IDs as data; strict path validation; connector is read-only |
 | Malicious event claims trusted provenance | Fake provider, CI, hook, or usage truth | Source policy and transport-specific constructors; generic writers cannot mint trusted source types |
 | Duplicate/out-of-order events | Double-counted usage/cost or false completion | Deterministic idempotency, append-only conflicts, ordered projections |
 | Source overwrites earlier evidence | Audit history is lost | Immutable envelope; superseding evidence is a new envelope |
 | Cross-session identifier collision | Work and usage attributed to wrong task | Canonically encoded issuer/organization/project/source-instance namespace, content-addressed graph nodes, conflict veto, no false exact |
 | Prompt text smuggled into a nominal ID | Content leak through metadata field | length/character bounds, digest opaque values, reject multiline IDs |
 | Absolute local paths exposed in API | User/workspace identity leak | path redaction and repository-relative projection |
-| Connector token appears in exception/log | Credential exposure | never serialize auth config; redact exception context; no token fields in models |
 | Raw spool is world-readable | Local user data disclosure | create directories/files with user-only permissions where supported |
 | Spool/index divergence after crash | Missing or inconsistent evidence | append then transactional index; replay from spool; integrity hashes |
 | Controller acts on stale/conflicting signal | Wrong run paused/cancelled | advisory default; expiry; supporting evidence; conflict and ownership checks |
 | MCP self-report treated as objective | False completion/cost claim | `claim` classification; separate machine/provider evidence |
-| Git connector reads Entire transcript refs | Transcript copied without consent | known metadata/trailer allowlist; transcript capability off by default |
 | Hook slows or blocks host agent | Developer workflow outage | bounded input; local append only; fail-open; no network/dashboard rebuild |
 
 ## Data minimization invariants
 
-- Store normalized evidence, not the original hook or connector response.
+- Store normalized evidence, not the original hook response.
 - `raw_ref` points only to a deliberately retained local object; it is absent in
   metadata-only mode.
 - `raw_digest` proves input identity without retaining its content.
 - Relative path lists are bounded and may be replaced by digests when large.
 - Semantic summaries are allowed only through explicit Work Event fields; they
   are never synthesized from prompt/response content.
-- The UI must not expose connector configuration or authentication values.
 
 ## Retention and deletion
 
@@ -108,15 +101,12 @@ Events, objective machine checks, and legal/audit holds require separate policy.
 
 Deleting a projection is safe because it can be rebuilt. Deleting immutable raw
 evidence is an explicit retention action and must never be disguised as replay,
-dedupe, connector disablement, or rollback.
+dedupe, or rollback.
 
 ## Network and configuration boundaries
 
 - Hook capture performs no network calls.
-- OTLP HTTP ingest binds to the same local-only API boundary by default.
-- Paperclip ingestion currently accepts an explicit exported JSON snapshot only; no API polling or credentials are implemented.
-- Entire integration reads the explicitly selected Git repository only.
-- No installer changes global Claude Code, Codex, Cursor, Git, or OTel config
+- No installer changes global Claude Code, Codex, Cursor, or Git config
   without a separate explicit user action.
 - No provider key is requested or read for evidence ingestion.
 
@@ -130,10 +120,8 @@ Release tests must prove:
    redacted;
 3. a duplicate payload is idempotent;
 4. a conflicting payload is preserved and surfaces a discrepancy;
-5. a corrupted/incomplete OTLP batch is partial, not silently complete;
-6. hooks return an allow/fail-open result when agentacct capture fails;
-7. no connector writes upstream or mutates Git;
-8. a control signal without an eligible basis cannot become hard enforcement.
+5. hooks return an allow/fail-open result when agentacct capture fails;
+6. a control signal without an eligible basis cannot become hard enforcement.
 
 ## Content-mode future work
 
