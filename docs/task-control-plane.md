@@ -2,7 +2,7 @@
 
 Status: implementation contract
 
-Agent Chronicle is organized around one durable product object: the Task.
+agentacct is organized around one durable product object: the Task.
 Client sessions, recorded sections, local usage, checks, artifacts, findings,
 approvals, schedules, and execution attempts are records attached to that Task;
 none of them becomes a second definition of the work.
@@ -23,15 +23,15 @@ Task state has three independent axes:
 - execution: whether an attempt is queued, running, finished, cancelled, or lost;
 - outcome: whether the target result is unknown, reported, verified, blocked, or
   has an open finding;
-- control: whether Chronicle is ready, awaiting approval, holding on policy, or
+- control: whether agentacct is ready, awaiting approval, holding on policy, or
   encountered a control failure.
 
 A failed target-product check is an outcome finding. It is not automatically a
-Chronicle failure or a user action.
+agentacct failure or a user action.
 
 ## Evidence and usage boundaries
 
-The Task detail page is a decision brief backed by an expandable evidence
+The Task detail view is a decision brief backed by an expandable evidence
 record. It shows what was attempted, what changed, what proves the result,
 usage/cost basis, unresolved findings, and a next action only when an owner was
 explicitly recorded.
@@ -39,46 +39,46 @@ explicitly recorded.
 Local client logs remain the usage truth. MCP remains the richest source of
 work meaning. Hooks, OTLP, connectors, CI, Git, and provider records keep their
 own provenance and per-dimension authority. Missing or ambiguous joins stay
-missing; Chronicle never allocates tokens to make a Task look complete.
+missing; agentacct never allocates tokens to make a Task look complete.
 
 ## Activation runtime
 
-`agent-chronicle onboard` composes existing project initialization, known local
+`agentacct onboard` composes existing project initialization, known local
 source detection, project-local recording configuration, one local usage import,
-and runtime startup. The managed runtime owns the dashboard and continuous usage
+and runtime startup. The managed runtime owns the local JSON API and continuous usage
 refresh with one absolute store. It survives the invoking shell and records a
 process fingerprint so `status`, `stop`, and `repair` never signal an unknown
 process.
 
-Setup success and first-Task success are separate. Chronicle says it is waiting
+Setup success and first-Task success are separate. agentacct says it is waiting
 until a real recognized client session appears after setup; demo rows never count.
 
 The preferred project-local flow is:
 
 ```bash
-agent-chronicle onboard
+agentacct onboard
 # Required: open a NEW recognized agent session in this project.
-agent-chronicle status
+agentacct status
 ```
 
 MCP servers and hooks bind at client-session start, so the session that runs
 onboarding cannot see the newly registered tools. The managed runtime is
-idempotently controlled with `agent-chronicle start`, `status`, `stop`, and
-`repair`; stop and repair never signal a process whose Chronicle ownership
+idempotently controlled with `agentacct start`, `status`, `stop`, and
+`repair`; stop and repair never signal a process whose agentacct ownership
 proof no longer matches. No step requires provider API keys or a billing
 connection. The older `init`, hook, import, watch, and `serve` commands remain
 available as an advanced/manual fallback.
 
-The default human and machine-readable Task detail routes are:
+The default Task detail endpoints on the local JSON API are:
 
 ```text
-http://127.0.0.1:8765/tasks/task_<opaque-id>
-http://127.0.0.1:8765/api/tasks/task_<opaque-id>
+GET http://127.0.0.1:8765/v1/receipt?task=task_<opaque-id>
+GET http://127.0.0.1:8765/v1/tasks
 ```
 
 ## Owned execution boundary
 
-The local control plane may launch and govern only executions Chronicle creates.
+The local control plane may launch and govern only executions agentacct creates.
 External Codex, Claude Code, Paperclip, OpenLIT, Entire, and provider processes
 remain observed-only connectors.
 
@@ -94,7 +94,7 @@ git/worktree state, and environment key names. Commands are argv arrays, never
 shell strings. If that agent registration changes after the attempt or its
 approval is created, the old attempt fails closed and a new attempt must freeze
 the new revision. Every process signal requires a matching PID birth time,
-process group, cwd, executable, launch nonce, and Chronicle ownership record.
+process group, cwd, executable, launch nonce, and agentacct ownership record.
 Unverifiable legacy processes are shown as lost and are never adopted.
 
 Operational authority lives in a dedicated append-only Control Store. Evidence
@@ -104,8 +104,8 @@ keys and expected revisions.
 
 ### Product and CLI workflow
 
-The dashboard exposes this as a fourth top-level area, **Control**. Creating a
-contract produces a pending attempt; it never starts a process. An observed
+The CLI (`agentacct control ...`) and the local `/v1` API expose this control
+surface. Creating a contract produces a pending attempt; it never starts a process. An observed
 Task becomes a controllable Task only when the user explicitly selects it while
 creating that contract. A planned Task receives the same opaque public id and
 opens through the normal Task Intelligence route.
@@ -113,13 +113,13 @@ opens through the normal Task Intelligence route.
 The minimal CLI setup is:
 
 ```bash
-agent-chronicle control register-workspace \
+agentacct control register-workspace \
   --store-dir .agent-sentinel/state --root . --workspace-id project
-agent-chronicle control register-agent \
+agentacct control register-agent \
   --store-dir .agent-sentinel/state \
   --agent-id local-agent --display-name "Local agent" \
   --argv-json '["/absolute/command","arg"]'
-agent-chronicle control plan \
+agentacct control plan \
   --store-dir .agent-sentinel/state \
   --objective "Run the bounded local task" \
   --workspace-id project --agent-id local-agent \
@@ -139,7 +139,7 @@ ready -> awaiting_approval -> request -> approve -> consume once -> ready
 
 The supervisor independently refuses to preflight any attempt whose control
 state is not `ready`, whose registered agent revision changed, or whose adapter
-is not Chronicle's `local_argv` + `subprocess` backend. A partial failure before
+is not agentacct's `local_argv` + `subprocess` backend. A partial failure before
 consumption therefore stays held; the caller never releases an attempt first
 and tries to consume approval afterward.
 
@@ -147,12 +147,12 @@ and tries to consume approval afterward.
 
 - The owned supervisor is POSIX-only: it relies on `flock`, process groups,
   `fork`, and Unix signals.
-- The web dashboard owns a persistent supervisor for its lifetime and recovers
-  durable owned attempts on startup. A CLI `control launch` stays in the
+- The managed runtime (the local daemon) owns a persistent supervisor for its
+  lifetime and recovers durable owned attempts on startup. A CLI `control launch` stays in the
   foreground until terminal; a one-shot CLI invocation never claims to be a
   background supervisor.
 - After a process exits while no supervisor can observe its exit status,
-  reconciliation reports `lost`; Chronicle never guesses success.
+  reconciliation reports `lost`; agentacct never guesses success.
 - Cancellation authority covers the exact owned process group. A child that
   intentionally detaches into another session is outside this controller's
   authority and is not adopted.

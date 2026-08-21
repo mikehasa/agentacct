@@ -193,7 +193,7 @@ _LOCAL_IMPORT_LIVE = _verification_record(
 _CORE_MCP_LIVE = _verification_record(
     "live_smoke",
     verified_at="2026-07-02",
-    evidence_refs=("docs/live-mcp-client-smoke-results.md#2026-07-02-semantic-context-dogfood-result",),
+    evidence_refs=("docs/coding-agent-integrations.md#maintainer-real-client-smoke-results",),
 )
 _SMALL_CLIENT_MCP_LIVE = _verification_record(
     "live_smoke",

@@ -5,7 +5,7 @@ The deep reference for agentacct: the daily workflow, confidence labels, MCP too
 ## What each client can claim
 
 <!-- Consistency contract: the capability matrix below is defined in
-     src/agent_chronicle/install_guide.py and embedded here verbatim, exactly as
+     src/agentacct/install_guide.py and embedded here verbatim, exactly as
      in INSTALL.md. tests/test_install_guide.py fails if this list drifts. -->
 
 - Claude Code: automatic high-confidence joins between usage and recorded work via the installed hook bridge (SessionStart and PreToolUse capture real session/transcript ids). Exact attribution still requires ids authored explicitly on the recording call; hook-derived ids are not bound to that MCP request. Recorded work context needs all three levers: the merged hooks settings entry including SessionStart (delivery — the SessionStart hook is the only path proven to make un-primed sessions record work, and it adds session-start/resume id capture; PreToolUse still captures the session/transcript ids on every tool call), `ENABLE_TOOL_SEARCH=auto` in the settings `env` block (discoverability — without it the agentacct tools stay deferred and un-primed sessions record nothing), and the hook bridge itself (join keys — without it recorded sections fall back to project-level context, never session-linked).
@@ -155,7 +155,7 @@ curl http://127.0.0.1:8765/events/summary
 
 `/events/summary?limit=N` keeps its recent-event aggregates bounded, but join-health counters and coverage ratios are computed over every matching event in the store. Machine consumers must inspect `result_scope.partial` and the bridge's `detail_scope.partial`: `links`, `attributions`, and `unlinked_contexts` may be capped even when the canonical full-store ratios are complete. A degraded response includes stable `degraded_reasons` instead of treating one successful join as healthy.
 
-Evidence v2 is additive and enabled by default. It shadows existing v1 writes; it does not replace `events.jsonl` or rename any public `sentinel_*` MCP tool. Inspect or replay it with:
+Evidence v2 is additive and enabled by default. It shadows existing v1 writes; it does not replace `events.jsonl` or rename any public `agentacct_*` MCP tool. Inspect or replay it with:
 
 ```bash
 agentacct evidence status --store-dir .agent-sentinel/state
@@ -267,7 +267,7 @@ It is not the same thing as MCP. MCP is an agent-to-tool protocol and is especia
 
 The onboarding helpers configure project-local recording. They do not mean agentacct automatically monitors every Claude Code/Codex/OpenCode/Hermes/OpenClaw session you start elsewhere.
 
-Maintainer smoke tests have verified minimal Claude Code and Codex runs, agentacct has been smoke-tested as an MCP tool inside real interactive Claude Code and Codex sessions, and Hermes/OpenCode/OpenClaw MCP setup commands have been maintainer-probed on the VPS. See [live-agent-smoke.md](live-agent-smoke.md), [live-smoke-results.md](live-smoke-results.md), and [live-mcp-client-smoke-results.md](live-mcp-client-smoke-results.md) for sanitized evidence and current limitations.
+Maintainer smoke tests have verified minimal Claude Code and Codex runs, agentacct has been smoke-tested as an MCP tool inside real interactive Claude Code and Codex sessions, and Hermes/OpenCode/OpenClaw MCP setup commands have been maintainer-probed on the VPS. See [live-agent-smoke.md](live-agent-smoke.md) for the smoke test guide and current limitations.
 
 Release-gate smoke commands, optional and not part of default CI because they can consume paid tokens:
 

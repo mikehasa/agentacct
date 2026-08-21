@@ -6,7 +6,7 @@ author: agentacct
 license: MIT
 metadata:
   hermes:
-    tags: [agent-chronicle, coding-agent, mcp, workflow, finops]
+    tags: [agentacct, coding-agent, mcp, workflow, finops]
     related_skills: [hermes-agent, opencode, github-pr-workflow]
 ---
 

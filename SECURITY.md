@@ -1,6 +1,6 @@
 # Security Policy
 
-Agent Chronicle is an early-alpha local developer tool. It starts from conservative defaults because it can launch and control child processes and can optionally proxy model-provider requests.
+agentacct is an early-alpha local developer tool. It starts from conservative defaults because it can launch and control child processes and can optionally proxy model-provider requests.
 
 ## Reporting a vulnerability
 
@@ -22,7 +22,7 @@ Do not include real API keys or private logs in a public issue.
 
 ## Security model
 
-Agent Chronicle is local-first:
+agentacct is local-first:
 
 - It stores run state on the local filesystem.
 - It does not include telemetry.
@@ -35,15 +35,15 @@ Agent Chronicle is local-first:
 
 ## Process-control boundary
 
-Agent Chronicle should only control processes it starts and records as Chronicle-owned.
+agentacct should only control processes it starts and records as agentacct-owned.
 
 It must not scan for, attach to, pause, resume, kill, or inspect existing Claude Code, Codex, Hermes, Cursor, OpenCode, shell, or other unrelated agent processes.
 
-If you find a path that lets Agent Chronicle control an unowned process, treat it as a security bug.
+If you find a path that lets agentacct control an unowned process, treat it as a security bug.
 
 ## Secret handling
 
-Agent Chronicle redacts common secret-shaped keys and values before persisting local integration events. Integrations should still send only the minimum useful evidence.
+agentacct redacts common secret-shaped keys and values before persisting local integration events. Integrations should still send only the minimum useful evidence.
 
 Do not put these values in event metadata, reports, issue comments, screenshots, or test fixtures:
 
@@ -60,4 +60,4 @@ The local dashboard/API are unauthenticated and intended for trusted localhost c
 
 ## Supported versions
 
-Agent Chronicle is currently early alpha. Security fixes target the latest `main` branch until versioned releases exist.
+agentacct is currently early alpha. Security fixes target the latest `main` branch until versioned releases exist.

@@ -3,7 +3,7 @@
 This file is written for the CODING AGENT performing the install (Claude Code, Codex, Hermes, OpenCode, OpenClaw, or any MCP-capable agent). agentacct is public: install it with `pipx install agentacct` (or straight from the public repository with `pipx install git+https://github.com/mikehasa/agentacct`). The fast path is `agentacct onboard`, which installs agentacct once per machine (global by default, zero repo files) — see Step 2. The per-client sections (Step 3) are the manual, per-project equivalent; run them from the target repository's root for the client you are running inside.
 
 <!-- Consistency contract: the command blocks, notes, and capability matrix below
-     are defined in src/agent_chronicle/install_guide.py and embedded here verbatim.
+     are defined in src/agentacct/install_guide.py and embedded here verbatim.
      tests/test_install_guide.py fails if this file drifts from the module.
      Edit the module first, then mirror the change here. -->
 
@@ -156,22 +156,22 @@ Replace `hermes` with `opencode` or `openclaw` for those clients.
 
 Every section ends the same way: `agentacct serve` is long-running: start it in the background or hand the command to the user; local JSON API at http://127.0.0.1:8765 (the HTML dashboard is retired — `agentacct tui` is the interactive surface). The dry-run import only previews; drop `--dry-run` when the user wants the ledger populated — API reads never write.
 
-## What the Task page shows
+## What the Task view shows
 
-The dashboard groups recognized root client sessions into stable Tasks. Open a Task from the dashboard or use its opaque public route:
+agentacct groups recognized root client sessions into stable Tasks. Open a Task in the macOS app (or `agentacct tui`), or fetch it from the local JSON API by its opaque public id:
 
 ```text
-http://127.0.0.1:8765/tasks/task_<opaque-id>
-http://127.0.0.1:8765/api/tasks/task_<opaque-id>
+GET http://127.0.0.1:8765/v1/receipt?task=task_<opaque-id>
+GET http://127.0.0.1:8765/v1/tasks
 ```
 
-The page is a decision brief, not a raw event dump: it summarizes what was attempted, the current outcome, strongest proof, usage/cost basis, unresolved findings, and a next action only when an owner was explicitly recorded. A bounded evidence timeline remains available underneath.
+The Task view is a decision brief, not a raw event dump: it summarizes what was attempted, the current outcome, strongest proof, usage/cost basis, unresolved findings, and a next action only when an owner was explicitly recorded. A bounded evidence timeline remains available underneath.
 
 Task state has three independent axes: **execution** (queued/running/finished/cancelled/lost), **outcome** (unknown/reported/verified/blocked/open finding), and **control** (ready/awaiting approval/policy hold/control failure). A failed target-product check is an outcome finding; it is not automatically an agentacct failure or a user action.
 
 ## Optional — govern an agentacct-owned local attempt
 
-The dashboard's **Control** page governs only processes agentacct launches itself. Existing Codex, Claude Code, Paperclip, OpenLIT, Entire, and other orchestrator processes remain observed-only.
+agentacct's control surface (the `agentacct control ...` commands) governs only processes agentacct launches itself. Existing Codex, Claude Code, Paperclip, OpenLIT, Entire, and other orchestrator processes remain observed-only.
 
 Register an existing workspace and a fixed argv array (never a shell command string):
 
@@ -201,7 +201,7 @@ agentacct control status --store-dir .agent-sentinel/state
 agentacct control launch --help
 ```
 
-`control launch` stays in the foreground until the attempt is terminal; the long-running dashboard owns the persistent web supervisor. An attempt freezes the current registered agent revision, and launch fails closed if that agent's argv changes after the attempt or approval was created; create a new attempt to authorize the new revision. Control status and product JSON are sanitized: they never return registered absolute paths, argv, PIDs/process groups, executable/cwd fingerprints, manifest ids, or ownership nonces.
+`control launch` stays in the foreground until the attempt is terminal; the long-running daemon owns the persistent supervisor. An attempt freezes the current registered agent revision, and launch fails closed if that agent's argv changes after the attempt or approval was created; create a new attempt to authorize the new revision. Control status and product JSON are sanitized: they never return registered absolute paths, argv, PIDs/process groups, executable/cwd fingerprints, manifest ids, or ownership nonces.
 
 ## Global install by hand (single-user machine)
 

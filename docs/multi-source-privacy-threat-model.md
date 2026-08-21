@@ -5,7 +5,7 @@ Last updated: 2026-07-13
 
 ## Security objective
 
-Agent Chronicle should explain what work happened and why the evidence supports
+agentacct should explain what work happened and why the evidence supports
 that conclusion without becoming a second transcript archive. Metadata-only,
 local-first collection is the default. Content collection is a separate,
 explicitly consented capability and is outside the first multi-source release.
@@ -37,7 +37,7 @@ evidence views.
    than an ordinary display claim.
 
 Provider and orchestrator records are trusted only for declared dimensions, not
-as arbitrary input to Chronicle's process or filesystem boundary.
+as arbitrary input to agentacct's process or filesystem boundary.
 
 ## Default capture profile
 
@@ -131,7 +131,7 @@ Release tests must prove:
 3. a duplicate payload is idempotent;
 4. a conflicting payload is preserved and surfaces a discrepancy;
 5. a corrupted/incomplete OTLP batch is partial, not silently complete;
-6. hooks return an allow/fail-open result when Chronicle capture fails;
+6. hooks return an allow/fail-open result when agentacct capture fails;
 7. no connector writes upstream or mutates Git;
 8. a control signal without an eligible basis cannot become hard enforcement.
 

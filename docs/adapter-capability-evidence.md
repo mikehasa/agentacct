@@ -26,7 +26,6 @@ This is a live observation of the declared local import paths on one machine, no
 
 ## Evidence boundaries
 
-- Claude Code and Codex MCP semantic verification is recorded separately in [Live MCP Client Smoke Results](live-mcp-client-smoke-results.md).
 - Hermes, OpenCode, and OpenClaw MCP verification is recorded separately in [Coding agent integrations](coding-agent-integrations.md#maintainer-real-client-smoke-results).
 - Synthetic parser fixtures prove deterministic field handling only. They do not prove current client schema compatibility, installation, or runtime health.
 - Runtime presence belongs to `/usage/sources`; latest importer health belongs to `/ingestion/health`; historical evidence belongs to `/evidence/product`.
