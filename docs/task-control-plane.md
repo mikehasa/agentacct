@@ -37,7 +37,7 @@ usage/cost basis, unresolved findings, and a next action only when an owner was
 explicitly recorded.
 
 Local client logs remain the usage truth. MCP remains the richest source of
-work meaning. Hooks, OTLP, connectors, CI, Git, and provider records keep their
+work meaning. Hooks, CI, Git, and provider records keep their
 own provenance and per-dimension authority. Missing or ambiguous joins stay
 missing; agentacct never allocates tokens to make a Task look complete.
 
@@ -79,8 +79,8 @@ GET http://127.0.0.1:8765/v1/tasks
 ## Owned execution boundary
 
 The local control plane may launch and govern only executions agentacct creates.
-External Codex, Claude Code, Paperclip, OpenLIT, Entire, and provider processes
-remain observed-only connectors.
+External Codex, Claude Code, and provider processes
+remain observed-only.
 
 The first complete control loop is:
 
@@ -162,6 +162,5 @@ and tries to consume approval afterward.
 - hosted multi-tenancy, organization hierarchy, RBAC, SSO, or SCIM;
 - kanban or a generic project-management product;
 - a generic agent marketplace;
-- mutating external orchestrators through read-only connectors;
 - replacing provider billing portals or agent-native permission systems;
 - storing full prompts, responses, thoughts, or transcripts by default.

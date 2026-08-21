@@ -90,7 +90,7 @@ The local JSON API listens at http://127.0.0.1:8765 by default (the TUI reads th
 agentacct was formerly Agent Sentinel; pre-rename installs keep working without re-setup:
 
 - Environment variables: every `AGENTACCT_*` variable also accepts its pre-rename `AGENT_CHRONICLE_*` and `AGENT_SENTINEL_*` names — old names are accepted indefinitely, the new name wins when more than one is set, and conflicting store-dir values refuse instead of silently splitting the ledger. There is no runtime deprecation nag; the old names simply keep working.
-- Binaries: the published package ships only agentacct-branded console scripts — `agentacct` plus the `agentacct-claude` / `agentacct-codex` wrappers. Pre-rename MCP registrations, hook wrappers, and launchd jobs that resolve the old `agent-chronicle` / `agent-sentinel` binary names are still recognized at runtime, but the old console scripts are no longer shipped (they collide with unrelated PyPI packages of those names).
+- Binaries: the published package ships only the `agentacct` console script. Pre-rename MCP registrations, hook wrappers, and launchd jobs that resolve the old `agent-chronicle` / `agent-sentinel` binary names are still recognized at runtime, but the old console scripts are no longer shipped (they collide with unrelated PyPI packages of those names).
 - Pre-rename `agent-sentinel` MCP registrations and `agent-sentinel:begin` instruction blocks stay recognized; stored data and the `.agent-sentinel/` store directories keep their pre-rename spellings forever (data format, not branding).
 - Caveat — foreign PyPI package collision: an unrelated PyPI project named `agent-sentinel` (0.5.0) also installs a `bin/agent-sentinel` script. If both packages land in the SAME environment, the later install silently overwrites that script (pip prints no warning), and `pip uninstall agent-sentinel` (the foreign package) deletes the alias out from under agentacct — pre-rename registrations and wrappers resolving the old binary name then fail until `pip install --force-reinstall agentacct`. Do not install both in one environment; pipx refuses the second install because the app names collide.
 
@@ -171,7 +171,7 @@ Task state has three independent axes: **execution** (queued/running/finished/ca
 
 ## Optional — govern an agentacct-owned local attempt
 
-agentacct's control surface (the `agentacct control ...` commands) governs only processes agentacct launches itself. Existing Codex, Claude Code, Paperclip, OpenLIT, Entire, and other orchestrator processes remain observed-only.
+agentacct's control surface (the `agentacct control ...` commands) governs only processes agentacct launches itself. Existing Codex, Claude Code, and other orchestrator processes remain observed-only.
 
 Register an existing workspace and a fixed argv array (never a shell command string):
 

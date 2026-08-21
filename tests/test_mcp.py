@@ -977,12 +977,8 @@ def test_mcp_workflow_smoke_is_documented() -> None:
     # The MCP tool/workflow reference moved from the README to docs/reference.md
     # in the value-first README rewrite.
     reference = open("docs/reference.md", encoding="utf-8").read()
-    checklist = open("docs/public-alpha-checklist.md", encoding="utf-8").read()
 
-    # The reference uses the public agentacct CLI; the maintainer checklist
-    # still uses the transition-alias name (a later doc-rebrand pass).
     assert "agentacct mcp workflow-smoke" in reference
-    assert "agentacct mcp workflow-smoke" in checklist
     # docs/reference.md now names the live agentacct_* MCP tools (post-cutover).
     assert "agentacct_record_event" in reference
     assert "agentacct_get_event_summary" in reference

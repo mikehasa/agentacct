@@ -256,13 +256,8 @@ def test_public_docs_describe_subscription_estimate_as_approximate() -> None:
     # The subscription-allocation section moved from the README to
     # docs/reference.md in the value-first README rewrite.
     reference = Path("docs/reference.md").read_text(encoding="utf-8")
-    checklist = Path("docs/public-alpha-checklist.md").read_text(encoding="utf-8")
 
-    # The reference uses the public agentacct CLI; the maintainer checklist
-    # still uses the transition-alias name (a later doc-rebrand pass).
     assert "agentacct cost subscription-estimate" in reference
-    assert "agentacct cost subscription-estimate" in checklist
-    for text in (reference, checklist):
-        assert "subscription_unavailable" in text
+    assert "subscription_unavailable" in reference
     assert "explicit approximation, not as exact provider billing" in reference
     assert "Provider invoices or exposed provider usage data remain the source of truth" in reference

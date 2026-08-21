@@ -27,16 +27,6 @@ def test_golden_scenarios_are_unique_and_machine_readable() -> None:
     assert all(scenario["expected"].strip() for scenario in scenarios)
 
 
-def test_license_bom_pins_audited_upstream_commits() -> None:
-    bom = (REPO_ROOT / "docs" / "integration-license-bom.md").read_text(encoding="utf-8")
-
-    assert "8adf21c8f952c0768fd5ff85d853798bb3c028f3" in bom
-    assert "7cd6662805fbd525f2f418ecf465a247b924af70" in bom
-    assert "c36f1a4afd91e4ddf0e5c7224b288ce722c7404f" in bom
-    assert "Copied/vendored source" in bom
-    assert "None" in bom
-
-
 def test_architecture_keeps_mcp_first_class_but_non_mandatory() -> None:
     architecture = (
         REPO_ROOT / "docs" / "multi-source-evidence-architecture.md"

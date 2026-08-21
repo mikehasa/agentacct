@@ -95,9 +95,9 @@ Prefer the terminal? `agentacct tui` is the full dashboard in your shell — usa
 
 agentacct is early alpha, and it would rather show you a gap than a guess:
 
-- **No hosted anything.** No hosted dashboard, no phone-home telemetry, no automatic cloud account sync. agentacct can *receive* telemetry locally when you explicitly point an OTLP exporter at it.
+- **No hosted anything.** No hosted dashboard, no phone-home telemetry, no automatic cloud account sync.
 - **Estimates are labeled as estimates.** There is no exact Claude Code/Codex subscription invoice access; costs come from a local pricing table and are labeled accordingly. See [docs/usage-truth-table.md](docs/usage-truth-table.md) for what each path can and cannot prove.
-- **No silent monitoring.** agentacct only reads the local session files of detected clients and never watches unrelated processes started outside agentacct/integrations. Hard stops apply only to runs agentacct itself launched or the opt-in proxy path.
+- **No silent monitoring.** agentacct only reads the local session files of detected clients and never watches unrelated processes started outside agentacct/integrations. Hard stops apply only to runs agentacct itself launched.
 - **Support is per-capability, not per-logo.** Claude Code, Codex, and OpenCode carry a full Work Receipt today — usage, cost, and the actions each session took (commands, edited files, tools); OpenCode also contributes independent exit-code checks. Hermes has a live usage path plus a narrower capture surface; OpenClaw and Cursor are usage-focused and explicitly scoped. How each fact is captured differs honestly — a live hook, or a scan of the client's own store — and the Receipt says which. Every per-client claim is pinned in the capability matrix in [INSTALL.md](INSTALL.md) and [docs/reference.md](docs/reference.md), and `agentacct capabilities agents` prints the same truth for your machine.
 
 Interfaces may change while agentacct is alpha.
@@ -110,11 +110,11 @@ agentacct keeps two evidence streams separate and joins them on real client ids 
 - **Work meaning** comes from the sections and events the agent records over MCP while it works (`agentacct_record_section`, `agentacct_record_machine_check`), plus machine checks like test runs.
 - **The join** links the two through session/transcript ids and labels every attribution `exact`, `high`, `medium`, or `low`. Claude Code binds real session/transcript ids through an installed hook bridge at session start and on every tool call; Codex, OpenCode, and Hermes are evidenced from each client's own session store at import time. Where a client's hook does not fire for its built-in tools, agentacct derives the same Actions — commands, edited files, tool categories and names — from that store directly, so the Receipt is populated with or without a live hook, and always says which.
 
-The per-client join mechanics, confidence-label glossary, daily workflow, MCP tool list, and optional enforcement extras are in [docs/reference.md](docs/reference.md).
+The per-client join mechanics, confidence-label glossary, daily workflow, and MCP tool list are in [docs/reference.md](docs/reference.md).
 
 ## Documentation
 
-- [Reference](docs/reference.md) — daily workflow, confidence labels, MCP tools, per-client capability matrix, verification evidence, enforcement extras, migration notes
+- [Reference](docs/reference.md) — daily workflow, confidence labels, MCP tools, per-client capability matrix, verification evidence, migration notes
 - [Install runbook](INSTALL.md) — per-client setup, global install, capability matrix
 - [Usage and cost truth table](docs/usage-truth-table.md)
 - [Coding agent integrations](docs/coding-agent-integrations.md)
@@ -124,8 +124,6 @@ The per-client join mechanics, confidence-label glossary, daily workflow, MCP to
 - [Multi-source privacy threat model](docs/multi-source-privacy-threat-model.md)
 - [Safety boundaries](docs/safety-boundaries.md)
 - [Full flow demo](docs/full-demo.md)
-- [Live smoke test guide](docs/live-agent-smoke.md)
-- [Public alpha checklist](docs/public-alpha-checklist.md)
 
 ## Development
 

@@ -1,6 +1,6 @@
 # agentacct reference
 
-The deep reference for agentacct: the daily workflow, confidence labels, MCP tools, per-client capability claims, verification evidence, optional enforcement extras, and migration notes. For the quick start, see the [README](../README.md); for the canonical install runbook, see [INSTALL.md](../INSTALL.md).
+The deep reference for agentacct: the daily workflow, confidence labels, MCP tools, per-client capability claims, verification evidence, and migration notes. For the quick start, see the [README](../README.md); for the canonical install runbook, see [INSTALL.md](../INSTALL.md).
 
 ## What each client can claim
 
@@ -176,15 +176,7 @@ agentacct capture manifest --vendor cursor
 
 `capabilities agents` is the canonical per-agent manifest. It deliberately has no whole-client support badge: local session discovery, usage import, mechanical capture, MCP semantics, model attribution, cache read/write, installation mode, and verification evidence remain independent. The Dashboard renders the same truth under **Advanced → Agent capability coverage**; `/usage/sources` and `/ingestion/health` continue to describe this machine's current runtime state instead.
 
-Read-only external adapters support dry runs before durable import:
-
-```bash
-agentacct connector openlit /path/to/otlp.json --dry-run --json
-agentacct connector paperclip /path/to/paperclip-export.json --dry-run --json
-agentacct connector entire /path/to/git-repository --dry-run --json
-```
-
-The localhost API accepts OTLP/HTTP JSON at `POST /v1/traces`. The evidence projections are JSON endpoints: `/evidence/status`, `/evidence/events`, `/evidence/work-graph`, `/evidence/matrix`, `/evidence/discrepancies`, and `/evidence/cost-outcome-basis`. `GET /evidence/events` uses bounded arrival-order cursor pages (`limit`, then `cursor=next_cursor`). Set `AGENTACCT_EVIDENCE_V2=0` for a v1-only rollback; existing v2 evidence remains untouched.
+The evidence projections are JSON endpoints: `/evidence/status`, `/evidence/events`, `/evidence/work-graph`, `/evidence/matrix`, `/evidence/discrepancies`, and `/evidence/cost-outcome-basis`. `GET /evidence/events` uses bounded arrival-order cursor pages (`limit`, then `cursor=next_cursor`). Set `AGENTACCT_EVIDENCE_V2=0` for a v1-only rollback; existing v2 evidence remains untouched.
 
 Start the MCP server over stdio:
 
@@ -203,8 +195,6 @@ Current MCP tools include:
 - `agentacct_list_events`
 - `agentacct_get_event_summary`
 - `agentacct_record_machine_check`
-- `agentacct_prepare_judge`
-- `agentacct_compute_value`
 
 Use local usage import for token/cost truth, and use MCP tools for workflow context. `agentacct_attach_client_context` stores local session/turn/message identifiers, while `agentacct_record_section` stores human-readable task chapters that can later be joined to imported usage. `agentacct_record_agent_usage_debug` stores agent-visible usage snapshots for comparison only; it does not add to agentacct's usage or cost totals.
 
@@ -232,7 +222,7 @@ This keeps a failed target-product check from being mislabeled as an agentacct f
 
 ## Local Control
 
-The **Control** page is a separate, opt-in surface for processes agentacct itself launches. It does not adopt or signal an existing Codex, Claude Code, Paperclip, OpenLIT, Entire, or other orchestrator process. Normal agent sessions remain observed on **Work**.
+The **Control** page is a separate, opt-in surface for processes agentacct itself launches. It does not adopt or signal an existing Codex, Claude Code, or other orchestrator process. Normal agent sessions remain observed on **Work**.
 
 Register one explicit workspace and one fixed argv adapter, then create a reviewable Task Contract:
 
@@ -259,48 +249,21 @@ Every mutation uses an idempotency key and expected revision. Workspace-write at
 
 ## What “telemetry” means here
 
-Telemetry is machine-emitted evidence about a running agent: for example a session start, a tool span, a trace/span id, a model label, a duration, or a client-reported token field. OpenTelemetry/OTLP is one standard wire format for those records; OpenLIT instruments runtimes and exports that format.
+Telemetry is machine-emitted evidence about a running agent: for example a session start, a tool span, a trace/span id, a model label, a duration, or a client-reported token field.
 
-It is not the same thing as MCP. MCP is an agent-to-tool protocol and is especially useful for semantic claims such as “I started this task”, “this section is complete”, or “this blocker occurred”. A native hook is a host callback that fires mechanically. A local client log is the client's own persisted usage/session record. agentacct accepts all four, keeps their provenance, and decides authority per evidence dimension. OTLP arriving locally is not automatically provider billing truth, and a missing MCP event does not mean no work happened.
+It is not the same thing as MCP. MCP is an agent-to-tool protocol and is especially useful for semantic claims such as “I started this task”, “this section is complete”, or “this blocker occurred”. A native hook is a host callback that fires mechanically. A local client log is the client's own persisted usage/session record. agentacct accepts all three, keeps their provenance, and decides authority per evidence dimension. A missing MCP event does not mean no work happened.
 
 ## Verification and evidence
 
 The onboarding helpers configure project-local recording. They do not mean agentacct automatically monitors every Claude Code/Codex/OpenCode/Hermes/OpenClaw session you start elsewhere.
 
-Maintainer smoke tests have verified minimal Claude Code and Codex runs, agentacct has been smoke-tested as an MCP tool inside real interactive Claude Code and Codex sessions, and Hermes/OpenCode/OpenClaw MCP setup commands have been maintainer-probed on the VPS. See [live-agent-smoke.md](live-agent-smoke.md) for the smoke test guide and current limitations.
-
-Release-gate smoke commands, optional and not part of default CI because they can consume paid tokens:
-
-```bash
-agentacct smoke claude-code
-agentacct smoke codex
-agentacct smoke all --json
-
-# Real MCP-client smoke tests. Disabled by default because they use real API credits.
-# Requires DEEPSEEK_API_KEY in the environment.
-agentacct smoke mcp-client --client hermes --provider deepseek --i-understand-this-uses-real-api --json
-```
-
-## Optional enforcement extras
-
-Enforcement is opt-in and secondary to observation.
-
-agentacct provides explicit wrapper commands for runs you want agentacct to own directly:
-
-```bash
-agentacct-claude -p "Reply with exactly: hello"
-agentacct-codex exec --sandbox read-only --ephemeral --skip-git-repo-check "Reply with exactly: hello"
-```
-
-Wrappers launch the underlying `claude` or `codex` binary through agentacct and write normal local run artifacts, with stdout/stderr capture, timeouts, and pause/kill limited to agentacct-owned runs. They do not automatically monitor Claude Code/Codex sessions started outside these wrapper commands, and they do not provide exact subscription billing by themselves.
-
-An opt-in provider cost proxy (`agentacct cost proxy --enable-forwarding --max-total-usd ...`) can forward OpenRouter/OpenAI/DeepSeek API calls under a hard local budget cap: forwarding is disabled by default, requires an explicit cap, refuses non-local bind hosts by default, and stores provider-reported costs as `actual_provider_cost_usd`. Start with low-limit test keys; details in [Safety boundaries](safety-boundaries.md).
+agentacct has been smoke-tested as an MCP tool inside real interactive Claude Code and Codex sessions, and Hermes/OpenCode/OpenClaw MCP setup commands have been maintainer-probed on the VPS.
 
 ## Migration from the pre-rename install
 
 agentacct was formerly Agent Sentinel. Existing installs keep working without re-setup:
 
 - Environment variables: every `AGENTACCT_*` variable also accepts its pre-rename `AGENT_CHRONICLE_*` and `AGENT_SENTINEL_*` names — the old names are accepted indefinitely, the new name wins when more than one is set, and conflicting store-dir values refuse rather than silently split the ledger. There is no runtime deprecation nag; the old names simply keep working.
-- Binaries: the published package ships only agentacct-branded console scripts — `agentacct` plus the `agentacct-claude` / `agentacct-codex` wrappers. Pre-rename MCP registrations, hook wrappers, and launchd jobs that resolve the old `agent-chronicle` / `agent-sentinel` binary names are still recognized at runtime, but the old console scripts are no longer shipped (they collide with unrelated PyPI packages of those names).
+- Binaries: the published package ships a single agentacct-branded console script — `agentacct`. Pre-rename MCP registrations, hook wrappers, and launchd jobs that resolve the old `agent-chronicle` / `agent-sentinel` binary names are still recognized at runtime, but the old console scripts are no longer shipped (they collide with unrelated PyPI packages of those names).
 - Stored data and the `.agent-sentinel/` store directory keep their pre-rename spellings forever; they are data format, not branding.
 - Caveat — foreign PyPI package collision: an unrelated project named `agent-sentinel` (0.5.0) exists on PyPI and also installs a `bin/agent-sentinel` script. Installing both packages into the same environment makes the later install silently overwrite that script (pip prints no warning), and `pip uninstall agent-sentinel` (the foreign package) deletes the alias out from under agentacct — anything resolving the old binary name dies until `pip install --force-reinstall agentacct`. Avoid installing both in one environment; pipx refuses the second install outright because the app names collide.

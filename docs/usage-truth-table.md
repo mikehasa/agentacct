@@ -13,8 +13,8 @@ agentacct usage truth-table --json
 
 | Integration path | What agentacct can observe | Update timing / freshness | Usage confidence | Cost confidence | Hard budget basis |
 | --- | --- | --- | --- | --- | --- |
-| Codex local usage import | Local Codex sessions, exact recorded parent lineage, model when present, non-cached input, cached input, output, reasoning tokens, turn count, timestamps | Repeated rollout `token_count` events during a thread; `--limit-sessions` selects complete recent root groups, and later token growth reaches agentacct only via dashboard refresh or an importer run with `--refresh` | `client_reported` | `unknown`; optional `estimated_from_tokens` with `--estimate-costs` | Advisory only from import; use token/runtime limits or proxy for hard dollar stops |
-| Claude Code local usage import | Local Claude Code project JSONL usage, model when present, input, cache creation/read, output tokens, turn count | Assistant message rows carry `message.usage` as transcript files are written; local `journal/result` rows are not the usage source in observed samples | `client_reported` | `unknown`; optional `estimated_from_tokens` with `--estimate-costs` | Advisory only from import; use token/runtime limits or proxy for hard dollar stops |
+| Codex local usage import | Local Codex sessions, exact recorded parent lineage, model when present, non-cached input, cached input, output, reasoning tokens, turn count, timestamps | Repeated rollout `token_count` events during a thread; `--limit-sessions` selects complete recent root groups, and later token growth reaches agentacct only via dashboard refresh or an importer run with `--refresh` | `client_reported` | `unknown`; optional `estimated_from_tokens` with `--estimate-costs` | Advisory only from import; use token/runtime limits for hard dollar stops |
+| Claude Code local usage import | Local Claude Code project JSONL usage, model when present, input, cache creation/read, output tokens, turn count | Assistant message rows carry `message.usage` as transcript files are written; local `journal/result` rows are not the usage source in observed samples | `client_reported` | `unknown`; optional `estimated_from_tokens` with `--estimate-costs` | Advisory only from import; use token/runtime limits for hard dollar stops |
 | OpenCode JSON event stream import | OpenCode JSON/JSONL `step-finish` token fields and client-reported cost when present | Usage/cost appear on captured `step-finish` events | `client_reported` | `client_reported` | Useful for dashboards/advisory budgets, not provider invoice truth |
 | Hermes local state import | Hermes `state.db` session rows, provider/model, input/cache/output/reasoning tokens, message count, client-reported cost fields | Session-level fields are read from Hermes' local SQLite state database | `client_reported` | `client_reported` when Hermes stores cost fields | Useful for dashboards/advisory budgets, not provider invoice truth |
 | OpenClaw JSONL local usage import | OpenClaw JSONL assistant usage rows, provider/model, input/cache/output tokens, optional client-reported cost fields | Usage appears on assistant message rows when OpenClaw writes JSONL session logs | `client_reported` | `client_reported` when `usage.cost.total` is present; otherwise `unknown` | Useful for dashboards/advisory budgets, not provider invoice truth |
@@ -22,24 +22,17 @@ agentacct usage truth-table --json
 | Agent MCP workflow events | Section `started`/`checkpoint`/`completed`/`blocked` events, machine checks, and blocker context reported by an MCP-capable agent | Only when the configured agent calls agentacct MCP tools | `unknown` unless the agent supplies usage metadata | `unknown` unless the agent supplies cost metadata | Not a billing source by itself |
 | Agent MCP usage debug snapshots | Agent-visible token/cost numbers or an explicit unavailable marker, plus client/session/turn join keys | Only when the configured agent calls `agentacct_record_agent_usage_debug`; stored as metadata for comparison | `unknown` in agentacct totals; debug values live under `metadata.agent_reported_*` | `unknown` in agentacct totals; debug cost lives under `metadata.agent_reported_cost_usd` when provided | Comparison evidence only; never a hard budget basis |
 | Native coding-agent hook capture | Host-emitted lifecycle/session/turn/tool ids, relative file metadata, subagent links, and recognized machine-check exit codes | On each explicitly activated Claude Code, Codex, or Cursor hook | `unknown`; hooks do not capture tokens | `unknown`; hooks do not capture cost | No token/dollar enforcement; objective exit codes may be machine evidence |
-| OpenLIT / OTLP trace ingestion | Trace/span/session ids, runtime lifecycle, tool-span metadata, allowlisted model labels, and telemetry-reported usage/cost fields when present | As spans reach local `POST /v1/traces`, or on explicit JSON import | `telemetry_reported`, corroborating unless measurement provenance proves more | `telemetry_reported`, never provider-billed merely because it used OTLP | Advisory unless separately backed by provider-billed evidence |
-| Paperclip snapshot connector | Work-item/execution/agent/work-product and cost claims from an exported snapshot | On explicit snapshot import | `unknown` | `orchestrator_claim`; missing and zero remain different | Advisory; agentacct never dispatches a Paperclip action |
-| Entire Git checkpoint connector | Public checkpoint/commit/session ids and allowlisted change/usage metadata | On explicit read-only repository scan | `checkpoint_reported`, corroborating only | `unknown` | No hard budget basis; Git proves artifacts, not billing |
-| Provider/API proxy | Provider/model, request estimate, provider usage fields, provider-billed cost when returned | Request estimates before forwarding; provider usage/cost after each proxied response | `provider_reported` when returned | `provider_billed` when returned; otherwise `estimated_from_tokens` | Strongest hard dollar enforcement path for traffic routed through agentacct |
-| agentacct-owned process wrapper | Runtime, exit code, stdout/stderr logs, pause/resume/kill ownership metadata | Process state while agentacct owns the command; token/cost freshness needs import, proxy, or MCP events | `unknown` | `unknown` | Useful for process/runtime control, not token or billing truth by itself |
+| agentacct-owned process wrapper | Runtime, exit code, stdout/stderr logs, pause/resume/kill ownership metadata | Process state while agentacct owns the command; token/cost freshness needs import or MCP events | `unknown` | `unknown` | Useful for process/runtime control, not token or billing truth by itself |
 
 ## Important boundaries
 
 - MCP setup proves that an agent can report work to agentacct. It does not automatically parse private session logs or prove exact billing.
-- MCP is a first-class semantic source, not a fallback to hooks. Hooks/OTLP can prove mechanical activity when MCP did not fire; they cannot invent task meaning.
-- Telemetry means machine-emitted runtime evidence. OTLP is its transport format, not a provider invoice and not the MCP protocol.
+- MCP is a first-class semantic source, not a fallback to hooks. Hooks can prove mechanical activity when MCP did not fire; they cannot invent task meaning.
 - Metadata-only hooks do not capture token usage or cost. They deliberately omit prompts, responses, thoughts, tool arguments/results, stdout, and stderr.
-- Paperclip rows are orchestrator claims. Entire rows prove Git/checkpoint artifact metadata. Neither is silently promoted to provider billing or objective completion.
 - Agent usage debug snapshots prove only what the agent reported seeing about itself, including explicit "unavailable" reports. They are not included in agentacct's token/cost totals.
 - Local usage import proves agentacct parsed an implemented local client session/export path. Imported usage is client-reported and sanitized; prompts/transcripts are not stored in agentacct events.
 - Current local usage truth rows include both `metadata.usage_source=local_client_session_store` and `metadata.usage_provenance=agent_sentinel_local_usage_import`. Ordinary event writes and MCP `agentacct_record_event` cannot create this trusted provenance.
 - Pricing-table estimates are equivalent-cost estimates, not provider invoices.
-- Provider/API proxy data applies only to traffic intentionally routed through agentacct.
 - Subscription tools such as Claude Code and Codex may expose useful per-session token data without exposing exact marginal subscription billing.
 - Current local Codex and Claude Code subscription samples expose token/cache fields but do not expose provider-billed cost fields to agentacct.
 - Ingestion receipts prove what agentacct attempted and parsed from each configured local source. They do not upgrade client-reported usage to provider billing or prove that a stopped watcher will capture future sessions.
@@ -170,15 +163,6 @@ agentacct usage import-local --client all --dry-run --json
 agentacct usage discover-sources
 agentacct usage truth-table
 agentacct serve --store-dir .agent-sentinel/state
-```
-
-For API-key experiments with hard dollar caps:
-
-```bash
-agentacct cost proxy \
-  --enable-forwarding \
-  --forward-provider openai \
-  --max-total-usd 0.01
 ```
 
 For normal subscription-based coding-agent workflows, treat local import and MCP events as a local activity ledger. Use the confidence labels on reports and dashboards before making budget or ROI claims.
