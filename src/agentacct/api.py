@@ -203,16 +203,6 @@ class MachineCheckRequest(BaseModel):
     after_summary: str | None = None
 
 
-class JudgePrepareRequest(BaseModel):
-    task_goal: str = "Evaluate this run's deliverable quality."
-    rubric: str = "Score whether the run produced a useful, relevant, low-risk deliverable for the task goal."
-    write_package: bool = True
-
-
-class ValueComputeRequest(BaseModel):
-    budget_usd: float | None = Field(default=None, gt=0)
-
-
 class EventRecordRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -3538,24 +3528,6 @@ def create_local_api_app(
                 after_summary=request.after_summary,
             )
             return {"outcome": outcome}
-        except FileNotFoundError as exc:
-            raise _not_found(exc) from exc
-        except ValueError as exc:
-            raise _invalid(exc) from exc
-
-    @app.post("/runs/{run_id}/judge/prepare")
-    def prepare_judge(run_id: str, request: JudgePrepareRequest) -> dict[str, Any]:
-        try:
-            return service.prepare_judge(run_id, task_goal=request.task_goal, rubric=request.rubric, write_package=request.write_package)
-        except FileNotFoundError as exc:
-            raise _not_found(exc) from exc
-        except ValueError as exc:
-            raise _invalid(exc) from exc
-
-    @app.post("/runs/{run_id}/value/compute")
-    def compute_value(run_id: str, request: ValueComputeRequest) -> dict[str, Any]:
-        try:
-            return {"value": service.compute_value(run_id, budget_usd=request.budget_usd)}
         except FileNotFoundError as exc:
             raise _not_found(exc) from exc
         except ValueError as exc:

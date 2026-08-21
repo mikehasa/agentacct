@@ -41,7 +41,7 @@ from .finding_disposition import (
     is_trusted_finding_disposition_event,
     reduce_finding_dispositions,
 )
-from .outcome import build_judge_package, build_machine_check_outcome, compute_advisory_value_score, read_outcome, write_outcome
+from .outcome import build_machine_check_outcome, read_outcome, write_outcome
 from .reports import build_run_report_payload
 from .storage import RunStore
 from .usage_truth import (
@@ -2561,26 +2561,6 @@ class SentinelService:
             after_summary=after_summary,
         )
         return write_outcome(self.store, run_id, outcome)
-
-    def prepare_judge(self, run_id: str, *, task_goal: str, rubric: str, write_package: bool = True) -> dict[str, Any]:
-        if run_id == "latest":
-            run_id = self.store.latest_run_id()
-        report_payload = build_run_report_payload(self.store, run_id)
-        package = build_judge_package(report=report_payload, task_goal=task_goal, rubric=rubric)
-        if write_package:
-            path = self.store.run_dir(run_id) / "judge_package.json"
-            path.write_text(json.dumps(package, indent=2, sort_keys=True), encoding="utf-8")
-        return package
-
-    def compute_value(self, run_id: str, *, budget_usd: float | None = None) -> dict[str, Any]:
-        if run_id == "latest":
-            run_id = self.store.latest_run_id()
-        report_payload = build_run_report_payload(self.store, run_id)
-        value = compute_advisory_value_score(report_payload, budget_usd=budget_usd)
-        existing = read_outcome(self.store, run_id) or report_payload["outcome"]
-        existing["value"] = value
-        write_outcome(self.store, run_id, existing)
-        return value
 
 
 def _sortable_created_at(event: dict[str, Any]) -> float:

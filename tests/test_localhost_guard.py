@@ -1,4 +1,4 @@
-"""Host/Origin guard on the local HTTP surfaces (dashboard/API and cost proxy).
+"""Host/Origin guard on the local HTTP surface (dashboard/API).
 
 The guard defends localhost binds against the user's own browser acting as a
 confused deputy: DNS rebinding (evil Host header on any request) and CSRF
@@ -11,9 +11,7 @@ from typer.testing import CliRunner
 
 from agentacct.api import create_local_api_app
 from agentacct.cli import app as cli_app
-from agentacct.cost import CostLedger, CostPolicy
 from agentacct.localhost_guard import LocalhostGuardMiddleware
-from agentacct.proxy import create_app
 from agentacct.service import SentinelService
 
 
@@ -21,32 +19,20 @@ def _api_client(tmp_path, **kwargs):
     return TestClient(create_local_api_app(store_dir=tmp_path, **kwargs))
 
 
-def _proxy_client(tmp_path, **kwargs):
-    return TestClient(create_app(store_dir=tmp_path, policy=CostPolicy(max_total_usd=1.0), dry_run=True, **kwargs))
-
-
-ANTHROPIC_PAYLOAD = {"model": "claude-sonnet-4", "max_tokens": 128, "messages": [{"role": "user", "content": "hello"}]}
-
-
-def test_default_test_client_get_allowed_on_both_apps(tmp_path):
+def test_default_test_client_get_allowed_on_the_local_api(tmp_path):
     # TestClient sends Host: testserver and no Origin; the guard must be
     # active yet transparent for it (regression sentinel for every existing
     # TestClient call site).
     assert _api_client(tmp_path).get("/health").status_code == 200
-    assert _proxy_client(tmp_path).get("/health").status_code == 200
 
 
-def test_evil_host_get_blocked_on_both_apps_even_without_origin(tmp_path):
+def test_evil_host_get_blocked_even_without_origin(tmp_path):
     # DNS rebinding: the rebound request carries the attacker's hostname on a
     # plain GET (no Origin header at all). The Host rule applies to ALL
     # requests, not just mutating ones.
     response = _api_client(tmp_path).get("/overview", headers={"Host": "evil.example"})
     assert response.status_code == 403
     assert "not an allowed local hostname" in response.text
-
-    proxy_response = _proxy_client(tmp_path).get("/health", headers={"Host": "evil.example:8787"})
-    assert proxy_response.status_code == 403
-    assert "not an allowed local hostname" in proxy_response.text
 
 
 def test_cross_origin_post_blocked_and_writes_nothing(tmp_path):
@@ -115,30 +101,6 @@ def test_host_header_port_and_bracketed_ipv6_parse_correctly(tmp_path):
     assert client.get("/health", headers={"Host": "[::1]"}).status_code == 200
 
 
-def test_proxy_cross_origin_post_blocked_without_ledger_write(tmp_path):
-    client = _proxy_client(tmp_path)
-
-    response = client.post(
-        "/anthropic/v1/messages",
-        json=ANTHROPIC_PAYLOAD,
-        headers={"Origin": "https://evil.example"},
-    )
-
-    assert response.status_code == 403
-    assert CostLedger(tmp_path).read_events() == []
-
-
-def test_proxy_absent_origin_post_allowed_and_recorded(tmp_path):
-    client = _proxy_client(tmp_path)
-
-    response = client.post("/anthropic/v1/messages", json=ANTHROPIC_PAYLOAD)
-
-    assert response.status_code == 200
-    events = CostLedger(tmp_path).read_events()
-    assert len(events) == 1
-    assert events[0]["provider"] == "anthropic"
-
-
 def test_extra_allowed_hosts_factory_kwarg(tmp_path):
     blocked = _api_client(tmp_path).get("/health", headers={"Host": "myhost.local:8765"})
     assert blocked.status_code == 403
@@ -147,11 +109,6 @@ def test_extra_allowed_hosts_factory_kwarg(tmp_path):
         "/health", headers={"Host": "myhost.local:8765"}
     )
     assert allowed.status_code == 200
-
-    proxy_allowed = _proxy_client(tmp_path, extra_allowed_hosts=("myhost.local",)).get(
-        "/health", headers={"Host": "myhost.local"}
-    )
-    assert proxy_allowed.status_code == 200
 
 
 def test_extra_allowed_host_origin_accepted_on_mutating_request(tmp_path):
@@ -167,7 +124,7 @@ def test_extra_allowed_host_origin_accepted_on_mutating_request(tmp_path):
 
 
 def test_cli_allow_host_reaches_the_app_factories(tmp_path, monkeypatch):
-    # `serve`, `api serve`, and `cost proxy` must plumb --allow-host into the
+    # `serve` and `api serve` must plumb --allow-host into the
     # factory kwarg. Capture the app uvicorn would run instead of serving.
     import uvicorn
 
@@ -177,12 +134,11 @@ def test_cli_allow_host_reaches_the_app_factories(tmp_path, monkeypatch):
     for command in (
         ["serve", "--store-dir", str(tmp_path), "--allow-host", "myhost.local"],
         ["api", "serve", "--store-dir", str(tmp_path), "--allow-host", "myhost.local"],
-        ["cost", "proxy", "--store-dir", str(tmp_path), "--allow-host", "myhost.local"],
     ):
         result = CliRunner().invoke(cli_app, command)
         assert result.exit_code == 0, (command, result.output)
 
-    assert len(served_apps) == 3
+    assert len(served_apps) == 2
     for served_app in served_apps:
         client = TestClient(served_app)
         assert client.get("/health", headers={"Host": "myhost.local"}).status_code == 200
@@ -196,14 +152,6 @@ def test_guard_is_outermost_middleware_on_the_local_api(tmp_path):
 
     assert app.user_middleware[0].cls is LocalhostGuardMiddleware
     assert len(app.user_middleware) >= 2
-
-
-def test_guard_is_outermost_middleware_on_the_cost_proxy(tmp_path):
-    # The proxy installs the guard LAST (its own contract), so it stays
-    # outermost even if a future middleware is added earlier in create_app.
-    app = create_app(store_dir=tmp_path, policy=CostPolicy(max_total_usd=1.0), dry_run=True)
-
-    assert app.user_middleware[0].cls is LocalhostGuardMiddleware
 
 
 def test_testserver_is_not_in_the_shipped_default_allowlist():

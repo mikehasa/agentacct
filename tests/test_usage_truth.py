@@ -27,7 +27,6 @@ def test_usage_truth_table_has_expected_integrations() -> None:
     assert "openclaw JSONL local usage import" in rows
     assert "agent MCP workflow events" in rows
     assert "native coding-agent hook capture" in rows
-    assert "provider/API proxy" in rows
     assert "sentinel-owned process wrapper" in rows
 
     assert rows["codex local usage import"]["usage_confidence"] == "client_reported"
@@ -43,7 +42,6 @@ def test_usage_truth_table_has_expected_integrations() -> None:
     assert "usage.cost.total" in rows["openclaw JSONL local usage import"]["cost_confidence"]
     assert rows["agent MCP workflow events"]["usage_confidence"] == "unknown"
     assert rows["native coding-agent hook capture"]["usage_confidence"] == "unknown"
-    assert "hard dollar enforcement" in rows["provider/API proxy"]["hard_budget_basis"]
     assert "optional fallback" in " ".join(rows["sentinel-owned process wrapper"]["limitations"])
 
 
@@ -54,8 +52,6 @@ def test_usage_truth_table_cli_json() -> None:
     payload = json.loads(result.output)
     integrations = payload["integrations"]
     assert len(integrations) >= 6
-    assert any(row["integration"] == "provider/API proxy" for row in integrations)
-    assert "provider_billed" in json.dumps(payload)
     assert "subscription billing" in json.dumps(payload)
 
 
@@ -67,7 +63,6 @@ def test_usage_truth_table_cli_human_output() -> None:
     assert "codex local usage import" in result.output
     assert "Freshness" in result.output
     assert "agent MCP workflow events" in result.output
-    assert "provider/API proxy" in result.output
 
 
 def test_usage_truth_table_is_documented() -> None:

@@ -9,10 +9,8 @@ from typing import Any, Literal
 from .confidence import (
     COST_CLIENT_REPORTED,
     COST_ESTIMATED_FROM_TOKENS,
-    COST_PROVIDER_BILLED,
     COST_UNKNOWN,
     USAGE_CLIENT_REPORTED,
-    USAGE_PROVIDER_REPORTED,
     USAGE_UNKNOWN,
 )
 
@@ -238,36 +236,10 @@ USAGE_TRUTH_TABLE: tuple[UsageTruthRow, ...] = (
         ],
     ),
     UsageTruthRow(
-        integration="provider/API proxy",
-        tier="provider_proxy",
-        evidence_source="Traffic explicitly routed through agentacct provider forwarding",
-        update_timing=(
-            "Request estimates are available before forwarding; provider-reported usage/cost is available after each proxied response."
-        ),
-        observable_fields=[
-            "provider",
-            "model",
-            "request token estimate",
-            "provider-reported token usage when returned",
-            "provider-billed cost when returned as finite non-negative provider cost",
-            "budget decision",
-        ],
-        usage_confidence=USAGE_PROVIDER_REPORTED,
-        cost_confidence=f"{COST_PROVIDER_BILLED} when provider returns billed cost; otherwise {COST_ESTIMATED_FROM_TOKENS}",
-        hard_budget_basis="Strongest hard dollar enforcement path when traffic flows through agentacct and budget caps are configured.",
-        automatic_scope="Only covers API traffic intentionally sent through agentacct's proxy/forwarding endpoint.",
-        setup_path="agentacct cost proxy --enable-forwarding --forward-provider openai --max-total-usd 0.01",
-        limitations=[
-            "Does not cover subscription clients that bypass the proxy.",
-            "Provider usage and cost fields vary by provider.",
-            "Requires explicit provider allowlist and environment-provided API keys.",
-        ],
-    ),
-    UsageTruthRow(
         integration="sentinel-owned process wrapper",
         tier="process_wrapper",
-        evidence_source="Commands launched through agentacct run or sentinel-* wrappers",
-        update_timing="Process state can update while agentacct owns the process; token/cost freshness requires import, proxy, or MCP events.",
+        evidence_source="Commands launched through agentacct run",
+        update_timing="Process state can update while agentacct owns the process; token/cost freshness requires import or MCP events.",
         observable_fields=[
             "process status",
             "runtime",
@@ -279,7 +251,7 @@ USAGE_TRUTH_TABLE: tuple[UsageTruthRow, ...] = (
         ],
         usage_confidence=USAGE_UNKNOWN,
         cost_confidence=COST_UNKNOWN,
-        hard_budget_basis="Useful for runtime/process control; not a token or billing source unless paired with importer/proxy/events.",
+        hard_budget_basis="Useful for runtime/process control; not a token or billing source unless paired with importer or MCP events.",
         automatic_scope="Only commands the user explicitly launches through agentacct.",
         setup_path="agentacct run -- <command>",
         limitations=[

@@ -2,9 +2,6 @@ import json
 import sys
 from pathlib import Path
 
-from typer.testing import CliRunner
-
-from agentacct.cli import app
 from agentacct.cost import CostLedger, estimate_openai_chat_usage
 from agentacct.runner import RunOptions, start_guarded_run
 
@@ -48,23 +45,3 @@ def test_cost_ledger_filters_and_totals_by_run_id(tmp_path):
     assert all(event["run_id"] == "run_a" for event in run_a_events)
     assert ledger.total_estimated_cost_usd(run_id="run_a") == sum(event["estimated_cost_usd"] for event in run_a_events)
     assert ledger.total_estimated_cost_usd() > ledger.total_estimated_cost_usd(run_id="run_a")
-
-
-def test_proxy_header_run_id_is_visible_in_cost_status(tmp_path):
-    from fastapi.testclient import TestClient
-    from agentacct.cost import CostPolicy
-    from agentacct.proxy import create_app
-
-    client = TestClient(create_app(store_dir=tmp_path, policy=CostPolicy(max_total_usd=1.0), dry_run=True))
-    response = client.post(
-        "/openai/v1/chat/completions",
-        headers={"X-Agent-Sentinel-Run-Id": "run_header_demo"},
-        json={"model": "gpt-5-mini", "messages": [{"role": "user", "content": "hello"}]},
-    )
-    assert response.status_code == 200
-
-    result = CliRunner().invoke(app, ["cost", "status", "--store-dir", str(tmp_path), "--run-id", "run_header_demo"])
-
-    assert result.exit_code == 0
-    assert "Run ID: run_header_demo" in result.output
-    assert "Events: 1" in result.output

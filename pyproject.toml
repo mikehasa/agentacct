@@ -56,8 +56,6 @@ Issues = "https://github.com/mikehasa/agentacct/issues"
 
 [project.scripts]
 agentacct = "agentacct.cli:app"
-agentacct-claude = "agentacct.wrappers:sentinel_claude_main"
-agentacct-codex = "agentacct.wrappers:sentinel_codex_main"
 
 # Artifacts ship src/ packages only. tests/ is excluded from BOTH the wheel
 # (src-layout find below) and the sdist (MANIFEST.in prunes): the shipped

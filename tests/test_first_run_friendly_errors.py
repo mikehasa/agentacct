@@ -1,6 +1,6 @@
 """First-run UX: friendly one-line failures instead of stack dumps (Phase 3, item 5).
 
-A user who runs `report`/`judge`/`value`/`pause` right after `init` (empty
+A user who runs `report`/`runs`/`pause` right after `init` (empty
 store), or mistypes a run id, must get one actionable sentence — never a
 Typer/rich traceback — and read-only commands must never create store
 directories as a side effect.
@@ -68,8 +68,6 @@ def test_report_json_unknown_run_id_is_friendly_too(tmp_path):
 
 def test_run_lookup_commands_are_friendly_on_an_empty_store(tmp_path):
     for command in (
-        ["judge", "prepare", "latest"],
-        ["value", "compute", "latest"],
         ["outcome", "record-machine-check", "latest", "--after-exit-code", "0"],
     ):
         store = tmp_path / ("state-" + command[0])
@@ -97,8 +95,6 @@ def test_read_only_commands_never_create_store_directories(tmp_path):
     for command in (
         ["report", "latest"],
         ["runs"],
-        ["judge", "prepare", "latest"],
-        ["value", "compute", "latest"],
         ["pause", "run_x"],
         ["resume", "run_x"],
         ["kill", "run_x"],
@@ -364,8 +360,6 @@ def test_malformed_run_id_is_friendly_across_run_commands(tmp_path):
     _make_run(tmp_path)  # a valid run so `latest` and the store both resolve
     for command in (
         ["report", "../evil"],
-        ["value", "compute", "my run"],
-        ["judge", "prepare", "a/b"],
         ["pause", "../../etc"],
         ["resume", "with space"],
         ["kill", "a/b/c"],

@@ -4,8 +4,8 @@ The product is POSIX-only: the import/run chain reaches ``fcntl`` (service.py)
 and POSIX process groups/signals (runner.py), so on native Windows an entry
 point would otherwise die with a traceback before doing anything useful. This
 guard fails fast with one actionable sentence instead. It lives in its own
-lightweight module (imports only ``sys``) so both ``agentacct.cli`` and
-``agentacct.wrappers`` can call it without importing each other.
+lightweight module (imports only ``sys``) so ``agentacct.cli`` can call it
+without pulling in the POSIX-only service/runner import chain first.
 """
 
 from __future__ import annotations

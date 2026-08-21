@@ -62,8 +62,6 @@ from agentacct.usage_truth import (
     DIAGNOSTIC_EVENT_SOURCES,
     LOCAL_USAGE_PROVENANCE,
 )
-from agentacct.wrappers import CLAUDE_WRAPPER, build_agent_command
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = Path(agentacct.__file__).resolve().parent
 
@@ -395,21 +393,6 @@ def test_store_dir_env_alias_resolves_and_conflicts_refuse(tmp_path) -> None:
             raise AssertionError(f"conflicting store env values must refuse: {left} vs {right}")
 
 
-def test_wrapper_binary_env_alias(monkeypatch) -> None:
-    assert CLAUDE_WRAPPER.env_binary == "AGENTACCT_CLAUDE_BINARY"
-    for name in ("AGENTACCT_CLAUDE_BINARY", "AGENT_CHRONICLE_CLAUDE_BINARY", "AGENT_SENTINEL_CLAUDE_BINARY"):
-        monkeypatch.delenv(name, raising=False)
-    # Oldest pre-rename alias is still honored on its own.
-    monkeypatch.setenv("AGENT_SENTINEL_CLAUDE_BINARY", "/old/claude")
-    assert build_agent_command(CLAUDE_WRAPPER, ["-p", "hi"]) == ["/old/claude", "-p", "hi"]
-    # AGENT_CHRONICLE_* wins over AGENT_SENTINEL_*.
-    monkeypatch.setenv("AGENT_CHRONICLE_CLAUDE_BINARY", "/mid/claude")
-    assert build_agent_command(CLAUDE_WRAPPER, [])[0] == "/mid/claude"
-    # New AGENTACCT_* primary wins over both.
-    monkeypatch.setenv("AGENTACCT_CLAUDE_BINARY", "/new/claude")
-    assert build_agent_command(CLAUDE_WRAPPER, [])[0] == "/new/claude"
-
-
 # ---------------------------------------------------------------------------
 # 4. mcp doctor probes BOTH registration keys and reports which is registered
 # ---------------------------------------------------------------------------
@@ -471,8 +454,6 @@ def test_frozen_tool_names_and_semantic_kind() -> None:
         "agentacct_record_agent_usage_debug",
         "agentacct_list_events",
         "agentacct_get_event_summary",
-        "agentacct_prepare_judge",
-        "agentacct_compute_value",
     ]
     # RECOGNIZE-MANY: the log-evidence creation-tool set (a READ path over
     # historical transcripts) accepts BOTH the new agentacct_* names AND the
@@ -509,7 +490,6 @@ def test_frozen_provenance_sources_and_schema_versions() -> None:
     assert SESSION_ROLLUP_SCHEMA_VERSION == "agent-sentinel.session-rollup.v1"
     assert '"schema_version": "agent-sentinel.work-ledger.v2"' in _src("work_ledger.py")
     assert '"schema_version": "agent-sentinel.report.v1"' in _src("reports.py")
-    assert '"schema_version": "agent-sentinel.judge-package.v1"' in _src("outcome.py")
     assert '"source": source or "agent-sentinel-mcp"' in _src("mcp.py")
 
 
@@ -521,17 +501,6 @@ def test_frozen_metadata_keys_wire_vocab_and_store_dirs() -> None:
     assert '"AGENT_SENTINEL_RUN_DIR": str(run_dir)' in _src("runner.py")
     assert 'sanitized["reserved_instrumentation_provenance_stripped"] = True' in _src("usage_truth.py")
     assert 'sanitized["reserved_client_context_provenance_stripped"] = True' in _src("service.py")
-    proxy_src = _src("proxy.py")
-    for error_type in (
-        "agent_sentinel_budget_exceeded",
-        "agent_sentinel_missing_budget",
-        "agent_sentinel_missing_api_key",
-        "agent_sentinel_invalid_api_key_format",
-        "agent_sentinel_transport_error",
-    ):
-        assert error_type in proxy_src
-    assert '"agent_sentinel": {' in proxy_src  # response envelope key
-    assert 'x_agent_sentinel_run_id' in proxy_src  # X-Agent-Sentinel-Run-Id header
     assert '"agent_sentinel": {' in _src("hooks.py")  # hook decision key
     # /health now returns the agentacct-branded service string; the pre-rename
     # value stays ACCEPTED by the activation recognizer so cross-version
@@ -591,8 +560,6 @@ def test_pyproject_name_alias_scripts_and_build_system() -> None:
     # The published package ships ONLY agentacct-branded scripts. The old
     # "agent-chronicle" / "agent-sentinel" console scripts collide with
     # unrelated PyPI packages, so they are not shipped.
-    assert scripts["agentacct-claude"] == "agentacct.wrappers:sentinel_claude_main"
-    assert scripts["agentacct-codex"] == "agentacct.wrappers:sentinel_codex_main"
     assert "agent-chronicle" not in scripts
     assert "agent-sentinel" not in scripts
     build_system = payload["build-system"]
