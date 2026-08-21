@@ -1,105 +1,109 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from agentacct.api import create_local_api_app
-from agentacct.control_plane import ControlStore
+from agentacct.evidence import EvidenceEnvelope
+from agentacct.evidence_runtime import EvidenceRuntime
 
 
-def _registered_store(root: Path) -> ControlStore:
-    store = ControlStore(root)
-    store.register_workspace(
-        root.parent,
-        workspace_id="workspace_test",
-        store_dir=root,
-        idempotency_key="test:workspace",
+def _append_billed_control_evidence(store: Path, *, run_id: str) -> EvidenceEnvelope:
+    envelope = EvidenceEnvelope.create(
+        assertion="observed",
+        event_type="provider.cost.observed",
+        source_type="provider_invoice",
+        source_system="fixture-provider",
+        source_instance="fixture-account",
+        source_schema="fixture.v1",
+        adapter="fixture.v1",
+        source_event_id=f"api-cost-{run_id}",
+        event_timestamp="2026-07-13T00:00:00Z",
+        dimensions=("cost",),
+        measurement_basis={"cost": "provider_billed"},
+        subjects={"run_id": run_id},
+        payload={"amount_usd": 1.0},
     )
-    store.register_agent(
-        "agent_test",
-        display_name="Test owned adapter",
-        adapter="local_argv",
-        execution_backend="subprocess",
-        argv_template=[sys.executable, "-c", "import time; time.sleep(30)"],
-        idempotency_key="test:agent",
+    EvidenceRuntime(store).append(envelope)
+    return envelope
+
+
+def test_control_api_evaluates_but_never_dispatches(tmp_path) -> None:
+    store = tmp_path / "state"
+    client = TestClient(create_local_api_app(store_dir=store))
+
+    advisory = client.post(
+        "/control/evaluate",
+        json={
+            "action": "warn",
+            "target_id": "run-1",
+            "recommendation": "Review this run.",
+        },
     )
-    return store
+    assert advisory.status_code == 200
+    assert advisory.json()["effective_mode"] == "advisory"
+    assert not (store / "evidence-v2").exists()
 
-
-def test_control_get_is_empty_read_only_and_reports_authority_boundary(tmp_path):
-    root = tmp_path / "state"
-    app = create_local_api_app(store_dir=root)
-
-    with TestClient(app) as client:
-        response = client.get("/api/control")
+    response = client.post(
+        "/control/evaluate",
+        json={
+            "action": "pause",
+            "target_id": "run-1",
+            "recommendation": "Pause after orchestrator-reported budget threshold.",
+            "requested_mode": "hard",
+            "evidence_basis": "orchestrator_claim",
+            "controller_owns_execution": True,
+            "idempotency_key": "pause-run-1",
+        },
+    )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["summary"]["attempt_count"] == 0
-    assert payload["authority_boundary"]["external_codex"] == "observed_only"
-    # A read never materializes control-plane state on disk.
-    assert not (root / "control-plane").exists()
+    assert payload["effective_mode"] == "advisory"
+    assert payload["hard_enforcement_allowed"] is False
+    assert payload["supporting_evidence_validation"]["state"] == "invalid"
+    assert payload["external_action_dispatched"] is False
+    assert not (store / "evidence-v2").exists()
 
 
-def test_control_json_omits_process_authority_paths_and_argv(tmp_path):
-    root = tmp_path / "state"
-    store = _registered_store(root)
-    task = store.create_task(origin="planned", idempotency_key="test:task")
-    contract = store.create_contract(
-        task.task_id,
-        objective="Sanitize the product projection",
-        workspace_id="workspace_test",
-        permission_envelope={"mutation_mode": "read_only", "secret": "do-not-render"},
-        idempotency_key="test:contract",
+def test_control_api_validates_format_existence_and_local_billed_basis(tmp_path) -> None:
+    store = tmp_path / "state"
+    evidence = _append_billed_control_evidence(store, run_id="run-billed")
+    client = TestClient(create_local_api_app(store_dir=store))
+    base = {
+        "action": "pause",
+        "target_id": "run-billed",
+        "recommendation": "Pause after billed threshold.",
+        "requested_mode": "hard",
+        "evidence_basis": "provider_billed",
+        "cost_confidence": "provider_billed",
+        "controller_owns_execution": True,
+        "expires_at": "2030-01-01T00:00:00Z",
+        "idempotency_key": "pause-run-billed-api",
+    }
+
+    malformed = client.post(
+        "/control/evaluate",
+        json={**base, "supporting_evidence_ids": ["not-evidence"]},
     )
-    store.create_attempt(
-        task.task_id,
-        agent_id="agent_test",
-        workspace_id="workspace_test",
-        contract_revision=contract.revision,
-        idempotency_key="test:attempt",
+    assert malformed.status_code == 422
+
+    missing = client.post(
+        "/control/evaluate",
+        json={**base, "supporting_evidence_ids": ["evd_" + ("0" * 64)]},
     )
-    app = create_local_api_app(store_dir=root)
+    assert missing.status_code == 200
+    assert missing.json()["hard_enforcement_allowed"] is False
+    assert missing.json()["supporting_evidence_validation"]["missing_ids"] == [
+        "evd_" + ("0" * 64)
+    ]
 
-    with TestClient(app) as client:
-        response = client.get("/api/control")
-
-    encoded = response.text
-    assert response.status_code == 200
-    for forbidden in (
-        "canonical_root",
-        "store_dir",
-        "argv_template",
-        "process_group_id",
-        "process_birth_time",
-        "process_executable",
-        "process_cwd",
-        "ownership_nonce_hash",
-        "manifest_id",
-        "do-not-render",
-        str(tmp_path),
-    ):
-        assert forbidden not in encoded
-    assert response.json()["agents"][0]["command_registered"] is True
-
-
-def test_control_json_reports_workspace_write_as_launch_approval_required(tmp_path):
-    root = tmp_path / "state"
-    store = _registered_store(root)
-    task = store.create_task(origin="planned", idempotency_key="test:approval-task")
-    store.create_contract(
-        task.task_id,
-        objective="Require approval for workspace mutation",
-        workspace_id="workspace_test",
-        permission_envelope={"mutation_mode": "workspace_write"},
-        idempotency_key="test:approval-contract",
+    valid = client.post(
+        "/control/evaluate",
+        json={**base, "supporting_evidence_ids": [evidence.evidence_id]},
     )
-    app = create_local_api_app(store_dir=root)
-
-    with TestClient(app) as client:
-        response = client.get("/api/control")
-
-    assert response.status_code == 200
-    assert response.json()["contracts"][0]["launch_approval_required"] is True
+    assert valid.status_code == 200
+    assert valid.json()["hard_enforcement_allowed"] is True
+    assert valid.json()["supporting_evidence_validation"]["state"] == "valid"
+    assert valid.json()["external_action_dispatched"] is False

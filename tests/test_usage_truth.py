@@ -27,9 +27,6 @@ def test_usage_truth_table_has_expected_integrations() -> None:
     assert "openclaw JSONL local usage import" in rows
     assert "agent MCP workflow events" in rows
     assert "native coding-agent hook capture" in rows
-    assert "OpenLIT / OTLP trace ingestion" in rows
-    assert "Paperclip snapshot connector" in rows
-    assert "Entire Git checkpoint connector" in rows
     assert "provider/API proxy" in rows
     assert "sentinel-owned process wrapper" in rows
 
@@ -46,7 +43,6 @@ def test_usage_truth_table_has_expected_integrations() -> None:
     assert "usage.cost.total" in rows["openclaw JSONL local usage import"]["cost_confidence"]
     assert rows["agent MCP workflow events"]["usage_confidence"] == "unknown"
     assert rows["native coding-agent hook capture"]["usage_confidence"] == "unknown"
-    assert "not proof of billing" in " ".join(rows["OpenLIT / OTLP trace ingestion"]["limitations"])
     assert "hard dollar enforcement" in rows["provider/API proxy"]["hard_budget_basis"]
     assert "optional fallback" in " ".join(rows["sentinel-owned process wrapper"]["limitations"])
 
