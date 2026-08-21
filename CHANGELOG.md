@@ -6,6 +6,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-08-21
+
+A cleanup release that removes dead code from earlier product pivots. There is
+no change to the Work Receipt, usage import, or the coding-agent capture
+surfaces; the v1 event-log store and Evidence v2 store are unaffected.
+
+### Removed
+- **Unused third-party evidence connectors.** The OpenLIT/OTLP, Paperclip, and
+  Entire Git ingestion connectors — which had no producer anywhere in the
+  product — along with the `connector` CLI sub-app, the `POST /v1/traces` and
+  `/connectors/*/import` routes, and their usage truth-table rows.
+- **The run-scoring, wrapper, cost-proxy, and smoke-harness surfaces** of the
+  legacy guarded-run lane: the advisory judge/value scoring (the `judge`/`value`
+  CLI sub-apps, the `agentacct_prepare_judge`/`agentacct_compute_value` MCP
+  tools, and the `/runs/{id}/judge/prepare` + `/runs/{id}/value/compute`
+  routes), the `agentacct-claude`/`agentacct-codex` process wrappers, the opt-in
+  cost proxy, and the optional real-agent smoke harnesses.
+- **The abandoned canonical SQLite store migration.** The never-enabled second
+  store (both `AGENTACCT_CANONICAL_LIVE_WRITE` and `AGENTACCT_CANONICAL_READ`
+  shipped OFF and it never ran in production) is removed rather than finished.
+
+### Changed
+- Finished the rename from the mid-lineage "Agent Chronicle" name and the dead
+  `agent-chronicle` CLI to `agentacct` across the public docs, and retired stale
+  HTML-dashboard references and two pre-rename smoke logs.
+
 ## [0.9.0] — 2026-08-17
 
 The multi-agent release: agentacct now reads and instruments **four** coding
@@ -610,7 +636,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.1
 [0.9.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.0
 [0.8.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.8.1
 [0.8.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.8.0
