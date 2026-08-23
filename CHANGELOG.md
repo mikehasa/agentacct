@@ -6,6 +6,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.3] — 2026-08-23
+
+A metadata release: finishes the agentacct rename on the last user-facing
+surfaces the 0.9.1 docs sweep missed. No code or behavior changes.
+
+### Changed
+- Renamed the remaining pre-rename "Agent Chronicle" references to agentacct in
+  the GitHub issue-form templates, the `LICENSE` copyright line, and the
+  `full_demo_task` example. (#121)
+
 ## [0.9.2] — 2026-08-22
 
 A documentation release: the docs now match the surface 0.9.1 actually ships.
@@ -651,7 +661,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.3
 [0.9.2]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.2
 [0.9.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.1
 [0.9.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.0
