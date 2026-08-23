@@ -1,7 +1,7 @@
-"""A deterministic task for Agent Chronicle end-to-end demos.
+"""A deterministic task for agentacct end-to-end demos.
 
 This script is intentionally boring: it sleeps, prints progress, and exits 0.
-Use it to validate Chronicle's run/report/API/MCP/outcome/value pipeline without
+Use it to validate agentacct's run/report/API/MCP/outcome/value pipeline without
 calling a real agent or touching real user processes.
 """
 
@@ -15,12 +15,12 @@ import time
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a safe deterministic Agent Chronicle demo task.")
+    parser = argparse.ArgumentParser(description="Run a safe deterministic agentacct demo task.")
     parser.add_argument("--steps", type=int, default=6, help="Number of visible task steps to print.")
     parser.add_argument("--sleep-seconds", type=float, default=1.0, help="Seconds to sleep per step.")
     parser.add_argument(
         "--label",
-        default="agent-chronicle-full-demo",
+        default="agentacct-full-demo",
         help="Human-readable label included in the final JSON summary.",
     )
     return parser.parse_args()

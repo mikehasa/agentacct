@@ -28,8 +28,8 @@ body:
   - type: textarea
     id: desired
     attributes:
-      label: Desired Chronicle behavior
-      description: What should Agent Chronicle track, block, report, or display?
+      label: Desired agentacct behavior
+      description: What should agentacct track, block, report, or display?
     validations:
       required: true
   - type: textarea
