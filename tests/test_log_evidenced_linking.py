@@ -46,6 +46,7 @@ from agentacct.log_evidence import (
     extract_created_event_id,
 )
 from agentacct.service import SentinelService
+from agentacct.task_outcome import reduce_task_outcome
 from agentacct.work_ledger import build_work_ledger
 
 SESSION = "019f2303-6ae1-7000-8000-000000000001"
@@ -91,9 +92,7 @@ def _mcp_ok_result(payload: dict) -> dict:
 
 
 def _mcp_tool_call_end(server, tool: str, call_id: str, result, *, omit_server: bool = False) -> dict:
-    """Codex 0.144.0-alpha.4 wire shape: MCP calls exist ONLY as event_msg/
-    mcp_tool_call_end lines (the duplicate function_call records are gone).
-    Fully synthetic redacted fixture modeled on the documented shape."""
+    """Legacy terminal MCP carrier retained in some Codex rollouts."""
 
     invocation: dict = {"tool": tool, "arguments": {}}
     if not omit_server:
@@ -107,6 +106,68 @@ def _mcp_tool_call_end(server, tool: str, call_id: str, result, *, omit_server: 
             "invocation": invocation,
             "duration": {"secs": 2, "nanos": 0},
             "result": result,
+        },
+    }
+
+
+_MISSING = object()
+
+
+def _mcp_call_result(payload: dict, *, is_error: bool = False) -> dict:
+    """Current Codex direct CallToolResult shape (not the legacy Ok wrapper)."""
+
+    result = {
+        "content": [
+            {
+                "type": "text",
+                "text": json.dumps(payload, indent=2, sort_keys=True),
+            }
+        ]
+    }
+    if is_error:
+        result["isError"] = True
+    return result
+
+
+def _mcp_item_completed(
+    server,
+    tool: str,
+    call_id: str,
+    *,
+    status: str = "completed",
+    result=_MISSING,
+    error=_MISSING,
+    arguments: dict | None = None,
+    omit_id: bool = False,
+    omit_server: bool = False,
+) -> dict:
+    """Sanitized literal of Codex's current paginated MCP completion carrier."""
+
+    item: dict = {
+        "type": "McpToolCall",
+        "id": call_id,
+        "server": server,
+        "tool": tool,
+        "arguments": arguments or {},
+        "status": status,
+        "duration": {"secs": 2, "nanos": 0},
+    }
+    if omit_id:
+        item.pop("id")
+    if omit_server:
+        item.pop("server")
+    if result is not _MISSING:
+        item["result"] = result
+    if error is not _MISSING:
+        item["error"] = error
+    return {
+        "timestamp": "2026-07-05T10:00:01.000Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "item_completed",
+            "thread_id": "thread-redacted",
+            "turn_id": "turn-redacted",
+            "item": item,
         },
     }
 
@@ -330,7 +391,410 @@ def test_no_evidence_event_metadata_is_byte_identical_to_pre_change_shape(tmp_pa
 
 
 # ---------------------------------------------------------------------------
-# Importer (codex 0.144+ mcp_tool_call_end channel)
+# Importer (current paginated item_completed / McpToolCall channel)
+# ---------------------------------------------------------------------------
+
+
+def test_codex_paginated_mcp_items_extract_all_creation_tools_and_ignore_reads(tmp_path) -> None:
+    tools_and_ids = [
+        ("agentacct_record_event", "evt_aa1001aa1001"),
+        ("agentacct_attach_client_context", "evt_bb2002bb2002"),
+        ("agentacct_record_section", "evt_cc3003cc3003"),
+        ("agentacct_record_agent_usage_debug", "evt_dd4004dd4004"),
+        ("agentacct_record_machine_check", "evt_ee5005ee5005"),
+    ]
+    lines = [
+        _mcp_item_completed(
+            "agentacct",
+            tool,
+            f"call_{index}",
+            result=_mcp_call_result(_creation_payload(event_id)),
+        )
+        for index, (tool, event_id) in enumerate(tools_and_ids)
+    ]
+    lines.append(
+        _mcp_item_completed(
+            "agentacct",
+            "agentacct_get_event_summary",
+            "call_read",
+            result=_mcp_call_result(_creation_payload("evt_deadbeef0001")),
+        )
+    )
+
+    event = _single_codex_event(_make_codex_home(tmp_path, lines))
+
+    assert list(event.evidenced_event_ids) == [event_id for _tool, event_id in tools_and_ids]
+    assert event.evidenced_event_id_total == 5
+    assert event.evidenced_outputs_skipped == 0
+
+
+def test_codex_paginated_mcp_items_fail_closed_without_hiding_refusals(tmp_path) -> None:
+    refusal = (
+        "tool call error: tool call failed for `agentacct/agentacct_record_section`\n\n"
+        "Caused by:\n    Mcp error: -32602: summary must be <= 1200 characters"
+    )
+    lines = [
+        _mcp_item_completed(
+            "agentacct",
+            "agentacct_record_section",
+            "call_ok",
+            result=_mcp_call_result(_creation_payload("evt_012301230123")),
+        ),
+        # A read tool is structurally irrelevant even when its result resembles
+        # a creation response.
+        _mcp_item_completed(
+            "agentacct",
+            "agentacct_list_events",
+            "call_read",
+            result=_mcp_call_result(_creation_payload("evt_deadbeef0002")),
+        ),
+        _mcp_item_completed(
+            "other-server",
+            "agentacct_record_section",
+            "call_foreign",
+            result=_mcp_call_result(_creation_payload("evt_badbadbad001")),
+        ),
+        _mcp_item_completed(
+            None,
+            "agentacct_record_section",
+            "call_no_server",
+            result=_mcp_call_result(_creation_payload("evt_badbadbad002")),
+            omit_server=True,
+        ),
+        _mcp_item_completed(
+            "agentacct",
+            "agentacct_record_section",
+            "call_refused",
+            status="failed",
+            error={"message": refusal},
+        ),
+        # CallToolResult-level failure is not a success merely because the item
+        # itself reached the completed state.
+        _mcp_item_completed(
+            "agentacct",
+            "agentacct_record_section",
+            "call_is_error",
+            result=_mcp_call_result(_creation_payload("evt_badbadbad003"), is_error=True),
+        ),
+        _mcp_item_completed(
+            "agentacct",
+            "agentacct_record_section",
+            "call_bad_content",
+            result={"content": "not-a-list"},
+        ),
+    ]
+
+    event = _single_codex_event(_make_codex_home(tmp_path, lines))
+
+    assert list(event.evidenced_event_ids) == ["evt_012301230123"]
+    assert event.evidenced_outputs_skipped == 5
+    assert list(event.refused_recording_attempts) == [
+        {
+            "tool": "agentacct_record_section",
+            "field": "summary",
+            "reason_code": "narrative_over_limit",
+            "count": 1,
+        }
+    ]
+    rendered = json.dumps(event.to_sentinel_event())
+    assert "deadbeef" not in rendered
+    assert "badbadbad" not in rendered
+    assert refusal not in rendered
+
+
+def test_codex_paginated_malformed_creation_items_raise_schema_drift(tmp_path) -> None:
+    missing_id = _mcp_item_completed(
+        "agentacct",
+        "agentacct_record_section",
+        "call_missing_id",
+        result=_mcp_call_result(_creation_payload("evt_101010101010")),
+        omit_id=True,
+    )
+    missing_server = _mcp_item_completed(
+        None,
+        "agentacct_record_section",
+        "call_missing_server",
+        result=_mcp_call_result(_creation_payload("evt_202020202020")),
+        omit_server=True,
+    )
+    unknown_status = _mcp_item_completed(
+        "agentacct",
+        "agentacct_record_section",
+        "call_unknown_status",
+        status="mystery",
+        result=_mcp_call_result(_creation_payload("evt_303030303030")),
+    )
+    missing_result = _mcp_item_completed(
+        "agentacct",
+        "agentacct_record_section",
+        "call_missing_result",
+    )
+    # Unknown/non-MCP paginated items are not evidence errors. This adapter is
+    # intentionally narrow instead of guessing every Codex TurnItem shape.
+    non_mcp_item = {
+        "type": "event_msg",
+        "payload": {
+            "type": "item_completed",
+            "item": {"type": "CommandExecution", "id": "cmd_1", "status": "completed"},
+        },
+    }
+    stats: dict[str, object] = {}
+    observations = []
+
+    events = discover_codex_usage(
+        codex_home=_make_codex_home(
+            tmp_path,
+            [missing_id, missing_server, unknown_status, missing_result, non_mcp_item],
+        ),
+        limit_sessions=10,
+        _discovery_stats=stats,
+        _session_observations=observations,
+    )
+
+    assert len(events) == 1
+    assert events[0].evidenced_event_ids == ()
+    assert events[0].evidenced_outputs_skipped == 4
+    assert events[0].source_parse_complete is False
+    assert observations[0].source_parse_complete is False
+    assert stats["error_codes"] == ["codex_rollout_schema_drift"]
+
+
+def test_codex_paginated_and_legacy_fragments_reconcile_order_independently(tmp_path) -> None:
+    success_id = "evt_414141414141"
+    for index, reverse in enumerate((False, True)):
+        duplicate_success = [
+            _mcp_item_completed(
+                "agentacct",
+                "agentacct_record_section",
+                "call_success",
+                result=_mcp_call_result(_creation_payload(success_id)),
+            ),
+            _mcp_tool_call_end(
+                "agentacct",
+                "agentacct_record_section",
+                "call_success",
+                _mcp_ok_result(_creation_payload(success_id)),
+            ),
+        ]
+        divergent = [
+            _mcp_item_completed(
+                "agentacct",
+                "agentacct_record_section",
+                "call_divergent",
+                status="failed",
+                error={"message": "tool call failed"},
+            ),
+            _mcp_tool_call_end(
+                "agentacct",
+                "agentacct_record_section",
+                "call_divergent",
+                _mcp_ok_result(_creation_payload("evt_515151515151")),
+            ),
+        ]
+        lines = duplicate_success + divergent
+        if reverse:
+            lines = [*reversed(duplicate_success), *reversed(divergent)]
+
+        event = _single_codex_event(_make_codex_home(tmp_path / f"order-{index}", lines))
+
+        assert list(event.evidenced_event_ids) == [success_id, "evt_515151515151"]
+        assert event.evidenced_event_id_total == 2
+        assert event.evidenced_outputs_skipped == 1
+
+
+def test_codex_conflicting_terminal_fragments_fail_closed_in_both_orders(tmp_path) -> None:
+    paginated = _mcp_item_completed(
+        "agentacct",
+        "agentacct_record_section",
+        "call_conflict",
+        result=_mcp_call_result(_creation_payload("evt_616161616161")),
+    )
+    legacy = _mcp_tool_call_end(
+        "agentacct",
+        "agentacct_record_section",
+        "call_conflict",
+        _mcp_ok_result(_creation_payload("evt_717171717171")),
+    )
+
+    for index, lines in enumerate(([paginated, legacy], [legacy, paginated])):
+        event = _single_codex_event(
+            _make_codex_home(tmp_path / f"conflict-{index}", list(lines))
+        )
+        assert event.evidenced_event_ids == ()
+        assert event.evidenced_event_id_total == 0
+        assert event.evidenced_outputs_skipped == 1
+
+
+def test_codex_paginated_jsonl_links_trusted_import_to_gradeable_receipt(tmp_path) -> None:
+    """The original symptom, through the public boundaries: a persisted MCP
+    response must turn a session-only observation into linked, verified work."""
+
+    store = tmp_path / "store"
+    service = SentinelService(store)
+    section = service.record_event(
+        {
+            "source": "codex",
+            "event_type": "section_completed",
+            "created_at": 200.0,
+            "metadata": {
+                "sentinel_semantic_kind": "section",
+                "client": "codex",
+                "client_session_id": None,
+                "section_id": "paginated-regression",
+                "section_status": "completed",
+                "section_title": "Fix paginated Codex evidence",
+                "kind": "implementation",
+                "project_dir": "/work/project",
+            },
+        }
+    )
+    check = service.record_event(
+        {
+            "source": "codex",
+            "event_type": "machine_check",
+            "created_at": 210.0,
+            "metadata": {
+                "result": "passed",
+                "evidence_type": "test",
+                "summary": "regression passed",
+                "name": "pytest",
+                "exit_code": 0,
+                "section_id": "paginated-regression",
+                "client": "codex",
+                "client_session_id": None,
+                "project_dir": "/work/project",
+            },
+        }
+    )
+    codex_home = _make_codex_home(
+        tmp_path,
+        [
+            _mcp_item_completed(
+                "agentacct",
+                "agentacct_record_section",
+                "call_section",
+                result=_mcp_call_result(_creation_payload(section["event_id"])),
+            ),
+            _mcp_item_completed(
+                "agentacct",
+                "agentacct_record_machine_check",
+                "call_check",
+                result=_mcp_call_result(_creation_payload(check["event_id"])),
+            ),
+        ],
+    )
+
+    imported = CliRunner().invoke(
+        app,
+        [
+            "usage",
+            "import-local",
+            "--store-dir",
+            str(store),
+            "--client",
+            "codex",
+            "--codex-home",
+            str(codex_home),
+            "--json",
+        ],
+    )
+
+    assert imported.exit_code == 0, imported.output
+    client = TestClient(
+        create_local_api_app(store_dir=store, v1_auth_token="paginated-test-token")
+    )
+    task = client.get("/tasks").json()["tasks"][0]
+    assert len(task["work_items"]) == 1
+    assert reduce_task_outcome(task)["key"] == "verified"
+
+    headers = {"Authorization": "Bearer paginated-test-token"}
+    listing = client.get("/v1/tasks", headers=headers).json()
+    assert listing["total"] == 1
+    row = listing["tasks"][0]
+    assert row["decision_status"]["key"] == "verified"
+    assert row["evidence_strength"]["gradeable"] is True
+    receipt = client.get(
+        f"/v1/receipt?task={row['task_id']}", headers=headers
+    ).json()
+    assert receipt["axes"]["decision_status"]["key"] == "verified"
+    assert receipt["axes"]["evidence_strength"]["gradeable"] is True
+
+
+def test_codex_refresh_repairs_existing_same_token_row_with_paginated_evidence(tmp_path) -> None:
+    store = tmp_path / "store"
+    section = SentinelService(store).record_event(
+        {
+            "source": "codex",
+            "event_type": "section_completed",
+            "created_at": 200.0,
+            "metadata": {
+                "sentinel_semantic_kind": "section",
+                "client": "codex",
+                "client_session_id": None,
+                "section_id": "refresh-regression",
+                "section_status": "completed",
+                "section_title": "Repair imported evidence",
+                "kind": "implementation",
+                "project_dir": "/work/project",
+            },
+        }
+    )
+    codex_home = _make_codex_home(tmp_path, [])
+    args = [
+        "usage",
+        "import-local",
+        "--store-dir",
+        str(store),
+        "--client",
+        "codex",
+        "--codex-home",
+        str(codex_home),
+        "--json",
+    ]
+    runner = CliRunner()
+    first = runner.invoke(app, args)
+    assert first.exit_code == 0, first.output
+
+    rollout = next((codex_home / "sessions").rglob("rollout-*.jsonl"))
+    rollout.write_text(
+        rollout.read_text(encoding="utf-8")
+        + json.dumps(
+            _mcp_item_completed(
+                "agentacct",
+                "agentacct_record_section",
+                "call_refresh",
+                result=_mcp_call_result(_creation_payload(section["event_id"])),
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    ordinary = runner.invoke(app, args)
+    assert ordinary.exit_code == 0, ordinary.output
+    ordinary_rows = [
+        event
+        for event in SentinelService(store).list_all_events()
+        if event.get("event_type") == "model_usage"
+    ]
+    assert len(ordinary_rows) == 1
+    assert "evidenced_event_ids" not in ordinary_rows[0]["metadata"]
+
+    refreshed = runner.invoke(app, [*args, "--refresh"])
+    assert refreshed.exit_code == 0, refreshed.output
+    refreshed_rows = [
+        event
+        for event in SentinelService(store).list_all_events()
+        if event.get("event_type") == "model_usage"
+    ]
+    assert len(refreshed_rows) == 1
+    assert refreshed_rows[0]["metadata"]["evidenced_event_ids"] == [
+        section["event_id"]
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Importer (legacy function/output and mcp_tool_call_end channels)
 # ---------------------------------------------------------------------------
 
 
@@ -570,6 +1034,26 @@ def test_codex_model_label_never_poisoned_by_tool_call_payloads(tmp_path) -> Non
     assert usage_foreign is not None
     assert usage_foreign.get("model") is None
 
+    # Current paginated MCP items put arguments under payload.item. One of
+    # agentacct's real creation tools has a legitimate argument NAMED model,
+    # so recursively scanning this envelope would mislabel and misprice the
+    # entire session.
+    poisoned_item = _mcp_item_completed(
+        "agentacct",
+        "agentacct_record_agent_usage_debug",
+        "call_item_poison",
+        arguments={"model": "gpt-poison"},
+        result=_mcp_call_result(_creation_payload("evt_66778899aabb")),
+    )
+    rollout_item = tmp_path / "rollout-item-poison.jsonl"
+    rollout_item.write_text(
+        "\n".join(json.dumps(line) for line in (poisoned_item, token_line_no_model)) + "\n",
+        encoding="utf-8",
+    )
+    usage_item = _read_codex_rollout_usage(rollout_item)
+    assert usage_item is not None
+    assert usage_item.get("model") is None
+
     # The legitimate carrier still labels the session — even when it appears
     # AFTER the tool line (the poisoned line no longer wins the first-scan).
     rollout_legit = tmp_path / "rollout-legit.jsonl"
@@ -579,6 +1063,15 @@ def test_codex_model_label_never_poisoned_by_tool_call_payloads(tmp_path) -> Non
     usage_legit = _read_codex_rollout_usage(rollout_legit)
     assert usage_legit is not None
     assert usage_legit.get("model") == "gpt-5.5"
+
+    rollout_item_legit = tmp_path / "rollout-item-legit.jsonl"
+    rollout_item_legit.write_text(
+        "\n".join(json.dumps(line) for line in (poisoned_item, _token_usage_line())) + "\n",
+        encoding="utf-8",
+    )
+    usage_item_legit = _read_codex_rollout_usage(rollout_item_legit)
+    assert usage_item_legit is not None
+    assert usage_item_legit.get("model") == "gpt-5.5"
 
 
 def test_classify_codex_mcp_invocation_and_unwrap_codex_mcp_result_units() -> None:

@@ -318,6 +318,84 @@ def test_discover_codex_populates_rollout_tool_activity(tmp_path):
     assert "tool_activity" not in worker.to_sentinel_event()["metadata"]
 
 
+def test_discover_codex_populates_paginated_mcp_tool_activity_once(tmp_path):
+    codex_home = _make_codex_home(tmp_path)
+    _add_codex_thread(
+        codex_home, session_id="worker", updated_at=300, model="gpt-5.5"
+    )
+    paginated_call = {
+        "timestamp": "2026-07-05T10:00:01.000Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "item_completed",
+            "thread_id": "thread-redacted",
+            "turn_id": "turn-redacted",
+            "item": {
+                "type": "McpToolCall",
+                "id": "call_section",
+                "server": "agentacct",
+                "tool": "agentacct_record_section",
+                "arguments": {"section_id": "redacted"},
+                "status": "completed",
+                "duration": {"secs": 2, "nanos": 0},
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {"event": {"event_id": "evt_123456789abc"}}
+                            ),
+                        }
+                    ]
+                },
+            },
+        },
+    }
+    # The duplicate legacy terminal fragment carries the same logical call ID.
+    # Actions count logical calls, not rollout representations.
+    legacy_duplicate = {
+        "type": "event_msg",
+        "payload": {
+            "type": "mcp_tool_call_end",
+            "call_id": "call_section",
+            "invocation": {
+                "server": "agentacct",
+                "tool": "agentacct_record_section",
+                "arguments": {"section_id": "redacted"},
+            },
+            "result": {
+                "Ok": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {"event": {"event_id": "evt_123456789abc"}}
+                            ),
+                        }
+                    ]
+                }
+            },
+        },
+    }
+    _rewrite_rollout_with_tool_calls(
+        codex_home,
+        "worker",
+        "/work/project",
+        [paginated_call, legacy_duplicate],
+    )
+
+    observations: list = []
+    discover_codex_usage(
+        codex_home=codex_home, limit_sessions=10, _session_observations=observations
+    )
+
+    worker = next(o for o in observations if o.client_session_id == "worker")
+    assert worker.rollout_tool_activity["tool_category_counts"] == {"mcp": 1}
+    assert worker.rollout_tool_activity["tool_names"] == [
+        {"name": "mcp__agentacct__agentacct_record_section", "count": 1}
+    ]
+
+
 def test_import_local_emits_and_refreshes_codex_actions(tmp_path):
     from typer.testing import CliRunner
 
