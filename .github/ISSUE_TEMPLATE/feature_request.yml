@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest an improvement to the Agent Chronicle CLI
+description: Suggest an improvement to the agentacct CLI
 title: "feat: "
 labels: ["enhancement"]
 body:
@@ -15,7 +15,7 @@ body:
     id: proposal
     attributes:
       label: Proposed solution
-      description: What should Agent Chronicle do?
+      description: What should agentacct do?
     validations:
       required: true
   - type: textarea
@@ -29,4 +29,4 @@ body:
       options:
         - label: This should preserve local-first behavior.
         - label: This should not require provider API keys by default.
-        - label: This should not control processes Agent Chronicle did not start.
+        - label: This should not control processes agentacct did not start.

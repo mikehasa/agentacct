@@ -1,5 +1,5 @@
 name: Bug report
-description: Report something broken in Agent Chronicle
+description: Report something broken in agentacct
 title: "bug: "
 labels: ["bug"]
 body:
@@ -12,7 +12,7 @@ body:
     attributes:
       label: Summary
       description: What went wrong?
-      placeholder: Agent Chronicle did...
+      placeholder: agentacct did...
     validations:
       required: true
   - type: textarea
