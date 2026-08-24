@@ -6,6 +6,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.4] — 2026-08-25
+
+Fixes Codex session recording for newly-onboarded users: agentacct MCP receipts
+recorded by current Codex now link into gradeable work items instead of being
+dropped.
+
 ### Fixed
 
 - Read Codex's paginated `item_completed` / `McpToolCall` rollout records
@@ -14,7 +20,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   representations are reconciled by logical call id. A clean failed or unknown
   duplicate does not suppress a valid receipt; malformed carriers, identity
   conflicts, and conflicting successful event ids invalidate that logical call
-  and report evidence schema drift.
+  and report evidence schema drift. (#123)
 
 ## [0.9.3] — 2026-08-23
 
@@ -671,7 +677,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.9.4...HEAD
+[0.9.4]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.4
 [0.9.3]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.3
 [0.9.2]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.2
 [0.9.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.1
