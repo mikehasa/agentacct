@@ -17,8 +17,18 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, TextIO
 
+from .codex_rollout_adapter import (
+    CodexEvidenceFragment,
+    codex_function_action_name,
+    codex_mcp_action_name,
+    codex_model_from_record,
+    codex_record_may_contain_evidence,
+    decode_codex_evidence_fragment,
+    reconcile_codex_evidence_fragments,
+    validated_codex_identifier,
+)
 from .confidence import COST_BASIS_CLIENT_SESSION, COST_BASIS_PRICING_TABLE, COST_CLIENT_REPORTED, COST_ESTIMATED_FROM_TOKENS, COST_UNKNOWN, USAGE_CLIENT_REPORTED
 from .env_compat import read_env_alias
 from .cost import estimate_model_cost_breakdown_usd, has_model_price, model_pricing_entry
@@ -26,15 +36,9 @@ from .log_evidence import (
     ACCEPTED_SERVER_KEYS,
     LogEvidenceAccumulator,
     classify_claude_tool_use,
-    classify_codex_function_call,
-    classify_codex_mcp_invocation,
     claude_tool_use_creation_tool,
-    extract_created_event_id,
     opencode_tool_creation_tool,
     refused_recording_rows,
-    unwrap_codex_mcp_error,
-    unwrap_codex_mcp_result,
-    unwrap_codex_output_text,
 )
 from .source_paths import resolve_core_usage_source_plans, resolve_usage_source_paths
 from .store_resolution import claude_worktree_owner_path_text
@@ -1084,6 +1088,7 @@ def _discover_codex_usage_from_home(
     rollout_parse_stats: dict[str, int] = {
         "unparseable_rollouts": 0,
         "schema_drift_rollouts": 0,
+        "evidence_schema_drift_rollouts": 0,
     }
     _codex_total_rows = len(rows)
     for _codex_index, row in enumerate(rows):
@@ -1091,6 +1096,7 @@ def _discover_codex_usage_from_home(
         row_parse_stats: dict[str, int] = {
             "unparseable_rollouts": 0,
             "schema_drift_rollouts": 0,
+            "evidence_schema_drift_rollouts": 0,
         }
         observation_metadata: dict[str, Any] = {}
         rollout_source = rollout_source_by_session.get(row_id)
@@ -1135,6 +1141,9 @@ def _discover_codex_usage_from_home(
         if rollout_parse_stats["schema_drift_rollouts"]:
             if "codex_rollout_schema_drift" not in error_codes:
                 error_codes.append("codex_rollout_schema_drift")
+        if rollout_parse_stats["evidence_schema_drift_rollouts"]:
+            if "codex_rollout_evidence_schema_drift" not in error_codes:
+                error_codes.append("codex_rollout_evidence_schema_drift")
         _discovery_stats["error_codes"] = error_codes
     index_source = _regular_source_file(root / "session_index.jsonl", root=root)
     titles_by_session = (
@@ -7256,18 +7265,6 @@ def _read_codex_rollout_parent_thread_id(
     return None
 
 
-# Tool-call channel payloads carry agent/tool-controlled data (invocation
-# arguments, tool results). A "model" string inside them is a tool ARGUMENT
-# or an echoed result field — never the session's model label — so the model
-# scan skips these payload types entirely (an agent passing
-# {"model": "gpt-x"} to a tool must not relabel, and thus reprice, the
-# session). The legitimate carriers (session_meta / turn_context / the
-# token-usage event_msg payloads) are unaffected.
-_CODEX_MODEL_SCAN_EXCLUDED_PAYLOAD_TYPES = frozenset(
-    {"function_call", "function_call_output", "mcp_tool_call_begin", "mcp_tool_call_end"}
-)
-
-
 # ---------------------------------------------------------------------------
 # Codex rollout parse memoization.
 #
@@ -7297,7 +7294,8 @@ _CODEX_PARSER_CODE_VERSION: str | None = None
 def _codex_parser_code_version() -> str | None:
     """A version tag that changes whenever the parsing code changes, so a stale
     cache from an older parser is never trusted. Hashes the installed package
-    version, a manual format counter, and this module + its evidence dependency.
+    version, a manual format counter, and this module plus its rollout-adapter
+    and evidence dependencies.
     Returns None when the source cannot be read (frozen bundle / .pyc-only): in
     that case the version cannot be proven, so the cache is disabled rather than
     keyed on a constant 'missing' tag that would survive an upgrade."""
@@ -7319,7 +7317,12 @@ def _codex_parser_code_version() -> str | None:
         except Exception:  # noqa: BLE001 - metadata is best-effort.
             hasher.update(b"\0nopkgver\0")
         readable = True
-        for module_path in (Path(__file__), Path(__file__).with_name("log_evidence.py")):
+        for module_path in (
+            Path(__file__),
+            Path(__file__).with_name("codex_rollout_adapter.py"),
+            Path(__file__).with_name("log_evidence.py"),
+            Path(__file__).with_name("tool_activity.py"),
+        ):
             try:
                 hasher.update(module_path.read_bytes())
             except OSError:
@@ -7513,7 +7516,9 @@ def _emit_scan_phase(label: str) -> None:
 # Only tool NAMES, cwd-relative touched PATHS, and best-effort-scrubbed COMMANDS
 # are derived; never tool output, never an absolute path prefix.
 
-_CODEX_TOOL_CALLS_SCAN_MAX = 5000  # bound accumulation on a pathological rollout
+_CODEX_TOOL_ACTIVITY_CARRIER_CAP = 5000
+_CODEX_EVIDENCE_FRAGMENT_CAP = 5000
+_CODEX_TOOL_ARGUMENT_TEXT_MAX = 1_000_000
 _CODEX_APPLY_PATCH_FILE_RE = re.compile(
     r"^\*\*\*\s+(?:Add|Update|Delete)\s+File:\s*(.+?)\s*$", re.MULTILINE
 )
@@ -7532,33 +7537,41 @@ _CODEX_EXEC_JS_CMD_RE = re.compile(
 )
 
 
+def _iter_codex_apply_patch_paths(patch_text: Any) -> Iterator[str]:
+    if not isinstance(patch_text, str) or "*** " not in patch_text:
+        return
+    for pattern in (_CODEX_APPLY_PATCH_FILE_RE, _CODEX_APPLY_PATCH_MOVE_RE):
+        for match in pattern.finditer(patch_text):
+            yield match.group(1)
+
+
 def _codex_apply_patch_paths(patch_text: Any) -> list[str]:
     """The file paths an ``apply_patch`` touched, parsed from its patch body."""
 
-    if not isinstance(patch_text, str) or "*** " not in patch_text:
-        return []
-    paths = [m.group(1) for m in _CODEX_APPLY_PATCH_FILE_RE.finditer(patch_text)]
-    paths.extend(m.group(1) for m in _CODEX_APPLY_PATCH_MOVE_RE.finditer(patch_text))
-    return paths
+    return list(_iter_codex_apply_patch_paths(patch_text))
 
 
-def _codex_command_text(name: str, raw_arg: Any) -> str | None:
+def _codex_command_text(tool_name: str, raw_arguments: Any) -> str | None:
     """The shell command a Codex exec tool ran — exact for ``exec_command`` (JSON
     ``cmd``), best-effort for the JS ``exec`` runtime. Never returns tool output."""
 
-    if not isinstance(raw_arg, str) or not raw_arg:
+    if (
+        not isinstance(raw_arguments, str)
+        or not raw_arguments
+        or len(raw_arguments) > _CODEX_TOOL_ARGUMENT_TEXT_MAX
+    ):
         return None
-    if name == "exec_command":
+    if tool_name == "exec_command":
         try:
-            parsed = json.loads(raw_arg)
-        except (json.JSONDecodeError, ValueError):
+            parsed = json.loads(raw_arguments)
+        except (json.JSONDecodeError, ValueError, RecursionError):
             return None
         if isinstance(parsed, dict):
             cmd = parsed.get("cmd") or parsed.get("command")
             return cmd if isinstance(cmd, str) and cmd.strip() else None
         return None
-    if name == "exec":
-        match = _CODEX_EXEC_JS_CMD_RE.search(raw_arg)
+    if tool_name == "exec":
+        match = _CODEX_EXEC_JS_CMD_RE.search(raw_arguments)
         if match:
             return match.group(1) if match.group(1) is not None else match.group(2)
     return None
@@ -7592,58 +7605,459 @@ def _codex_relativize_touched_path(raw_path: str, cwd: str | None) -> str | None
     return None
 
 
-def _codex_tool_activity_from_calls(
-    tool_calls: list[tuple[str, Any]],
-    *,
-    cwd: str | None,
-) -> dict[str, Any]:
-    """Derive Actions signals from a rollout's collected ``(name, raw_arg)`` tool
-    calls, in the SAME metadata shape the hook drain emits (values, not keys, so the
-    store's key-based secret redaction can't blank a credential-shaped name/path)."""
+@dataclass(frozen=True)
+class _CodexToolActivityFact:
+    """One bounded Actions fact after raw arguments have been discarded."""
 
-    name_counts: dict[str, int] = {}
-    category_counts: dict[str, int] = {}
-    commands: list[str] = []
-    touched: list[str] = []
-    for raw_name, raw_arg in tool_calls:
-        name = normalize_tool_name(raw_name)
-        if name:
-            name_counts[name] = name_counts.get(name, 0) + 1
-            category = tool_category(name)
-            category_counts[category] = category_counts.get(category, 0) + 1
-        lowered = str(raw_name or "").strip().lower()
-        if lowered in ("exec", "exec_command"):
-            command = _normalize_command(_codex_command_text(lowered, raw_arg))
-            if (
-                command
-                and command not in commands
-                and len(commands) < _COMMANDS_PER_BATCH_MAX
-            ):
-                commands.append(command)
-        elif lowered == "apply_patch":
-            for raw_path in _codex_apply_patch_paths(raw_arg):
-                touched_path = _normalize_touched_path(
-                    _codex_relativize_touched_path(raw_path, cwd)
+    action_name: str
+    command: str | None = None
+    has_command_conflict: bool = False
+
+
+@dataclass(frozen=True)
+class _CodexActionCarrier:
+    """One ephemeral tool-call carrier decoded from a rollout line."""
+
+    call_id: Any
+    action_name: Any
+    raw_arguments: Any
+
+
+@dataclass(frozen=True)
+class _CodexToolActivityCarrierIdentity:
+    """The bounded identity retained between the two Actions scan phases."""
+
+    call_id: str | None
+    action_name: str | None
+
+
+def _codex_action_carrier(payload: Mapping[str, Any]) -> _CodexActionCarrier | None:
+    """Decode a supported Actions carrier without retaining its raw arguments."""
+
+    payload_type = payload.get("type")
+    if payload_type in {"function_call", "custom_tool_call"}:
+        call_name = payload.get("name")
+        action_name = call_name
+        raw_arguments = (
+            payload.get("arguments")
+            if payload_type == "function_call"
+            else payload.get("input")
+        )
+        if payload_type == "function_call":
+            action_name = codex_function_action_name(
+                payload.get("namespace"),
+                call_name,
+            )
+        return _CodexActionCarrier(
+            call_id=payload.get("call_id"),
+            action_name=action_name,
+            raw_arguments=raw_arguments,
+        )
+    if payload_type == "mcp_tool_call_end":
+        invocation = payload.get("invocation")
+        if isinstance(invocation, Mapping):
+            return _CodexActionCarrier(
+                call_id=payload.get("call_id"),
+                action_name=codex_mcp_action_name(
+                    invocation.get("server"),
+                    invocation.get("tool"),
+                ),
+                raw_arguments=invocation.get("arguments"),
+            )
+        return None
+    if payload_type == "item_completed":
+        item = payload.get("item")
+        if isinstance(item, Mapping) and item.get("type") == "McpToolCall":
+            return _CodexActionCarrier(
+                call_id=item.get("id"),
+                action_name=codex_mcp_action_name(
+                    item.get("server"),
+                    item.get("tool"),
+                ),
+                raw_arguments=item.get("arguments"),
+            )
+    return None
+
+
+def _normalized_codex_action_name(raw_action_name: Any) -> str | None:
+    """Return one exact, bounded Actions name without truncating identities."""
+
+    validated_action_name = validated_codex_identifier(
+        raw_action_name,
+        max_length=120,
+    )
+    if validated_action_name is None:
+        return None
+    return validated_action_name
+
+
+def _merge_codex_action_names(first_name: str, second_name: str) -> str | None:
+    """Choose a canonical MCP name over its matching bare legacy name."""
+
+    if first_name == second_name:
+        return first_name
+    if (
+        first_name.startswith("mcp__")
+        and first_name.rsplit("__", 1)[-1] == second_name
+    ):
+        return first_name
+    if (
+        second_name.startswith("mcp__")
+        and second_name.rsplit("__", 1)[-1] == first_name
+    ):
+        return second_name
+    return None
+
+
+def _merge_codex_tool_activity_facts(
+    first_fact: _CodexToolActivityFact,
+    second_fact: _CodexToolActivityFact,
+) -> _CodexToolActivityFact | None:
+    """Merge duplicate representations, or reject an ambiguous call identity."""
+
+    merged_action_name = _merge_codex_action_names(
+        first_fact.action_name,
+        second_fact.action_name,
+    )
+    if merged_action_name is None:
+        return None
+    has_command_conflict = (
+        first_fact.has_command_conflict or second_fact.has_command_conflict
+    )
+    if (
+        first_fact.command
+        and second_fact.command
+        and first_fact.command != second_fact.command
+    ):
+        has_command_conflict = True
+    merged_command = (
+        None
+        if has_command_conflict
+        else first_fact.command or second_fact.command
+    )
+    return _CodexToolActivityFact(
+        action_name=merged_action_name,
+        command=merged_command,
+        has_command_conflict=has_command_conflict,
+    )
+
+
+class _CodexToolActivityAccumulator:
+    """Bounded two-phase Actions projection.
+
+    Phase one reconciles logical call identities and scrubbed commands. Phase two
+    revisits only those same source lines and collects paths from calls that are
+    still valid. Deferring path selection makes the output independent of whether
+    a conflicting duplicate appears before or after another valid call, without
+    retaining raw arguments or a carrier-by-path product in memory.
+    """
+
+    def __init__(
+        self,
+        *,
+        carrier_cap: int = _CODEX_TOOL_ACTIVITY_CARRIER_CAP,
+        touched_path_cap: int = _TOUCHED_FILES_PER_BATCH_MAX,
+    ) -> None:
+        self._carrier_cap = max(0, carrier_cap)
+        self._retained_touched_path_cap = max(0, touched_path_cap)
+        self._carrier_identities_by_source_line: dict[
+            int,
+            _CodexToolActivityCarrierIdentity,
+        ] = {}
+        self._facts_by_call_id: dict[str, _CodexToolActivityFact | None] = {}
+        self._anonymous_call_facts_by_source_line: dict[
+            int,
+            _CodexToolActivityFact,
+        ] = {}
+        self._touched_path_scan_count = 0
+        self._touched_path_scan_valid = True
+        self._touched_paths: list[str] = []
+        self._touched_path_set: set[str] = set()
+
+    @staticmethod
+    def _decode_call_activity_fact(
+        raw_action_name: Any,
+        raw_arguments: Any,
+    ) -> _CodexToolActivityFact | None:
+        normalized_action_name = _normalized_codex_action_name(raw_action_name)
+        if normalized_action_name is None:
+            return None
+        lowered_action_name = normalized_action_name.lower()
+        command = None
+        if lowered_action_name in {"exec", "exec_command"}:
+            command = _normalize_command(
+                _codex_command_text(lowered_action_name, raw_arguments)
+            )
+        return _CodexToolActivityFact(
+            action_name=normalized_action_name,
+            command=command,
+        )
+
+    def record_call(
+        self,
+        call_id: Any,
+        raw_action_name: Any,
+        raw_arguments: Any,
+        *,
+        source_line_number: int,
+    ) -> None:
+        if len(self._carrier_identities_by_source_line) >= self._carrier_cap:
+            return
+        validated_call_id = validated_codex_identifier(call_id)
+        normalized_action_name = _normalized_codex_action_name(raw_action_name)
+        self._carrier_identities_by_source_line[source_line_number] = (
+            _CodexToolActivityCarrierIdentity(
+                call_id=validated_call_id,
+                action_name=normalized_action_name,
+            )
+        )
+        candidate_fact = self._decode_call_activity_fact(
+            normalized_action_name,
+            raw_arguments,
+        )
+        if candidate_fact is None:
+            return
+        if (
+            validated_call_id is not None
+            and validated_call_id in self._facts_by_call_id
+        ):
+            existing_fact = self._facts_by_call_id[validated_call_id]
+            if existing_fact is None:
+                return
+            self._facts_by_call_id[validated_call_id] = (
+                _merge_codex_tool_activity_facts(
+                    existing_fact,
+                    candidate_fact,
                 )
-                if (
-                    touched_path
-                    and touched_path not in touched
-                    and len(touched) < _TOUCHED_FILES_PER_BATCH_MAX
-                ):
-                    touched.append(touched_path)
-    activity: dict[str, Any] = {}
-    if category_counts:
-        activity["tool_category_counts"] = dict(sorted(category_counts.items()))
-    if name_counts:
-        activity["tool_names"] = [
-            {"name": name, "count": count}
-            for name, count in sorted(name_counts.items())
-        ]
-    if touched:
-        activity["touched_files"] = touched
-    if commands:
-        activity["commands"] = commands
-    return activity
+            )
+            return
+        if validated_call_id is not None:
+            self._facts_by_call_id[validated_call_id] = candidate_fact
+        else:
+            self._anonymous_call_facts_by_source_line[source_line_number] = (
+                candidate_fact
+            )
+
+    def expects_carrier_on_source_line(self, source_line_number: int) -> bool:
+        return source_line_number in self._carrier_identities_by_source_line
+
+    def _final_fact_for_carrier(
+        self,
+        source_line_number: int,
+        identity: _CodexToolActivityCarrierIdentity,
+    ) -> _CodexToolActivityFact | None:
+        if identity.call_id is None:
+            final_fact = self._anonymous_call_facts_by_source_line.get(
+                source_line_number
+            )
+        else:
+            final_fact = self._facts_by_call_id.get(identity.call_id)
+        if (
+            final_fact is None
+            or identity.action_name is None
+            or _merge_codex_action_names(
+                final_fact.action_name,
+                identity.action_name,
+            )
+            is None
+        ):
+            return None
+        return final_fact
+
+    def needs_touched_path_scan(self) -> bool:
+        if self._retained_touched_path_cap <= 0:
+            return False
+        for source_line_number, identity in (
+            self._carrier_identities_by_source_line.items()
+        ):
+            if (
+                identity.action_name is not None
+                and identity.action_name.lower() == "apply_patch"
+                and self._final_fact_for_carrier(source_line_number, identity)
+                is not None
+            ):
+                return True
+        return False
+
+    def record_touched_paths(
+        self,
+        source_line_number: int,
+        carrier: _CodexActionCarrier | None,
+        *,
+        cwd: str | None,
+    ) -> None:
+        """Collect paths from one phase-two carrier after final reconciliation."""
+
+        expected_identity = self._carrier_identities_by_source_line.get(
+            source_line_number
+        )
+        if expected_identity is None:
+            self._touched_path_scan_valid = False
+            return
+        self._touched_path_scan_count += 1
+        if carrier is None:
+            self._touched_path_scan_valid = False
+            return
+        actual_identity = _CodexToolActivityCarrierIdentity(
+            call_id=validated_codex_identifier(carrier.call_id),
+            action_name=_normalized_codex_action_name(carrier.action_name),
+        )
+        if actual_identity != expected_identity:
+            self._touched_path_scan_valid = False
+            return
+
+        final_fact = self._final_fact_for_carrier(
+            source_line_number,
+            expected_identity,
+        )
+        if (
+            final_fact is None
+            or expected_identity.action_name is None
+            or expected_identity.action_name.lower() != "apply_patch"
+            or len(self._touched_paths) >= self._retained_touched_path_cap
+            or not isinstance(carrier.raw_arguments, str)
+            or len(carrier.raw_arguments) > _CODEX_TOOL_ARGUMENT_TEXT_MAX
+        ):
+            return
+
+        for raw_path in _iter_codex_apply_patch_paths(carrier.raw_arguments):
+            normalized_path = _normalize_touched_path(
+                _codex_relativize_touched_path(raw_path, cwd)
+            )
+            if normalized_path is None or normalized_path in self._touched_path_set:
+                continue
+            self._touched_paths.append(normalized_path)
+            self._touched_path_set.add(normalized_path)
+            if len(self._touched_paths) >= self._retained_touched_path_cap:
+                break
+
+    def finish_touched_path_scan(self, *, source_unchanged: bool) -> None:
+        """Keep phase-two paths only when every retained carrier was re-read."""
+
+        if (
+            not source_unchanged
+            or not self._touched_path_scan_valid
+            or self._touched_path_scan_count
+            != len(self._carrier_identities_by_source_line)
+        ):
+            self._touched_paths.clear()
+            self._touched_path_set.clear()
+
+    def _retained_facts_in_carrier_order(self) -> Iterator[_CodexToolActivityFact]:
+        seen_call_ids: set[str] = set()
+        for source_line_number, identity in (
+            self._carrier_identities_by_source_line.items()
+        ):
+            if (
+                identity.call_id is not None
+                and identity.call_id in seen_call_ids
+            ):
+                continue
+            fact = self._final_fact_for_carrier(source_line_number, identity)
+            if fact is None:
+                continue
+            if identity.call_id is not None:
+                seen_call_ids.add(identity.call_id)
+            yield fact
+
+    def as_activity(self) -> dict[str, Any]:
+        action_name_counts: dict[str, int] = {}
+        category_counts: dict[str, int] = {}
+        commands: list[str] = []
+        command_set: set[str] = set()
+        for fact in self._retained_facts_in_carrier_order():
+            action_name_counts[fact.action_name] = (
+                action_name_counts.get(fact.action_name, 0) + 1
+            )
+            category = tool_category(fact.action_name)
+            category_counts[category] = category_counts.get(category, 0) + 1
+            if (
+                fact.command
+                and len(commands) < _COMMANDS_PER_BATCH_MAX
+                and fact.command not in command_set
+            ):
+                commands.append(fact.command)
+                command_set.add(fact.command)
+
+        activity: dict[str, Any] = {}
+        if category_counts:
+            activity["tool_category_counts"] = dict(
+                sorted(category_counts.items())
+            )
+        if action_name_counts:
+            activity["tool_names"] = [
+                {"name": action_name, "count": count}
+                for action_name, count in sorted(action_name_counts.items())
+            ]
+        if self._touched_paths:
+            activity["touched_files"] = list(self._touched_paths)
+        if commands:
+            activity["commands"] = commands
+        return activity
+
+
+def _codex_open_file_snapshot(handle: TextIO) -> tuple[int, int, int, int, int]:
+    """Identity and mutation fields for one already-open regular rollout."""
+
+    file_stat = os.fstat(handle.fileno())
+    return (
+        int(file_stat.st_dev),
+        int(file_stat.st_ino),
+        int(file_stat.st_size),
+        int(file_stat.st_mtime_ns),
+        int(file_stat.st_ctime_ns),
+    )
+
+
+def _collect_codex_rollout_touched_paths(
+    handle: TextIO,
+    *,
+    source_snapshot: tuple[int, int, int, int, int] | None,
+    source_line_count: int,
+    tool_activity: _CodexToolActivityAccumulator,
+    cwd: str | None,
+) -> None:
+    """Re-read retained carrier lines and fail closed if the source changes."""
+
+    if not tool_activity.needs_touched_path_scan():
+        return
+    source_unchanged = False
+    try:
+        if (
+            source_snapshot is None
+            or source_snapshot != _codex_open_file_snapshot(handle)
+        ):
+            raise OSError("rollout changed during its primary scan")
+        handle.seek(0)
+        for source_line_number in range(1, source_line_count + 1):
+            line = handle.readline()
+            if line == "":
+                break
+            if not tool_activity.expects_carrier_on_source_line(
+                source_line_number
+            ):
+                continue
+            carrier = None
+            try:
+                obj = json.loads(line)
+            except (json.JSONDecodeError, RecursionError):
+                obj = None
+            if isinstance(obj, Mapping):
+                payload = obj.get("payload")
+                if isinstance(payload, Mapping):
+                    carrier = _codex_action_carrier(payload)
+            tool_activity.record_touched_paths(
+                source_line_number,
+                carrier,
+                cwd=cwd,
+            )
+        else:
+            source_unchanged = source_snapshot == _codex_open_file_snapshot(handle)
+    except (OSError, ValueError):
+        # Touched files are optional Actions metadata. If the live rollout moves
+        # while it is being scanned, omit paths instead of mixing two snapshots.
+        source_unchanged = False
+    tool_activity.finish_touched_path_scan(source_unchanged=source_unchanged)
 
 
 def _read_codex_rollout_usage(
@@ -7719,12 +8133,13 @@ def _read_codex_rollout_usage_uncached(
     _parse_stats: dict[str, int] | None = None,
     _observation_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Read token totals + session_meta parent + client-log evidence in ONE pass.
+    """Read token totals, session lineage, Actions, and client-log evidence.
 
     Returns None only when the rollout holds neither a total_token_usage line
     nor any client-log evidence; an evidence-only rollout returns a dict
     WITHOUT ``input_tokens`` so the caller's sqlite tokens_used fallback still
-    fires while the evidence rides along.
+    fires while the evidence rides along. The primary scan reconciles call
+    identities; a bounded second scan extracts paths only from final valid calls.
     """
 
     source_file = _coerce_private_regular_source(source)
@@ -7742,10 +8157,11 @@ def _read_codex_rollout_usage_uncached(
     replayed_parent_session_meta = False
     first_activity_at: int | None = None
     last_activity_at: int | None = None
-    # Tool calls (name, raw_arg) for the discovery-side Actions extraction. The
-    # raw arg is read ONLY by _codex_tool_activity_from_calls (command text /
-    # apply_patch paths); tool output is never collected here.
-    tool_calls: list[tuple[str, Any]] = []
+    # Discovery-side Actions retain only bounded identities and scrubbed commands.
+    # Patch bodies are revisited, never retained, after all duplicate call
+    # representations have been reconciled.
+    tool_activity = _CodexToolActivityAccumulator()
+    source_line_count = 0
     token_usage_events: list[tuple[Any, ...]] = []
     raw_token_event_count = 0
     replay_prefix_token_events = 0
@@ -7754,31 +8170,13 @@ def _read_codex_rollout_usage_uncached(
     replay_probe_event: tuple[Any, ...] | None = None
     replay_second: str | None = None
     replay_probe_complete = False
-    # Client-log evidence extraction (log_evidence.py): remember creation-tool
-    # function_calls by call_id (allowlist by BARE tool name + namespace
-    # check), then run the strict single-created-event shape check on their
-    # paired outputs only. Read-tool outputs echo OTHER sessions' event ids
-    # and are structurally invisible here. Namespace-rejected creation-name
-    # calls are remembered too so their outputs are skipped-but-counted
-    # (custom server registration names surface in the counters).
-    #
-    # Codex 0.144.0-alpha.4 dropped the duplicate function_call records for
-    # MCP tools: mcp_tool_call_end event_msg lines are now the ONLY channel
-    # carrying creation-tool outputs, so BOTH channels are read. Pre-0.144
-    # rollouts carry the same call under both shapes with an identical
-    # call_id (verified 10/10 overlap), so the two sets below dedup across
-    # the channels, regardless of file order:
-    # - a call_id is CONSUMED only by a DONATING channel (its output
-    #   unwrapped to a well-formed created-event payload) — each call donates
-    #   at most once;
-    # - a rejected / unwrap-failed representation is skip-counted (at most
-    #   once per call_id) but never consumes the id, so if the two
-    #   representations of one call ever diverge (codex bug, torn file) the
-    #   other channel's valid output still donates instead of being blocked.
-    accepted_calls: dict[str, str] = {}
-    rejected_calls: set[str] = set()
-    donated_call_ids: set[str] = set()
-    skip_counted_call_ids: set[str] = set()
+    # Client-log evidence is decoded into carrier-independent fragments during
+    # the scan and reconciled by logical call id after it. This supports legacy
+    # function/output pairs, legacy mcp_tool_call_end records, and current
+    # paginated item_completed/McpToolCall records without making file order or
+    # one Codex persistence representation part of the evidence model.
+    evidence_fragments: list[CodexEvidenceFragment] = []
+    evidence_fragment_cap_exceeded = False
     evidence = LogEvidenceAccumulator()
     saw_nonempty_line = False
     saw_valid_object = False
@@ -7786,47 +8184,27 @@ def _read_codex_rollout_usage_uncached(
     saw_token_usage_schema_drift = False
     cache_write_tokens_applicable = False
 
-    def _skip_once(
-        call_key: str | None,
-        text: str | None = None,
-        *,
-        tool: str | None = None,
+    def _record_tool_activity(
+        source_line_number: int,
+        carrier: _CodexActionCarrier,
     ) -> None:
-        # ``text``/``tool``, when the channel has them, let the accumulator
-        # classify an agentacct refusal into its bounded reason vocabulary.
-        # The dedup below still applies, so one refused call is counted once
-        # even when both codex channels carry it.
-        if call_key is None:
-            evidence.record_skip(text, tool=tool)
-            return
-        if call_key in donated_call_ids or call_key in skip_counted_call_ids:
-            return
-        skip_counted_call_ids.add(call_key)
-        evidence.record_skip(text, tool=tool)
-
-    def _donate_once(
-        call_key: str,
-        text: str | None,
-        *,
-        refusal_text: str | None = None,
-        tool: str | None = None,
-    ) -> None:
-        if not isinstance(text, str) or extract_created_event_id(text) is None:
-            # Unwrap/shape failure: counted, but the call_id stays available
-            # for the other channel's (possibly valid) representation.
-            _skip_once(call_key, refusal_text if refusal_text is not None else text, tool=tool)
-            return
-        if call_key in donated_call_ids:
-            return
-        donated_call_ids.add(call_key)
-        evidence.add_output_text(text)
+        tool_activity.record_call(
+            carrier.call_id,
+            carrier.action_name,
+            carrier.raw_arguments,
+            source_line_number=source_line_number,
+        )
     with _open_regular_source_text(source_file) as handle:
-        for line in handle:
+        try:
+            source_snapshot = _codex_open_file_snapshot(handle)
+        except OSError:
+            source_snapshot = None
+        for source_line_count, line in enumerate(handle, start=1):
             if line.strip():
                 saw_nonempty_line = True
             try:
                 obj = json.loads(line)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, RecursionError):
                 if line.strip():
                     saw_malformed_line = True
                 continue
@@ -7886,88 +8264,27 @@ def _read_codex_rollout_usage_uncached(
             if not isinstance(payload, dict):
                 continue
             payload_type = payload.get("type")
-            # Collect tool calls for the discovery-side Actions extraction. A
-            # function_call carries its args as a JSON string under ``arguments``;
-            # a custom_tool_call (Codex's ``exec`` runtime and ``apply_patch``)
-            # carries them as a string under ``input``.
-            if (
-                payload_type in ("function_call", "custom_tool_call")
-                and len(tool_calls) < _CODEX_TOOL_CALLS_SCAN_MAX
+            action_carrier = _codex_action_carrier(payload)
+            if action_carrier is not None:
+                _record_tool_activity(source_line_count, action_carrier)
+
+            if len(evidence_fragments) < _CODEX_EVIDENCE_FRAGMENT_CAP:
+                fragment = decode_codex_evidence_fragment(obj)
+                if fragment is not None:
+                    evidence_fragments.append(fragment)
+            elif (
+                not evidence_fragment_cap_exceeded
+                and codex_record_may_contain_evidence(obj)
             ):
-                call_name = payload.get("name")
-                if isinstance(call_name, str) and call_name:
-                    call_arg = (
-                        payload.get("arguments")
-                        if payload_type == "function_call"
-                        else payload.get("input")
-                    )
-                    tool_calls.append((call_name, call_arg))
-            if payload_type == "function_call":
-                # Pairing is strictly by call_id (never the response-item id).
-                call_id = payload.get("call_id")
-                if isinstance(call_id, str) and call_id:
-                    verdict = classify_codex_function_call(payload.get("name"), payload.get("namespace"))
-                    if verdict == "accepted":
-                        accepted_calls[call_id] = str(payload.get("name"))
-                    elif verdict == "rejected":
-                        rejected_calls.add(call_id)
-            elif payload_type == "function_call_output":
-                call_id = payload.get("call_id")
-                if isinstance(call_id, str) and call_id in accepted_calls:
-                    # No refusal text is passed on this legacy channel: a
-                    # failed call's ``output`` is codex's own plain-text error,
-                    # which unwrap_codex_output_text (JSON/content-block only)
-                    # returns None for. Such a call stays a plain skip and is
-                    # reported in the unclassified remainder rather than
-                    # guessed at from an unverified wire shape — an
-                    # UNDER-count, which is the honest direction for a figure
-                    # that claims "agentacct refused this".
-                    _donate_once(
-                        call_id,
-                        unwrap_codex_output_text(payload.get("output")),
-                        tool=accepted_calls[call_id],
-                    )
-                elif isinstance(call_id, str) and call_id in rejected_calls:
-                    _skip_once(call_id)
-            elif payload_type == "mcp_tool_call_end":
-                # The 0.144+ channel. Classification is by the invocation's
-                # server/tool pair (allowlist first, then the shared namespace
-                # rule; a None/absent server is rejected + counted — the field
-                # is always present in this shape, absence is drift).
-                call_id = payload.get("call_id")
-                call_key = call_id if isinstance(call_id, str) and call_id else None
-                invocation = payload.get("invocation")
-                if not isinstance(invocation, dict):
-                    # The invocation block itself is missing/renamed/non-dict:
-                    # the tool name is unrecoverable, so the line cannot be
-                    # classified at all. That state is itself drift for this
-                    # wire shape — count it so the NEXT channel/shape drift
-                    # surfaces in the counters instead of silently losing
-                    # evidence (same rule as the absent server key, one
-                    # level down; deliberately also counts foreign-tool
-                    # lines, which cannot be told apart without a tool name).
-                    _skip_once(call_key)
-                else:
-                    verdict = classify_codex_mcp_invocation(invocation.get("server"), invocation.get("tool"))
-                    if verdict is not None:
-                        if call_key is None:
-                            # Creation-tool line without a pairable call_id:
-                            # shape drift, skipped-but-counted (never guessed).
-                            evidence.record_skip()
-                        elif verdict == "accepted":
-                            # unwrap_codex_mcp_result reads the Ok branch only,
-                            # so the Err branch is unwrapped separately to keep
-                            # the refusal classifiable.
-                            _donate_once(
-                                call_key,
-                                unwrap_codex_mcp_result(payload.get("result")),
-                                refusal_text=unwrap_codex_mcp_error(payload.get("result")),
-                                tool=str(invocation.get("tool")),
-                            )
-                        else:
-                            _skip_once(call_key)
-            if model is None and payload_type not in _CODEX_MODEL_SCAN_EXCLUDED_PAYLOAD_TYPES:
-                model = _find_first_string_key(payload, "model")
+                # Reconciliation must retain out-of-order descriptors and
+                # outputs, but it must not accumulate or repeatedly decode an
+                # unbounded rollout. Make truncation an explicit evidence-health
+                # failure and one bounded skip instead of claiming completeness.
+                evidence_fragment_cap_exceeded = True
+
+            carrier_model = codex_model_from_record(obj)
+            if model is None and carrier_model is not None:
+                model = carrier_model
             info = payload.get("info")
             if isinstance(info, dict) and "total_token_usage" in info:
                 total_token_usage = info.get("total_token_usage")
@@ -8012,7 +8329,7 @@ def _read_codex_rollout_usage_uncached(
                     last_token_usage = None
                 token_event = (
                     event_timestamp,
-                    _find_first_string_key(payload, "model"),
+                    carrier_model,
                     _codex_token_delta(
                         current_value=current_total_usage,
                         last_value=last_token_usage,
@@ -8068,6 +8385,23 @@ def _read_codex_rollout_usage_uncached(
                     )
                 previous_total_usage = current_total_usage
                 turn_count += 1
+        _collect_codex_rollout_touched_paths(
+            handle,
+            source_snapshot=source_snapshot,
+            source_line_count=source_line_count,
+            tool_activity=tool_activity,
+            cwd=session_meta_cwd,
+        )
+    if evidence_fragment_cap_exceeded:
+        # A later fragment could contradict a retained call id. Without the
+        # complete bounded set, no partial donor is authoritative.
+        evidence.record_skip()
+        evidence_parse_incomplete = True
+    else:
+        evidence_parse_incomplete = reconcile_codex_evidence_fragments(
+            evidence_fragments,
+            evidence,
+        )
     if replay_probe_event is not None:
         token_usage_events.append(replay_probe_event)
     if (
@@ -8080,9 +8414,11 @@ def _read_codex_rollout_usage_uncached(
         _parse_stats["schema_drift_rollouts"] = _safe_nonnegative_int(
             _parse_stats.get("schema_drift_rollouts")
         ) + 1
-    rollout_tool_activity = _codex_tool_activity_from_calls(
-        tool_calls, cwd=session_meta_cwd
-    )
+    if evidence_parse_incomplete and _parse_stats is not None:
+        _parse_stats["evidence_schema_drift_rollouts"] = _safe_nonnegative_int(
+            _parse_stats.get("evidence_schema_drift_rollouts")
+        ) + 1
+    rollout_tool_activity = tool_activity.as_activity()
     if _observation_metadata is not None:
         _observation_metadata.update(
             {

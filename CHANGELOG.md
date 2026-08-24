@@ -6,6 +6,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Read Codex's paginated `item_completed` / `McpToolCall` rollout records
+  when linking agentacct MCP receipts and deriving Actions, while retaining
+  compatibility with legacy Codex rollout carriers. Duplicate carrier
+  representations are reconciled by logical call id; malformed results and
+  conflicting successful event ids fail closed without letting a failed
+  duplicate suppress a valid receipt.
+
 ## [0.9.3] — 2026-08-23
 
 A metadata release: finishes the agentacct rename on the last user-facing

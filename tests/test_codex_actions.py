@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import pytest
+
 from agentacct import client_usage as cu
 from agentacct.client_usage import discover_codex_usage
 from agentacct.tool_activity import (
@@ -27,6 +29,55 @@ from tests.test_client_usage import _make_codex_home, _add_codex_thread
 
 
 # --- pure extraction helpers ------------------------------------------------
+
+
+def _tool_activity_from_calls(
+    calls: list[tuple[str, object]],
+    *,
+    cwd: str | None,
+) -> dict[str, object]:
+    accumulator = cu._CodexToolActivityAccumulator()
+    identified_calls = [
+        (f"call-{index}", tool_name, arguments)
+        for index, (tool_name, arguments) in enumerate(calls)
+    ]
+    _record_calls_and_touched_paths(accumulator, identified_calls, cwd=cwd)
+    return accumulator.as_activity()
+
+
+def _record_calls_and_touched_paths(
+    accumulator: cu._CodexToolActivityAccumulator,
+    calls: list[tuple[object, object, object]],
+    *,
+    cwd: str | None,
+) -> None:
+    """Run the accumulator's identity and path phases over the same carriers."""
+
+    for source_line_number, (call_id, tool_name, arguments) in enumerate(
+        calls,
+        start=1,
+    ):
+        accumulator.record_call(
+            call_id,
+            tool_name,
+            arguments,
+            source_line_number=source_line_number,
+        )
+    for source_line_number, (call_id, tool_name, arguments) in enumerate(
+        calls,
+        start=1,
+    ):
+        if accumulator.expects_carrier_on_source_line(source_line_number):
+            accumulator.record_touched_paths(
+                source_line_number,
+                cu._CodexActionCarrier(
+                    call_id=call_id,
+                    action_name=tool_name,
+                    raw_arguments=arguments,
+                ),
+                cwd=cwd,
+            )
+    accumulator.finish_touched_path_scan(source_unchanged=True)
 
 
 def test_apply_patch_paths_parses_add_update_delete_move():
@@ -67,12 +118,14 @@ def test_command_text_from_js_exec_single_quoted():
     assert cu._codex_command_text("exec", js) == "ls -la"
 
 
-def test_command_text_skips_template_literal_and_garbage():
+def test_command_text_skips_unsupported_arguments():
     # A backtick/template cmd is deliberately skipped (honest undercount) rather
     # than captured half-parsed.
     assert cu._codex_command_text("exec", "tools.exec_command({cmd:`git ${x}`})") is None
     assert cu._codex_command_text("exec_command", "not json at all") is None
     assert cu._codex_command_text("exec_command", "") is None
+    deeply_nested_json = "[" * 10_000 + "0" + "]" * 10_000
+    assert cu._codex_command_text("exec_command", deeply_nested_json) is None
 
 
 def test_relativize_touched_path_keeps_relative_relativizes_under_cwd_drops_outside():
@@ -95,7 +148,7 @@ def test_tool_activity_from_calls_aggregates_all_signals():
         ("spawn_agent", "{}"),
         ("read_file", "{}"),  # unknown -> category "other", name kept
     ]
-    activity = cu._codex_tool_activity_from_calls(calls, cwd="/work/project")
+    activity = _tool_activity_from_calls(calls, cwd="/work/project")
     assert activity["tool_category_counts"] == {
         "agent": 1,
         "edit": 1,
@@ -121,13 +174,249 @@ def test_tool_activity_from_calls_dedupes_commands_and_paths():
         ("apply_patch", "*** Add File: a.py\n"),
         ("apply_patch", "*** Update File: a.py\n"),
     ]
-    activity = cu._codex_tool_activity_from_calls(calls, cwd=None)
+    activity = _tool_activity_from_calls(calls, cwd=None)
     assert activity["commands"] == ["ls"]
     assert activity["touched_files"] == ["a.py"]
 
 
+def test_touched_path_cap_counts_unique_paths_across_calls():
+    accumulator = cu._CodexToolActivityAccumulator(touched_path_cap=2)
+    calls = [
+        (call_id, "apply_patch", f"*** Update File: {path}\n")
+        for call_id, path in (
+            ("call-1", "repeated.py"),
+            ("call-2", "repeated.py"),
+            ("call-3", "later.py"),
+            ("call-4", "beyond-cap.py"),
+        )
+    ]
+    _record_calls_and_touched_paths(accumulator, calls, cwd=None)
+
+    activity = accumulator.as_activity()
+    assert activity["tool_category_counts"] == {"edit": 4}
+    assert activity["touched_files"] == ["repeated.py", "later.py"]
+
+
+@pytest.mark.parametrize(
+    ("same_call_paths", "expected_paths"),
+    [
+        (("a.py", "b.py"), ["a.py", "b.py", "c.py"]),
+        (("b.py", "a.py"), ["b.py", "a.py", "c.py"]),
+    ],
+)
+def test_touched_paths_merge_duplicate_calls_in_carrier_order(
+    same_call_paths: tuple[str, str],
+    expected_paths: list[str],
+):
+    accumulator = cu._CodexToolActivityAccumulator(touched_path_cap=3)
+    calls = [
+        ("duplicate-call", "apply_patch", f"*** Update File: {path}\n")
+        for path in same_call_paths
+    ]
+    calls.append(("later-call", "apply_patch", "*** Update File: c.py\n"))
+    _record_calls_and_touched_paths(accumulator, calls, cwd=None)
+
+    activity = accumulator.as_activity()
+    assert activity["tool_category_counts"] == {"edit": 2}
+    assert activity["touched_files"] == expected_paths
+
+
+@pytest.mark.parametrize(
+    "call_order",
+    [
+        ("conflicting-patch", "conflicting-command", "valid-patch"),
+        ("conflicting-command", "conflicting-patch", "valid-patch"),
+        ("conflicting-patch", "valid-patch", "conflicting-command"),
+        ("conflicting-command", "valid-patch", "conflicting-patch"),
+    ],
+)
+def test_conflicting_call_identity_does_not_consume_touched_path_cap(
+    call_order: tuple[str, str, str],
+):
+    accumulator = cu._CodexToolActivityAccumulator(touched_path_cap=1)
+    carriers = {
+        "conflicting-patch": (
+            "ambiguous-call",
+            "apply_patch",
+            "*** Update File: blocked.py\n",
+        ),
+        "conflicting-command": (
+            "ambiguous-call",
+            "exec_command",
+            json.dumps({"cmd": "pytest"}),
+        ),
+        "valid-patch": (
+            "valid-call",
+            "apply_patch",
+            "*** Update File: kept.py\n",
+        ),
+    }
+    _record_calls_and_touched_paths(
+        accumulator,
+        [carriers[carrier_name] for carrier_name in call_order],
+        cwd=None,
+    )
+
+    activity = accumulator.as_activity()
+    assert activity["tool_category_counts"] == {"edit": 1}
+    assert activity["tool_names"] == [{"name": "apply_patch", "count": 1}]
+    assert activity["touched_files"] == ["kept.py"]
+    assert "commands" not in activity
+
+
+def test_repeated_multi_file_calls_do_not_hide_later_distinct_path():
+    accumulator = cu._CodexToolActivityAccumulator(
+        carrier_cap=4,
+        touched_path_cap=3,
+    )
+    repeated_patch = "*** Update File: a.py\n*** Update File: b.py\n"
+    calls = [
+        ("call-1", "apply_patch", repeated_patch),
+        ("call-2", "apply_patch", repeated_patch),
+        ("call-3", "apply_patch", "*** Update File: c.py\n"),
+    ]
+    _record_calls_and_touched_paths(accumulator, calls, cwd=None)
+
+    assert accumulator.as_activity()["touched_files"] == ["a.py", "b.py", "c.py"]
+
+
+def test_touched_path_projection_retains_only_the_output_cap():
+    carrier_cap = 64
+    touched_path_cap = 2
+    accumulator = cu._CodexToolActivityAccumulator(
+        carrier_cap=carrier_cap,
+        touched_path_cap=touched_path_cap,
+    )
+    patch = "".join(
+        f"*** Update File: path-{index}.py\n" for index in range(200)
+    )
+    calls = [
+        (f"call-{call_index}", "apply_patch", patch)
+        for call_index in range(carrier_cap)
+    ]
+    _record_calls_and_touched_paths(accumulator, calls, cwd=None)
+
+    assert len(accumulator._carrier_identities_by_source_line) == carrier_cap
+    assert len(accumulator._touched_path_set) == touched_path_cap
+    assert all(
+        not hasattr(fact, "touched_paths")
+        for fact in accumulator._facts_by_call_id.values()
+        if fact is not None
+    )
+    assert accumulator.as_activity()["touched_files"] == [
+        "path-0.py",
+        "path-1.py",
+    ]
+
+
+def test_touched_path_scan_discards_paths_if_source_changes():
+    accumulator = cu._CodexToolActivityAccumulator()
+    accumulator.record_call(
+        "call-1",
+        "apply_patch",
+        "*** Update File: must-be-discarded.py\n",
+        source_line_number=1,
+    )
+    accumulator.record_touched_paths(
+        1,
+        cu._CodexActionCarrier(
+            call_id="call-1",
+            action_name="apply_patch",
+            raw_arguments="*** Update File: must-be-discarded.py\n",
+        ),
+        cwd=None,
+    )
+    accumulator.finish_touched_path_scan(source_unchanged=False)
+
+    activity = accumulator.as_activity()
+    assert activity["tool_category_counts"] == {"edit": 1}
+    assert "touched_files" not in activity
+
+
+def test_touched_path_scan_rejects_mutation_between_phases(tmp_path):
+    def rollout_line(path: str) -> str:
+        return json.dumps(
+            {
+                "type": "custom_tool_call",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "name": "apply_patch",
+                    "call_id": "same-call",
+                    "input": f"*** Update File: {path}\n",
+                },
+            }
+        )
+
+    rollout = tmp_path / "rollout.jsonl"
+    rollout.write_text(rollout_line("first.py") + "\n", encoding="utf-8")
+    accumulator = cu._CodexToolActivityAccumulator()
+    with rollout.open("r", encoding="utf-8") as handle:
+        source_snapshot = cu._codex_open_file_snapshot(handle)
+        first_record = json.loads(handle.readline())
+        first_carrier = cu._codex_action_carrier(first_record["payload"])
+        assert first_carrier is not None
+        accumulator.record_call(
+            first_carrier.call_id,
+            first_carrier.action_name,
+            first_carrier.raw_arguments,
+            source_line_number=1,
+        )
+
+        # Same logical identity, different raw path. A mixed two-phase read must
+        # omit paths rather than attributing either snapshot's argument.
+        rollout.write_text(
+            rollout_line("must-not-be-attributed.py") + "\n",
+            encoding="utf-8",
+        )
+        cu._collect_codex_rollout_touched_paths(
+            handle,
+            source_snapshot=source_snapshot,
+            source_line_count=1,
+            tool_activity=accumulator,
+            cwd=None,
+        )
+
+    activity = accumulator.as_activity()
+    assert activity["tool_category_counts"] == {"edit": 1}
+    assert "touched_files" not in activity
+
+
+def test_anonymous_and_identified_calls_preserve_carrier_order():
+    accumulator = cu._CodexToolActivityAccumulator()
+    calls = [
+        (None, "exec_command", json.dumps({"cmd": "first"})),
+        ("identified", "exec_command", json.dumps({"cmd": "second"})),
+        (None, "exec_command", json.dumps({"cmd": "third"})),
+    ]
+    _record_calls_and_touched_paths(accumulator, calls, cwd=None)
+
+    assert accumulator.as_activity()["commands"] == ["first", "second", "third"]
+
+
 def test_tool_activity_empty_calls_is_empty():
-    assert cu._codex_tool_activity_from_calls([], cwd=None) == {}
+    assert _tool_activity_from_calls([], cwd=None) == {}
+
+
+def test_tool_activity_carrier_cap_bounds_duplicate_decoding():
+    accumulator = cu._CodexToolActivityAccumulator(carrier_cap=1)
+    _record_calls_and_touched_paths(
+        accumulator,
+        [
+            ("call-1", "exec_command", json.dumps({"cmd": "pytest -q"})),
+            (
+                "call-1",
+                "apply_patch",
+                "*** Add File: must-not-be-decoded.py\n",
+            ),
+        ],
+        cwd=None,
+    )
+
+    assert accumulator.as_activity() == {
+        "tool_category_counts": {"execute": 1},
+        "tool_names": [{"name": "exec_command", "count": 1}],
+        "commands": ["pytest -q"],
+    }
 
 
 # --- event build ------------------------------------------------------------
@@ -316,6 +605,65 @@ def test_discover_codex_populates_rollout_tool_activity(tmp_path):
     # The carrier is INTERNAL: it never leaks into the session observation event.
     assert "rollout_tool_activity" not in worker.to_sentinel_event()["metadata"]
     assert "tool_activity" not in worker.to_sentinel_event()["metadata"]
+
+
+def test_touched_path_before_session_meta_uses_authoritative_session_cwd(tmp_path):
+    codex_home = _make_codex_home(tmp_path)
+    _add_codex_thread(
+        codex_home, session_id="worker", updated_at=300, model="gpt-5.5"
+    )
+    rollout = next((codex_home / "sessions").rglob("*worker.jsonl"))
+    rollout.write_text(
+        "\n".join(
+            json.dumps(line)
+            for line in [
+                {
+                    "type": "custom_tool_call",
+                    "payload": {
+                        "type": "custom_tool_call",
+                        "name": "apply_patch",
+                        "call_id": "pre-meta-call",
+                        "input": (
+                            "*** Begin Patch\n"
+                            "*** Update File: /work/project/src/pre_meta.py\n"
+                            "*** End Patch\n"
+                        ),
+                    },
+                },
+                {
+                    "type": "session_meta",
+                    "payload": {"id": "worker", "cwd": "/work/project"},
+                },
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "info": {
+                            "total_token_usage": {
+                                "input_tokens": 100,
+                                "cached_input_tokens": 0,
+                                "output_tokens": 20,
+                                "reasoning_output_tokens": 0,
+                                "total_tokens": 120,
+                            }
+                        },
+                        "model": "gpt-5.5",
+                    },
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    observations: list = []
+    discover_codex_usage(
+        codex_home=codex_home,
+        limit_sessions=10,
+        _session_observations=observations,
+    )
+
+    worker = next(o for o in observations if o.client_session_id == "worker")
+    assert worker.rollout_tool_activity["touched_files"] == ["src/pre_meta.py"]
 
 
 def test_discover_codex_populates_paginated_mcp_tool_activity_once(tmp_path):

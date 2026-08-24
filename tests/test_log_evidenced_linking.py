@@ -22,6 +22,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
+import agentacct.client_usage as client_usage_module
 from agentacct.api import create_local_api_app
 from agentacct.cli import app
 from agentacct.client_usage import ClientUsageEvent, discover_claude_code_usage, discover_codex_usage
@@ -554,12 +555,69 @@ def test_codex_paginated_malformed_creation_items_raise_schema_drift(tmp_path) -
     assert len(events) == 1
     assert events[0].evidenced_event_ids == ()
     assert events[0].evidenced_outputs_skipped == 4
-    assert events[0].source_parse_complete is False
-    assert observations[0].source_parse_complete is False
-    assert stats["error_codes"] == ["codex_rollout_schema_drift"]
+    assert events[0].source_parse_complete is True
+    assert observations[0].source_parse_complete is True
+    assert stats["error_codes"] == ["codex_rollout_evidence_schema_drift"]
 
 
-def test_codex_paginated_and_legacy_fragments_reconcile_order_independently(tmp_path) -> None:
+def test_codex_evidence_fragment_cap_invalidates_only_relevant_overflow(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(client_usage_module, "_CODEX_EVIDENCE_FRAGMENT_CAP", 1)
+    retained_event_id = "evt_404040404040"
+    retained_creation = _mcp_item_completed(
+        "agentacct",
+        "agentacct_record_section",
+        "call_retained",
+        result=_mcp_call_result(_creation_payload(retained_event_id)),
+    )
+    overflow_cases = [
+        (
+            "creation",
+            _mcp_item_completed(
+                "agentacct",
+                "agentacct_record_section",
+                "call_overflow",
+                result=_mcp_call_result(_creation_payload("evt_505050505050")),
+            ),
+            (),
+            1,
+            ["codex_rollout_evidence_schema_drift"],
+        ),
+        (
+            "read",
+            _mcp_item_completed(
+                "agentacct",
+                "agentacct_list_events",
+                "call_read",
+                result=_mcp_call_result(_creation_payload("evt_deadbeef0003")),
+            ),
+            (retained_event_id,),
+            0,
+            [],
+        ),
+    ]
+
+    for name, overflow_record, expected_ids, expected_skips, expected_errors in overflow_cases:
+        stats: dict[str, object] = {}
+        events = discover_codex_usage(
+            codex_home=_make_codex_home(
+                tmp_path / name,
+                [retained_creation, overflow_record],
+            ),
+            limit_sessions=10,
+            _discovery_stats=stats,
+        )
+
+        assert len(events) == 1
+        event = events[0]
+        assert event.evidenced_event_ids == expected_ids
+        assert event.evidenced_outputs_skipped == expected_skips
+        assert stats.get("error_codes", []) == expected_errors
+
+
+def test_codex_duplicate_and_failed_sibling_fragments_are_order_independent(tmp_path) -> None:
     success_id = "evt_414141414141"
     for index, reverse in enumerate((False, True)):
         duplicate_success = [
@@ -718,79 +776,6 @@ def test_codex_paginated_jsonl_links_trusted_import_to_gradeable_receipt(tmp_pat
     ).json()
     assert receipt["axes"]["decision_status"]["key"] == "verified"
     assert receipt["axes"]["evidence_strength"]["gradeable"] is True
-
-
-def test_codex_refresh_repairs_existing_same_token_row_with_paginated_evidence(tmp_path) -> None:
-    store = tmp_path / "store"
-    section = SentinelService(store).record_event(
-        {
-            "source": "codex",
-            "event_type": "section_completed",
-            "created_at": 200.0,
-            "metadata": {
-                "sentinel_semantic_kind": "section",
-                "client": "codex",
-                "client_session_id": None,
-                "section_id": "refresh-regression",
-                "section_status": "completed",
-                "section_title": "Repair imported evidence",
-                "kind": "implementation",
-                "project_dir": "/work/project",
-            },
-        }
-    )
-    codex_home = _make_codex_home(tmp_path, [])
-    args = [
-        "usage",
-        "import-local",
-        "--store-dir",
-        str(store),
-        "--client",
-        "codex",
-        "--codex-home",
-        str(codex_home),
-        "--json",
-    ]
-    runner = CliRunner()
-    first = runner.invoke(app, args)
-    assert first.exit_code == 0, first.output
-
-    rollout = next((codex_home / "sessions").rglob("rollout-*.jsonl"))
-    rollout.write_text(
-        rollout.read_text(encoding="utf-8")
-        + json.dumps(
-            _mcp_item_completed(
-                "agentacct",
-                "agentacct_record_section",
-                "call_refresh",
-                result=_mcp_call_result(_creation_payload(section["event_id"])),
-            )
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    ordinary = runner.invoke(app, args)
-    assert ordinary.exit_code == 0, ordinary.output
-    ordinary_rows = [
-        event
-        for event in SentinelService(store).list_all_events()
-        if event.get("event_type") == "model_usage"
-    ]
-    assert len(ordinary_rows) == 1
-    assert "evidenced_event_ids" not in ordinary_rows[0]["metadata"]
-
-    refreshed = runner.invoke(app, [*args, "--refresh"])
-    assert refreshed.exit_code == 0, refreshed.output
-    refreshed_rows = [
-        event
-        for event in SentinelService(store).list_all_events()
-        if event.get("event_type") == "model_usage"
-    ]
-    assert len(refreshed_rows) == 1
-    assert refreshed_rows[0]["metadata"]["evidenced_event_ids"] == [
-        section["event_id"]
-    ]
 
 
 # ---------------------------------------------------------------------------

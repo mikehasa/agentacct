@@ -128,6 +128,18 @@ agentacct mcp doctor
 
 The `--write` path updates project `.codex/config.toml` with a portable store path. Some Codex versions may not load project-local `.codex/config.toml`; in that case use the previewed `codex mcp add ...` command or per-command config flags.
 
+Local usage import recognizes both Codex's current paginated
+`item_completed` / `McpToolCall` rollout records and the older
+`function_call`, `function_call_output`, and `mcp_tool_call_end` carriers.
+When Codex writes the same logical MCP call in more than one representation,
+agentacct reconciles them by call id so the receipt and Action are counted
+once. Malformed recording results and conflicting successful event ids do not
+donate evidence; a valid receipt still survives a failed duplicate carrier.
+
+No migration or backfill runs automatically; rows not revisited by an explicit
+refresh remain unchanged. Restart a long-running watcher after upgrading so
+subsequent scans use the new parser.
+
 ### Hermes
 
 ```bash

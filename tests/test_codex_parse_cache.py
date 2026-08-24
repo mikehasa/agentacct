@@ -67,6 +67,36 @@ def _make_codex_home(root: Path, *, model: str = "gpt-5.5") -> Path:
                         },
                     }
                 ),
+                json.dumps(
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "item_completed",
+                            "item": {
+                                "type": "McpToolCall",
+                                "id": "call-cache-evidence",
+                                "server": "agentacct",
+                                "tool": "agentacct_record_section",
+                                "arguments": {},
+                                "status": "completed",
+                                "result": {
+                                    "content": [
+                                        {
+                                            "type": "text",
+                                            "text": json.dumps(
+                                                {
+                                                    "event": {
+                                                        "event_id": "evt_ca11e0ca11e0"
+                                                    }
+                                                }
+                                            ),
+                                        }
+                                    ]
+                                },
+                            },
+                        },
+                    }
+                ),
             ]
         )
         + "\n",
@@ -169,6 +199,29 @@ def test_cache_hit_yields_identical_events_and_reuses_the_parse(tmp_path):
 
     # A hit is provably an identical re-parse: same events, cache or not.
     assert _event_signatures(baseline) == _event_signatures(cold) == _event_signatures(warm)
+    assert warm[0].evidenced_event_ids == ("evt_ca11e0ca11e0",)
+
+
+def test_parser_code_version_hashes_every_cached_projection_dependency(
+    monkeypatch,
+):
+    seen: list[str] = []
+    original_read_bytes = Path.read_bytes
+
+    def tracked_read_bytes(path: Path) -> bytes:
+        seen.append(path.name)
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", tracked_read_bytes)
+    monkeypatch.setattr(cu, "_CODEX_PARSER_CODE_VERSION", None)
+
+    assert cu._codex_parser_code_version() is not None
+    assert {
+        "client_usage.py",
+        "codex_rollout_adapter.py",
+        "log_evidence.py",
+        "tool_activity.py",
+    }.issubset(seen)
 
 
 def test_cache_invalidates_and_reparses_when_the_file_changes(tmp_path):
