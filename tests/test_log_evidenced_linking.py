@@ -560,7 +560,7 @@ def test_codex_paginated_malformed_creation_items_raise_schema_drift(tmp_path) -
     assert stats["error_codes"] == ["codex_rollout_evidence_schema_drift"]
 
 
-def test_codex_evidence_fragment_cap_invalidates_only_relevant_overflow(
+def test_codex_evidence_fragment_cap_only_invalidates_current_creation_overflow(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -615,6 +615,39 @@ def test_codex_evidence_fragment_cap_invalidates_only_relevant_overflow(
         assert event.evidenced_event_ids == expected_ids
         assert event.evidenced_outputs_skipped == expected_skips
         assert stats.get("error_codes", []) == expected_errors
+
+
+def test_codex_evidence_fragment_cap_counts_unpaired_legacy_outputs(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(client_usage_module, "_CODEX_EVIDENCE_FRAGMENT_CAP", 1)
+    retained_creation = _mcp_item_completed(
+        "agentacct",
+        "agentacct_record_section",
+        "call_retained",
+        result=_mcp_call_result(_creation_payload("evt_606060606060")),
+    )
+    unpaired_legacy_output = _function_output(
+        "call_unpaired",
+        _wrapped_output(_creation_payload("evt_deadbeef0004")),
+    )
+    stats: dict[str, object] = {}
+
+    events = discover_codex_usage(
+        codex_home=_make_codex_home(
+            tmp_path,
+            [retained_creation, unpaired_legacy_output],
+        ),
+        limit_sessions=10,
+        _discovery_stats=stats,
+    )
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.evidenced_event_ids == ()
+    assert event.evidenced_outputs_skipped == 1
+    assert stats["error_codes"] == ["codex_rollout_evidence_schema_drift"]
 
 
 def test_codex_duplicate_and_failed_sibling_fragments_are_order_independent(tmp_path) -> None:

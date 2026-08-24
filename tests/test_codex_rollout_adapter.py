@@ -391,6 +391,17 @@ def _reconcile_same_call(
         ),
         (
             [
+                CodexEvidenceOutcome(
+                    outcome_classification="success", event_id=EVENT_ID
+                ),
+                CodexEvidenceOutcome(outcome_classification="malformed"),
+            ],
+            [],
+            1,
+            True,
+        ),
+        (
+            [
                 CodexEvidenceOutcome(outcome_classification="failure"),
                 CodexEvidenceOutcome(
                     outcome_classification="failure",

@@ -133,8 +133,9 @@ Local usage import recognizes both Codex's current paginated
 `function_call`, `function_call_output`, and `mcp_tool_call_end` carriers.
 When Codex writes the same logical MCP call in more than one representation,
 agentacct reconciles them by call id so the receipt and Action are counted
-once. Malformed recording results and conflicting successful event ids do not
-donate evidence; a valid receipt still survives a failed duplicate carrier.
+once. A clean failed or unknown duplicate does not suppress a valid receipt.
+Malformed carriers, identity conflicts, and conflicting successful event ids
+invalidate that logical call and report evidence schema drift.
 
 No migration or backfill runs automatically; rows not revisited by an explicit
 refresh remain unchanged. Restart a long-running watcher after upgrading so

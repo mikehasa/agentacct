@@ -8278,8 +8278,11 @@ def _read_codex_rollout_usage_uncached(
             ):
                 # Reconciliation must retain out-of-order descriptors and
                 # outputs, but it must not accumulate or repeatedly decode an
-                # unbounded rollout. Make truncation an explicit evidence-health
-                # failure and one bounded skip instead of claiming completeness.
+                # unbounded rollout. A legacy output cannot be classified until
+                # its descriptor appears, so even an ultimately orphaned output
+                # counts toward this cap. Make truncation an explicit
+                # evidence-health failure and one bounded skip instead of
+                # claiming completeness.
                 evidence_fragment_cap_exceeded = True
 
             carrier_model = codex_model_from_record(obj)
