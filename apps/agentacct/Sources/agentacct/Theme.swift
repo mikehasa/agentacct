@@ -202,6 +202,7 @@ struct PanelTile: View {
     let label: String
     let value: String
     var detail: String? = nil
+    var reservesDetailSpace = true
     var accent: Color = Theme.text
 
     var body: some View {
@@ -210,13 +211,20 @@ struct PanelTile: View {
                 .font(Type.tileLabel)
                 .tracking(0.7)
                 .foregroundStyle(Theme.textFaint)
+                .lineLimit(1)
             Text(value)
                 .font(Type.metric)
                 .foregroundStyle(accent)
-            if let detail {
-                Text(detail)
+                .lineLimit(1)
+            if detail != nil || reservesDetailSpace {
+                // Mixed rows reserve three single-line slots so absent detail
+                // cannot change card geometry or enter the accessibility tree.
+                Text(detail ?? " ")
                     .font(Type.tiny)
                     .foregroundStyle(Theme.textFaint)
+                    .lineLimit(1)
+                    .opacity(detail == nil ? 0 : 1)
+                    .accessibilityHidden(detail == nil)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

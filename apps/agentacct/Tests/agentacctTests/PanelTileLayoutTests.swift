@@ -21,11 +21,28 @@ final class PanelTileLayoutTests: XCTestCase {
     }
 
     @MainActor
-    private func renderedHeight(detail: String?, width: CGFloat) throws -> Int {
+    func testPanelTileCanOmitReservedDetailSpaceForCompactRows() throws {
+        let standardHeight = try renderedHeight(detail: nil, width: 243)
+        let compactHeight = try renderedHeight(
+            detail: nil,
+            width: 243,
+            reservesDetailSpace: false
+        )
+
+        XCTAssertLessThan(compactHeight, standardHeight)
+    }
+
+    @MainActor
+    private func renderedHeight(
+        detail: String?,
+        width: CGFloat,
+        reservesDetailSpace: Bool = true
+    ) throws -> Int {
         let tile = PanelTile(
             label: "today · fresh tokens",
             value: "297.4k",
-            detail: detail
+            detail: detail,
+            reservesDetailSpace: reservesDetailSpace
         )
         .frame(width: width)
         .fixedSize(horizontal: false, vertical: true)

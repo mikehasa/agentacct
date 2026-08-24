@@ -7,6 +7,14 @@ on:
     branches: [main]
 
 jobs:
+  swift-app:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Swift app tests
+        run: swift test --package-path apps/agentacct
+
   pytest:
     runs-on: ubuntu-latest
     strategy:

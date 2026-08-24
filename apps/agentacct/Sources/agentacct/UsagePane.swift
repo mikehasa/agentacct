@@ -188,13 +188,17 @@ struct UsagePane: View {
         if let usage = dashboard.usage {
             if let totals = usage.totals {
                 HStack(spacing: 8) {
-                    PanelTile(label: "\(dashboard.usageDays)d cost", value: totals.costText, accent: Theme.blue)
+                    PanelTile(label: "\(dashboard.usageDays)d cost", value: totals.costText,
+                              reservesDetailSpace: false, accent: Theme.blue)
                     PanelTile(label: "\(dashboard.usageDays)d fresh tokens",
-                              value: totals.freshTokens.map(UsageTotals.compact) ?? "—")
+                              value: totals.freshTokens.map(UsageTotals.compact) ?? "—",
+                              reservesDetailSpace: false)
                     PanelTile(label: "cache read",
-                              value: totals.cacheReadTokens.map(UsageTotals.compact) ?? "—")
+                              value: totals.cacheReadTokens.map(UsageTotals.compact) ?? "—",
+                              reservesDetailSpace: false)
                     PanelTile(label: "sessions",
-                              value: totals.sessions.map(String.init) ?? "—")
+                              value: totals.sessions.map(String.init) ?? "—",
+                              reservesDetailSpace: false)
                 }
             }
             if let periods = usage.byPeriod, periods.count > 1 {
