@@ -1097,6 +1097,32 @@ def test_codex_dedupe_signature_distinguishes_missing_from_explicit_zero(tmp_pat
     assert event.deduplicated_usage_rows == 0
 
 
+def test_codex_rollout_survives_deeply_nested_json_line(tmp_path):
+    codex_home = _make_codex_home(tmp_path)
+    rollout_path = next((codex_home / "sessions").rglob("rollout-*.jsonl"))
+    deeply_nested_line = (
+        '{"type":"event_msg","payload":{"nested":'
+        + "[" * 10_000
+        + "0"
+        + "]" * 10_000
+        + "}}"
+    )
+    rollout_path.write_text(
+        rollout_path.read_text(encoding="utf-8") + deeply_nested_line + "\n",
+        encoding="utf-8",
+    )
+    parse_stats: dict[str, int] = {}
+
+    usage = client_usage_module._read_codex_rollout_usage(
+        rollout_path,
+        _parse_stats=parse_stats,
+    )
+
+    assert usage is not None
+    assert usage["total_tokens"] == 2_625
+    assert parse_stats["unparseable_rollouts"] == 1
+
+
 def test_codex_partial_or_invalid_rollout_never_uses_sqlite_input_fallback(tmp_path):
     codex_home = _make_codex_home(tmp_path)
     partial = {

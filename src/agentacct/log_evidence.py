@@ -120,8 +120,24 @@ _CODEX_ACCEPTED_NAMESPACES = frozenset(
 _CLAUDE_TOOL_PREFIX = "mcp__"
 
 
+def extract_created_event_id_from_payload(payload: Any) -> str | None:
+    """Extract one event id only from the exact creation-response shape."""
+
+    if not isinstance(payload, dict):
+        return None
+    event = payload.get("event")
+    if not isinstance(event, dict):
+        return None
+    if any(isinstance(payload.get(key), list) for key in ("events", "runs")):
+        return None
+    event_id = event.get("event_id")
+    if not isinstance(event_id, str) or not EVIDENCED_EVENT_ID_RE.match(event_id):
+        return None
+    return event_id
+
+
 def extract_created_event_id(text: str) -> str | None:
-    """Strict single-created-event shape check shared by every wire adapter.
+    """Strict single-created-event text check shared by every wire adapter.
 
     Accepts exactly the creation-tool payload shape: a JSON dict with a
     top-level ``"event"`` dict whose ``event_id`` is a well-formed evt id.
@@ -135,17 +151,7 @@ def extract_created_event_id(text: str) -> str | None:
         payload = json.loads(text)
     except (json.JSONDecodeError, ValueError):
         return None
-    if not isinstance(payload, dict):
-        return None
-    event = payload.get("event")
-    if not isinstance(event, dict):
-        return None
-    if any(isinstance(payload.get(key), list) for key in ("events", "runs")):
-        return None
-    event_id = event.get("event_id")
-    if not isinstance(event_id, str) or not EVIDENCED_EVENT_ID_RE.match(event_id):
-        return None
-    return event_id
+    return extract_created_event_id_from_payload(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -545,16 +551,15 @@ def opencode_tool_creation_tool(name: Any) -> str | None:
     return None
 
 
-def classify_codex_mcp_invocation(server: Any, tool: Any) -> str | None:
-    """"accepted" / "rejected" / None for a codex mcp_tool_call_end invocation.
+def classify_codex_mcp_call_identity(server: Any, tool: Any) -> str | None:
+    """Classify a Codex MCP call as an accepted recording-tool identity.
 
-    Codex 0.144.0-alpha.4 dropped the duplicate ``function_call`` records for
-    MCP tools; the ``mcp_tool_call_end`` event_msg's ``invocation`` block
-    (``server``/``tool``) is now the only channel. Same allowlist-first rule
+    Applies equally to the legacy ``mcp_tool_call_end.invocation`` identity and
+    the paginated ``item_completed.item`` identity. Same allowlist-first rule
     as :func:`classify_codex_function_call`, with ONE deliberate difference:
-    the ``server`` field is always present in this shape, so a None/absent
-    server is REJECTED (skipped-but-counted — absence is drift), never
-    accepted the way an absent function_call namespace is.
+    terminal MCP carriers require a server, so None/absent is REJECTED
+    (skipped-but-counted), never accepted like an absent legacy
+    ``function_call`` namespace.
     """
 
     if not isinstance(tool, str) or tool not in SENTINEL_CREATION_TOOLS:
@@ -562,6 +567,12 @@ def classify_codex_mcp_invocation(server: Any, tool: Any) -> str | None:
     if server is None:
         return "rejected"
     return "accepted" if codex_namespace_matches_sentinel(server) else "rejected"
+
+
+def classify_codex_mcp_invocation(server: Any, tool: Any) -> str | None:
+    """Compatibility name for :func:`classify_codex_mcp_call_identity`."""
+
+    return classify_codex_mcp_call_identity(server, tool)
 
 
 def unwrap_codex_mcp_result(result: Any) -> str | None:
@@ -645,6 +656,14 @@ class LogEvidenceAccumulator:
         if event_id is None:
             self.record_skip(text, tool=tool)
             return
+        self.add_event_id(event_id)
+
+    def add_event_id(self, event_id: str) -> None:
+        """Add an already-normalized created-event id without retaining output."""
+
+        if not isinstance(event_id, str) or not EVIDENCED_EVENT_ID_RE.match(event_id):
+            self.record_skip()
+            return
         if event_id in self._seen:
             return
         self._seen.add(event_id)
@@ -663,6 +682,28 @@ class LogEvidenceAccumulator:
         refusal = classify_refused_recording(text, tool=tool)
         if refusal is not None:
             self._refused[refusal] += 1
+
+    def record_classified_skip(
+        self,
+        refusal: tuple[str | None, str | None, str] | None,
+    ) -> None:
+        """Count a skip after an adapter has dropped the original response text.
+
+        The tuple is re-normalized through the same frozen vocabularies used at
+        render time, so this path cannot turn adapter data into unbounded or
+        caller-controlled metadata.
+        """
+
+        self.evidenced_outputs_skipped += 1
+        if refusal is None:
+            return
+        rows = refused_recording_rows({refusal: 1})
+        if not rows:
+            return
+        row = rows[0]
+        self._refused[
+            (row["tool"], row["field"], row["reason_code"])
+        ] += 1
 
     @property
     def evidenced_event_id_total(self) -> int:
