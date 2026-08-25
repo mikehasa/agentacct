@@ -141,6 +141,72 @@ final class DashboardInteractionTests: XCTestCase {
         }
     }
 
+    func testPlanWindowCopyRequiresARealSevenDayWindow() throws {
+        let missingProvider = DashboardPlanWindowPresentation(limit: nil)
+        XCTAssertEqual(missingProvider.remainingText, "—")
+        XCTAssertEqual(missingProvider.remainingCaption, "7-day")
+        XCTAssertEqual(missingProvider.resetText, "Provider limit unavailable")
+        XCTAssertEqual(missingProvider.provenanceText, "No live provider data")
+
+        let fiveHourOnly = try decode(
+            LimitEntry.self,
+            from: """
+            {
+              "client": "codex",
+              "plan_type": "pro",
+              "windows": [{ "kind": "5h", "used_percent": 31 }]
+            }
+            """
+        )
+        let sevenDay = try decode(
+            LimitEntry.self,
+            from: """
+            {
+              "client": "codex",
+              "plan_type": "pro",
+              "windows": [{ "kind": "7d", "used_percent": 39 }]
+            }
+            """
+        )
+
+        let unavailable = DashboardPlanWindowPresentation(limit: fiveHourOnly)
+        XCTAssertEqual(unavailable.titleSuffix, "")
+        XCTAssertEqual(unavailable.remainingText, "—")
+        XCTAssertEqual(unavailable.remainingCaption, "7-day")
+        XCTAssertEqual(unavailable.resetText, "7-day limit unavailable")
+        XCTAssertEqual(unavailable.provenanceText, "No provider-reported 7-day window")
+
+        let available = DashboardPlanWindowPresentation(limit: sevenDay)
+        XCTAssertEqual(available.titleSuffix, " · 7-day window")
+        XCTAssertEqual(available.remainingText, "61%")
+        XCTAssertEqual(available.remainingCaption, "remaining")
+        XCTAssertEqual(available.provenanceText, "Provider reported")
+    }
+
+    func testActiveSessionResolutionNeverDropsAnUnmatchedSession() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-1",
+              "decision_status": { "key": "verified" },
+              "evidence_strength": { "key": "none" },
+              "cost": {},
+              "primary_root": { "client": "codex", "client_session_id": "root" }
+            }
+            """
+        )
+
+        XCTAssertEqual(
+            workSessionResolution(for: "codex::root", in: [task]),
+            .task("task-1")
+        )
+        XCTAssertEqual(
+            workSessionResolution(for: "codex::subagent", in: [task]),
+            .unresolved("codex::subagent")
+        )
+    }
+
     func testNeedsReviewProjectionUsesActionableTasks() throws {
         let tasks = try decode(
             [ReceiptSummary].self,

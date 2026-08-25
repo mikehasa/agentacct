@@ -43,24 +43,30 @@ final class ThemeContrastTests: XCTestCase {
             ("red", Theme.Palette.red),
             ("cyan", Theme.Palette.cyan),
         ]
+        let chipStyles = [
+            (name: "chip", backgroundOpacity: Chip.backgroundOpacity),
+            (name: "axis chip", backgroundOpacity: AxisChip.backgroundOpacity),
+        ]
 
         for scheme in [ColorScheme.light, .dark] {
-            // Chip is currently used only on card-backed rows and panels. Add
-            // another host surface here before placing it elsewhere.
+            // Both chip styles are currently used only on card-backed rows and
+            // panels. Add another host surface here before placing one elsewhere.
             let card = Theme.Palette.card.hex(for: scheme)
-            for (name, semanticColor) in semanticColors {
-                let foreground = semanticColor.hex(for: scheme)
-                let chipBackground = composite(
-                    foreground: foreground,
-                    background: card,
-                    opacity: Chip.backgroundOpacity
-                )
-                assertContrast(
-                    foreground,
-                    against: chipBackground,
-                    minimum: minimumSmallTextContrast,
-                    context: "\(name) chip in \(scheme) mode"
-                )
+            for style in chipStyles {
+                for (name, semanticColor) in semanticColors {
+                    let foreground = semanticColor.hex(for: scheme)
+                    let chipBackground = composite(
+                        foreground: foreground,
+                        background: card,
+                        opacity: style.backgroundOpacity
+                    )
+                    assertContrast(
+                        foreground,
+                        against: chipBackground,
+                        minimum: minimumSmallTextContrast,
+                        context: "\(name) \(style.name) in \(scheme) mode"
+                    )
+                }
             }
         }
     }

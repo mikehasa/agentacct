@@ -572,23 +572,54 @@ private struct ActiveWorkCard: View {
     }
 }
 
+struct DashboardPlanWindowPresentation: Equatable {
+    let titleSuffix: String
+    let remainingText: String
+    let remainingCaption: String
+    let remainingFraction: Double
+    let usedPercent: Double?
+    let resetText: String
+    let provenanceText: String
+
+    init(limit: LimitEntry?) {
+        guard let limit else {
+            titleSuffix = ""
+            remainingText = "—"
+            remainingCaption = "7-day"
+            remainingFraction = 0
+            usedPercent = nil
+            resetText = "Provider limit unavailable"
+            provenanceText = "No live provider data"
+            return
+        }
+        guard let window = (limit.windows ?? []).first(where: { $0.kind == "7d" }) else {
+            titleSuffix = ""
+            remainingText = "—"
+            remainingCaption = "7-day"
+            remainingFraction = 0
+            usedPercent = nil
+            resetText = "7-day limit unavailable"
+            provenanceText = "No provider-reported 7-day window"
+            return
+        }
+
+        let remaining = window.usedPercent.map { max(0, 100 - $0) }
+        titleSuffix = " · 7-day window"
+        remainingText = remaining.map { String(format: "%.0f%%", $0) } ?? "—"
+        remainingCaption = "remaining"
+        remainingFraction = (remaining ?? 0) / 100
+        usedPercent = window.usedPercent
+        resetText = Theme.resetsIn(window.resetsAt).map { "Resets in \($0)" }
+            ?? "Reset time unavailable"
+        provenanceText = "Provider reported"
+    }
+}
+
 private struct PlanAndUsageCard: View {
     let limit: LimitEntry?
     let accountCount: Int
     let today: UsageTotals?
     let onViewLimits: () -> Void
-
-    private var sevenDay: LimitWindow? {
-        (limit?.windows ?? []).first { $0.kind == "7d" }
-    }
-
-    private var used: Double? { sevenDay?.usedPercent }
-    private var remaining: Double? { used.map { max(0, 100 - $0) } }
-
-    private var resetText: String {
-        Theme.resetsIn(sevenDay?.resetsAt).map { "Resets in \($0)" }
-            ?? "Reset time unavailable"
-    }
 
     private var providerTitle: String {
         guard let limit else { return "No live provider limit" }
@@ -599,6 +630,8 @@ private struct PlanAndUsageCard: View {
     }
 
     var body: some View {
+        let window = DashboardPlanWindowPresentation(limit: limit)
+
         Card(padding: 0, fillsHeight: true) {
             VStack(spacing: 0) {
                 DashboardCardHeader("Plan and usage", count: accountCount > 1 ? accountCount : nil) {
@@ -612,16 +645,16 @@ private struct PlanAndUsageCard: View {
                 Divider().overlay(Theme.border)
                 HStack(spacing: Space.l) {
                     PlanRing(
-                        fraction: (remaining ?? 0) / 100,
-                        tint: used.map(Theme.limitColor) ?? Theme.textFaint
+                        fraction: window.remainingFraction,
+                        tint: window.usedPercent.map(Theme.limitColor) ?? Theme.textFaint
                     )
                     .frame(width: 82, height: 82)
                     .overlay {
                         VStack(spacing: 1) {
-                            Text(remaining.map { String(format: "%.0f%%", $0) } ?? "—")
+                            Text(window.remainingText)
                                 .font(Type.hero)
                                 .foregroundStyle(Theme.text)
-                            Text("remaining")
+                            Text(window.remainingCaption)
                                 .font(Type.tiny)
                                 .foregroundStyle(Theme.textMuted)
                         }
@@ -629,14 +662,14 @@ private struct PlanAndUsageCard: View {
 
                     VStack(alignment: .leading, spacing: Space.s) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(providerTitle + (limit == nil ? "" : " · 7-day window"))
+                            Text(providerTitle + window.titleSuffix)
                                 .font(Type.tiny)
                                 .foregroundStyle(Theme.textMuted)
                                 .lineLimit(1)
-                            Text(resetText)
+                            Text(window.resetText)
                                 .font(Type.rowTitle.weight(.semibold))
                                 .foregroundStyle(Theme.text)
-                            Text("Provider reported")
+                            Text(window.provenanceText)
                                 .font(Type.tiny)
                                 .foregroundStyle(Theme.textFaint)
                         }

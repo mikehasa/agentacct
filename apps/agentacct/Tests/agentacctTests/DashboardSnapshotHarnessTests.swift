@@ -27,6 +27,9 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         XCTAssertEqual(store.totalReceiptTasks, 4)
         XCTAssertEqual(store.planClients.count, 1)
         XCTAssertEqual(store.usage?.byPeriod?.count, 7)
+        XCTAssertEqual(fixture.glance.limits.count, 1)
+        XCTAssertEqual(fixture.glance.recentSessions.count, 2)
+        XCTAssertNotNil(fixture.glance.usage.windows.first { $0.label == "today" })
     }
 
     @MainActor

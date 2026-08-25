@@ -237,9 +237,8 @@ struct MenuContent: View {
     private func openMain(selecting sessionId: String?) {
         if let sessionId {
             // The Work surface is Task-primary; it resolves this session key to
-            // its Task (by primary-root match) and selects/expands it there.
-            selection.pane = .work
-            selection.sessionId = sessionId
+            // its Task when the compact task summary carries an exact match.
+            selection.open(.session(sessionId))
         }
         openWindow(id: "main")
         NSApp.activate(ignoringOtherApps: true)
