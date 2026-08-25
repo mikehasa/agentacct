@@ -15,10 +15,17 @@ struct MainWindow: View {
     @EnvironmentObject var selection: AppSelection
     @StateObject private var setup = SetupModel()
     @State private var showSetup = false
+    /// Design-review renders cannot infer whether the executable was packaged
+    /// with the recorder. Live windows leave this nil and use SetupModel.
+    var canSetUpOverride: Bool? = nil
+
+    private var canSetUp: Bool {
+        canSetUpOverride ?? (setup.bundledCLIDir != nil)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            TopBar(canSetUp: setup.bundledCLIDir != nil) { showSetup = true }
+            TopBar(canSetUp: canSetUp) { showSetup = true }
             Rectangle().fill(Theme.border).frame(height: 1)
             Group {
                 switch selection.pane {
@@ -36,10 +43,13 @@ struct MainWindow: View {
             SetupSheet(setup: setup) { showSetup = false }
         }
         .task {
+            // Fixture-backed design review must stay deterministic and must
+            // never consult the developer's live daemon/account data.
+            guard !SnapshotMode.enabled else { return }
             // First-run: a packaged build whose recorder isn't installed yet
             // offers setup once, automatically. A dev build (no embedded CLI)
             // never prompts.
-            if !SnapshotMode.enabled, setup.shouldOfferSetup { showSetup = true }
+            if setup.shouldOfferSetup { showSetup = true }
             await dashboard.refresh()
             // The window is a live instrument: refresh while it stays open
             // (the daemon caches by fingerprint, so a quiet minute is one

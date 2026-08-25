@@ -32,6 +32,14 @@ open .build/agentacct.app
 
 Or during development: `swift run` (menu bar item appears; Ctrl-C to quit).
 
+## Test the dashboard UI
+
+The deterministic snapshot harness renders the real dashboard from synthetic
+API payloads in light and dark mode, without a running daemon or personal
+account data. See [Tests/README.md](Tests/README.md) for the two-command quick
+start, artifact matrix, extension guide, determinism rules, and review
+checklist.
+
 ## Status / roadmap
 
 - [x] discovery + bearer + version handshake + 30s poll

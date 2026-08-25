@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 // Offscreen renders of the real UI with real daemon data. Development tooling:
@@ -65,7 +64,7 @@ enum SnapshotRunner {
                             .environmentObject(selection)
                             .frame(width: 1120, height: height)
                             .environment(\.colorScheme, scheme)
-                        try render(
+                        try SnapshotImageWriter.render(
                             window,
                             to: out.appendingPathComponent("window-\(pane.rawValue.lowercased())-\(suffix).png")
                         )
@@ -78,7 +77,7 @@ enum SnapshotRunner {
                         .background(scheme == .dark ? Color(white: 0.13) : Color(white: 0.97))
                         .frame(width: 360)
                         .environment(\.colorScheme, scheme)
-                    try render(menu, to: out.appendingPathComponent("menu-\(suffix).png"))
+                    try SnapshotImageWriter.render(menu, to: out.appendingPathComponent("menu-\(suffix).png"))
                 }
                 SnapshotScheme.override = nil
                 print("snapshots written to \(out.path)")
@@ -93,17 +92,28 @@ enum SnapshotRunner {
         exit(0)
     }
 
-    @MainActor
-    private static func render(_ view: some View, to url: URL) throws {
-        let renderer = ImageRenderer(content: view)
-        renderer.scale = 2
-        guard let cgImage = renderer.cgImage else {
-            throw NSError(domain: "snapshot", code: 1, userInfo: [NSLocalizedDescriptionKey: "render produced no image"])
+    static func runDashboardFixture(fixturePath: String, outputDir: String) {
+        let fixtureURL = URL(fileURLWithPath: (fixturePath as NSString).expandingTildeInPath)
+        let outputURL = URL(fileURLWithPath: (outputDir as NSString).expandingTildeInPath)
+        var finished = false
+        var exitCode: Int32 = 0
+        Task { @MainActor in
+            defer { finished = true }
+            do {
+                let fixture = try DashboardSnapshotFixture.load(from: fixtureURL)
+                let rendered = try DashboardSnapshotRenderer.render(
+                    fixture: fixture,
+                    outputDirectory: outputURL
+                )
+                print("dashboard snapshots written to \(outputURL.path): \(rendered.count) files")
+            } catch {
+                exitCode = 1
+                FileHandle.standardError.write(Data("dashboard snapshot failed: \(error)\n".utf8))
+            }
         }
-        let rep = NSBitmapImageRep(cgImage: cgImage)
-        guard let png = rep.representation(using: .png, properties: [:]) else {
-            throw NSError(domain: "snapshot", code: 2, userInfo: [NSLocalizedDescriptionKey: "png encode failed"])
+        while !finished {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
         }
-        try png.write(to: url)
+        exit(exitCode)
     }
 }

@@ -314,6 +314,10 @@ struct SectionCaption: View {
 /// mode swaps them for plain containers so renders match the live app.
 enum SnapshotMode {
     nonisolated(unsafe) static var enabled = false
+    /// Dashboard review matrices model a real viewport at the top scroll
+    /// position. Legacy all-pane screenshots retain their existing full-content
+    /// behavior until each pane has its own review viewport.
+    nonisolated(unsafe) static var boundsScrollContentToViewport = false
 }
 
 struct ScrollBox<Content: View>: View {
@@ -321,7 +325,15 @@ struct ScrollBox<Content: View>: View {
 
     var body: some View {
         if SnapshotMode.enabled {
-            content().frame(maxHeight: .infinity, alignment: .top)
+            if SnapshotMode.boundsScrollContentToViewport {
+                GeometryReader { proxy in
+                    content()
+                        .frame(width: proxy.size.width, alignment: .topLeading)
+                }
+                .clipped()
+            } else {
+                content().frame(maxHeight: .infinity, alignment: .top)
+            }
         } else {
             ScrollView(showsIndicators: false) { content() }
         }

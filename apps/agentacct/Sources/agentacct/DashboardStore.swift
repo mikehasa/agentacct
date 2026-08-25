@@ -44,6 +44,20 @@ final class DashboardStore: ObservableObject {
     private let client = GlanceClient()
     private let pageSize = 60
 
+    init() {}
+
+    /// Design-review tooling: populate the same state the daemon endpoints
+    /// would, without network access or a developer's local account data.
+    init(preloaded fixture: DashboardSnapshotFixture) {
+        sessions = fixture.sessions.sessions
+        totalSessions = fixture.sessions.totalSessions
+        totalRootSessions = fixture.sessions.totalRootSessions
+        truncated = fixture.sessions.truncated ?? false
+        planStatuses = fixture.sessions.plan ?? []
+        planClients = fixture.plan.clients
+        usage = fixture.usage
+    }
+
     func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
