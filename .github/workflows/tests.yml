@@ -52,7 +52,18 @@ jobs:
         run: ./Tests/visual-snapshots-cli-tests.sh
       - name: Run Swift tests
         run: swift test
+      - name: Detect canonical visual renderer
+        id: visual-renderer
+        run: |
+          if ./Scripts/visual-snapshots check-environment; then
+            echo "canonical=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "canonical=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Reviewed pixel references require the exact canonical renderer;" \
+              "deterministic render tests and the review artifact still run on this hosted image."
+          fi
       - name: Verify dashboard visual references
+        if: steps.visual-renderer.outputs.canonical == 'true'
         env:
           AGENTACCT_SNAPSHOT_ARTIFACT_DIR: ${{ runner.temp }}/agentacct-dashboard-diff
         run: ./Scripts/visual-snapshots verify DashboardVisualRegressionTests

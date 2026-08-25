@@ -23,6 +23,7 @@ usage() {
   cat >&2 <<'EOF'
 usage:
   ./Scripts/visual-snapshots list [test-selector-or-path ...]
+  ./Scripts/visual-snapshots check-environment
   ./Scripts/visual-snapshots verify [test-selector-or-path ...]
   ./Scripts/visual-snapshots record [test-selector-or-path ...]
 
@@ -197,9 +198,16 @@ run_selected() {
 action="$1"
 shift
 case "$action" in
-  list|verify|record) ;;
+  list|check-environment|verify|record) ;;
   *) usage ;;
 esac
+
+if [[ "$action" == "check-environment" ]]; then
+  [[ $# -eq 0 ]] || usage
+  check_environment
+  printf '%s\n' "$platform_id"
+  exit 0
+fi
 
 if [[ "$action" == "record" ]] && is_truthy "${CI:-}"; then
   fail "recording is disabled in CI; record locally and commit reviewed references"

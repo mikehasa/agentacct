@@ -19,6 +19,12 @@ Discover the available visual regression suites:
 ./Scripts/visual-snapshots list
 ```
 
+Check whether the current host exactly matches the reviewed-reference renderer:
+
+```bash
+./Scripts/visual-snapshots check-environment
+```
+
 This project currently discovers `DashboardVisualRegressionTests`. An empty
 list remains valid for another project or branch before its first visual suite.
 
@@ -123,7 +129,8 @@ SnapshotTesting explicitly warns that image references must be created and
 compared in the same rendering environment. GitHub's hosted runner images are
 updated weekly, so an OS label alone is not sufficient.
 
-The CLI fails before running a visual test unless the exact renderer is:
+The CLI fails before comparing or recording reviewed pixels unless the exact
+renderer is:
 
 ```text
 macos-26.6-25G72-xcode-26.6-17F113-arm64-2x
@@ -132,6 +139,13 @@ macos-26.6-25G72-xcode-26.6-17F113-arm64-2x
 That identity includes macOS product and build, Xcode version and build,
 architecture, and scale. A mismatch is an explicit baseline-platform migration,
 not a pixel failure. Never bypass it by copying references between platforms.
+
+GitHub hosted images are mutable even under a versioned runner label. CI always
+runs the semantic suite, renders the matrix twice for deterministic comparison,
+and uploads a fresh review matrix. It compares that render with reviewed PNGs
+only when `check-environment` confirms the exact canonical renderer. This keeps
+host-image updates visible without turning an OS update into a false product
+regression or silently approving new pixels.
 
 Every nondeterministic input used by the current dashboard has an executable
 control:

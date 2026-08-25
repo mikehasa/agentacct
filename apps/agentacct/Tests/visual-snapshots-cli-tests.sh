@@ -72,6 +72,12 @@ fail() {
   exit 1
 }
 
+detected_platform="$("$app_dir/Scripts/visual-snapshots" check-environment)"
+[[ "$detected_platform" == "$platform_id" ]] \
+  || fail "environment check returned the wrong platform id: $detected_platform"
+[[ ! -s "$AGENTACCT_FAKE_SWIFT_LOG" ]] \
+  || fail "environment check performed unnecessary test discovery"
+
 resolved="$("$app_dir/Scripts/visual-snapshots" list \
   "$test_dir/TestFiles/DashboardVisualRegressionTests.swift")"
 [[ "$resolved" == "agentacctTests.DashboardVisualRegressionTests" ]] \
@@ -143,12 +149,12 @@ grep -q 'recording is disabled in CI' "$test_dir/ci.out" \
 
 : > "$AGENTACCT_FAKE_SWIFT_LOG"
 if AGENTACCT_FAKE_OS_BUILD=unexpected \
-  "$app_dir/Scripts/visual-snapshots" verify DashboardVisualRegressionTests \
+  "$app_dir/Scripts/visual-snapshots" check-environment \
   >"$test_dir/platform.out" 2>&1; then
-  fail "verification unexpectedly accepted a different renderer build"
+  fail "environment check unexpectedly accepted a different renderer build"
 fi
 [[ ! -s "$AGENTACCT_FAKE_SWIFT_LOG" ]] \
-  || fail "renderer mismatch invoked a visual test before rejecting the environment"
+  || fail "renderer mismatch performed unnecessary test discovery"
 grep -q 'explicit baseline-platform migration' "$test_dir/platform.out" \
   || fail "renderer mismatch did not explain the migration workflow"
 
