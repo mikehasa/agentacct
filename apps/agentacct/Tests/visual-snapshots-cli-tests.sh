@@ -123,7 +123,7 @@ expected_verify+='^agentacctTests\.SettingsVisualRegressionTests\/testCompactDar
   || fail "verify did not use the exact discovered test selector"
 
 : > "$AGENTACCT_FAKE_SWIFT_LOG"
-"$app_dir/Scripts/visual-snapshots" record \
+CI=false "$app_dir/Scripts/visual-snapshots" record \
   "$test_dir/TestFiles/DashboardVisualRegressionTests.swift" >/dev/null
 expected_record="record|1|$platform_id|^agentacctTests\\.DashboardVisualRegressionTests/"
 expected_record+=$'\n'
