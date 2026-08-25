@@ -7,11 +7,27 @@ import SwiftUI
 // (root session + its continuations + subagents); this folds the former
 // Receipts + Sessions panes into one Task-primary view.
 
+enum WorkSessionResolution: Equatable {
+    case task(String)
+    case unresolved(String)
+}
+
+func workSessionResolution(
+    for sessionId: String,
+    in tasks: [ReceiptSummary]
+) -> WorkSessionResolution {
+    if let match = tasks.first(where: { $0.primaryRoot?.sessionKey == sessionId }) {
+        return .task(match.taskId)
+    }
+    return .unresolved(sessionId)
+}
+
 struct WorkPane: View {
     @EnvironmentObject var dashboard: DashboardStore
     @EnvironmentObject var selection: AppSelection
     @State private var query = ""
     @State private var sort: WorkSort = .latest
+    @State private var unresolvedSessionId: String?
 
     enum WorkSort: String, CaseIterable, Identifiable {
         case latest, cost
@@ -32,27 +48,46 @@ struct WorkPane: View {
         }
     }
 
+    private var selectionKey: String {
+        if let taskId = selection.taskId { return "task:\(taskId)" }
+        if let sessionId = selection.sessionId { return "session:\(sessionId)" }
+        return "list"
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             taskList.frame(width: 340)
             Rectangle().fill(Theme.border).frame(width: 1)
             detail.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .task {
-            await dashboard.fetchReceipts()
-            resolveDeepLink()
+        .task(id: selectionKey) {
+            await resolveSelection()
         }
     }
 
-    /// A menu-bar recent-session click lands here with `selection.sessionId`
-    /// set; the Work surface is Task-primary, so resolve that session to its
-    /// Task by primary-root match and select the Task instead.
-    private func resolveDeepLink() {
-        guard let sessionId = selection.sessionId, selection.taskId == nil else { return }
-        if let match = dashboard.receiptTasks.first(where: { $0.primaryRoot?.sessionKey == sessionId }) {
-            select(match.taskId)
+    /// Keep list navigation, direct Task links, and menu-bar session links on
+    /// one lifecycle. The task id is part of `.task(id:)`, so changing rows
+    /// cancels an obsolete Receipt request before starting the next one.
+    private func resolveSelection() async {
+        unresolvedSessionId = nil
+        if selectionKey == "list" || dashboard.receiptTasks.isEmpty {
+            await dashboard.fetchReceipts()
         }
-        selection.sessionId = nil
+        if let taskId = selection.taskId {
+            await dashboard.fetchReceipt(taskId: taskId)
+            return
+        }
+        guard let sessionId = selection.sessionId else { return }
+        switch workSessionResolution(for: sessionId, in: dashboard.receiptTasks) {
+        case .task(let taskId):
+            selection.taskId = taskId
+            selection.sessionId = nil
+        case .unresolved(let sessionId):
+            // Compact Task summaries intentionally carry only the primary root.
+            // Keep a continuation/subagent selection intact and explain the
+            // limitation instead of silently replacing it with an empty detail.
+            unresolvedSessionId = sessionId
+        }
     }
 
     private var taskList: some View {
@@ -75,7 +110,7 @@ struct WorkPane: View {
             }
             .padding(.horizontal, 8).padding(.vertical, 7)
             Rectangle().fill(Theme.border.opacity(0.6)).frame(height: 1)
-            if let error = dashboard.receiptError, dashboard.receiptTasks.isEmpty {
+            if let error = dashboard.receiptListError, dashboard.receiptTasks.isEmpty {
                 Text(error).font(.callout).foregroundStyle(Theme.textMuted)
                     .padding().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -96,10 +131,29 @@ struct WorkPane: View {
 
     @ViewBuilder
     private var detail: some View {
-        if let receipt = dashboard.receipt {
+        if let receipt = dashboard.receipt, receipt.taskId == selection.taskId {
             WorkDetail(receipt: receipt)
         } else if let error = dashboard.receiptError, selection.taskId != nil {
             Text(error).font(.callout).foregroundStyle(Theme.textMuted).padding()
+        } else if let unresolvedSessionId, selection.sessionId == unresolvedSessionId {
+            VStack(spacing: 8) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.largeTitle)
+                    .foregroundStyle(Theme.textFaint)
+                    .accessibilityHidden(true)
+                Text("Task link unavailable")
+                    .font(Type.rowTitle.weight(.semibold))
+                    .foregroundStyle(Theme.text)
+                Text("This active session is not identified in the task summary. "
+                    + "Select its Task from the list to inspect the full receipt.")
+                    .font(Type.body)
+                    .foregroundStyle(Theme.textMuted)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 360)
+            }
+            .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityIdentifier("work.unresolved-session")
         } else {
             VStack(spacing: 8) {
                 Image(systemName: "checklist").font(.largeTitle).foregroundStyle(Theme.textFaint)
@@ -110,8 +164,8 @@ struct WorkPane: View {
     }
 
     private func select(_ taskId: String) {
+        selection.sessionId = nil
         selection.taskId = taskId
-        Task { await dashboard.fetchReceipt(taskId: taskId) }
     }
 }
 

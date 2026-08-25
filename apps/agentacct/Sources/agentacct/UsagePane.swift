@@ -340,18 +340,14 @@ struct PlanDayTooltip: View {
     }
 }
 
-/// The stacked daily bars, client-colored (cost/tokens view + the dashboard's
-/// rhythm strip). Interactive: hover a bar for the day's per-client split,
-/// click a legend entry to hide/show that agent's slices, and (when wired)
-/// switch the trailing-days range.
+/// Client-colored daily bars in the detailed Usage view. Hover a bar for the
+/// day's per-client split; click a legend entry to hide or show that agent.
 struct DailyChart: View {
     let periods: [PeriodBucket]
-    /// Present → the range switcher renders (7/30/90) and calls back.
-    var selectedDays: Int? = nil
-    var onSelectDays: ((Int) -> Void)? = nil
 
-    @State private var hovered: PeriodBucket?
+    @State private var hoveredIndex: Int?
     @State private var hidden: Set<String> = []
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var clients: [String] {
         var seen: [String] = []
@@ -377,85 +373,149 @@ struct DailyChart: View {
         max(periods.map(visibleTotal).max() ?? 1, 1)
     }
 
+    private var visibleGrandTotal: Int {
+        Int(periods.reduce(0.0) { $0 + visibleTotal($1) })
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                SectionCaption(tone: Theme.textMuted, text: "Daily fresh tokens")
-                if let selectedDays, let onSelectDays {
-                    Picker("", selection: Binding(get: { selectedDays }, set: onSelectDays)) {
-                        Text("7d").tag(7)
-                        Text("30d").tag(30)
-                        Text("90d").tag(90)
+        Card(padding: 0) {
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    SectionCaption(tone: Theme.textMuted, text: "Daily fresh tokens")
+                    Spacer()
+                    HStack(spacing: 5) {
+                        Text("\(periods.count)-day total")
+                            .font(Type.tiny)
+                            .foregroundStyle(Theme.textFaint)
+                        Text(UsageTotals.compact(visibleGrandTotal))
+                            .font(Type.numeric)
+                            .foregroundStyle(Theme.text)
                     }
-                    .pickerStyle(.segmented)
-                    .frame(width: 130)
-                }
-                Spacer()
-                ForEach(clients, id: \.self) { client in
-                    Button {
-                        if hidden.contains(client) { hidden.remove(client) } else { hidden.insert(client) }
-                    } label: {
-                        HStack(spacing: 4) {
-                            StatusDot(color: hidden.contains(client)
-                                      ? Theme.textFaint.opacity(0.4)
-                                      : Theme.clientColor(client), size: 5)
-                            Text(client)
-                                .font(.system(size: 9.5))
-                                .foregroundStyle(hidden.contains(client) ? Theme.textFaint : Theme.textMuted)
-                                .strikethrough(hidden.contains(client))
+                    ForEach(clients, id: \.self) { client in
+                        Button {
+                            if hidden.contains(client) { hidden.remove(client) } else { hidden.insert(client) }
+                        } label: {
+                            HStack(spacing: 4) {
+                                StatusDot(color: hidden.contains(client)
+                                          ? Theme.textFaint.opacity(0.4)
+                                          : Theme.clientColor(client), size: 5)
+                                Text(client)
+                                    .font(Type.tiny)
+                                    .foregroundStyle(hidden.contains(client) ? Theme.textFaint : Theme.textMuted)
+                                    .strikethrough(hidden.contains(client))
+                            }
+                            .contentShape(Rectangle())
                         }
-                        .contentShape(Rectangle())
+                        .buttonStyle(QuietButtonStyle(
+                            tint: Theme.clientColor(client),
+                            horizontalPadding: 4,
+                            verticalPadding: 3
+                        ))
+                        .help(hidden.contains(client) ? "Show \(client)" : "Hide \(client)")
                     }
-                    .buttonStyle(.plain)
-                    .help(hidden.contains(client) ? "Show \(client)" : "Hide \(client)")
                 }
-            }
-            Card(padding: 12) {
-                VStack(spacing: 6) {
-                    HStack(alignment: .bottom, spacing: 3) {
-                        ForEach(periods) { period in
-                            let total = visibleTotal(period)
-                            let height = 110 * total / maxTokens
-                            VStack(spacing: 0.5) {
-                                ForEach(visibleClients, id: \.self) { client in
-                                    let slice = Double(period.byClient?[client]?.freshTokens ?? 0)
-                                    if slice > 0, total > 0 {
-                                        RoundedRectangle(cornerRadius: 1)
-                                            .fill(Theme.clientColor(client).gradient)
-                                            .frame(height: max(1.5, height * slice / total))
+                .padding(.leading, 14)
+                .padding(.trailing, 12)
+                .padding(.vertical, 10)
+
+                Rectangle().fill(Theme.border).frame(height: 1)
+
+                VStack(spacing: 7) {
+                    HStack(alignment: .top, spacing: 8) {
+                        VStack(alignment: .trailing, spacing: 0) {
+                            Text(UsageTotals.compact(Int(maxTokens)))
+                            Spacer()
+                            Text(UsageTotals.compact(Int(maxTokens / 2)))
+                            Spacer()
+                            Text("0")
+                        }
+                        .font(Type.tiny.monospacedDigit())
+                        .foregroundStyle(Theme.textFaint)
+                        .frame(width: 34, height: 116)
+
+                        ZStack(alignment: .bottom) {
+                            VStack(spacing: 0) {
+                                Rectangle().fill(Theme.border.opacity(0.65)).frame(height: 1)
+                                Spacer()
+                                Rectangle().fill(Theme.border.opacity(0.45)).frame(height: 1)
+                                Spacer()
+                                Rectangle().fill(Theme.border.opacity(0.65)).frame(height: 1)
+                            }
+
+                            HStack(alignment: .bottom, spacing: 3) {
+                                ForEach(Array(periods.enumerated()), id: \.offset) { index, period in
+                                    let total = visibleTotal(period)
+                                    let height = 108 * total / maxTokens
+                                    ZStack(alignment: .bottom) {
+                                        VStack(spacing: 1) {
+                                            ForEach(visibleClients, id: \.self) { client in
+                                                let slice = Double(period.byClient?[client]?.freshTokens ?? 0)
+                                                if slice > 0, total > 0 {
+                                                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                                                        .fill(Theme.clientColor(client))
+                                                        .frame(height: max(1.5, height * slice / total))
+                                                }
+                                            }
+                                        }
+                                        if hoveredIndex == index {
+                                            Rectangle()
+                                                .fill(Theme.textFaint.opacity(0.45))
+                                                .frame(width: 1)
+                                                .frame(maxHeight: .infinity)
+                                        }
                                     }
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                                    .contentShape(Rectangle())
+                                    .opacity(hoveredIndex == nil || hoveredIndex == index ? 1 : 0.72)
+                                    .onHover { inside in
+                                        if inside {
+                                            hoveredIndex = index
+                                        } else if hoveredIndex == index {
+                                            hoveredIndex = nil
+                                        }
+                                    }
+                                    .accessibilityElement()
+                                    .accessibilityLabel(
+                                        "\(period.period ?? period.shortLabel), "
+                                            + "\(UsageTotals.compact(Int(total))) fresh tokens"
+                                    )
                                 }
                             }
-                            .frame(maxWidth: .infinity, alignment: .bottom)
-                            .frame(maxHeight: .infinity, alignment: .bottom)
-                            .contentShape(Rectangle())
-                            .opacity(hovered == nil || hovered?.id == period.id ? 1 : 0.55)
-                            .onHover { inside in
-                                if inside { hovered = period } else if hovered?.id == period.id { hovered = nil }
+                        }
+                        .frame(height: 116)
+                        .overlay(alignment: .topLeading) {
+                            if let hoveredIndex, periods.indices.contains(hoveredIndex) {
+                                let hovered = periods[hoveredIndex]
+                                // Cost has no per-client breakdown, so a day
+                                // cost is honest only when every client is shown.
+                                DayTooltip(
+                                    period: hovered,
+                                    clients: visibleClients,
+                                    dayCostText: hidden.isEmpty ? hovered.costText : nil
+                                )
                             }
                         }
                     }
-                    .frame(height: 112, alignment: .bottom)
-                    .overlay(alignment: .topLeading) {
-                        if let hovered {
-                            // Cost has no per-client breakdown, so a day cost is
-                            // only honest when nothing is hidden; otherwise the
-                            // header would out-total the rows it sits above.
-                            DayTooltip(period: hovered, clients: visibleClients,
-                                       dayCostText: hidden.isEmpty ? hovered.costText : nil)
+
+                    HStack(spacing: 8) {
+                        Color.clear.frame(width: 34, height: 1)
+                        HStack {
+                            Text(periods.first?.shortLabel ?? "")
+                            Spacer()
+                            Text(periods[periods.count / 2].shortLabel)
+                            Spacer()
+                            Text(periods.last?.shortLabel ?? "")
                         }
                     }
-                    HStack {
-                        Text(periods.first?.shortLabel ?? "")
-                        Spacer()
-                        Text(periods[periods.count / 2].shortLabel)
-                        Spacer()
-                        Text(periods.last?.shortLabel ?? "")
-                    }
-                    .font(.system(size: 9))
+                    .font(Type.tiny.monospacedDigit())
                     .foregroundStyle(Theme.textFaint)
                 }
+                .padding(12)
+                .animation(reduceMotion ? nil : Motion.hover, value: hoveredIndex)
             }
+        }
+        .onChange(of: periods.map(\.period)) {
+            hoveredIndex = nil
         }
     }
 }

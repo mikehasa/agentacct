@@ -30,7 +30,7 @@ final class GlanceState: ObservableObject {
     /// Snapshot/tooling: a fixed state, no polling.
     init(preloaded: GlanceSnapshot) {
         phase = .connected(preloaded)
-        lastUpdated = Date()
+        lastUpdated = SnapshotMode.currentDate
     }
 
     func start() {
@@ -48,6 +48,7 @@ final class GlanceState: ObservableObject {
     }
 
     private func poll() async {
+        guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
         do {
@@ -57,7 +58,10 @@ final class GlanceState: ObservableObject {
         } catch let error as GlanceClientError {
             switch error {
             case .incompatible(let version, let schema):
-                phase = .incompatible("daemon \(version) serves \(schema); this app expects \(GlanceClient.supportedGlanceSchema). Update one of them.")
+                phase = .incompatible(
+                    "daemon \(version) serves \(schema); this app expects "
+                        + "\(GlanceClient.supportedGlanceSchema). Update one of them."
+                )
             default:
                 phase = .disconnected(error.description)
             }

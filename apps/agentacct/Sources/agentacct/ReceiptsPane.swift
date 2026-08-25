@@ -84,7 +84,10 @@ struct ReceiptRow: View {
                 .lineLimit(2)
             HStack(spacing: 6) {
                 AxisChip(text: task.decisionStatus.key, tint: receiptDecisionTint(task.decisionStatus.key))
-                AxisChip(text: task.evidenceStrength.compactHeadline, tint: receiptEvidenceTint(task.evidenceStrength.key))
+                AxisChip(
+                    text: task.evidenceStrength.compactHeadline,
+                    tint: receiptEvidenceTint(task.evidenceStrength.key)
+                )
                 // Parallel deliberate-stop marker, shown only when it adds info the
                 // decision word does not already state. Purple unifies with the
                 // step-level handoff chip (Theme.statusColor("handed_off")).
@@ -109,7 +112,9 @@ struct ReceiptRow: View {
     }
 }
 
-private struct AxisChip: View {
+struct AxisChip: View {
+    static let backgroundOpacity = 0.08
+
     let text: String
     let tint: Color
 
@@ -117,7 +122,7 @@ private struct AxisChip: View {
         Text(text)
             .font(.caption2).fontWeight(.semibold)
             .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(tint.opacity(0.18), in: Capsule())
+            .background(tint.opacity(Self.backgroundOpacity), in: Capsule())
             .foregroundStyle(tint)
     }
 }

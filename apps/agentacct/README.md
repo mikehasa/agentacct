@@ -31,6 +31,16 @@ open .build/agentacct.app
 ```
 
 Or during development: `swift run` (menu bar item appears; Ctrl-C to quit).
+The Dashboard leads with recent task outcomes and their evidence, followed by
+review, active work, plan headroom, and usage history.
+
+## Test the dashboard UI
+
+The deterministic snapshot harness renders the real dashboard from synthetic
+API payloads in light and dark mode, without a running daemon or personal
+account data. See [Tests/README.md](Tests/README.md) for the two-command quick
+start, artifact matrix, extension guide, determinism rules, and review
+checklist.
 
 ## Status / roadmap
 
@@ -46,7 +56,8 @@ Or during development: `swift run` (menu bar item appears; Ctrl-C to quit).
       and by model (30d cube) · Limits with a show-stale toggle
 - [ ] adaptive poll cadence (menu-open recency / Low Power Mode — CodexBar's
       2–30 min policy)
-- [ ] usage window picker (7d/30d/all), per-session plan share in the window
+- [x] usage window picker (7d/30d/90d)
+- [ ] per-session plan share in the window
 - [ ] notifications on limit thresholds
 - [ ] Sparkle updates, Developer ID signing + notarization, brew cask
 - [ ] app icon + proper menu bar iconography (text-only today)
