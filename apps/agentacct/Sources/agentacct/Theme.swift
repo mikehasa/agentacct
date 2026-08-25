@@ -193,8 +193,8 @@ enum Type {
     static let tiny = Font.system(size: 9.5)
     /// Tracked caps caption (see SectionCaption).
     static let caption = Font.system(size: 10, weight: .semibold)
-    /// Small tracked caps label inside tiles.
-    static let tileLabel = Font.system(size: 9.5, weight: .semibold)
+    /// Small tracked caps label inside tiles, at the macOS minimum text size.
+    static let tileLabel = Font.system(size: 10, weight: .semibold)
 }
 
 /// The spacing scale. Padding and gaps come from here, not magic numbers.
