@@ -13,6 +13,9 @@ let package = Package(
             name: "agentacctTests",
             dependencies: ["agentacct"],
             path: "Tests/agentacctTests",
+            // Baselines are compared directly from the source checkout. They
+            // are review artifacts, not resources copied into the test bundle.
+            exclude: ["ReferenceImages"],
             resources: [.process("Fixtures")]
         )
     ]

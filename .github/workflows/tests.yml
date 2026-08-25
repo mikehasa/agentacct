@@ -51,10 +51,11 @@ jobs:
       - name: Test visual snapshot CLI
         run: ./Tests/visual-snapshots-cli-tests.sh
       - name: Run Swift tests
-        env:
-          AGENTACCT_VERIFY_VISUAL_BASELINES: "1"
-          AGENTACCT_SNAPSHOT_ARTIFACT_DIR: ${{ runner.temp }}/agentacct-dashboard-diff
         run: swift test
+      - name: Verify dashboard visual references
+        env:
+          AGENTACCT_SNAPSHOT_ARTIFACT_DIR: ${{ runner.temp }}/agentacct-dashboard-diff
+        run: ./Scripts/visual-snapshots verify DashboardVisualRegressionTests
       - name: Upload dashboard visual failures
         if: failure()
         uses: actions/upload-artifact@v4

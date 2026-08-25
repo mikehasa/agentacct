@@ -156,6 +156,9 @@ enum DashboardSnapshotRenderer {
                 .environment(\.displayScale, 2)
                 .environment(\.layoutDirection, .leftToRight)
                 .environment(\.dynamicTypeSize, .medium)
+                .environment(\.controlSize, .regular)
+                .environment(\.legibilityWeight, nil)
+                .environment(\.appearsActive, true)
                 .transaction { transaction in
                     transaction.disablesAnimations = true
                 }

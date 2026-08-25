@@ -19,7 +19,8 @@ Discover the available visual regression suites:
 ./Scripts/visual-snapshots list
 ```
 
-An empty list is valid before a project adds its first visual regression suite.
+This project currently discovers `DashboardVisualRegressionTests`. An empty
+list remains valid for another project or branch before its first visual suite.
 
 Verify one suite before changing its UI:
 
@@ -84,6 +85,10 @@ The dashboard renderer owns this complete fixed matrix at 2x scale:
 | `dashboard-reference-light.png` | 1120 × 680 pt, light | 2240 × 1360 px |
 | `dashboard-reference-dark.png` | 1120 × 680 pt, dark | 2240 × 1360 px |
 
+References live under `Tests/agentacctTests/ReferenceImages/<platform-id>`.
+They are read directly from the source checkout and excluded from SwiftPM's
+test resources, so the test bundle does not duplicate reviewer-only PNGs.
+
 For an ad-hoc render that does not compare or update references:
 
 ```bash
@@ -122,7 +127,7 @@ control:
 | locale and dates | `en_US_POSIX`, Gregorian calendar, and UTC in the process and SwiftUI environment |
 | geometry | fixed proposed size, viewport, 2x renderer and display scale, and exact pixel assertions |
 | appearance | explicit light/dark scheme and left-to-right layout |
-| system text sizing | fixed SwiftUI dynamic type size; the exact OS build pins system fonts |
+| host UI preferences | fixed dynamic type, control size, legibility weight, and active appearance; the exact OS build pins system fonts |
 | animations and hover | animations disabled; no pointer enters the offscreen surface |
 | async and local state | snapshot mode suppresses polling, setup prompts, and daemon access |
 | map ordering | arrays remain ordered and dictionary-derived chart clients are sorted |
@@ -168,7 +173,9 @@ rendering the app.
 Each `*VisualRegressionTests` suite compares its complete surface matrix with
 reviewed PNGs. The CLI supplies `AGENTACCT_VERIFY_VISUAL_BASELINES=1`,
 `AGENTACCT_SNAPSHOT_MODE`, the exact platform ID, and the failure directory.
-Ordinary tests can therefore remain useful on other developer machines.
+Ordinary `swift test` runs compile the visual suites but skip their baseline
+comparison, so semantic tests remain useful on non-canonical developer
+machines. Always use the CLI when the intent is to verify visual references.
 
 ## Intentional update checklist
 
@@ -261,9 +268,9 @@ more expensive than the package graph.
 
 ## CI behavior
 
-Once a visual regression suite exists, the macOS job pins the explicit
-`macos-26` arm64 runner label and Xcode path, then invokes the CLI to verify the
-exact build fingerprint. On a visual mismatch it
+The macOS job pins the explicit `macos-26` arm64 runner label and Xcode path,
+then invokes the CLI to verify the exact build fingerprint and dashboard
+references. On a visual mismatch it
 uploads expected, actual, and diff PNGs. It also publishes the complete current
 dashboard matrix so a reviewer can evaluate the finished app without macOS.
 
