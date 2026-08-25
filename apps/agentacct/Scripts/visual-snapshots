@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+app_dir="$(cd "$script_dir/.." && pwd)"
+invocation_dir="$PWD"
+swift_bin="${AGENTACCT_SWIFT_BIN:-swift}"
+failure_dir="${AGENTACCT_SNAPSHOT_ARTIFACT_DIR:-$app_dir/.build/visual-snapshot-failures}"
+expected_os_version="26.6"
+expected_os_build="25G72"
+expected_xcode_version="26.6"
+expected_xcode_build="17F113"
+expected_architecture="arm64"
+platform_id="macos-$expected_os_version-$expected_os_build"
+platform_id+="-xcode-$expected_xcode_version-$expected_xcode_build"
+platform_id+="-$expected_architecture-2x"
+discovered_file=""
+selected_file=""
+normalized_file=""
+matches_file=""
+
+usage() {
+  cat >&2 <<'EOF'
+usage:
+  ./Scripts/visual-snapshots list [test-selector-or-path ...]
+  ./Scripts/visual-snapshots verify [test-selector-or-path ...]
+  ./Scripts/visual-snapshots record [test-selector-or-path ...]
+
+Targets are XCTest selectors reported by `swift test list`, unqualified visual
+regression suite names, or paths to *VisualRegressionTests.swift files. With no
+target, the command selects every discovered *VisualRegressionTests suite.
+EOF
+  exit 2
+}
+
+fail() {
+  echo "visual-snapshots: $*" >&2
+  exit 2
+}
+
+is_truthy() {
+  local value="${1:-}"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  [[ -n "$value" && "$value" != "0" && "$value" != "false" && "$value" != "no" ]]
+}
+
+cleanup() {
+  [[ -z "$discovered_file" ]] || rm -f "$discovered_file"
+  [[ -z "$selected_file" ]] || rm -f "$selected_file"
+  [[ -z "$normalized_file" ]] || rm -f "$normalized_file"
+  [[ -z "$matches_file" ]] || rm -f "$matches_file"
+}
+
+check_environment() {
+  local kernel architecture os_version os_build xcode_output xcode_version xcode_build
+  kernel="$(uname -s)"
+  architecture="$(uname -m)"
+  if [[ "$kernel" != "Darwin" || "$architecture" != "$expected_architecture" ]]; then
+    fail "canonical references require macOS on $expected_architecture; got $kernel $architecture"
+  fi
+
+  os_version="$(sw_vers -productVersion)"
+  os_build="$(sw_vers -buildVersion)"
+  xcode_output="$(xcodebuild -version)"
+  xcode_version="$(printf '%s\n' "$xcode_output" | awk 'NR == 1 { print $2 }')"
+  xcode_build="$(printf '%s\n' "$xcode_output" | awk 'NR == 2 { print $3 }')"
+  if [[ "$os_version" != "$expected_os_version" || "$os_build" != "$expected_os_build" \
+        || "$xcode_version" != "$expected_xcode_version" || "$xcode_build" != "$expected_xcode_build" ]]; then
+    fail \
+      "renderer mismatch: expected macOS $expected_os_version ($expected_os_build)," \
+      "Xcode $expected_xcode_version ($expected_xcode_build), $expected_architecture;" \
+      "got macOS $os_version ($os_build), Xcode $xcode_version ($xcode_build)," \
+      "$architecture. Treat this as an explicit baseline-platform migration," \
+      "not a pixel failure."
+  fi
+}
+
+discover_visual_tests() {
+  discovered_file="$(mktemp "${TMPDIR:-/tmp}/agentacct-visual-tests.XXXXXX")"
+  "$swift_bin" test list \
+    | awk -F/ '$1 ~ /VisualRegressionTests$/ { print }' \
+    | sort -u > "$discovered_file"
+}
+
+target_file_basename() {
+  local target="$1"
+  if [[ -f "$target" ]]; then
+    basename "$target" .swift
+  elif [[ -f "$invocation_dir/$target" ]]; then
+    basename "$invocation_dir/$target" .swift
+  elif [[ -f "$app_dir/$target" ]]; then
+    basename "$app_dir/$target" .swift
+  elif [[ "$target" == *.swift ]]; then
+    fail "test file does not exist: $target"
+  else
+    printf '%s\n' "$target"
+  fi
+}
+
+resolve_target() {
+  local requested="$1"
+  local target match_count
+  target="$(target_file_basename "$requested")"
+  matches_file="$(mktemp "${TMPDIR:-/tmp}/agentacct-visual-matches.XXXXXX")"
+
+  awk -F/ -v target="$target" '
+    {
+      suite = $1
+      method = $2
+      shortSuite = suite
+      sub(/^.*\./, "", shortSuite)
+      if (target == $0) {
+        print $0
+      } else if (target == suite || target == shortSuite) {
+        print suite
+      } else if (target == shortSuite "/" method) {
+        print $0
+      }
+    }
+  ' "$discovered_file" | sort -u > "$matches_file"
+
+  match_count="$(wc -l < "$matches_file" | tr -d ' ')"
+  if [[ "$match_count" == "0" ]]; then
+    rm -f "$matches_file"
+    matches_file=""
+    fail \
+      "target '$requested' does not resolve to a discovered visual regression test;" \
+      "run './Scripts/visual-snapshots list'"
+  fi
+  if [[ "$match_count" != "1" ]]; then
+    echo "visual-snapshots: target '$requested' is ambiguous; use one of:" >&2
+    sed 's/^/  /' "$matches_file" >&2
+    rm -f "$matches_file"
+    matches_file=""
+    exit 2
+  fi
+
+  cat "$matches_file" >> "$selected_file"
+  rm -f "$matches_file"
+  matches_file=""
+}
+
+select_targets() {
+  selected_file="$(mktemp "${TMPDIR:-/tmp}/agentacct-visual-selected.XXXXXX")"
+  if [[ $# -eq 0 ]]; then
+    cut -d/ -f1 "$discovered_file" | sort -u > "$selected_file"
+  else
+    local target
+    for target in "$@"; do
+      resolve_target "$target"
+    done
+    sort -u -o "$selected_file" "$selected_file"
+  fi
+
+  # A selected suite already includes its methods. Remove overlapping method
+  # selectors so a multi-target command never runs the same test twice.
+  normalized_file="$(mktemp "${TMPDIR:-/tmp}/agentacct-visual-normalized.XXXXXX")"
+  awk '
+    NR == FNR { selected[$0] = 1; next }
+    {
+      suite = $0
+      slash = index(suite, "/")
+      if (slash > 0) { suite = substr(suite, 1, slash - 1) }
+      if ($0 == suite || !(suite in selected)) { print }
+    }
+  ' "$selected_file" "$selected_file" > "$normalized_file"
+  mv "$normalized_file" "$selected_file"
+  normalized_file=""
+}
+
+filter_for_selector() {
+  local selector="$1"
+  local escaped
+  escaped="$(printf '%s' "$selector" | sed 's/[][(){}.^$*+?|\\/]/\\&/g')"
+  if [[ "$selector" == *"/"* ]]; then
+    printf '^%s$\n' "$escaped"
+  else
+    printf '^%s/\n' "$escaped"
+  fi
+}
+
+run_selected() {
+  local mode="$1"
+  local selector filter
+  while IFS= read -r selector; do
+    filter="$(filter_for_selector "$selector")"
+    echo "$mode $selector"
+    AGENTACCT_SNAPSHOT_MODE="$mode" \
+      AGENTACCT_VERIFY_VISUAL_BASELINES=1 \
+      AGENTACCT_SNAPSHOT_PLATFORM_ID="$platform_id" \
+      AGENTACCT_SNAPSHOT_ARTIFACT_DIR="$failure_dir" \
+      "$swift_bin" test --filter "$filter"
+  done < "$selected_file"
+}
+
+[[ $# -ge 1 ]] || usage
+action="$1"
+shift
+case "$action" in
+  list|verify|record) ;;
+  *) usage ;;
+esac
+
+if [[ "$action" == "record" ]] && is_truthy "${CI:-}"; then
+  fail "recording is disabled in CI; record locally and commit reviewed references"
+fi
+
+trap cleanup EXIT
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+export TZ=UTC
+cd "$app_dir"
+discover_visual_tests
+select_targets "$@"
+
+if [[ "$action" == "list" ]]; then
+  cat "$selected_file"
+  exit 0
+fi
+
+[[ -s "$selected_file" ]] \
+  || fail "no *VisualRegressionTests suites were discovered by 'swift test list'"
+check_environment
+mkdir -p "$failure_dir"
+run_selected "$action"
+
+if [[ "$action" == "record" ]]; then
+  echo "Recorded selected references; verifying the replacements now."
+  run_selected verify
+  echo "References recorded and verified. Review every changed PNG before committing."
+else
+  echo "Selected visual references match."
+fi

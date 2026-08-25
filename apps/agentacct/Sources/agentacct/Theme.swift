@@ -117,7 +117,7 @@ enum Theme {
         return green
     }
 
-    static func resetsIn(_ resetsAt: Double?, now: Date = Date()) -> String? {
+    static func resetsIn(_ resetsAt: Double?, now: Date = SnapshotMode.currentDate) -> String? {
         guard let resetsAt else { return nil }
         let delta = resetsAt - now.timeIntervalSince1970
         guard delta > 0 else { return nil }
@@ -314,6 +314,27 @@ struct SectionCaption: View {
 /// mode swaps them for plain containers so renders match the live app.
 enum SnapshotMode {
     nonisolated(unsafe) static var enabled = false
+
+    /// Optional clock override for deterministic fixture renders.
+    ///
+    /// The normal app leaves this `nil` and uses the real clock. The dashboard
+    /// snapshot renderer sets it to the fixture's `glance.generated_at` only
+    /// while rendering, then restores it to `nil` in `defer`.
+    nonisolated(unsafe) private static var fixtureDate: Date?
+
+    /// The date relative UI copy should use.
+    ///
+    /// Formatting helpers such as `Theme.resetsIn` and `agoText` read this
+    /// instead of calling `Date()` directly. This freezes text like
+    /// “resets in 6d 13h” in snapshots without changing the system clock or
+    /// affecting normal application behavior.
+    static var currentDate: Date { fixtureDate ?? Date() }
+
+    /// Pins or restores the clock used by relative UI copy during a snapshot.
+    static func setFixtureDate(_ date: Date?) {
+        fixtureDate = date
+    }
+
     /// Dashboard review matrices model a real viewport at the top scroll
     /// position. Legacy all-pane screenshots retain their existing full-content
     /// behavior until each pane has its own review viewport.

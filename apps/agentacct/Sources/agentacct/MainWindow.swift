@@ -214,7 +214,7 @@ func durationText(_ seconds: Double) -> String {
 
 func agoText(_ epoch: Double?) -> String? {
     guard let epoch, epoch > 0 else { return nil }
-    let delta = Date().timeIntervalSince1970 - epoch
+    let delta = SnapshotMode.currentDate.timeIntervalSince1970 - epoch
     guard delta >= 0 else { return nil }
     let total = Int(delta)
     if total < 60 { return "\(total)s ago" }

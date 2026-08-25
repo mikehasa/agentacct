@@ -30,7 +30,7 @@ final class GlanceState: ObservableObject {
     /// Snapshot/tooling: a fixed state, no polling.
     init(preloaded: GlanceSnapshot) {
         phase = .connected(preloaded)
-        lastUpdated = Date()
+        lastUpdated = SnapshotMode.currentDate
     }
 
     func start() {

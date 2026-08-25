@@ -56,6 +56,7 @@ struct DashboardSnapshotFixture: Decodable {
 
 enum SnapshotError: LocalizedError {
     case unsupportedSchema(payload: String, actual: String, expected: String)
+    case missingFixtureDate
     case renderProducedNoImage
     case pngEncodingFailed
 
@@ -63,6 +64,8 @@ enum SnapshotError: LocalizedError {
         switch self {
         case .unsupportedSchema(let payload, let actual, let expected):
             return "fixture \(payload) payload serves \(actual); expected \(expected)"
+        case .missingFixtureDate:
+            return "fixture glance.generated_at is required to pin relative time labels"
         case .renderProducedNoImage:
             return "render produced no image"
         case .pngEncodingFailed:
@@ -91,12 +94,25 @@ struct DashboardSnapshotConfiguration {
 }
 
 enum DashboardSnapshotRenderer {
+    private static let snapshotLocale = Locale(identifier: "en_US_POSIX")
+    private static let snapshotTimeZone = TimeZone(secondsFromGMT: 0)!
+
+    private static var snapshotCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = snapshotLocale
+        calendar.timeZone = snapshotTimeZone
+        return calendar
+    }
+
     @MainActor
     static func render(
         fixture: DashboardSnapshotFixture,
         outputDirectory: URL,
         configurations: [DashboardSnapshotConfiguration] = DashboardSnapshotConfiguration.reviewConfigurations
     ) throws -> [URL] {
+        guard let generatedAt = fixture.glance.generatedAt else {
+            throw SnapshotError.missingFixtureDate
+        }
         try FileManager.default.createDirectory(
             at: outputDirectory,
             withIntermediateDirectories: true
@@ -104,9 +120,13 @@ enum DashboardSnapshotRenderer {
 
         SnapshotMode.enabled = true
         SnapshotMode.boundsScrollContentToViewport = true
+        // Freeze relative labels at the fixture's own generation time. The
+        // defer below restores live-clock behavior even when rendering throws.
+        SnapshotMode.setFixtureDate(Date(timeIntervalSince1970: generatedAt))
         defer {
             SnapshotMode.enabled = false
             SnapshotMode.boundsScrollContentToViewport = false
+            SnapshotMode.setFixtureDate(nil)
             SnapshotScheme.override = nil
         }
 
@@ -130,8 +150,21 @@ enum DashboardSnapshotRenderer {
                 )
                 .clipped()
                 .environment(\.colorScheme, configuration.colorScheme)
+                .environment(\.locale, snapshotLocale)
+                .environment(\.calendar, snapshotCalendar)
+                .environment(\.timeZone, snapshotTimeZone)
+                .environment(\.displayScale, 2)
+                .environment(\.layoutDirection, .leftToRight)
+                .environment(\.dynamicTypeSize, .medium)
+                .transaction { transaction in
+                    transaction.disablesAnimations = true
+                }
             let outputURL = outputDirectory.appendingPathComponent(configuration.filename)
-            try SnapshotImageWriter.render(view, to: outputURL)
+            try SnapshotImageWriter.render(
+                view,
+                to: outputURL,
+                size: CGSize(width: configuration.width, height: configuration.height)
+            )
             return outputURL
         }
     }
@@ -139,9 +172,13 @@ enum DashboardSnapshotRenderer {
 
 enum SnapshotImageWriter {
     @MainActor
-    static func render(_ view: some View, to url: URL) throws {
+    static func render(_ view: some View, to url: URL, size: CGSize? = nil) throws {
         let renderer = ImageRenderer(content: view)
         renderer.scale = 2
+        renderer.colorMode = .nonLinear
+        if let size {
+            renderer.proposedSize = ProposedViewSize(width: size.width, height: size.height)
+        }
         guard let cgImage = renderer.cgImage else {
             throw SnapshotError.renderProducedNoImage
         }

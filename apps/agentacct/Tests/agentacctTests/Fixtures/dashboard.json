@@ -36,7 +36,7 @@
         "plan_type": "pro",
         "stale": false,
         "windows": [
-          { "kind": "7d", "used_percent": 39, "window_minutes": 10080 },
+          { "kind": "7d", "used_percent": 39, "window_minutes": 10080, "resets_at": 1788155200 },
           { "kind": "5h", "used_percent": 12, "window_minutes": 300 }
         ]
       }

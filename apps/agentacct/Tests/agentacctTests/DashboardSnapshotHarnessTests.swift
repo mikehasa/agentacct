@@ -1,5 +1,4 @@
 import AppKit
-import ImageIO
 import XCTest
 @testable import agentacct
 
@@ -53,40 +52,36 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
             let representation = try XCTUnwrap(image.representations.first, artifact.filename)
             XCTAssertEqual(representation.pixelsWide, artifact.pixelsWide)
             XCTAssertEqual(representation.pixelsHigh, artifact.pixelsHigh)
-            let firstPixels = try pixelData(at: imageURL)
-            let secondPixels = try pixelData(
-                at: secondOutputDirectory.appendingPathComponent(artifact.filename)
+            let difference = try VisualSnapshotHarness.compare(
+                expectedURL: imageURL,
+                actualURL: secondOutputDirectory.appendingPathComponent(artifact.filename)
             )
-            let difference = pixelDifference(firstPixels, secondPixels)
             // Core Graphics can round antialiased edges one 8-bit color step
             // differently between renders. Larger or more widespread changes
             // indicate dynamic data, animation, or an unstable layout.
             XCTAssertLessThanOrEqual(
-                difference.maximumDelta,
-                1,
+                difference.maximumChannelDelta,
+                VisualSnapshotTolerance.renderingNoise.maximumChannelDelta,
                 "Repeated fixture renders exceeded the one-step antialiasing budget"
             )
             XCTAssertLessThanOrEqual(
-                Double(difference.changedBytes) / Double(firstPixels.count),
-                0.001,
-                "Repeated fixture renders changed more than 0.1% of normalized pixel bytes"
+                difference.changedChannelFraction,
+                VisualSnapshotTolerance.renderingNoise.maximumChangedChannelFraction,
+                "Repeated fixture renders exceeded the normalized-channel stability budget"
             )
         }
 
-        let light = try pixelData(
-            at: outputDirectory.appendingPathComponent("dashboard-reference-light.png")
+        let appearanceDifference = try VisualSnapshotHarness.compare(
+            expectedURL: outputDirectory.appendingPathComponent("dashboard-reference-light.png"),
+            actualURL: outputDirectory.appendingPathComponent("dashboard-reference-dark.png")
         )
-        let dark = try pixelData(
-            at: outputDirectory.appendingPathComponent("dashboard-reference-dark.png")
-        )
-        let appearanceDifference = pixelDifference(light, dark)
         XCTAssertGreaterThan(
-            appearanceDifference.maximumDelta,
+            appearanceDifference.maximumChannelDelta,
             32,
             "Light and dark review artifacts must have visibly different colors"
         )
         XCTAssertGreaterThan(
-            Double(appearanceDifference.changedBytes) / Double(light.count),
+            appearanceDifference.changedPixelFraction,
             0.05,
             "Light and dark review artifacts must differ across a meaningful part of the dashboard"
         )
@@ -125,36 +120,36 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         }
     }
 
-    private func pixelData(at url: URL) throws -> Data {
-        let source = try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, nil), url.lastPathComponent)
-        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil), url.lastPathComponent)
-        let bytesPerRow = image.width * 4
-        var pixels = Data(count: bytesPerRow * image.height)
-        let colorSpace = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
-        let rendered = pixels.withUnsafeMutableBytes { storage -> Bool in
-            guard let context = CGContext(
-                data: storage.baseAddress,
-                width: image.width,
-                height: image.height,
-                bitsPerComponent: 8,
-                bytesPerRow: bytesPerRow,
-                space: colorSpace,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-            ) else { return false }
-            context.setBlendMode(.copy)
-            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-            return true
+    @MainActor
+    func testRejectsFixtureWithoutSnapshotClock() throws {
+        let fixtureURL = try XCTUnwrap(
+            Bundle.module.url(forResource: "dashboard", withExtension: "json")
+        )
+        var fixtureJSON = try String(contentsOf: fixtureURL, encoding: .utf8)
+        let generatedAtLine = "    \"generated_at\": 1787590000,\n"
+        let generatedAtRange = try XCTUnwrap(fixtureJSON.range(of: generatedAtLine))
+        fixtureJSON.removeSubrange(generatedAtRange)
+        let fixture = try DashboardSnapshotFixture.decode(Data(fixtureJSON.utf8))
+
+        XCTAssertThrowsError(
+            try DashboardSnapshotRenderer.render(
+                fixture: fixture,
+                outputDirectory: FileManager.default.temporaryDirectory
+            )
+        ) { error in
+            guard case SnapshotError.missingFixtureDate = error else {
+                return XCTFail("Expected a missing-fixture-date error; got \(error)")
+            }
         }
-        XCTAssertTrue(rendered, "Could not normalize \(url.lastPathComponent) to RGBA8")
-        return pixels
     }
 
-    private func pixelDifference(_ first: Data, _ second: Data) -> (changedBytes: Int, maximumDelta: Int) {
-        precondition(first.count == second.count)
-        return zip(first, second).reduce(into: (changedBytes: 0, maximumDelta: 0)) { result, pair in
-            let delta = abs(Int(pair.0) - Int(pair.1))
-            if delta > 0 { result.changedBytes += 1 }
-            result.maximumDelta = max(result.maximumDelta, delta)
-        }
+    @MainActor
+    func testSnapshotClockPinsRelativeLabelsToFixtureTime() {
+        SnapshotMode.setFixtureDate(Date(timeIntervalSince1970: 1_000_000))
+        defer { SnapshotMode.setFixtureDate(nil) }
+
+        XCTAssertEqual(Theme.resetsIn(1_000_000 + 6 * 86_400 + 13 * 3_600), "6d 13h")
+        XCTAssertEqual(agoText(1_000_000 - 3_600), "1h ago")
     }
+
 }

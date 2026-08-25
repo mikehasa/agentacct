@@ -1,25 +1,81 @@
-# Dashboard snapshot testing
+# Visual snapshot testing
 
-This is the contributor entry point for reviewing dashboard UI changes. The
-harness renders the real SwiftUI dashboard from a synthetic API fixture, so a
-human or coding agent can reproduce the same review surfaces without starting
-the daemon, connecting an account, or rebuilding test infrastructure.
+This is the contributor entry point for reviewing macOS UI changes. The
+harness renders the real SwiftUI surface from versioned synthetic endpoint
+responses, so a human or coding agent can reproduce it without starting the
+daemon, connecting an account, or creating another snapshot system.
 
 ## Quick start
 
-Requirements: macOS 14 or newer and Swift 5.9 or newer.
-
-From `apps/agentacct`:
+Run the ordinary deterministic and unit checks during development:
 
 ```bash
 swift test
-swift run agentacct --snapshot-dashboard-fixture \
-  Tests/agentacctTests/Fixtures/dashboard.json \
-  /tmp/agentacct-dashboard-review
-open /tmp/agentacct-dashboard-review
 ```
 
-The command writes this fixed review matrix at 2x scale:
+Discover the available visual regression suites:
+
+```bash
+./Scripts/visual-snapshots list
+```
+
+An empty list is valid before a project adds its first visual regression suite.
+
+Verify one suite before changing its UI:
+
+```bash
+./Scripts/visual-snapshots verify DashboardVisualRegressionTests
+open .build/visual-snapshot-failures  # only when verification fails
+```
+
+Verification is read-only. A mismatch fails and writes three review artifacts:
+
+- `*.expected.png` — the reviewed image in Git;
+- `*.actual.png` — the current render;
+- `*.diff.png` — changed pixels in magenta, unchanged pixels dimmed.
+
+After the new UI has been reviewed, explicitly replace only that suite:
+
+```bash
+./Scripts/visual-snapshots record \
+  Tests/agentacctTests/DashboardVisualRegressionTests.swift
+git diff -- Tests/agentacctTests/ReferenceImages
+```
+
+Record validates every PNG, writes references atomically, and immediately runs
+the selected test again in verify mode. It never stages or commits files and is
+rejected in CI. If a new render is already within the narrow antialiasing
+tolerance, the command retains the existing reference byte-for-byte to prevent
+meaningless Git churn.
+
+GitHub displays a changed PNG as a
+[2-up, swipe, or onion-skin comparison](https://docs.github.com/en/repositories/working-with-files/using-files/working-with-non-code-files#rendering-and-diffing-images).
+The reference update is therefore the reviewer-facing before/after artifact.
+
+## Selecting tests
+
+The canonical identity is the specifier reported by `swift test list`. The CLI
+accepts the same common shapes used by native test runners:
+
+| Command target | Selection |
+| --- | --- |
+| no target | every discovered `*VisualRegressionTests` suite |
+| `DashboardVisualRegressionTests` | one suite |
+| `DashboardVisualRegressionTests/testDashboard` | one test method |
+| `agentacctTests.DashboardVisualRegressionTests/testDashboard` | one fully qualified test |
+| `Tests/agentacctTests/DashboardVisualRegressionTests.swift` | the suite matching the file basename |
+
+A file path is only a convenience. SwiftPM does not expose source-file
+ownership in its discovered test list, so the basename must map unambiguously
+to a discovered `*VisualRegressionTests` suite. Zero or multiple matches fail
+before any test runs. There is no separate snapshot ID registry to maintain.
+
+Multiple targets are accepted. Prefer one suite per intentional reference
+update so the resulting Git diff stays easy to review.
+
+## Dashboard review matrix
+
+The dashboard renderer owns this complete fixed matrix at 2x scale:
 
 | Artifact | Viewport | Pixel size |
 | --- | --- | --- |
@@ -28,103 +84,210 @@ The command writes this fixed review matrix at 2x scale:
 | `dashboard-reference-light.png` | 1120 × 680 pt, light | 2240 × 1360 px |
 | `dashboard-reference-dark.png` | 1120 × 680 pt, dark | 2240 × 1360 px |
 
-Generated PNGs belong in a temporary directory outside the repository. Do not
-commit them unless a later change intentionally introduces reviewed golden
-baselines.
+For an ad-hoc render that does not compare or update references:
 
-On every pull request and push to `main`, the `macOS app and dashboard
-snapshots` CI job runs the same tests, builds the release executable, and
-publishes the four PNGs as `dashboard-review-<commit SHA>` for 14 days. Download
-that artifact from the workflow run when a reviewer does not have a local macOS
-environment.
+```bash
+swift run agentacct --snapshot-dashboard-fixture \
+  Tests/agentacctTests/Fixtures/dashboard.json \
+  /tmp/agentacct-dashboard-review
+open /tmp/agentacct-dashboard-review
+```
 
-## What is under test
+Keep ad-hoc PNGs outside the repository.
 
-- `Fixtures/dashboard.json` is one coherent set of synthetic `/v1/glance`,
-  `/v1/sessions`, `/v1/plan`, and usage responses. It contains no personal data.
-- `DashboardSnapshotFixture` decodes those responses through the same wire
-  models as the live app and rejects unsupported versioned schemas.
-- `DashboardStore(preloaded:)` injects the decoded state without network access.
-- `DashboardSnapshotRenderer` renders the real `MainWindow` at two supported
-  viewport sizes and both system appearances. Snapshot mode disables live
-  refresh, bounds scroll content to the viewport, and explicitly includes the
-  packaged app's setup entry point.
-- `DashboardSnapshotHarnessTests` verifies the exact artifact matrix and pixel
-  dimensions, meaningful light/dark differences, and bounded repeat-render
-  stability.
+## Flakiness contract
 
-The current tests do **not** approve the dashboard's taste or compare it with a
-reviewed golden image. A human must still inspect all four PNGs for hierarchy,
-spacing, clipping, contrast, wording, and cross-appearance consistency. A
-future baseline stage can automate visual-diff review after the design is
-approved.
+Image snapshots are renderer output, not portable drawings. Point-Free's
+SnapshotTesting explicitly warns that image references must be created and
+compared in the same rendering environment. GitHub's hosted runner images are
+updated weekly, so an OS label alone is not sufficient.
 
-## Extend the harness without rebuilding it
+The CLI fails before running a visual test unless the exact renderer is:
 
-### Change representative data
+```text
+macos-26.6-25G72-xcode-26.6-17F113-arm64-2x
+```
+
+That identity includes macOS product and build, Xcode version and build,
+architecture, and scale. A mismatch is an explicit baseline-platform migration,
+not a pixel failure. Never bypass it by copying references between platforms.
+
+Every nondeterministic input used by the current dashboard has an executable
+control:
+
+| Risk | Control |
+| --- | --- |
+| live or changing data | versioned synthetic JSON; wire decoders reject unsupported schemas |
+| wall-clock labels | fixture `glance.generated_at` supplies `SnapshotMode.currentDate`; missing time fails |
+| locale and dates | `en_US_POSIX`, Gregorian calendar, and UTC in the process and SwiftUI environment |
+| geometry | fixed proposed size, viewport, 2x renderer and display scale, and exact pixel assertions |
+| appearance | explicit light/dark scheme and left-to-right layout |
+| system text sizing | fixed SwiftUI dynamic type size; the exact OS build pins system fonts |
+| animations and hover | animations disabled; no pointer enters the offscreen surface |
+| async and local state | snapshot mode suppresses polling, setup prompts, and daemon access |
+| map ordering | arrays remain ordered and dictionary-derived chart clients are sorted |
+| color profiles | renderer uses non-linear color mode; comparison normalizes both PNGs to sRGB RGBA8 |
+| raster rounding | at most one 8-bit channel step across 0.1% of normalized channels |
+| baseline churn | a within-budget recording retains the reviewed PNG byte-for-byte |
+| stale diagnostics | successful verify or record removes that snapshot's old failure files |
+| accidental approval | verify never writes; record is explicit, atomic, reruns verify, and is disabled in CI |
+
+Dimensions must match exactly. Do not loosen the pixel budget to make a real
+change pass.
+
+The normal deterministic test renders the four-image matrix twice. When
+adopting a new renderer environment, also stress separate processes:
+
+```bash
+for run_index in {1..10}; do
+  swift test --skip-build \
+    --filter '^agentacctTests\.DashboardSnapshotHarnessTests/testRendersEveryDashboardReviewConfiguration$'
+done
+```
+
+The current renderer passed this check: ten processes, eight images per
+process, 80 total renders, and no out-of-budget drift.
+
+## What each layer catches
+
+`DashboardSnapshotHarnessTests` catches fixture/schema drift, a missing
+appearance or viewport, wrong dimensions, wall-clock leaks, dynamic content,
+animation, and same-process instability. It runs wherever Swift tests run and
+does not need approved images.
+
+`VisualSnapshotHarnessTests` checks the dependency-free image lifecycle:
+normalization, strict magnitude and changed-area tolerances, dimension
+mismatches, expected/actual/diff creation, safe mode parsing, CI recording
+rejection, atomic writes, baseline retention, and stale artifact cleanup.
+
+`visual-snapshots-cli-tests.sh` uses a fake SwiftPM test list and renderer
+environment. It verifies path and selector resolution, exact filtering,
+record-then-verify behavior, CI safety, and fail-fast platform checks without
+rendering the app.
+
+Each `*VisualRegressionTests` suite compares its complete surface matrix with
+reviewed PNGs. The CLI supplies `AGENTACCT_VERIFY_VISUAL_BASELINES=1`,
+`AGENTACCT_SNAPSHOT_MODE`, the exact platform ID, and the failure directory.
+Ordinary tests can therefore remain useful on other developer machines.
+
+## Intentional update checklist
+
+1. Run `./Scripts/visual-snapshots verify <target>` and confirm that the old
+   reference fails only for intended surfaces.
+2. Open every expected, actual, and diff artifact. Check hierarchy, spacing,
+   clipping, contrast, wording, and light/dark consistency.
+3. Have a human review the finished render before recording.
+4. Run `./Scripts/visual-snapshots record <same-target>`.
+5. Review every changed PNG in Git, including images that seem unchanged.
+6. Run verify, `swift test`, and `swift build -c release` again.
+7. Commit the UI code and reviewed references together.
+
+Never record automatically after failure. That converts an unexpected
+regression into an approved image without review.
+
+## Add a visual regression suite
+
+1. Name the XCTest file and class `FeatureVisualRegressionTests.swift` and
+   `FeatureVisualRegressionTests`.
+2. Put a versioned synthetic fixture in `Tests/agentacctTests/Fixtures` and
+   load it through production wire decoders.
+3. Make one test method own the complete meaningful matrix for that surface.
+4. Render to a unique temporary directory and remove it with `defer`.
+5. Resolve references under
+   `ReferenceImages/$AGENTACCT_SNAPSHOT_PLATFORM_ID`.
+6. Resolve `VisualSnapshotMode` from the process environment.
+7. Call `VisualSnapshotHarness.assertSnapshot` once for each rendered PNG.
+8. Add independent assertions for filenames and pixel dimensions so deleting a
+   configuration cannot silently shrink the contract.
+9. Run the CLI integration test, deterministic render test, record, and verify.
+10. Add the complete review matrix to CI artifacts.
+
+Snapshot names must be unique within the shared failure directory. A visual
+test should test visual contracts; keep behavior, formatting, and
+accessibility assertions in focused semantic tests as well.
+
+## Change representative data
 
 Edit `Fixtures/dashboard.json`, keeping it synthetic and internally coherent.
-Use realistic boundary cases that change the UI meaningfully, such as long
-labels, missing optional values, failed work, or large metrics. Keep every
-versioned `schema` value aligned with the endpoint contract. Run `swift test`
-afterward; decoding or schema drift should fail with the affected payload name.
+Use realistic states that alter the UI meaningfully: long labels, absent
+optional values, failed work, blocked work, large metrics, and time-relative
+labels. Keep every `schema` aligned with the endpoint contract.
 
-Do not put access tokens, discovery files, home-directory paths, live account
-data, or current timestamps in a fixture. Prefer fixed values and stable text.
+Do not add tokens, discovery files, home-directory paths, live account data,
+random identifiers, or current timestamps. If a UI element depends on time,
+locale, packaging, accessibility settings, or other environment state, inject
+that state at the render boundary and add a focused determinism assertion.
 
-### Add a viewport or appearance
+## Add a dashboard viewport or appearance
 
-1. Add the configuration to `DashboardSnapshotConfiguration.reviewConfigurations`.
-2. Add its literal filename and 2x pixel dimensions to `expectedArtifacts` in
-   `DashboardSnapshotHarnessTests`. The test expectation is intentionally
-   independent of production configuration so an accidental removal fails.
-3. Regenerate the artifacts and inspect the entire matrix, not only the new file.
-4. Update the matrix table above.
+1. Add it to `DashboardSnapshotConfiguration.reviewConfigurations`.
+2. Add its literal filename and 2x dimensions to `expectedArtifacts` in
+   `DashboardSnapshotHarnessTests`. This independent list makes accidental
+   removal fail.
+3. Record the expanded matrix and inspect every image.
+4. Update the matrix table above and CI review artifact.
 
-### Add a scenario
+Prefer a separately named fixture for a distinct product state and share the
+viewport matrix.
 
-Prefer a separate named fixture when the scenario represents a distinct product
-state. Keep viewport and appearance configuration shared. Add a focused test
-for the state-specific contract instead of weakening the core matrix. If the
-scenario needs time, locale, packaging, or other environment state, inject that
-state explicitly at the render boundary—never read it implicitly during a
-snapshot.
+## Why there is no snapshot dependency
 
-## Determinism rules
+The workflow follows established open-source tools while keeping its
+implementation project-sized:
 
-- Snapshot rendering must not contact the daemon, inspect personal state, or
-  depend on whether the executable came from SwiftPM or an app bundle.
-- Use fixed fixture values. Inject clocks, locale, or packaging state if a new
-  UI element depends on them.
-- Disable animation or wait for a documented settled state. Repeated renders
-  allow at most one 8-bit color step on at most 0.1% of normalized pixel bytes
-  for Core Graphics antialiasing.
-- Test decoded pixels, not PNG file bytes. PNG metadata or compression can
-  change without changing what the user sees.
-- Keep generated review artifacts outside Git until golden-baseline ownership,
-  update workflow, and failure diagnostics are intentionally designed.
+- [Swift Package Manager](https://docs.swift.org/swiftpm/documentation/packagemanagerdocs/swifttest/)
+  supplies discovered selectors and native regex filtering.
+- [Point-Free SnapshotTesting](https://github.com/pointfreeco/swift-snapshot-testing)
+  informs test-derived references, explicit recording, and exact-environment
+  guidance.
+- [Uber ios-snapshot-test-case](https://github.com/uber/ios-snapshot-test-case)
+  informs separate reference and failure paths and test-derived naming.
+- [Cash App Paparazzi](https://github.com/cashapp/paparazzi) informs separate
+  record/verify commands, source-controlled goldens, and reviewable diffs.
 
-## Review checklist
+SnapshotTesting 1.19.4 was evaluated directly. Its API is mature, but its
+manifest has moved to Swift tools 6 while this project retains 5.9
+compatibility, and its package graph also resolves `swift-syntax` and
+`swift-custom-dump`. A clean probe spent 134 seconds fetching before compilation
+and had already downloaded about 75 MB when stopped. Its plain `swift test`
+failure path also does not preserve the same expected/actual/diff directory
+contract without additional glue.
 
-Before asking for review:
+For four dashboard surfaces, the tested local helper is smaller operationally,
+keeps strict maximum-delta semantics, and adds no dependency. Reconsider the
+library if the project needs framework-level device traits, many snapshot
+formats, or enough suites that maintaining the local image lifecycle becomes
+more expensive than the package graph.
 
-1. Run `swift test` and a release build with `swift build -c release`.
-2. Generate all four artifacts with the quick-start command.
-3. Inspect minimum and reference viewports in both light and dark appearances.
-4. Check for clipping, unintended scrolling, unstable relative-time text,
-   missing controls, low contrast, and information hierarchy regressions.
-5. Confirm fixture changes are synthetic, minimal, and exercise an intentional
-   product state.
-6. Review the complete branch diff and keep generated PNGs out of Git.
+## CI behavior
+
+Once a visual regression suite exists, the macOS job pins the explicit
+`macos-26` arm64 runner label and Xcode path, then invokes the CLI to verify the
+exact build fingerprint. On a visual mismatch it
+uploads expected, actual, and diff PNGs. It also publishes the complete current
+dashboard matrix so a reviewer can evaluate the finished app without macOS.
+
+Because hosted images move, a runner update should fail with the renderer
+migration message before visual tests run. Verify the new environment, run the
+ten-process stress check, update the one CLI renderer identity, record new
+references under its new platform directory, and review that migration
+separately from product UI changes.
 
 ## Troubleshooting
 
-- **Unsupported schema:** update the fixture only after confirming the app's
-  endpoint model supports the new schema. The error names the rejected payload.
-- **No image produced:** run on macOS 14+ from a logged-in graphical session;
-  SwiftUI's `ImageRenderer` requires the macOS rendering stack.
-- **Unexpected live values:** rendering must use
-  `--snapshot-dashboard-fixture`; the older `--snapshot` command intentionally
-  exercises live daemon data.
-- **Wrong output size:** point sizes are rendered at 2x. Update the production
-  configuration, the independent test expectation, and this guide together.
+- **No suites discovered:** visual test classes must end in
+  `VisualRegressionTests`; confirm them with `swift test list`.
+- **Path does not resolve:** the `.swift` basename must equal its visual test
+  class. Use the fully qualified discovered selector for an unusual file.
+- **Renderer mismatch:** use canonical CI or treat the new exact build as a
+  deliberate platform migration. Do not bypass the guard.
+- **Unsupported schema:** update the fixture only after production endpoint
+  models support it.
+- **No image produced:** run in a logged-in macOS graphical session; SwiftUI
+  `ImageRenderer` requires the macOS rendering stack.
+- **Unexpected live values:** use `--snapshot-dashboard-fixture`; the legacy
+  `--snapshot` command intentionally reads daemon data.
+- **Wrong output size:** update the production configuration, independent test
+  expectation, references, and this guide together.
+- **Failure directory is empty:** environment validation or compilation failed
+  before comparison. Read the test output first.
