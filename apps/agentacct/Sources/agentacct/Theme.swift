@@ -64,30 +64,69 @@ enum Theme {
         })
     }
 
+    /// A semantic color's inspectable light/dark source values. Keeping the
+    /// values separate from SwiftUI's dynamic resolver lets accessibility
+    /// tests verify the actual palette instead of sampling rendered pixels.
+    struct AdaptiveColor {
+        let lightHex: UInt32
+        let darkHex: UInt32
+
+        var color: Color {
+            Theme.dynamic(light: lightHex, dark: darkHex)
+        }
+
+        func hex(for scheme: ColorScheme) -> UInt32 {
+            scheme == .dark ? darkHex : lightHex
+        }
+    }
+
+    enum Palette {
+        // Surfaces
+        static let bg = AdaptiveColor(lightHex: 0xF7F5F1, darkHex: 0x16161E)
+        static let surface = AdaptiveColor(lightHex: 0xFDFCFA, darkHex: 0x1A1B26)
+        static let card = AdaptiveColor(lightHex: 0xFFFFFF, darkHex: 0x1F2335)
+        static let cardAlt = AdaptiveColor(lightHex: 0xEEEBE4, darkHex: 0x24283B)
+        static let border = AdaptiveColor(lightHex: 0xE3DFD6, darkHex: 0x292E42)
+
+        // Text
+        static let text = AdaptiveColor(lightHex: 0x201E1B, darkHex: 0xC0CAF5)
+        static let textMuted = AdaptiveColor(lightHex: 0x6E6960, darkHex: 0xA0A6C4)
+        static let textFaint = AdaptiveColor(lightHex: 0x6E685E, darkHex: 0x8B92AF)
+
+        // Brand and semantic accents
+        static let accent = AdaptiveColor(lightHex: 0x3B5BDB, darkHex: 0x7AA2F7)
+        static let blue = AdaptiveColor(lightHex: 0x3B5BDB, darkHex: 0x7AA2F7)
+        static let purple = AdaptiveColor(lightHex: 0x7048B6, darkHex: 0xBB9AF7)
+        static let green = AdaptiveColor(lightHex: 0x2F7D46, darkHex: 0x9ECE6A)
+        static let orange = AdaptiveColor(lightHex: 0xA15900, darkHex: 0xE0AF68)
+        static let red = AdaptiveColor(lightHex: 0xC03050, darkHex: 0xF7768E)
+        static let cyan = AdaptiveColor(lightHex: 0x0E7490, darkHex: 0x7DCFFF)
+    }
+
     // MARK: surfaces (light: warm paper + white panels · dark: Tokyo storm)
 
-    static let bg = dynamic(light: 0xF7F5F1, dark: 0x16161E)
-    static let surface = dynamic(light: 0xFDFCFA, dark: 0x1A1B26)
-    static let card = dynamic(light: 0xFFFFFF, dark: 0x1F2335)
-    static let cardAlt = dynamic(light: 0xEEEBE4, dark: 0x24283B)
-    static let border = dynamic(light: 0xE3DFD6, dark: 0x292E42)
+    static let bg = Palette.bg.color
+    static let surface = Palette.surface.color
+    static let card = Palette.card.color
+    static let cardAlt = Palette.cardAlt.color
+    static let border = Palette.border.color
 
     // MARK: text (ink on paper · Tokyo foreground)
 
-    static let text = dynamic(light: 0x201E1B, dark: 0xC0CAF5)
-    static let textMuted = dynamic(light: 0x6E6960, dark: 0x787C99)
-    static let textFaint = dynamic(light: 0x8F8878, dark: 0x565F89)
+    static let text = Palette.text.color
+    static let textMuted = Palette.textMuted.color
+    static let textFaint = Palette.textFaint.color
 
     // MARK: accents — one restrained indigo carries the brand; the client
     // palette keeps the TUI's hue identities, darkened for paper.
 
-    static let accent = dynamic(light: 0x3B5BDB, dark: 0x7AA2F7)
-    static let blue = dynamic(light: 0x3B5BDB, dark: 0x7AA2F7)
-    static let purple = dynamic(light: 0x7048B6, dark: 0xBB9AF7)
-    static let green = dynamic(light: 0x2F7D46, dark: 0x9ECE6A)
-    static let orange = dynamic(light: 0xB26A00, dark: 0xE0AF68)
-    static let red = dynamic(light: 0xC03050, dark: 0xF7768E)
-    static let cyan = dynamic(light: 0x0E7490, dark: 0x7DCFFF)
+    static let accent = Palette.accent.color
+    static let blue = Palette.blue.color
+    static let purple = Palette.purple.color
+    static let green = Palette.green.color
+    static let orange = Palette.orange.color
+    static let red = Palette.red.color
+    static let cyan = Palette.cyan.color
 
     static func clientColor(_ client: String?) -> Color {
         switch client {
@@ -266,6 +305,8 @@ struct MeterBar: View {
 
 /// A small tinted label chip.
 struct Chip: View {
+    static let backgroundOpacity = 0.08
+
     let text: String
     var tint: Color = .secondary
 
@@ -274,7 +315,7 @@ struct Chip: View {
             .font(.system(size: 10, weight: .medium))
             .padding(.horizontal, 7)
             .padding(.vertical, 2.5)
-            .background(tint.opacity(0.14), in: Capsule())
+            .background(tint.opacity(Self.backgroundOpacity), in: Capsule())
             .foregroundStyle(tint)
     }
 }

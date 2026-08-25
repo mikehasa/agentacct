@@ -100,6 +100,22 @@ open /tmp/agentacct-dashboard-review
 
 Keep ad-hoc PNGs outside the repository.
 
+## Color contrast guardrail
+
+`Theme.Palette` is the source of truth for each semantic color's light and dark
+hex values. Following
+[WCAG 2.2 SC 1.4.3](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html),
+`ThemeContrastTests` requires small text roles to reach at least 4.5:1 on every
+dashboard surface and applies the same target to text inside tinted chips. When
+changing a palette value or chip opacity, run:
+
+```bash
+swift test --filter ThemeContrastTests
+```
+
+Do not lower the target to make a new color pass. Choose a nearby accessible
+value, render the four dashboard artifacts, and inspect both appearances.
+
 ## Flakiness contract
 
 Image snapshots are renderer output, not portable drawings. Point-Free's
