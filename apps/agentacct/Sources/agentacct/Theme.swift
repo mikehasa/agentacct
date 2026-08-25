@@ -2,17 +2,15 @@ import AppKit
 import SwiftUI
 
 // The agentacct visual system — semantic tokens with a light and a dark value
-// each, resolved live from the system appearance. The identity is a precision
-// instrument: warm paper surfaces, ink text, one restrained indigo accent,
-// hairline borders, monospaced digits everywhere a number lives. Dark mode is
-// the Tokyo Night storm variant (shared identity with `agentacct tui`), not a
-// separate design.
+// each, resolved live from the system appearance. Neutral surfaces keep work
+// evidence legible; one restrained indigo carries interaction, while status
+// colors retain a single semantic meaning. Updating numbers use tabular digits.
 //
 // Rules of the road:
-// * Views never hard-code a color or a font size — they use Theme/Type tokens
-//   so a retune touches ONE file.
-// * Numbers always render in monospaced digits (Type.metric*), so columns of
-//   money and tokens align like a meter, not a paragraph.
+// * Repeated color and text roles use Theme/Type tokens. Component-specific
+//   optical sizes stay beside the symbol or control they tune.
+// * Updating metrics use tabular digits so values do not shift horizontally;
+//   prose and one-off numbers retain proportional spacing.
 // * No `.preferredColorScheme` locks anywhere: the app follows the system,
 //   and snapshots pin the scheme explicitly via `SnapshotScheme`.
 
@@ -82,28 +80,31 @@ enum Theme {
 
     enum Palette {
         // Surfaces
-        static let bg = AdaptiveColor(lightHex: 0xF7F5F1, darkHex: 0x16161E)
-        static let surface = AdaptiveColor(lightHex: 0xFDFCFA, darkHex: 0x1A1B26)
-        static let card = AdaptiveColor(lightHex: 0xFFFFFF, darkHex: 0x1F2335)
-        static let cardAlt = AdaptiveColor(lightHex: 0xEEEBE4, darkHex: 0x24283B)
-        static let border = AdaptiveColor(lightHex: 0xE3DFD6, darkHex: 0x292E42)
+        static let bg = AdaptiveColor(lightHex: 0xF6F7F9, darkHex: 0x101114)
+        static let surface = AdaptiveColor(lightHex: 0xFFFFFF, darkHex: 0x18191E)
+        static let card = AdaptiveColor(lightHex: 0xFFFFFF, darkHex: 0x18191E)
+        static let cardAlt = AdaptiveColor(lightHex: 0xF1F2F5, darkHex: 0x202128)
+        static let border = AdaptiveColor(lightHex: 0xE0E2E7, darkHex: 0x34363E)
 
         // Text
-        static let text = AdaptiveColor(lightHex: 0x201E1B, darkHex: 0xC0CAF5)
-        static let textMuted = AdaptiveColor(lightHex: 0x6E6960, darkHex: 0xA0A6C4)
-        static let textFaint = AdaptiveColor(lightHex: 0x6E685E, darkHex: 0x8B92AF)
+        static let text = AdaptiveColor(lightHex: 0x19191D, darkHex: 0xF4F4F6)
+        static let textMuted = AdaptiveColor(lightHex: 0x5F606A, darkHex: 0xB1B2BA)
+        static let textFaint = AdaptiveColor(lightHex: 0x6B6D77, darkHex: 0x8E909A)
 
         // Brand and semantic accents
-        static let accent = AdaptiveColor(lightHex: 0x3B5BDB, darkHex: 0x7AA2F7)
-        static let blue = AdaptiveColor(lightHex: 0x3B5BDB, darkHex: 0x7AA2F7)
+        static let accent = AdaptiveColor(lightHex: 0x5B5BD6, darkHex: 0xA7A5FF)
+        static let blue = AdaptiveColor(lightHex: 0x4545B8, darkHex: 0xA7A5FF)
         static let purple = AdaptiveColor(lightHex: 0x7048B6, darkHex: 0xBB9AF7)
-        static let green = AdaptiveColor(lightHex: 0x2F7D46, darkHex: 0x9ECE6A)
-        static let orange = AdaptiveColor(lightHex: 0xA15900, darkHex: 0xE0AF68)
-        static let red = AdaptiveColor(lightHex: 0xC03050, darkHex: 0xF7768E)
+        // Success is deliberately quieter than the previous lime. Codex has
+        // its own identity color below so green retains one semantic meaning.
+        static let green = AdaptiveColor(lightHex: 0x0B7A66, darkHex: 0x62C8AD)
+        static let codex = AdaptiveColor(lightHex: 0x44647A, darkHex: 0x839CB2)
+        static let orange = AdaptiveColor(lightHex: 0x925A08, darkHex: 0xF1BB67)
+        static let red = AdaptiveColor(lightHex: 0xC73552, darkHex: 0xFF7D96)
         static let cyan = AdaptiveColor(lightHex: 0x0E7490, darkHex: 0x7DCFFF)
     }
 
-    // MARK: surfaces (light: warm paper + white panels · dark: Tokyo storm)
+    // MARK: surfaces
 
     static let bg = Palette.bg.color
     static let surface = Palette.surface.color
@@ -111,19 +112,20 @@ enum Theme {
     static let cardAlt = Palette.cardAlt.color
     static let border = Palette.border.color
 
-    // MARK: text (ink on paper · Tokyo foreground)
+    // MARK: text
 
     static let text = Palette.text.color
     static let textMuted = Palette.textMuted.color
     static let textFaint = Palette.textFaint.color
 
-    // MARK: accents — one restrained indigo carries the brand; the client
-    // palette keeps the TUI's hue identities, darkened for paper.
+    // MARK: accents — one restrained indigo carries actions and selection.
+    // Client identity colors remain separate from semantic success/failure.
 
     static let accent = Palette.accent.color
     static let blue = Palette.blue.color
     static let purple = Palette.purple.color
     static let green = Palette.green.color
+    static let codex = Palette.codex.color
     static let orange = Palette.orange.color
     static let red = Palette.red.color
     static let cyan = Palette.cyan.color
@@ -131,7 +133,7 @@ enum Theme {
     static func clientColor(_ client: String?) -> Color {
         switch client {
         case "claude-code": return blue
-        case "codex": return green
+        case "codex": return codex
         case "cursor": return orange
         case "hermes": return purple
         case "opencode": return cyan
@@ -153,7 +155,7 @@ enum Theme {
     static func limitColor(usedPercent: Double) -> Color {
         if usedPercent >= 90 { return red }
         if usedPercent >= 70 { return orange }
-        return green
+        return accent
     }
 
     static func resetsIn(_ resetsAt: Double?, now: Date = SnapshotMode.currentDate) -> String? {
@@ -172,29 +174,39 @@ enum Theme {
 
 // MARK: - Typography tokens
 
-/// The type ramp. Metrics are rounded + monospaced-digit (instrument dials);
-/// labels are compact tracked caps; body copy is the system face.
+/// The macOS type ramp. SF Pro's neutral default design carries the interface;
+/// metrics use tabular digits without changing the surrounding letterforms.
+/// Three weights are enough to express the hierarchy without making every
+/// region compete for attention.
 enum Type {
-    /// The one big number (menu hero).
-    static let hero = Font.system(size: 30, weight: .bold, design: .rounded).monospacedDigit()
-    /// Panel-leading metric (stat tiles).
-    static let metric = Font.system(size: 18, weight: .semibold, design: .rounded).monospacedDigit()
+    /// Primary ring metric.
+    static let hero = Font.system(size: 28, weight: .semibold).monospacedDigit()
+    /// Title paired with a hero metric.
+    static let heroTitle = Font.system(size: 17, weight: .semibold)
+    /// Title inside a summary card.
+    static let cardTitle = Font.system(size: 14, weight: .semibold)
+    /// Panel-leading metric in top-level stat tiles.
+    static let metric = Font.system(size: 24, weight: .semibold).monospacedDigit()
     /// Row-trailing metric (list money/token cells).
-    static let metricS = Font.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit()
+    static let metricS = Font.system(size: 12, weight: .semibold).monospacedDigit()
     /// Inline numeric text (meters, percentages).
     static let numeric = Font.system(size: 11.5, weight: .semibold).monospacedDigit()
     /// Row titles.
-    static let rowTitle = Font.system(size: 12.5, weight: .medium)
+    static let rowTitle = Font.system(size: 13, weight: .medium)
     /// Body copy.
-    static let body = Font.system(size: 12)
+    static let body = Font.system(size: 13)
+    /// Compact control labels and supporting copy.
+    static let callout = Font.system(size: 12)
+    /// Text actions.
+    static let action = Font.system(size: 12, weight: .medium)
     /// Secondary copy.
-    static let small = Font.system(size: 10.5)
+    static let small = Font.system(size: 11)
     /// Footnotes / axis labels.
-    static let tiny = Font.system(size: 9.5)
-    /// Tracked caps caption (see SectionCaption).
-    static let caption = Font.system(size: 10, weight: .semibold)
-    /// Small tracked caps label inside tiles, at the macOS minimum text size.
-    static let tileLabel = Font.system(size: 10, weight: .semibold)
+    static let tiny = Font.system(size: 10)
+    /// Sentence-case section label (see SectionCaption).
+    static let caption = Font.system(size: 11, weight: .medium)
+    /// Small sentence-case label inside summary tiles.
+    static let tileLabel = Font.system(size: 11, weight: .medium)
 }
 
 /// The spacing scale. Padding and gaps come from here, not magic numbers.
@@ -203,7 +215,19 @@ enum Space {
     static let s: CGFloat = 8
     static let m: CGFloat = 12
     static let l: CGFloat = 16
+    static let dashboard: CGFloat = 20
     static let xl: CGFloat = 24
+}
+
+/// Productive motion only: quick feedback, a brief content update, and one
+/// zero-bounce geometry transition for persistent selection. Views must still
+/// disable geometry motion when `accessibilityReduceMotion` is enabled.
+enum Motion {
+    static let feedback = Animation.easeOut(duration: 0.07)
+    static let hover = Animation.easeOut(duration: 0.10)
+    static let contentUpdate = Animation.easeOut(duration: 0.16)
+    static let selection = Animation.spring(duration: 0.22, bounce: 0)
+    static let paneCrossfade = Animation.easeOut(duration: 0.14)
 }
 
 // MARK: - Reusable components
@@ -236,7 +260,7 @@ struct StatTile: View {
     }
 }
 
-/// The window's stat tile: white/storm panel, hairline border, big dial.
+/// The window's stat tile: white/storm panel, hairline border, tabular value.
 struct PanelTile: View {
     let label: String
     let value: String
@@ -244,10 +268,9 @@ struct PanelTile: View {
     var accent: Color = Theme.text
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label.uppercased())
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
                 .font(Type.tileLabel)
-                .tracking(0.7)
                 .foregroundStyle(Theme.textFaint)
             Text(value)
                 .font(Type.metric)
@@ -259,10 +282,10 @@ struct PanelTile: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(11)
-        .background(Theme.card, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .padding(13)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(Theme.border, lineWidth: 1)
         )
     }
@@ -271,16 +294,84 @@ struct PanelTile: View {
 /// The window's panel card: content on card surface with a hairline border.
 struct Card<Content: View>: View {
     var padding: CGFloat = Space.m
+    /// Equal-height grids opt in; ordinary cards keep their intrinsic height.
+    var fillsHeight = false
     @ViewBuilder let content: () -> Content
 
     var body: some View {
         content()
             .padding(padding)
+            .frame(
+                maxWidth: .infinity,
+                maxHeight: fillsHeight ? .infinity : nil,
+                alignment: .topLeading
+            )
             .background(Theme.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .strokeBorder(Theme.border, lineWidth: 1)
             )
+    }
+}
+
+/// A quiet macOS action: no fill at rest unless it is the local primary
+/// action, then short color-only hover and press feedback. The nested body
+/// reads Reduce Motion so every use shares the same accessibility behavior.
+struct QuietButtonStyle: ButtonStyle {
+    var tint: Color = Theme.accent
+    var prominent = false
+    var horizontalPadding: CGFloat = 7
+    var verticalPadding: CGFloat = 6
+
+    func makeBody(configuration: Configuration) -> some View {
+        QuietButtonBody(
+            configuration: configuration,
+            tint: tint,
+            prominent: prominent,
+            horizontalPadding: horizontalPadding,
+            verticalPadding: verticalPadding
+        )
+    }
+}
+
+private struct QuietButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    let tint: Color
+    let prominent: Bool
+    let horizontalPadding: CGFloat
+    let verticalPadding: CGFloat
+
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isFocused) private var isFocused
+
+    private var fillOpacity: Double {
+        if configuration.isPressed { return 0.14 }
+        if hovering { return 0.10 }
+        return prominent ? 0.065 : 0
+    }
+
+    var body: some View {
+        configuration.label
+            .padding(.horizontal, horizontalPadding)
+            .padding(.vertical, verticalPadding)
+            .background(
+                tint.opacity(fillOpacity),
+                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+            )
+            .overlay {
+                if isFocused {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(Theme.accent, lineWidth: 2)
+                }
+            }
+            .contentShape(Rectangle())
+            .onHover { inside in
+                withAnimation(reduceMotion ? nil : Motion.hover) {
+                    hovering = inside
+                }
+            }
+            .animation(reduceMotion ? nil : Motion.feedback, value: configuration.isPressed)
     }
 }
 
@@ -295,7 +386,7 @@ struct MeterBar: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(.quaternary.opacity(0.6))
                 Capsule()
-                    .fill(tint.gradient)
+                    .fill(tint)
                     .frame(width: max(height, proxy.size.width * min(max(fraction, 0), 1)))
             }
         }
@@ -320,7 +411,7 @@ struct Chip: View {
     }
 }
 
-/// A colored status dot (soft glow kept subtle so paper stays clean).
+/// A colored status dot. It stays flat so status never reads as decoration.
 struct StatusDot: View {
     let color: Color
     var size: CGFloat = 7
@@ -329,7 +420,6 @@ struct StatusDot: View {
         Circle()
             .fill(color)
             .frame(width: size, height: size)
-            .shadow(color: color.opacity(0.35), radius: 1.5)
     }
 }
 
@@ -341,9 +431,8 @@ struct SectionCaption: View {
     let text: String
 
     var body: some View {
-        Text(text.uppercased())
+        Text(text)
             .font(Type.caption)
-            .tracking(0.8)
             .foregroundStyle(tone ?? Color.secondary)
     }
 }

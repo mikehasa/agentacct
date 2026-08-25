@@ -14,8 +14,8 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
     private let expectedArtifacts = [
         ExpectedArtifact(filename: "dashboard-minimum-light.png", pixelsWide: 1920, pixelsHigh: 1120),
         ExpectedArtifact(filename: "dashboard-minimum-dark.png", pixelsWide: 1920, pixelsHigh: 1120),
-        ExpectedArtifact(filename: "dashboard-reference-light.png", pixelsWide: 2240, pixelsHigh: 1360),
-        ExpectedArtifact(filename: "dashboard-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1360),
+        ExpectedArtifact(filename: "dashboard-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "dashboard-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
     ]
 
     @MainActor
@@ -96,6 +96,7 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
             (payload: "glance", supported: GlanceClient.supportedGlanceSchema),
             (payload: "sessions", supported: DashboardSnapshotFixture.supportedSessionsSchema),
             (payload: "plan", supported: DashboardSnapshotFixture.supportedPlanSchema),
+            (payload: "tasks", supported: DashboardSnapshotFixture.supportedTasksSchema),
         ]
 
         for schema in schemas {

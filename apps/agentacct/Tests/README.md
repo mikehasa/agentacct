@@ -80,10 +80,10 @@ The dashboard renderer owns this complete fixed matrix at 2x scale:
 
 | Artifact | Viewport | Pixel size |
 | --- | --- | --- |
-| `dashboard-minimum-light.png` | 960 × 560 pt, light | 1920 × 1120 px |
-| `dashboard-minimum-dark.png` | 960 × 560 pt, dark | 1920 × 1120 px |
-| `dashboard-reference-light.png` | 1120 × 680 pt, light | 2240 × 1360 px |
-| `dashboard-reference-dark.png` | 1120 × 680 pt, dark | 2240 × 1360 px |
+| `dashboard-minimum-light.png` | 960 × 560 pt minimum window, light; single-column viewport | 1920 × 1120 px |
+| `dashboard-minimum-dark.png` | 960 × 560 pt minimum window, dark; single-column viewport | 1920 × 1120 px |
+| `dashboard-reference-light.png` | 1120 × 800 pt standard window, light; complete two-column dashboard | 2240 × 1600 px |
+| `dashboard-reference-dark.png` | 1120 × 800 pt standard window, dark; complete two-column dashboard | 2240 × 1600 px |
 
 References live under `Tests/agentacctTests/ReferenceImages/<platform-id>`.
 They are read directly from the source checkout and excluded from SwiftPM's
@@ -171,6 +171,13 @@ process, 80 total renders, and no out-of-budget drift.
 
 ## What each layer catches
 
+`DashboardInteractionTests` is the compact semantic layer. One table-driven
+test covers every dashboard destination (all Work, one Task, one session, and
+Limits), including stale-selection cleanup. Two projection tests keep outcome,
+evidence, cost, missing values, and Tokens/Cost totals honest without repeating
+the same assertions in view tests. A clock test prevents relative refresh copy
+from reintroducing snapshot flakiness.
+
 `DashboardSnapshotHarnessTests` catches fixture/schema drift, a missing
 appearance or viewport, wrong dimensions, wall-clock leaks, dynamic content,
 animation, and same-process instability. It runs wherever Swift tests run and
@@ -192,6 +199,21 @@ reviewed PNGs. The CLI supplies `AGENTACCT_VERIFY_VISUAL_BASELINES=1`,
 Ordinary `swift test` runs compile the visual suites but skip their baseline
 comparison, so semantic tests remain useful on non-canonical developer
 machines. Always use the CLI when the intent is to verify visual references.
+
+### Dashboard interaction coverage
+
+| Interaction contract | Automated evidence | Installed-app check |
+| --- | --- | --- |
+| Navigation tabs; recent-work, review, active-work, and Limits destinations | destination matrix plus stable accessibility identifiers | activate each control and confirm its pane/detail |
+| Outcome, evidence, cost, recency, long labels, and responsive layout | projection tests plus the four-image review matrix | resize through the 960 pt minimum and scroll once |
+| Tokens/Cost selection, totals, missing values, and mark labels | series tests plus default chart snapshots | hover, click, and keyboard-focus a mark in each series |
+| Light/dark appearance, reduced motion, and reduced transparency | explicit scheme matrix; material policy test; animations disabled in snapshots | switch system appearance; enable Reduce Motion and Reduce Transparency, then repeat navigation |
+| Refresh and setup presentation | deterministic freshness test and accessibility identifiers | refresh against the local daemon; open and dismiss setup |
+
+ImageRenderer cannot synthesize pointer, keyboard, sheet, or daemon events.
+Those boundaries remain a short manual pass until the Swift package gains a
+host-app XCUITest target; the identifiers above are the migration path. Do not
+duplicate them with brittle view-tree tests in the meantime.
 
 ## Intentional update checklist
 

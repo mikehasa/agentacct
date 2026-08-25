@@ -54,14 +54,14 @@
         "session_id": "fixture-active-01",
         "title": "Dashboard design system",
         "status": "in_progress",
-        "last_activity_at": 1787590000
+        "last_activity_at": 1787589988
       },
       {
         "client": "codex",
         "session_id": "fixture-active-02",
         "title": "Snapshot harness",
         "status": "checkpoint",
-        "last_activity_at": 1787589000
+        "last_activity_at": 1787589952
       }
     ]
   },
@@ -84,21 +84,6 @@
     ],
     "sessions": [
       {
-        "session_key": "codex::fixture-failed",
-        "client": "codex",
-        "client_session_id": "fixture-failed",
-        "client_session_id_short": "fixture-",
-        "title": "Review dashboard visual regression",
-        "project": "agentacct",
-        "status": "in_progress",
-        "instrumentation_state": "recorded",
-        "work": {
-          "items": [],
-          "counts": { "total": 1, "completed": 0, "resolved": 0, "active": 1, "blocked": 0 },
-          "evidence": { "strong": 0, "weak": 0, "failed": 1, "none": 0 }
-        }
-      },
-      {
         "session_key": "codex::fixture-blocked",
         "client": "codex",
         "client_session_id": "fixture-blocked",
@@ -111,6 +96,21 @@
           "items": [],
           "counts": { "total": 1, "completed": 0, "resolved": 0, "active": 0, "blocked": 1 },
           "evidence": { "strong": 0, "weak": 1, "failed": 0, "none": 0 }
+        }
+      },
+      {
+        "session_key": "codex::fixture-failed",
+        "client": "codex",
+        "client_session_id": "fixture-failed",
+        "client_session_id_short": "fixture-",
+        "title": "Review dashboard visual regression",
+        "project": "agentacct",
+        "status": "in_progress",
+        "instrumentation_state": "recorded",
+        "work": {
+          "items": [],
+          "counts": { "total": 1, "completed": 0, "resolved": 0, "active": 1, "blocked": 0 },
+          "evidence": { "strong": 0, "weak": 0, "failed": 1, "none": 0 }
         }
       }
     ]
@@ -128,6 +128,85 @@
         "state_detail": "Provider-reported account truth",
         "window_pcts": { "today": null, "7d": null },
         "daily": []
+      }
+    ]
+  },
+  "tasks": {
+    "schema": "agentacct.receipt.v1",
+    "total": 3,
+    "truncated": false,
+    "tasks": [
+      {
+        "task_id": "task-snapshot-harness",
+        "title": "Build reusable snapshot harness",
+        "decision_status": { "key": "verified", "label": "Verified", "asserted_by": "machine" },
+        "evidence_strength": {
+          "key": "independently_checked",
+          "gradeable": true,
+          "strongest_tier": "independently_checked",
+          "checkable_total": 4,
+          "checked_total": 4,
+          "by_tier": { "independently_checked": 4 },
+          "checks_total": 4,
+          "checks_passed": 4,
+          "checks_failed": 0
+        },
+        "cost": {
+          "estimated_cost_usd": 4.82,
+          "cost_basis": "pricing_table",
+          "cost_confidence": "estimated",
+          "cost_complete": true
+        },
+        "primary_root": { "client": "codex", "client_session_id": "fixture-active-02" },
+        "last_activity_at": 1787589880
+      },
+      {
+        "task_id": "task-dashboard-hierarchy",
+        "title": "Rethink dashboard product hierarchy",
+        "decision_status": { "key": "reported", "label": "Agent reported", "asserted_by": "agent_report" },
+        "evidence_strength": {
+          "key": "self_checked",
+          "gradeable": true,
+          "strongest_tier": "self_checked",
+          "checkable_total": 3,
+          "checked_total": 2,
+          "by_tier": { "self_checked": 2, "unchecked": 1 },
+          "checks_total": 2,
+          "checks_passed": 2,
+          "checks_failed": 0
+        },
+        "cost": {
+          "estimated_cost_usd": 2.16,
+          "cost_basis": "pricing_table",
+          "cost_confidence": "estimated",
+          "cost_complete": true
+        },
+        "primary_root": { "client": "codex", "client_session_id": "fixture-active-01" },
+        "last_activity_at": 1787589340
+      },
+      {
+        "task_id": "task-visual-regression",
+        "title": "Review dashboard visual regression",
+        "decision_status": { "key": "finding", "label": "Open finding", "asserted_by": "machine" },
+        "evidence_strength": {
+          "key": "unchecked",
+          "gradeable": true,
+          "strongest_tier": "unchecked",
+          "checkable_total": 1,
+          "checked_total": 0,
+          "by_tier": { "unchecked": 1 },
+          "checks_total": 1,
+          "checks_passed": 0,
+          "checks_failed": 1
+        },
+        "cost": {
+          "estimated_cost_usd": 1.08,
+          "cost_basis": "pricing_table",
+          "cost_confidence": "estimated",
+          "cost_complete": true
+        },
+        "primary_root": { "client": "codex", "client_session_id": "fixture-failed" },
+        "last_activity_at": 1787589280
       }
     ]
   },
@@ -150,7 +229,7 @@
       { "period": "2026-08-20", "fresh_tokens": 2400000, "estimated_cost_usd": 52.10, "cost_complete": true, "by_client": { "codex": { "fresh_tokens": 2400000 } } },
       { "period": "2026-08-21", "fresh_tokens": 900000, "estimated_cost_usd": 19.75, "cost_complete": true, "by_client": { "codex": { "fresh_tokens": 900000 } } },
       { "period": "2026-08-22", "fresh_tokens": 3600000, "estimated_cost_usd": 82.44, "cost_complete": true, "by_client": { "codex": { "fresh_tokens": 3600000 } } },
-      { "period": "2026-08-23", "fresh_tokens": 4700000, "estimated_cost_usd": 106.27, "cost_complete": true, "by_client": { "codex": { "fresh_tokens": 4700000 } } },
+      { "period": "2026-08-23", "fresh_tokens": 4800000, "estimated_cost_usd": 106.27, "cost_complete": true, "by_client": { "codex": { "fresh_tokens": 4800000 } } },
       { "period": "2026-08-24", "fresh_tokens": 12100000, "estimated_cost_usd": 260.52, "cost_complete": true, "by_client": { "codex": { "fresh_tokens": 12100000 } } },
       { "period": "2026-08-25", "fresh_tokens": 22500000, "estimated_cost_usd": 525.14, "cost_complete": true, "by_client": { "codex": { "fresh_tokens": 22500000 } } }
     ],

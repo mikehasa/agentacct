@@ -38,6 +38,7 @@ final class ThemeContrastTests: XCTestCase {
             ("blue", Theme.Palette.blue),
             ("purple", Theme.Palette.purple),
             ("green", Theme.Palette.green),
+            ("codex", Theme.Palette.codex),
             ("orange", Theme.Palette.orange),
             ("red", Theme.Palette.red),
             ("cyan", Theme.Palette.cyan),

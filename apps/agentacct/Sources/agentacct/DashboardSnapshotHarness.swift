@@ -7,15 +7,17 @@ import SwiftUI
 struct DashboardSnapshotFixture: Decodable {
     static let supportedSessionsSchema = "agentacct.sessions.v1"
     static let supportedPlanSchema = "agentacct.plan.v1"
+    static let supportedTasksSchema = "agentacct.receipt.v1"
 
     let daemonVersion: String
     let glance: Glance
     let sessions: V1SessionsPayload
     let plan: V1PlanPayload
+    let tasks: ReceiptTasksPayload
     let usage: UsageSummary
 
     enum CodingKeys: String, CodingKey {
-        case glance, sessions, plan, usage
+        case glance, sessions, plan, tasks, usage
         case daemonVersion = "daemon_version"
     }
 
@@ -44,6 +46,13 @@ struct DashboardSnapshotFixture: Decodable {
                 payload: "plan",
                 actual: fixture.plan.schema,
                 expected: supportedPlanSchema
+            )
+        }
+        guard fixture.tasks.schema == supportedTasksSchema else {
+            throw SnapshotError.unsupportedSchema(
+                payload: "tasks",
+                actual: fixture.tasks.schema,
+                expected: supportedTasksSchema
             )
         }
         return fixture
@@ -88,8 +97,11 @@ struct DashboardSnapshotConfiguration {
     static let reviewConfigurations: [Self] = [
         Self(viewport: "minimum", width: 960, height: 560, colorScheme: .light),
         Self(viewport: "minimum", width: 960, height: 560, colorScheme: .dark),
-        Self(viewport: "reference", width: 1120, height: 680, colorScheme: .light),
-        Self(viewport: "reference", width: 1120, height: 680, colorScheme: .dark),
+        // The reference viewport must show the complete dashboard, including
+        // chart labels. The shorter minimum pair intentionally verifies the
+        // real top-of-scroll experience instead.
+        Self(viewport: "reference", width: 1120, height: 800, colorScheme: .light),
+        Self(viewport: "reference", width: 1120, height: 800, colorScheme: .dark),
     ]
 }
 

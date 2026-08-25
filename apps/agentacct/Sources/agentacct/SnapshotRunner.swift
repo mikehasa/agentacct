@@ -27,12 +27,9 @@ enum SnapshotRunner {
                     // must render the loaded state, not the spinner.
                     await dashboard.fetchDetail(client: first.client, sessionId: first.clientSessionId)
                 }
-                // The Work pane loads its Task list + Receipt from a SwiftUI
-                // `.task`, which ImageRenderer does not run — so preload them here
-                // (as with the deep view above), or the Work pane renders empty.
-                // Selecting the first Task (server order = recency) shows a full
-                // Receipt; make the flagship demo Task the most recent one.
-                await dashboard.fetchReceipts()
+                // refresh() also loads the Task list. Select the newest Task and
+                // preload its Receipt because ImageRenderer does not run the
+                // Work pane's SwiftUI `.task`.
                 if let flagship = dashboard.receiptTasks.first {
                     selection.taskId = flagship.taskId
                     await dashboard.fetchReceipt(taskId: flagship.taskId)

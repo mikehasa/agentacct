@@ -31,6 +31,8 @@ open .build/agentacct.app
 ```
 
 Or during development: `swift run` (menu bar item appears; Ctrl-C to quit).
+The Dashboard leads with recent task outcomes and their evidence, followed by
+review, active work, plan headroom, and usage history.
 
 ## Test the dashboard UI
 

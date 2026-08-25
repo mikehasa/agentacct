@@ -56,12 +56,15 @@ final class DashboardStore: ObservableObject {
         planStatuses = fixture.sessions.plan ?? []
         planClients = fixture.plan.clients
         usage = fixture.usage
+        receiptTasks = fixture.tasks.tasks
+        lastUpdated = fixture.glance.generatedAt.map(Date.init(timeIntervalSince1970:))
     }
 
     func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
+        async let receipts: Void = fetchReceipts()
         do {
             // Preserve the paginated depth across auto-refreshes: replacing a
             // Load-more'd list with page 1 collapsed the walk and blanked an
@@ -90,6 +93,7 @@ final class DashboardStore: ObservableObject {
         } catch {
             errorText = "daemon fetch failed: \(error.localizedDescription)"
         }
+        await receipts
     }
 
     /// The next page of the recency-ordered roots walk (server-side slice;
@@ -234,6 +238,37 @@ final class AppSelection: ObservableObject {
     @Published var sessionId: String?
     @Published var taskId: String?
     @Published var pane: MainPane = .dashboard
+
+    /// Dashboard actions replace stale deep links before changing panes. This
+    /// keeps a previous Task or session from overriding the control the user
+    /// just activated when WorkPane resolves its selection.
+    func open(_ destination: DashboardDestination) {
+        switch destination {
+        case .work:
+            taskId = nil
+            sessionId = nil
+            pane = .work
+        case .task(let id):
+            taskId = id
+            sessionId = nil
+            pane = .work
+        case .session(let id):
+            taskId = nil
+            sessionId = id
+            pane = .work
+        case .limits:
+            taskId = nil
+            sessionId = nil
+            pane = .limits
+        }
+    }
+}
+
+enum DashboardDestination: Equatable {
+    case work
+    case task(String)
+    case session(String)
+    case limits
 }
 
 enum MainPane: String, CaseIterable, Identifiable {
