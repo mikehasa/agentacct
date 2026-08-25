@@ -12,7 +12,9 @@ struct DashboardWorkItem: Identifiable {
     let lastActivityAt: Double?
     let outcome: String
     let outcomeKey: String
+    let outcomeSource: String?
     let evidence: String
+    let failedChecks: Int
     let cost: String
 
     init(task: ReceiptSummary) {
@@ -25,17 +27,27 @@ struct DashboardWorkItem: Identifiable {
         client = task.primaryRoot?.client ?? "Unknown agent"
         lastActivityAt = task.lastActivityAt
         outcomeKey = task.decisionStatus.key
+        outcomeSource = Self.outcomeSourceLabel(task.decisionStatus.assertedBy)
         if let label = task.decisionStatus.label, !label.isEmpty {
             outcome = label
         } else {
             outcome = Self.outcomeLabel(for: task.decisionStatus.key)
         }
         evidence = task.evidenceStrength.compactHeadline
+        failedChecks = task.evidenceStrength.checksFailed ?? 0
         cost = Self.compactCost(task.cost)
     }
 
     var recency: String? {
         agoText(lastActivityAt)
+    }
+
+    var needsReview: Bool {
+        failedChecks > 0 || ["finding", "failed", "blocked"].contains(outcomeKey)
+    }
+
+    var hasFinding: Bool {
+        failedChecks > 0 || ["finding", "failed"].contains(outcomeKey)
     }
 
     private static func outcomeLabel(for key: String) -> String {
@@ -50,12 +62,22 @@ struct DashboardWorkItem: Identifiable {
         }
     }
 
+    private static func outcomeSourceLabel(_ source: String?) -> String? {
+        switch source {
+        case "agent_report": return "agent reported"
+        case "machine": return "machine checked"
+        case "human": return "human reviewed"
+        case "inferred": return "state inferred"
+        default: return nil
+        }
+    }
+
     private static func compactCost(_ cost: ReceiptCost) -> String {
         guard let value = cost.estimatedCostUsd else { return "—" }
         let prefix: String
         if cost.costComplete == false {
             prefix = "~$"
-        } else if cost.costConfidence == "client_reported" {
+        } else if cost.costComplete == true && cost.costConfidence == "client_reported" {
             prefix = "$"
         } else {
             prefix = "≈$"
@@ -90,8 +112,10 @@ enum DashboardUsageSeries: String, CaseIterable, Identifiable {
     func totalText(for periods: [PeriodBucket]) -> String {
         switch self {
         case .tokens:
-            let total = periods.reduce(0) { $0 + ($1.freshTokens ?? 0) }
-            return "\(UsageTotals.compact(total)) total"
+            let available = periods.compactMap(\.freshTokens)
+            guard !available.isEmpty else { return "—" }
+            let prefix = available.count == periods.count ? "" : "~"
+            return "\(prefix)\(UsageTotals.compact(available.reduce(0, +))) total"
         case .cost:
             let available = periods.compactMap(\.estimatedCostUsd)
             guard !available.isEmpty else { return "—" }
@@ -106,6 +130,13 @@ enum DashboardUsageSeries: String, CaseIterable, Identifiable {
         case .tokens: return "Fresh tokens · last \(dayCount) days · client reported"
         case .cost: return "Estimated cost · last \(dayCount) days · pricing-table basis"
         }
+    }
+}
+
+func isActiveWorkStatus(_ status: String?) -> Bool {
+    switch status {
+    case "started", "checkpoint", "in_progress": return true
+    default: return false
     }
 }
 
@@ -137,28 +168,31 @@ struct DashboardPane: View {
 
     private var recentSessions: [RecentSession] {
         guard case .connected(let snapshot) = glance.phase else { return [] }
-        return Array(snapshot.glance.recentSessions.prefix(3))
+        return snapshot.glance.recentSessions.filter {
+            isActiveWorkStatus($0.status)
+        }
     }
 
-    private var attentionRows: [V1SessionRow] {
-        let rows = dashboard.sessions.filter {
-            $0.status == "blocked" || ($0.work?.evidence?.failed ?? 0) > 0
-        }
+    private var attentionItems: [DashboardWorkItem] {
+        let items = dashboard.receiptTasks.map(DashboardWorkItem.init)
         // Failed evidence is the more urgent review target. Preserve API order
-        // inside each group so equal-priority rows remain stable.
-        return rows.filter { ($0.work?.evidence?.failed ?? 0) > 0 }
-            + rows.filter { ($0.work?.evidence?.failed ?? 0) == 0 }
+        // inside each group so equal-priority tasks remain stable.
+        return items.filter { $0.needsReview && $0.hasFinding }
+            + items.filter { $0.needsReview && !$0.hasFinding }
     }
 
     var body: some View {
         ScrollBox {
             VStack(alignment: .leading, spacing: Space.m) {
                 splitRow {
-                    RecentWorkCard(items: recentWork, totalCount: dashboard.receiptTasks.count) { destination in
+                    RecentWorkCard(
+                        items: recentWork,
+                        totalCount: dashboard.totalReceiptTasks ?? dashboard.receiptTasks.count
+                    ) { destination in
                         selection.open(destination)
                     }
                 } right: {
-                    NeedsReviewCard(rows: attentionRows) { destination in
+                    NeedsReviewCard(items: attentionItems) { destination in
                         selection.open(destination)
                     }
                 }
@@ -183,7 +217,7 @@ struct DashboardPane: View {
             .padding(Space.dashboard)
         }
         .overlay(alignment: .bottom) {
-            if let error = dashboard.errorText {
+            if let error = dashboard.errorText ?? dashboard.receiptListError {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(Type.small)
                     .foregroundStyle(Theme.red)
@@ -365,8 +399,6 @@ private struct RecentWorkCard: View {
 private struct RecentWorkRow: View {
     let item: DashboardWorkItem
     let action: () -> Void
-    @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: action) {
@@ -401,19 +433,13 @@ private struct RecentWorkRow: View {
                     .foregroundStyle(Theme.textMuted)
                     .frame(width: 64, alignment: .trailing)
 
-                Image(systemName: "chevron.forward")
-                    .font(.system(size: 8.5, weight: .semibold))
-                    .foregroundStyle(Theme.textFaint)
-                    .frame(width: 10)
+                DashboardDisclosureIndicator()
             }
             .padding(.horizontal, 15)
             .frame(minHeight: 64)
             .contentShape(Rectangle())
         }
-        .buttonStyle(DashboardRowButtonStyle(hovering: hovering))
-        .onHover { inside in
-            withAnimation(reduceMotion ? nil : Motion.hover) { hovering = inside }
-        }
+        .buttonStyle(DashboardRowButtonStyle())
         .accessibilityLabel(
             "\(item.title), \(item.outcome), \(item.evidence), \(item.cost)"
         )
@@ -423,16 +449,16 @@ private struct RecentWorkRow: View {
 }
 
 private struct NeedsReviewCard: View {
-    let rows: [V1SessionRow]
+    let items: [DashboardWorkItem]
     let open: (DashboardDestination) -> Void
 
-    private var visibleRows: [V1SessionRow] { Array(rows.prefix(2)) }
+    private var visibleItems: [DashboardWorkItem] { Array(items.prefix(2)) }
 
     var body: some View {
         Card(padding: 0, fillsHeight: true) {
             VStack(spacing: 0) {
-                DashboardCardHeader("Needs review", count: rows.count) {
-                    if rows.count > visibleRows.count {
+                DashboardCardHeader("Needs review", count: items.count) {
+                    if items.count > visibleItems.count {
                         Button { open(.work) } label: {
                             Text("View all").font(Type.action)
                         }
@@ -443,7 +469,7 @@ private struct NeedsReviewCard: View {
                 }
                 Divider().overlay(Theme.border)
 
-                if visibleRows.isEmpty {
+                if visibleItems.isEmpty {
                     DashboardEmptyState(
                         icon: "checkmark.circle.fill",
                         title: "All clear",
@@ -451,9 +477,9 @@ private struct NeedsReviewCard: View {
                     )
                     .frame(minHeight: 222)
                 } else {
-                    ForEach(Array(visibleRows.enumerated()), id: \.element.id) { index, row in
-                        DashboardAttentionRow(row: row) { open(.session(row.id)) }
-                        if index < visibleRows.count - 1 {
+                    ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
+                        DashboardAttentionRow(item: item) { open(.task(item.id)) }
+                        if index < visibleItems.count - 1 {
                             Divider().overlay(Theme.border.opacity(0.72))
                         }
                     }
@@ -465,20 +491,16 @@ private struct NeedsReviewCard: View {
 }
 
 private struct DashboardAttentionRow: View {
-    let row: V1SessionRow
+    let item: DashboardWorkItem
     let action: () -> Void
-    @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var failedChecks: Int { row.work?.evidence?.failed ?? 0 }
-    private var hasFinding: Bool { failedChecks > 0 }
-    private var tint: Color { hasFinding ? Theme.red : Theme.orange }
-    private var icon: String { hasFinding ? "xmark.circle.fill" : "hand.raised.circle.fill" }
+    private var tint: Color { item.hasFinding ? Theme.red : Theme.orange }
+    private var icon: String { item.hasFinding ? "xmark.circle.fill" : "hand.raised.circle.fill" }
     private var status: String {
-        if hasFinding {
-            return "Open finding · \(failedChecks) failed check\(failedChecks == 1 ? "" : "s")"
+        if item.failedChecks > 0 {
+            return "Open finding · \(item.failedChecks) failed check\(item.failedChecks == 1 ? "" : "s")"
         }
-        return "Blocked · agent reported"
+        return [item.outcome, item.outcomeSource].compactMap { $0 }.joined(separator: " · ")
     }
 
     var body: some View {
@@ -489,7 +511,7 @@ private struct DashboardAttentionRow: View {
                     .foregroundStyle(tint)
                     .frame(width: 24, height: 24)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(row.displayTitle)
+                    Text(item.title)
                         .font(Type.rowTitle.weight(.semibold))
                         .foregroundStyle(Theme.text)
                         .lineLimit(2)
@@ -499,22 +521,16 @@ private struct DashboardAttentionRow: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: Space.s)
-                Image(systemName: "chevron.forward")
-                    .font(.system(size: 8.5, weight: .semibold))
-                    .foregroundStyle(Theme.textFaint)
-                    .frame(width: 10)
+                DashboardDisclosureIndicator()
             }
             .padding(.horizontal, 15)
             .frame(minHeight: 95)
             .contentShape(Rectangle())
         }
-        .buttonStyle(DashboardRowButtonStyle(hovering: hovering))
-        .onHover { inside in
-            withAnimation(reduceMotion ? nil : Motion.hover) { hovering = inside }
-        }
-        .accessibilityLabel("\(row.displayTitle), \(status)")
-        .accessibilityHint("Opens this work session")
-        .accessibilityIdentifier("dashboard.review.\(row.id)")
+        .buttonStyle(DashboardRowButtonStyle())
+        .accessibilityLabel("\(item.title), \(status)")
+        .accessibilityHint("Opens this task in Work")
+        .accessibilityIdentifier("dashboard.review.task.\(item.id)")
     }
 }
 
@@ -569,11 +585,17 @@ private struct PlanAndUsageCard: View {
     private var used: Double? { sevenDay?.usedPercent }
     private var remaining: Double? { used.map { max(0, 100 - $0) } }
 
+    private var resetText: String {
+        Theme.resetsIn(sevenDay?.resetsAt).map { "Resets in \($0)" }
+            ?? "Reset time unavailable"
+    }
+
     private var providerTitle: String {
         guard let limit else { return "No live provider limit" }
         let client = limit.client?.replacingOccurrences(of: "-", with: " ").capitalized
         let plan = limit.planType?.capitalized
-        return [client, plan].compactMap { $0 }.joined(separator: " ")
+        let title = [client, plan].compactMap { $0 }.joined(separator: " ")
+        return title.isEmpty ? "Provider limit" : title
     }
 
     var body: some View {
@@ -611,7 +633,7 @@ private struct PlanAndUsageCard: View {
                                 .font(Type.tiny)
                                 .foregroundStyle(Theme.textMuted)
                                 .lineLimit(1)
-                            Text(Theme.resetsIn(sevenDay?.resetsAt).map { "Resets in \($0)" } ?? "Reset time unavailable")
+                            Text(resetText)
                                 .font(Type.rowTitle.weight(.semibold))
                                 .foregroundStyle(Theme.text)
                             Text("Provider reported")
@@ -701,6 +723,7 @@ private struct DashboardUsageChart: View {
                                     .frame(height: 24)
                             }
                             .buttonStyle(DashboardSeriesButtonStyle(selected: series == choice))
+                            .accessibilityAddTraits(series == choice ? .isSelected : [])
                             .accessibilityIdentifier("dashboard.usage.\(choice.rawValue.lowercased())")
                         }
                     }
@@ -716,6 +739,11 @@ private struct DashboardUsageChart: View {
                     .padding(.horizontal, 15)
                     .padding(.vertical, 11)
             }
+        }
+        .onChange(of: periods.map(\.period)) {
+            hoveredIndex = nil
+            pinnedIndex = nil
+            focusedIndex = nil
         }
     }
 
@@ -757,7 +785,7 @@ private struct DashboardUsageChart: View {
                                         Spacer(minLength: 0)
                                         RoundedRectangle(cornerRadius: 2, style: .continuous)
                                             .fill(barColor(index))
-                                            .frame(height: max(3, 106 * series.value(for: period) / maximum))
+                                            .frame(height: barHeight(for: period))
                                     }
                                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                                     .contentShape(Rectangle())
@@ -776,7 +804,8 @@ private struct DashboardUsageChart: View {
                                 .accessibilityLabel(
                                     "\(period.period ?? period.shortLabel), \(series.valueText(for: period))"
                                 )
-                                .accessibilityHint("Selects this day for inspection")
+                                .accessibilityHint("Pins or clears this day's value")
+                                .accessibilityAddTraits(pinnedIndex == index ? .isSelected : [])
                                 .accessibilityIdentifier("dashboard.usage.day.\(index)")
 
                                 Text(period.shortLabel)
@@ -795,7 +824,10 @@ private struct DashboardUsageChart: View {
                             value: series.valueText(for: periods[index])
                         )
                         .position(
-                            x: min(max(58, columnWidth / 2 + CGFloat(index) * (columnWidth + gap)), proxy.size.width - 58),
+                            x: min(
+                                max(58, columnWidth / 2 + CGFloat(index) * (columnWidth + gap)),
+                                proxy.size.width - 58
+                            ),
                             y: 17
                         )
                         .transition(.opacity)
@@ -811,6 +843,12 @@ private struct DashboardUsageChart: View {
     private func barColor(_ index: Int) -> Color {
         if activeIndex == index || index == periods.count - 1 { return Theme.accent }
         return Theme.textFaint.opacity(0.72)
+    }
+
+    private func barHeight(for period: PeriodBucket) -> CGFloat {
+        let value = series.value(for: period)
+        guard value > 0 else { return 0 }
+        return max(3, 106 * value / maximum)
     }
 
     private func axisText(_ value: Double) -> String {
@@ -889,9 +927,6 @@ private struct DashboardSessionRow: View {
     let session: RecentSession
     let action: () -> Void
 
-    @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
@@ -909,19 +944,13 @@ private struct DashboardSessionRow: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 8)
-                Image(systemName: "chevron.forward")
-                    .font(.system(size: 8.5, weight: .semibold))
-                    .foregroundStyle(Theme.textFaint)
-                    .frame(width: 10)
+                DashboardDisclosureIndicator()
             }
             .padding(.horizontal, 15)
             .frame(minHeight: 66)
             .contentShape(Rectangle())
         }
-        .buttonStyle(DashboardRowButtonStyle(hovering: hovering))
-        .onHover { inside in
-            withAnimation(reduceMotion ? nil : Motion.hover) { hovering = inside }
-        }
+        .buttonStyle(DashboardRowButtonStyle())
         .accessibilityLabel(
             "\(session.title ?? session.shortSessionId), \(session.client), \(session.status ?? "status unavailable")"
         )
@@ -935,17 +964,16 @@ private struct DashboardSessionRow: View {
 }
 
 private struct DashboardRowButtonStyle: ButtonStyle {
-    let hovering: Bool
-
     func makeBody(configuration: Configuration) -> some View {
-        DashboardRowButtonBody(configuration: configuration, hovering: hovering)
+        DashboardRowButtonBody(configuration: configuration)
     }
 }
 
 private struct DashboardRowButtonBody: View {
     let configuration: ButtonStyleConfiguration
-    let hovering: Bool
+    @State private var hovering = false
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         configuration.label
@@ -959,6 +987,22 @@ private struct DashboardRowButtonBody: View {
                         .padding(2)
                 }
             }
+            .onHover { inside in
+                withAnimation(reduceMotion ? nil : Motion.hover) {
+                    hovering = inside
+                }
+            }
+            .animation(reduceMotion ? nil : Motion.feedback, value: configuration.isPressed)
+    }
+}
+
+private struct DashboardDisclosureIndicator: View {
+    var body: some View {
+        Image(systemName: "chevron.forward")
+            .font(.system(size: 8.5, weight: .semibold))
+            .foregroundStyle(Theme.textFaint)
+            .frame(width: 10)
+            .accessibilityHidden(true)
     }
 }
 

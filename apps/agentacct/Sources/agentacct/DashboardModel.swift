@@ -176,14 +176,13 @@ struct UsageSummary: Decodable {
     }
 }
 
-struct PeriodBucket: Decodable, Identifiable {
+struct PeriodBucket: Decodable {
     let period: String?
     let freshTokens: Int?
     let estimatedCostUsd: Double?
     let costComplete: Bool?
     let byClient: [String: PeriodClientSlice]?
 
-    var id: String { period ?? UUID().uuidString }
     /// "08-05" from "2026-08-05" for axis labels.
     var shortLabel: String {
         guard let period, period.count >= 10 else { return period ?? "" }

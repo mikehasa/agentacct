@@ -171,22 +171,23 @@ process, 80 total renders, and no out-of-budget drift.
 
 ## What each layer catches
 
-`DashboardInteractionTests` is the compact semantic layer. One table-driven
-test covers every dashboard destination (all Work, one Task, one session, and
-Limits), including stale-selection cleanup. Two projection tests keep outcome,
-evidence, cost, missing values, and Tokens/Cost totals honest without repeating
-the same assertions in view tests. A clock test prevents relative refresh copy
-from reintroducing snapshot flakiness.
+`DashboardInteractionTests` is the compact semantic layer. Table-driven tests
+cover every dashboard destination, active-session states, the task-first review
+projection, stale-selection cleanup, cost completeness, missing values, and
+Tokens/Cost totals. A clock test prevents relative refresh copy from
+reintroducing snapshot flakiness. These tests keep product semantics separate
+from pixels without repeating view-tree assertions.
 
-`DashboardSnapshotHarnessTests` catches fixture/schema drift, a missing
-appearance or viewport, wrong dimensions, wall-clock leaks, dynamic content,
-animation, and same-process instability. It runs wherever Swift tests run and
-does not need approved images.
+`DashboardSnapshotHarnessTests` catches fixture/schema/store-wiring drift, a
+missing appearance or viewport, wrong dimensions, wall-clock leaks, dynamic
+content, animation, and same-process instability. It runs wherever Swift tests
+run and does not need approved images.
 
 `VisualSnapshotHarnessTests` checks the dependency-free image lifecycle:
-normalization, strict magnitude and changed-area tolerances, dimension
-mismatches, expected/actual/diff creation, safe mode parsing, CI recording
-rejection, atomic writes, baseline retention, and stale artifact cleanup.
+normalization, strict magnitude and changed-area tolerances, honest dimension
+mismatch diagnostics, expected/actual/diff creation, safe mode parsing, CI
+recording rejection, atomic writes, changed-reference replacement, invalid
+render rejection, baseline retention, and stale artifact cleanup.
 
 `visual-snapshots-cli-tests.sh` uses a fake SwiftPM test list and renderer
 environment. It verifies path and selector resolution, exact filtering,
@@ -204,7 +205,7 @@ machines. Always use the CLI when the intent is to verify visual references.
 
 | Interaction contract | Automated evidence | Installed-app check |
 | --- | --- | --- |
-| Navigation tabs; recent-work, review, active-work, and Limits destinations | destination matrix plus stable accessibility identifiers | activate each control and confirm its pane/detail |
+| Navigation tabs; recent-work, review, active-work, and Limits destinations | destination matrix, task-first review projection, and stable accessibility identifiers | activate each control and confirm its pane/detail |
 | Outcome, evidence, cost, recency, long labels, and responsive layout | projection tests plus the four-image review matrix | resize through the 960 pt minimum and scroll once |
 | Tokens/Cost selection, totals, missing values, and mark labels | series tests plus default chart snapshots | hover, click, and keyboard-focus a mark in each series |
 | Light/dark appearance, reduced motion, and reduced transparency | explicit scheme matrix; material policy test; animations disabled in snapshots | switch system appearance; enable Reduce Motion and Reduce Transparency, then repeat navigation |

@@ -21,12 +21,6 @@ enum SnapshotRunner {
                 let dashboard = DashboardStore()
                 await dashboard.refresh()
                 let selection = AppSelection()
-                if let first = dashboard.sessions.first {
-                    selection.sessionId = first.id
-                    // The deep view loads async in the live app; a snapshot
-                    // must render the loaded state, not the spinner.
-                    await dashboard.fetchDetail(client: first.client, sessionId: first.clientSessionId)
-                }
                 // refresh() also loads the Task list. Select the newest Task and
                 // preload its Receipt because ImageRenderer does not run the
                 // Work pane's SwiftUI `.task`.

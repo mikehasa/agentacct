@@ -75,13 +75,10 @@ final class VisualSnapshotHarnessTests: XCTestCase {
     }
 
     func testMismatchWritesExpectedActualAndDiffArtifacts() throws {
-        let temporaryDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("agentacct-visual-harness-\(UUID().uuidString)")
+        let temporaryDirectory = try makeTemporaryDirectory(named: "mismatch")
         let expectedURL = temporaryDirectory.appendingPathComponent("expected.png")
         let actualURL = temporaryDirectory.appendingPathComponent("actual.png")
         let artifactDirectory = temporaryDirectory.appendingPathComponent("failures")
-        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
-        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
 
         try image(width: 2, height: 2, fill: [32, 64, 96, 255]).writePNG(to: expectedURL)
         try image(width: 2, height: 2, fill: [200, 64, 96, 255]).writePNG(to: actualURL)
@@ -112,13 +109,10 @@ final class VisualSnapshotHarnessTests: XCTestCase {
     }
 
     func testRecordModeAtomicallyCreatesAValidReference() throws {
-        let temporaryDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("agentacct-visual-record-\(UUID().uuidString)")
+        let temporaryDirectory = try makeTemporaryDirectory(named: "record")
         let referenceURL = temporaryDirectory.appendingPathComponent("references/sample.png")
         let actualURL = temporaryDirectory.appendingPathComponent("actual.png")
         let artifactDirectory = temporaryDirectory.appendingPathComponent("failures")
-        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
-        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
         try image(width: 2, height: 2, fill: [40, 80, 120, 255]).writePNG(to: actualURL)
 
         let result = try VisualSnapshotHarness.assertSnapshot(
@@ -138,12 +132,10 @@ final class VisualSnapshotHarnessTests: XCTestCase {
     }
 
     func testRecordModeReplacesAnInvalidReferenceWithAValidRender() throws {
-        let temporaryDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("agentacct-visual-repair-\(UUID().uuidString)")
+        let temporaryDirectory = try makeTemporaryDirectory(named: "repair")
         let referenceURL = temporaryDirectory.appendingPathComponent("references/sample.png")
         let actualURL = temporaryDirectory.appendingPathComponent("actual.png")
         let artifactDirectory = temporaryDirectory.appendingPathComponent("failures")
-        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
         try FileManager.default.createDirectory(
             at: referenceURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -169,12 +161,10 @@ final class VisualSnapshotHarnessTests: XCTestCase {
     }
 
     func testRecordModeRetainsAnEquivalentReferenceAndClearsStaleArtifacts() throws {
-        let temporaryDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("agentacct-visual-retain-\(UUID().uuidString)")
+        let temporaryDirectory = try makeTemporaryDirectory(named: "retain")
         let referenceURL = temporaryDirectory.appendingPathComponent("references/sample.png")
         let actualURL = temporaryDirectory.appendingPathComponent("actual.png")
         let artifactDirectory = temporaryDirectory.appendingPathComponent("failures")
-        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
         try FileManager.default.createDirectory(
             at: referenceURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -183,11 +173,7 @@ final class VisualSnapshotHarnessTests: XCTestCase {
         try image(width: 2, height: 2, fill: [40, 80, 120, 255]).writePNG(to: referenceURL)
         try image(width: 2, height: 2, fill: [41, 80, 120, 255]).writePNG(to: actualURL)
         let originalReference = try Data(contentsOf: referenceURL)
-        for suffix in ["expected", "actual", "diff"] {
-            try Data("stale".utf8).write(
-                to: artifactDirectory.appendingPathComponent("sample.\(suffix).png")
-            )
-        }
+        try writeStaleArtifacts(named: "sample", to: artifactDirectory)
 
         let result = try VisualSnapshotHarness.assertSnapshot(
             name: "sample",
@@ -210,12 +196,10 @@ final class VisualSnapshotHarnessTests: XCTestCase {
     }
 
     func testDimensionMismatchDoesNotLeaveAStaleDiffImage() throws {
-        let temporaryDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("agentacct-visual-dimensions-\(UUID().uuidString)")
+        let temporaryDirectory = try makeTemporaryDirectory(named: "dimensions")
         let expectedURL = temporaryDirectory.appendingPathComponent("expected.png")
         let actualURL = temporaryDirectory.appendingPathComponent("actual.png")
         let artifactDirectory = temporaryDirectory.appendingPathComponent("failures")
-        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
         try FileManager.default.createDirectory(at: artifactDirectory, withIntermediateDirectories: true)
         try image(width: 2, height: 2, fill: [40, 80, 120, 255]).writePNG(to: expectedURL)
         try image(width: 3, height: 2, fill: [40, 80, 120, 255]).writePNG(to: actualURL)
@@ -255,6 +239,99 @@ final class VisualSnapshotHarnessTests: XCTestCase {
 
         XCTAssertFalse(comparison.dimensionsMatch)
         XCTAssertFalse(comparison.isWithin(.renderingNoise))
+        XCTAssertEqual(comparison.changedPixelFraction, 1)
+        XCTAssertEqual(comparison.changedChannelFraction, 1)
+    }
+
+    func testSuccessfulVerifyClearsStaleFailureArtifacts() throws {
+        let temporaryDirectory = try makeTemporaryDirectory(named: "verify-cleanup")
+        let expectedURL = temporaryDirectory.appendingPathComponent("expected.png")
+        let actualURL = temporaryDirectory.appendingPathComponent("actual.png")
+        let artifactDirectory = temporaryDirectory.appendingPathComponent("failures")
+        try FileManager.default.createDirectory(at: artifactDirectory, withIntermediateDirectories: true)
+        try image(width: 2, height: 2, fill: [40, 80, 120, 255]).writePNG(to: expectedURL)
+        try image(width: 2, height: 2, fill: [40, 80, 120, 255]).writePNG(to: actualURL)
+        try writeStaleArtifacts(named: "sample", to: artifactDirectory)
+
+        try VisualSnapshotHarness.verify(
+            name: "sample",
+            expectedURL: expectedURL,
+            actualURL: actualURL,
+            artifactDirectory: artifactDirectory
+        )
+
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: artifactDirectory.path), [])
+    }
+
+    func testVerifyRequiresAReviewedReference() throws {
+        let temporaryDirectory = try makeTemporaryDirectory(named: "missing-reference")
+        let referenceURL = temporaryDirectory.appendingPathComponent("missing.png")
+        let actualURL = temporaryDirectory.appendingPathComponent("actual.png")
+        let artifactDirectory = temporaryDirectory.appendingPathComponent("failures")
+        try image(width: 2, height: 2, fill: [40, 80, 120, 255]).writePNG(to: actualURL)
+
+        XCTAssertThrowsError(
+            try VisualSnapshotHarness.verify(
+                name: "sample",
+                expectedURL: referenceURL,
+                actualURL: actualURL,
+                artifactDirectory: artifactDirectory
+            )
+        ) { error in
+            guard case VisualSnapshotError.missingReference(let missingURL) = error else {
+                return XCTFail("Expected a missing-reference error; got \(error)")
+            }
+            XCTAssertEqual(missingURL, referenceURL)
+        }
+    }
+
+    func testRecordModeDoesNotReplaceAReferenceWithAnInvalidRender() throws {
+        let temporaryDirectory = try makeTemporaryDirectory(named: "invalid-render")
+        let referenceURL = temporaryDirectory.appendingPathComponent("reference.png")
+        let actualURL = temporaryDirectory.appendingPathComponent("actual.png")
+        let artifactDirectory = temporaryDirectory.appendingPathComponent("failures")
+        try image(width: 2, height: 2, fill: [40, 80, 120, 255]).writePNG(to: referenceURL)
+        try Data("invalid PNG".utf8).write(to: actualURL)
+        let originalReference = try Data(contentsOf: referenceURL)
+
+        XCTAssertThrowsError(
+            try VisualSnapshotHarness.assertSnapshot(
+                name: "sample",
+                referenceURL: referenceURL,
+                actualURL: actualURL,
+                artifactDirectory: artifactDirectory,
+                mode: .record
+            )
+        ) { error in
+            guard case VisualSnapshotError.cannotDecode(let rejectedURL) = error else {
+                return XCTFail("Expected the invalid render to be rejected; got \(error)")
+            }
+            XCTAssertEqual(rejectedURL, actualURL)
+        }
+        XCTAssertEqual(try Data(contentsOf: referenceURL), originalReference)
+    }
+
+    func testRecordModeReplacesAChangedValidReference() throws {
+        let temporaryDirectory = try makeTemporaryDirectory(named: "changed-reference")
+        let referenceURL = temporaryDirectory.appendingPathComponent("reference.png")
+        let actualURL = temporaryDirectory.appendingPathComponent("actual.png")
+        let artifactDirectory = temporaryDirectory.appendingPathComponent("failures")
+        try image(width: 2, height: 2, fill: [40, 80, 120, 255]).writePNG(to: referenceURL)
+        try image(width: 2, height: 2, fill: [120, 80, 40, 255]).writePNG(to: actualURL)
+
+        let result = try VisualSnapshotHarness.assertSnapshot(
+            name: "sample",
+            referenceURL: referenceURL,
+            actualURL: actualURL,
+            artifactDirectory: artifactDirectory,
+            mode: .record
+        )
+
+        XCTAssertEqual(result, .recorded)
+        XCTAssertTrue(
+            try VisualSnapshotHarness.compare(expectedURL: referenceURL, actualURL: actualURL)
+                .isWithin(.renderingNoise)
+        )
     }
 
     private func image(width: Int, height: Int, fill: [UInt8]) -> VisualSnapshotImage {
@@ -263,5 +340,21 @@ final class VisualSnapshotHarnessTests: XCTestCase {
             height: height,
             rgba: Data(Array(repeating: fill, count: width * height).flatMap { $0 })
         )
+    }
+
+    private func makeTemporaryDirectory(named purpose: String) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentacct-visual-\(purpose)-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return directory
+    }
+
+    private func writeStaleArtifacts(named name: String, to directory: URL) throws {
+        for suffix in ["expected", "actual", "diff"] {
+            try Data("stale".utf8).write(
+                to: directory.appendingPathComponent("\(name).\(suffix).png")
+            )
+        }
     }
 }

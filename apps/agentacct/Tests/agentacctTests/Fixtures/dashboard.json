@@ -65,56 +65,6 @@
       }
     ]
   },
-  "sessions": {
-    "schema": "agentacct.sessions.v1",
-    "generated_at": 1787590000,
-    "total_sessions": 54,
-    "total_root_sessions": 18,
-    "filtered_total": 18,
-    "offset": 0,
-    "limit": 60,
-    "returned": 2,
-    "truncated": false,
-    "plan": [
-      {
-        "client": "codex",
-        "confidence": "provider_reported",
-        "calibration_state": "never"
-      }
-    ],
-    "sessions": [
-      {
-        "session_key": "codex::fixture-blocked",
-        "client": "codex",
-        "client_session_id": "fixture-blocked",
-        "client_session_id_short": "fixture-",
-        "title": "Resolve provider calibration",
-        "project": "agentacct",
-        "status": "blocked",
-        "instrumentation_state": "recorded",
-        "work": {
-          "items": [],
-          "counts": { "total": 1, "completed": 0, "resolved": 0, "active": 0, "blocked": 1 },
-          "evidence": { "strong": 0, "weak": 1, "failed": 0, "none": 0 }
-        }
-      },
-      {
-        "session_key": "codex::fixture-failed",
-        "client": "codex",
-        "client_session_id": "fixture-failed",
-        "client_session_id_short": "fixture-",
-        "title": "Review dashboard visual regression",
-        "project": "agentacct",
-        "status": "in_progress",
-        "instrumentation_state": "recorded",
-        "work": {
-          "items": [],
-          "counts": { "total": 1, "completed": 0, "resolved": 0, "active": 1, "blocked": 0 },
-          "evidence": { "strong": 0, "weak": 0, "failed": 1, "none": 0 }
-        }
-      }
-    ]
-  },
   "plan": {
     "schema": "agentacct.plan.v1",
     "generated_at": 1787590000,
@@ -133,7 +83,7 @@
   },
   "tasks": {
     "schema": "agentacct.receipt.v1",
-    "total": 3,
+    "total": 4,
     "truncated": false,
     "tasks": [
       {
@@ -207,6 +157,23 @@
         },
         "primary_root": { "client": "codex", "client_session_id": "fixture-failed" },
         "last_activity_at": 1787589280
+      },
+      {
+        "task_id": "task-provider-calibration",
+        "title": "Resolve provider calibration",
+        "decision_status": { "key": "blocked", "label": "Blocked", "asserted_by": "agent_report" },
+        "evidence_strength": {
+          "key": "not_gradeable",
+          "gradeable": false,
+          "checkable_total": 0,
+          "checked_total": 0,
+          "checks_total": 0,
+          "checks_passed": 0,
+          "checks_failed": 0
+        },
+        "cost": {},
+        "primary_root": { "client": "codex", "client_session_id": "fixture-blocked" },
+        "last_activity_at": 1787589100
       }
     ]
   },

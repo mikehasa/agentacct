@@ -240,15 +240,23 @@ enum VisualSnapshotHarness {
         actual: VisualSnapshotImage
     ) -> VisualSnapshotComparison {
         guard expected.width == actual.width, expected.height == actual.height else {
+            let totalPixels = max(
+                expected.width * expected.height,
+                actual.width * actual.height
+            )
+            let totalChannels = max(expected.rgba.count, actual.rgba.count)
             return VisualSnapshotComparison(
                 expectedWidth: expected.width,
                 expectedHeight: expected.height,
                 actualWidth: actual.width,
                 actualHeight: actual.height,
-                changedPixels: 0,
-                totalPixels: max(expected.width * expected.height, actual.width * actual.height),
-                changedChannels: 0,
-                totalChannels: max(expected.rgba.count, actual.rgba.count),
+                // Differently sized images have no pixel-for-pixel identity.
+                // Report a complete change instead of the misleading 0% that
+                // the dimension guard used to produce in failure messages.
+                changedPixels: totalPixels,
+                totalPixels: totalPixels,
+                changedChannels: totalChannels,
+                totalChannels: totalChannels,
                 maximumChannelDelta: 255
             )
         }

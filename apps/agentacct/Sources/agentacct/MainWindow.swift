@@ -83,6 +83,7 @@ struct MainWindow: View {
 
 struct TopBar: View {
     @EnvironmentObject var dashboard: DashboardStore
+    @EnvironmentObject var glance: GlanceState
     @EnvironmentObject var selection: AppSelection
     /// Packaged build → show the "Set up recording" entry point.
     var canSetUp: Bool = false
@@ -141,10 +142,14 @@ struct TopBar: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Local data updated \(freshness)")
             }
-            if dashboard.isRefreshing {
-                ProgressView().controlSize(.small).tint(Theme.textMuted)
+            if dashboard.isRefreshing || glance.isRefreshing {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(Theme.textMuted)
+                    .accessibilityLabel("Refreshing local data")
             } else {
                 Button {
+                    glance.refreshNow()
                     Task { await dashboard.refresh() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
@@ -159,6 +164,7 @@ struct TopBar: View {
                     verticalPadding: 0
                 ))
                 .help("Refresh local data")
+                .accessibilityLabel("Refresh local data")
                 .accessibilityIdentifier("dashboard.refresh")
             }
         }
@@ -255,6 +261,7 @@ struct PaneTab: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(PaneTabPressStyle())
+        .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("navigation.\(pane.rawValue.lowercased())")
         .onHover { inside in
             withAnimation(reduceMotion ? nil : Motion.hover) {

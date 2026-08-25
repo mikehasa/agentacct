@@ -340,17 +340,12 @@ struct PlanDayTooltip: View {
     }
 }
 
-/// The stacked daily bars, client-colored (cost/tokens view + the dashboard's
-/// rhythm strip). Interactive: hover a bar for the day's per-client split,
-/// click a legend entry to hide/show that agent's slices, and (when wired)
-/// switch the trailing-days range.
+/// Client-colored daily bars in the detailed Usage view. Hover a bar for the
+/// day's per-client split; click a legend entry to hide or show that agent.
 struct DailyChart: View {
     let periods: [PeriodBucket]
-    /// Present → the range switcher renders (7/30/90) and calls back.
-    var selectedDays: Int? = nil
-    var onSelectDays: ((Int) -> Void)? = nil
 
-    @State private var hovered: PeriodBucket?
+    @State private var hoveredIndex: Int?
     @State private var hidden: Set<String> = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -387,15 +382,6 @@ struct DailyChart: View {
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
                     SectionCaption(tone: Theme.textMuted, text: "Daily fresh tokens")
-                    if let selectedDays, let onSelectDays {
-                        Picker("", selection: Binding(get: { selectedDays }, set: onSelectDays)) {
-                            Text("7d").tag(7)
-                            Text("30d").tag(30)
-                            Text("90d").tag(90)
-                        }
-                        .pickerStyle(.segmented)
-                        .frame(width: 130)
-                    }
                     Spacer()
                     HStack(spacing: 5) {
                         Text("\(periods.count)-day total")
@@ -457,7 +443,7 @@ struct DailyChart: View {
                             }
 
                             HStack(alignment: .bottom, spacing: 3) {
-                                ForEach(periods) { period in
+                                ForEach(Array(periods.enumerated()), id: \.offset) { index, period in
                                     let total = visibleTotal(period)
                                     let height = 108 * total / maxTokens
                                     ZStack(alignment: .bottom) {
@@ -471,7 +457,7 @@ struct DailyChart: View {
                                                 }
                                             }
                                         }
-                                        if hovered?.id == period.id {
+                                        if hoveredIndex == index {
                                             Rectangle()
                                                 .fill(Theme.textFaint.opacity(0.45))
                                                 .frame(width: 1)
@@ -480,12 +466,12 @@ struct DailyChart: View {
                                     }
                                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                                     .contentShape(Rectangle())
-                                    .opacity(hovered == nil || hovered?.id == period.id ? 1 : 0.72)
+                                    .opacity(hoveredIndex == nil || hoveredIndex == index ? 1 : 0.72)
                                     .onHover { inside in
                                         if inside {
-                                            hovered = period
-                                        } else if hovered?.id == period.id {
-                                            hovered = nil
+                                            hoveredIndex = index
+                                        } else if hoveredIndex == index {
+                                            hoveredIndex = nil
                                         }
                                     }
                                     .accessibilityElement()
@@ -498,7 +484,8 @@ struct DailyChart: View {
                         }
                         .frame(height: 116)
                         .overlay(alignment: .topLeading) {
-                            if let hovered {
+                            if let hoveredIndex, periods.indices.contains(hoveredIndex) {
+                                let hovered = periods[hoveredIndex]
                                 // Cost has no per-client breakdown, so a day
                                 // cost is honest only when every client is shown.
                                 DayTooltip(
@@ -524,8 +511,11 @@ struct DailyChart: View {
                     .foregroundStyle(Theme.textFaint)
                 }
                 .padding(12)
-                .animation(reduceMotion ? nil : Motion.hover, value: hovered?.id)
+                .animation(reduceMotion ? nil : Motion.hover, value: hoveredIndex)
             }
+        }
+        .onChange(of: periods.map(\.period)) {
+            hoveredIndex = nil
         }
     }
 }

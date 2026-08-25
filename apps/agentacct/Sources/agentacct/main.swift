@@ -16,9 +16,15 @@ if let flagIndex = CommandLine.arguments.firstIndex(of: "--snapshot-dashboard-fi
         )
         exit(2)
     }
-} else if let flagIndex = CommandLine.arguments.firstIndex(of: "--snapshot"),
-          CommandLine.arguments.count > flagIndex + 1 {
-    SnapshotRunner.run(outputDir: CommandLine.arguments[flagIndex + 1])
+} else if let flagIndex = CommandLine.arguments.firstIndex(of: "--snapshot") {
+    if CommandLine.arguments.count > flagIndex + 1 {
+        SnapshotRunner.run(outputDir: CommandLine.arguments[flagIndex + 1])
+    } else {
+        FileHandle.standardError.write(
+            Data("usage: agentacct --snapshot <output-dir>\n".utf8)
+        )
+        exit(2)
+    }
 } else {
     AgentacctApp.main()
 }

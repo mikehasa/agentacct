@@ -77,6 +77,14 @@ resolved="$("$app_dir/Scripts/visual-snapshots" list \
 [[ "$resolved" == "agentacctTests.DashboardVisualRegressionTests" ]] \
   || fail "file path did not resolve to its discovered suite: $resolved"
 
+if "$app_dir/Scripts/visual-snapshots" list \
+  "$test_dir/TestFiles/MissingVisualRegressionTests.swift" \
+  >"$test_dir/missing-path.out" 2>&1; then
+  fail "a missing visual test file unexpectedly resolved"
+fi
+grep -q 'test file does not exist' "$test_dir/missing-path.out" \
+  || fail "missing test path did not explain the error"
+
 all_suites="$("$app_dir/Scripts/visual-snapshots" list)"
 [[ "$all_suites" == $'agentacctTests.DashboardVisualRegressionTests\nagentacctTests.SettingsVisualRegressionTests' ]] \
   || fail "list did not return only visual regression suites: $all_suites"

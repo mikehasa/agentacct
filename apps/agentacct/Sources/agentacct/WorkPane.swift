@@ -32,25 +32,37 @@ struct WorkPane: View {
         }
     }
 
+    private var selectionKey: String {
+        if let taskId = selection.taskId { return "task:\(taskId)" }
+        if let sessionId = selection.sessionId { return "session:\(sessionId)" }
+        return "list"
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             taskList.frame(width: 340)
             Rectangle().fill(Theme.border).frame(width: 1)
             detail.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .task {
-            await dashboard.fetchReceipts()
-            resolveDeepLink()
+        .task(id: selectionKey) {
+            await resolveSelection()
         }
     }
 
-    /// A menu-bar recent-session click lands here with `selection.sessionId`
-    /// set; the Work surface is Task-primary, so resolve that session to its
-    /// Task by primary-root match and select the Task instead.
-    private func resolveDeepLink() {
-        guard let sessionId = selection.sessionId, selection.taskId == nil else { return }
+    /// Keep list navigation, direct Task links, and menu-bar session links on
+    /// one lifecycle. The task id is part of `.task(id:)`, so changing rows
+    /// cancels an obsolete Receipt request before starting the next one.
+    private func resolveSelection() async {
+        if selectionKey == "list" || dashboard.receiptTasks.isEmpty {
+            await dashboard.fetchReceipts()
+        }
+        if let taskId = selection.taskId {
+            await dashboard.fetchReceipt(taskId: taskId)
+            return
+        }
+        guard let sessionId = selection.sessionId else { return }
         if let match = dashboard.receiptTasks.first(where: { $0.primaryRoot?.sessionKey == sessionId }) {
-            select(match.taskId)
+            selection.taskId = match.taskId
         }
         selection.sessionId = nil
     }
@@ -75,7 +87,7 @@ struct WorkPane: View {
             }
             .padding(.horizontal, 8).padding(.vertical, 7)
             Rectangle().fill(Theme.border.opacity(0.6)).frame(height: 1)
-            if let error = dashboard.receiptError, dashboard.receiptTasks.isEmpty {
+            if let error = dashboard.receiptListError, dashboard.receiptTasks.isEmpty {
                 Text(error).font(.callout).foregroundStyle(Theme.textMuted)
                     .padding().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -96,7 +108,7 @@ struct WorkPane: View {
 
     @ViewBuilder
     private var detail: some View {
-        if let receipt = dashboard.receipt {
+        if let receipt = dashboard.receipt, receipt.taskId == selection.taskId {
             WorkDetail(receipt: receipt)
         } else if let error = dashboard.receiptError, selection.taskId != nil {
             Text(error).font(.callout).foregroundStyle(Theme.textMuted).padding()
@@ -110,8 +122,8 @@ struct WorkPane: View {
     }
 
     private func select(_ taskId: String) {
+        selection.sessionId = nil
         selection.taskId = taskId
-        Task { await dashboard.fetchReceipt(taskId: taskId) }
     }
 }
 

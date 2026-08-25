@@ -19,11 +19,19 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
     ]
 
     @MainActor
+    func testFixturePreloadsEveryDashboardDataLane() throws {
+        let fixture = try DashboardSnapshotFixture.load(from: dashboardFixtureURL())
+        let store = DashboardStore(preloaded: fixture)
+
+        XCTAssertEqual(store.receiptTasks.count, 4)
+        XCTAssertEqual(store.totalReceiptTasks, 4)
+        XCTAssertEqual(store.planClients.count, 1)
+        XCTAssertEqual(store.usage?.byPeriod?.count, 7)
+    }
+
+    @MainActor
     func testRendersEveryDashboardReviewConfiguration() throws {
-        let fixtureURL = try XCTUnwrap(
-            Bundle.module.url(forResource: "dashboard", withExtension: "json")
-        )
-        let fixture = try DashboardSnapshotFixture.load(from: fixtureURL)
+        let fixture = try DashboardSnapshotFixture.load(from: dashboardFixtureURL())
         let outputDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("agentacct-dashboard-snapshots-\(UUID().uuidString)")
         let secondOutputDirectory = FileManager.default.temporaryDirectory
@@ -85,16 +93,16 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
             0.05,
             "Light and dark review artifacts must differ across a meaningful part of the dashboard"
         )
+        XCTAssertFalse(SnapshotMode.enabled)
+        XCTAssertFalse(SnapshotMode.boundsScrollContentToViewport)
+        XCTAssertNil(SnapshotScheme.override)
     }
 
     func testRejectsUnsupportedVersionedFixtureSchemas() throws {
-        let fixtureURL = try XCTUnwrap(
-            Bundle.module.url(forResource: "dashboard", withExtension: "json")
-        )
+        let fixtureURL = try dashboardFixtureURL()
         let validFixture = try String(contentsOf: fixtureURL, encoding: .utf8)
         let schemas = [
             (payload: "glance", supported: GlanceClient.supportedGlanceSchema),
-            (payload: "sessions", supported: DashboardSnapshotFixture.supportedSessionsSchema),
             (payload: "plan", supported: DashboardSnapshotFixture.supportedPlanSchema),
             (payload: "tasks", supported: DashboardSnapshotFixture.supportedTasksSchema),
         ]
@@ -123,9 +131,7 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
 
     @MainActor
     func testRejectsFixtureWithoutSnapshotClock() throws {
-        let fixtureURL = try XCTUnwrap(
-            Bundle.module.url(forResource: "dashboard", withExtension: "json")
-        )
+        let fixtureURL = try dashboardFixtureURL()
         var fixtureJSON = try String(contentsOf: fixtureURL, encoding: .utf8)
         let generatedAtLine = "    \"generated_at\": 1787590000,\n"
         let generatedAtRange = try XCTUnwrap(fixtureJSON.range(of: generatedAtLine))
@@ -153,4 +159,9 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         XCTAssertEqual(agoText(1_000_000 - 3_600), "1h ago")
     }
 
+    private func dashboardFixtureURL() throws -> URL {
+        try XCTUnwrap(
+            Bundle.module.url(forResource: "dashboard", withExtension: "json")
+        )
+    }
 }

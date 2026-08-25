@@ -56,7 +56,8 @@ checklist.
       and by model (30d cube) · Limits with a show-stale toggle
 - [ ] adaptive poll cadence (menu-open recency / Low Power Mode — CodexBar's
       2–30 min policy)
-- [ ] usage window picker (7d/30d/all), per-session plan share in the window
+- [x] usage window picker (7d/30d/90d)
+- [ ] per-session plan share in the window
 - [ ] notifications on limit thresholds
 - [ ] Sparkle updates, Developer ID signing + notarization, brew cask
 - [ ] app icon + proper menu bar iconography (text-only today)

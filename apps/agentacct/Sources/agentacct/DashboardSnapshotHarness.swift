@@ -5,19 +5,17 @@ import SwiftUI
 /// fixture intentionally uses the app's wire decoders so API-shape changes
 /// cannot silently leave the visual harness on a separate model.
 struct DashboardSnapshotFixture: Decodable {
-    static let supportedSessionsSchema = "agentacct.sessions.v1"
     static let supportedPlanSchema = "agentacct.plan.v1"
     static let supportedTasksSchema = "agentacct.receipt.v1"
 
     let daemonVersion: String
     let glance: Glance
-    let sessions: V1SessionsPayload
     let plan: V1PlanPayload
     let tasks: ReceiptTasksPayload
     let usage: UsageSummary
 
     enum CodingKeys: String, CodingKey {
-        case glance, sessions, plan, tasks, usage
+        case glance, plan, tasks, usage
         case daemonVersion = "daemon_version"
     }
 
@@ -32,13 +30,6 @@ struct DashboardSnapshotFixture: Decodable {
                 payload: "glance",
                 actual: fixture.glance.schema,
                 expected: GlanceClient.supportedGlanceSchema
-            )
-        }
-        guard fixture.sessions.schema == supportedSessionsSchema else {
-            throw SnapshotError.unsupportedSchema(
-                payload: "sessions",
-                actual: fixture.sessions.schema,
-                expected: supportedSessionsSchema
             )
         }
         guard fixture.plan.schema == supportedPlanSchema else {
