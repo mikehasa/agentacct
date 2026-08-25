@@ -32,6 +32,12 @@ Generated PNGs belong in a temporary directory outside the repository. Do not
 commit them unless a later change intentionally introduces reviewed golden
 baselines.
 
+On every pull request and push to `main`, the `macOS app and dashboard
+snapshots` CI job runs the same tests, builds the release executable, and
+publishes the four PNGs as `dashboard-review-<commit SHA>` for 14 days. Download
+that artifact from the workflow run when a reviewer does not have a local macOS
+environment.
+
 ## What is under test
 
 - `Fixtures/dashboard.json` is one coherent set of synthetic `/v1/glance`,

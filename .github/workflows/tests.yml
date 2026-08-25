@@ -34,3 +34,29 @@ jobs:
           python -m pip install -e . pytest
       - name: Run tests
         run: pytest -q
+
+  macos-app:
+    name: macOS app and dashboard snapshots
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: apps/agentacct
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Swift tests
+        run: swift test
+      - name: Build release executable
+        run: swift build -c release
+      - name: Render dashboard review matrix
+        run: |
+          .build/release/agentacct \
+            --snapshot-dashboard-fixture \
+            Tests/agentacctTests/Fixtures/dashboard.json \
+            "$RUNNER_TEMP/agentacct-dashboard-review"
+      - name: Upload dashboard review matrix
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-review-${{ github.sha }}
+          path: ${{ runner.temp }}/agentacct-dashboard-review/*.png
+          if-no-files-found: error
+          retention-days: 14
