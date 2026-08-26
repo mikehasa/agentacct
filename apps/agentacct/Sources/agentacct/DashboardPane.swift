@@ -54,13 +54,19 @@ struct DashboardWorkItem: Identifiable {
     /// A superseded finding's failed check belongs to the finding that
     /// superseded it — it never resurfaces as needing review (keeps this
     /// predicate agreeing with the Work tab's Attention bucket).
+    /// Keys whose failed checks no longer demand review: a later same-scope
+    /// pass superseded them, or a human explicitly resolved the finding.
+    private static let settledFindingKeys: Set<String> = [
+        "finding_superseded", "finding_resolved_by_user",
+    ]
+
     var needsReview: Bool {
-        (failedChecks > 0 && outcomeKey != "finding_superseded")
+        (failedChecks > 0 && !Self.settledFindingKeys.contains(outcomeKey))
             || ["finding", "failed", "blocked"].contains(outcomeKey)
     }
 
     var hasFinding: Bool {
-        (failedChecks > 0 && outcomeKey != "finding_superseded")
+        (failedChecks > 0 && !Self.settledFindingKeys.contains(outcomeKey))
             || ["finding", "failed"].contains(outcomeKey)
     }
 

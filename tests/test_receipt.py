@@ -278,7 +278,10 @@ def test_human_resolved_finding_is_human_asserted_but_not_evidence_verified() ->
         finding_episodes=episodes,
     )
     receipt = _receipt(task)
-    assert receipt["axes"]["decision_status"]["key"] == "finding"
+    # A fully human-resolved finding gets its own decision WORD (so every
+    # surface files it done-ish by vocabulary alone), asserted by the human.
+    assert receipt["axes"]["decision_status"]["key"] == "finding_resolved_by_user"
+    assert receipt["axes"]["decision_status"]["label"] == "Finding resolved"
     assert receipt["axes"]["decision_status"]["asserted_by"] == "human"
     assert "not machine verification" in receipt["axes"]["decision_status"]["statement"]
     # A failing check is not positive proof — evidence reaches no CHECKED tier,

@@ -549,6 +549,116 @@ private struct ActionListDisclosure: View {
     }
 }
 
+// MARK: - Disposition controls
+
+/// The human attention controls for one finding or blocker: Mark reviewed,
+/// Resolve… (note REQUIRED — recorded as your assertion, never machine
+/// verification), Reopen. Posts the append-only disposition through the
+/// daemon and surfaces its own conflict copy verbatim ("blocker changed…"),
+/// so optimistic-concurrency refusals read as facts, not mystery failures.
+struct DispositionControls: View {
+    let kind: String
+    let state: String
+    let revision: Int
+    let taskId: String
+    var targetDigest: String? = nil
+    var blockedEventId: String? = nil
+    @EnvironmentObject var dashboard: DashboardStore
+    @State private var resolvePopoverShown = false
+    @State private var note = ""
+    @State private var busy = false
+    @State private var errorText: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: Space.s) {
+                if busy {
+                    ProgressView().controlSize(.small)
+                } else {
+                    if state == "open" {
+                        actionButton("Mark reviewed") { post("mark_reviewed", note: nil) }
+                    }
+                    if state != "resolved" {
+                        Button {
+                            resolvePopoverShown = true
+                        } label: {
+                            Text("Resolve…").font(Type.captionSemibold).foregroundStyle(Theme.accent)
+                        }
+                        .buttonStyle(QuietButtonStyle())
+                        .accessibilityIdentifier("disposition.resolve.\(kind)")
+                        .popover(isPresented: $resolvePopoverShown, arrowEdge: .bottom) {
+                            resolveSheet
+                        }
+                    }
+                    if state != "open" {
+                        actionButton("Reopen") { post("reopen", note: nil) }
+                    }
+                }
+            }
+            if let errorText {
+                Text(verbatim: errorText)
+                    .font(Type.dataSmall).foregroundStyle(Theme.coral)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func actionButton(_ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label).font(Type.captionSemibold).foregroundStyle(Theme.accent)
+        }
+        .buttonStyle(QuietButtonStyle())
+        .accessibilityIdentifier("disposition.\(label.lowercased().replacingOccurrences(of: " ", with: "-")).\(kind)")
+    }
+
+    private var resolveSheet: some View {
+        VStack(alignment: .leading, spacing: Space.s) {
+            CapsLabel(text: "Resolve \(kind)")
+            Text("Say what resolved it — recorded as your assertion, never machine verification.")
+                .font(Type.caption).foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("e.g. fixed by hand in a later commit", text: $note, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .font(Type.body)
+                .lineLimit(2...4)
+                .frame(width: 300)
+            HStack {
+                Spacer()
+                Button {
+                    resolvePopoverShown = false
+                    post("resolve", note: note)
+                } label: {
+                    Text("Record resolve").font(Type.captionSemibold)
+                }
+                .disabled(note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("disposition.record-resolve.\(kind)")
+            }
+        }
+        .padding(Space.l)
+    }
+
+    private func post(_ action: String, note: String?) {
+        busy = true
+        errorText = nil
+        Task {
+            do {
+                try await dashboard.postDisposition(
+                    kind: kind,
+                    action: action,
+                    expectedRevision: revision,
+                    note: note,
+                    targetDigest: targetDigest,
+                    blockedEventId: blockedEventId,
+                    refreshTaskId: taskId
+                )
+            } catch {
+                errorText = error.localizedDescription
+            }
+            busy = false
+        }
+    }
+}
+
 // MARK: - Blocker callout
 
 /// WHY a Task is blocked, in the agent's own words, right under the headline —
@@ -557,6 +667,7 @@ private struct ActionListDisclosure: View {
 /// later steps completed after it (never re-grading the sticky blocked word).
 struct BlockerCallout: View {
     let blocker: ReceiptBlocker
+    let taskId: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -604,6 +715,23 @@ struct BlockerCallout: View {
                 // step in this count even when its latest status moved on.
                 Text("+\(count - 1) more step\(count == 2 ? "" : "s") with recorded blockers in Sessions & steps below")
                     .font(Type.dataSmall).foregroundStyle(Theme.muted)
+            }
+            if let state = blocker.disposition?.state, state != "open" {
+                Text(verbatim: "marked \(state) by you"
+                     + (blocker.disposition?.note.map { " — \($0)" } ?? ""))
+                    .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // Resolve/review this exact blocker. Snapshots skip the controls
+            // (the offscreen renderer cannot drive popovers or POSTs).
+            if !SnapshotMode.enabled, let blockedEventId = blocker.blockedEventId {
+                DispositionControls(
+                    kind: "blocker",
+                    state: blocker.disposition?.state ?? "open",
+                    revision: blocker.dispositionRevision ?? 0,
+                    taskId: taskId,
+                    blockedEventId: blockedEventId
+                )
             }
         }
         .padding(Space.l)
@@ -693,6 +821,7 @@ struct RecordCoverageCard: View {
 /// an agent-reported pass stays ink — the source chip says why.
 struct RecordChecksCard: View {
     let evidence: ReceiptEvidenceDim
+    let taskId: String
 
     var body: some View {
         Card(padding: Space.xl) {
@@ -718,7 +847,7 @@ struct RecordChecksCard: View {
                         if index > 0 {
                             Rectangle().fill(Theme.hairline).frame(height: 1)
                         }
-                        RecordCheckRow(check: check)
+                        RecordCheckRow(check: check, taskId: taskId)
                     }
                 }
             }
@@ -732,6 +861,7 @@ struct RecordChecksCard: View {
 /// the plain one-liner: the offscreen renderer can't drive the toggle.
 private struct RecordCheckRow: View {
     let check: ReceiptCheck
+    let taskId: String
     @State private var expanded = false
 
     private var mark: (symbol: String, tint: Color) {
@@ -845,6 +975,25 @@ private struct RecordCheckRow: View {
                check.commandRedacted != true, check.artifactUrl == nil, check.artifactRef == nil {
                 Text("no further detail recorded for this check")
                     .font(Type.dataSmall).foregroundStyle(Theme.muted)
+            }
+            // A surfaced failing check carries its human attention handle:
+            // review/resolve it here instead of leaving the red forever.
+            if let finding = check.finding {
+                if let state = finding.state, state != "open" {
+                    Text(verbatim: "marked \(state) by you"
+                         + (finding.note.map { " — \($0)" } ?? ""))
+                        .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !SnapshotMode.enabled, let digest = finding.targetDigest {
+                    DispositionControls(
+                        kind: "finding",
+                        state: finding.state ?? "open",
+                        revision: finding.revision ?? 0,
+                        taskId: taskId,
+                        targetDigest: digest
+                    )
+                }
             }
         }
     }

@@ -37,6 +37,14 @@ enum GlanceClientError: Error, CustomStringConvertible {
     }
 }
 
+// Without LocalizedError, `error.localizedDescription` renders the generic
+// Cocoa "couldn't be completed" — hiding the daemon's own conflict copy that
+// postAuthed extracts verbatim. This conformance is what lets a 409's
+// "blocker changed…" actually reach the user.
+extension GlanceClientError: LocalizedError {
+    var errorDescription: String? { description }
+}
+
 struct GlanceSnapshot {
     let glance: Glance
     let daemonVersion: String
@@ -129,6 +137,55 @@ final class GlanceClient {
             throw GlanceClientError.http((response as? HTTPURLResponse)?.statusCode ?? -1)
         }
         return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    /// The bearer-gated /v1 POST lane — the app's first user-originated write
+    /// (dispositions). JSON in, JSON out; a non-2xx status surfaces the
+    /// daemon's own detail message so honesty copy ("blocker changed…")
+    /// reaches the user verbatim.
+    func postAuthed<T: Decodable>(_ path: String, body: [String: Any]) async throws -> T {
+        do {
+            return try await postOnce(path, body: body, discovery: loadDiscovery())
+        } catch GlanceClientError.http(401) {
+            // Same reader contract as every GET: the daemon restarted with a
+            // fresh per-boot token — re-read the discovery file and retry once.
+            return try await postOnce(path, body: body, discovery: loadDiscovery())
+        }
+    }
+
+    private func postOnce<T: Decodable>(
+        _ path: String, body: [String: Any], discovery: Discovery
+    ) async throws -> T {
+        let host = discovery.host ?? "127.0.0.1"
+        guard let url = URL(string: "http://\(host):\(discovery.port)\(path)") else {
+            throw GlanceClientError.transport("bad daemon URL")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(discovery.token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw GlanceClientError.transport(error.localizedDescription)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw GlanceClientError.transport("not an HTTP response")
+        }
+        guard http.statusCode == 200 else {
+            if let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let detail = payload["detail"] as? String {
+                throw GlanceClientError.transport(detail)
+            }
+            throw GlanceClientError.http(http.statusCode)
+        }
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            throw GlanceClientError.transport("payload decode failed: \(error.localizedDescription)")
+        }
     }
 
     private func get<T: Decodable>(_ path: String, discovery: Discovery) async throws -> T {

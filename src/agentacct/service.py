@@ -27,6 +27,8 @@ from .event_log import (
     serialize_event,
 )
 from .finding_disposition import (
+    BLOCKER_DISPOSITION_AUTHORITY_SCOPE,
+    BLOCKER_DISPOSITION_EVENT_TYPE,
     FINDING_DISPOSITION_AUTHORITY_SCOPE,
     FINDING_DISPOSITION_CONTRACT_KEY,
     FINDING_DISPOSITION_CONTRACT_VERSION,
@@ -1893,6 +1895,213 @@ class SentinelService:
                     "finding idempotency key belongs to a different operation"
                 )
         return None
+
+    def record_blocker_disposition(
+        self,
+        *,
+        target_event: Mapping[str, Any],
+        action: str,
+        expected_revision: int,
+        note: str | None,
+        idempotency_key: str,
+        transport: str = "dashboard",
+    ) -> dict[str, Any]:
+        """Atomically append one user attention transition for an exact
+        recorded blocker (the agent's ``blocked`` section event).
+
+        The finding sibling's contract, replayed for a work-event target:
+        server-validated chain, optimistic revision, idempotent replay, and a
+        currency check against the section's LATER events (a newer blocked
+        event supersedes the target; a terminal ``completed`` cleared it).
+        The agent's recorded event is never rewritten, and this never mints
+        the evidence-backed machine resolution lane
+        (``resolves_blocked_event_id``) — a human "resolved" stays a human
+        assertion with ``authoritative_for_check_result: False``.
+        """
+
+        if action not in {"mark_reviewed", "resolve", "reopen"}:
+            raise FindingDispositionConflict("unsupported blocker disposition action")
+        if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 0:
+            raise FindingDispositionConflict("blocker revision must be a non-negative integer")
+        if not isinstance(idempotency_key, str) or not idempotency_key or len(idempotency_key) > 240:
+            raise FindingDispositionConflict("blocker idempotency key is invalid")
+        if any(char in idempotency_key for char in "\r\n\x00"):
+            raise FindingDispositionConflict("blocker idempotency key is invalid")
+        normalized_note = _normalize_finding_disposition_note(note, action=action)
+
+        target_event_id = str(target_event.get("event_id") or "").strip()
+        target_metadata = (
+            target_event.get("metadata")
+            if isinstance(target_event.get("metadata"), Mapping)
+            else {}
+        )
+        section_id = str(target_metadata.get("section_id") or "").strip()
+        target_status = str(target_metadata.get("section_status") or "").strip().lower()
+        target_client = str(target_metadata.get("client") or "").strip()
+        target_session = str(target_metadata.get("client_session_id") or "").strip()
+        if (
+            not target_event_id
+            or not section_id
+            or target_status != "blocked"
+            or str(target_metadata.get("sentinel_semantic_kind") or "") != "section"
+        ):
+            raise FindingDispositionNotFound("blocker target is not a recorded blocked step")
+        target_event_digest = canonical_event_digest(target_event)
+        target_blocker_digest = finding_target_digest(target_event)
+        if target_blocker_digest is None:
+            raise FindingDispositionNotFound("blocker target is not addressable")
+        target_series_digest = hashlib.sha256(
+            json.dumps(
+                {
+                    "client": target_client,
+                    "client_session_id": target_session,
+                    "schema": "agent-chronicle.blocker-target.v1",
+                    "section_id": section_id,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        operation_digest = finding_operation_digest(
+            target_event_id=target_event_id,
+            target_event_digest=target_event_digest,
+            target_finding_digest=target_blocker_digest,
+            target_check_key_digest=target_series_digest,
+            action=action,
+            expected_revision=expected_revision,
+            note=normalized_note,
+        )
+
+        with self._events_write_lock():
+            existing_events, unparseable_lines = self._partition_existing_for_rewrite()
+            if unparseable_lines:
+                raise FindingDispositionConflict(
+                    "blocker state is unavailable while the event ledger contains unreadable lines"
+                )
+            disposition_projection = reduce_finding_dispositions(
+                existing_events,
+                event_type=BLOCKER_DISPOSITION_EVENT_TYPE,
+                authority_scope=BLOCKER_DISPOSITION_AUTHORITY_SCOPE,
+            )
+            for existing in existing_events:
+                if not is_trusted_finding_disposition_event(
+                    existing,
+                    event_type=BLOCKER_DISPOSITION_EVENT_TYPE,
+                    authority_scope=BLOCKER_DISPOSITION_AUTHORITY_SCOPE,
+                ):
+                    continue
+                metadata = existing.get("metadata")
+                if not isinstance(metadata, dict) or metadata.get("idempotency_key") != idempotency_key:
+                    continue
+                existing_target = str(metadata.get("target_finding_digest") or "")
+                if existing_target in disposition_projection.invalid_targets:
+                    raise FindingDispositionConflict(
+                        "blocker disposition history is conflicting or corrupt"
+                    )
+                if metadata.get("operation_digest") == operation_digest:
+                    return existing
+                raise FindingDispositionConflict(
+                    "blocker idempotency key belongs to a different operation"
+                )
+
+            # Currency, from the section's own later events: the ledger clears
+            # a blocker on ``completed`` and replaces the current blocked event
+            # on a newer ``blocked`` — mirror both without rebuilding the
+            # (multi-second) full ledger under this lock.
+            target_seen = False
+            target_time = float(target_event.get("created_at") or 0.0)
+            for existing in existing_events:
+                metadata = existing.get("metadata")
+                if not isinstance(metadata, Mapping):
+                    continue
+                if str(metadata.get("sentinel_semantic_kind") or "") != "section":
+                    continue
+                if str(metadata.get("section_id") or "").strip() != section_id:
+                    continue
+                if str(metadata.get("client") or "").strip() != target_client:
+                    continue
+                if str(metadata.get("client_session_id") or "").strip() != target_session:
+                    continue
+                event_id = str(existing.get("event_id") or "")
+                if event_id == target_event_id:
+                    target_seen = True
+                    continue
+                event_time = float(existing.get("created_at") or 0.0)
+                if event_time <= target_time:
+                    continue
+                status = str(metadata.get("section_status") or "").strip().lower()
+                if status == "completed":
+                    raise FindingDispositionConflict(
+                        "blocker was cleared by a later completed step"
+                    )
+                if status == "blocked":
+                    raise FindingDispositionConflict(
+                        "a newer blocker replaced this one; target the newest"
+                    )
+            if not target_seen:
+                raise FindingDispositionNotFound("blocker target event is not in this ledger")
+
+            if target_blocker_digest in disposition_projection.invalid_targets:
+                raise FindingDispositionConflict(
+                    "blocker disposition history is conflicting or corrupt"
+                )
+            current = disposition_projection.states.get(target_blocker_digest)
+            current_state = current.state if current is not None else "open"
+            current_revision = current.revision if current is not None else 0
+            if current_revision != expected_revision:
+                raise FindingDispositionConflict(
+                    "blocker changed or was resolved by a newer action"
+                )
+            next_state = disposition_transition(current_state, action)
+            if next_state is None:
+                raise FindingDispositionConflict("blocker disposition transition is invalid")
+
+            event = mark_trusted_finding_disposition(
+                {
+                    "source": FINDING_DISPOSITION_SOURCE,
+                    "event_type": BLOCKER_DISPOSITION_EVENT_TYPE,
+                    "run_id": target_event.get("run_id"),
+                    "metadata": {
+                        "sentinel_semantic_kind": BLOCKER_DISPOSITION_EVENT_TYPE,
+                        "authority_scope": BLOCKER_DISPOSITION_AUTHORITY_SCOPE,
+                        "authoritative_for_check_result": False,
+                        "actor": "dashboard-user",
+                        # Post-hoc audit only (which lane carried the write);
+                        # never part of the trust contract or the digests.
+                        "transport": transport,
+                        "target_failure_event_id": target_event_id,
+                        "target_event_digest": target_event_digest,
+                        "target_finding_digest": target_blocker_digest,
+                        "target_source_type": target_event.get("source_type"),
+                        "target_source": target_event.get("source"),
+                        "target_client": target_event.get("client"),
+                        "target_namespace_fingerprint": (
+                            target_event.get("namespace_fingerprint")
+                            or target_event.get("session_namespace_fingerprint")
+                        ),
+                        "target_project_identity": target_event.get("project_identity"),
+                        "target_check_key_digest": target_series_digest,
+                        "target_section_id": section_id,
+                        "target_section_client": target_client,
+                        "target_client_session_id": target_session,
+                        "action": action,
+                        "expected_revision": expected_revision,
+                        "revision": expected_revision + 1,
+                        "prior_state": current_state,
+                        "next_state": next_state,
+                        "note": normalized_note,
+                        "idempotency_key": idempotency_key,
+                        "operation_digest": operation_digest,
+                    },
+                }
+            )
+            recorded = self._prepare_recorded_event(event)
+            self._ensure_trailing_newline()
+            self._append_ledger_events([recorded], fsync=True)
+
+        self.evidence.shadow_v1_event(recorded, transport=transport)
+        return recorded
 
     def _partition_existing_for_rewrite(self) -> tuple[list[dict[str, Any]], list[str]]:
         """Return (parsed events, unparseable raw lines) preserving both.

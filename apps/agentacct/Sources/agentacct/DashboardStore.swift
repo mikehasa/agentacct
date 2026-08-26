@@ -124,14 +124,23 @@ final class DashboardStore: ObservableObject {
 
     /// One Task's full Receipt. 404 (task unknown / recorded elsewhere) is a
     /// first-class message; a CANCELLED fetch (the user picked another Task)
-    /// writes nothing so a late error can't mask the fresh receipt.
+    /// writes nothing so a late error can't mask the fresh receipt. A
+    /// generation token guards against UNCANCELLED racers too (a disposition
+    /// post's refresh runs in its own unstructured Task): only the newest
+    /// fetch may write, so a late straggler can never wedge another task's
+    /// page. A same-task refresh keeps the current receipt on screen instead
+    /// of unmounting the record page for the rebuild.
+    private var receiptGeneration = 0
+
     func fetchReceipt(taskId: String) async {
-        receipt = nil
+        receiptGeneration += 1
+        let generation = receiptGeneration
+        if receipt?.taskId != taskId { receipt = nil }
         receiptError = nil
         do {
             let encoded = taskId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? taskId
             let payload: Receipt = try await client.getAuthed("/v1/receipt?task=\(encoded)")
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, generation == receiptGeneration else { return }
             receipt = payload
             receiptError = nil
         } catch is CancellationError {
@@ -139,10 +148,10 @@ final class DashboardStore: ObservableObject {
         } catch let error as URLError where error.code == .cancelled {
             return
         } catch GlanceClientError.http(404) {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, generation == receiptGeneration else { return }
             receiptError = "this Task is not in the store (it may have been recorded elsewhere)"
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, generation == receiptGeneration else { return }
             receiptError = "receipt fetch failed: \(error.localizedDescription)"
         }
     }
@@ -155,6 +164,50 @@ final class DashboardStore: ObservableObject {
         return try await client.getAuthed(
             "/v1/session?client=\(encodedClient)&session_id=\(encodedSession)"
         )
+    }
+
+    /// Record one human attention disposition (finding or blocker) and refresh
+    /// the open receipt so the new state is what the user sees next. Throws
+    /// with the daemon's own conflict/not-found detail on failure.
+    func postDisposition(
+        kind: String,
+        action: String,
+        expectedRevision: Int,
+        note: String?,
+        targetDigest: String? = nil,
+        blockedEventId: String? = nil,
+        refreshTaskId: String? = nil
+    ) async throws {
+        var body: [String: Any] = [
+            "kind": kind,
+            "action": action,
+            "expected_revision": expectedRevision,
+        ]
+        // The server rejects control characters and >1200 chars in a note;
+        // normalize what a paste can legally contain instead of bouncing the
+        // user off a 409 for invisible newlines.
+        let normalizedNote = note?
+            .components(separatedBy: .newlines)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespaces)
+            .prefix(1200)
+        if let normalizedNote, !normalizedNote.isEmpty { body["note"] = String(normalizedNote) }
+        if let targetDigest { body["target_digest"] = targetDigest }
+        if let blockedEventId { body["blocked_event_id"] = blockedEventId }
+        do {
+            let _: DispositionResponse = try await client.postAuthed("/v1/disposition", body: body)
+        } catch {
+            // A conflict means the state moved under us — refresh so the
+            // controls re-render with the CURRENT revision instead of
+            // re-offering the stale one forever, then surface the error.
+            if let refreshTaskId { await fetchReceipt(taskId: refreshTaskId) }
+            await fetchReceipts()
+            throw error
+        }
+        if let refreshTaskId {
+            await fetchReceipt(taskId: refreshTaskId)
+        }
+        await fetchReceipts()
     }
 
     /// Preload one session's deep view into `preloadedSessions` (snapshot support).
@@ -187,6 +240,13 @@ final class DashboardStore: ObservableObject {
             errorText = "usage range fetch failed: \(error.localizedDescription)"
         }
     }
+}
+
+/// The POST /v1/disposition acknowledgement: the chain's new state.
+struct DispositionResponse: Decodable {
+    let ok: Bool?
+    let state: String?
+    let revision: Int?
 }
 
 /// The menu bar → main window selection channel.

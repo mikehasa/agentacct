@@ -1177,6 +1177,8 @@ def _receipt_decision_color(key: str) -> str:
         "handed_off": "blue",
         "resolved": "blue",
         "finding_superseded": "blue",
+        "finding_resolved_by_user": "blue",
+        "blocker_resolved_by_user": "blue",
     }.get(key, "dim")
 
 

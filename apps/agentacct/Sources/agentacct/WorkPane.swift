@@ -52,7 +52,9 @@ enum WorkGroup: String, CaseIterable, Identifiable {
         switch key {
         case "finding", "failed", "blocked": return .attention
         case "verified": return .verified
-        case "reported", "resolved", "mostly_done", "finding_superseded": return .reported
+        case "reported", "resolved", "mostly_done", "finding_superseded",
+             "finding_resolved_by_user", "blocker_resolved_by_user":
+            return .reported
         case "in_progress", "started", "checkpoint": return .inProgress
         case "observed": return .observed
         case "handed_off", "ended_open": return .stopped
@@ -126,6 +128,10 @@ enum DecisionLegend {
               definition: "Steps finished, some still open — later work moved elsewhere."),
         .init(key: "handed_off", label: "Handed off",
               definition: "The agent deliberately stopped and passed the work on."),
+        .init(key: "blocker_resolved_by_user", label: "Blocker resolved",
+              definition: "You marked the recorded blocker resolved — not a completion claim, not machine verification."),
+        .init(key: "finding_resolved_by_user", label: "Finding resolved",
+              definition: "You marked the finding resolved; the failing check stays in history — not machine verification."),
         .init(key: "finding_superseded", label: "Finding superseded",
               definition: "A check failed, but a later run of the same check passed."),
         .init(key: "ended_open", label: "Ended open",
@@ -897,7 +903,7 @@ struct WorkRecordPage: View {
             // and a coral "blocker" box under a Failed badge would re-merge
             // the two vocabularies the receipt keeps apart.
             if let blocker = receipt.axes.decisionStatus.blocker, blocker.text != nil {
-                BlockerCallout(blocker: blocker)
+                BlockerCallout(blocker: blocker, taskId: receipt.taskId)
                     .padding(.top, Space.xs)
             }
         }
@@ -945,7 +951,7 @@ struct WorkRecordPage: View {
     private var mainColumn: some View {
         VStack(alignment: .leading, spacing: Space.xl) {
             RecordDimensionsCard(receipt: receipt)
-            RecordChecksCard(evidence: receipt.dimensions.evidence)
+            RecordChecksCard(evidence: receipt.dimensions.evidence, taskId: receipt.taskId)
         }
     }
 
