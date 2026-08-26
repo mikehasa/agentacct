@@ -96,13 +96,8 @@ struct TopBar: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            HStack(spacing: 7) {
-                Circle().fill(Theme.accent).frame(width: 8, height: 8)
-                Text("agentacct")
-                    .font(Face.sansFont(14, .semibold))
-                    .foregroundStyle(Theme.ink)
-            }
-            .padding(.leading, 76)  // clear the traffic lights (hidden titlebar)
+            BrandLockup()
+                .padding(.leading, 76)  // clear the traffic lights (hidden titlebar)
 
             HStack(spacing: 3) {
                 ForEach(MainPane.allCases) { pane in

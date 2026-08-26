@@ -402,7 +402,7 @@ private struct WorkTablePage: View {
                 Text("not gradeable").font(Type.dataSmall).foregroundStyle(Theme.muted)
             }
             Spacer()
-            Text("Evidence counts verifiable steps · claim ≠ proof")
+            Text("Evidence counts checkable steps · claim ≠ proof")
                 .font(Type.dataSmall).foregroundStyle(Theme.muted)
         }
     }

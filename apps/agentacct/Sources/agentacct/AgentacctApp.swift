@@ -18,11 +18,12 @@ struct AgentacctApp: App {
                 .environmentObject(dashboard)
                 .environmentObject(selection)
         } label: {
-            // A quiet placeholder icon (a proper brand mark is future work).
-            // The weekly-plan % lives in the dropdown and the window — the
-            // menu BAR shows no number (the provider's own menu already does).
-            Label("agentacct", systemImage: glance.menuBarSymbol)
-                .labelStyle(.iconOnly)
+            // The Stamped Tile mark as a template image, so the system tints
+            // it for light/dark/tinted menu bars. The weekly-plan % lives in
+            // the dropdown and the window — the menu BAR shows no number
+            // (the provider's own menu already does).
+            Image(nsImage: MenuBarMark.templateImage())
+                .accessibilityLabel("agentacct")
         }
         .menuBarExtraStyle(.window)
 
