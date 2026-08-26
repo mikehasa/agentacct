@@ -608,10 +608,12 @@ private struct WorkTableRow: View {
     @ViewBuilder
     private var costCell: some View {
         let cost = DashboardWorkItem(task: task).cost
+        let planText = Fmt.planPct(task.cost.planShare?.pct).map { "\($0) of weekly plan" }
         if cost == "—" {
             Text("unpriced").font(Type.dataSmall).foregroundStyle(Theme.muted)
         } else {
             Text(cost).font(Type.dataSmall).foregroundStyle(Theme.ink)
+                .help(planText ?? "")
         }
     }
 
@@ -763,10 +765,14 @@ private struct WorkRailRow: View {
                         Text(cost == "—" ? "unpriced" : cost)
                             .font(Type.dataSmall).foregroundStyle(Theme.muted)
                     }
-                    // Who did the work, and how fresh it is — both already in
-                    // the summary payload; absence stays silent, never dashed.
+                    // Who did the work, how fresh, and the weekly-plan share
+                    // when calibrated — all from the summary payload; absence
+                    // stays silent, never dashed.
                     if task.primaryRoot?.client != nil || task.lastActivityAt != nil {
                         HStack(spacing: 4) {
+                            // The client name yields (truncates) first; the ago
+                            // and the compact plan share stay whole (hover
+                            // carries the share's full sentence).
                             if let client = task.primaryRoot?.client {
                                 Text(client)
                                     .font(Type.dataSmall).foregroundStyle(Theme.muted)
@@ -777,6 +783,14 @@ private struct WorkRailRow: View {
                                     Text("·").font(Type.dataSmall).foregroundStyle(Theme.muted)
                                 }
                                 Text(ago).font(Type.dataSmall).foregroundStyle(Theme.muted)
+                                    .fixedSize()
+                            }
+                            Spacer(minLength: 4)
+                            if let pct = Fmt.planPct(task.cost.planShare?.pct) {
+                                Text(pct)
+                                    .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                                    .fixedSize()
+                                    .help("\(pct) of the weekly \(task.cost.planShare?.client ?? "") plan")
                             }
                         }
                     }

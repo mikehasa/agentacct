@@ -1960,6 +1960,66 @@ def _apply_finding_dispositions_to_projection(
     return projection
 
 
+def _stamp_task_plan_shares(projection: Mapping[str, Any], events: list[dict[str, Any]]) -> None:
+    """Stamp each projected Task with its weekly-plan share.
+
+    A Task's share is the SUM of its member sessions' calibrated per-session
+    plan percentages — raw per-session values (never the root-folded display
+    numbers), so members are counted exactly once. Uses the same one-shot
+    computation the glance lane uses (``plan_status_and_session_pcts``), so a
+    receipt and the menu bar can never disagree about a session's share.
+    Calibrated-or-nothing: with no calibrated fit for the Task's client the
+    ``pct`` is null and ``calibration_state`` says why — never a fabricated 0.
+    ``covered_sessions`` names how many members actually carried a share, so a
+    partial sum is disclosed instead of passed off as complete.
+    """
+
+    from .glance import plan_status_and_session_pcts
+
+    plan_entries, session_pcts, _weights, _records = plan_status_and_session_pcts(events)
+    states = {
+        str(entry.get("client") or ""): str(entry.get("calibration_state") or "") or None
+        for entry in plan_entries
+        if isinstance(entry, Mapping)
+    }
+    for task in projection.get("tasks", []):
+        if not isinstance(task, dict):
+            continue
+        members = [
+            member
+            for member in (task.get("session_keys") or [])
+            if isinstance(member, Mapping)
+        ]
+        primary = task.get("primary_root")
+        client = str(primary.get("client") or "") if isinstance(primary, Mapping) else ""
+        covered = 0
+        total_pct = 0.0
+        for member in members:
+            member_client = str(member.get("client") or "")
+            # One client, one plan: the share is labelled with the primary
+            # root's client, so only that client's member sessions may
+            # contribute — a cross-client continuation must never sum another
+            # plan's percentages under this label.
+            if member_client != client:
+                continue
+            key = (member_client, str(member.get("client_session_id") or ""))
+            pct = session_pcts.get(key)
+            if pct is not None:
+                covered += 1
+                total_pct += float(pct)
+        # A client outside the plan lane (hermes/opencode/...) is honestly
+        # "never" — its meter has no calibratable weekly plan — instead of a
+        # null that reads as "unknown".
+        state = states.get(client) or ("never" if client else None)
+        task["plan_share"] = {
+            "pct": total_pct if covered else None,
+            "client": client or None,
+            "calibration_state": state,
+            "covered_sessions": covered,
+            "session_count": len(members),
+        }
+
+
 def _dashboard_task_projection(data: _DashboardPageData) -> dict[str, Any]:
     sessions = data.rollup_sessions
     work_items = data.work_items
@@ -2348,9 +2408,12 @@ def build_store_task_projection(
     event-level reducer this assembly ultimately calls through the page-data
     path) — shadowing that import broke the /tasks route once already."""
 
-    return _dashboard_task_projection(
-        build_page_data(store_dir, continuation_snapshot=continuation_snapshot)
-    )
+    data = build_page_data(store_dir, continuation_snapshot=continuation_snapshot)
+    projection = _dashboard_task_projection(data)
+    # Same stamp the /v1 lane applies, so `agentacct receipt` / the TUI can
+    # never disagree with the app about a task's weekly-plan share.
+    _stamp_task_plan_shares(projection, data.events)
+    return projection
 
 
 def surfaced_finding_episodes(projection: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -2839,6 +2902,9 @@ def create_local_api_app(
             # case verified on the live store.
             ledger = _derived_work_ledger(events, fingerprint=fingerprint)
             projection = _dashboard_task_projection(_page_data(events=events, ledger=ledger))
+            # Weekly-plan shares ride the same cached projection: deterministic
+            # from the same event log, so the cache key already covers them.
+            _stamp_task_plan_shares(projection, events)
             v1_receipt_projection_cache["projection"] = (fingerprint, time.time(), projection)
             return projection
 

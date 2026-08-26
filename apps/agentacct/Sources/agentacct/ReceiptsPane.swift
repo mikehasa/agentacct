@@ -111,6 +111,7 @@ struct RecordSummaryStrip: View {
         if let usd = cost.estimatedCostUsd {
             var qualifier = costBasisLabel(cost.costBasis)
             if cost.costComplete == false { qualifier += " · partial" }
+            if let pct = Fmt.planPct(cost.planShare?.pct) { qualifier += " · \(pct) wkly" }
             costCell = Cell(
                 id: "cost",
                 label: "Est. cost",
@@ -418,11 +419,21 @@ struct RecordDimensionsCard: View {
             tokensLine = "tokens: " + parts.joined(separator: " · ")
         }
         guard let cost = dim.estimatedCostUsd else {
-            guard let tokensLine else { return "no priced usage" }
-            return "no priced usage\n" + tokensLine
+            // The share is token-derived, not dollar-derived — an unpriced
+            // task with a calibrated share still states it.
+            var absent = "no priced usage"
+            if let share = dim.planShare?.text { absent += " · \(share)" }
+            guard let tokensLine else { return absent }
+            return absent + "\n" + tokensLine
         }
         let display = receiptCostDisplay(cost, complete: dim.costComplete, confidence: dim.costConfidence)
         var line = "\(display) · \(costBasisLabel(dim.costBasis))\((dim.costComplete ?? true) ? "" : " (partial)")"
+        // The task's share of the weekly plan — shown only once calibrated
+        // (the daemon sends null until then; absence stays a named state on
+        // the Limits pane, never a number here).
+        if let share = dim.planShare?.text {
+            line += " · \(share)"
+        }
         if let tokensLine { line += "\n" + tokensLine }
         return line
     }

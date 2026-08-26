@@ -610,17 +610,45 @@ struct ReceiptEvidence: Decodable {
     }
 }
 
+/// A Task's share of its client's weekly plan — daemon-computed sum of the
+/// member sessions' calibrated per-session percentages. Calibrated-or-nothing:
+/// ``pct`` is nil (never 0) until the fit is calibrated, and
+/// ``calibrationState`` names why.
+struct ReceiptPlanShare: Decodable {
+    let pct: Double?
+    let client: String?
+    let calibrationState: String?
+    let coveredSessions: Int?
+    let sessionCount: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case pct, client
+        case calibrationState = "calibration_state"
+        case coveredSessions = "covered_sessions"
+        case sessionCount = "session_count"
+    }
+
+    /// "≈X.X% of weekly plan" — nil when not calibrated (absence stays named
+    /// by the calibration state, never rendered as a number).
+    var text: String? {
+        guard let formatted = Fmt.planPct(pct) else { return nil }
+        return "\(formatted) of weekly plan"
+    }
+}
+
 struct ReceiptCost: Decodable {
     let estimatedCostUsd: Double?
     let costBasis: String?
     let costConfidence: String?
     let costComplete: Bool?
+    let planShare: ReceiptPlanShare?
 
     enum CodingKeys: String, CodingKey {
         case estimatedCostUsd = "estimated_cost_usd"
         case costBasis = "cost_basis"
         case costConfidence = "cost_confidence"
         case costComplete = "cost_complete"
+        case planShare = "plan_share"
     }
 
     /// None-never-$0: an absent estimate is "—", never a fabricated zero.
@@ -799,6 +827,7 @@ struct ReceiptCostDim: Decodable {
     let costBasis: String?
     let costConfidence: String?
     let costComplete: Bool?
+    let planShare: ReceiptPlanShare?
     let tokens: ReceiptCostTokens?
     let provenance: [String]?
     let gaps: [String]?
@@ -808,6 +837,7 @@ struct ReceiptCostDim: Decodable {
         case costBasis = "cost_basis"
         case costConfidence = "cost_confidence"
         case costComplete = "cost_complete"
+        case planShare = "plan_share"
         case tokens
         case provenance, gaps
     }
