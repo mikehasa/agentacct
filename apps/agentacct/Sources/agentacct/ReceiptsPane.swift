@@ -111,6 +111,7 @@ struct RecordSummaryStrip: View {
         if let usd = cost.estimatedCostUsd {
             var qualifier = costBasisLabel(cost.costBasis)
             if cost.costComplete == false { qualifier += " · partial" }
+            if let pct = Fmt.planPct(cost.planShare?.pct) { qualifier += " · \(pct) wkly" }
             costCell = Cell(
                 id: "cost",
                 label: "Est. cost",
@@ -423,6 +424,12 @@ struct RecordDimensionsCard: View {
         }
         let display = receiptCostDisplay(cost, complete: dim.costComplete, confidence: dim.costConfidence)
         var line = "\(display) · \(costBasisLabel(dim.costBasis))\((dim.costComplete ?? true) ? "" : " (partial)")"
+        // The task's share of the weekly plan — shown only once calibrated
+        // (the daemon sends null until then; absence stays a named state on
+        // the Limits pane, never a number here).
+        if let share = dim.planShare?.text {
+            line += " · \(share)"
+        }
         if let tokensLine { line += "\n" + tokensLine }
         return line
     }

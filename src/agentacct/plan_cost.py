@@ -69,6 +69,24 @@ _CALIBRATION_WINDOW_DAYS = 21
 # very different plan tier — neither of which we can identify — so we keep the shipped
 # baseline rather than apply an unreliable (over- or under-stating) scale.
 _TRUSTED_SCALE_BAND = (0.5, 2.5)
+# An out-of-band fit is still ACCEPTED when the evidence is overwhelming and
+# internally consistent: a fixed band alone turned "calibrating" into "rejected
+# forever" for any account whose true tokens→meter ratio sits past the edge (a
+# smaller plan tier, or baseline weights that have drifted for a new model mix)
+# — the fit was being re-rejected on 130+ clean intervals whose split halves
+# agreed within ~12%. Untracked-usage inflation is already excluded per-interval
+# by the A+B>0 gate above, so a PERSISTENT, split-half-stable ratio is a
+# property of the account, not noise. Requirements, all of them:
+# * at least this many clean intervals (noise averages out far above the
+#   3-interval floor),
+_STABILITY_MIN_INTERVALS = 24
+# * each chronological half of the fit window independently lands within this
+#   relative distance of the full fit (a drifting or bimodal ratio never
+#   qualifies),
+_STABILITY_HALF_AGREEMENT = 0.35
+# * and the fit sits inside a wide hard ceiling — beyond it no amount of
+#   stability makes the number credible (something structural is wrong).
+_STABILITY_HARD_BAND = (0.2, 8.0)
 
 # The two-component token model. The weekly meter is driven by FRESH work
 # (input + output + cache_creation); cache READS barely move it — measured on
@@ -316,6 +334,33 @@ def _component_tokens_between(
     return fresh, reads
 
 
+def _stable_out_of_band_fit(
+    points: list[tuple[float, float, float]],
+    *,
+    alpha: float,
+    raw_scale: float,
+) -> bool:
+    """Should an out-of-band fit be accepted anyway? See the stability
+    constants above for the contract. ``points`` are the clean intervals in
+    chronological order; each half's ratio-of-sums scale (at the already-chosen
+    alpha) must independently agree with the full fit."""
+
+    if len(points) < _STABILITY_MIN_INTERVALS:
+        return False
+    if not (_STABILITY_HARD_BAND[0] <= raw_scale <= _STABILITY_HARD_BAND[1]):
+        return False
+    half = len(points) // 2
+    for chunk in (points[:half], points[half:]):
+        observed = sum(delta for delta, _a, _b in chunk)
+        predicted = sum(a + alpha * b for _d, a, b in chunk)
+        if predicted <= 0:
+            return False
+        chunk_scale = observed / predicted
+        if abs(chunk_scale - raw_scale) > _STABILITY_HALF_AGREEMENT * raw_scale:
+            return False
+    return True
+
+
 def calibrate_plan_weights(
     events: list[dict[str, Any]],
     *,
@@ -434,7 +479,12 @@ def calibrate_plan_weights(
                     raw_scale = candidate_scale
                     break
     trusted = _TRUSTED_SCALE_BAND[0] <= raw_scale <= _TRUSTED_SCALE_BAND[1]
-    if intervals >= _MIN_SCALE_INTERVALS and trusted:
+    stability_accepted = (
+        intervals >= _MIN_SCALE_INTERVALS
+        and not trusted
+        and _stable_out_of_band_fit(points, alpha=alpha, raw_scale=raw_scale)
+    )
+    if intervals >= _MIN_SCALE_INTERVALS and (trusted or stability_accepted):
         scale = raw_scale
         confidence = "calibrated"
         # A plain string, not a %-format template — no %% escaping (a literal
@@ -443,6 +493,8 @@ def calibrate_plan_weights(
             f"two-component fit x{scale:.2f}, cache-read discount {alpha:.2f} "
             f"({intervals} recent weekly-% intervals)"
         )
+        if stability_accepted:
+            basis += "; outside the usual band, accepted on split-half stability"
     else:
         # Too little clean history, or a fit outside the trusted band (heavy
         # untracked Claude usage or a very different plan tier we can't

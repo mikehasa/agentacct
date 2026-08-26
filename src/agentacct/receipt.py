@@ -767,6 +767,9 @@ def _cost_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
         "cost_basis": cost_basis,
         "cost_confidence": cost_confidence,
         "cost_complete": cost_complete,
+        # The Task's share of the client's weekly plan (projection-stamped;
+        # calibrated-or-nothing — pct is null with the state naming why).
+        "plan_share": _mapping(task.get("plan_share")) or None,
         "tokens": {
             "fresh": int(usage.get("fresh_tokens") or 0),
             "cache_creation": int(usage.get("cache_creation_tokens") or 0),
@@ -1090,6 +1093,9 @@ def build_receipt_summary(
             "estimated_cost_usd": usage.get("estimated_cost_usd"),
             "cost_basis": _text(usage.get("cost_basis")) or None,
             "cost_complete": bool(usage.get("cost_complete")),
+            # The weekly-plan share for list rows (same projection stamp the
+            # detail receipt carries — the two can never disagree).
+            "plan_share": _mapping(task.get("plan_share")) or None,
         },
         "session_count": int(task.get("session_count") or 0),
         # The primary root's {client, client_session_id} — the one id a list row
