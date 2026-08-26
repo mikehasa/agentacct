@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-08-26
+
 The macOS app adopts the v7 brand design system end to end: a semantic
 cream/cobalt token palette (light + dark), a nine-role type ramp, evidence
 tiers carried by pip shapes everywhere, and the record-page layout for Work
@@ -13,23 +15,28 @@ Receipts.
 
 ### Added
 
+- macOS app: the Dashboard is rebuilt around work evidence — recent work
+  with decision badges and evidence-tier pips, a needs-review card, live
+  active work, the provider plan ring, and the daily fresh-token history —
+  backed by a deterministic snapshot harness with CI-verified visual
+  baselines. (#126)
 - macOS app: the Work surface's receipts table (lifecycle filter tabs with
   honest decision-vocabulary buckets, evidence-tier pips with
   checked/checkable ratios, a right-aligned checks rail with failure
   annotations, cost + recency) and the Receipt record page (receipt rail,
   summary strip, dimensions ledger with provenance chips and inline gap
   annotations, checks card, evidence-coverage card with a counted tier
-  legend, evidence sources, gaps).
+  legend, evidence sources, gaps). (#127)
 - macOS app: a Sources pane rendering `/v1/ingestion` — per-source import
   state and recency, continuous-sync watcher state, actionable issues, the
-  verifier shelf, and the local-only scope card.
+  verifier shelf, and the local-only scope card. (#127)
 - Local API: bearer-gated `GET /v1/ingestion`, the `/v1` twin of the legacy
-  `/ingestion/health` snapshot, advertised from `/v1/version`.
+  `/ingestion/health` snapshot, advertised from `/v1/version`. (#127)
 - `/v1/tasks` rows now carry `checks_total` / `checks_passed` /
   `checks_failed` from the same reducer the full Receipt uses, so a list
-  checks column can never disagree with the open record.
+  checks column can never disagree with the open record. (#127)
 - macOS app: the Stamped Tile brand mark — app icon (deterministic
-  generator script), top-bar lockup, and menu-bar template mark.
+  generator script), top-bar lockup, and menu-bar template mark. (#127)
 
 ### Changed
 
@@ -37,19 +44,24 @@ Receipts.
   daily chart with an optional per-client token filter, By-client and
   By-model tables with proportional share bars, a basis footer); Limits
   gets v7 meters with 75/90% notches, absolute reset times, and named
-  states for unreported windows or clients without quota readings.
+  states for unreported windows or clients without quota readings. (#127)
 - macOS app: green now marks only live-connection facts and independently
   verified evidence — completion claims render in ink, agent-reported check
   passes lose their green mark, and every cost carries its `~`/`≈` prefix
   plus a human basis phrase. Absent facts are named states ("unpriced",
-  "not recorded"), never dashes or zeros.
+  "not recorded"), never dashes or zeros. (#127)
+
+- README: rebuilt around the redesigned app with five screenshots from a
+  fully synthetic, arithmetically consistent demo workspace, plus precise
+  wording for the loopback-only local API, evidence-tier vocabulary, and
+  the cost grammar. (#128)
 
 ### Fixed
 
 - Receipt evidence gaps count only checkable steps: a research/docs step
-  can no longer owe a passing check the taxonomy says it cannot have.
+  can no longer owe a passing check the taxonomy says it cannot have. (#127)
 - Check names quoted in per-step grade reasons truncate at word boundaries
-  with an ellipsis instead of mid-word.
+  with an ellipsis instead of mid-word. (#127)
 
 ## [0.9.4] — 2026-08-25
 
@@ -722,7 +734,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.9.4...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.0
 [0.9.4]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.4
 [0.9.3]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.3
 [0.9.2]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.2
