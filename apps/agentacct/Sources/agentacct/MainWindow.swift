@@ -33,6 +33,7 @@ struct MainWindow: View {
                 case .work: WorkPane()
                 case .usage: UsagePane()
                 case .limits: LimitsPane()
+                case .sources: SourcesPane()
                 }
             }
             .id(selection.pane)
@@ -304,6 +305,7 @@ extension MainPane {
         case .work: return "checklist"
         case .usage: return "chart.bar.xaxis"
         case .limits: return "gauge.with.needle"
+        case .sources: return "point.3.connected.trianglepath.dotted"
         }
     }
 }

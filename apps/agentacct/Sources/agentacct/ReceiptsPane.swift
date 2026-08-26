@@ -43,6 +43,41 @@ func receiptSourceTint(_ source: String) -> Color {
     Theme.muted
 }
 
+/// The app-wide cost prefix grammar, applied wherever a receipt cost renders:
+/// bare `$` only for a complete client-reported figure, `~$` for a knowingly
+/// partial one, `≈$` for every other estimate. One prefix per basis — the
+/// same number never appears with and without its estimate marker.
+func receiptCostDisplay(_ usd: Double, complete: Bool?, confidence: String?) -> String {
+    if complete == true && confidence == "client_reported" { return Fmt.dollars(usd) }
+    if complete == false { return Fmt.dollars(usd, prefix: "~$") }
+    return Fmt.dollars(usd, prefix: "≈$")
+}
+
+/// Human phrasing for a cost basis key (raw keys stay in provenance chips).
+func costBasisLabel(_ basis: String?) -> String {
+    switch basis {
+    case "pricing_table": return "pricing estimate"
+    case "local_client_session": return "client-reported"
+    case "provider_invoice": return "provider billed"
+    case "user_subscription": return "subscription equivalent"
+    case "mixed": return "mixed basis"
+    case nil, "none": return "basis unknown"
+    case .some(let other): return other.replacingOccurrences(of: "_", with: " ")
+    }
+}
+
+/// Human phrasing for an asserted-by key (same map the dashboard uses).
+func assertedByLabel(_ raw: String?) -> String? {
+    switch raw {
+    case "agent_report": return "agent reported"
+    case "machine": return "machine checked"
+    case "human": return "human reviewed"
+    case "inferred": return "state inferred"
+    case nil: return nil
+    case .some(let other): return other.replacingOccurrences(of: "_", with: " ")
+    }
+}
+
 // MARK: - Record summary strip
 
 /// The record page's summary strip: Actions · Est. cost · Elapsed · Checks ·
@@ -74,9 +109,15 @@ struct RecordSummaryStrip: View {
 
         let costCell: Cell
         if let usd = cost.estimatedCostUsd {
-            var qualifier = cost.costBasis ?? "basis unknown"
+            var qualifier = costBasisLabel(cost.costBasis)
             if cost.costComplete == false { qualifier += " · partial" }
-            costCell = Cell(id: "cost", label: "Est. cost", value: Fmt.dollars(usd), qualifier: qualifier, absent: nil)
+            costCell = Cell(
+                id: "cost",
+                label: "Est. cost",
+                value: receiptCostDisplay(usd, complete: cost.costComplete, confidence: cost.costConfidence),
+                qualifier: qualifier,
+                absent: nil
+            )
         } else {
             costCell = Cell(id: "cost", label: "Est. cost", value: nil, qualifier: nil, absent: "no priced usage")
         }
@@ -332,8 +373,8 @@ struct RecordDimensionsCard: View {
     private var costSummary: String {
         let dim = receipt.dimensions.cost
         guard let cost = dim.estimatedCostUsd else { return "no priced usage" }
-        let basis = dim.costBasis ?? "unknown basis"
-        return String(format: "$%.2f · %@%@", cost, basis, (dim.costComplete ?? true) ? "" : " (partial)")
+        let display = receiptCostDisplay(cost, complete: dim.costComplete, confidence: dim.costConfidence)
+        return "\(display) · \(costBasisLabel(dim.costBasis))\((dim.costComplete ?? true) ? "" : " (partial)")"
     }
 
     private var evidenceSummary: String {
@@ -343,7 +384,7 @@ struct RecordDimensionsCard: View {
 
     private var outcomeSummary: String {
         let dim = receipt.dimensions.outcome
-        var line = "\(dim.decisionStatus ?? "unknown") · asserted by \(dim.assertedBy ?? "none")"
+        var line = "\(dim.decisionStatus ?? "unknown") · \(assertedByLabel(dim.assertedBy) ?? "unattested")"
         if let statement = dim.statement, !statement.isEmpty {
             line += "\n“\(statement)”"
         }
@@ -381,7 +422,7 @@ struct RecordCoverageCard: View {
                 Rectangle().fill(Theme.hairline).frame(height: 1).padding(.vertical, Space.m)
 
                 if evidence.gradeable == true, let checkable = evidence.checkableTotal, checkable > 0 {
-                    Text("\(evidence.checkedTotal ?? 0) of \(checkable) verifiable steps checked")
+                    Text("\(evidence.checkedTotal ?? 0) of \(checkable) checkable steps checked")
                         .font(Face.sansFont(16, .semibold))
                         .foregroundStyle(Theme.ink)
                     CoverageBar(segments: tiers.map { CoverageSegment(count: $0.count, grade: $0.grade) })
@@ -415,11 +456,10 @@ struct RecordCoverageCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, Space.s)
                 }
-                if let definition = evidence.definition {
-                    Text(definition).font(Type.dataSmall).foregroundStyle(Theme.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, Space.s)
-                }
+                Text("Counts show how many checkable steps carry a passing check, and how independent that check is — counts, not a probability of correctness.")
+                    .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, Space.s)
             }
         }
     }

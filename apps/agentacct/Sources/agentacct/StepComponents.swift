@@ -53,6 +53,13 @@ struct StepCard: View {
         }
     }
 
+    /// The collapsed row's tier pip (falls back to a muted hollow pip when an
+    /// older daemon sent no grade).
+    private var stepPip: some View {
+        let style = EvidenceTierStyle.forGrade(step.evidenceGrade)
+        return EvidencePip(shape: style.pip, tint: style.tint)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
@@ -63,7 +70,13 @@ struct StepCard: View {
                         .font(.system(size: 8, weight: .semibold))
                         .foregroundStyle(Theme.muted)
                         .frame(width: 10)
-                    StatusDot(color: Theme.statusColor(step.latestStatus))
+                    // The leading glyph is the step's evidence-tier PIP (shape
+                    // carries the tier); a filled lifecycle dot here read as the
+                    // independently-checked pip on claimed steps.
+                    stepPip
+                    if step.latestStatus == "blocked" || step.latestStatus == "failed" {
+                        Chip(text: step.latestStatus ?? "", tint: Theme.coral)
+                    }
                     Text(step.title ?? step.sectionId ?? "untitled")
                         .font(Type.body)
                         .foregroundStyle(Theme.ink)
@@ -82,7 +95,7 @@ struct StepCard: View {
                     // primary signal; fall back to the older evidence_status only
                     // if an older daemon did not send a grade.
                     if let grade = step.evidenceGrade {
-                        Chip(text: stepGradeLabel(grade), tint: stepGradeTint(grade))
+                        TierBadge(grade: grade)
                     } else if let evidence = step.evidenceStatus {
                         Chip(text: evidence, tint: evidenceTint(evidence))
                     }
@@ -121,14 +134,16 @@ struct StepCard: View {
                     // "Why this grade" — the daemon-supplied reason for the M2
                     // grade, else the older evidence_status explanation.
                     if let why = step.evidenceGradeReason {
+                        // Muted prose: the TierBadge already carries the tier
+                        // color; accent-tinted prose here read as a link.
                         Text(why)
                             .font(Type.caption)
-                            .foregroundStyle(stepGradeTint(step.evidenceGrade))
+                            .foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                     } else if let why = evidenceExplanation {
                         Text(why)
                             .font(Type.caption)
-                            .foregroundStyle(evidenceTint(step.evidenceStatus))
+                            .foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if let summary = step.summary, !summary.isEmpty {

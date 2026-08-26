@@ -34,19 +34,26 @@ func workSessionResolution(
 /// in "Other" so the tab counts always sum to All (no receipt is hidden).
 enum WorkGroup: String, CaseIterable, Identifiable {
     case attention = "Attention"
+    case verified = "Verified"
+    case reported = "Reported"
     case inProgress = "In progress"
-    case complete = "Complete"
-    case stopped = "Stopped"
+    case observed = "Observed"
+    case handedOff = "Handed off"
     case other = "Other"
 
     var id: String { rawValue }
 
+    /// Buckets never upgrade a claim: "Verified" holds only the machine-
+    /// asserted key; agent claims of done-ness group under their own word
+    /// ("Reported"); ambient activity stays "Observed".
     static func forKey(_ key: String?) -> WorkGroup {
         switch key {
         case "finding", "failed", "blocked": return .attention
-        case "in_progress", "mostly_done", "observed": return .inProgress
-        case "verified", "resolved", "reported", "finding_superseded": return .complete
-        case "handed_off", "ended_open": return .stopped
+        case "verified": return .verified
+        case "reported", "resolved", "mostly_done", "finding_superseded": return .reported
+        case "in_progress", "started", "checkpoint": return .inProgress
+        case "observed": return .observed
+        case "handed_off": return .handedOff
         default: return .other
         }
     }
@@ -241,7 +248,8 @@ private struct WorkTablePage: View {
     private var tabs: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Space.xl) {
-                tabButton(nil, label: "All", count: dashboard.receiptTasks.count)
+                let truncated = (dashboard.totalReceiptTasks ?? 0) > dashboard.receiptTasks.count
+                tabButton(nil, label: truncated ? "Loaded" : "All", count: dashboard.receiptTasks.count)
                 ForEach(WorkGroup.allCases) { candidate in
                     let count = groupCounts[candidate] ?? 0
                     // "Other" appears only when an unmapped decision key exists,
@@ -363,7 +371,7 @@ private struct WorkTablePage: View {
         HStack(spacing: Space.l) {
             CapsLabel(text: "Task").frame(maxWidth: .infinity, alignment: .leading)
             CapsLabel(text: "Evidence").frame(width: 150, alignment: .leading)
-            CapsLabel(text: "Client").frame(width: 104, alignment: .leading)
+            CapsLabel(text: "Client").frame(width: 124, alignment: .leading)
             CapsLabel(text: "Checks passed").frame(width: 130, alignment: .trailing)
             CapsLabel(text: "Est. cost").frame(width: 76, alignment: .trailing)
             CapsLabel(text: "Updated").frame(width: 72, alignment: .trailing)
@@ -388,6 +396,10 @@ private struct WorkTablePage: View {
                     EvidencePip(shape: style.pip, tint: style.tint)
                     Text(style.label).font(Type.dataSmall).foregroundStyle(Theme.muted)
                 }
+            }
+            HStack(spacing: 6) {
+                EvidencePip(shape: .hollow, tint: Theme.muted)
+                Text("not gradeable").font(Type.dataSmall).foregroundStyle(Theme.muted)
             }
             Spacer()
             Text("Evidence counts verifiable steps · claim ≠ proof")
@@ -427,11 +439,9 @@ private struct WorkTableRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 evidenceCell.frame(width: 150, alignment: .leading)
-                clientCell.frame(width: 104, alignment: .leading)
+                clientCell.frame(width: 124, alignment: .leading)
                 checksCell.frame(width: 130, alignment: .trailing)
-                Text(DashboardWorkItem(task: task).cost)
-                    .font(Type.dataSmall).foregroundStyle(Theme.ink)
-                    .frame(width: 76, alignment: .trailing)
+                costCell.frame(width: 76, alignment: .trailing)
                 Text(agoText(task.lastActivityAt) ?? "no activity")
                     .font(Type.dataSmall).foregroundStyle(Theme.muted)
                     .frame(width: 72, alignment: .trailing)
@@ -477,6 +487,18 @@ private struct WorkTableRow: View {
             ProvenanceChip(text: client)
         } else {
             Text("unattributed").font(Type.dataSmall).foregroundStyle(Theme.muted)
+        }
+    }
+
+    /// Cost with the ~/≈ prefix grammar; a task with no priced usage is a
+    /// named state, never a dash.
+    @ViewBuilder
+    private var costCell: some View {
+        let cost = DashboardWorkItem(task: task).cost
+        if cost == "—" {
+            Text("unpriced").font(Type.dataSmall).foregroundStyle(Theme.muted)
+        } else {
+            Text(cost).font(Type.dataSmall).foregroundStyle(Theme.ink)
         }
     }
 
@@ -576,7 +598,8 @@ private struct WorkRailRow: View {
                             .foregroundStyle(statusTint)
                             .lineLimit(1)
                         Spacer(minLength: 4)
-                        Text(DashboardWorkItem(task: task).cost)
+                        let cost = DashboardWorkItem(task: task).cost
+                        Text(cost == "—" ? "unpriced" : cost)
                             .font(Type.dataSmall).foregroundStyle(Theme.muted)
                     }
                 }
@@ -686,8 +709,8 @@ struct WorkRecordPage: View {
     }
 
     private func statementLine(_ statement: String) -> String {
-        if let assertedBy = receipt.axes.decisionStatus.assertedBy {
-            return "\(statement) — asserted by \(assertedBy)"
+        if let assertedBy = assertedByLabel(receipt.axes.decisionStatus.assertedBy) {
+            return "\(statement) — \(assertedBy)"
         }
         return statement
     }
@@ -791,7 +814,18 @@ private struct SessionDrillRow: View {
     private var label: String {
         if let title = member.title, !title.isEmpty { return title }
         if let loaded = effectiveDetail?.session.displayTitle, !loaded.isEmpty { return loaded }
-        return "\(member.client) · \(String(member.clientSessionId.prefix(8)))"
+        return "\(member.client) · \(distinguishingId)"
+    }
+
+    /// Subagent ids share the root's uuid prefix ("<root>:agent-<id>"), so the
+    /// DISTINGUISHING part is the component after the last colon — a row list
+    /// where every child shows the parent's prefix identifies nothing.
+    private var distinguishingId: String {
+        let id = member.clientSessionId
+        if let last = id.split(separator: ":").last, last.count < id.count {
+            return String(last.prefix(16))
+        }
+        return String(id.prefix(8))
     }
 
     var body: some View {

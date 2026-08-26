@@ -765,9 +765,12 @@ def _evidence_dimension(checks: list[Mapping[str, Any]], strength: Mapping[str, 
     gaps: list[str] = []
     if not checks:
         gaps.append("No machine checks were recorded for this Task.")
-    reported_only = int(strength.get("agent_reported_step_count") or 0)
-    if reported_only:
-        gaps.append(f"{reported_only} completed step(s) have no linked passing check.")
+    # Only CHECKABLE steps can owe a check: research/docs steps are declared
+    # non-verifiable by the coverage ledger, so demanding evidence for them
+    # would inflate the gap count with impossible asks.
+    unchecked_steps = int((strength.get("by_tier") or {}).get("unchecked") or 0)
+    if unchecked_steps:
+        gaps.append(f"{unchecked_steps} completed step(s) have no linked passing check.")
     return {
         "checks": list(checks),
         "checks_total": int(strength.get("checks_total") or 0),

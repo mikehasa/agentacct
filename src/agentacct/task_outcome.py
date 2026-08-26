@@ -190,10 +190,11 @@ def step_evidence_grade(item: Mapping[str, Any]) -> dict[str, Any]:
                 "",
             )
         ) or "a recorded check"
+        snippet = _proof_snippet(proof)
         reason = {
-            GRADE_EXTERNALLY_VERIFIED: f"CI/provider check passed ({proof[:60]})",
-            GRADE_INDEPENDENTLY_CHECKED: f"the harness observed a check pass ({proof[:60]}) — independent of the agent",
-            GRADE_SELF_CHECKED: f"the agent reported a check passed ({proof[:60]}) — the agent's own, not independent",
+            GRADE_EXTERNALLY_VERIFIED: f"CI/provider check passed ({snippet})",
+            GRADE_INDEPENDENTLY_CHECKED: f"the harness observed a check pass ({snippet}) — independent of the agent",
+            GRADE_SELF_CHECKED: f"the agent reported a check passed ({snippet}) — the agent's own, not independent",
         }[grade]
         return {"grade": grade, "reason": reason, "checks": len(checks)}
     projected_checks = isinstance(item.get("current_check_events"), list)
@@ -207,6 +208,16 @@ def step_evidence_grade(item: Mapping[str, Any]) -> dict[str, Any]:
             "checks": len(checks),
         }
     return {"grade": GRADE_CLAIMED, "reason": "marked done; no passing machine check for this step", "checks": 0}
+
+
+def _proof_snippet(text: str, limit: int = 60) -> str:
+    """Word-boundary truncation with an ellipsis — a check name sliced
+    mid-word reads as a rendering bug in every surface that quotes it."""
+
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0].rstrip()
+    return (cut or text[:limit].rstrip()) + "…"
 
 
 def step_verification_counts(task: Mapping[str, Any]) -> dict[str, int]:
