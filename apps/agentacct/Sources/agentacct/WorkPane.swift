@@ -53,7 +53,7 @@ enum WorkGroup: String, CaseIterable, Identifiable {
         case "finding", "failed", "blocked": return .attention
         case "verified": return .verified
         case "reported", "resolved", "mostly_done", "finding_superseded",
-             "finding_resolved_by_user":
+             "finding_resolved_by_user", "blocker_resolved_by_user":
             return .reported
         case "in_progress", "started", "checkpoint": return .inProgress
         case "observed": return .observed
@@ -128,6 +128,8 @@ enum DecisionLegend {
               definition: "Steps finished, some still open — later work moved elsewhere."),
         .init(key: "handed_off", label: "Handed off",
               definition: "The agent deliberately stopped and passed the work on."),
+        .init(key: "blocker_resolved_by_user", label: "Blocker resolved",
+              definition: "You marked the recorded blocker resolved — not a completion claim, not machine verification."),
         .init(key: "finding_resolved_by_user", label: "Finding resolved",
               definition: "You marked the finding resolved; the failing check stays in history — not machine verification."),
         .init(key: "finding_superseded", label: "Finding superseded",

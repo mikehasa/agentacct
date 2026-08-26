@@ -715,6 +715,28 @@ def reduce_task_outcome(
         key = "observed"
     else:
         all_successful = all(status in _SUCCESS_STATUSES for status in statuses)
+        # A human-dismissed blocker must never fall into the "reported" chain:
+        # the agent never claimed done — its last word on that step was
+        # "blocked", and a human withdrew the attention claim. When every
+        # non-successful step is exactly such a dismissed blocker, the Task's
+        # word is the HUMAN's action, asserted by the human — never a
+        # fabricated agent completion report and never verified.
+        non_success_all_dismissed = not all_successful and all(
+            status in _SUCCESS_STATUSES or _blocker_resolved_by_user(item)
+            for item, status in zip(items, statuses)
+        )
+        if non_success_all_dismissed:
+            return {
+                "key": "blocker_resolved_by_user",
+                "finding": None,
+                "verification": None,
+                "latest_checks": checks,
+                "blocker": None,
+                "max_work_updated_at": max_work_updated_at,
+                "open_step_count": open_step_count,
+                "handoff_current": handoff_current,
+                **step_counts,
+            }
         passing_checks = [event for event in checks if _text(event.get("result")).lower() == "passed"]
         checks_are_current = bool(checks) and all(
             _text(event.get("result")).lower() == "passed"

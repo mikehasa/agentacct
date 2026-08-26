@@ -479,7 +479,7 @@ enum DecisionTintClass {
         case "blocked", "failed", "finding": return .danger
         case "in_progress", "started", "checkpoint": return .accent
         case "reported", "resolved", "mostly_done", "handed_off", "finding_superseded",
-             "finding_resolved_by_user":
+             "finding_resolved_by_user", "blocker_resolved_by_user":
             return .claimed
         case "ended_open": return .inferredStop
         case "verified": return .verified

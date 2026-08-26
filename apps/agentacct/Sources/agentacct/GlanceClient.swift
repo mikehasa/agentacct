@@ -37,6 +37,14 @@ enum GlanceClientError: Error, CustomStringConvertible {
     }
 }
 
+// Without LocalizedError, `error.localizedDescription` renders the generic
+// Cocoa "couldn't be completed" — hiding the daemon's own conflict copy that
+// postAuthed extracts verbatim. This conformance is what lets a 409's
+// "blocker changed…" actually reach the user.
+extension GlanceClientError: LocalizedError {
+    var errorDescription: String? { description }
+}
+
 struct GlanceSnapshot {
     let glance: Glance
     let daemonVersion: String
@@ -136,7 +144,18 @@ final class GlanceClient {
     /// daemon's own detail message so honesty copy ("blocker changed…")
     /// reaches the user verbatim.
     func postAuthed<T: Decodable>(_ path: String, body: [String: Any]) async throws -> T {
-        let discovery = try loadDiscovery()
+        do {
+            return try await postOnce(path, body: body, discovery: loadDiscovery())
+        } catch GlanceClientError.http(401) {
+            // Same reader contract as every GET: the daemon restarted with a
+            // fresh per-boot token — re-read the discovery file and retry once.
+            return try await postOnce(path, body: body, discovery: loadDiscovery())
+        }
+    }
+
+    private func postOnce<T: Decodable>(
+        _ path: String, body: [String: Any], discovery: Discovery
+    ) async throws -> T {
         let host = discovery.host ?? "127.0.0.1"
         guard let url = URL(string: "http://\(host):\(discovery.port)\(path)") else {
             throw GlanceClientError.transport("bad daemon URL")

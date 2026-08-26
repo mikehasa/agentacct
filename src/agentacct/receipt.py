@@ -102,6 +102,7 @@ _DECISION_ASSERTED_BY: dict[str, str] = {
     # Every standing failure carries a human "resolved" disposition — the
     # machine fact stays in history; the ATTENTION claim is the human's.
     "finding_resolved_by_user": "human",
+    "blocker_resolved_by_user": "human",
     # ``failed`` is refined out of ``blocked`` from an agent-recorded work status,
     # not a machine check — so it is an agent report, exactly like ``blocked``.
     "failed": "agent_report",
@@ -125,6 +126,10 @@ _DECISION_STATEMENTS: dict[str, str] = {
         "You marked the recorded finding resolved; the failing check stays in history — "
         "this is not machine verification."
     ),
+    "blocker_resolved_by_user": (
+        "You marked the recorded blocker resolved; the step's recorded state stays in "
+        "history — not a completion claim and not machine verification."
+    ),
     "finding_superseded": (
         "A recorded check failed, but a later same-scope check passed; the finding is kept "
         "in history and is not a verified outcome."
@@ -147,6 +152,7 @@ _DECISION_STATEMENTS: dict[str, str] = {
 # Display-label overrides for keys whose mechanical Title Case reads wrong.
 _DECISION_LABELS: dict[str, str] = {
     "finding_resolved_by_user": "Finding resolved",
+    "blocker_resolved_by_user": "Blocker resolved",
 }
 
 _SUCCESS_STATUSES = {"completed", "passed", "resolved"}

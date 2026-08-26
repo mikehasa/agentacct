@@ -2067,6 +2067,9 @@ class SentinelService:
                         "authority_scope": BLOCKER_DISPOSITION_AUTHORITY_SCOPE,
                         "authoritative_for_check_result": False,
                         "actor": "dashboard-user",
+                        # Post-hoc audit only (which lane carried the write);
+                        # never part of the trust contract or the digests.
+                        "transport": transport,
                         "target_failure_event_id": target_event_id,
                         "target_event_digest": target_event_digest,
                         "target_finding_digest": target_blocker_digest,

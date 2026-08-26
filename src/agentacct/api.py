@@ -3080,6 +3080,12 @@ def create_local_api_app(
                 status_code=400, detail="expected_revision must be a non-negative integer"
             )
         idempotency_key = str(payload.get("idempotency_key") or "").strip()
+        # The v1: namespace is the endpoint's own deterministic key space; a
+        # caller-squatted key there would permanently 409 later UI actions.
+        if idempotency_key.startswith("v1:"):
+            raise HTTPException(
+                status_code=400, detail="idempotency_key may not use the reserved v1: prefix"
+            )
         try:
             if kind == "finding":
                 digest = str(payload.get("target_digest") or "").strip()
@@ -3118,6 +3124,21 @@ def create_local_api_app(
                 blocked_event_id = str(payload.get("blocked_event_id") or "").strip()
                 if not blocked_event_id:
                     raise HTTPException(status_code=400, detail="blocked_event_id is required")
+                # Same quarantine as the finding lane: only a blocker some read
+                # surface actually SHOWS is disposable — the id must be a
+                # surfaced work item's current blocked event.
+                projection = _v1_task_projection()
+                surfaced_blocked_ids = {
+                    str(item.get("current_blocked_event_id") or "")
+                    for task in projection.get("tasks", [])
+                    if isinstance(task, Mapping)
+                    for item in (task.get("work_items") or [])
+                    if isinstance(item, Mapping)
+                }
+                if blocked_event_id not in surfaced_blocked_ids:
+                    raise FindingDispositionNotFound(
+                        "no surfaced blocker matches that event id"
+                    )
                 events = service.list_all_events()
                 target = next(
                     (

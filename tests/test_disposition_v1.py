@@ -158,11 +158,15 @@ def test_blocker_resolve_end_to_end_moves_the_task_off_blocked(tmp_path: Path) -
     assert body["revision"] == 1
 
     rows = _task_rows(client)
-    # The human resolution withdraws the blocker's attention claim; the Task
-    # falls through to its natural non-blocked state (never a fabricated
-    # completion — the step stays blocked in the DATA).
-    assert rows[0]["decision_status"]["key"] != "blocked"
-    assert rows[0]["decision_status"]["blocker"] is None
+    # The human resolution withdraws the blocker's attention claim. The
+    # landing word is the HUMAN's action — never "reported" (the agent never
+    # claimed done; its last recorded word was "blocked") and never verified.
+    decision = rows[0]["decision_status"]
+    assert decision["key"] == "blocker_resolved_by_user"
+    assert decision["label"] == "Blocker resolved"
+    assert decision["asserted_by"] == "human"
+    assert "not a completion claim" in decision["statement"]
+    assert decision["blocker"] is None
 
     # Stale revision now conflicts (409), never silently overwrites.
     stale = client.post(
@@ -326,3 +330,72 @@ def test_disposition_requires_the_bearer_token(tmp_path: Path) -> None:
         json={"kind": "finding", "action": "resolve", "expected_revision": 0},
     )
     assert response.status_code in {401, 403}
+
+
+def test_mixed_completed_and_human_resolved_blocker_lands_on_the_human_word(tmp_path: Path) -> None:
+    """Completed steps beside a human-dismissed blocker: the dismissal must
+    stay visible at the decision level (not silently upgraded to 'reported')."""
+
+    service = SentinelService(tmp_path)
+    _record_usage(service, session_id="s1", at=100.0)
+    _record_section(service, session_id="s1", section_id="sec-done", status="completed", at=110.0)
+    blocked_id = _record_blocked_section(service, session_id="s1", section_id="sec-b", at=120.0)
+
+    client = _app(tmp_path)
+    response = client.post(
+        "/v1/disposition",
+        headers=_auth(),
+        json={
+            "kind": "blocker",
+            "action": "resolve",
+            "expected_revision": 0,
+            "note": "handled by hand",
+            "blocked_event_id": blocked_id,
+        },
+    )
+    assert response.status_code == 200
+    decision = _task_rows(client)[0]["decision_status"]
+    assert decision["key"] == "blocker_resolved_by_user"
+    assert decision["asserted_by"] == "human"
+
+
+def test_disposition_rejects_reserved_and_unsurfaced_handles(tmp_path: Path) -> None:
+    service = SentinelService(tmp_path)
+    _record_usage(service, session_id="s1", at=100.0)
+    blocked_id = _record_blocked_section(service, session_id="s1", section_id="sec-a", at=120.0)
+    client = _app(tmp_path)
+
+    # The v1: idempotency namespace is the endpoint's own.
+    squatted = client.post(
+        "/v1/disposition",
+        headers=_auth(),
+        json={
+            "kind": "blocker",
+            "action": "resolve",
+            "expected_revision": 0,
+            "note": "n",
+            "blocked_event_id": blocked_id,
+            "idempotency_key": "v1:blocker:squat:0:resolve",
+        },
+    )
+    assert squatted.status_code == 400
+
+    # Only a SURFACED blocker is disposable — an arbitrary ledger event id
+    # (here: a usage event's id) is a 404, mirroring the finding quarantine.
+    other_id = next(
+        str(event.get("event_id"))
+        for event in service.list_all_events()
+        if event.get("event_type") != "section_blocked"
+    )
+    unsurfaced = client.post(
+        "/v1/disposition",
+        headers=_auth(),
+        json={
+            "kind": "blocker",
+            "action": "resolve",
+            "expected_revision": 0,
+            "note": "n",
+            "blocked_event_id": other_id,
+        },
+    )
+    assert unsurfaced.status_code == 404

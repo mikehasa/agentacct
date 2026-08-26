@@ -121,6 +121,8 @@ def _state_axes(
         in {
             "finding",
             "finding_superseded",
+        "finding_resolved_by_user",
+        "blocker_resolved_by_user",
             "blocked",
             "verified",
             "reported",
