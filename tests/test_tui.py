@@ -1292,9 +1292,9 @@ def test_plan_pct_cell_helper():
     # (not a bare '—'), so the column is not misread as "there is no weekly plan".
     from agentacct.tui import _PLAN_CALIBRATING_CELL
     assert _plan_pct_cell(cc, {}, {"claude-code": "baseline"}) == _PLAN_CALIBRATING_CELL
-    # codex is a plan client, but its rolling meter never calibrates — so an
-    # uncalibrated codex cell stays '—', not a false "calibrating" promise.
-    assert _plan_pct_cell(cx, {}, {"codex": "baseline"}) == "—"
+    # codex's weekly meter became calibratable (2026-08-27): an uncalibrated
+    # codex cell now honestly shows the calibrating marker, like claude-code.
+    assert _plan_pct_cell(cx, {}, {"codex": "baseline"}) == _PLAN_CALIBRATING_CELL
     # A calibrated client with a zero-token session still shows '—', not '⋯'.
     assert _plan_pct_cell(cc, {}, {"claude-code": "calibrated"}) == "—"
     # A non-plan client never shows the calibrating marker.

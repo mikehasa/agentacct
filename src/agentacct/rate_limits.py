@@ -784,6 +784,144 @@ def read_codex_rate_limits_latest(
     return None
 
 
+def latest_recorded_captured_at(
+    existing_events: Iterable[Mapping[str, Any]], *, client: str
+) -> float:
+    """The newest recorded ``captured_at`` for one client's limit stream.
+
+    The series importer's watermark: only in-file readings STRICTLY newer than
+    this are imported, so a re-scan never re-records history (transition dedup
+    alone compares only the latest state and would re-write a whole replayed
+    series)."""
+
+    newest = 0.0
+    for event in existing_events:
+        if event.get("event_type") != EVENT_TYPE:
+            continue
+        metadata = event.get("metadata") or {}
+        if str(metadata.get("client") or "") != client:
+            continue
+        ordering = _event_ordering(event)
+        if ordering > newest:
+            newest = ordering
+    return newest
+
+
+# Replayed rollout prefixes are stamped with FRESH outer timestamps
+# milliseconds apart (the recorder re-stamps each copied TokenCount at replay
+# time), so a burst of near-simultaneous readings is replay noise, not a real
+# series: collapse each burst to its LAST line — the state at the fork point,
+# which IS the genuine account state at that moment.
+_CODEX_REPLAY_COLLAPSE_SECONDS = 5.0
+# The series import backfills at most this far (the calibration window plus
+# margin) — older history cannot influence the fit and only bloats the ledger.
+_CODEX_SERIES_BACKFILL_DAYS = 30
+
+
+def _read_codex_file_rate_limit_series(path: Path) -> list[RateLimitSnapshot]:
+    """Every DEFAULT-bucket rate-limit snapshot in one rollout, chronological,
+    with replay bursts collapsed. Fails soft to an empty list."""
+
+    snapshots: list[RateLimitSnapshot] = []
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if '"rate_limits"' not in line:
+                    continue
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(obj, Mapping):
+                    continue
+                payload = obj.get("payload")
+                if not isinstance(payload, Mapping):
+                    continue
+                try:
+                    snapshot = normalize_codex_rate_limits(
+                        payload.get("rate_limits"),
+                        captured_at=obj.get("timestamp"),
+                        session_id=_codex_session_id_from_path(path),
+                        source_file=str(path),
+                    )
+                except Exception:  # noqa: BLE001 - one poison line must not abort the file.
+                    continue
+                if (
+                    snapshot is not None
+                    and _is_default_codex_bucket(snapshot)
+                    and snapshot.captured_at is not None
+                    and snapshot.captured_at > 0
+                ):
+                    snapshots.append(snapshot)
+    except OSError:
+        return []
+    # Collapse bursts: keep a reading only when the NEXT one is not within the
+    # replay window (the last of each burst always survives).
+    collapsed: list[RateLimitSnapshot] = []
+    for index, snapshot in enumerate(snapshots):
+        if index + 1 < len(snapshots):
+            gap = float(snapshots[index + 1].captured_at or 0) - float(snapshot.captured_at or 0)
+            if 0 <= gap < _CODEX_REPLAY_COLLAPSE_SECONDS:
+                continue
+        collapsed.append(snapshot)
+    return collapsed
+
+
+def read_codex_rate_limits_series(
+    codex_home: Path | str | None = None,
+    *,
+    since_epoch: float = 0.0,
+    now: float | None = None,
+    max_files: int = 400,
+) -> list[RateLimitSnapshot]:
+    """The DEFAULT-bucket weekly-meter series across recent rollouts, ascending.
+
+    The calibration-density companion to ``read_codex_rate_limits_latest``:
+    that reader records one snapshot per scan tick, which starves the weekly
+    fit; this one imports the in-file history — bounded to readings STRICTLY
+    newer than ``since_epoch`` (the caller's recorded watermark) and to the
+    backfill window — with per-file replay bursts collapsed. Files whose mtime
+    predates the watermark cannot contain newer lines (rollouts only grow) and
+    are skipped unread.
+    """
+
+    import time as _time
+
+    now_epoch = now if now is not None else _time.time()
+    floor = max(since_epoch, now_epoch - _CODEX_SERIES_BACKFILL_DAYS * 86400.0)
+    rollouts: list[Path] = []
+    for root in _codex_sessions_roots(codex_home):
+        try:
+            rollouts.extend(root.rglob("rollout-*.jsonl"))
+        except OSError:
+            continue
+
+    def _mtime(p: Path) -> float:
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    rollouts = [path for path in rollouts if _mtime(path) >= floor]
+    rollouts.sort(key=lambda p: (_mtime(p), str(p)), reverse=True)
+    series: list[RateLimitSnapshot] = []
+    for path in rollouts[: max(1, max_files)]:
+        try:
+            file_series = _read_codex_file_rate_limit_series(path)
+        except Exception:  # noqa: BLE001 - fail soft per the module contract.
+            continue
+        series.extend(
+            snapshot
+            for snapshot in file_series
+            if float(snapshot.captured_at or 0) > floor
+        )
+    series.sort(key=lambda snapshot: float(snapshot.captured_at or 0))
+    return series
+
+
 def read_claude_plan_usage_latest(
     path: Path | str | None = None,
 ) -> list[RateLimitSnapshot]:

@@ -118,12 +118,21 @@ _FRESH_COMPONENT_REF_FACTOR = 8.3
 _ALPHA_GRID_STEPS = 100
 
 # Plan-bearing clients whose meter can actually CALIBRATE to per-session weekly
-# percentages — i.e. a clean weekly-reset cumulative meter. codex's 7-day meter is
-# rolling and opaque (Σdeltas ≫ the window, resets unobservable), so a weekly plan %
-# is undefined for it: it must never be shown as "calibrating", because that promises
-# a number that will never arrive. This is the single source of truth; shells
-# (TUI plan column, glance/app payloads) derive their three-state display from it.
-CALIBRATABLE_CLIENTS = ("claude-code",)
+# percentages — i.e. a clean weekly-reset cumulative meter. This is the single
+# source of truth; shells (TUI plan column, glance/app payloads) derive their
+# three-state display from it.
+#
+# codex joined 2026-08-27: its rate_limits shape changed — the meter now
+# reports a single primary window (window_minutes=10080) with an observable
+# resets_at, and the local rollouts show week-reset-cumulative behavior
+# (monotonic climb within an epoch, drop to 0 at a new resets_at ≈ +7d),
+# the same semantics the fit requires. The 2026-08-05 "rolling and opaque"
+# verdict described the OLD shape and no longer holds. Residual noise the
+# machinery already absorbs: integer-quantized percents (transition-recorded,
+# so consecutive readings differ by ≥1 point), irregular resets (any drop is
+# skipped as a reset), and fork/replay contamination (the series importer
+# collapses replay bursts; the latest reader is mtime-anchored).
+CALIBRATABLE_CLIENTS = ("claude-code", "codex")
 
 
 @dataclass(frozen=True)
@@ -428,18 +437,17 @@ def calibrate_plan_weights(
     default_base = BASELINE_MODEL_WEIGHTS["claude-opus-4-8"] * _FRESH_COMPONENT_REF_FACTOR
 
     if client not in CALIBRATABLE_CLIENTS:
-        # A rolling/opaque meter (codex) can land 3 numerically-clean intervals
-        # inside the trusted band by coincidence — but its weekly plan % is
-        # UNDEFINED by design, so a fit here would confidently label a number
-        # that means nothing (adversarial-review finding: /v1/plan served
-        # "calibrated" codex aggregates). The gate lives HERE, not in each
-        # display surface, so no surface can ever receive one.
+        # A client without a calibratable weekly-reset meter can still land
+        # numerically-clean intervals by coincidence — but its weekly plan %
+        # is UNDEFINED, so a fit here would confidently label a number that
+        # means nothing. The gate lives HERE, not in each display surface, so
+        # no surface can ever receive one.
         return PlanWeights(
             weights=base,
             default_weight=default_base,
             scale=1.0,
             confidence="baseline",
-            basis="weekly plan % is undefined for this client's rolling meter (it never calibrates)",
+            basis="weekly plan % is undefined for this client (no calibratable weekly meter)",
             intervals_used=0,
             client=client,
         )

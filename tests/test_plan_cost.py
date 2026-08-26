@@ -328,12 +328,11 @@ def test_raw_scale_discloses_the_unclamped_fit(tmp_path):
     assert weights.raw_scale is not None and weights.raw_scale > 10.0
 
 
-def test_codex_never_calibrates_even_with_numerically_clean_history(tmp_path):
-    """A rolling meter can land 3 clean intervals in the trusted band by
-    coincidence, but codex's weekly plan % is UNDEFINED by design — the gate
-    lives in calibrate_plan_weights so NO surface can ever receive a
-    'calibrated' codex fit (adversarial-review finding: /v1/plan served
-    confidently-labeled aggregates of an undefined quantity)."""
+def test_codex_calibrates_from_clean_weekly_history(tmp_path):
+    """codex's meter became week-reset cumulative (2026-08-27), so the same
+    interval machinery that fits claude-code now fits codex — with in-band
+    history it calibrates; a client with no calibratable meter still reads
+    'never' (see the hermes case below)."""
 
     service = SentinelService(tmp_path)
     t0 = 1_000_000
@@ -348,6 +347,16 @@ def test_codex_never_calibrates_even_with_numerically_clean_history(tmp_path):
         _record_7d(service, captured=float(t0 + (i + 1) * 3600), pct=pct, client="codex", index=i + 1)
     weights = pc.calibrate_plan_weights(service.list_all_events(), client="codex",
                                         now=float(t0 + 5 * 3600))
+    assert weights.confidence == "calibrated"
+    assert pc.calibration_state(weights) == "calibrated"
+    assert abs(weights.scale - 1.0) < 0.15
+
+
+def test_non_calibratable_client_still_reads_never(tmp_path):
+    """The undefined-plan gate survives for clients without a weekly meter."""
+
+    service = SentinelService(tmp_path)
+    weights = pc.calibrate_plan_weights(service.list_all_events(), client="hermes")
     assert weights.confidence == "baseline"
     assert pc.calibration_state(weights) == "never"
     assert "undefined" in weights.basis

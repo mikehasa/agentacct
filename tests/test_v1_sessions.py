@@ -356,8 +356,8 @@ def test_plan_entries_carry_the_three_state_semantic(tmp_path):
     plan = {entry["client"]: entry for entry in _sessions(client)["plan"]}
     assert plan["claude-code"]["calibration_state"] == "calibrating"
     assert plan["claude-code"]["calibratable"] is True
-    assert plan["codex"]["calibration_state"] == "never"
-    assert plan["codex"]["calibratable"] is False
+    assert plan["codex"]["calibration_state"] == "calibrating"
+    assert plan["codex"]["calibratable"] is True
     for entry in plan.values():
         assert isinstance(entry["basis"], str) and entry["basis"]
         assert "scale" in entry and "intervals_used" in entry
@@ -1021,7 +1021,7 @@ def test_plan_endpoint_uncalibrated_carries_states_not_numbers(tmp_path):
     assert clients["claude-code"]["calibration_state"] == "calibrating"
     assert clients["claude-code"]["window_pcts"] is None
     assert clients["claude-code"]["daily"] is None
-    assert clients["codex"]["calibration_state"] == "never"
+    assert clients["codex"]["calibration_state"] == "calibrating"
     assert clients["codex"]["by_model"] is None
 
 
