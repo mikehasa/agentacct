@@ -29,10 +29,47 @@ struct DaemonInfo: Decodable {
 struct Usage: Decodable {
     let windows: [UsageWindow]
     let usageRecordCount: Int?
+    // The 7-day per-client cube slice the daemon already serves (same numbers
+    // as the Usage pane's cube). Optional so an older payload still decodes.
+    let byClient: [GlanceClientUsage]?
 
     enum CodingKeys: String, CodingKey {
         case windows
         case usageRecordCount = "usage_record_count"
+        case byClient = "by_client"
+    }
+}
+
+/// One client's 7-day usage slice from the glance cube — what a per-agent
+/// dashboard row can honestly state for ANY recording client, limits or not.
+struct GlanceClientUsage: Decodable, Identifiable {
+    let client: String
+    let freshTokens: Int?
+    let estimatedCostUsd: Double?
+    let knownAdditiveCostUsd: Double?
+    let costComplete: Bool?
+    let costConfidence: String?
+    let sessions: Int?
+
+    var id: String { client }
+
+    enum CodingKeys: String, CodingKey {
+        case client, sessions
+        case freshTokens = "fresh_tokens"
+        case estimatedCostUsd = "estimated_cost_usd"
+        case knownAdditiveCostUsd = "known_additive_cost_usd"
+        case costComplete = "cost_complete"
+        case costConfidence = "cost_confidence"
+    }
+
+    /// The app-wide cost grammar; nil when nothing is priced (callers name it).
+    var costText: String? {
+        Fmt.costDisplay(
+            usd: estimatedCostUsd,
+            knownAdditive: knownAdditiveCostUsd,
+            complete: costComplete,
+            confidence: costConfidence
+        )
     }
 }
 

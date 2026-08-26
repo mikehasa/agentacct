@@ -141,13 +141,10 @@ final class DashboardInteractionTests: XCTestCase {
         }
     }
 
-    func testPlanWindowCopyRequiresARealSevenDayWindow() throws {
-        let missingProvider = DashboardPlanWindowPresentation(limit: nil)
-        XCTAssertEqual(missingProvider.remainingText, "—")
-        XCTAssertEqual(missingProvider.remainingCaption, "7-day")
-        XCTAssertEqual(missingProvider.resetText, "Provider limit unavailable")
-        XCTAssertEqual(missingProvider.provenanceText, "No live provider data")
-
+    func testAgentPlanRowCopyRequiresARealSevenDayWindow() throws {
+        // The per-agent row must never fabricate a meter or a reset time: a
+        // 5h-only client says so, a limit-less client says so, and only a
+        // provider-reported 7d percent produces a meter value.
         let fiveHourOnly = try decode(
             LimitEntry.self,
             from: """
@@ -169,18 +166,59 @@ final class DashboardInteractionTests: XCTestCase {
             """
         )
 
-        let unavailable = DashboardPlanWindowPresentation(limit: fiveHourOnly)
-        XCTAssertEqual(unavailable.titleSuffix, "")
-        XCTAssertEqual(unavailable.remainingText, "—")
-        XCTAssertEqual(unavailable.remainingCaption, "7-day")
-        XCTAssertEqual(unavailable.resetText, "7-day limit unavailable")
-        XCTAssertEqual(unavailable.provenanceText, "No provider-reported 7-day window")
+        let noLimit = DashboardAgentPlanRow(client: "hermes", limit: nil, plan: nil, usage: nil)
+        XCTAssertNil(noLimit.usedPercent)
+        XCTAssertEqual(noLimit.meterCaption, "no limits reported by this client")
+        XCTAssertNil(noLimit.usageText)
 
-        let available = DashboardPlanWindowPresentation(limit: sevenDay)
-        XCTAssertEqual(available.titleSuffix, " · 7-day window")
-        XCTAssertEqual(available.remainingText, "61%")
-        XCTAssertEqual(available.remainingCaption, "remaining")
-        XCTAssertEqual(available.provenanceText, "Provider reported")
+        let unavailable = DashboardAgentPlanRow(client: "codex", limit: fiveHourOnly, plan: nil, usage: nil)
+        XCTAssertNil(unavailable.usedPercent)
+        XCTAssertEqual(unavailable.meterCaption, "no provider-reported 7-day window")
+
+        let available = DashboardAgentPlanRow(client: "codex", limit: sevenDay, plan: nil, usage: nil)
+        XCTAssertEqual(available.usedPercent, 39)
+        XCTAssertEqual(available.meterCaption, "39% used · provider reported")
+        XCTAssertNil(available.resetText, "no reset time was reported — never fabricated")
+        XCTAssertEqual(available.detailText, available.meterCaption)
+    }
+
+    func testAgentPlanRowsIncludeEveryRecordingClientWithoutFavoritism() throws {
+        // Regression for the single-meter dashboard: every non-stale limit
+        // client AND every usage-only client gets a row — limit clients first
+        // by least headroom, usage-only clients after in cube order.
+        let claude = try decode(
+            LimitEntry.self,
+            from: """
+            { "client": "claude-code", "windows": [{ "kind": "7d", "used_percent": 47 }] }
+            """
+        )
+        let codex = try decode(
+            LimitEntry.self,
+            from: """
+            { "client": "codex", "plan_type": "pro", "windows": [{ "kind": "7d", "used_percent": 5 }] }
+            """
+        )
+        let usage = try decode(
+            [GlanceClientUsage].self,
+            from: """
+            [
+              { "client": "claude-code", "fresh_tokens": 5140000, "estimated_cost_usd": 1200.5,
+                "cost_complete": true, "cost_confidence": "estimated_from_tokens" },
+              { "client": "codex", "fresh_tokens": 17670000, "estimated_cost_usd": 310.9,
+                "cost_complete": true, "cost_confidence": "estimated_from_tokens" },
+              { "client": "hermes", "fresh_tokens": 145000, "estimated_cost_usd": 1.0,
+                "cost_complete": true, "cost_confidence": "estimated_from_tokens" }
+            ]
+            """
+        )
+        let rows = DashboardAgentPlanRow.rows(limits: [codex, claude], planClients: [], usage: usage)
+        XCTAssertEqual(rows.map(\.client), ["claude-code", "codex", "hermes"])
+        XCTAssertEqual(rows[0].usedPercent, 47)
+        XCTAssertEqual(rows[1].planType, "pro")
+        // The usage-only client keeps the honest hatched-track copy.
+        XCTAssertNil(rows[2].usedPercent)
+        XCTAssertEqual(rows[2].meterCaption, "no limits reported by this client")
+        XCTAssertNotNil(rows[2].usageText)
     }
 
     func testActiveSessionResolutionNeverDropsAnUnmatchedSession() throws {
