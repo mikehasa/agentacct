@@ -74,15 +74,25 @@ _TRUSTED_SCALE_BAND = (0.5, 2.5)
 # forever" for any account whose true tokens→meter ratio sits past the edge (a
 # smaller plan tier, or baseline weights that have drifted for a new model mix)
 # — the fit was being re-rejected on 130+ clean intervals whose split halves
-# agreed within ~12%. Untracked-usage inflation is already excluded per-interval
-# by the A+B>0 gate above, so a PERSISTENT, split-half-stable ratio is a
-# property of the account, not noise. Requirements, all of them:
+# agreed within ~12%. A PERSISTENT, time-split-stable ratio sustained across
+# weeks is a property of the account, not noise. KNOWN LIMIT, disclosed in the
+# basis: the A+B>0 gate above excludes only intervals with ZERO tracked tokens;
+# untracked Claude usage (desktop app / claude.ai) that consistently co-occurs
+# with tracked work still inflates the fitted ratio, and if that habit is
+# steady it is stable too — the accepted scale maps tracked tokens to the
+# ACCOUNT-WIDE meter, which is exactly what the share numbers then mean.
+# Requirements, all of them:
 # * at least this many clean intervals (noise averages out far above the
 #   3-interval floor),
 _STABILITY_MIN_INTERVALS = 24
-# * each chronological half of the fit window independently lands within this
-#   relative distance of the full fit (a drifting or bimodal ratio never
-#   qualifies),
+# * the fit window spans at least this much wall clock, split at its time
+#   midpoint with at least this many intervals in EACH half — a single heavy
+#   day can mint 24+ readings whose "halves" are its own morning and
+#   afternoon, and must never self-certify,
+_STABILITY_MIN_WINDOW_SPAN_SECONDS = 7 * 86400.0
+_STABILITY_MIN_HALF_INTERVALS = 6
+# * each time-half independently lands within this relative distance of the
+#   full fit (a drifting or bimodal ratio never qualifies),
 _STABILITY_HALF_AGREEMENT = 0.35
 # * and the fit sits inside a wide hard ceiling — beyond it no amount of
 #   stability makes the number credible (something structural is wrong).
@@ -125,8 +135,9 @@ class PlanWeights:
     times the fitted ``scale``. ``alpha`` is the fitted cache-read discount in
     [0, 1] — a cache-read token counts as ``alpha`` fresh tokens (measured ~0
     on the reference account). ``confidence`` is ``calibrated`` when the fit
-    came from enough recorded 7-day history and landed in the trusted band,
-    else ``baseline``. ``raw_scale`` preserves the pre-band fit for the
+    came from enough recorded 7-day history and landed in the trusted band
+    (or, outside it, passed the split-half stability acceptance), else
+    ``baseline``. ``raw_scale`` preserves the pre-band fit for the
     calibration-progress disclosure. ``default_weight`` applies to a model
     absent from ``weights``.
     """
@@ -335,24 +346,34 @@ def _component_tokens_between(
 
 
 def _stable_out_of_band_fit(
-    points: list[tuple[float, float, float]],
+    points: list[tuple[float, float, float, float]],
     *,
     alpha: float,
     raw_scale: float,
 ) -> bool:
     """Should an out-of-band fit be accepted anyway? See the stability
     constants above for the contract. ``points`` are the clean intervals in
-    chronological order; each half's ratio-of-sums scale (at the already-chosen
-    alpha) must independently agree with the full fit."""
+    chronological order as ``(t, delta, A, B)``; the window is split at its
+    TIME midpoint (never by count — a burst day must not become both halves),
+    and each half's ratio-of-sums scale (at the already-chosen alpha) must
+    independently agree with the full fit."""
 
     if len(points) < _STABILITY_MIN_INTERVALS:
         return False
     if not (_STABILITY_HARD_BAND[0] <= raw_scale <= _STABILITY_HARD_BAND[1]):
         return False
-    half = len(points) // 2
-    for chunk in (points[:half], points[half:]):
-        observed = sum(delta for delta, _a, _b in chunk)
-        predicted = sum(a + alpha * b for _d, a, b in chunk)
+    first_t = points[0][0]
+    last_t = points[-1][0]
+    if last_t - first_t < _STABILITY_MIN_WINDOW_SPAN_SECONDS:
+        return False
+    split_t = (first_t + last_t) / 2.0
+    early = [point for point in points if point[0] <= split_t]
+    late = [point for point in points if point[0] > split_t]
+    for chunk in (early, late):
+        if len(chunk) < _STABILITY_MIN_HALF_INTERVALS:
+            return False
+        observed = sum(delta for _t, delta, _a, _b in chunk)
+        predicted = sum(a + alpha * b for _t, _d, a, b in chunk)
         if predicted <= 0:
             return False
         chunk_scale = observed / predicted
@@ -377,8 +398,10 @@ def calibrate_plan_weights(
     Σobserved / Σ(A + alpha×B) for a given alpha; alpha is chosen on a [0, 1]
     grid by residual (closed-form per point, no iterative optimizer). Only
     intervals whose movement our tracked-client tokens can explain
-    (``A + B > 0``) contribute, and the fitted scale is applied only inside
-    the trusted band; otherwise the shipped baseline is kept. This guards the
+    (``A + B > 0``) contribute, and the fitted scale is applied when it lands
+    inside the trusted band — or, outside it, when it passes the split-half
+    stability acceptance (see the stability constants); otherwise the shipped
+    baseline is kept. This guards the
     estimate's known blind spot: the 7-day meter is ACCOUNT-WIDE (Claude
     desktop app, claude.ai, other machines all move it) while our tokens cover
     only tracked clients, so movement with no local tokens is untracked usage
@@ -423,9 +446,10 @@ def calibrate_plan_weights(
 
     series = seven_day_series(events, client=client)
     window_start = now_epoch - _CALIBRATION_WINDOW_DAYS * 86400.0
-    # (delta, A, B) per clean interval: observed movement, fresh-component
-    # prediction, cache-read prediction.
-    points: list[tuple[float, float, float]] = []
+    # (t, delta, A, B) per clean interval: interval end time, observed
+    # movement, fresh-component prediction, cache-read prediction. The time
+    # rides along for the stability split (chronological — series is sorted).
+    points: list[tuple[float, float, float, float]] = []
     for (t0, p0), (t1, p1) in zip(series, series[1:]):
         if not (0 < t1 - t0 <= _MAX_INTERVAL_SECONDS):
             continue
@@ -443,23 +467,23 @@ def calibrate_plan_weights(
         # over-state every session, so skip it.
         if fresh_pred + read_pred <= 0:
             continue
-        points.append((delta, fresh_pred, read_pred))
+        points.append((t1, delta, fresh_pred, read_pred))
 
     intervals = len(points)
     raw_scale = 1.0
     alpha = 0.0
     if points:
         candidates: list[tuple[float, float, float]] = []  # (alpha, scale, sse)
-        observed_sum = sum(delta for delta, _a, _b in points)
+        observed_sum = sum(delta for _t, delta, _a, _b in points)
         for step in range(_ALPHA_GRID_STEPS + 1):
             candidate_alpha = step / _ALPHA_GRID_STEPS
-            predicted_sum = sum(a + candidate_alpha * b for _d, a, b in points)
+            predicted_sum = sum(a + candidate_alpha * b for _t, _d, a, b in points)
             if predicted_sum <= 0:
                 continue
             candidate_scale = observed_sum / predicted_sum
             sse = sum(
                 (delta - candidate_scale * (a + candidate_alpha * b)) ** 2
-                for delta, a, b in points
+                for _t, delta, a, b in points
             )
             candidates.append((candidate_alpha, candidate_scale, sse))
         if candidates:
@@ -494,7 +518,10 @@ def calibrate_plan_weights(
             f"({intervals} recent weekly-% intervals)"
         )
         if stability_accepted:
-            basis += "; outside the usual band, accepted on split-half stability"
+            basis += (
+                "; outside the usual band, accepted on split-half stability "
+                "(may include usage from untracked Claude surfaces)"
+            )
     else:
         # Too little clean history, or a fit outside the trusted band (heavy
         # untracked Claude usage or a very different plan tier we can't
@@ -790,8 +817,22 @@ def plan_status_entry(weights: PlanWeights) -> dict[str, Any]:
             f"{weights.intervals_used} intervals recorded; the fit"
             + (f" (x{raw:.2f})" if raw is not None else "")
             + f" is outside the trusted band [{_TRUSTED_SCALE_BAND[0]}, {_TRUSTED_SCALE_BAND[1]}]"
-            " — heavy untracked usage or a plan change can cause this"
         )
+        beyond_ceiling = raw is not None and not (
+            _STABILITY_HARD_BAND[0] <= raw <= _STABILITY_HARD_BAND[1]
+        )
+        if beyond_ceiling:
+            # Honest terminal state, not a spinner: past the stability ceiling
+            # no amount of history calibrates this ratio.
+            detail += (
+                f" and beyond the stability ceiling [{_STABILITY_HARD_BAND[0]}, {_STABILITY_HARD_BAND[1]}]"
+                " — it will not calibrate at this ratio (heavy untracked usage or a plan change can cause this)"
+            )
+        else:
+            detail += (
+                " — it calibrates once it holds split-half stable across "
+                f"{_STABILITY_MIN_INTERVALS}+ intervals spanning a week or more"
+            )
     return {
         "client": weights.client,
         "confidence": weights.confidence,
@@ -804,6 +845,9 @@ def plan_status_entry(weights: PlanWeights) -> dict[str, Any]:
         "intervals_needed": _MIN_SCALE_INTERVALS,
         "raw_scale": weights.raw_scale,
         "trusted_band": list(_TRUSTED_SCALE_BAND),
+        # The stability-acceptance ceiling for out-of-band fits, so a shell can
+        # explain the full acceptance region, not just the inner band.
+        "stability_band": list(_STABILITY_HARD_BAND),
         "state_detail": detail,
     }
 

@@ -410,19 +410,24 @@ def test_session_plan_pcts():
 # ---------------------------------------------------------------------------
 
 
-def _consistent_history(service, *, ratio, intervals, tokens=50_000_000, t0=1_000_000):
-    """A weekly-%% history whose movement is a constant ``ratio`` x baseline."""
+def _consistent_history(service, *, ratio, intervals, tokens=50_000_000, t0=1_000_000,
+                        spacing=8 * 3600):
+    """A weekly-%% history whose movement is a constant ``ratio`` x baseline.
+
+    Default spacing (8h) makes 24+ intervals span more than a week, so the
+    stability lane's wall-clock requirement is satisfied; a burst test passes
+    a tighter spacing explicitly."""
     opus = pc.baseline_weight_fresh("claude-opus-4-8")
     move = ratio * (tokens / 1_000_000.0 * opus)
     pct = 0.0
     _record_7d(service, captured=float(t0), pct=pct, index=0)
     for i in range(intervals):
         _record_usage(service, client="claude-code", model="claude-opus-4-8",
-                      session_id=f"s{i}", tokens=tokens, updated_at=t0 + i * 3600 + 1800,
+                      session_id=f"s{i}", tokens=tokens, updated_at=t0 + i * spacing + spacing // 2,
                       cost=1.0)
         pct += move
-        _record_7d(service, captured=float(t0 + (i + 1) * 3600), pct=pct, index=i + 1)
-    return float(t0 + (intervals + 1) * 3600)
+        _record_7d(service, captured=float(t0 + (i + 1) * spacing), pct=pct, index=i + 1)
+    return float(t0 + (intervals + 1) * spacing)
 
 
 def test_stability_accepts_persistent_out_of_band_fit(tmp_path):
@@ -449,17 +454,18 @@ def test_stability_rejects_a_drifting_out_of_band_fit(tmp_path):
     opus = pc.baseline_weight_fresh("claude-opus-4-8")
     tokens = 50_000_000
     n = pc._STABILITY_MIN_INTERVALS + 2
+    spacing = 8 * 3600
     pct = 0.0
     _record_7d(service, captured=float(t0), pct=pct, index=0)
     for i in range(n):
         ratio = 2.0 if i < n // 2 else 7.0
         _record_usage(service, client="claude-code", model="claude-opus-4-8",
-                      session_id=f"s{i}", tokens=tokens, updated_at=t0 + i * 3600 + 1800,
+                      session_id=f"s{i}", tokens=tokens, updated_at=t0 + i * spacing + spacing // 2,
                       cost=1.0)
         pct += ratio * (tokens / 1_000_000.0 * opus)
-        _record_7d(service, captured=float(t0 + (i + 1) * 3600), pct=pct, index=i + 1)
+        _record_7d(service, captured=float(t0 + (i + 1) * spacing), pct=pct, index=i + 1)
     weights = pc.calibrate_plan_weights(service.list_all_events(), client="claude-code",
-                                        now=float(t0 + (n + 1) * 3600))
+                                        now=float(t0 + (n + 1) * spacing))
     assert weights.confidence == "baseline"
     assert weights.scale == 1.0
 
@@ -483,6 +489,20 @@ def test_stability_needs_more_than_the_minimum_interval_floor(tmp_path):
 
     service = SentinelService(tmp_path)
     now = _consistent_history(service, ratio=4.0, intervals=6)
+    weights = pc.calibrate_plan_weights(service.list_all_events(), client="claude-code", now=now)
+    assert weights.confidence == "baseline"
+    assert weights.scale == 1.0
+
+
+def test_stability_rejects_a_single_burst_day(tmp_path):
+    """24+ hourly readings from ONE heavy day are numerically stable but span
+    far less than the required wall clock — a burst must never self-certify
+    (its "halves" are just the morning and afternoon of the same anomaly)."""
+
+    service = SentinelService(tmp_path)
+    now = _consistent_history(service, ratio=4.0,
+                              intervals=pc._STABILITY_MIN_INTERVALS + 2,
+                              spacing=3600)
     weights = pc.calibrate_plan_weights(service.list_all_events(), client="claude-code", now=now)
     assert weights.confidence == "baseline"
     assert weights.scale == 1.0

@@ -419,8 +419,12 @@ struct RecordDimensionsCard: View {
             tokensLine = "tokens: " + parts.joined(separator: " · ")
         }
         guard let cost = dim.estimatedCostUsd else {
-            guard let tokensLine else { return "no priced usage" }
-            return "no priced usage\n" + tokensLine
+            // The share is token-derived, not dollar-derived — an unpriced
+            // task with a calibrated share still states it.
+            var absent = "no priced usage"
+            if let share = dim.planShare?.text { absent += " · \(share)" }
+            guard let tokensLine else { return absent }
+            return absent + "\n" + tokensLine
         }
         let display = receiptCostDisplay(cost, complete: dim.costComplete, confidence: dim.costConfidence)
         var line = "\(display) · \(costBasisLabel(dim.costBasis))\((dim.costComplete ?? true) ? "" : " (partial)")"

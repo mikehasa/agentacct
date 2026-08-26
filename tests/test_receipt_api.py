@@ -528,3 +528,92 @@ def test_calibrated_store_serves_matching_plan_share_on_rows_and_receipts(tmp_pa
     task_id = rows[0]["task_id"]
     receipt = client.get(f"/v1/receipt?task={task_id}", headers=_auth()).json()
     assert receipt["dimensions"]["cost"]["plan_share"] == share
+
+
+def test_stability_accepted_store_serves_shares_end_to_end(tmp_path: Path) -> None:
+    """A persistent OUT-OF-BAND account (the live failure shape) must calibrate
+    through the stability lane and serve task shares on the wire."""
+
+    from agentacct import plan_cost as pc
+    import time as _time
+
+    service = SentinelService(tmp_path)
+    spacing = 8 * 3600
+    n = pc._STABILITY_MIN_INTERVALS + 2
+    t0 = _time.time() - (n + 2) * spacing  # ~9 days back, inside the 21-day window
+    opus = pc.baseline_weight_fresh("claude-opus-4-8")
+    ratio = 4.0  # outside the trusted band (2.5), inside the stability ceiling
+    pct = 0.0
+    _record_7d_reading(service, captured=t0, pct=pct, index=0)
+    for i in range(n):
+        _record_bulk_usage(service, session_id=f"cal{i}",
+                           at=t0 + i * spacing + spacing // 2, tokens=20_000_000)
+        pct += ratio * (20.0 * opus)
+        _record_7d_reading(service, captured=t0 + (i + 1) * spacing, pct=pct, index=i + 1)
+
+    client = _app(tmp_path)
+    plan = client.get("/v1/plan?days=7", headers=_auth()).json()
+    cc = next(entry for entry in plan["clients"] if entry["client"] == "claude-code")
+    assert cc["calibration_state"] == "calibrated"
+    assert "split-half stability" in cc["basis"]
+    assert "untracked" in cc["basis"]  # the blind spot stays disclosed
+
+    rows = client.get("/v1/tasks", headers=_auth()).json()["tasks"]
+    share = rows[0]["cost"]["plan_share"]
+    assert share["calibration_state"] == "calibrated"
+    assert share["pct"] is not None and share["pct"] > 0
+
+
+def test_plan_share_stamp_is_client_scoped_and_names_never_for_plan_less_clients(
+    tmp_path: Path,
+) -> None:
+    """Unit contract of the stamp: only the labelled client's members may
+    contribute to the sum (a cross-client continuation must not mix plans),
+    and a client outside the plan lane reads 'never', not null."""
+
+    from agentacct.api import _stamp_task_plan_shares
+    from agentacct import plan_cost as pc
+    import time as _time
+
+    service = SentinelService(tmp_path)
+    t0 = _time.time() - 30 * 3600
+    opus = pc.baseline_weight_fresh("claude-opus-4-8")
+    pct = 1.0
+    _record_7d_reading(service, captured=t0, pct=pct, index=0)
+    for i in range(4):
+        _record_bulk_usage(service, session_id=f"cal{i}",
+                           at=t0 + i * 3600 + 1800, tokens=50_000_000)
+        pct += 50.0 * opus
+        _record_7d_reading(service, captured=t0 + (i + 1) * 3600, pct=pct, index=i + 1)
+    events = service.list_all_events()
+
+    projection = {
+        "tasks": [
+            {  # codex-primary task with a claude-code member: cc pct must NOT
+               # be summed under the codex label.
+                "primary_root": {"client": "codex", "client_session_id": "cx1"},
+                "session_keys": [
+                    {"client": "codex", "client_session_id": "cx1"},
+                    {"client": "claude-code", "client_session_id": "cal0"},
+                ],
+            },
+            {  # plan-less client: state must read "never", not null.
+                "primary_root": {"client": "hermes", "client_session_id": "h1"},
+                "session_keys": [{"client": "hermes", "client_session_id": "h1"}],
+            },
+            {  # the calibrated client still sums its own members.
+                "primary_root": {"client": "claude-code", "client_session_id": "cal1"},
+                "session_keys": [
+                    {"client": "claude-code", "client_session_id": "cal1"},
+                    {"client": "codex", "client_session_id": "cx9"},
+                ],
+            },
+        ]
+    }
+    _stamp_task_plan_shares(projection, events)
+    cross, hermes, cc = (task["plan_share"] for task in projection["tasks"])
+    assert cross["pct"] is None and cross["client"] == "codex"
+    assert cross["calibration_state"] == "never"
+    assert hermes["pct"] is None and hermes["calibration_state"] == "never"
+    assert cc["pct"] is not None and cc["pct"] > 0
+    assert cc["covered_sessions"] == 1  # the codex member never counted

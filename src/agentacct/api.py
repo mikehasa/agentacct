@@ -1990,23 +1990,31 @@ def _stamp_task_plan_shares(projection: Mapping[str, Any], events: list[dict[str
             for member in (task.get("session_keys") or [])
             if isinstance(member, Mapping)
         ]
+        primary = task.get("primary_root")
+        client = str(primary.get("client") or "") if isinstance(primary, Mapping) else ""
         covered = 0
         total_pct = 0.0
         for member in members:
-            key = (
-                str(member.get("client") or ""),
-                str(member.get("client_session_id") or ""),
-            )
+            member_client = str(member.get("client") or "")
+            # One client, one plan: the share is labelled with the primary
+            # root's client, so only that client's member sessions may
+            # contribute — a cross-client continuation must never sum another
+            # plan's percentages under this label.
+            if member_client != client:
+                continue
+            key = (member_client, str(member.get("client_session_id") or ""))
             pct = session_pcts.get(key)
             if pct is not None:
                 covered += 1
                 total_pct += float(pct)
-        primary = task.get("primary_root")
-        client = str(primary.get("client") or "") if isinstance(primary, Mapping) else ""
+        # A client outside the plan lane (hermes/opencode/...) is honestly
+        # "never" — its meter has no calibratable weekly plan — instead of a
+        # null that reads as "unknown".
+        state = states.get(client) or ("never" if client else None)
         task["plan_share"] = {
             "pct": total_pct if covered else None,
             "client": client or None,
-            "calibration_state": states.get(client),
+            "calibration_state": state,
             "covered_sessions": covered,
             "session_count": len(members),
         }
@@ -2400,9 +2408,12 @@ def build_store_task_projection(
     event-level reducer this assembly ultimately calls through the page-data
     path) — shadowing that import broke the /tasks route once already."""
 
-    return _dashboard_task_projection(
-        build_page_data(store_dir, continuation_snapshot=continuation_snapshot)
-    )
+    data = build_page_data(store_dir, continuation_snapshot=continuation_snapshot)
+    projection = _dashboard_task_projection(data)
+    # Same stamp the /v1 lane applies, so `agentacct receipt` / the TUI can
+    # never disagree with the app about a task's weekly-plan share.
+    _stamp_task_plan_shares(projection, data.events)
+    return projection
 
 
 def surfaced_finding_episodes(projection: Mapping[str, Any]) -> list[Mapping[str, Any]]:
