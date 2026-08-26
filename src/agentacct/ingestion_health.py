@@ -28,6 +28,8 @@ from typing import Any, Iterator, Mapping, Sequence
 
 
 INGESTION_HEALTH_SCHEMA_VERSION = "agent-chronicle.ingestion-health.v1"
+# The bearer-gated /v1 envelope that wraps the snapshot for native shells.
+V1_INGESTION_SCHEMA_VERSION = "agentacct.v1-ingestion.v1"
 INGESTION_HEALTH_DIRNAME = "ingestion-health"
 INGESTION_HEALTH_FILENAME = "state.json"
 EVIDENCE_REFRESHABLE_USAGE_ERROR_CODE = "evidence_refreshable_usage_failed"

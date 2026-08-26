@@ -5,6 +5,13 @@ import SwiftUI
 // exists when the daemon says the client is calibrated (calibrated-or-
 // nothing); otherwise the pane opens on the cost view with an honest note.
 
+/// Per-series chart colors for the stacked daily chart, its legend, tooltip
+/// rows, and bucket rows. Keyed by the client's index in a stable sorted
+/// client list. Interim helper until the Usage structural redesign lands.
+private func seriesColor(_ index: Int) -> Color {
+    [Theme.chartBar, Theme.chartBarDim, Theme.amber, Theme.muted][index % 4]
+}
+
 struct UsagePane: View {
     @EnvironmentObject var dashboard: DashboardStore
     // nil = no explicit user choice: the default follows the DATA (plan view
@@ -23,6 +30,11 @@ struct UsagePane: View {
         dashboard.planClients.filter { $0.calibrationState == "calibrated" }
     }
 
+    /// Stable sorted client names for the plan view's per-client accents.
+    private var calibratedClientOrder: [String] {
+        calibratedClients.map(\.client).sorted()
+    }
+
     private var mode: UsageMode {
         // The live pane opens on the plan view when a client is calibrated (the
         // subscription user's real question). The README snapshot instead shows
@@ -37,7 +49,7 @@ struct UsagePane: View {
         ScrollBox {
             VStack(alignment: .leading, spacing: Space.l) {
                 HStack(spacing: 10) {
-                    SectionCaption(tone: Theme.textMuted, text: "Usage · last \(dashboard.usageDays) days")
+                    SectionCaption(tone: Theme.muted, text: "Usage · last \(dashboard.usageDays) days")
                     Spacer()
                     // One range control for the whole pane: it drives the daily
                     // bars AND the per-model breakdown depth. The today/7d
@@ -84,16 +96,16 @@ struct UsagePane: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("No calibrated plan estimate yet.")
                     .font(Type.body)
-                    .foregroundStyle(Theme.textMuted)
+                    .foregroundStyle(Theme.muted)
                 ForEach(dashboard.planClients) { client in
                     if client.calibrationState == "calibrating" {
                         Text("\(client.client): calibrating from your own limit history")
-                            .font(Type.small)
-                            .foregroundStyle(Theme.textFaint)
+                            .font(Type.caption)
+                            .foregroundStyle(Theme.muted)
                     } else if client.calibrationState == "never" {
                         Text("\(client.client): a weekly plan % is undefined for this client's rolling meter")
-                            .font(Type.small)
-                            .foregroundStyle(Theme.textFaint)
+                            .font(Type.caption)
+                            .foregroundStyle(Theme.muted)
                     }
                 }
             }
@@ -101,35 +113,38 @@ struct UsagePane: View {
             ForEach(calibratedClients) { client in
                 VStack(alignment: .leading, spacing: Space.s) {
                     HStack(spacing: 8) {
-                        StatusDot(color: Theme.clientColor(client.client), size: 6)
-                        SectionCaption(tone: Theme.textMuted, text: "\(client.client) · % of the weekly plan")
+                        StatusDot(
+                            color: seriesColor(calibratedClientOrder.firstIndex(of: client.client) ?? 0),
+                            size: 6
+                        )
+                        SectionCaption(tone: Theme.muted, text: "\(client.client) · % of the weekly plan")
                         Spacer()
                         if let today = Fmt.planPct(client.windowPcts?["today"] ?? nil) {
                             Text("today \(today)")
-                                .font(Type.numeric)
+                                .font(Type.dataSmallSemibold)
                                 .foregroundStyle(Theme.accent)
                         }
                         if let week = Fmt.planPct(client.windowPcts?["7d"] ?? nil) {
                             Text("7d \(week)")
-                                .font(Type.numeric)
-                                .foregroundStyle(Theme.textMuted)
+                                .font(Type.dataSmallSemibold)
+                                .foregroundStyle(Theme.muted)
                         }
                     }
                     if let daily = client.daily, daily.count > 1 {
-                        PlanDailyChart(days: daily, tint: Theme.clientColor(client.client))
+                        PlanDailyChart(days: daily, tint: Theme.chartBar)
                     }
                     if let byModel = client.byModel, !byModel.isEmpty {
                         modelShares(byModel)
                     }
                     if let unknown = Fmt.planPct(client.unknownTimePct) {
                         Text("+ \(unknown) from rows with unusable timestamps (outside the daily bars)")
-                            .font(Type.tiny)
-                            .foregroundStyle(Theme.textFaint)
+                            .font(Type.caption)
+                            .foregroundStyle(Theme.muted)
                     }
                     if let basis = client.basis {
                         Text("estimate basis: \(basis)")
-                            .font(Type.tiny)
-                            .foregroundStyle(Theme.textFaint)
+                            .font(Type.caption)
+                            .foregroundStyle(Theme.muted)
                     }
                 }
             }
@@ -140,40 +155,39 @@ struct UsagePane: View {
         let maxPct = shares.compactMap(\.pct).max() ?? 1
         return VStack(alignment: .leading, spacing: Space.s) {
             HStack(spacing: 6) {
-                SectionCaption(tone: Theme.textMuted, text: "Which model eats the plan")
+                SectionCaption(tone: Theme.muted, text: "Which model eats the plan")
                 Spacer()
                 // Disclose that these are estimates AND the window they sum over,
                 // so a 30/90-day breakdown reading >100% of a weekly plan is
                 // clearly a multi-week accumulation, not a broken number.
                 Text("estimated · last \(dashboard.usageDays)d")
-                    .font(Type.tiny)
-                    .foregroundStyle(Theme.textFaint)
+                    .font(Type.caption)
+                    .foregroundStyle(Theme.muted)
             }
             Card(padding: 6) {
                 VStack(spacing: 0) {
                     ForEach(Array(shares.enumerated()), id: \.element.id) { index, share in
                         HStack(spacing: 10) {
                             Text(share.model ?? "unknown")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(Theme.text)
+                                .font(Type.captionSemibold)
+                                .foregroundStyle(Theme.ink)
                                 .lineLimit(1)
                                 .frame(width: 168, alignment: .leading)
                             MeterBar(fraction: (share.pct ?? 0) / max(maxPct, 0.0001),
-                                     tint: Theme.accent, height: 7)
+                                     tint: Theme.chartBar, height: 7)
                             Text(Fmt.planPct(share.pct) ?? "—")
-                                .font(Type.numeric)
-                                .foregroundStyle(Theme.text)
+                                .font(Type.dataSmallSemibold)
+                                .foregroundStyle(Theme.ink)
                                 .frame(width: 64, alignment: .trailing)
                             Text(share.totalTokens.map { UsageTotals.compact(Int($0)) } ?? "—")
-                                .font(.system(size: 11))
-                                .monospacedDigit()
-                                .foregroundStyle(Theme.textMuted)
+                                .font(Type.dataSmall)
+                                .foregroundStyle(Theme.muted)
                                 .frame(width: 58, alignment: .trailing)
                         }
                         .padding(.horizontal, 9)
                         .padding(.vertical, 7)
                         if index < shares.count - 1 {
-                            Rectangle().fill(Theme.border.opacity(0.6)).frame(height: 1)
+                            Rectangle().fill(Theme.hairline).frame(height: 1)
                         }
                     }
                 }
@@ -188,7 +202,7 @@ struct UsagePane: View {
         if let usage = dashboard.usage {
             if let totals = usage.totals {
                 HStack(spacing: 8) {
-                    PanelTile(label: "\(dashboard.usageDays)d cost", value: totals.costText, accent: Theme.blue)
+                    PanelTile(label: "\(dashboard.usageDays)d cost", value: totals.costText, accent: Theme.accent)
                     PanelTile(label: "\(dashboard.usageDays)d fresh tokens",
                               value: totals.freshTokens.map(UsageTotals.compact) ?? "—")
                     PanelTile(label: "cache read",
@@ -202,22 +216,28 @@ struct UsagePane: View {
                 DailyChart(periods: periods)
             }
             bucketSection(title: "By agent", buckets: usage.byClient) { bucket in
-                (bucket.client ?? "?", Theme.clientColor(bucket.client))
+                (bucket.client ?? "?",
+                 seriesColor(agentClientOrder(usage.byClient).firstIndex(of: bucket.client ?? "?") ?? 0))
             }
             bucketSection(title: "By model", buckets: usage.byModel) { bucket in
-                (bucket.model ?? "?", Theme.clientColor(bucket.client))
+                (bucket.model ?? "?", Theme.chartBar)
             }
         } else {
             VStack(spacing: 10) {
                 Image(systemName: "chart.bar.xaxis")
                     .font(.system(size: 32, weight: .light))
-                    .foregroundStyle(Theme.textFaint)
+                    .foregroundStyle(Theme.muted)
                 Text("No usage loaded")
-                    .foregroundStyle(Theme.textMuted)
+                    .foregroundStyle(Theme.muted)
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 90)
         }
+    }
+
+    /// Stable sorted client names for the by-agent bucket accents.
+    private func agentClientOrder(_ buckets: [UsageBucket]) -> [String] {
+        buckets.map { $0.client ?? "?" }.sorted()
     }
 
     private func bucketSection(
@@ -228,34 +248,33 @@ struct UsagePane: View {
         let sorted = buckets.sorted { ($0.freshTokens ?? 0) > ($1.freshTokens ?? 0) }
         let maxFresh = Double(sorted.first?.freshTokens ?? 1)
         return VStack(alignment: .leading, spacing: 8) {
-            SectionCaption(tone: Theme.textMuted, text: title + " · last \(dashboard.usageDays) days")
+            SectionCaption(tone: Theme.muted, text: title + " · last \(dashboard.usageDays) days")
             Card(padding: 6) {
                 VStack(spacing: 0) {
                     ForEach(Array(sorted.enumerated()), id: \.element.id) { index, bucket in
                         let (name, tint) = nameOf(bucket)
                         HStack(spacing: 10) {
-                            StatusDot(color: tint, size: 6)
+                            StatusDot(color: Theme.muted, size: 6)
                             Text(name)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(Theme.text)
+                                .font(Type.captionSemibold)
+                                .foregroundStyle(Theme.ink)
                                 .lineLimit(1)
                                 .frame(width: 168, alignment: .leading)
                             MeterBar(fraction: Double(bucket.freshTokens ?? 0) / max(maxFresh, 1),
                                      tint: tint, height: 7)
                             Text(bucket.freshTokens.map(UsageTotals.compact) ?? "—")
-                                .font(.system(size: 11.5))
-                                .monospacedDigit()
-                                .foregroundStyle(Theme.textMuted)
+                                .font(Type.dataSmall)
+                                .foregroundStyle(Theme.muted)
                                 .frame(width: 58, alignment: .trailing)
                             Text(bucket.costText)
-                                .font(Type.metricS)
-                                .foregroundStyle(Theme.text)
+                                .font(Type.dataSmallSemibold)
+                                .foregroundStyle(Theme.ink)
                                 .frame(width: 82, alignment: .trailing)
                         }
                         .padding(.horizontal, 9)
                         .padding(.vertical, 7)
                         if index < sorted.count - 1 {
-                            Rectangle().fill(Theme.border.opacity(0.6)).frame(height: 1)
+                            Rectangle().fill(Theme.hairline).frame(height: 1)
                         }
                     }
                 }
@@ -282,7 +301,7 @@ struct PlanDailyChart: View {
                 HStack(alignment: .bottom, spacing: 3) {
                     ForEach(days) { day in
                         RoundedRectangle(cornerRadius: 1)
-                            .fill(day.pct > 0 ? AnyShapeStyle(tint.gradient) : AnyShapeStyle(Theme.border.opacity(0.5)))
+                            .fill(day.pct > 0 ? tint : Theme.tintNeutral)
                             .frame(height: day.pct > 0 ? max(2, 110 * day.pct / maxPct) : 1.5)
                             .frame(maxWidth: .infinity, alignment: .bottom)
                             .contentShape(Rectangle())
@@ -305,8 +324,8 @@ struct PlanDailyChart: View {
                     Spacer()
                     Text(shortDate(days.last?.date))
                 }
-                .font(.system(size: 9))
-                .foregroundStyle(Theme.textFaint)
+                .font(Type.dataSmall)
+                .foregroundStyle(Theme.muted)
             }
         }
     }
@@ -324,23 +343,23 @@ struct PlanDayTooltip: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(day.date.count >= 10 ? String(day.date.dropFirst(5)) : day.date)
-                .font(Type.tiny.weight(.semibold))
-                .foregroundStyle(Theme.text)
+                .font(Type.dataSmallSemibold)
+                .foregroundStyle(Theme.ink)
             Text(Fmt.planPct(day.pct) ?? "≈0%")
-                .font(Type.tiny.monospacedDigit())
+                .font(Type.dataSmall)
                 .foregroundStyle(Theme.accent)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(Theme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .strokeBorder(Theme.border, lineWidth: 1))
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
+        .overlay(RoundedRectangle(cornerRadius: Metrics.radius)
+            .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW))
         .padding(4)
         .fixedSize()
     }
 }
 
-/// Client-colored daily bars in the detailed Usage view. Hover a bar for the
+/// Per-series daily bars in the detailed Usage view. Hover a bar for the
 /// day's per-client split; click a legend entry to hide or show that agent.
 struct DailyChart: View {
     let periods: [PeriodBucket]
@@ -363,6 +382,11 @@ struct DailyChart: View {
         clients.filter { !hidden.contains($0) }
     }
 
+    /// Series accent keyed by the client's index in the stable sorted list.
+    private func clientColor(_ client: String) -> Color {
+        seriesColor(clients.firstIndex(of: client) ?? 0)
+    }
+
     private func visibleTotal(_ period: PeriodBucket) -> Double {
         visibleClients.reduce(0.0) { partial, client in
             partial + Double(period.byClient?[client]?.freshTokens ?? 0)
@@ -381,15 +405,15 @@ struct DailyChart: View {
         Card(padding: 0) {
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
-                    SectionCaption(tone: Theme.textMuted, text: "Daily fresh tokens")
+                    SectionCaption(tone: Theme.muted, text: "Daily fresh tokens")
                     Spacer()
                     HStack(spacing: 5) {
                         Text("\(periods.count)-day total")
-                            .font(Type.tiny)
-                            .foregroundStyle(Theme.textFaint)
+                            .font(Type.caption)
+                            .foregroundStyle(Theme.muted)
                         Text(UsageTotals.compact(visibleGrandTotal))
-                            .font(Type.numeric)
-                            .foregroundStyle(Theme.text)
+                            .font(Type.dataSmallSemibold)
+                            .foregroundStyle(Theme.ink)
                     }
                     ForEach(clients, id: \.self) { client in
                         Button {
@@ -397,17 +421,17 @@ struct DailyChart: View {
                         } label: {
                             HStack(spacing: 4) {
                                 StatusDot(color: hidden.contains(client)
-                                          ? Theme.textFaint.opacity(0.4)
-                                          : Theme.clientColor(client), size: 5)
+                                          ? Theme.muted.opacity(0.4)
+                                          : clientColor(client), size: 5)
                                 Text(client)
-                                    .font(Type.tiny)
-                                    .foregroundStyle(hidden.contains(client) ? Theme.textFaint : Theme.textMuted)
+                                    .font(Type.caption)
+                                    .foregroundStyle(Theme.muted)
                                     .strikethrough(hidden.contains(client))
                             }
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(QuietButtonStyle(
-                            tint: Theme.clientColor(client),
+                            tint: clientColor(client),
                             horizontalPadding: 4,
                             verticalPadding: 3
                         ))
@@ -418,7 +442,7 @@ struct DailyChart: View {
                 .padding(.trailing, 12)
                 .padding(.vertical, 10)
 
-                Rectangle().fill(Theme.border).frame(height: 1)
+                Rectangle().fill(Theme.hairline).frame(height: 1)
 
                 VStack(spacing: 7) {
                     HStack(alignment: .top, spacing: 8) {
@@ -429,17 +453,17 @@ struct DailyChart: View {
                             Spacer()
                             Text("0")
                         }
-                        .font(Type.tiny.monospacedDigit())
-                        .foregroundStyle(Theme.textFaint)
+                        .font(Type.dataSmall)
+                        .foregroundStyle(Theme.muted)
                         .frame(width: 34, height: 116)
 
                         ZStack(alignment: .bottom) {
                             VStack(spacing: 0) {
-                                Rectangle().fill(Theme.border.opacity(0.65)).frame(height: 1)
+                                Rectangle().fill(Theme.hairline.opacity(0.65)).frame(height: 1)
                                 Spacer()
-                                Rectangle().fill(Theme.border.opacity(0.45)).frame(height: 1)
+                                Rectangle().fill(Theme.hairline.opacity(0.45)).frame(height: 1)
                                 Spacer()
-                                Rectangle().fill(Theme.border.opacity(0.65)).frame(height: 1)
+                                Rectangle().fill(Theme.hairline.opacity(0.65)).frame(height: 1)
                             }
 
                             HStack(alignment: .bottom, spacing: 3) {
@@ -452,14 +476,14 @@ struct DailyChart: View {
                                                 let slice = Double(period.byClient?[client]?.freshTokens ?? 0)
                                                 if slice > 0, total > 0 {
                                                     RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                                                        .fill(Theme.clientColor(client))
+                                                        .fill(clientColor(client))
                                                         .frame(height: max(1.5, height * slice / total))
                                                 }
                                             }
                                         }
                                         if hoveredIndex == index {
                                             Rectangle()
-                                                .fill(Theme.textFaint.opacity(0.45))
+                                                .fill(Theme.muted.opacity(0.45))
                                                 .frame(width: 1)
                                                 .frame(maxHeight: .infinity)
                                         }
@@ -491,6 +515,7 @@ struct DailyChart: View {
                                 DayTooltip(
                                     period: hovered,
                                     clients: visibleClients,
+                                    allClients: clients,
                                     dayCostText: hidden.isEmpty ? hovered.costText : nil
                                 )
                             }
@@ -507,8 +532,8 @@ struct DailyChart: View {
                             Text(periods.last?.shortLabel ?? "")
                         }
                     }
-                    .font(Type.tiny.monospacedDigit())
-                    .foregroundStyle(Theme.textFaint)
+                    .font(Type.dataSmall)
+                    .foregroundStyle(Theme.muted)
                 }
                 .padding(12)
                 .animation(reduceMotion ? nil : Motion.hover, value: hoveredIndex)
@@ -523,10 +548,12 @@ struct DailyChart: View {
 /// The hover card: one day's totals and per-client split. The header total is
 /// summed over the VISIBLE clients so it always equals the stacked bar and the
 /// rows below it; the day cost is only shown when the caller vouches it covers
-/// the same (unfiltered) set.
+/// the same (unfiltered) set. `allClients` keeps series colors keyed to the
+/// stable sorted client list even while some clients are hidden.
 struct DayTooltip: View {
     let period: PeriodBucket
     let clients: [String]
+    var allClients: [String] = []
     var dayCostText: String? = nil
 
     private var visibleFresh: Int {
@@ -537,38 +564,37 @@ struct DayTooltip: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Text(period.shortLabel)
-                    .font(Type.tiny.weight(.semibold))
-                    .foregroundStyle(Theme.text)
+                    .font(Type.dataSmallSemibold)
+                    .foregroundStyle(Theme.ink)
                 Text(UsageTotals.compact(visibleFresh))
-                    .font(Type.tiny.monospacedDigit())
-                    .foregroundStyle(Theme.textMuted)
+                    .font(Type.dataSmall)
+                    .foregroundStyle(Theme.muted)
                 if let dayCostText {
                     Text(dayCostText)
-                        .font(Type.tiny.monospacedDigit())
-                        .foregroundStyle(Theme.textMuted)
+                        .font(Type.dataSmall)
+                        .foregroundStyle(Theme.muted)
                 }
             }
             ForEach(clients, id: \.self) { client in
                 if let slice = period.byClient?[client], let fresh = slice.freshTokens, fresh > 0 {
                     HStack(spacing: 5) {
-                        StatusDot(color: Theme.clientColor(client), size: 4)
+                        StatusDot(color: seriesColor(allClients.firstIndex(of: client) ?? 0), size: 4)
                         Text(client)
-                            .font(Type.tiny)
-                            .foregroundStyle(Theme.textMuted)
+                            .font(Type.caption)
+                            .foregroundStyle(Theme.muted)
                         Spacer(minLength: 6)
                         Text(UsageTotals.compact(fresh))
-                            .font(Type.tiny.monospacedDigit())
-                            .foregroundStyle(Theme.text)
+                            .font(Type.dataSmall)
+                            .foregroundStyle(Theme.ink)
                     }
                 }
             }
         }
         .padding(8)
         .frame(minWidth: 140, alignment: .leading)
-        .background(Theme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .strokeBorder(Theme.border, lineWidth: 1))
-        .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
+        .overlay(RoundedRectangle(cornerRadius: Metrics.radius)
+            .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW))
         .padding(4)
         .allowsHitTesting(false)
     }

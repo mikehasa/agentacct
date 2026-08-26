@@ -8,65 +8,37 @@ import SwiftUI
 // distinct so an agent's "done" never reads as machine verification. Honesty
 // rides the payload — nothing here re-derives an axis or invents a number.
 
-/// Decision-status color (what is CLAIMED). Deliberately a different function
-/// from ``evidenceStrengthTint`` so the two axes can never share a color.
+/// Decision-status color (what is CLAIMED). Delegates to the shared
+/// ``DecisionTintClass`` — deliberately a different lookup from the evidence
+/// tiers so the two axes can never share a palette: the decision axis never
+/// wears green for claims ("completed" stays ink), and coral is failure-only.
 func receiptDecisionTint(_ key: String?) -> Color {
-    switch key {
-    case "verified": return Theme.green
-    case "finding", "failed", "blocked": return Theme.red
-    case "reported", "mostly_done", "in_progress": return Theme.orange
-    case "handed_off", "resolved", "finding_superseded": return Theme.blue
-    default: return Theme.textMuted
-    }
+    DecisionTintClass.forKey(key).text
 }
 
-/// Evidence-coverage color, keyed on the strongest tier present (most
-/// independent is warmest). A failing check is never positive proof — it lands
+/// Evidence-coverage color, keyed on the strongest tier present. Delegates to
+/// the shared ``EvidenceTierStyle`` ramp (green only for externally-verified
+/// independent evidence). A failing check is never positive proof — it lands
 /// on the decision axis as a finding, not here.
 func receiptEvidenceTint(_ key: String?) -> Color {
-    switch key {
-    case "externally_verified": return Theme.green
-    case "independently_checked": return Theme.cyan
-    case "self_checked": return Theme.blue
-    case "unchecked": return Theme.orange
-    default: return Theme.textMuted  // undefined / not gradeable
-    }
+    EvidenceTierStyle.forGrade(key).tint
 }
 
-/// Per-step evidence-grade color (adds ``claimed`` / ``none`` to the tier ramp).
+/// Per-step evidence-grade color — the same shared tier ramp, so step rows and
+/// receipt headlines can never disagree.
 func stepGradeTint(_ grade: String?) -> Color {
-    switch grade {
-    case "externally_verified": return Theme.green
-    case "independently_checked": return Theme.cyan
-    case "self_checked": return Theme.blue
-    case "claimed": return Theme.orange
-    default: return Theme.textMuted  // none
-    }
+    EvidenceTierStyle.forGrade(grade).tint
 }
 
-/// Short chip label for a per-step grade.
+/// Short chip label for a per-step grade (the daemon's own tier words).
 func stepGradeLabel(_ grade: String?) -> String {
-    switch grade {
-    case "externally_verified": return "external"
-    case "independently_checked": return "independent"
-    case "self_checked": return "self-checked"
-    case "claimed": return "unchecked"
-    case "none": return "none"
-    default: return grade ?? "none"
-    }
+    EvidenceTierStyle.forGrade(grade).label
 }
 
-/// Provenance-source chip color: the strongest source is warmest.
+/// Provenance-source chip color: v7 provenance chips are neutral — the chip
+/// TEXT names the source; color never ranks provenance.
 func receiptSourceTint(_ source: String) -> Color {
-    switch source {
-    case "ci": return Theme.green
-    case "hook": return Theme.blue
-    case "mcp": return Theme.accent
-    case "git": return Theme.orange
-    case "human": return Theme.orange
-    case "client_log": return Theme.textMuted
-    default: return Theme.textFaint
-    }
+    Theme.muted
 }
 
 // Reusable Task-row and Receipt cards for the Work surface (WorkPane.swift).
@@ -79,8 +51,8 @@ struct ReceiptRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(task.title ?? task.taskId)
-                .font(.callout).fontWeight(.medium)
-                .foregroundStyle(Theme.text)
+                .font(Type.rowLabel)
+                .foregroundStyle(Theme.ink)
                 .lineLimit(2)
             HStack(spacing: 6) {
                 AxisChip(text: task.decisionStatus.key, tint: receiptDecisionTint(task.decisionStatus.key))
@@ -89,20 +61,21 @@ struct ReceiptRow: View {
                     tint: receiptEvidenceTint(task.evidenceStrength.key)
                 )
                 // Parallel deliberate-stop marker, shown only when it adds info the
-                // decision word does not already state. Purple unifies with the
-                // step-level handoff chip (Theme.statusColor("handed_off")).
+                // decision word does not already state. Muted unifies with the
+                // step-level handoff chip (Theme.statusColor("handed_off") is ink;
+                // the lifecycle marker stays quieter than the decision word).
                 if task.handedOff == true && task.decisionStatus.key != "handed_off" {
-                    AxisChip(text: "↗ handed off", tint: Theme.purple)
+                    AxisChip(text: "↗ handed off", tint: Theme.muted)
                 }
                 Spacer()
-                Text(task.cost.text).font(.caption).foregroundStyle(Theme.textMuted)
+                Text(task.cost.text).font(Type.dataSmall).foregroundStyle(Theme.muted)
             }
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            selected ? AnyShapeStyle(Theme.cardAlt) : AnyShapeStyle(.clear),
-            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+            selected ? AnyShapeStyle(Theme.selected) : AnyShapeStyle(.clear),
+            in: RoundedRectangle(cornerRadius: Metrics.radius)
         )
         // The whole card is the tap target, not just the text — an unselected
         // row's background is `.clear`, which SwiftUI does not hit-test, so
@@ -113,17 +86,17 @@ struct ReceiptRow: View {
 }
 
 struct AxisChip: View {
-    static let backgroundOpacity = 0.08
-
     let text: String
     let tint: Color
 
     var body: some View {
         Text(text)
-            .font(.caption2).fontWeight(.semibold)
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(tint.opacity(Self.backgroundOpacity), in: Capsule())
+            .font(Type.dataSmall)
             .foregroundStyle(tint)
+            .padding(.horizontal, 10)
+            .frame(height: Metrics.chipH)
+            .background(Theme.chipBg, in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.chipLine, lineWidth: Metrics.borderW))
     }
 }
 
@@ -145,9 +118,9 @@ struct ReceiptCards: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(receipt.title ?? "Task").font(.title3).fontWeight(.semibold)
-                .foregroundStyle(Theme.text)
-            Text(receipt.taskId).font(.caption).foregroundStyle(Theme.textFaint)
+            Text(receipt.title ?? "Task").font(Type.titleCard)
+                .foregroundStyle(Theme.ink)
+            Text(receipt.taskId).font(Type.dataSmall).foregroundStyle(Theme.muted)
         }
     }
 
@@ -168,14 +141,14 @@ struct ReceiptCards: View {
                     axisRow(
                         label: "Lifecycle",
                         key: "↗ handed off",
-                        tint: Theme.purple,
+                        tint: Theme.muted,
                         detail: assertedText(handoff.assertedBy),
                         note: handoff.statement
                     )
                 }
                 evidenceCoverageRow(receipt.axes.evidenceStrength)
                 if let orthogonality = receipt.axes.orthogonalityNote {
-                    Text(orthogonality).font(.caption).foregroundStyle(Theme.textFaint)
+                    Text(orthogonality).font(Type.caption).foregroundStyle(Theme.muted)
                 }
             }
         }
@@ -184,12 +157,12 @@ struct ReceiptCards: View {
     private func axisRow(label: String, key: String, tint: Color, detail: String?, note: String?) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
-                Text(label).font(.caption).foregroundStyle(Theme.textMuted).frame(width: 130, alignment: .leading)
-                Text(key.uppercased()).font(.callout).fontWeight(.bold).foregroundStyle(tint)
-                if let detail { Text(detail).font(.caption).foregroundStyle(Theme.textMuted) }
+                Text(label).font(Type.caption).foregroundStyle(Theme.muted).frame(width: 130, alignment: .leading)
+                Text(key.uppercased()).font(Face.sansFont(13, .bold)).foregroundStyle(tint)
+                if let detail { Text(detail).font(Type.caption).foregroundStyle(Theme.muted) }
             }
             if let note {
-                Text(note).font(.caption).foregroundStyle(Theme.textFaint)
+                Text(note).font(Type.caption).foregroundStyle(Theme.muted)
                     .padding(.leading, 138)
             }
         }
@@ -200,17 +173,17 @@ struct ReceiptCards: View {
     private func evidenceCoverageRow(_ evidence: ReceiptEvidence) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Evidence coverage").font(.caption).foregroundStyle(Theme.textMuted)
+                Text("Evidence coverage").font(Type.caption).foregroundStyle(Theme.muted)
                     .frame(width: 130, alignment: .leading)
-                Text(evidence.headline).font(.callout).fontWeight(.bold)
+                Text(evidence.headline).font(Face.sansFont(13, .bold))
                     .foregroundStyle(receiptEvidenceTint(evidence.key))
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let ledger = evidence.ledger {
-                Text(ledger).font(.caption).foregroundStyle(Theme.textMuted).padding(.leading, 138)
+                Text(ledger).font(Type.caption).foregroundStyle(Theme.muted).padding(.leading, 138)
             }
             if let definition = evidence.definition {
-                Text(definition).font(.caption).foregroundStyle(Theme.textFaint).padding(.leading, 138)
+                Text(definition).font(Type.caption).foregroundStyle(Theme.muted).padding(.leading, 138)
             }
         }
     }
@@ -230,16 +203,13 @@ struct ReceiptCards: View {
 
     private func dimensionRow(_ name: String, _ summary: String, _ provenance: [String]?) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            Text(name).font(.caption).fontWeight(.semibold).foregroundStyle(Theme.textMuted)
+            Text(name).font(Type.captionSemibold).foregroundStyle(Theme.muted)
                 .frame(width: 74, alignment: .leading)
-            Text(summary).font(.callout).foregroundStyle(Theme.text)
+            Text(summary).font(Type.body).foregroundStyle(Theme.ink)
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 4) {
                 ForEach(provenance ?? [], id: \.self) { source in
-                    Text(source).font(.caption2)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(receiptSourceTint(source).opacity(0.16), in: Capsule())
-                        .foregroundStyle(receiptSourceTint(source))
+                    ProvenanceChip(text: source, tint: receiptSourceTint(source))
                 }
             }
         }
@@ -254,12 +224,12 @@ struct ReceiptCards: View {
             if !preview.shown.isEmpty {
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(preview.shown, id: \.self) { path in
-                        Text(path).font(.caption).foregroundStyle(Theme.textFaint)
+                        Text(path).font(Type.dataSmall).foregroundStyle(Theme.muted)
                             .lineLimit(1).truncationMode(.middle)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     if preview.elided > 0 {
-                        Text("… +\(preview.elided) more").font(.caption).foregroundStyle(Theme.textFaint)
+                        Text("… +\(preview.elided) more").font(Type.dataSmall).foregroundStyle(Theme.muted)
                     }
                 }
                 .padding(.leading, 82)  // align under the summary column (74 label + 8 spacing)
@@ -270,12 +240,12 @@ struct ReceiptCards: View {
                     ForEach(commands.shown, id: \.self) { cmd in
                         // verbatim: a command is untrusted text — never interpret it as
                         // markdown (Text's default LocalizedStringKey init would).
-                        Text(verbatim: "$ \(cmd)").font(.caption).foregroundStyle(Theme.textFaint)
+                        Text(verbatim: "$ \(cmd)").font(Type.dataSmall).foregroundStyle(Theme.muted)
                             .lineLimit(1).truncationMode(.middle)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     if commands.elided > 0 {
-                        Text("… +\(commands.elided) more").font(.caption).foregroundStyle(Theme.textFaint)
+                        Text("… +\(commands.elided) more").font(Type.dataSmall).foregroundStyle(Theme.muted)
                     }
                 }
                 .padding(.leading, 82)  // align the commands under the summary column
@@ -311,12 +281,12 @@ struct ReceiptCards: View {
             Card {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Gaps (\(items.count)) — what could not be proven")
-                        .font(.callout).fontWeight(.semibold).foregroundStyle(Theme.text)
+                        .font(Type.titleCard).foregroundStyle(Theme.ink)
                     ForEach(items) { item in
                         HStack(alignment: .top, spacing: 6) {
-                            Text(item.dimension).font(.caption2).foregroundStyle(Theme.textFaint)
+                            Text(item.dimension).font(Type.caption).foregroundStyle(Theme.muted)
                                 .frame(width: 70, alignment: .leading)
-                            Text(item.reason).font(.caption).foregroundStyle(Theme.textMuted)
+                            Text(item.reason).font(Type.caption).foregroundStyle(Theme.muted)
                         }
                     }
                 }
@@ -330,13 +300,13 @@ struct ReceiptCards: View {
         if !legend.isEmpty {
             Card {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Provenance").font(.callout).fontWeight(.semibold).foregroundStyle(Theme.text)
+                    Text("Provenance").font(Type.titleCard).foregroundStyle(Theme.ink)
                     ForEach(legend.keys.sorted(), id: \.self) { source in
                         HStack(alignment: .top, spacing: 6) {
-                            Text(source).font(.caption2).fontWeight(.semibold)
+                            Text(source).font(Type.captionSemibold)
                                 .foregroundStyle(receiptSourceTint(source))
                                 .frame(width: 78, alignment: .leading)
-                            Text(legend[source] ?? "").font(.caption).foregroundStyle(Theme.textMuted)
+                            Text(legend[source] ?? "").font(Type.caption).foregroundStyle(Theme.muted)
                         }
                     }
                 }

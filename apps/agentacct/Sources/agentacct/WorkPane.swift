@@ -57,7 +57,7 @@ struct WorkPane: View {
     var body: some View {
         HStack(spacing: 0) {
             taskList.frame(width: 340)
-            Rectangle().fill(Theme.border).frame(width: 1)
+            Rectangle().fill(Theme.rule).frame(width: 1)
             detail.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task(id: selectionKey) {
@@ -93,11 +93,11 @@ struct WorkPane: View {
     private var taskList: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundStyle(Theme.textFaint)
+                Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundStyle(Theme.muted)
                 if SnapshotMode.enabled {
                     // ImageRenderer draws a TextField / .menu Picker as a yellow
                     // placeholder; a snapshot shows plain stand-ins instead.
-                    Text("Filter tasks").font(Type.body).foregroundStyle(Theme.textFaint)
+                    Text("Filter tasks").font(Type.body).foregroundStyle(Theme.muted)
                     Spacer()
                     Chip(text: sort.rawValue, tint: Theme.accent)
                 } else {
@@ -109,9 +109,9 @@ struct WorkPane: View {
                 }
             }
             .padding(.horizontal, 8).padding(.vertical, 7)
-            Rectangle().fill(Theme.border.opacity(0.6)).frame(height: 1)
+            Rectangle().fill(Theme.hairline).frame(height: 1)
             if let error = dashboard.receiptListError, dashboard.receiptTasks.isEmpty {
-                Text(error).font(.callout).foregroundStyle(Theme.textMuted)
+                Text(error).font(Type.body).foregroundStyle(Theme.muted)
                     .padding().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollBox {
@@ -126,7 +126,7 @@ struct WorkPane: View {
                 }
             }
         }
-        .background(Theme.surface.opacity(0.4))
+        .background(Theme.chrome)
     }
 
     @ViewBuilder
@@ -134,20 +134,20 @@ struct WorkPane: View {
         if let receipt = dashboard.receipt, receipt.taskId == selection.taskId {
             WorkDetail(receipt: receipt)
         } else if let error = dashboard.receiptError, selection.taskId != nil {
-            Text(error).font(.callout).foregroundStyle(Theme.textMuted).padding()
+            Text(error).font(Type.body).foregroundStyle(Theme.muted).padding()
         } else if let unresolvedSessionId, selection.sessionId == unresolvedSessionId {
             VStack(spacing: 8) {
                 Image(systemName: "arrow.triangle.branch")
                     .font(.largeTitle)
-                    .foregroundStyle(Theme.textFaint)
+                    .foregroundStyle(Theme.muted)
                     .accessibilityHidden(true)
                 Text("Task link unavailable")
-                    .font(Type.rowTitle.weight(.semibold))
-                    .foregroundStyle(Theme.text)
+                    .font(Type.rowLabel)
+                    .foregroundStyle(Theme.ink)
                 Text("This active session is not identified in the task summary. "
                     + "Select its Task from the list to inspect the full receipt.")
                     .font(Type.body)
-                    .foregroundStyle(Theme.textMuted)
+                    .foregroundStyle(Theme.muted)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 360)
             }
@@ -156,8 +156,8 @@ struct WorkPane: View {
             .accessibilityIdentifier("work.unresolved-session")
         } else {
             VStack(spacing: 8) {
-                Image(systemName: "checklist").font(.largeTitle).foregroundStyle(Theme.textFaint)
-                Text("Select a Task to see its work").foregroundStyle(Theme.textMuted)
+                Image(systemName: "checklist").font(.largeTitle).foregroundStyle(Theme.muted)
+                Text("Select a Task to see its work").foregroundStyle(Theme.muted)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -190,7 +190,7 @@ private struct WorkDetail: View {
 
     private func sessionsSection(_ groups: [ReceiptSessionGroup]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            SectionCaption(tone: Theme.textMuted, text: "Sessions & steps")
+            SectionCaption(tone: Theme.muted, text: "Sessions & steps")
             ForEach(groups) { group in
                 VStack(alignment: .leading, spacing: 5) {
                     // Only label the group when there's more than one root (a
@@ -199,10 +199,10 @@ private struct WorkDetail: View {
                     if groups.count > 1 {
                         HStack(spacing: 6) {
                             Chip(text: group.role == "continuation" ? "continuation" : "primary",
-                                 tint: group.role == "continuation" ? Theme.blue : Theme.accent)
+                                 tint: group.role == "continuation" ? Theme.muted : Theme.accent)
                             if let count = group.supportingCount, count > 0 {
                                 Text("\(count) subagent\(count == 1 ? "" : "s")")
-                                    .font(Type.tiny).foregroundStyle(Theme.textFaint)
+                                    .font(Type.dataSmall).foregroundStyle(Theme.muted)
                             }
                         }
                     }
@@ -252,21 +252,21 @@ private struct SessionDrillRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                withAnimation(Motion.contentUpdate) { expanded.toggle() }
                 if expanded, detail == nil, !loading { Task { await load() } }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.textFaint).frame(width: 10)
+                        .font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.muted).frame(width: 10)
                     Chip(text: member.role == "subagent" ? (member.sessionKind ?? "subagent") : "root",
-                         tint: member.role == "subagent" ? Theme.purple : Theme.accent)
-                    Text(label).font(Type.body).foregroundStyle(Theme.text).lineLimit(1).truncationMode(.tail)
+                         tint: member.role == "subagent" ? Theme.muted : Theme.accent)
+                    Text(label).font(Type.body).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.tail)
                     Spacer(minLength: 8)
                     if let project = member.project, member.role == "root" {
-                        Text(project).font(Type.tiny).foregroundStyle(Theme.textFaint)
+                        Text(project).font(Type.caption).foregroundStyle(Theme.muted)
                     }
                     if let ago = agoText(member.lastActivityAt) {
-                        Text(ago).font(Type.tiny).foregroundStyle(Theme.textFaint)
+                        Text(ago).font(Type.dataSmall).foregroundStyle(Theme.muted)
                     }
                 }
                 .padding(.horizontal, 10).padding(.vertical, 7).contentShape(Rectangle())
@@ -277,8 +277,8 @@ private struct SessionDrillRow: View {
                 expandedBody.padding(.horizontal, 12).padding(.bottom, 10).padding(.leading, 6)
             }
         }
-        .background(Theme.card, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
+        .overlay(RoundedRectangle(cornerRadius: Metrics.radius).strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW))
         .task {
             // The root session opens expanded — its step-by-step is the point;
             // load its steps up front.
@@ -291,7 +291,7 @@ private struct SessionDrillRow: View {
         if let detail = effectiveDetail {
             VStack(alignment: .leading, spacing: 6) {
                 if detail.steps.isEmpty {
-                    Text("no recorded steps for this session").font(Type.small).foregroundStyle(Theme.textFaint)
+                    Text("no recorded steps for this session").font(Type.caption).foregroundStyle(Theme.muted)
                 } else {
                     // A snapshot opens the first couple of check-bearing steps
                     // (so their check evidence — command + exit code — shows) plus
@@ -316,10 +316,10 @@ private struct SessionDrillRow: View {
         } else if loading {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("loading steps…").font(Type.small).foregroundStyle(Theme.textFaint)
+                Text("loading steps…").font(Type.caption).foregroundStyle(Theme.muted)
             }
         } else if failed {
-            Text("couldn't load this session").font(Type.small).foregroundStyle(Theme.orange)
+            Text("couldn't load this session").font(Type.caption).foregroundStyle(Theme.amber)
         }
     }
 

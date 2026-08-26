@@ -65,7 +65,7 @@ enum SnapshotRunner {
                         .environmentObject(glance)
                         .environmentObject(dashboard)
                         .environmentObject(selection)
-                        .background(scheme == .dark ? Color(white: 0.13) : Color(white: 0.97))
+                        .background(Theme.canvas)
                         .frame(width: 360)
                         .environment(\.colorScheme, scheme)
                     try SnapshotImageWriter.render(menu, to: out.appendingPathComponent("menu-\(suffix).png"))

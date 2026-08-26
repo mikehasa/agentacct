@@ -4,12 +4,13 @@ import SwiftUI
 // drill-down (WorkPane.swift). Previously part of the Sessions pane.
 
 /// Tint for a check's independence: agent-reported is muted (the agent's own
-/// word), hook-observed is cyan, CI/provider is green.
+/// word), hook-observed is ink (machine-observed locally), CI/provider is
+/// green (independent evidence — the only tier that may wear green).
 func checkIndependenceTint(_ sourceType: String?) -> Color {
     switch sourceType {
     case "ci", "external", "provider": return Theme.green
-    case "client_hook": return Theme.cyan
-    default: return Theme.textMuted
+    case "client_hook": return Theme.ink
+    default: return Theme.muted
     }
 }
 
@@ -55,27 +56,27 @@ struct StepCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                withAnimation(Motion.contentUpdate) { expanded.toggle() }
             } label: {
                 HStack(spacing: 9) {
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
                         .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(Theme.textFaint)
+                        .foregroundStyle(Theme.muted)
                         .frame(width: 10)
                     StatusDot(color: Theme.statusColor(step.latestStatus))
                     Text(step.title ?? step.sectionId ?? "untitled")
                         .font(Type.body)
-                        .foregroundStyle(Theme.text)
+                        .foregroundStyle(Theme.ink)
                         .lineLimit(expanded ? nil : 1)
                         .fixedSize(horizontal: false, vertical: expanded)
                     Spacer(minLength: 8)
                     if let kind = step.kind, kind != "unknown" {
-                        Chip(text: kind, tint: Theme.textMuted)
+                        Chip(text: kind, tint: Theme.muted)
                     }
                     if let checks = step.checks, !checks.isEmpty {
                         Text("\(checks.count) check\(checks.count == 1 ? "" : "s")")
-                            .font(Type.tiny)
-                            .foregroundStyle(Theme.textFaint)
+                            .font(Type.dataSmall)
+                            .foregroundStyle(Theme.muted)
                     }
                     // The M2 per-step grade (self-checked / independent / …) is the
                     // primary signal; fall back to the older evidence_status only
@@ -103,37 +104,37 @@ struct StepCard: View {
                         }
                         if let ago = agoText(step.updatedAt) {
                             Text("updated \(ago)")
-                                .font(Type.tiny)
-                                .foregroundStyle(Theme.textFaint)
+                                .font(Type.dataSmall)
+                                .foregroundStyle(Theme.muted)
                         }
                         if let usage = step.usage, let tokens = usage.totalTokens, tokens > 0 {
                             Text("\(UsageTotals.compact(Int(tokens))) tok · \(usage.costText)")
-                                .font(Type.tiny.monospacedDigit())
-                                .foregroundStyle(Theme.textMuted)
+                                .font(Type.dataSmall)
+                                .foregroundStyle(Theme.muted)
                         }
                         if let models = step.models, !models.isEmpty {
                             Text(models.compactMap { $0.model ?? "unknown model" }.joined(separator: " · "))
-                                .font(Type.tiny)
-                                .foregroundStyle(Theme.purple)
+                                .font(Type.dataSmall)
+                                .foregroundStyle(Theme.muted)
                         }
                     }
                     // "Why this grade" — the daemon-supplied reason for the M2
                     // grade, else the older evidence_status explanation.
                     if let why = step.evidenceGradeReason {
                         Text(why)
-                            .font(Type.tiny)
+                            .font(Type.caption)
                             .foregroundStyle(stepGradeTint(step.evidenceGrade))
                             .fixedSize(horizontal: false, vertical: true)
                     } else if let why = evidenceExplanation {
                         Text(why)
-                            .font(Type.tiny)
+                            .font(Type.caption)
                             .foregroundStyle(evidenceTint(step.evidenceStatus))
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if let summary = step.summary, !summary.isEmpty {
                         Text(summary)
-                            .font(Type.small)
-                            .foregroundStyle(Theme.textMuted)
+                            .font(Type.caption)
+                            .foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                     }
@@ -146,27 +147,27 @@ struct StepCard: View {
                     }
                     if let blocker = step.blocker, !blocker.isEmpty {
                         Label(blocker, systemImage: "hand.raised.fill")
-                            .font(Type.small)
-                            .foregroundStyle(Theme.orange)
+                            .font(Type.caption)
+                            .foregroundStyle(Theme.amber)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                     }
                     if let next = step.nextStep, !next.isEmpty {
                         Label(next, systemImage: "arrow.turn.down.right")
-                            .font(Type.small)
-                            .foregroundStyle(Theme.textMuted)
+                            .font(Type.caption)
+                            .foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                     }
                     if let files = step.files, !files.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("\(files.count) file\(files.count == 1 ? "" : "s")")
-                                .font(Type.tiny.weight(.semibold))
-                                .foregroundStyle(Theme.textFaint)
+                                .font(Type.dataSmallSemibold)
+                                .foregroundStyle(Theme.muted)
                             ForEach(files, id: \.self) { file in
                                 Text(file)
-                                    .font(Type.tiny.monospaced())
-                                    .foregroundStyle(Theme.textFaint)
+                                    .font(Type.dataSmall)
+                                    .foregroundStyle(Theme.muted)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .textSelection(.enabled)
                             }
@@ -178,10 +179,10 @@ struct StepCard: View {
                 .padding(.leading, 18)
             }
         }
-        .background(Theme.card, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
         .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(Theme.border, lineWidth: 1)
+            RoundedRectangle(cornerRadius: Metrics.radius)
+                .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW)
         )
     }
 }
@@ -190,12 +191,19 @@ struct StepCard: View {
 struct CheckRow: View {
     let check: V1Check
 
+    /// Honesty rule for the pass mark: a green checkmark is reserved for
+    /// machine-observed results (CI/external/provider, or a hook-captured exit
+    /// code). An agent-REPORTED "passed" is the agent's own word, so its mark
+    /// stays ink — never green.
     private var mark: (String, Color) {
         switch check.result {
-        case "passed": return ("checkmark", Theme.green)
-        case "failed", "error": return ("xmark", Theme.red)
-        case "skipped": return ("chevron.right.2", Theme.orange)
-        default: return ("circle.fill", Theme.textFaint)
+        case "passed":
+            let machineObserved = ["ci", "external", "provider", "client_hook"]
+                .contains(check.sourceType ?? "")
+            return ("checkmark", machineObserved ? Theme.green : Theme.ink)
+        case "failed", "error": return ("xmark", Theme.coral)
+        case "skipped": return ("chevron.right.2", Theme.amber)
+        default: return ("circle.fill", Theme.muted)
         }
     }
 
@@ -206,22 +214,22 @@ struct CheckRow: View {
                 .foregroundStyle(mark.1)
                 .frame(width: 12)
             Text(check.evidenceType ?? "check")
-                .font(Type.tiny.weight(.semibold))
-                .foregroundStyle(Theme.textMuted)
+                .font(Type.captionSemibold)
+                .foregroundStyle(Theme.muted)
             Text(check.summary ?? "")
-                .font(Type.tiny)
-                .foregroundStyle(Theme.textMuted)
+                .font(Type.caption)
+                .foregroundStyle(Theme.muted)
                 .lineLimit(2)
             if let exit = check.exitCode {
                 Text("(exit \(exit))")
-                    .font(Type.tiny.monospacedDigit())
-                    .foregroundStyle(Theme.textFaint)
+                    .font(Type.dataSmall)
+                    .foregroundStyle(Theme.muted)
             }
             // Who attested this check — an agent-reported check is the agent's
             // own word no matter what its summary text claims.
             Chip(text: check.independence, tint: checkIndependenceTint(check.sourceType))
             if check.supersessionState == "superseded" {
-                Chip(text: "superseded", tint: Theme.textFaint)
+                Chip(text: "superseded", tint: Theme.muted)
             }
             Spacer(minLength: 0)
         }

@@ -1,16 +1,21 @@
 import AppKit
 import SwiftUI
 
-// The agentacct visual system — semantic tokens with a light and a dark value
-// each, resolved live from the system appearance. Neutral surfaces keep work
-// evidence legible; one restrained indigo carries interaction, while status
-// colors retain a single semantic meaning. Updating numbers use tabular digits.
+// The agentacct visual system — the v7 brand token sheet (DESIGN.md v10) as
+// Swift. Cream canvas and white cards are the ground; one cobalt accent is the
+// only interactive voice; green, amber and coral are semantic and rationed:
+// green speaks only for live-connection facts and independently verified
+// evidence, amber for the unverified tier and thresholds, coral for failure.
 //
-// Rules of the road:
-// * Repeated color and text roles use Theme/Type tokens. Component-specific
-//   optical sizes stay beside the symbol or control they tune.
-// * Updating metrics use tabular digits so values do not shift horizontally;
-//   prose and one-off numbers retain proportional spacing.
+// Rules of the road (v10):
+// * Pip shape carries the evidence tier everywhere; color is never the only
+//   carrier. The decision axis never merges with evidence tiers.
+// * Absence is a named state — never a dash-as-value, a blank, or a fabricated
+//   number. Every cost carries its basis.
+// * Nothing below 12px; no shadows; no gradients; radius caps at 4
+//   (fully-round chips excepted).
+// * Updating metrics use the mono face with tabular digits so values do not
+//   shift horizontally.
 // * No `.preferredColorScheme` locks anywhere: the app follows the system,
 //   and snapshots pin the scheme explicitly via `SnapshotScheme`.
 
@@ -78,83 +83,105 @@ enum Theme {
         }
     }
 
+    /// DESIGN.md v10 semantic tokens, verbatim. Light / dark.
     enum Palette {
         // Surfaces
-        static let bg = AdaptiveColor(lightHex: 0xF6F7F9, darkHex: 0x101114)
-        static let surface = AdaptiveColor(lightHex: 0xFFFFFF, darkHex: 0x18191E)
-        static let card = AdaptiveColor(lightHex: 0xFFFFFF, darkHex: 0x18191E)
-        static let cardAlt = AdaptiveColor(lightHex: 0xF1F2F5, darkHex: 0x202128)
-        static let border = AdaptiveColor(lightHex: 0xE0E2E7, darkHex: 0x34363E)
+        static let canvas = AdaptiveColor(lightHex: 0xF4F1E9, darkHex: 0x0D1215)
+        static let chrome = AdaptiveColor(lightHex: 0xFCFBF7, darkHex: 0x141B1F)
+        static let card = AdaptiveColor(lightHex: 0xFFFFFF, darkHex: 0x1B252A)
+        static let selected = AdaptiveColor(lightHex: 0xE7EDF8, darkHex: 0x223049)
 
-        // Text
-        static let text = AdaptiveColor(lightHex: 0x19191D, darkHex: 0xF4F4F6)
-        static let textMuted = AdaptiveColor(lightHex: 0x5F606A, darkHex: 0xB1B2BA)
-        static let textFaint = AdaptiveColor(lightHex: 0x6B6D77, darkHex: 0x8E909A)
+        // Ink
+        static let ink = AdaptiveColor(lightHex: 0x171A1D, darkHex: 0xF2F4F3)
+        static let muted = AdaptiveColor(lightHex: 0x59636B, darkHex: 0xA5B0B4)
 
-        // Brand and semantic accents
-        static let accent = AdaptiveColor(lightHex: 0x5B5BD6, darkHex: 0xA7A5FF)
-        static let blue = AdaptiveColor(lightHex: 0x4545B8, darkHex: 0xA7A5FF)
-        static let purple = AdaptiveColor(lightHex: 0x7048B6, darkHex: 0xBB9AF7)
-        // Success is deliberately quieter than the previous lime. Codex has
-        // its own identity color below so green retains one semantic meaning.
-        static let green = AdaptiveColor(lightHex: 0x0B7A66, darkHex: 0x62C8AD)
-        static let codex = AdaptiveColor(lightHex: 0x44647A, darkHex: 0x839CB2)
-        static let orange = AdaptiveColor(lightHex: 0x925A08, darkHex: 0xF1BB67)
-        static let red = AdaptiveColor(lightHex: 0xC73552, darkHex: 0xFF7D96)
-        static let cyan = AdaptiveColor(lightHex: 0x0E7490, darkHex: 0x7DCFFF)
+        // Accents — each has exactly one job.
+        static let accent = AdaptiveColor(lightHex: 0x245BDB, darkHex: 0x82A6FF)
+        static let green = AdaptiveColor(lightHex: 0x1F7653, darkHex: 0x78D5A8)
+        static let amber = AdaptiveColor(lightHex: 0x7A5A00, darkHex: 0xE7C66A)
+        static let coral = AdaptiveColor(lightHex: 0xB63F2F, darkHex: 0xFF9B88)
+
+        // Tints (badge/wash backgrounds; text on a tint uses the matching accent)
+        static let tintNeutral = AdaptiveColor(lightHex: 0xEDEBE3, darkHex: 0x2A343B)
+        static let tintAccent = AdaptiveColor(lightHex: 0xE8EEFB, darkHex: 0x24365C)
+        static let tintGreen = AdaptiveColor(lightHex: 0xE2F0E9, darkHex: 0x1E3B2F)
+        static let tintAmber = AdaptiveColor(lightHex: 0xF7EFDA, darkHex: 0x3D3420)
+        static let tintCoral = AdaptiveColor(lightHex: 0xF8E5E1, darkHex: 0x412620)
+        static let chipBg = AdaptiveColor(lightHex: 0xF7F5F0, darkHex: 0x232E34)
+
+        // Lines
+        static let rule = AdaptiveColor(lightHex: 0x79848B, darkHex: 0x68777D)
+        static let hairline = AdaptiveColor(lightHex: 0xE4E1D7, darkHex: 0x2C363C)
+        static let cardLine = AdaptiveColor(lightHex: 0xDDDACF, darkHex: 0x313D44)
+        static let chipLine = AdaptiveColor(lightHex: 0xD8D5CC, darkHex: 0x3B474E)
+
+        // Chart (one series per chart)
+        static let chartBar = AdaptiveColor(lightHex: 0x245BDB, darkHex: 0x5B82E0)
+        static let chartBarDim = AdaptiveColor(lightHex: 0xB9CBF2, darkHex: 0x31456F)
+
+        // Copy that sits ON a filled accent (primary buttons): white in light,
+        // near-black on the lighter dark-mode cobalt.
+        static let onAccent = AdaptiveColor(lightHex: 0xFFFFFF, darkHex: 0x0D1215)
     }
 
     // MARK: surfaces
 
-    static let bg = Palette.bg.color
-    static let surface = Palette.surface.color
+    static let canvas = Palette.canvas.color
+    static let chrome = Palette.chrome.color
     static let card = Palette.card.color
-    static let cardAlt = Palette.cardAlt.color
-    static let border = Palette.border.color
+    static let selected = Palette.selected.color
 
-    // MARK: text
+    // MARK: ink
 
-    static let text = Palette.text.color
-    static let textMuted = Palette.textMuted.color
-    static let textFaint = Palette.textFaint.color
+    static let ink = Palette.ink.color
+    static let muted = Palette.muted.color
 
-    // MARK: accents — one restrained indigo carries actions and selection.
-    // Client identity colors remain separate from semantic success/failure.
+    // MARK: accents
 
     static let accent = Palette.accent.color
-    static let blue = Palette.blue.color
-    static let purple = Palette.purple.color
     static let green = Palette.green.color
-    static let codex = Palette.codex.color
-    static let orange = Palette.orange.color
-    static let red = Palette.red.color
-    static let cyan = Palette.cyan.color
+    static let amber = Palette.amber.color
+    static let coral = Palette.coral.color
+    static let onAccent = Palette.onAccent.color
 
-    static func clientColor(_ client: String?) -> Color {
-        switch client {
-        case "claude-code": return blue
-        case "codex": return codex
-        case "cursor": return orange
-        case "hermes": return purple
-        case "opencode": return cyan
-        case "openclaw": return red
-        default: return .secondary.opacity(0.8)
-        }
-    }
+    // MARK: tints
 
+    static let tintNeutral = Palette.tintNeutral.color
+    static let tintAccent = Palette.tintAccent.color
+    static let tintGreen = Palette.tintGreen.color
+    static let tintAmber = Palette.tintAmber.color
+    static let tintCoral = Palette.tintCoral.color
+    static let chipBg = Palette.chipBg.color
+
+    // MARK: lines
+
+    static let rule = Palette.rule.color
+    static let hairline = Palette.hairline.color
+    static let cardLine = Palette.cardLine.color
+    static let chipLine = Palette.chipLine.color
+
+    // MARK: chart
+
+    static let chartBar = Palette.chartBar.color
+    static let chartBarDim = Palette.chartBarDim.color
+
+    /// Session/task lifecycle → decision-axis colors. The decision axis never
+    /// wears green for claims: "completed" is an assertion, so it stays ink.
+    /// Coral is failure-only; the interactive cobalt marks live progress.
     static func statusColor(_ status: String?) -> Color {
         switch status {
-        case "blocked": return orange
-        case "handed_off": return purple
-        case "in_progress", "started", "checkpoint": return blue
-        case "completed": return green
-        default: return .secondary.opacity(0.5)
+        case "blocked", "failed": return coral
+        case "in_progress", "started", "checkpoint": return accent
+        case "completed", "handed_off": return ink
+        default: return muted
         }
     }
 
+    /// Threshold → color for limit meters: attention from 75%, failure at the
+    /// limit itself (v10: notches sit at 75/90).
     static func limitColor(usedPercent: Double) -> Color {
-        if usedPercent >= 90 { return red }
-        if usedPercent >= 70 { return orange }
+        if usedPercent >= 100 { return coral }
+        if usedPercent >= 75 { return amber }
         return accent
     }
 
@@ -174,49 +201,99 @@ enum Theme {
 
 // MARK: - Typography tokens
 
-/// The macOS type ramp. SF Pro's neutral default design carries the interface;
-/// metrics use tabular digits without changing the surrounding letterforms.
-/// Three weights are enough to express the hierarchy without making every
-/// region compete for attention.
-enum Type {
-    /// Primary ring metric.
-    static let hero = Font.system(size: 28, weight: .semibold).monospacedDigit()
-    /// Title paired with a hero metric.
-    static let heroTitle = Font.system(size: 17, weight: .semibold)
-    /// Title inside a summary card.
-    static let cardTitle = Font.system(size: 14, weight: .semibold)
-    /// Panel-leading metric in top-level stat tiles.
-    static let metric = Font.system(size: 24, weight: .semibold).monospacedDigit()
-    /// Row-trailing metric (list money/token cells).
-    static let metricS = Font.system(size: 12, weight: .semibold).monospacedDigit()
-    /// Inline numeric text (meters, percentages).
-    static let numeric = Font.system(size: 11.5, weight: .semibold).monospacedDigit()
-    /// Row titles.
-    static let rowTitle = Font.system(size: 13, weight: .medium)
-    /// Body copy.
-    static let body = Font.system(size: 13)
-    /// Compact control labels and supporting copy.
-    static let callout = Font.system(size: 12)
-    /// Text actions.
-    static let action = Font.system(size: 12, weight: .medium)
-    /// Secondary copy.
-    static let small = Font.system(size: 11)
-    /// Footnotes / axis labels.
-    static let tiny = Font.system(size: 10)
-    /// Sentence-case section label (see SectionCaption).
-    static let caption = Font.system(size: 11, weight: .medium)
-    /// Small sentence-case label inside summary tiles.
-    static let tileLabel = Font.system(size: 11, weight: .medium)
+/// Brand faces with graceful degradation. The v7 spec sets Instrument Sans
+/// for UI and JetBrains Mono for data; neither ships with macOS, so resolution
+/// happens once at startup: use the brand face when it is installed or
+/// bundled, otherwise fall back to the system faces (SF / SF Mono) with the
+/// same sizes and weights. Registration of bundled fonts can slot in here
+/// later without touching any call site.
+enum Face {
+    static let sans: String? = resolve(["Instrument Sans", "InstrumentSans-Regular"])
+    static let mono: String? = resolve(["JetBrains Mono", "JetBrainsMono-Regular"])
+
+    private static func resolve(_ candidates: [String]) -> String? {
+        for name in candidates where NSFont(name: name, size: 13) != nil { return name }
+        return nil
+    }
+
+    static func sansFont(_ size: CGFloat, _ weight: Font.Weight) -> Font {
+        if let sans { return Font.custom(sans, size: size).weight(weight) }
+        return Font.system(size: size, weight: weight)
+    }
+
+    /// Data face. Tabular digits always, so updating values hold still.
+    static func monoFont(_ size: CGFloat, _ weight: Font.Weight) -> Font {
+        if let mono { return Font.custom(mono, size: size).weight(weight).monospacedDigit() }
+        return Font.system(size: size, weight: weight, design: .monospaced).monospacedDigit()
+    }
 }
 
-/// The spacing scale. Padding and gaps come from here, not magic numbers.
+/// The v7 nine-role type ramp (DESIGN.md v10). Hard floor: nothing below 12px.
+/// Tracking rides beside the roles that need it (SwiftUI fonts cannot carry
+/// letter-spacing, so title call sites pair the font with its tracking token).
+enum Type {
+    /// Record/page titles — 26/650, tracking −0.6.
+    static let titlePage = Face.sansFont(26, .semibold)
+    static let titlePageTracking: CGFloat = -0.6
+    /// Page section heads — 20/650, tracking −0.4.
+    static let titleSection = Face.sansFont(20, .semibold)
+    static let titleSectionTracking: CGFloat = -0.4
+    /// Card headers — 15/650.
+    static let titleCard = Face.sansFont(15, .semibold)
+    /// Summary-strip values — 18/700 mono.
+    static let kpi = Face.monoFont(18, .bold)
+    /// Row labels, dimension names, source names — 14/600.
+    static let rowLabel = Face.sansFont(14, .semibold)
+    /// Values and sentences — 14/400.
+    static let body = Face.sansFont(14, .regular)
+    /// Inline data strings — 13/400 mono.
+    static let data = Face.monoFont(13, .regular)
+    /// Chips, captions, meta — 12/400 (semibold variant for badge text).
+    static let caption = Face.sansFont(12, .regular)
+    static let captionSemibold = Face.sansFont(12, .semibold)
+    /// Small data annotations (12 mono) — timestamps, counts in captions.
+    static let dataSmall = Face.monoFont(12, .regular)
+    static let dataSmallSemibold = Face.monoFont(12, .semibold)
+    /// Eyebrows, column headers, strip captions — 12/700 mono, tracking +0.9.
+    /// Reserved for the label species; row content stays sentence case.
+    static let labelCaps = Face.monoFont(12, .bold)
+    static let labelCapsTracking: CGFloat = 0.9
+}
+
+/// The spacing scale — 4px base grid. Padding and gaps come from here.
 enum Space {
     static let xs: CGFloat = 4
     static let s: CGFloat = 8
     static let m: CGFloat = 12
     static let l: CGFloat = 16
-    static let dashboard: CGFloat = 20
     static let xl: CGFloat = 24
+    /// Standard card inset (v7: 24).
+    static let cardPad: CGFloat = 24
+    /// Page gutter (v7: 28–32).
+    static let gutter: CGFloat = 28
+}
+
+/// Normative component geometry (DESIGN.md v10). One radius for everything
+/// but chips; hairlines are 1px, secondary-button strokes 1.5px, focus 2px.
+enum Metrics {
+    static let radius: CGFloat = 4
+    static let borderW: CGFloat = 1
+    static let borderWSecondary: CGFloat = 1.5
+    static let focusW: CGFloat = 2
+
+    static let rowLedger: CGFloat = 64
+    static let rowTable: CGFloat = 52
+    static let rowSource: CGFloat = 72
+    static let rowHeader: CGFloat = 40
+
+    static let tierBadgeH: CGFloat = 22
+    static let decisionBadgeH: CGFloat = 26
+    static let decisionBadgeRowH: CGFloat = 20
+    static let chipH: CGFloat = 20
+    static let buttonH: CGFloat = 36
+    static let buttonHCompact: CGFloat = 32
+    static let meterH: CGFloat = 8
+    static let pipR: CGFloat = 4
 }
 
 /// Productive motion only: quick feedback, a brief content update, and one
@@ -230,70 +307,251 @@ enum Motion {
     static let paneCrossfade = Animation.easeOut(duration: 0.14)
 }
 
-// MARK: - Reusable components
+// MARK: - Evidence tier grammar
 
-/// A caption + big monospaced value, on a soft adaptive card (menu variant).
-struct StatTile: View {
-    let label: String
-    let value: String
-    var detail: String? = nil
-    var accent: Color = .primary
+/// The four pip shapes that carry evidence tiers everywhere (v10 rule 1:
+/// shape is the tier; color is never the only carrier).
+///
+/// Mapping from the daemon's evidence vocabulary — labels always keep the
+/// daemon's words, the shape/color pair is presentation only:
+/// * externally_verified → verified pip (filled inside a ring), green —
+///   the reserved tier; appears only with independent evidence.
+/// * independently_checked → filled pip, ink — machine-observed locally
+///   (hook-captured exit codes).
+/// * self_checked → half pip, accent — a supported claim.
+/// * claimed / unchecked → hollow pip, amber — claim ≠ proof.
+/// * none / not gradeable → hollow pip, muted.
+enum PipShape {
+    case filled
+    case half
+    case hollow
+    case verified
+}
+
+/// A single evidence pip (r4 by default). Draws the tier shape flat.
+struct EvidencePip: View {
+    let shape: PipShape
+    var tint: Color
+    var radius: CGFloat = Metrics.pipR
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label.uppercased())
-                .font(Type.tileLabel)
-                .tracking(0.6)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(Font.system(size: 17, weight: .semibold, design: .rounded).monospacedDigit())
-                .foregroundStyle(accent)
-            if let detail {
-                Text(detail)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+        ZStack {
+            switch shape {
+            case .filled:
+                Circle().fill(tint)
+            case .half:
+                Circle().strokeBorder(tint, lineWidth: 1.5)
+                HalfDisc().fill(tint)
+            case .hollow:
+                Circle().strokeBorder(tint, lineWidth: 1.5)
+            case .verified:
+                Circle().strokeBorder(tint, lineWidth: 1.5)
+                Circle().fill(tint).padding(radius * 0.45)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .frame(width: radius * 2, height: radius * 2)
+        .accessibilityHidden(true)  // the badge text names the tier
+    }
+
+    /// Left half of the pip disc (the "supported" glyph).
+    private struct HalfDisc: Shape {
+        func path(in rect: CGRect) -> Path {
+            var path = Path()
+            path.addArc(
+                center: CGPoint(x: rect.midX, y: rect.midY),
+                radius: rect.width / 2,
+                startAngle: .degrees(90),
+                endAngle: .degrees(270),
+                clockwise: false
+            )
+            path.closeSubpath()
+            return path
+        }
     }
 }
 
-/// The window's stat tile: white/storm panel, hairline border, tabular value.
-struct PanelTile: View {
+/// Evidence tier presentation: shape + colors + display label for each daemon
+/// grade word. The single lookup every surface shares so list, detail, and
+/// step rows can never disagree.
+struct EvidenceTierStyle {
+    let pip: PipShape
+    let tint: Color
+    let tintBg: Color
     let label: String
-    let value: String
-    var detail: String? = nil
-    var accent: Color = Theme.text
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(Type.tileLabel)
-                .foregroundStyle(Theme.textFaint)
-            Text(value)
-                .font(Type.metric)
-                .foregroundStyle(accent)
-            if let detail {
-                Text(detail)
-                    .font(Type.tiny)
-                    .foregroundStyle(Theme.textFaint)
-            }
+    static func forGrade(_ grade: String?) -> EvidenceTierStyle {
+        switch grade {
+        case "externally_verified":
+            return .init(pip: .verified, tint: Theme.green, tintBg: Theme.tintGreen, label: "externally-verified")
+        case "independently_checked":
+            return .init(pip: .filled, tint: Theme.ink, tintBg: Theme.tintNeutral, label: "independently-checked")
+        case "self_checked":
+            return .init(pip: .half, tint: Theme.accent, tintBg: Theme.tintAccent, label: "self-checked")
+        case "claimed":
+            return .init(pip: .hollow, tint: Theme.amber, tintBg: Theme.tintAmber, label: "claimed")
+        case "unchecked":
+            return .init(pip: .hollow, tint: Theme.amber, tintBg: Theme.tintAmber, label: "unchecked")
+        default:
+            return .init(pip: .hollow, tint: Theme.muted, tintBg: Theme.tintNeutral, label: grade ?? "none")
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(13)
-        .background(Theme.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Theme.border, lineWidth: 1)
-        )
     }
 }
 
-/// The window's panel card: content on card surface with a hairline border.
+/// Tier badge: h22, rx4, tint wash, pip + 12/600 sentence-case text.
+struct TierBadge: View {
+    let grade: String?
+    var text: String? = nil
+
+    var body: some View {
+        let style = EvidenceTierStyle.forGrade(grade)
+        HStack(spacing: 6) {
+            EvidencePip(shape: style.pip, tint: style.tint)
+            Text(text ?? style.label)
+                .font(Type.captionSemibold)
+                .foregroundStyle(style.tint)
+        }
+        .padding(.horizontal, 11)
+        .frame(height: Metrics.tierBadgeH)
+        .background(style.tintBg, in: RoundedRectangle(cornerRadius: Metrics.radius))
+    }
+}
+
+// MARK: - Decision axis
+
+/// Decision badge tint classes (no pip — the decision axis carries no
+/// evidence shapes). Green is reserved for machine-verified completion, the
+/// one decision key backed by independent evidence.
+enum DecisionTintClass {
+    case neutral
+    case accent
+    case danger
+    case verified
+
+    static func forKey(_ key: String?) -> DecisionTintClass {
+        switch key {
+        case "blocked", "failed", "finding": return .danger
+        case "in_progress", "started", "checkpoint": return .accent
+        case "verified": return .verified
+        default: return .neutral
+        }
+    }
+
+    var text: Color {
+        switch self {
+        case .neutral: return Theme.ink
+        case .accent: return Theme.accent
+        case .danger: return Theme.coral
+        case .verified: return Theme.green
+        }
+    }
+
+    var wash: Color {
+        switch self {
+        case .neutral: return Theme.tintNeutral
+        case .accent: return Theme.tintAccent
+        case .danger: return Theme.tintCoral
+        case .verified: return Theme.tintGreen
+        }
+    }
+}
+
+/// Decision badge: h26 page variant / h20 row variant, rx4, no pip.
+struct DecisionBadge: View {
+    let key: String?
+    let label: String
+    var compact = false
+
+    var body: some View {
+        let tint = DecisionTintClass.forKey(key)
+        Text(label)
+            .font(compact ? Type.captionSemibold : Face.sansFont(13, .semibold))
+            .foregroundStyle(tint.text)
+            .padding(.horizontal, compact ? 8 : 12)
+            .frame(height: compact ? Metrics.decisionBadgeRowH : Metrics.decisionBadgeH)
+            .background(tint.wash, in: RoundedRectangle(cornerRadius: Metrics.radius))
+    }
+}
+
+// MARK: - Chips and labels
+
+/// Provenance chip: h20 fully-round, chip wash + border, 12 mono muted text.
+/// Names a source or basis (Client log, Agent report, Pricing table…).
+struct ProvenanceChip: View {
+    let text: String
+    var tint: Color = Theme.muted
+
+    var body: some View {
+        Text(text)
+            .font(Type.dataSmall)
+            .foregroundStyle(tint)
+            .padding(.horizontal, 12)
+            .frame(height: Metrics.chipH)
+            .background(Theme.chipBg, in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.chipLine, lineWidth: Metrics.borderW))
+    }
+}
+
+/// A small tinted label chip (fully round). The general-purpose pill for
+/// inline state words; tier words should use TierBadge instead.
+struct Chip: View {
+    let text: String
+    var tint: Color = Theme.muted
+
+    var body: some View {
+        Text(text)
+            .font(Type.dataSmall)
+            .foregroundStyle(tint)
+            .padding(.horizontal, 10)
+            .frame(height: Metrics.chipH)
+            .background(Theme.chipBg, in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.chipLine, lineWidth: Metrics.borderW))
+    }
+}
+
+/// The caps-mono label species: eyebrows, column headers, strip captions.
+/// 12/700 mono, +0.9 tracking, uppercased. Content never shouts — only labels.
+struct CapsLabel: View {
+    let text: String
+    var tone: Color = Theme.muted
+
+    var body: some View {
+        Text(text.uppercased())
+            .font(Type.labelCaps)
+            .tracking(Type.labelCapsTracking)
+            .foregroundStyle(tone)
+    }
+}
+
+/// Section header caption used across the dropdown and window. ``tone``
+/// precedes ``text`` so the memberwise init reads ``(tone:text:)`` at window
+/// call sites while menu calls stay ``(text:)``.
+struct SectionCaption: View {
+    var tone: Color? = nil
+    let text: String
+
+    var body: some View {
+        CapsLabel(text: text, tone: tone ?? Theme.muted)
+    }
+}
+
+/// A colored status dot. It stays flat so status never reads as decoration.
+struct StatusDot: View {
+    let color: Color
+    var size: CGFloat = 7
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: size, height: size)
+    }
+}
+
+// MARK: - Cards, tiles, buttons
+
+/// The window's panel card: content on the card surface, 1px card border,
+/// v7 radius 4, no shadow.
 struct Card<Content: View>: View {
-    var padding: CGFloat = Space.m
+    var padding: CGFloat = Space.l
     /// Equal-height grids opt in; ordinary cards keep their intrinsic height.
     var fillsHeight = false
     @ViewBuilder let content: () -> Content
@@ -306,11 +564,65 @@ struct Card<Content: View>: View {
                 maxHeight: fillsHeight ? .infinity : nil,
                 alignment: .topLeading
             )
-            .background(Theme.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Theme.border, lineWidth: 1)
+                RoundedRectangle(cornerRadius: Metrics.radius)
+                    .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW)
             )
+    }
+}
+
+/// A caption + big monospaced value, on a soft adaptive card (menu variant).
+struct StatTile: View {
+    let label: String
+    let value: String
+    var detail: String? = nil
+    var accent: Color = .primary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            CapsLabel(text: label)
+            Text(value)
+                .font(Face.monoFont(17, .bold))
+                .foregroundStyle(accent)
+            if let detail {
+                Text(detail)
+                    .font(Type.dataSmall)
+                    .foregroundStyle(Theme.muted)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Theme.tintNeutral.opacity(0.5), in: RoundedRectangle(cornerRadius: Metrics.radius))
+    }
+}
+
+/// The window's stat tile: card panel, hairline border, tabular value.
+struct PanelTile: View {
+    let label: String
+    let value: String
+    var detail: String? = nil
+    var accent: Color = Theme.ink
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            CapsLabel(text: label)
+            Text(value)
+                .font(Type.kpi)
+                .foregroundStyle(accent)
+            if let detail {
+                Text(detail)
+                    .font(Type.dataSmall)
+                    .foregroundStyle(Theme.muted)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Space.m)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Metrics.radius)
+                .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW)
+        )
     }
 }
 
@@ -357,12 +669,12 @@ private struct QuietButtonBody: View {
             .padding(.vertical, verticalPadding)
             .background(
                 tint.opacity(fillOpacity),
-                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                in: RoundedRectangle(cornerRadius: Metrics.radius)
             )
             .overlay {
                 if isFocused {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(Theme.accent, lineWidth: 2)
+                    RoundedRectangle(cornerRadius: Metrics.radius)
+                        .strokeBorder(Theme.accent, lineWidth: Metrics.focusW)
                 }
             }
             .contentShape(Rectangle())
@@ -375,17 +687,38 @@ private struct QuietButtonBody: View {
     }
 }
 
-/// A slim rounded meter (limits, shares).
+/// The v7 secondary button chrome: card fill + 1.5px card border, rx4.
+/// Wrap a label; height comes from Metrics.buttonH at the call site.
+struct SecondaryButtonChrome: ViewModifier {
+    var height: CGFloat = Metrics.buttonH
+
+    func body(content: Content) -> some View {
+        content
+            .font(Face.sansFont(13, .semibold))
+            .foregroundStyle(Theme.ink)
+            .padding(.horizontal, Space.l)
+            .frame(height: height)
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
+            .overlay(
+                RoundedRectangle(cornerRadius: Metrics.radius)
+                    .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderWSecondary)
+            )
+    }
+}
+
+// MARK: - Meters and coverage
+
+/// A slim v7 meter (limits, shares): rx2 track on the neutral wash.
 struct MeterBar: View {
     let fraction: Double
     var tint: Color
-    var height: CGFloat = 5
+    var height: CGFloat = Metrics.meterH
 
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Capsule().fill(.quaternary.opacity(0.6))
-                Capsule()
+                RoundedRectangle(cornerRadius: 2).fill(Theme.tintNeutral)
+                RoundedRectangle(cornerRadius: 2)
                     .fill(tint)
                     .frame(width: max(height, proxy.size.width * min(max(fraction, 0), 1)))
             }
@@ -394,49 +727,63 @@ struct MeterBar: View {
     }
 }
 
-/// A small tinted label chip.
-struct Chip: View {
-    static let backgroundOpacity = 0.08
+/// One segment of an evidence coverage bar.
+struct CoverageSegment {
+    let count: Int
+    let grade: String
+}
 
-    let text: String
-    var tint: Color = .secondary
+/// Coverage bar: h8, rx2 segments, 4px gaps, widths strictly proportional to
+/// counts. Always pair with a counted legend at the call site.
+struct CoverageBar: View {
+    let segments: [CoverageSegment]
+    var height: CGFloat = Metrics.meterH
+
+    private var total: Int { segments.reduce(0) { $0 + $1.count } }
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 10, weight: .medium))
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2.5)
-            .background(tint.opacity(Self.backgroundOpacity), in: Capsule())
-            .foregroundStyle(tint)
+        GeometryReader { proxy in
+            let visible = segments.filter { $0.count > 0 }
+            let gaps = CGFloat(max(visible.count - 1, 0)) * 4
+            let unit = total > 0 ? (proxy.size.width - gaps) / CGFloat(total) : 0
+            HStack(spacing: 4) {
+                ForEach(Array(visible.enumerated()), id: \.offset) { _, segment in
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(EvidenceTierStyle.forGrade(segment.grade).tint)
+                        .frame(width: max(unit * CGFloat(segment.count), 2))
+                }
+            }
+        }
+        .frame(height: height)
     }
 }
 
-/// A colored status dot. It stays flat so status never reads as decoration.
-struct StatusDot: View {
-    let color: Color
-    var size: CGFloat = 7
+// MARK: - Summary strip
+
+/// One cell of a v7 summary strip: caps-mono caption over an 18/700 mono
+/// value, with an optional muted qualifier riding the value line.
+struct SummaryCell: View {
+    let label: String
+    let value: String
+    var qualifier: String? = nil
 
     var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: size, height: size)
+        VStack(alignment: .leading, spacing: 6) {
+            CapsLabel(text: label)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(value)
+                    .font(Type.kpi)
+                    .foregroundStyle(Theme.ink)
+                if let qualifier {
+                    Text(qualifier)
+                        .font(Type.dataSmall)
+                        .foregroundStyle(Theme.muted)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
-
-/// Section header caption used across the dropdown and window. ``tone``
-/// precedes ``text`` so the memberwise init reads ``(tone:text:)`` at window
-/// call sites while menu calls stay ``(text:)``.
-struct SectionCaption: View {
-    var tone: Color? = nil
-    let text: String
-
-    var body: some View {
-        Text(text)
-            .font(Type.caption)
-            .foregroundStyle(tone ?? Color.secondary)
-    }
-}
-
 
 // MARK: - Snapshot support
 

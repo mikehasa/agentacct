@@ -70,7 +70,11 @@ from .finding_disposition import (
 )
 from .env_compat import read_env_alias
 from .localhost_guard import install_localhost_guard
-from .ingestion_health import IngestionHealthStore, importer_build_id
+from .ingestion_health import (
+    IngestionHealthStore,
+    V1_INGESTION_SCHEMA_VERSION,
+    importer_build_id,
+)
 from .join_rules import namespace_join_compatible
 from .mechanical_checks import build_mechanical_check_events
 from .service import SentinelService
@@ -2691,6 +2695,7 @@ def create_local_api_app(
             "session_detail_schema": V1_SESSION_DETAIL_SCHEMA_VERSION,
             "plan_schema": V1_PLAN_SCHEMA_VERSION,
             "receipt_schema": RECEIPT_SCHEMA_VERSION,
+            "ingestion_schema": V1_INGESTION_SCHEMA_VERSION,
             "pid": os.getpid(),
             "store_dir": str(store_dir),
             "store_scope": store_scope,
@@ -2903,6 +2908,21 @@ def create_local_api_app(
             latest_store_activity_at=latest_store_activity(tasks),
         )
 
+    @app.get("/v1/ingestion")
+    def v1_ingestion(request: Request) -> dict[str, Any]:
+        """Source/ingestion health for the native shell's Sources surface —
+        the bearer-gated twin of the legacy ``/ingestion/health`` route. The
+        snapshot is passed through verbatim (same additive contract): per-source
+        state and recency, watcher liveness, and actionable issues. The shell
+        renders exactly what the snapshot vouches for; a source the importer
+        has never seen simply is not listed — absence stays absence."""
+
+        _require_v1_token(request)
+        return {
+            "schema": V1_INGESTION_SCHEMA_VERSION,
+            "ingestion": ingestion_health.snapshot(),
+        }
+
     @app.get("/")
     def index() -> dict[str, Any]:
         """A machine-readable front door (the HTML dashboard is retired).
@@ -2932,6 +2952,7 @@ def create_local_api_app(
                 "/v1/plan (bearer token from the store's local-api.json)",
                 "/v1/tasks (bearer token from the store's local-api.json)",
                 "/v1/receipt?task= (bearer token from the store's local-api.json)",
+                "/v1/ingestion (bearer token from the store's local-api.json)",
             ],
         }
 

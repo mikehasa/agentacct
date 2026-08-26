@@ -5,17 +5,16 @@ import XCTest
 final class ThemeContrastTests: XCTestCase {
     private let minimumSmallTextContrast = 4.5
 
-    func testSmallTextRolesMeetContrastTargetOnDashboardSurfaces() {
+    func testTextRolesMeetContrastTargetOnEverySurface() {
         let foregrounds: [(String, Theme.AdaptiveColor)] = [
-            ("text", Theme.Palette.text),
-            ("textMuted", Theme.Palette.textMuted),
-            ("textFaint", Theme.Palette.textFaint),
+            ("ink", Theme.Palette.ink),
+            ("muted", Theme.Palette.muted),
         ]
         let surfaces: [(String, Theme.AdaptiveColor)] = [
-            ("bg", Theme.Palette.bg),
-            ("surface", Theme.Palette.surface),
+            ("canvas", Theme.Palette.canvas),
+            ("chrome", Theme.Palette.chrome),
             ("card", Theme.Palette.card),
-            ("cardAlt", Theme.Palette.cardAlt),
+            ("selected", Theme.Palette.selected),
         ]
 
         for scheme in [ColorScheme.light, .dark] {
@@ -32,42 +31,73 @@ final class ThemeContrastTests: XCTestCase {
         }
     }
 
-    func testSemanticColorsMeetContrastTargetInSmallChips() {
-        let semanticColors: [(String, Theme.AdaptiveColor)] = [
-            ("accent", Theme.Palette.accent),
-            ("blue", Theme.Palette.blue),
-            ("purple", Theme.Palette.purple),
-            ("green", Theme.Palette.green),
-            ("codex", Theme.Palette.codex),
-            ("orange", Theme.Palette.orange),
-            ("red", Theme.Palette.red),
-            ("cyan", Theme.Palette.cyan),
-        ]
-        let chipStyles = [
-            (name: "chip", backgroundOpacity: Chip.backgroundOpacity),
-            (name: "axis chip", backgroundOpacity: AxisChip.backgroundOpacity),
+    /// Badge and chip text sits on a solid tint wash (v7 badges composite
+    /// nothing — the tint is an exact hex), so every text-on-tint pairing the
+    /// components produce is asserted directly.
+    func testBadgeTextMeetsContrastTargetOnItsTint() {
+        let pairings: [(String, Theme.AdaptiveColor, Theme.AdaptiveColor)] = [
+            ("accent on tintAccent", Theme.Palette.accent, Theme.Palette.tintAccent),
+            ("green on tintGreen", Theme.Palette.green, Theme.Palette.tintGreen),
+            ("amber on tintAmber", Theme.Palette.amber, Theme.Palette.tintAmber),
+            ("coral on tintCoral", Theme.Palette.coral, Theme.Palette.tintCoral),
+            ("ink on tintNeutral", Theme.Palette.ink, Theme.Palette.tintNeutral),
+            ("muted on tintNeutral", Theme.Palette.muted, Theme.Palette.tintNeutral),
+            ("ink on chip", Theme.Palette.ink, Theme.Palette.chipBg),
+            ("muted on chip", Theme.Palette.muted, Theme.Palette.chipBg),
+            ("accent on chip", Theme.Palette.accent, Theme.Palette.chipBg),
         ]
 
         for scheme in [ColorScheme.light, .dark] {
-            // Both chip styles are currently used only on card-backed rows and
-            // panels. Add another host surface here before placing one elsewhere.
-            let card = Theme.Palette.card.hex(for: scheme)
-            for style in chipStyles {
-                for (name, semanticColor) in semanticColors {
-                    let foreground = semanticColor.hex(for: scheme)
-                    let chipBackground = composite(
-                        foreground: foreground,
-                        background: card,
-                        opacity: style.backgroundOpacity
-                    )
+            for (context, foreground, tint) in pairings {
+                assertContrast(
+                    foreground.hex(for: scheme),
+                    against: tint.hex(for: scheme),
+                    minimum: minimumSmallTextContrast,
+                    context: "\(context) in \(scheme) mode"
+                )
+            }
+        }
+    }
+
+    /// Semantic accents also appear as plain text (links, annotations,
+    /// threshold percentages) on the three main surfaces.
+    func testSemanticTextMeetsContrastTargetOnSurfaces() {
+        let accents: [(String, Theme.AdaptiveColor)] = [
+            ("accent", Theme.Palette.accent),
+            ("green", Theme.Palette.green),
+            ("amber", Theme.Palette.amber),
+            ("coral", Theme.Palette.coral),
+        ]
+        let surfaces: [(String, Theme.AdaptiveColor)] = [
+            ("canvas", Theme.Palette.canvas),
+            ("chrome", Theme.Palette.chrome),
+            ("card", Theme.Palette.card),
+        ]
+
+        for scheme in [ColorScheme.light, .dark] {
+            for (accentName, accent) in accents {
+                for (surfaceName, surface) in surfaces {
                     assertContrast(
-                        foreground,
-                        against: chipBackground,
+                        accent.hex(for: scheme),
+                        against: surface.hex(for: scheme),
                         minimum: minimumSmallTextContrast,
-                        context: "\(name) \(style.name) in \(scheme) mode"
+                        context: "\(accentName) on \(surfaceName) in \(scheme) mode"
                     )
                 }
             }
+        }
+    }
+
+    /// Primary buttons fill with the accent; their copy must stay legible in
+    /// both schemes (white on cobalt / near-black on the lighter dark cobalt).
+    func testPrimaryButtonCopyMeetsContrastTarget() {
+        for scheme in [ColorScheme.light, .dark] {
+            assertContrast(
+                Theme.Palette.onAccent.hex(for: scheme),
+                against: Theme.Palette.accent.hex(for: scheme),
+                minimum: minimumSmallTextContrast,
+                context: "onAccent on accent in \(scheme) mode"
+            )
         }
     }
 
@@ -108,23 +138,5 @@ final class ThemeContrastTests: XCTestCase {
         component <= 0.04045
             ? component / 12.92
             : pow((component + 0.055) / 1.055, 2.4)
-    }
-
-    private func composite(foreground: UInt32, background: UInt32, opacity: Double) -> UInt32 {
-        let red = compositeChannel(foreground >> 16, background >> 16, opacity: opacity)
-        let green = compositeChannel(foreground >> 8, background >> 8, opacity: opacity)
-        let blue = compositeChannel(foreground, background, opacity: opacity)
-        return (red << 16) | (green << 8) | blue
-    }
-
-    private func compositeChannel(
-        _ foreground: UInt32,
-        _ background: UInt32,
-        opacity: Double
-    ) -> UInt32 {
-        let foregroundChannel = Double(foreground & 0xFF)
-        let backgroundChannel = Double(background & 0xFF)
-        let blended = foregroundChannel * opacity + backgroundChannel * (1 - opacity)
-        return UInt32(blended.rounded())
     }
 }
