@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .activation import ActivationStateStore
@@ -63,6 +63,7 @@ from .cost import (
 )
 from .evidence_store import EVIDENCE_STORE_DIRNAME
 from .finding_disposition import (
+    FindingDispositionConflict,
     FindingDispositionNotFound,
     disposition_for_event,
     finding_target_digest,
@@ -2201,7 +2202,82 @@ def _dashboard_task_projection(data: _DashboardPageData) -> dict[str, Any]:
         disposition_events=data.events,
         form_secret=data.task_csrf_token,
     )
+    _apply_blocker_dispositions_to_projection(projection, events=data.events)
     return data.task_identity.decorate_projection(projection) if data.task_identity is not None else projection
+
+
+def _apply_blocker_dispositions_to_projection(
+    projection: Mapping[str, Any], *, events: list[dict[str, Any]]
+) -> None:
+    """Stamp each blocked work item with its human attention disposition.
+
+    Replays the blocker-attention chains (the finding machinery with the
+    blocker event type) and, for every item whose ``current_blocked_event_id``
+    resolves to a raw ledger event, stamps the item with the chain's state:
+
+    * ``blocker_disposition_state`` — open/reviewed/resolved (absent = open);
+    * ``blocker_disposition`` — {state, revision, note, updated_at} for the UI;
+    * ``blocker_target_revision`` — the optimistic-concurrency revision a
+      write must echo.
+
+    Read-time only; the agent's recorded events are never touched. The outcome
+    reducer consumes the stamp so a human-resolved blocker stops forcing the
+    Task's decision word (the machine resolution lane stays separate).
+    """
+
+    from .finding_disposition import (
+        BLOCKER_DISPOSITION_AUTHORITY_SCOPE,
+        BLOCKER_DISPOSITION_EVENT_TYPE,
+        finding_target_digest,
+        reduce_finding_dispositions,
+    )
+
+    chains = reduce_finding_dispositions(
+        events,
+        event_type=BLOCKER_DISPOSITION_EVENT_TYPE,
+        authority_scope=BLOCKER_DISPOSITION_AUTHORITY_SCOPE,
+    )
+    wanted_ids: set[str] = set()
+    for task in projection.get("tasks", []):
+        if not isinstance(task, Mapping):
+            continue
+        for item in task.get("work_items", []) or []:
+            if isinstance(item, Mapping):
+                blocked_id = str(item.get("current_blocked_event_id") or "")
+                if blocked_id:
+                    wanted_ids.add(blocked_id)
+    if not wanted_ids:
+        return
+    raw_by_id = {
+        str(event.get("event_id") or ""): event
+        for event in events
+        if str(event.get("event_id") or "") in wanted_ids
+    }
+    for task in projection.get("tasks", []):
+        if not isinstance(task, Mapping):
+            continue
+        for item in task.get("work_items", []) or []:
+            if not isinstance(item, dict):
+                continue
+            blocked_id = str(item.get("current_blocked_event_id") or "")
+            raw = raw_by_id.get(blocked_id)
+            if raw is None:
+                continue
+            digest = finding_target_digest(raw)
+            if digest is None:
+                continue
+            state = chains.states.get(digest)
+            revision = state.revision if state is not None else 0
+            item["blocker_target_revision"] = revision
+            if state is None or digest in chains.invalid_targets:
+                continue
+            item["blocker_disposition_state"] = state.state
+            item["blocker_disposition"] = {
+                "state": state.state,
+                "revision": state.revision,
+                "note": state.note,
+                "updated_at": state.updated_at,
+            }
 
 
 # ---------------------------------------------------------------------------
@@ -2973,6 +3049,115 @@ def create_local_api_app(
             title=_task_title(selected),
             latest_store_activity_at=latest_store_activity(tasks),
         )
+
+    @app.post("/v1/disposition")
+    def v1_disposition(
+        request: Request, payload: dict[str, Any] = Body(...)
+    ) -> dict[str, Any]:
+        """Record ONE human attention transition for a surfaced finding or a
+        recorded blocker — the first user-originated write on the /v1 lane.
+
+        Bearer-gated like every /v1 route; the body must echo the optimistic
+        ``expected_revision`` the caller displayed, so a concurrent change is
+        a 409, never a silent overwrite. A resolve REQUIRES a note. The write
+        appends a server-validated disposition event (see finding_disposition)
+        — it never rewrites machine evidence or the agent's recorded events,
+        and the response is the chain's new state, not a re-graded outcome.
+        """
+
+        _require_v1_token(request)
+        kind = str(payload.get("kind") or "").strip()
+        action = str(payload.get("action") or "").strip()
+        raw_note = payload.get("note")
+        note = raw_note.strip() if isinstance(raw_note, str) and raw_note.strip() else None
+        expected_revision = payload.get("expected_revision")
+        if (
+            isinstance(expected_revision, bool)
+            or not isinstance(expected_revision, int)
+            or expected_revision < 0
+        ):
+            raise HTTPException(
+                status_code=400, detail="expected_revision must be a non-negative integer"
+            )
+        idempotency_key = str(payload.get("idempotency_key") or "").strip()
+        try:
+            if kind == "finding":
+                digest = str(payload.get("target_digest") or "").strip()
+                projection = _v1_task_projection()
+                episode = resolve_finding_episode(projection, digest=digest)
+                target = (
+                    episode.get("failure_event")
+                    if isinstance(episode.get("failure_event"), dict)
+                    else None
+                )
+                if target is None:
+                    raise FindingDispositionNotFound("finding target is unavailable")
+                assignment_context = (
+                    episode.get("assignment_context")
+                    if isinstance(episode.get("assignment_context"), dict)
+                    else {}
+                )
+                task_scope = (
+                    assignment_context.get("task_scope")
+                    if isinstance(assignment_context.get("task_scope"), dict)
+                    else None
+                )
+                full_digest = finding_target_digest(target)
+                if not idempotency_key:
+                    idempotency_key = f"v1:finding:{full_digest}:{expected_revision}:{action}"
+                recorded = service.record_finding_disposition(
+                    target_event=target,
+                    action=action,
+                    expected_revision=expected_revision,
+                    note=note,
+                    idempotency_key=idempotency_key,
+                    task_scope=task_scope,
+                    transport="v1",
+                )
+            elif kind == "blocker":
+                blocked_event_id = str(payload.get("blocked_event_id") or "").strip()
+                if not blocked_event_id:
+                    raise HTTPException(status_code=400, detail="blocked_event_id is required")
+                events = service.list_all_events()
+                target = next(
+                    (
+                        event
+                        for event in events
+                        if str(event.get("event_id") or "") == blocked_event_id
+                    ),
+                    None,
+                )
+                if target is None:
+                    raise FindingDispositionNotFound(
+                        "blocker target event is not in this ledger"
+                    )
+                if not idempotency_key:
+                    idempotency_key = f"v1:blocker:{blocked_event_id}:{expected_revision}:{action}"
+                recorded = service.record_blocker_disposition(
+                    target_event=target,
+                    action=action,
+                    expected_revision=expected_revision,
+                    note=note,
+                    idempotency_key=idempotency_key,
+                    transport="v1",
+                )
+            else:
+                raise HTTPException(status_code=400, detail="kind must be finding or blocker")
+        except FindingDispositionNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except FindingDispositionConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        metadata = (
+            recorded.get("metadata") if isinstance(recorded.get("metadata"), Mapping) else {}
+        )
+        return {
+            "ok": True,
+            "kind": kind,
+            "action": action,
+            "state": metadata.get("next_state"),
+            "revision": metadata.get("revision"),
+            "event_id": recorded.get("event_id"),
+        }
 
     @app.get("/v1/ingestion")
     def v1_ingestion(request: Request) -> dict[str, Any]:

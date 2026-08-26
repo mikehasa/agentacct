@@ -157,6 +157,33 @@ final class DashboardStore: ObservableObject {
         )
     }
 
+    /// Record one human attention disposition (finding or blocker) and refresh
+    /// the open receipt so the new state is what the user sees next. Throws
+    /// with the daemon's own conflict/not-found detail on failure.
+    func postDisposition(
+        kind: String,
+        action: String,
+        expectedRevision: Int,
+        note: String?,
+        targetDigest: String? = nil,
+        blockedEventId: String? = nil,
+        refreshTaskId: String? = nil
+    ) async throws {
+        var body: [String: Any] = [
+            "kind": kind,
+            "action": action,
+            "expected_revision": expectedRevision,
+        ]
+        if let note, !note.isEmpty { body["note"] = note }
+        if let targetDigest { body["target_digest"] = targetDigest }
+        if let blockedEventId { body["blocked_event_id"] = blockedEventId }
+        let _: DispositionResponse = try await client.postAuthed("/v1/disposition", body: body)
+        if let refreshTaskId {
+            await fetchReceipt(taskId: refreshTaskId)
+        }
+        await fetchReceipts()
+    }
+
     /// Preload one session's deep view into `preloadedSessions` (snapshot support).
     func preloadSession(client clientName: String, sessionId: String) async {
         if let detail = try? await loadSession(client: clientName, sessionId: sessionId) {
@@ -187,6 +214,13 @@ final class DashboardStore: ObservableObject {
             errorText = "usage range fetch failed: \(error.localizedDescription)"
         }
     }
+}
+
+/// The POST /v1/disposition acknowledgement: the chain's new state.
+struct DispositionResponse: Decodable {
+    let ok: Bool?
+    let state: String?
+    let revision: Int?
 }
 
 /// The menu bar → main window selection channel.

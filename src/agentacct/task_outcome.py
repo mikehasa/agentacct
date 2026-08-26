@@ -525,10 +525,21 @@ def reduce_task_outcome(
     # failed check may explain the blocker, but it must never demote a
     # recorded ``blocked``/``failed`` step (or explicit blocker text) into a
     # non-actionable finding.
+    # A human "resolved" disposition (server-validated append-only chain, see
+    # finding_disposition) withdraws the blocker's ATTENTION claim: the item's
+    # recorded status/text stay untouched in the data, but it no longer forces
+    # the Task's decision word — the reduction falls through to whatever else
+    # is true. Deliberately weaker than the evidence-backed machine resolution
+    # lane (which rewrites latest_status to ``resolved``); a human dismissal
+    # never fabricates a terminal success.
+    def _blocker_resolved_by_user(item: Mapping[str, Any]) -> bool:
+        return _text(item.get("blocker_disposition_state")).lower() == "resolved"
+
     blocked_items = [
         item
         for item, status in zip(items, statuses)
-        if status in _BLOCKED_STATUSES or _text(item.get("blocker"))
+        if (status in _BLOCKED_STATUSES or _text(item.get("blocker")))
+        and not _blocker_resolved_by_user(item)
     ]
     if blocked_items:
         def _item_time(item: Mapping[str, Any]) -> float:
@@ -558,6 +569,15 @@ def reduce_task_outcome(
             "updated_at": newest_at or None,
             "blocked_step_count": len(blocked_items),
             "later_completed_steps": later_completed_steps,
+            # The write handle for a user disposition on THIS blocker: the
+            # exact blocked event plus the optimistic revision to echo.
+            "blocked_event_id": _text(newest.get("current_blocked_event_id")) or None,
+            "disposition_revision": _integer(newest.get("blocker_target_revision")),
+            "disposition": (
+                dict(newest["blocker_disposition"])
+                if isinstance(newest.get("blocker_disposition"), Mapping)
+                else None
+            ),
         }
         return {
             "key": "blocked",

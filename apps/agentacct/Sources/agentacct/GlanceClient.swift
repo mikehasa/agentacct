@@ -131,6 +131,44 @@ final class GlanceClient {
         return try JSONDecoder().decode(T.self, from: data)
     }
 
+    /// The bearer-gated /v1 POST lane — the app's first user-originated write
+    /// (dispositions). JSON in, JSON out; a non-2xx status surfaces the
+    /// daemon's own detail message so honesty copy ("blocker changed…")
+    /// reaches the user verbatim.
+    func postAuthed<T: Decodable>(_ path: String, body: [String: Any]) async throws -> T {
+        let discovery = try loadDiscovery()
+        let host = discovery.host ?? "127.0.0.1"
+        guard let url = URL(string: "http://\(host):\(discovery.port)\(path)") else {
+            throw GlanceClientError.transport("bad daemon URL")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(discovery.token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw GlanceClientError.transport(error.localizedDescription)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw GlanceClientError.transport("not an HTTP response")
+        }
+        guard http.statusCode == 200 else {
+            if let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let detail = payload["detail"] as? String {
+                throw GlanceClientError.transport(detail)
+            }
+            throw GlanceClientError.http(http.statusCode)
+        }
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            throw GlanceClientError.transport("payload decode failed: \(error.localizedDescription)")
+        }
+    }
+
     private func get<T: Decodable>(_ path: String, discovery: Discovery) async throws -> T {
         let host = discovery.host ?? "127.0.0.1"
         guard let url = URL(string: "http://\(host):\(discovery.port)\(path)") else {

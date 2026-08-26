@@ -507,7 +507,8 @@ struct ReceiptDecision: Decodable {
 }
 
 /// Why a Task reads blocked: the newest agent-recorded blocker (preferring the
-/// newest one that carries text), plus the staleness facts beside it.
+/// newest one that carries text), plus the staleness facts beside it — and the
+/// write handle for a human disposition on that exact blocker.
 struct ReceiptBlocker: Decodable {
     let stepTitle: String?
     let sectionId: String?
@@ -516,15 +517,52 @@ struct ReceiptBlocker: Decodable {
     let updatedAt: Double?
     let blockedStepCount: Int?
     let laterCompletedSteps: Int?
+    // Disposition write handle: the exact blocked event + the optimistic
+    // revision a POST /v1/disposition must echo.
+    let blockedEventId: String?
+    let dispositionRevision: Int?
+    let disposition: ReceiptDispositionState?
 
     enum CodingKeys: String, CodingKey {
-        case text
+        case text, disposition
         case stepTitle = "step_title"
         case sectionId = "section_id"
         case nextStep = "next_step"
         case updatedAt = "updated_at"
         case blockedStepCount = "blocked_step_count"
         case laterCompletedSteps = "later_completed_steps"
+        case blockedEventId = "blocked_event_id"
+        case dispositionRevision = "disposition_revision"
+    }
+}
+
+/// One human attention disposition (finding or blocker): append-only chain
+/// state served by the daemon. Never machine verification.
+struct ReceiptDispositionState: Decodable {
+    let state: String?
+    let revision: Int?
+    let note: String?
+    let updatedAt: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case state, revision, note
+        case updatedAt = "updated_at"
+    }
+}
+
+/// The disposition handle a failing check row carries when it is a surfaced
+/// finding episode of this store.
+struct ReceiptCheckFinding: Decodable {
+    let targetDigest: String?
+    let state: String?
+    let revision: Int?
+    let attentionOpen: Bool?
+    let note: String?
+
+    enum CodingKeys: String, CodingKey {
+        case state, revision, note
+        case targetDigest = "target_digest"
+        case attentionOpen = "attention_open"
     }
 }
 
@@ -860,11 +898,14 @@ struct ReceiptCheck: Decodable, Identifiable {
     let commandRedacted: Bool?
     let artifactRef: String?
     let artifactUrl: String?
+    // Present only on a failing check that is a surfaced finding episode —
+    // the handle the disposition controls post with.
+    let finding: ReceiptCheckFinding?
 
     var id: String { "\(name ?? "check")-\(result ?? "")-\(exitCode ?? 0)" }
 
     enum CodingKeys: String, CodingKey {
-        case kind, name, result, scope, source, superseded, at, summary, files
+        case kind, name, result, scope, source, superseded, at, summary, files, finding
         case exitCode = "exit_code"
         case commandRedacted = "command_redacted"
         case artifactRef = "artifact_ref"

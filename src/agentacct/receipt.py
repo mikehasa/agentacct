@@ -99,6 +99,9 @@ _DECISION_ASSERTED_BY: dict[str, str] = {
     "verified": "machine",
     "finding": "machine",
     "finding_superseded": "machine",
+    # Every standing failure carries a human "resolved" disposition — the
+    # machine fact stays in history; the ATTENTION claim is the human's.
+    "finding_resolved_by_user": "human",
     # ``failed`` is refined out of ``blocked`` from an agent-recorded work status,
     # not a machine check — so it is an agent report, exactly like ``blocked``.
     "failed": "agent_report",
@@ -118,6 +121,10 @@ _DECISION_ASSERTED_BY: dict[str, str] = {
 _DECISION_STATEMENTS: dict[str, str] = {
     "verified": "Recorded machine evidence verifies the latest outcome.",
     "finding": "A recorded check found an issue in the work being reviewed.",
+    "finding_resolved_by_user": (
+        "You marked the recorded finding resolved; the failing check stays in history — "
+        "this is not machine verification."
+    ),
     "finding_superseded": (
         "A recorded check failed, but a later same-scope check passed; the finding is kept "
         "in history and is not a verified outcome."
@@ -135,6 +142,11 @@ _DECISION_STATEMENTS: dict[str, str] = {
     "in_progress": "This Task is still in progress.",
     "observed": "agentacct observed this Task but no outcome was recorded.",
     "unknown": "agentacct observed this Task but no outcome was recorded.",
+}
+
+# Display-label overrides for keys whose mechanical Title Case reads wrong.
+_DECISION_LABELS: dict[str, str] = {
+    "finding_resolved_by_user": "Finding resolved",
 }
 
 _SUCCESS_STATUSES = {"completed", "passed", "resolved"}
@@ -249,10 +261,45 @@ def _check_source(check: Mapping[str, Any]) -> str:
 def _project_checks(task: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Shape the Task's latest-per-identity checks for the Evidence dimension."""
 
+    from .finding_disposition import finding_target_digest
+
+    # The surfaced finding-episode index, keyed by target digest, so a failing
+    # check row can carry its own disposition handle (state + revision + the
+    # digest a /v1 disposition write names). Only SURFACED episodes get a
+    # handle — a failure outside this store's scope stays un-disposable here,
+    # the same quarantine the write path enforces.
+    episodes = (
+        task.get("finding_episodes")
+        if isinstance(task.get("finding_episodes"), list)
+        else []
+    )
+    episode_by_digest = {
+        str(episode.get("target_digest") or ""): episode
+        for episode in episodes
+        if isinstance(episode, Mapping) and episode.get("target_digest")
+    }
+
     shaped: list[dict[str, Any]] = []
     for check in latest_task_checks(task):
         if not isinstance(check, Mapping):
             continue
+        finding_handle = None
+        if _text(check.get("result")).lower() in {"failed", "error"}:
+            digest = finding_target_digest(check)
+            episode = episode_by_digest.get(str(digest or ""))
+            if episode is not None:
+                latest = (
+                    episode.get("latest_disposition")
+                    if isinstance(episode.get("latest_disposition"), Mapping)
+                    else {}
+                )
+                finding_handle = {
+                    "target_digest": str(digest),
+                    "state": _text(episode.get("disposition_state")) or "open",
+                    "revision": int(episode.get("revision") or 0),
+                    "attention_open": bool(episode.get("attention_open")),
+                    "note": _text(latest.get("note")) or None,
+                }
         files = check.get("files") if isinstance(check.get("files"), list) else []
         shaped.append(
             {
@@ -278,6 +325,9 @@ def _project_checks(task: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "command_redacted": bool(check.get("command_redacted")),
                 "artifact_ref": _text(check.get("artifact_ref")) or None,
                 "artifact_url": _text(check.get("artifact_url")) or None,
+                # The human-attention handle for a surfaced failing check
+                # (None on passes and on failures outside this store's scope).
+                "finding": finding_handle,
             }
         )
     return shaped
@@ -498,16 +548,20 @@ def _decision_status(
             key = "failed"
 
     attention = _text(canonical.get("finding_attention_state"))
+    # Every standing failure human-resolved -> a DISTINCT decision word, so
+    # every surface (app groups/tints, TUI, CLI) files the task done-ish by
+    # vocabulary alone. The failing checks stay in the evidence dimension;
+    # this never touches evidence strength.
+    if key == "finding" and attention == "resolved":
+        key = "finding_resolved_by_user"
     asserted_by = _DECISION_ASSERTED_BY.get(key, "none")
-    # A finding a human has reviewed or resolved is now a HUMAN assertion — and
-    # (crucially) this never touches evidence strength.
-    if key == "finding" and attention in {"reviewed", "resolved"}:
+    # A finding a human has reviewed (but not resolved) stays a red finding
+    # with a HUMAN assertion.
+    if key == "finding" and attention == "reviewed":
         asserted_by = "human"
 
     statement = _DECISION_STATEMENTS.get(key, _DECISION_STATEMENTS["unknown"])
-    if key == "finding" and attention == "resolved":
-        statement = "You marked the recorded finding resolved; this is not machine verification."
-    elif key == "finding" and attention == "reviewed":
+    if key == "finding" and attention == "reviewed":
         statement = "Every current finding was reviewed; no passing check has replaced the failed evidence."
 
     # The newest blocker's own words (agent-recorded text, next step, when, and
@@ -519,7 +573,7 @@ def _decision_status(
 
     return {
         "key": key,
-        "label": key.replace("_", " ").title(),
+        "label": _DECISION_LABELS.get(key, key.replace("_", " ").title()),
         "statement": statement,
         "asserted_by": asserted_by,
         "finding_attention_state": attention or None,

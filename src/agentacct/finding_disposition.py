@@ -24,6 +24,16 @@ FINDING_DISPOSITION_SOURCE = "agent-chronicle-dashboard"
 FINDING_DISPOSITION_AUTHORITY_SCOPE = "finding_attention_only"
 FINDING_TARGET_SCHEMA = "agent-chronicle.finding-target.v1"
 
+# The blocker sibling: the SAME chain machinery (target digests, optimistic
+# revisions, idempotency, operation digests) replayed for a different target
+# kind — the exact agent-recorded blocked step event instead of a failed
+# check. A human disposition here records only whether the user still wants
+# that blocker highlighted; it never rewrites the agent's recorded event and
+# never counts as the evidence-backed machine resolution lane
+# (``resolves_blocked_event_id``), which stays agent-only.
+BLOCKER_DISPOSITION_EVENT_TYPE = "blocker_disposition"
+BLOCKER_DISPOSITION_AUTHORITY_SCOPE = "blocker_attention_only"
+
 FINDING_ACTIONS = {"mark_reviewed", "resolve", "reopen", "reinstate"}
 FINDING_STATES = {"open", "reviewed", "resolved"}
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
@@ -164,15 +174,20 @@ def disposition_transition(prior_state: str, action: str) -> str | None:
     return None
 
 
-def is_trusted_finding_disposition_event(event: Mapping[str, Any]) -> bool:
+def is_trusted_finding_disposition_event(
+    event: Mapping[str, Any],
+    *,
+    event_type: str = FINDING_DISPOSITION_EVENT_TYPE,
+    authority_scope: str = FINDING_DISPOSITION_AUTHORITY_SCOPE,
+) -> bool:
     metadata = event.get("metadata") if isinstance(event.get("metadata"), Mapping) else {}
     return bool(
-        event.get("event_type") == FINDING_DISPOSITION_EVENT_TYPE
+        event.get("event_type") == event_type
         and event.get("source") == FINDING_DISPOSITION_SOURCE
-        and metadata.get("sentinel_semantic_kind") == FINDING_DISPOSITION_EVENT_TYPE
+        and metadata.get("sentinel_semantic_kind") == event_type
         and metadata.get(FINDING_DISPOSITION_CONTRACT_KEY)
         == FINDING_DISPOSITION_CONTRACT_VERSION
-        and metadata.get("authority_scope") == FINDING_DISPOSITION_AUTHORITY_SCOPE
+        and metadata.get("authority_scope") == authority_scope
         and metadata.get("authoritative_for_check_result") is False
         and metadata.get("actor") == "dashboard-user"
     )
@@ -196,8 +211,15 @@ def _bounded_text(value: str, *, maximum: int, allow_empty: bool = False) -> boo
 
 def reduce_finding_dispositions(
     events: Iterable[Mapping[str, Any]],
+    *,
+    event_type: str = FINDING_DISPOSITION_EVENT_TYPE,
+    authority_scope: str = FINDING_DISPOSITION_AUTHORITY_SCOPE,
 ) -> FindingDispositionProjection:
-    """Replay only server-trusted, internally consistent disposition chains."""
+    """Replay only server-trusted, internally consistent disposition chains.
+
+    The chain machinery is target-kind agnostic; pass the blocker event
+    type/scope to replay blocker-attention chains with the same guarantees.
+    """
 
     states: dict[str, FindingDispositionState] = {}
     accepted = 0
@@ -206,7 +228,9 @@ def reduce_finding_dispositions(
     invalid_targets: set[str] = set()
 
     for event in events:
-        if not is_trusted_finding_disposition_event(event):
+        if not is_trusted_finding_disposition_event(
+            event, event_type=event_type, authority_scope=authority_scope
+        ):
             continue
         metadata = event.get("metadata") if isinstance(event.get("metadata"), Mapping) else {}
         target_event_id = str(metadata.get("target_failure_event_id") or "").strip()
