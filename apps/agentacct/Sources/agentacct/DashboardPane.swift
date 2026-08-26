@@ -16,6 +16,8 @@ struct DashboardWorkItem: Identifiable {
     let evidence: String
     let failedChecks: Int
     let cost: String
+    let gradeable: Bool
+    let strongestTierKey: String?
 
     init(task: ReceiptSummary) {
         id = task.taskId
@@ -36,18 +38,30 @@ struct DashboardWorkItem: Identifiable {
         evidence = task.evidenceStrength.compactHeadline
         failedChecks = task.evidenceStrength.checksFailed ?? 0
         cost = Self.compactCost(task.cost)
+        gradeable = task.evidenceStrength.gradeable == true
+        strongestTierKey = task.evidenceStrength.strongestTier
     }
 
     var recency: String? {
         agoText(lastActivityAt)
     }
 
+    /// Strongest evidence tier present (drives the row's tier pip).
+    var strongestTier: String? {
+        gradeable ? (strongestTierKey ?? "unchecked") : nil
+    }
+
+    /// A superseded finding's failed check belongs to the finding that
+    /// superseded it — it never resurfaces as needing review (keeps this
+    /// predicate agreeing with the Work tab's Attention bucket).
     var needsReview: Bool {
-        failedChecks > 0 || ["finding", "failed", "blocked"].contains(outcomeKey)
+        (failedChecks > 0 && outcomeKey != "finding_superseded")
+            || ["finding", "failed", "blocked"].contains(outcomeKey)
     }
 
     var hasFinding: Bool {
-        failedChecks > 0 || ["finding", "failed"].contains(outcomeKey)
+        (failedChecks > 0 && outcomeKey != "finding_superseded")
+            || ["finding", "failed"].contains(outcomeKey)
     }
 
     private static func outcomeLabel(for key: String) -> String {
@@ -121,7 +135,11 @@ enum DashboardUsageSeries: String, CaseIterable, Identifiable {
             guard !available.isEmpty else { return "—" }
             let complete = available.count == periods.count
                 && periods.allSatisfy { $0.costComplete == true }
-            return "\(Fmt.dollars(available.reduce(0, +), prefix: complete ? "$" : "~$")) total"
+            let reported = complete && periods.allSatisfy {
+                ["client_reported", "provider_billed"].contains($0.costConfidence ?? "")
+            }
+            let prefix = reported ? "$" : (complete ? "≈$" : "~$")
+            return "\(Fmt.dollars(available.reduce(0, +), prefix: prefix)) total"
         }
     }
 
@@ -384,9 +402,9 @@ private struct RecentWorkCard: View {
     private var workColumnLabels: some View {
         HStack(spacing: 12) {
             Text("Task").frame(maxWidth: .infinity, alignment: .leading)
-            Text("Outcome").frame(width: 100, alignment: .leading)
-            Text("Evidence").frame(width: 78, alignment: .leading)
-            Text("Cost").frame(width: 64, alignment: .trailing)
+            Text("Outcome").frame(width: 104, alignment: .leading)
+            Text("Evidence").frame(width: 96, alignment: .leading)
+            Text("Cost").frame(width: 68, alignment: .trailing)
             Color.clear.frame(width: 10, height: 1)
         }
         .font(Face.sansFont(12, .medium))
@@ -415,23 +433,29 @@ private struct RecentWorkRow: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                HStack(spacing: 7) {
-                    StatusDot(color: DecisionTintClass.forKey(item.outcomeKey).text, size: 7)
-                    Text(item.outcome).lineLimit(2)
+                // Decision axis: a pip-less tinted badge (a filled dot here
+                // read as the independently-checked evidence pip).
+                DecisionBadge(key: item.outcomeKey, label: item.outcome, compact: true)
+                    .frame(width: 104, alignment: .leading)
+
+                // Evidence axis: the strongest tier's pip shape + the ratio.
+                HStack(spacing: 6) {
+                    if let tier = item.strongestTier {
+                        let style = EvidenceTierStyle.forGrade(tier)
+                        EvidencePip(shape: style.pip, tint: style.tint)
+                    } else {
+                        EvidencePip(shape: .hollow, tint: Theme.muted)
+                    }
+                    Text(item.evidence)
+                        .font(Type.dataSmall)
+                        .foregroundStyle(Theme.muted)
                 }
-                .font(Type.captionSemibold)
-                .foregroundStyle(Theme.muted)
-                .frame(width: 100, alignment: .leading)
+                .frame(width: 96, alignment: .leading)
 
-                Text(item.evidence)
+                Text(item.cost == "—" ? "unpriced" : item.cost)
                     .font(Type.dataSmall)
                     .foregroundStyle(Theme.muted)
-                    .frame(width: 78, alignment: .leading)
-
-                Text(item.cost)
-                    .font(Type.dataSmall)
-                    .foregroundStyle(Theme.muted)
-                    .frame(width: 64, alignment: .trailing)
+                    .frame(width: 68, alignment: .trailing)
 
                 DashboardDisclosureIndicator()
             }
@@ -610,7 +634,7 @@ struct DashboardPlanWindowPresentation: Equatable {
         remainingFraction = (remaining ?? 0) / 100
         usedPercent = window.usedPercent
         resetText = Theme.resetsIn(window.resetsAt).map { "Resets in \($0)" }
-            ?? "Reset time unavailable"
+            ?? "Reset time unreported"
         provenanceText = "Provider reported"
     }
 }
@@ -634,7 +658,9 @@ private struct PlanAndUsageCard: View {
 
         Card(padding: 0, fillsHeight: true) {
             VStack(spacing: 0) {
-                DashboardCardHeader("Plan and usage", count: accountCount > 1 ? accountCount : nil) {
+                // The card renders ONE provider meter; a multi-account badge
+                // here promised accounts the card never shows.
+                DashboardCardHeader("Plan and usage", count: nil) {
                     Button(action: onViewLimits) {
                         Text("View limits").font(Type.captionSemibold)
                     }
@@ -963,7 +989,9 @@ private struct DashboardSessionRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                StatusDot(color: Theme.statusColor(session.status), size: 6)
+                RoundedRectangle(cornerRadius: 1)
+                .fill(Theme.statusColor(session.status))
+                .frame(width: 3, height: 14)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(session.title ?? "\(session.client) · \(session.shortSessionId)")
                         .font(Type.rowLabel)

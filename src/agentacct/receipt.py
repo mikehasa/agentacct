@@ -125,7 +125,7 @@ _DECISION_STATEMENTS: dict[str, str] = {
     "failed": "A step was recorded as failed.",
     "blocked": "The agent recorded a blocker for this Task.",
     "resolved": "A later passed check reports the exact blocker resolved; this is not a verified completion.",
-    "reported": "The agent reported completing work; no linked passing check verifies it yet.",
+    "reported": "The agent reported completing work; no check verifies the completion claim itself.",
     "handed_off": "The work was cleanly handed off (continued elsewhere); a deliberate stop, not a completion.",
     "ended_open": (
         "The session ended with this step still open; agentacct inferred a stop from the session-end "

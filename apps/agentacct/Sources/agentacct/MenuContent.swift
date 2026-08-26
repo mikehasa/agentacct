@@ -89,7 +89,7 @@ struct MenuContent: View {
             if let used = sevenDay {
                 Text("\(Int(used.rounded()))%")
                     .font(Face.monoFont(24, .bold))
-                MeterBar(fraction: used / 100.0, tint: Theme.limitColor(usedPercent: used), height: 6)
+                LimitMeter(usedPercent: used)
                     .padding(.vertical, 2)
                 Text("today \(windows["today"]?.costText ?? "—") · \(windows["today"]?.tokensText ?? "—") fresh tok")
                     .font(Type.dataSmall)
@@ -111,6 +111,9 @@ struct MenuContent: View {
                      value: windows["last 30 days"]?.costText ?? "—",
                      detail: (windows["last 30 days"]?.tokensText).map { "\($0) tok" })
         }
+        Text("≈ costs are pricing estimates from client-reported tokens")
+            .font(Type.caption)
+            .foregroundStyle(Theme.muted)
 
         let liveLimits = glance.limits.filter { $0.stale != true }
         if !liveLimits.isEmpty {
@@ -139,12 +142,14 @@ struct MenuContent: View {
         ForEach(Array((limit.windows ?? []).enumerated()), id: \.offset) { _, window in
             if let used = window.usedPercent {
                 HStack(spacing: 8) {
-                    StatusDot(color: Theme.muted, size: 6)
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Theme.muted)
+                        .frame(width: 3, height: 12)
                     Text("\(limit.client ?? "?") \(window.kind ?? "")")
                         .font(Type.caption)
                         .foregroundStyle(Theme.muted)
                         .frame(width: 96, alignment: .leading)
-                    MeterBar(fraction: used / 100.0, tint: Theme.limitColor(usedPercent: used))
+                    LimitMeter(usedPercent: used)
                     Text(String(format: "%.0f%%", used))
                         .font(Type.dataSmallSemibold)
                         .frame(width: 34, alignment: .trailing)
@@ -162,7 +167,11 @@ struct MenuContent: View {
             openMain(selecting: "\(session.client)::\(session.sessionId)")
         } content: {
             HStack(spacing: 8) {
-                StatusDot(color: Theme.statusColor(session.status), size: 7)
+                // Lifecycle marker as a bar, not a dot — filled circles are
+                // the evidence-tier pip vocabulary.
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Theme.statusColor(session.status))
+                    .frame(width: 3, height: 14)
                 Text(session.title ?? "\(session.client) · \(session.shortSessionId)")
                     .font(Type.caption)
                     .lineLimit(1)

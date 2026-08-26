@@ -48,6 +48,7 @@ struct UsageTotals: Decodable {
     let estimatedCostUsd: Double?
     let costComplete: Bool?
     let knownAdditiveCostUsd: Double?
+    let costConfidence: String?
 
     enum CodingKeys: String, CodingKey {
         case freshTokens = "fresh_tokens"
@@ -55,19 +56,19 @@ struct UsageTotals: Decodable {
         case estimatedCostUsd = "estimated_cost_usd"
         case costComplete = "cost_complete"
         case knownAdditiveCostUsd = "known_additive_cost_usd"
+        case costConfidence = "cost_confidence"
     }
 
-    /// The one shared cost rule (mirrors usage_snapshot.cost_text): a plain
-    /// dollar figure ONLY when the cube vouches completeness; a partial subtotal
-    /// is marked approximate; nothing priced renders as an em-dash — never $0.
+    /// The one shared cost rule: a bare dollar figure only for a complete
+    /// figure whose confidence is reported/billed; a complete ESTIMATE keeps
+    /// its ≈; a partial subtotal is ~; nothing priced is an em-dash — never $0.
     var costText: String {
-        if costComplete == true, let cost = estimatedCostUsd {
-            return Fmt.dollars(cost)
-        }
-        if let known = knownAdditiveCostUsd {
-            return Fmt.dollars(known, prefix: "~$")
-        }
-        return "—"
+        Fmt.costDisplay(
+            usd: estimatedCostUsd,
+            knownAdditive: knownAdditiveCostUsd,
+            complete: costComplete,
+            confidence: costConfidence
+        ) ?? "—"
     }
 
     var tokensText: String {

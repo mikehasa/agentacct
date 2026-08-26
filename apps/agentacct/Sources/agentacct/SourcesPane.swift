@@ -120,6 +120,7 @@ struct SourcesPane: View {
 
     private func connectedCard(_ snapshot: V1IngestionSnapshot) -> some View {
         let sources = (snapshot.sources ?? []).sorted { $0.source < $1.source }
+        let watcherRunning = snapshot.watcher?.state == "running"
         return Card(padding: 0) {
             VStack(spacing: 0) {
                 HStack(spacing: Space.s) {
@@ -127,7 +128,7 @@ struct SourcesPane: View {
                     Text("\(sources.count)").font(Type.dataSmall).foregroundStyle(Theme.muted)
                     Spacer()
                     if let overall = snapshot.state {
-                        sourceStateLozenge(overall)
+                        overallLozenge(overall, watcherRunning: watcherRunning)
                     }
                 }
                 .padding(.horizontal, Space.xl)
@@ -148,20 +149,20 @@ struct SourcesPane: View {
                             Rectangle().fill(Theme.hairline).frame(height: 1)
                                 .padding(.horizontal, Space.xl)
                         }
-                        sourceRow(source)
+                        sourceRow(source, watcherRunning: watcherRunning)
                     }
                 }
             }
         }
     }
 
-    private func sourceRow(_ source: V1IngestionSource) -> some View {
+    private func sourceRow(_ source: V1IngestionSource, watcherRunning: Bool) -> some View {
         HStack(alignment: .center, spacing: Space.l) {
             RoundedRectangle(cornerRadius: Metrics.radius)
                 .fill(Theme.tintNeutral)
                 .frame(width: 36, height: 36)
                 .overlay(
-                    Text(String(source.source.prefix(1)).uppercased())
+                    Text(Self.monogram(source.source))
                         .font(Type.dataSmallSemibold).foregroundStyle(Theme.muted)
                 )
             VStack(alignment: .leading, spacing: 4) {
@@ -181,10 +182,24 @@ struct SourcesPane: View {
                         .font(Type.dataSmall).foregroundStyle(Theme.coral)
                 }
             }
-            sourceStateLozenge(source.state ?? "unknown")
+            sourceLozenge(source, watcherRunning: watcherRunning)
         }
         .padding(.horizontal, Space.xl)
         .frame(minHeight: Metrics.rowSource)
+    }
+
+    /// Two-letter monogram that actually distinguishes sources: hyphenated
+    /// names take their parts' initials (claude-code → CC); plain names take
+    /// first + last letter (opencode → OE, openclaw → OW, codex → CX).
+    static func monogram(_ name: String) -> String {
+        let parts = name.split(whereSeparator: { $0 == "-" || $0 == "_" })
+        if parts.count >= 2 {
+            return parts.prefix(2).compactMap { $0.first.map(String.init) }.joined().uppercased()
+        }
+        guard let first = name.first, let last = name.last, name.count > 1 else {
+            return name.uppercased()
+        }
+        return String([first, last]).uppercased()
     }
 
     /// The row's fact line, built only from reported numbers.
@@ -197,17 +212,39 @@ struct SourcesPane: View {
         return parts.isEmpty ? "no scan recorded" : parts.joined(separator: " · ")
     }
 
-    /// State lozenge — green speaks only for a live, healthy connection.
+    /// Per-source lozenge — green "Reporting" is a LIVE-connection fact: it
+    /// requires a healthy source, a running watcher, and rows actually
+    /// parsed. A healthy source under a stopped watcher is "Idle"; a watch
+    /// that has never yielded a row is "Watching", not "Reporting".
     @ViewBuilder
-    private func sourceStateLozenge(_ state: String) -> some View {
-        switch state {
-        case "healthy":
+    private func sourceLozenge(_ source: V1IngestionSource, watcherRunning: Bool) -> some View {
+        switch source.state ?? "unknown" {
+        case "healthy" where watcherRunning && (source.parsed ?? 0) > 0:
             StateLozenge(text: "Reporting", tint: Theme.green, wash: Theme.tintGreen, pip: .filled)
+        case "healthy" where watcherRunning:
+            StateLozenge(text: "Watching · no data yet", tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+        case "healthy":
+            StateLozenge(text: "Idle", tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
         case "degraded":
             StateLozenge(text: "Degraded", tint: Theme.amber, wash: Theme.tintAmber, pip: .hollow)
         case "pending":
             StateLozenge(text: "Pending", tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
-        default:
+        case let state:
+            StateLozenge(text: state.capitalized, tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+        }
+    }
+
+    /// The card-level roll-up follows the same live-fact rule.
+    @ViewBuilder
+    private func overallLozenge(_ state: String, watcherRunning: Bool) -> some View {
+        switch state {
+        case "healthy" where watcherRunning:
+            StateLozenge(text: "Reporting", tint: Theme.green, wash: Theme.tintGreen, pip: .filled)
+        case "healthy":
+            StateLozenge(text: "Idle", tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+        case "degraded":
+            StateLozenge(text: "Degraded", tint: Theme.amber, wash: Theme.tintAmber, pip: .hollow)
+        case let state:
             StateLozenge(text: state.capitalized, tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
         }
     }
@@ -242,15 +279,27 @@ struct SourcesPane: View {
         }
     }
 
+    /// State-dependent copy: present-tense "keeps the store current" is only
+    /// true while the watcher is actually running.
     private func watcherDetail(_ watcher: V1IngestionWatcher?) -> String {
         guard let watcher else { return "The daemon reported no watcher block." }
-        var parts: [String] = []
-        if let ago = agoText(watcher.heartbeatAt) { parts.append("heartbeat \(ago)") }
-        if let interval = watcher.intervalSeconds {
-            parts.append("scans every \(Int(interval.rounded()))s")
+        let heartbeat = agoText(watcher.heartbeatAt).map { "last heartbeat \($0)" } ?? "no heartbeat recorded"
+        let cadenceSeconds = watcher.intervalSeconds.map { Int($0.rounded()) }
+        switch watcher.state {
+        case "running":
+            let cadence = cadenceSeconds.map { " · scans every \($0)s" } ?? ""
+            return "The importer keeps the store current in the background — \(heartbeat)\(cadence)"
+        case "stale":
+            let cadence = cadenceSeconds.map { " (expected every \($0)s)" } ?? ""
+            return "The importer's heartbeat is overdue — \(heartbeat)\(cadence)"
+        case "stopped":
+            let cadence = cadenceSeconds.map { " (expected every \($0)s)" } ?? ""
+            return "Importer stopped — \(heartbeat)\(cadence). Start it with `agentacct start`."
+        case "not_configured":
+            return "No continuous sync is configured — imports happen only on manual scans."
+        default:
+            return heartbeat
         }
-        if parts.isEmpty { return "The watcher reported no heartbeat details." }
-        return "The importer keeps the store current in the background — " + parts.joined(separator: " · ")
     }
 
     // MARK: issues

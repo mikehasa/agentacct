@@ -76,6 +76,14 @@ struct LimitsPane: View {
                     }
                 }
             }
+            if !showStale {
+                let hidden = snapshot.glance.limits.count - limits.count
+                if hidden > 0 {
+                    Text("\(hidden) stale reading\(hidden == 1 ? "" : "s") hidden — Show stale accounts to inspect")
+                        .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                        .padding(.top, Space.m)
+                }
+            }
             calibrationSection.padding(.top, Space.xl)
             definitionsCard.padding(.top, Space.xl)
         case .connecting:
@@ -245,7 +253,9 @@ struct LimitsPane: View {
 
     private func calibrationTint(_ state: String?) -> Color {
         switch state {
-        case "calibrated": return Theme.green  // derived from provider-reported readings
+        // Accent, not green: a calibration fit warmed from the client's own
+        // history is self-derived state, not independently verified evidence.
+        case "calibrated": return Theme.accent
         case "calibrating": return Theme.amber
         default: return Theme.muted
         }

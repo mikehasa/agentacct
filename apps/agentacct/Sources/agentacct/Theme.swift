@@ -33,6 +33,43 @@ enum Fmt {
     static func dollars(_ value: Double, prefix: String = "$") -> String {
         prefix + (usd.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value))
     }
+
+    /// The app-wide cost grammar (v10 rule 5 — every cost carries its basis):
+    /// a bare `$` only for a COMPLETE figure whose confidence is reported or
+    /// billed; a complete estimate wears `≈$`; a known-partial subtotal `~$`;
+    /// nothing priced returns nil so callers name the absence.
+    static func costDisplay(
+        usd: Double?,
+        knownAdditive: Double? = nil,
+        complete: Bool?,
+        confidence: String?
+    ) -> String? {
+        let reported = ["client_reported", "provider_billed"].contains(confidence ?? "")
+        if complete == true, let usd {
+            return dollars(usd, prefix: reported ? "$" : "≈$")
+        }
+        if let knownAdditive {
+            return dollars(knownAdditive, prefix: "~$")
+        }
+        if let usd {
+            return dollars(usd, prefix: "≈$")
+        }
+        return nil
+    }
+
+    /// Human phrasing for a cost-confidence key (raw keys stay in payloads).
+    static func costConfidenceLabel(_ confidence: String?) -> String? {
+        switch confidence {
+        case "estimated_from_tokens": return "pricing estimate"
+        case "client_reported": return "client-reported"
+        case "provider_billed": return "provider billed"
+        case "subscription_equivalent": return "subscription equivalent"
+        case "approximate_subscription_allocation": return "approximate subscription share"
+        case "mixed": return "mixed confidence"
+        case nil, "unknown": return nil
+        case .some(let other): return other.replacingOccurrences(of: "_", with: " ")
+        }
+    }
 }
 
 /// Snapshot-only scheme pin: offscreen ImageRenderer resolves dynamic NSColors

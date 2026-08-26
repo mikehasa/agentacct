@@ -154,7 +154,7 @@ struct UsagePane: View {
                 id: "cost",
                 label: "Est. cost",
                 value: totals.flatMap { $0.costText == "—" ? nil : $0.costText },
-                qualifier: totals?.costConfidenceLabel,
+                qualifier: Fmt.costConfidenceLabel(totals?.costConfidence),
                 absent: "no priced usage"
             ),
             StripRow.Cell(
@@ -170,7 +170,7 @@ struct UsagePane: View {
     @ViewBuilder
     private func basisFooter(_ usage: UsageSummary) -> some View {
         let parts: [String] = [
-            usage.totals?.costConfidenceLabel.map { "cost: \($0)" },
+            Fmt.costConfidenceLabel(usage.totals?.costConfidence).map { "cost: \($0)" },
             "token counts come from client usage records",
             usage.totals?.cacheReadTokens.map {
                 "fresh tokens exclude \(UsageTotals.compact($0)) cache-read tokens"
@@ -403,6 +403,31 @@ struct UsageDailyChart: View {
         }
     }
 
+    /// Plot height: the top gridline is exactly the max value's line.
+    private static let plotHeight: CGFloat = 128
+
+    /// The peak annotation, centered over the peak bar in its own band.
+    @ViewBuilder
+    private var peakBand: some View {
+        HStack(alignment: .bottom, spacing: 3) {
+            ForEach(Array(periods.enumerated()), id: \.offset) { index, period in
+                Group {
+                    if index == peakIndex, let peak = value(period), peak > 0 {
+                        Text("peak \(valueText(period))")
+                            .font(Type.dataSmall)
+                            .foregroundStyle(Theme.muted)
+                            .fixedSize()
+                    } else {
+                        Color.clear.frame(height: 1)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .frame(height: 20, alignment: .bottom)
+        .padding(.bottom, 2)
+    }
+
     private var chartTitle: String {
         switch series {
         case .cost: return "Estimated cost per day"
@@ -440,66 +465,65 @@ struct UsageDailyChart: View {
                 Rectangle().fill(Theme.hairline).frame(height: 1).padding(.horizontal, Space.xl)
 
                 VStack(spacing: 7) {
-                    HStack(alignment: .top, spacing: Space.s) {
-                        VStack(alignment: .trailing, spacing: 0) {
-                            Text(axisText(1))
-                            Spacer()
-                            Text(axisText(0.5))
-                            Spacer()
+                    HStack(alignment: .bottom, spacing: Space.s) {
+                        // Axis labels sit centered ON their gridlines: one
+                        // linear scale where the max value IS the top line.
+                        ZStack(alignment: .bottomTrailing) {
+                            Text(axisText(1)).offset(y: -Self.plotHeight + 7)
+                            Text(axisText(0.5)).offset(y: -Self.plotHeight / 2 + 7)
                             Text("0")
                         }
                         .font(Type.dataSmall)
                         .foregroundStyle(Theme.muted)
-                        .frame(width: 44, height: 136)
+                        .frame(width: 44, height: Self.plotHeight, alignment: .bottomTrailing)
 
-                        ZStack(alignment: .bottom) {
-                            VStack(spacing: 0) {
+                        VStack(spacing: 0) {
+                            // A reserved band above the plot keeps the peak
+                            // annotation from stealing plot height.
+                            peakBand
+                            ZStack(alignment: .bottomLeading) {
                                 Rectangle().fill(Theme.hairline).frame(height: 1)
-                                Spacer()
+                                    .offset(y: -Self.plotHeight + 0.5)
                                 Rectangle().fill(Theme.hairline).frame(height: 1)
-                                Spacer()
+                                    .offset(y: -Self.plotHeight / 2)
                                 Rectangle().fill(Theme.hairline).frame(height: 1)
-                            }
 
-                            HStack(alignment: .bottom, spacing: 3) {
-                                ForEach(Array(periods.enumerated()), id: \.offset) { index, period in
-                                    VStack(spacing: 2) {
-                                        if index == peakIndex, let peak = value(period), peak > 0 {
-                                            Text("peak \(valueText(period))")
-                                                .font(Type.dataSmall)
-                                                .foregroundStyle(Theme.muted)
-                                                .fixedSize()
+                                HStack(alignment: .bottom, spacing: 3) {
+                                    ForEach(Array(periods.enumerated()), id: \.offset) { index, period in
+                                        Group {
+                                            if let dayValue = value(period) {
+                                                // Strictly linear: the peak bar
+                                                // touches the line its label names.
+                                                RoundedRectangle(cornerRadius: 2)
+                                                    .fill(hoveredIndex == nil || hoveredIndex == index
+                                                          ? Theme.chartBar : Theme.chartBarDim)
+                                                    .frame(height: max(1, Self.plotHeight * dayValue / maxValue))
+                                            } else {
+                                                // A day with no plottable value: a flat
+                                                // neutral stub, never a zero-height lie.
+                                                RoundedRectangle(cornerRadius: 1)
+                                                    .fill(Theme.tintNeutral)
+                                                    .frame(height: 3)
+                                            }
                                         }
-                                        if let dayValue = value(period) {
-                                            RoundedRectangle(cornerRadius: 2)
-                                                .fill(hoveredIndex == nil || hoveredIndex == index
-                                                      ? Theme.chartBar : Theme.chartBarDim)
-                                                .frame(height: max(2, 128 * dayValue / maxValue))
-                                        } else {
-                                            // A day with no plottable value: a flat
-                                            // neutral stub, never a zero-height lie.
-                                            RoundedRectangle(cornerRadius: 1)
-                                                .fill(Theme.tintNeutral)
-                                                .frame(height: 3)
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                                        .contentShape(Rectangle())
+                                        .onHover { inside in
+                                            if inside {
+                                                hoveredIndex = index
+                                            } else if hoveredIndex == index {
+                                                hoveredIndex = nil
+                                            }
                                         }
+                                        .accessibilityElement()
+                                        .accessibilityLabel(
+                                            "\(period.period ?? period.shortLabel), \(valueText(period))"
+                                        )
                                     }
-                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                                    .contentShape(Rectangle())
-                                    .onHover { inside in
-                                        if inside {
-                                            hoveredIndex = index
-                                        } else if hoveredIndex == index {
-                                            hoveredIndex = nil
-                                        }
-                                    }
-                                    .accessibilityElement()
-                                    .accessibilityLabel(
-                                        "\(period.period ?? period.shortLabel), \(valueText(period))"
-                                    )
                                 }
                             }
+                            .frame(height: Self.plotHeight)
                         }
-                        .frame(height: 136)
                         .overlay(alignment: .topLeading) {
                             if let hoveredIndex, periods.indices.contains(hoveredIndex) {
                                 let hovered = periods[hoveredIndex]
