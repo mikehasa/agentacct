@@ -879,7 +879,10 @@ struct WorkRecordPage: View {
             }
             // WHY the Task is blocked, right under the headline — the newest
             // blocker's own words instead of the generic statement alone.
-            if let blocker = receipt.axes.decisionStatus.blocker {
+            // Text-gated: a bare `failed` refinement carries no blocker words,
+            // and a coral "blocker" box under a Failed badge would re-merge
+            // the two vocabularies the receipt keeps apart.
+            if let blocker = receipt.axes.decisionStatus.blocker, blocker.text != nil {
                 BlockerCallout(blocker: blocker)
                     .padding(.top, Space.xs)
             }

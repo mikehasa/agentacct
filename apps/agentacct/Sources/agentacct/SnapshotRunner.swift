@@ -27,10 +27,16 @@ enum SnapshotRunner {
                 // one) and preload its Receipt because ImageRenderer does not
                 // run the Work pane's SwiftUI `.task`.
                 let wanted = ProcessInfo.processInfo.environment["AGENTACCT_SNAPSHOT_TASK"]
-                let flagship = dashboard.receiptTasks.first { task in
+                let requested = dashboard.receiptTasks.first { task in
                     guard let wanted, !wanted.isEmpty else { return false }
                     return task.taskId == wanted || task.taskId.hasPrefix(wanted)
-                } ?? dashboard.receiptTasks.first
+                }
+                if let wanted, !wanted.isEmpty, requested == nil {
+                    FileHandle.standardError.write(Data(
+                        "AGENTACCT_SNAPSHOT_TASK '\(wanted)' matched no loaded task; rendering the newest instead\n".utf8
+                    ))
+                }
+                let flagship = requested ?? dashboard.receiptTasks.first
                 if let flagship {
                     selection.taskId = flagship.taskId
                     await dashboard.fetchReceipt(taskId: flagship.taskId)

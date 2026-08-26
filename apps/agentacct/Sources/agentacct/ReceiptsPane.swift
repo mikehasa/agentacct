@@ -290,7 +290,10 @@ struct RecordDimensionsCard: View {
             let files = actionsTouchedPreview
             let commands = actionsCommandsPreview
             let toolRows = fullToolRows
-            if !files.shown.isEmpty || !commands.shown.isEmpty {
+            // The tools disclosure must stay reachable for read/search-only
+            // receipts (tool names without any touched file or command).
+            let hasElidedTools = (dim.toolNamesElided ?? 0) > 0 && !toolRows.isEmpty
+            if !files.shown.isEmpty || !commands.shown.isEmpty || hasElidedTools {
                 VStack(alignment: .leading, spacing: 2) {
                     ActionListDisclosure(
                         preview: files.shown,
@@ -306,7 +309,7 @@ struct RecordDimensionsCard: View {
                         noun: "commands",
                         rowPrefix: "$ "
                     )
-                    if (dim.toolNamesElided ?? 0) > 0, !toolRows.isEmpty {
+                    if hasElidedTools {
                         ActionListDisclosure(
                             preview: [],
                             elided: dim.toolNamesElided ?? 0,
@@ -478,7 +481,12 @@ private struct ActionListDisclosure: View {
         }
         if elided > 0 {
             if SnapshotMode.enabled {
-                Text("… +\(elided) more \(noun)").font(Type.dataSmall).foregroundStyle(Theme.muted)
+                // Static overflow only under a rendered preview; a preview-less
+                // list (tools) would otherwise print a dangling duplicate of
+                // the summary's own "+N more".
+                if !preview.isEmpty {
+                    Text("… +\(elided) more \(noun)").font(Type.dataSmall).foregroundStyle(Theme.muted)
+                }
             } else {
                 Button {
                     withAnimation(Motion.contentUpdate) { expanded = true }
@@ -550,8 +558,11 @@ struct BlockerCallout: View {
                     .font(Type.rowLabel).foregroundStyle(Theme.ink)
                     .lineLimit(2)
                 Spacer(minLength: Space.s)
+                // "last updated": the projection carries the step's last-activity
+                // time, which later non-terminal events can bump past the moment
+                // the blocker itself was recorded.
                 if let ago = agoText(blocker.updatedAt) {
-                    Text("recorded \(ago)").font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    Text("last updated \(ago)").font(Type.dataSmall).foregroundStyle(Theme.muted)
                 }
             }
             if let text = blocker.text {
@@ -568,15 +579,19 @@ struct BlockerCallout: View {
                     .textSelection(.enabled)
             }
             if let later = blocker.laterCompletedSteps, later > 0 {
+                // The count IS the fact; whether it cleared the blocker is not
+                // in the data, so the copy never speculates.
                 HStack(spacing: 6) {
                     EvidencePip(shape: .hollow, tint: Theme.amber)
-                    Text("\(later) step\(later == 1 ? "" : "s") completed after this blocker was recorded — it may already be cleared.")
+                    Text("\(later) step\(later == 1 ? "" : "s") completed after this blocker's last update.")
                         .font(Type.caption).foregroundStyle(Theme.amber)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
             if let count = blocker.blockedStepCount, count > 1 {
-                Text("+\(count - 1) more blocked step\(count == 2 ? "" : "s") in Sessions & steps below")
+                // "steps with recorded blockers": sticky blocker text keeps a
+                // step in this count even when its latest status moved on.
+                Text("+\(count - 1) more step\(count == 2 ? "" : "s") with recorded blockers in Sessions & steps below")
                     .font(Type.dataSmall).foregroundStyle(Theme.muted)
             }
         }
@@ -725,11 +740,13 @@ private struct RecordCheckRow: View {
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(Theme.muted)
                     .frame(width: 10)
+                    .accessibilityHidden(true)
             }
             Image(systemName: mark.symbol)
                 .font(.system(size: 10, weight: .bold))
                 .foregroundStyle(mark.tint)
                 .frame(width: 14)
+                .accessibilityHidden(true)  // the row label names the result
             Text(check.name ?? check.kind ?? "check")
                 .font(Type.body).foregroundStyle(Theme.ink)
                 .lineLimit(1).truncationMode(.middle)
@@ -763,6 +780,10 @@ private struct RecordCheckRow: View {
                     headerLine
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(
+                    "\(check.name ?? check.kind ?? "check"), \(check.result ?? "unknown")"
+                    + ", \(expanded ? "expanded" : "collapsed")"
+                )
                 .accessibilityIdentifier("receipt.check.\(check.name ?? "check")")
             }
             if expanded {
@@ -799,7 +820,7 @@ private struct RecordCheckRow: View {
             if check.commandRedacted == true {
                 // Absence is a named state: a command ran, and agentacct
                 // deliberately never records command text for checks.
-                Text("command text not captured — agentacct records check names and results, never command arguments")
+                Text("command text not captured for checks — agentacct records the check's name, result, and files, not the command itself")
                     .font(Type.dataSmall).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
