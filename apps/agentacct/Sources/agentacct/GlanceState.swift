@@ -70,18 +70,6 @@ final class GlanceState: ObservableObject {
         }
     }
 
-    /// Menu bar icon (placeholder until a brand mark exists): a steady gauge
-    /// when connected, a slashed one when the daemon is down/incompatible.
-    /// No number in the bar — the provider's own menu already shows the plan
-    /// meter; ours lives one click away in the dropdown.
-    var menuBarSymbol: String {
-        switch phase {
-        case .connected, .connecting:
-            return "gauge.with.dots.needle.50percent"
-        case .disconnected, .incompatible:
-            return "gauge.badge.minus"
-        }
-    }
 
     /// The provider-reported 7d used %% for the label + dropdown hero:
     /// claude-code's live reading first (the primary plan), else the hottest

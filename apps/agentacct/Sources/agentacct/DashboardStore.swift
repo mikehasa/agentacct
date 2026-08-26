@@ -22,6 +22,9 @@ final class DashboardStore: ObservableObject {
     /// a fallback so its steps render in a snapshot.
     @Published private(set) var preloadedSessions: [String: V1SessionDetail] = [:]
     @Published private(set) var errorText: String?
+    /// Source/watcher health from /v1/ingestion (the Sources pane).
+    @Published private(set) var ingestion: V1IngestionSnapshot?
+    @Published private(set) var ingestionError: String?
     @Published private(set) var isRefreshing = false
     @Published private(set) var lastUpdated: Date?
 
@@ -61,6 +64,7 @@ final class DashboardStore: ObservableObject {
         async let tasksRequest: ReceiptTasksPayload = client.getAuthed("/v1/tasks?limit=200")
         async let planRequest: V1PlanPayload = client.getAuthed("/v1/plan?days=\(days)")
         async let usageRequest: UsageSummary = client.getLocal("/usage/summary?days=\(days)")
+        async let ingestionRequest: V1IngestionPayload = client.getAuthed("/v1/ingestion")
 
         var tasksSucceeded = false
         do {
@@ -73,6 +77,19 @@ final class DashboardStore: ObservableObject {
             receiptListError = "daemon not running (no discovery file) — start it with `agentacct start`"
         } catch {
             receiptListError = "receipts fetch failed: \(error.localizedDescription)"
+        }
+
+        do {
+            let payload = try await ingestionRequest
+            ingestion = payload.ingestion
+            ingestionError = nil
+        } catch GlanceClientError.http(404) {
+            // An older daemon without the route: a named state, not an error toast.
+            ingestionError = "this daemon predates /v1/ingestion"
+        } catch GlanceClientError.noDiscovery(_) {
+            ingestionError = "daemon not running (no discovery file) — start it with `agentacct start`"
+        } catch {
+            ingestionError = "source health fetch failed: \(error.localizedDescription)"
         }
 
         do {
@@ -216,5 +233,6 @@ enum MainPane: String, CaseIterable, Identifiable {
     case work = "Work"
     case usage = "Usage"
     case limits = "Limits"
+    case sources = "Sources"
     var id: String { rawValue }
 }

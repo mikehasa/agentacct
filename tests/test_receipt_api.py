@@ -276,6 +276,17 @@ def test_receipt_self_checked_when_an_agent_reported_check_passes(tmp_path: Path
     # The touched file recorded on the section rides the Actions dimension.
     assert "src/login.py" in receipt["dimensions"]["actions"]["touched_files"]
 
+    # The list row carries the same check tallies as the detail (shared
+    # reducer) so a checks column can never disagree with the open Receipt.
+    row = next(
+        entry
+        for entry in client.get("/v1/tasks", headers=_auth()).json()["tasks"]
+        if entry["task_id"] == task_id
+    )
+    for tally in ("checks_total", "checks_passed", "checks_failed"):
+        assert row["evidence_strength"][tally] == evidence[tally]
+    assert row["evidence_strength"]["checks_passed"] == 1
+
 
 def _derived_style_ledger(service: SentinelService, tmp_path: Path) -> dict:
     """Build the work ledger exactly the way the sessions lane's cached

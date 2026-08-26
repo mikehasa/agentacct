@@ -24,8 +24,8 @@ struct MenuContent: View {
                 disconnectedView(reason: reason)
             case .incompatible(let message):
                 Label { Text(message) } icon: { Image(systemName: "exclamationmark.triangle.fill") }
-                    .font(.callout)
-                    .foregroundStyle(Theme.orange)
+                    .font(Type.caption)
+                    .foregroundStyle(Theme.amber)
             case .connected(let snapshot):
                 connectedView(snapshot: snapshot)
             }
@@ -40,26 +40,26 @@ struct MenuContent: View {
     private func waitingView(_ text: String) -> some View {
         HStack(spacing: 8) {
             ProgressView().controlSize(.small)
-            Text(text).foregroundStyle(.secondary)
+            Text(text).foregroundStyle(Theme.muted)
         }
-        .font(.callout)
+        .font(Type.caption)
         .padding(.vertical, 12)
     }
 
     private func disconnectedView(reason: String) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Label("Daemon not reachable", systemImage: "bolt.slash.fill")
-                .font(.callout.weight(.medium))
-                .foregroundStyle(.secondary)
+                .font(Type.captionSemibold)
+                .foregroundStyle(Theme.muted)
             Text(reason)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+                .font(Type.caption)
+                .foregroundStyle(Theme.muted)
                 .lineLimit(2)
             Text("agentacct start")
-                .font(.caption.monospaced())
+                .font(Type.dataSmall)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                .background(Theme.chipBg, in: RoundedRectangle(cornerRadius: Metrics.radius))
         }
         .padding(.vertical, 6)
     }
@@ -76,35 +76,30 @@ struct MenuContent: View {
         // when no provider reading exists — never a fabricated %.
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline) {
-                Text(sevenDay != nil ? "WEEKLY PLAN · 7D" : "TODAY")
-                    .font(.system(size: 10, weight: .semibold))
-                    .tracking(0.8)
-                    .foregroundStyle(.secondary)
+                CapsLabel(text: sevenDay != nil ? "WEEKLY PLAN · 7D" : "TODAY")
                 Spacer()
                 if state.isRefreshing {
                     ProgressView().controlSize(.mini)
                 } else if let updated = state.lastUpdated {
                     Text(updated, style: .relative)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
+                        .font(Type.dataSmall)
+                        .foregroundStyle(Theme.muted)
                 }
             }
             if let used = sevenDay {
                 Text("\(Int(used.rounded()))%")
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                MeterBar(fraction: used / 100.0, tint: Theme.limitColor(usedPercent: used), height: 6)
+                    .font(Face.monoFont(24, .bold))
+                LimitMeter(usedPercent: used)
                     .padding(.vertical, 2)
                 Text("today \(windows["today"]?.costText ?? "—") · \(windows["today"]?.tokensText ?? "—") fresh tok")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .font(Type.dataSmall)
+                    .foregroundStyle(Theme.muted)
             } else {
                 Text(windows["today"]?.costText ?? "—")
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
-                    .monospacedDigit()
+                    .font(Face.monoFont(24, .bold))
                 Text("\(windows["today"]?.tokensText ?? "—") fresh tokens")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .font(Type.dataSmall)
+                    .foregroundStyle(Theme.muted)
             }
         }
 
@@ -116,6 +111,9 @@ struct MenuContent: View {
                      value: windows["last 30 days"]?.costText ?? "—",
                      detail: (windows["last 30 days"]?.tokensText).map { "\($0) tok" })
         }
+        Text("≈ costs are pricing estimates from client-reported tokens")
+            .font(Type.caption)
+            .foregroundStyle(Theme.muted)
 
         let liveLimits = glance.limits.filter { $0.stale != true }
         if !liveLimits.isEmpty {
@@ -144,19 +142,20 @@ struct MenuContent: View {
         ForEach(Array((limit.windows ?? []).enumerated()), id: \.offset) { _, window in
             if let used = window.usedPercent {
                 HStack(spacing: 8) {
-                    StatusDot(color: Theme.clientColor(limit.client), size: 6)
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Theme.muted)
+                        .frame(width: 3, height: 12)
                     Text("\(limit.client ?? "?") \(window.kind ?? "")")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
+                        .font(Type.caption)
+                        .foregroundStyle(Theme.muted)
                         .frame(width: 96, alignment: .leading)
-                    MeterBar(fraction: used / 100.0, tint: Theme.limitColor(usedPercent: used))
+                    LimitMeter(usedPercent: used)
                     Text(String(format: "%.0f%%", used))
-                        .font(.system(size: 11.5, weight: .medium))
-                        .monospacedDigit()
+                        .font(Type.dataSmallSemibold)
                         .frame(width: 34, alignment: .trailing)
                     Text(Theme.resetsIn(window.resetsAt) ?? "")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
+                        .font(Type.dataSmall)
+                        .foregroundStyle(Theme.muted)
                         .frame(width: 44, alignment: .trailing)
                 }
             }
@@ -168,21 +167,24 @@ struct MenuContent: View {
             openMain(selecting: "\(session.client)::\(session.sessionId)")
         } content: {
             HStack(spacing: 8) {
-                StatusDot(color: Theme.statusColor(session.status), size: 7)
+                // Lifecycle marker as a bar, not a dot — filled circles are
+                // the evidence-tier pip vocabulary.
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Theme.statusColor(session.status))
+                    .frame(width: 3, height: 14)
                 Text(session.title ?? "\(session.client) · \(session.shortSessionId)")
-                    .font(.system(size: 12))
+                    .font(Type.caption)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer(minLength: 8)
                 if let pct = session.planPctText {
                     Text(pct)
-                        .font(.system(size: 10.5, weight: .medium))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                        .font(Type.dataSmallSemibold)
+                        .foregroundStyle(Theme.muted)
                 }
                 Image(systemName: "chevron.right")
                     .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.quaternary)
+                    .foregroundStyle(Theme.muted)
             }
         }
     }
@@ -195,8 +197,8 @@ struct MenuContent: View {
         let calibrating = plan.filter { $0.calibrationState == "calibrating" }.map(\.client)
         if !calibrating.isEmpty {
             Text("plan share calibrating from your own limit history: \(calibrating.joined(separator: ", "))")
-                .font(.system(size: 9.5))
-                .foregroundStyle(.tertiary)
+                .font(Type.caption)
+                .foregroundStyle(Theme.muted)
         }
     }
 
@@ -206,7 +208,7 @@ struct MenuContent: View {
                 openMain(selecting: nil)
             } label: {
                 Label("Open agentacct", systemImage: "macwindow")
-                    .font(.system(size: 11.5, weight: .medium))
+                    .font(Type.captionSemibold)
             }
             .buttonStyle(.plain)
             .foregroundStyle(Theme.accent)
@@ -219,7 +221,7 @@ struct MenuContent: View {
                     .font(.system(size: 11))
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Theme.muted)
             .help("Refresh now")
             Button {
                 NSApplication.shared.terminate(nil)
@@ -228,7 +230,7 @@ struct MenuContent: View {
                     .font(.system(size: 11))
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Theme.muted)
             .help("Quit agentacct")
         }
         .padding(.top, 2)
@@ -272,8 +274,8 @@ struct LaunchAtLoginToggle: View {
             }
         )) {
             Text("Login")
-                .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
+                .font(Type.caption)
+                .foregroundStyle(Theme.muted)
         }
         .toggleStyle(.checkbox)
         .controlSize(.small)
@@ -293,8 +295,8 @@ struct MenuHoverButton<Content: View>: View {
                 .padding(.horizontal, 7)
                 .padding(.vertical, 4.5)
                 .background(
-                    hovering ? AnyShapeStyle(.quaternary.opacity(0.7)) : AnyShapeStyle(.clear),
-                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    hovering ? AnyShapeStyle(Theme.tintNeutral) : AnyShapeStyle(.clear),
+                    in: RoundedRectangle(cornerRadius: Metrics.radius)
                 )
                 .contentShape(Rectangle())
         }

@@ -613,10 +613,14 @@ struct Receipt: Decodable {
     let axes: ReceiptAxes
     let dimensions: ReceiptDimensions
     let sessions: [ReceiptSessionGroup]?
+    /// Task wall-clock span as the daemon computed it (nil when the store
+    /// cannot bound it — the record page names that absence).
+    let durationSeconds: Double?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case taskId = "task_id"
+        case durationSeconds = "duration_seconds"
         case title, axes, dimensions, sessions
     }
 }

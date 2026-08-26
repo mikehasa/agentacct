@@ -26,19 +26,22 @@ struct MainWindow: View {
     var body: some View {
         VStack(spacing: 0) {
             TopBar(canSetUp: canSetUp) { showSetup = true }
-            Rectangle().fill(Theme.border).frame(height: 1)
+            Rectangle().fill(Theme.rule).frame(height: 1)
             Group {
                 switch selection.pane {
                 case .dashboard: DashboardPane()
                 case .work: WorkPane()
                 case .usage: UsagePane()
                 case .limits: LimitsPane()
+                case .sources: SourcesPane()
                 }
             }
             .id(selection.pane)
             .transition(.opacity)
             .animation(reduceMotion ? nil : Motion.paneCrossfade, value: selection.pane)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Top-anchored: snapshot mode renders full pane content, which
+            // must clip at the bottom, never lose the page header.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .background(WindowSurfaceBackground(role: .canvas))
         .frame(minWidth: 960, minHeight: 560)
@@ -91,30 +94,35 @@ struct TopBar: View {
     @Namespace private var paneSelection
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    var body: some View {
-        HStack(spacing: 14) {
-            HStack(spacing: 7) {
-                Circle().fill(Theme.accent).frame(width: 8, height: 8)
-                Text("agentacct")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Theme.text)
-            }
-            .padding(.leading, 76)  // clear the traffic lights (hidden titlebar)
-
-            HStack(spacing: 3) {
-                ForEach(MainPane.allCases) { pane in
-                    PaneTab(
-                        pane: pane,
-                        selected: selection.pane == pane,
-                        selectionNamespace: paneSelection
-                    ) {
-                        selection.pane = pane
-                    }
+    private func paneTabs(iconOnly: Bool) -> some View {
+        HStack(spacing: 3) {
+            ForEach(MainPane.allCases) { pane in
+                PaneTab(
+                    pane: pane,
+                    selected: selection.pane == pane,
+                    iconOnly: iconOnly,
+                    selectionNamespace: paneSelection
+                ) {
+                    selection.pane = pane
                 }
             }
-            .padding(3)
-            .background(Theme.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .animation(reduceMotion ? nil : Motion.selection, value: selection.pane)
+        }
+        .padding(3)
+        .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
+        .animation(reduceMotion ? nil : Motion.selection, value: selection.pane)
+    }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            BrandLockup()
+                .padding(.leading, 76)  // clear the traffic lights (hidden titlebar)
+
+            // Five panes no longer fit a 960pt window with full labels; the
+            // tab strip degrades to icon-only before any label truncates.
+            ViewThatFits(in: .horizontal) {
+                paneTabs(iconOnly: false)
+                paneTabs(iconOnly: true)
+            }
 
             Spacer()
 
@@ -123,7 +131,7 @@ struct TopBar: View {
                     HStack(spacing: 4) {
                         Image(systemName: "record.circle")
                             .font(.system(size: 12, weight: .medium))
-                        Text("Set up recording").font(Type.action)
+                        Text("Set up recording").font(Type.captionSemibold)
                     }
                     .foregroundStyle(Theme.accent)
                 }
@@ -137,15 +145,15 @@ struct TopBar: View {
                     Circle().fill(Theme.green).frame(width: 5, height: 5)
                     Text("Local data · \(freshness)")
                 }
-                .font(.system(size: 10.5))
-                .foregroundStyle(Theme.textFaint)
+                .font(Type.dataSmall)
+                .foregroundStyle(Theme.muted)
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Local data updated \(freshness)")
             }
             if dashboard.isRefreshing || glance.isRefreshing {
                 ProgressView()
                     .controlSize(.small)
-                    .tint(Theme.textMuted)
+                    .tint(Theme.muted)
                     .accessibilityLabel("Refreshing local data")
             } else {
                 Button {
@@ -154,12 +162,12 @@ struct TopBar: View {
                 } label: {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(Theme.textMuted)
+                        .foregroundStyle(Theme.muted)
                         .frame(width: 28, height: 28)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(QuietButtonStyle(
-                    tint: Theme.textMuted,
+                    tint: Theme.muted,
                     horizontalPadding: 0,
                     verticalPadding: 0
                 ))
@@ -220,9 +228,9 @@ private struct WindowSurfaceBackground: View {
             }
             // Keep palette and contrast stable while still allowing the
             // system's desktop tint and active-window state to come through.
-            .overlay(Theme.bg.opacity(veilOpacity))
+            .overlay(Theme.canvas.opacity(veilOpacity))
         } else {
-            Theme.bg
+            Theme.canvas
         }
     }
 }
@@ -230,6 +238,7 @@ private struct WindowSurfaceBackground: View {
 struct PaneTab: View {
     let pane: MainPane
     let selected: Bool
+    var iconOnly = false
     let selectionNamespace: Namespace.ID
     let action: () -> Void
     @State private var hovering = false
@@ -242,20 +251,23 @@ struct PaneTab: View {
                     .font(.system(size: 12, weight: selected ? .semibold : .medium))
                     .symbolRenderingMode(.monochrome)
                     .frame(width: 14, height: 14)
-                Text(pane.rawValue)
-                    .font(.system(size: 12.5, weight: selected ? .semibold : .medium))
+                if !iconOnly {
+                    Text(pane.rawValue)
+                        .font(Face.sansFont(12.5, selected ? .semibold : .medium))
+                        .fixedSize()
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .foregroundStyle(selected ? Theme.text : (hovering ? Theme.textMuted : Theme.textFaint))
+            .foregroundStyle(selected ? Theme.ink : (hovering ? Theme.ink : Theme.muted))
             .background {
                 if selected {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Theme.cardAlt)
+                    RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
+                        .fill(Theme.card)
                         .matchedGeometryEffect(id: "selected-pane", in: selectionNamespace)
                 } else if hovering {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Theme.cardAlt.opacity(0.55))
+                    RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
+                        .fill(Theme.card.opacity(0.55))
                 }
             }
             .contentShape(Rectangle())
@@ -287,8 +299,8 @@ private struct PaneTabPressBody: View {
             .opacity(configuration.isPressed ? 0.72 : 1)
             .overlay {
                 if isFocused {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(Theme.accent, lineWidth: 2)
+                    RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
+                        .strokeBorder(Theme.accent, lineWidth: Metrics.focusW)
                 }
             }
             .animation(reduceMotion ? nil : Motion.feedback, value: configuration.isPressed)
@@ -302,6 +314,7 @@ extension MainPane {
         case .work: return "checklist"
         case .usage: return "chart.bar.xaxis"
         case .limits: return "gauge.with.needle"
+        case .sources: return "point.3.connected.trianglepath.dotted"
         }
     }
 }
@@ -315,18 +328,18 @@ extension MainPane {
 func evidenceTint(_ status: String?) -> Color {
     switch status {
     case "strong": return Theme.green
-    case "failed": return Theme.red
-    case "weak": return Theme.orange
-    default: return Theme.textMuted
+    case "failed": return Theme.coral
+    case "weak": return Theme.amber
+    default: return Theme.muted
     }
 }
 
 func joinTint(_ state: String?) -> Color {
     switch state {
     case "attributed": return Theme.green
-    case "ambiguous": return Theme.orange
-    case "sections_only": return Theme.blue
-    default: return Theme.textMuted
+    case "ambiguous": return Theme.amber
+    case "sections_only": return Theme.accent
+    default: return Theme.muted
     }
 }
 

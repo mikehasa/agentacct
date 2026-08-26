@@ -125,7 +125,7 @@ _DECISION_STATEMENTS: dict[str, str] = {
     "failed": "A step was recorded as failed.",
     "blocked": "The agent recorded a blocker for this Task.",
     "resolved": "A later passed check reports the exact blocker resolved; this is not a verified completion.",
-    "reported": "The agent reported completing work; no linked passing check verifies it yet.",
+    "reported": "The agent reported completing work; no check verifies the completion claim itself.",
     "handed_off": "The work was cleanly handed off (continued elsewhere); a deliberate stop, not a completion.",
     "ended_open": (
         "The session ended with this step still open; agentacct inferred a stop from the session-end "
@@ -765,9 +765,12 @@ def _evidence_dimension(checks: list[Mapping[str, Any]], strength: Mapping[str, 
     gaps: list[str] = []
     if not checks:
         gaps.append("No machine checks were recorded for this Task.")
-    reported_only = int(strength.get("agent_reported_step_count") or 0)
-    if reported_only:
-        gaps.append(f"{reported_only} completed step(s) have no linked passing check.")
+    # Only CHECKABLE steps can owe a check: research/docs steps are declared
+    # non-verifiable by the coverage ledger, so demanding evidence for them
+    # would inflate the gap count with impossible asks.
+    unchecked_steps = int((strength.get("by_tier") or {}).get("unchecked") or 0)
+    if unchecked_steps:
+        gaps.append(f"{unchecked_steps} completed step(s) have no linked passing check.")
     return {
         "checks": list(checks),
         "checks_total": int(strength.get("checks_total") or 0),
@@ -1053,6 +1056,11 @@ def build_receipt_summary(
             "checkable_total": evidence_strength["checkable_total"],
             "checked_total": evidence_strength["checked_total"],
             "by_tier": evidence_strength["by_tier"],
+            # Check tallies for the list's checks column — same reducer values
+            # the full Receipt serves, so list and detail can never disagree.
+            "checks_total": evidence_strength["checks_total"],
+            "checks_passed": evidence_strength["checks_passed"],
+            "checks_failed": evidence_strength["checks_failed"],
             "hidden_in_subagents": evidence_strength["hidden_in_subagents"],
             "unattributed_checks": evidence_strength["unattributed_checks"],
         },

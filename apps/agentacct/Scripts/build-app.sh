@@ -13,8 +13,11 @@ swift build -c release
 
 APP=".build/agentacct.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp ".build/release/agentacct" "$APP/Contents/MacOS/agentacct"
+
+# Brand app icon (Stamped Tile). Regenerate with Scripts/generate-app-icon.swift.
+cp "Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 # Embed the frozen standalone CLI when it has been built (packaging/freeze-cli.sh
 # writes packaging/dist/agentacct/). This is what lets a machine with no Python
@@ -37,6 +40,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key><string>agentacct</string>
     <key>CFBundleIdentifier</key><string>dev.agentacct.app</string>
     <key>CFBundleName</key><string>agentacct</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.9.4</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>

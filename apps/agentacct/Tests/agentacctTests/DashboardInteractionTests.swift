@@ -110,11 +110,11 @@ final class DashboardInteractionTests: XCTestCase {
         let completePeriods = Array(periods.prefix(2))
 
         XCTAssertEqual(DashboardUsageSeries.tokens.valueText(for: periods[0]), "1.2M")
-        XCTAssertEqual(DashboardUsageSeries.cost.valueText(for: periods[0]), "$2.50")
+        XCTAssertEqual(DashboardUsageSeries.cost.valueText(for: periods[0]), "≈$2.50")
         XCTAssertEqual(DashboardUsageSeries.cost.valueText(for: periods[2]), "—")
         XCTAssertEqual(DashboardUsageSeries.tokens.valueText(for: periods[2]), "—")
         XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: completePeriods), "1.5M total")
-        XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: completePeriods), "$3.75 total")
+        XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: completePeriods), "≈$3.75 total")
         XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: periods), "~1.5M total")
         XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: periods), "~$3.75 total")
         XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: [periods[2]]), "—")
@@ -237,6 +237,12 @@ final class DashboardInteractionTests: XCTestCase {
                 "decision_status": { "key": "finding", "label": "Open finding" },
                 "evidence_strength": { "key": "unchecked" },
                 "cost": {}
+              },
+              {
+                "task_id": "superseded",
+                "decision_status": { "key": "finding_superseded", "label": "Finding superseded" },
+                "evidence_strength": { "key": "self_checked", "checks_failed": 1 },
+                "cost": {}
               }
             ]
             """
@@ -252,6 +258,10 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertFalse(items[2].needsReview)
         XCTAssertTrue(items[3].needsReview)
         XCTAssertTrue(items[3].hasFinding)
+        // A superseded finding's failed check belongs to the finding that
+        // superseded it — it never resurfaces as needing review.
+        XCTAssertFalse(items[4].needsReview)
+        XCTAssertFalse(items[4].hasFinding)
     }
 
     @MainActor

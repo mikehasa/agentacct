@@ -16,6 +16,8 @@ struct DashboardWorkItem: Identifiable {
     let evidence: String
     let failedChecks: Int
     let cost: String
+    let gradeable: Bool
+    let strongestTierKey: String?
 
     init(task: ReceiptSummary) {
         id = task.taskId
@@ -36,18 +38,30 @@ struct DashboardWorkItem: Identifiable {
         evidence = task.evidenceStrength.compactHeadline
         failedChecks = task.evidenceStrength.checksFailed ?? 0
         cost = Self.compactCost(task.cost)
+        gradeable = task.evidenceStrength.gradeable == true
+        strongestTierKey = task.evidenceStrength.strongestTier
     }
 
     var recency: String? {
         agoText(lastActivityAt)
     }
 
+    /// Strongest evidence tier present (drives the row's tier pip).
+    var strongestTier: String? {
+        gradeable ? (strongestTierKey ?? "unchecked") : nil
+    }
+
+    /// A superseded finding's failed check belongs to the finding that
+    /// superseded it — it never resurfaces as needing review (keeps this
+    /// predicate agreeing with the Work tab's Attention bucket).
     var needsReview: Bool {
-        failedChecks > 0 || ["finding", "failed", "blocked"].contains(outcomeKey)
+        (failedChecks > 0 && outcomeKey != "finding_superseded")
+            || ["finding", "failed", "blocked"].contains(outcomeKey)
     }
 
     var hasFinding: Bool {
-        failedChecks > 0 || ["finding", "failed"].contains(outcomeKey)
+        (failedChecks > 0 && outcomeKey != "finding_superseded")
+            || ["finding", "failed"].contains(outcomeKey)
     }
 
     private static func outcomeLabel(for key: String) -> String {
@@ -121,7 +135,11 @@ enum DashboardUsageSeries: String, CaseIterable, Identifiable {
             guard !available.isEmpty else { return "—" }
             let complete = available.count == periods.count
                 && periods.allSatisfy { $0.costComplete == true }
-            return "\(Fmt.dollars(available.reduce(0, +), prefix: complete ? "$" : "~$")) total"
+            let reported = complete && periods.allSatisfy {
+                ["client_reported", "provider_billed"].contains($0.costConfidence ?? "")
+            }
+            let prefix = reported ? "$" : (complete ? "≈$" : "~$")
+            return "\(Fmt.dollars(available.reduce(0, +), prefix: prefix)) total"
         }
     }
 
@@ -214,15 +232,15 @@ struct DashboardPane: View {
                     DashboardUsageChart(periods: periods)
                 }
             }
-            .padding(Space.dashboard)
+            .padding(Space.gutter)
         }
         .overlay(alignment: .bottom) {
             if let error = dashboard.errorText ?? dashboard.receiptListError {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(Type.small)
-                    .foregroundStyle(Theme.red)
+                    .font(Type.caption)
+                    .foregroundStyle(Theme.coral)
                     .padding(Space.s)
-                    .background(Theme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
                     .padding(.bottom, 10)
             }
         }
@@ -317,20 +335,20 @@ private struct DashboardCardHeader<Action: View>: View {
     var body: some View {
         HStack(spacing: Space.s) {
             Text(title)
-                .font(Type.callout.weight(.semibold))
-                .foregroundStyle(Theme.textMuted)
+                .font(Type.titleCard)
+                .foregroundStyle(Theme.muted)
             if let count {
                 Text(String(count))
-                    .font(Type.tiny.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(Theme.textMuted)
+                    .font(Type.dataSmallSemibold)
+                    .foregroundStyle(Theme.muted)
                     .padding(.horizontal, 6)
                     .frame(minWidth: 20, minHeight: 20)
-                    .background(Theme.cardAlt, in: Capsule())
+                    .background(Theme.tintNeutral, in: Capsule())
             }
             Spacer(minLength: Space.s)
             action()
         }
-        .padding(.leading, 15)
+        .padding(.leading, Space.l)
         .padding(.trailing, 8)
         .frame(height: 44)
     }
@@ -352,13 +370,13 @@ private struct RecentWorkCard: View {
             VStack(spacing: 0) {
                 DashboardCardHeader("Recent work", count: totalCount) {
                     Button { open(.work) } label: {
-                        Text("View all").font(Type.action)
+                        Text("View all").font(Type.captionSemibold)
                     }
                     .foregroundStyle(Theme.accent)
                     .buttonStyle(QuietButtonStyle())
                     .accessibilityIdentifier("dashboard.recent-work.view-all")
                 }
-                Divider().overlay(Theme.border)
+                Divider().overlay(Theme.hairline)
 
                 if items.isEmpty {
                     DashboardEmptyState(
@@ -369,11 +387,11 @@ private struct RecentWorkCard: View {
                     .frame(minHeight: 222)
                 } else {
                     workColumnLabels
-                    Divider().overlay(Theme.border)
+                    Divider().overlay(Theme.hairline)
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         RecentWorkRow(item: item) { open(.task(item.id)) }
                         if index < items.count - 1 {
-                            Divider().overlay(Theme.border.opacity(0.72))
+                            Divider().overlay(Theme.hairline.opacity(0.72))
                         }
                     }
                 }
@@ -384,14 +402,14 @@ private struct RecentWorkCard: View {
     private var workColumnLabels: some View {
         HStack(spacing: 12) {
             Text("Task").frame(maxWidth: .infinity, alignment: .leading)
-            Text("Outcome").frame(width: 100, alignment: .leading)
-            Text("Evidence").frame(width: 78, alignment: .leading)
-            Text("Cost").frame(width: 64, alignment: .trailing)
+            Text("Outcome").frame(width: 116, alignment: .leading)
+            Text("Evidence").frame(width: 118, alignment: .leading)
+            Text("Cost").frame(width: 68, alignment: .trailing)
             Color.clear.frame(width: 10, height: 1)
         }
-        .font(Type.tiny.weight(.medium))
-        .foregroundStyle(Theme.textFaint)
-        .padding(.horizontal, 15)
+        .font(Face.sansFont(12, .medium))
+        .foregroundStyle(Theme.muted)
+        .padding(.horizontal, Space.l)
         .frame(height: 30)
     }
 }
@@ -405,37 +423,44 @@ private struct RecentWorkRow: View {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.title)
-                        .font(Type.rowTitle.weight(.semibold))
-                        .foregroundStyle(Theme.text)
+                        .font(Type.rowLabel)
+                        .foregroundStyle(Theme.ink)
                         .lineLimit(2)
                     Text([item.client, item.recency].compactMap { $0 }.joined(separator: " · "))
-                        .font(Type.tiny)
-                        .foregroundStyle(Theme.textFaint)
+                        .font(Type.caption)
+                        .foregroundStyle(Theme.muted)
                         .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                HStack(spacing: 7) {
-                    StatusDot(color: receiptDecisionTint(item.outcomeKey), size: 7)
-                    Text(item.outcome).lineLimit(2)
+                // Decision axis: a pip-less tinted badge (a filled dot here
+                // read as the independently-checked evidence pip).
+                DecisionBadge(key: item.outcomeKey, label: item.outcome, compact: true)
+                    .frame(width: 116, alignment: .leading)
+
+                // Evidence axis: the strongest tier's pip shape + the ratio.
+                HStack(spacing: 6) {
+                    if let tier = item.strongestTier {
+                        let style = EvidenceTierStyle.forGrade(tier)
+                        EvidencePip(shape: style.pip, tint: style.tint)
+                    } else {
+                        EvidencePip(shape: .hollow, tint: Theme.muted)
+                    }
+                    Text(item.evidence)
+                        .font(Type.dataSmall)
+                        .foregroundStyle(Theme.muted)
+                        .lineLimit(1)
                 }
-                .font(Type.tiny.weight(.semibold))
-                .foregroundStyle(Theme.textMuted)
-                .frame(width: 100, alignment: .leading)
+                .frame(width: 118, alignment: .leading)
 
-                Text(item.evidence)
-                    .font(Type.tiny.monospacedDigit())
-                    .foregroundStyle(Theme.textMuted)
-                    .frame(width: 78, alignment: .leading)
-
-                Text(item.cost)
-                    .font(Type.tiny.monospacedDigit())
-                    .foregroundStyle(Theme.textMuted)
-                    .frame(width: 64, alignment: .trailing)
+                Text(item.cost == "—" ? "unpriced" : item.cost)
+                    .font(Type.dataSmall)
+                    .foregroundStyle(Theme.muted)
+                    .frame(width: 68, alignment: .trailing)
 
                 DashboardDisclosureIndicator()
             }
-            .padding(.horizontal, 15)
+            .padding(.horizontal, Space.l)
             .frame(minHeight: 64)
             .contentShape(Rectangle())
         }
@@ -460,14 +485,14 @@ private struct NeedsReviewCard: View {
                 DashboardCardHeader("Needs review", count: items.count) {
                     if items.count > visibleItems.count {
                         Button { open(.work) } label: {
-                            Text("View all").font(Type.action)
+                            Text("View all").font(Type.captionSemibold)
                         }
                         .foregroundStyle(Theme.accent)
                         .buttonStyle(QuietButtonStyle())
                         .accessibilityIdentifier("dashboard.review.view-all")
                     }
                 }
-                Divider().overlay(Theme.border)
+                Divider().overlay(Theme.hairline)
 
                 if visibleItems.isEmpty {
                     DashboardEmptyState(
@@ -480,7 +505,7 @@ private struct NeedsReviewCard: View {
                     ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
                         DashboardAttentionRow(item: item) { open(.task(item.id)) }
                         if index < visibleItems.count - 1 {
-                            Divider().overlay(Theme.border.opacity(0.72))
+                            Divider().overlay(Theme.hairline.opacity(0.72))
                         }
                     }
                     Spacer(minLength: 0)
@@ -494,7 +519,7 @@ private struct DashboardAttentionRow: View {
     let item: DashboardWorkItem
     let action: () -> Void
 
-    private var tint: Color { item.hasFinding ? Theme.red : Theme.orange }
+    private var tint: Color { item.hasFinding ? Theme.coral : Theme.amber }
     private var icon: String { item.hasFinding ? "xmark.circle.fill" : "hand.raised.circle.fill" }
     private var status: String {
         if item.failedChecks > 0 {
@@ -512,18 +537,18 @@ private struct DashboardAttentionRow: View {
                     .frame(width: 24, height: 24)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.title)
-                        .font(Type.rowTitle.weight(.semibold))
-                        .foregroundStyle(Theme.text)
+                        .font(Type.rowLabel)
+                        .foregroundStyle(Theme.ink)
                         .lineLimit(2)
                     Text(status)
-                        .font(Type.small)
+                        .font(Type.caption)
                         .foregroundStyle(tint)
                         .lineLimit(1)
                 }
                 Spacer(minLength: Space.s)
                 DashboardDisclosureIndicator()
             }
-            .padding(.horizontal, 15)
+            .padding(.horizontal, Space.l)
             .frame(minHeight: 95)
             .contentShape(Rectangle())
         }
@@ -543,13 +568,13 @@ private struct ActiveWorkCard: View {
             VStack(spacing: 0) {
                 DashboardCardHeader("Active work", count: sessions.count) {
                     Button { open(.work) } label: {
-                        Text("View all").font(Type.action)
+                        Text("View all").font(Type.captionSemibold)
                     }
                     .foregroundStyle(Theme.accent)
                     .buttonStyle(QuietButtonStyle())
                     .accessibilityIdentifier("dashboard.active-work.view-all")
                 }
-                Divider().overlay(Theme.border)
+                Divider().overlay(Theme.hairline)
                 if sessions.isEmpty {
                     DashboardEmptyState(
                         icon: "pause.circle",
@@ -563,7 +588,7 @@ private struct ActiveWorkCard: View {
                             open(.session("\(session.client)::\(session.sessionId)"))
                         }
                         if index < min(sessions.count, 2) - 1 {
-                            Divider().overlay(Theme.border.opacity(0.72)).padding(.leading, 36)
+                            Divider().overlay(Theme.hairline.opacity(0.72)).padding(.leading, 36)
                         }
                     }
                 }
@@ -610,7 +635,7 @@ struct DashboardPlanWindowPresentation: Equatable {
         remainingFraction = (remaining ?? 0) / 100
         usedPercent = window.usedPercent
         resetText = Theme.resetsIn(window.resetsAt).map { "Resets in \($0)" }
-            ?? "Reset time unavailable"
+            ?? "Reset time unreported"
         provenanceText = "Provider reported"
     }
 }
@@ -634,64 +659,66 @@ private struct PlanAndUsageCard: View {
 
         Card(padding: 0, fillsHeight: true) {
             VStack(spacing: 0) {
-                DashboardCardHeader("Plan and usage", count: accountCount > 1 ? accountCount : nil) {
+                // The card renders ONE provider meter; a multi-account badge
+                // here promised accounts the card never shows.
+                DashboardCardHeader("Plan and usage", count: nil) {
                     Button(action: onViewLimits) {
-                        Text("View limits").font(Type.action)
+                        Text("View limits").font(Type.captionSemibold)
                     }
                     .foregroundStyle(Theme.accent)
                     .buttonStyle(QuietButtonStyle())
                     .accessibilityIdentifier("dashboard.plan.view-limits")
                 }
-                Divider().overlay(Theme.border)
+                Divider().overlay(Theme.hairline)
                 HStack(spacing: Space.l) {
                     PlanRing(
                         fraction: window.remainingFraction,
-                        tint: window.usedPercent.map(Theme.limitColor) ?? Theme.textFaint
+                        tint: window.usedPercent.map(Theme.limitColor) ?? Theme.muted
                     )
                     .frame(width: 82, height: 82)
                     .overlay {
                         VStack(spacing: 1) {
                             Text(window.remainingText)
-                                .font(Type.hero)
-                                .foregroundStyle(Theme.text)
+                                .font(Face.monoFont(24, .bold))
+                                .foregroundStyle(Theme.ink)
                             Text(window.remainingCaption)
-                                .font(Type.tiny)
-                                .foregroundStyle(Theme.textMuted)
+                                .font(Type.caption)
+                                .foregroundStyle(Theme.muted)
                         }
                     }
 
                     VStack(alignment: .leading, spacing: Space.s) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(providerTitle + window.titleSuffix)
-                                .font(Type.tiny)
-                                .foregroundStyle(Theme.textMuted)
+                                .font(Type.caption)
+                                .foregroundStyle(Theme.muted)
                                 .lineLimit(1)
                             Text(window.resetText)
-                                .font(Type.rowTitle.weight(.semibold))
-                                .foregroundStyle(Theme.text)
+                                .font(Type.rowLabel)
+                                .foregroundStyle(Theme.ink)
                             Text(window.provenanceText)
-                                .font(Type.tiny)
-                                .foregroundStyle(Theme.textFaint)
+                                .font(Type.caption)
+                                .foregroundStyle(Theme.muted)
                         }
 
-                        Divider().overlay(Theme.border)
+                        Divider().overlay(Theme.hairline)
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Today")
-                                .font(Type.tiny)
-                                .foregroundStyle(Theme.textMuted)
+                                .font(Type.caption)
+                                .foregroundStyle(Theme.muted)
                             Text("\(today?.costText ?? "—") · \(today?.tokensText ?? "—")")
-                                .font(Type.rowTitle.weight(.semibold).monospacedDigit())
-                                .foregroundStyle(Theme.text)
+                                .font(Face.monoFont(14, .semibold))
+                                .foregroundStyle(Theme.ink)
                             Text("Pricing estimate · client-reported fresh tokens")
-                                .font(Type.tiny)
-                                .foregroundStyle(Theme.textFaint)
+                                .font(Type.caption)
+                                .foregroundStyle(Theme.muted)
                                 .lineLimit(1)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(15)
+                .padding(Space.l)
                 .frame(minHeight: 134)
             }
         }
@@ -704,7 +731,7 @@ struct PlanRing: View {
 
     var body: some View {
         ZStack {
-            Circle().stroke(Theme.cardAlt, lineWidth: 7)
+            Circle().stroke(Theme.tintNeutral, lineWidth: 7)
             Circle()
                 .trim(from: 0, to: min(max(fraction, 0), 1))
                 .stroke(tint, style: StrokeStyle(lineWidth: 7, lineCap: .round))
@@ -732,16 +759,16 @@ private struct DashboardUsageChart: View {
                 HStack(spacing: Space.m) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Usage history")
-                            .font(Type.callout.weight(.semibold))
-                            .foregroundStyle(Theme.textMuted)
+                            .font(Type.titleCard)
+                            .foregroundStyle(Theme.muted)
                         Text(series.subtitle(dayCount: periods.count))
-                            .font(Type.tiny)
-                            .foregroundStyle(Theme.textFaint)
+                            .font(Type.caption)
+                            .foregroundStyle(Theme.muted)
                     }
                     Spacer(minLength: Space.s)
                     Text(series.totalText(for: periods))
-                        .font(Type.tiny.monospacedDigit())
-                        .foregroundStyle(Theme.textMuted)
+                        .font(Type.dataSmall)
+                        .foregroundStyle(Theme.muted)
                     HStack(spacing: 2) {
                         ForEach(DashboardUsageSeries.allCases) { choice in
                             Button {
@@ -751,7 +778,7 @@ private struct DashboardUsageChart: View {
                                     pinnedIndex = nil
                                 }
                             } label: {
-                                Text(choice.rawValue).font(Type.tiny.weight(.semibold))
+                                Text(choice.rawValue).font(Type.captionSemibold)
                                     .padding(.horizontal, 9)
                                     .frame(height: 24)
                             }
@@ -761,15 +788,15 @@ private struct DashboardUsageChart: View {
                         }
                     }
                     .padding(2)
-                    .background(Theme.cardAlt, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
                 }
-                .padding(.horizontal, 15)
+                .padding(.horizontal, Space.l)
                 .frame(minHeight: 47)
 
-                Divider().overlay(Theme.border)
+                Divider().overlay(Theme.hairline)
 
                 chart
-                    .padding(.horizontal, 15)
+                    .padding(.horizontal, Space.l)
                     .padding(.vertical, 11)
             }
         }
@@ -789,8 +816,8 @@ private struct DashboardUsageChart: View {
                 Spacer()
                 Text("0")
             }
-            .font(Type.tiny.monospacedDigit())
-            .foregroundStyle(Theme.textFaint)
+            .font(Type.dataSmall)
+            .foregroundStyle(Theme.muted)
             .frame(width: 38, height: 130)
 
             GeometryReader { proxy in
@@ -800,13 +827,13 @@ private struct DashboardUsageChart: View {
 
                 ZStack(alignment: .bottomLeading) {
                     VStack(spacing: 0) {
-                        Divider().overlay(Theme.border)
+                        Divider().overlay(Theme.hairline)
                         Spacer()
-                        Divider().overlay(Theme.border.opacity(0.72))
+                        Divider().overlay(Theme.hairline.opacity(0.72))
                         Spacer()
-                        Divider().overlay(Theme.border)
+                        Divider().overlay(Theme.hairline)
                     }
-                    .padding(.bottom, 18)
+                    .padding(.bottom, 20)
 
                     HStack(alignment: .bottom, spacing: gap) {
                         ForEach(Array(periods.enumerated()), id: \.offset) { index, period in
@@ -820,7 +847,10 @@ private struct DashboardUsageChart: View {
                                             .fill(barColor(index))
                                             .frame(height: barHeight(for: period))
                                     }
-                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    // Fixed plot height so the max bar tops at
+                                    // the gridline its axis label names.
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 110)
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(DashboardChartBarStyle(active: activeIndex == index))
@@ -842,8 +872,8 @@ private struct DashboardUsageChart: View {
                                 .accessibilityIdentifier("dashboard.usage.day.\(index)")
 
                                 Text(period.shortLabel)
-                                    .font(Type.tiny.monospacedDigit())
-                                    .foregroundStyle(Theme.textFaint)
+                                    .font(Type.dataSmall)
+                                    .foregroundStyle(Theme.muted)
                                     .lineLimit(1)
                             }
                             .frame(width: columnWidth)
@@ -874,14 +904,14 @@ private struct DashboardUsageChart: View {
     }
 
     private func barColor(_ index: Int) -> Color {
-        if activeIndex == index || index == periods.count - 1 { return Theme.accent }
-        return Theme.textFaint.opacity(0.72)
+        if activeIndex == index || index == periods.count - 1 { return Theme.chartBar }
+        return Theme.chartBarDim
     }
 
     private func barHeight(for period: PeriodBucket) -> CGFloat {
         let value = series.value(for: period)
         guard value > 0 else { return 0 }
-        return max(3, 106 * value / maximum)
+        return max(3, 110 * value / maximum)
     }
 
     private func axisText(_ value: Double) -> String {
@@ -898,15 +928,15 @@ private struct DashboardChartTooltip: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(date).font(Type.tiny).foregroundStyle(Theme.textFaint)
-            Text(value).font(Type.small.weight(.semibold).monospacedDigit()).foregroundStyle(Theme.text)
+            Text(date).font(Type.dataSmall).foregroundStyle(Theme.muted)
+            Text(value).font(Type.dataSmallSemibold).foregroundStyle(Theme.ink)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(Theme.cardAlt, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .strokeBorder(Theme.border, lineWidth: 1)
+            RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
+                .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW)
         )
         .fixedSize()
     }
@@ -927,15 +957,15 @@ private struct DashboardSeriesButtonBody: View {
 
     var body: some View {
         configuration.label
-            .foregroundStyle(selected ? Theme.text : Theme.textMuted)
+            .foregroundStyle(selected ? Theme.ink : Theme.muted)
             .background(
-                selected ? Theme.card : (configuration.isPressed ? Theme.border.opacity(0.6) : Color.clear),
-                in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                selected ? Theme.card : (configuration.isPressed ? Theme.hairline.opacity(0.6) : Color.clear),
+                in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
             )
             .overlay {
                 if isFocused {
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .strokeBorder(Theme.accent, lineWidth: 2)
+                    RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
+                        .strokeBorder(Theme.accent, lineWidth: Metrics.focusW)
                 }
             }
     }
@@ -949,8 +979,8 @@ private struct DashboardChartBarStyle: ButtonStyle {
             .opacity(configuration.isPressed ? 0.72 : 1)
             .overlay {
                 if active {
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .strokeBorder(Theme.accent.opacity(0.55), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
+                        .strokeBorder(Theme.accent.opacity(0.55), lineWidth: Metrics.borderW)
                 }
             }
     }
@@ -963,23 +993,25 @@ private struct DashboardSessionRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                StatusDot(color: Theme.statusColor(session.status), size: 6)
+                RoundedRectangle(cornerRadius: 1)
+                .fill(Theme.statusColor(session.status))
+                .frame(width: 3, height: 14)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(session.title ?? "\(session.client) · \(session.shortSessionId)")
-                        .font(Type.rowTitle.weight(.semibold))
-                        .foregroundStyle(Theme.text)
+                        .font(Type.rowLabel)
+                        .foregroundStyle(Theme.ink)
                         .lineLimit(1)
                     Text([Optional(session.client), session.status.map(statusLabel), agoText(session.lastActivityAt)]
                         .compactMap { $0 }
                         .joined(separator: " · "))
-                        .font(Type.tiny)
-                        .foregroundStyle(Theme.textFaint)
+                        .font(Type.caption)
+                        .foregroundStyle(Theme.muted)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 8)
                 DashboardDisclosureIndicator()
             }
-            .padding(.horizontal, 15)
+            .padding(.horizontal, Space.l)
             .frame(minHeight: 66)
             .contentShape(Rectangle())
         }
@@ -1015,8 +1047,8 @@ private struct DashboardRowButtonBody: View {
             )
             .overlay {
                 if isFocused {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(Theme.accent, lineWidth: 2)
+                    RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
+                        .strokeBorder(Theme.accent, lineWidth: Metrics.focusW)
                         .padding(2)
                 }
             }
@@ -1033,7 +1065,7 @@ private struct DashboardDisclosureIndicator: View {
     var body: some View {
         Image(systemName: "chevron.forward")
             .font(.system(size: 8.5, weight: .semibold))
-            .foregroundStyle(Theme.textFaint)
+            .foregroundStyle(Theme.muted)
             .frame(width: 10)
             .accessibilityHidden(true)
     }
@@ -1048,14 +1080,14 @@ private struct DashboardEmptyState: View {
         HStack(spacing: Space.m) {
             Image(systemName: icon)
                 .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(Theme.textFaint)
+                .foregroundStyle(Theme.muted)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(Type.rowTitle.weight(.semibold)).foregroundStyle(Theme.text)
-                Text(message).font(Type.small).foregroundStyle(Theme.textMuted)
+                Text(title).font(Type.rowLabel).foregroundStyle(Theme.ink)
+                Text(message).font(Type.caption).foregroundStyle(Theme.muted)
             }
         }
-        .padding(15)
+        .padding(Space.l)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

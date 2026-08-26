@@ -6,6 +6,51 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+The macOS app adopts the v7 brand design system end to end: a semantic
+cream/cobalt token palette (light + dark), a nine-role type ramp, evidence
+tiers carried by pip shapes everywhere, and the record-page layout for Work
+Receipts.
+
+### Added
+
+- macOS app: the Work surface's receipts table (lifecycle filter tabs with
+  honest decision-vocabulary buckets, evidence-tier pips with
+  checked/checkable ratios, a right-aligned checks rail with failure
+  annotations, cost + recency) and the Receipt record page (receipt rail,
+  summary strip, dimensions ledger with provenance chips and inline gap
+  annotations, checks card, evidence-coverage card with a counted tier
+  legend, evidence sources, gaps).
+- macOS app: a Sources pane rendering `/v1/ingestion` — per-source import
+  state and recency, continuous-sync watcher state, actionable issues, the
+  verifier shelf, and the local-only scope card.
+- Local API: bearer-gated `GET /v1/ingestion`, the `/v1` twin of the legacy
+  `/ingestion/health` snapshot, advertised from `/v1/version`.
+- `/v1/tasks` rows now carry `checks_total` / `checks_passed` /
+  `checks_failed` from the same reducer the full Receipt uses, so a list
+  checks column can never disagree with the open record.
+- macOS app: the Stamped Tile brand mark — app icon (deterministic
+  generator script), top-bar lockup, and menu-bar template mark.
+
+### Changed
+
+- macOS app: Usage becomes a record page (summary strip, one single-series
+  daily chart with an optional per-client token filter, By-client and
+  By-model tables with proportional share bars, a basis footer); Limits
+  gets v7 meters with 75/90% notches, absolute reset times, and named
+  states for unreported windows or clients without quota readings.
+- macOS app: green now marks only live-connection facts and independently
+  verified evidence — completion claims render in ink, agent-reported check
+  passes lose their green mark, and every cost carries its `~`/`≈` prefix
+  plus a human basis phrase. Absent facts are named states ("unpriced",
+  "not recorded"), never dashes or zeros.
+
+### Fixed
+
+- Receipt evidence gaps count only checkable steps: a research/docs step
+  can no longer owe a passing check the taxonomy says it cannot have.
+- Check names quoted in per-step grade reasons truncate at word boundaries
+  with an ellipsis instead of mid-word.
+
 ## [0.9.4] — 2026-08-25
 
 Fixes Codex session recording for newly-onboarded users: agentacct MCP receipts

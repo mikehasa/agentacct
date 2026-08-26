@@ -48,8 +48,8 @@ EOF
 cat > "$test_dir/bin/sw_vers" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
-  -productVersion) echo "${AGENTACCT_FAKE_OS_VERSION:-26.6}" ;;
-  -buildVersion) echo "${AGENTACCT_FAKE_OS_BUILD:-25G72}" ;;
+  -productVersion) echo "${AGENTACCT_FAKE_OS_VERSION:-26.5.2}" ;;
+  -buildVersion) echo "${AGENTACCT_FAKE_OS_BUILD:-25F84}" ;;
   *) exit 1 ;;
 esac
 EOF
@@ -64,7 +64,7 @@ chmod +x "$test_dir/bin/"*
 export PATH="$test_dir/bin:$PATH"
 export AGENTACCT_SWIFT_BIN="$test_dir/bin/swift"
 export AGENTACCT_FAKE_SWIFT_LOG="$test_dir/swift.log"
-platform_id="macos-26.6-25G72-xcode-26.6-17F113-arm64-2x"
+platform_id="macos-26.5.2-25F84-xcode-26.6-17F113-arm64-2x"
 touch "$AGENTACCT_FAKE_SWIFT_LOG"
 
 fail() {

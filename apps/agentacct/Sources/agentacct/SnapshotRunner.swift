@@ -46,14 +46,14 @@ enum SnapshotRunner {
 
                     for pane in MainPane.allCases {
                         selection.pane = pane
-                        // The Work pane shows the Receipt cards AND the steps
-                        // drill-down below them; render it taller so both fit.
-                        let height: CGFloat = pane == .work ? 1420 : 680
+                        // Width-only frame: the canvas grows to the pane's full
+                        // content height (ImageRenderer centers an overflowing
+                        // fixed frame, which would clip both ends).
                         let window = MainWindow()
                             .environmentObject(glance)
                             .environmentObject(dashboard)
                             .environmentObject(selection)
-                            .frame(width: 1120, height: height)
+                            .frame(width: 1120, alignment: .top)
                             .environment(\.colorScheme, scheme)
                         try SnapshotImageWriter.render(
                             window,
@@ -61,11 +61,29 @@ enum SnapshotRunner {
                         )
                     }
 
+                    // The Work surface has a second state: the receipts TABLE
+                    // (no Task selected). Render it too, then restore the
+                    // record selection for the other scheme's pass.
+                    let recordTaskId = selection.taskId
+                    selection.pane = .work
+                    selection.taskId = nil
+                    let tableWindow = MainWindow()
+                        .environmentObject(glance)
+                        .environmentObject(dashboard)
+                        .environmentObject(selection)
+                        .frame(width: 1120, alignment: .top)
+                        .environment(\.colorScheme, scheme)
+                    try SnapshotImageWriter.render(
+                        tableWindow,
+                        to: out.appendingPathComponent("window-work-table-\(suffix).png")
+                    )
+                    selection.taskId = recordTaskId
+
                     let menu = MenuContent()
                         .environmentObject(glance)
                         .environmentObject(dashboard)
                         .environmentObject(selection)
-                        .background(scheme == .dark ? Color(white: 0.13) : Color(white: 0.97))
+                        .background(Theme.canvas)
                         .frame(width: 360)
                         .environment(\.colorScheme, scheme)
                     try SnapshotImageWriter.render(menu, to: out.appendingPathComponent("menu-\(suffix).png"))

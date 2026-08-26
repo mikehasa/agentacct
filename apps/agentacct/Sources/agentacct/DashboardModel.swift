@@ -181,6 +181,7 @@ struct PeriodBucket: Decodable {
     let freshTokens: Int?
     let estimatedCostUsd: Double?
     let costComplete: Bool?
+    let costConfidence: String?
     let byClient: [String: PeriodClientSlice]?
 
     /// "08-05" from "2026-08-05" for axis labels.
@@ -189,10 +190,16 @@ struct PeriodBucket: Decodable {
         return String(period.dropFirst(5))
     }
 
-    /// The shared cost honesty rule (complete-$ / partial-~$ / em-dash).
+    /// The shared cost grammar ($ reported / ≈$ estimate / ~$ partial / —).
     var costText: String {
-        guard let cost = estimatedCostUsd else { return "—" }
-        return Fmt.dollars(cost, prefix: costComplete == true ? "$" : "~$")
+        if costComplete != true, let cost = estimatedCostUsd {
+            return Fmt.dollars(cost, prefix: "~$")
+        }
+        return Fmt.costDisplay(
+            usd: estimatedCostUsd,
+            complete: costComplete,
+            confidence: costConfidence
+        ) ?? "—"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -200,6 +207,7 @@ struct PeriodBucket: Decodable {
         case freshTokens = "fresh_tokens"
         case estimatedCostUsd = "estimated_cost_usd"
         case costComplete = "cost_complete"
+        case costConfidence = "cost_confidence"
         case byClient = "by_client"
     }
 }
@@ -221,6 +229,7 @@ struct UsageBucket: Decodable, Identifiable {
     let estimatedCostUsd: Double?
     let costComplete: Bool?
     let knownAdditiveCostUsd: Double?
+    let costConfidence: String?
     let costConfidenceLabel: String?
 
     var id: String { "\(client ?? "?")::\(model ?? "*")" }
@@ -232,17 +241,17 @@ struct UsageBucket: Decodable, Identifiable {
         case estimatedCostUsd = "estimated_cost_usd"
         case costComplete = "cost_complete"
         case knownAdditiveCostUsd = "known_additive_cost_usd"
+        case costConfidence = "cost_confidence"
         case costConfidenceLabel = "cost_confidence_label"
     }
 
-    /// The shared cube cost rule: complete `$` / partial `~$` / `—`.
+    /// The shared cost grammar ($ reported / ≈$ estimate / ~$ partial / —).
     var costText: String {
-        if costComplete == true, let cost = estimatedCostUsd {
-            return Fmt.dollars(cost)
-        }
-        if let known = knownAdditiveCostUsd {
-            return Fmt.dollars(known, prefix: "~$")
-        }
-        return "—"
+        Fmt.costDisplay(
+            usd: costComplete == true ? estimatedCostUsd : nil,
+            knownAdditive: knownAdditiveCostUsd,
+            complete: costComplete,
+            confidence: costConfidence
+        ) ?? "—"
     }
 }

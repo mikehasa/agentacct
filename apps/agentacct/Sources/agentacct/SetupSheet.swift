@@ -12,16 +12,16 @@ struct SetupSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.l) {
             HStack(spacing: 9) {
-                Circle().fill(Theme.accent.gradient).frame(width: 10, height: 10)
+                Circle().fill(Theme.accent).frame(width: 10, height: 10)
                 Text("Set up recording")
-                    .font(.system(size: 15, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Theme.text)
+                    .font(Type.titleCard)
+                    .foregroundStyle(Theme.ink)
                 Spacer()
             }
 
             Text("agentacct records what your coding agents actually do — the work, not just tokens — for this local dashboard. This installs the recorder and configures the agents you have.")
                 .font(Type.body)
-                .foregroundStyle(Theme.textMuted)
+                .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 6) {
@@ -37,8 +37,8 @@ struct SetupSheet: View {
                         VStack(alignment: .leading, spacing: 2) {
                             ForEach(Array(setup.log.enumerated()), id: \.offset) { i, line in
                                 Text(line)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(Theme.textMuted)
+                                    .font(Type.dataSmall)
+                                    .foregroundStyle(Theme.muted)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .id(i)
                             }
@@ -46,8 +46,8 @@ struct SetupSheet: View {
                         .padding(8)
                     }
                     .frame(height: 150)
-                    .background(Theme.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Theme.border, lineWidth: 1))
+                    .background(Theme.chrome, in: RoundedRectangle(cornerRadius: Metrics.radius))
+                    .overlay(RoundedRectangle(cornerRadius: Metrics.radius).strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW))
                     .onChange(of: setup.log.count) {
                         withAnimation { proxy.scrollTo(setup.log.count - 1, anchor: .bottom) }
                     }
@@ -58,7 +58,7 @@ struct SetupSheet: View {
         }
         .padding(Space.l)
         .frame(width: 460)
-        .background(Theme.bg)
+        .background(Theme.canvas)
     }
 
     @ViewBuilder
@@ -66,12 +66,12 @@ struct SetupSheet: View {
         switch setup.phase {
         case .idle:
             HStack {
-                Button("Not now", action: onClose).buttonStyle(.plain).foregroundStyle(Theme.textMuted)
+                Button("Not now", action: onClose).buttonStyle(.plain).foregroundStyle(Theme.muted)
                 Spacer()
                 Button {
                     Task { await setup.setUp() }
                 } label: {
-                    Text("Set up recording").fontWeight(.semibold)
+                    Text("Set up recording").font(Face.sansFont(13, .semibold))
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
@@ -79,30 +79,30 @@ struct SetupSheet: View {
         case .working(let status):
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text(status).font(Type.small).foregroundStyle(Theme.textMuted)
+                Text(status).font(Type.caption).foregroundStyle(Theme.muted)
                 Spacer()
             }
         case .done:
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 7) {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.green)
-                    Text("Recording is configured.").font(Type.body.weight(.medium)).foregroundStyle(Theme.text)
+                    Text("Recording is configured.").font(Face.sansFont(14, .medium)).foregroundStyle(Theme.ink)
                 }
                 Text("Open a NEW agent session (in any project) so it picks up the tools and hooks — the session that ran setup can't see them yet.")
-                    .font(Type.small).foregroundStyle(Theme.textMuted)
+                    .font(Type.caption).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack { Spacer(); Button("Done", action: onClose).buttonStyle(.borderedProminent).tint(Theme.accent) }
             }
         case .failed(let message):
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 7) {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.orange)
-                    Text("Setup didn't finish").font(Type.body.weight(.medium)).foregroundStyle(Theme.text)
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.amber)
+                    Text("Setup didn't finish").font(Face.sansFont(14, .medium)).foregroundStyle(Theme.ink)
                 }
-                Text(message).font(Type.small).foregroundStyle(Theme.textMuted)
+                Text(message).font(Type.caption).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    Button("Close", action: onClose).buttonStyle(.plain).foregroundStyle(Theme.textMuted)
+                    Button("Close", action: onClose).buttonStyle(.plain).foregroundStyle(Theme.muted)
                     Spacer()
                     Button("Try again") { setup.reset(); Task { await setup.setUp() } }
                         .buttonStyle(.borderedProminent).tint(Theme.accent)
@@ -117,7 +117,7 @@ private struct SetupBullet: View {
     var body: some View {
         HStack(alignment: .top, spacing: 7) {
             Circle().fill(Theme.accent.opacity(0.7)).frame(width: 4, height: 4).padding(.top, 6)
-            Text(text).font(Type.small).foregroundStyle(Theme.textMuted)
+            Text(text).font(Type.caption).foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
