@@ -1,6 +1,8 @@
 import SwiftUI
 
-// The Receipts pane: Task list (left) -> one Task's Work Receipt (right).
+// Work Receipt record components — the cards that render one Task's Receipt
+// as an enterprise record page (summary strip, dimensions ledger, evidence
+// coverage, checks, gaps, evidence sources). Consumed by WorkPane.swift.
 //
 // A Receipt answers the 8 questions for one converged Task and keeps the two
 // honesty axes visibly SEPARATE: decision status (what a human/agent SAYS) and
@@ -41,221 +43,238 @@ func receiptSourceTint(_ source: String) -> Color {
     Theme.muted
 }
 
-// Reusable Task-row and Receipt cards for the Work surface (WorkPane.swift).
-// The former standalone Receipts pane was folded into WorkPane.
+// MARK: - Record summary strip
 
-struct ReceiptRow: View {
-    let task: ReceiptSummary
-    let selected: Bool
+/// The record page's summary strip: Actions · Est. cost · Elapsed · Checks ·
+/// Sessions, each a caps caption over an 18/700 mono value with 1px verticals
+/// between the cells. Absent facts are named ("not recorded"), never zeroed.
+struct RecordSummaryStrip: View {
+    let receipt: Receipt
+    let summary: ReceiptSummary?
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(task.title ?? task.taskId)
-                .font(Type.rowLabel)
-                .foregroundStyle(Theme.ink)
-                .lineLimit(2)
-            HStack(spacing: 6) {
-                AxisChip(text: task.decisionStatus.key, tint: receiptDecisionTint(task.decisionStatus.key))
-                AxisChip(
-                    text: task.evidenceStrength.compactHeadline,
-                    tint: receiptEvidenceTint(task.evidenceStrength.key)
-                )
-                // Parallel deliberate-stop marker, shown only when it adds info the
-                // decision word does not already state. Muted unifies with the
-                // step-level handoff chip (Theme.statusColor("handed_off") is ink;
-                // the lifecycle marker stays quieter than the decision word).
-                if task.handedOff == true && task.decisionStatus.key != "handed_off" {
-                    AxisChip(text: "↗ handed off", tint: Theme.muted)
-                }
-                Spacer()
-                Text(task.cost.text).font(Type.dataSmall).foregroundStyle(Theme.muted)
-            }
+    private struct Cell: Identifiable {
+        let id: String
+        let label: String
+        let value: String?
+        let qualifier: String?
+        let absent: String?
+    }
+
+    private var cells: [Cell] {
+        let actions = receipt.dimensions.actions
+        let cost = receipt.dimensions.cost
+        let evidence = receipt.dimensions.evidence
+
+        let actionCell: Cell
+        if let total = actions.toolCategoryTotal {
+            actionCell = Cell(id: "actions", label: "Actions", value: "\(total)", qualifier: "events", absent: nil)
+        } else {
+            actionCell = Cell(id: "actions", label: "Actions", value: nil, qualifier: nil, absent: "not instrumented")
         }
-        .padding(8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            selected ? AnyShapeStyle(Theme.selected) : AnyShapeStyle(.clear),
-            in: RoundedRectangle(cornerRadius: Metrics.radius)
-        )
-        // The whole card is the tap target, not just the text — an unselected
-        // row's background is `.clear`, which SwiftUI does not hit-test, so
-        // without this the blank areas of the card swallow the tap (SessionRow
-        // already does this).
-        .contentShape(Rectangle())
-    }
-}
 
-struct AxisChip: View {
-    let text: String
-    let tint: Color
+        let costCell: Cell
+        if let usd = cost.estimatedCostUsd {
+            var qualifier = cost.costBasis ?? "basis unknown"
+            if cost.costComplete == false { qualifier += " · partial" }
+            costCell = Cell(id: "cost", label: "Est. cost", value: Fmt.dollars(usd), qualifier: qualifier, absent: nil)
+        } else {
+            costCell = Cell(id: "cost", label: "Est. cost", value: nil, qualifier: nil, absent: "no priced usage")
+        }
+
+        let elapsedCell: Cell
+        if let seconds = receipt.durationSeconds, seconds > 0 {
+            elapsedCell = Cell(id: "elapsed", label: "Elapsed", value: durationText(seconds), qualifier: nil, absent: nil)
+        } else {
+            elapsedCell = Cell(id: "elapsed", label: "Elapsed", value: nil, qualifier: nil, absent: "not recorded")
+        }
+
+        let checksCell: Cell
+        if let total = evidence.checksTotal, total > 0 {
+            let failed = evidence.checksFailed ?? 0
+            checksCell = Cell(
+                id: "checks",
+                label: "Checks",
+                value: "\(evidence.checksPassed ?? 0)/\(total)",
+                qualifier: failed > 0 ? "passed · \(failed) failed" : "passed",
+                absent: nil
+            )
+        } else {
+            checksCell = Cell(id: "checks", label: "Checks", value: nil, qualifier: nil, absent: "none recorded")
+        }
+
+        let sessionsCell: Cell
+        if let count = summary?.sessionCount ?? receipt.dimensions.task.boundary?.sessionCount {
+            let roots = receipt.sessions?.count ?? 0
+            sessionsCell = Cell(
+                id: "sessions",
+                label: "Sessions",
+                value: "\(count)",
+                qualifier: roots > 1 ? "\(roots) roots" : nil,
+                absent: nil
+            )
+        } else {
+            sessionsCell = Cell(id: "sessions", label: "Sessions", value: nil, qualifier: nil, absent: "not recorded")
+        }
+
+        return [actionCell, costCell, elapsedCell, checksCell, sessionsCell]
+    }
 
     var body: some View {
-        Text(text)
-            .font(Type.dataSmall)
-            .foregroundStyle(tint)
-            .padding(.horizontal, 10)
-            .frame(height: Metrics.chipH)
-            .background(Theme.chipBg, in: Capsule())
-            .overlay(Capsule().strokeBorder(Theme.chipLine, lineWidth: Metrics.borderW))
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 0) {
+                ForEach(Array(cells.enumerated()), id: \.element.id) { index, cell in
+                    if index > 0 {
+                        // Fixed-height vertical: an unbounded Rectangle would
+                        // stretch the strip to the page height.
+                        Rectangle().fill(Theme.hairline).frame(width: 1, height: 46)
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        CapsLabel(text: cell.label)
+                        if let value = cell.value {
+                            // Qualifier under the value: cells are narrow and a
+                            // basis word must never wrap the number itself.
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(value).font(Type.kpi).foregroundStyle(Theme.ink)
+                                if let qualifier = cell.qualifier {
+                                    Text(qualifier).font(Type.dataSmall).foregroundStyle(Theme.muted)
+                                        .lineLimit(1)
+                                }
+                            }
+                        } else {
+                            // Absence is a named state at value position — never "0".
+                            Text(cell.absent ?? "not recorded")
+                                .font(Type.body).foregroundStyle(Theme.muted)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, index > 0 ? Space.l : 0)
+                }
+            }
+            Rectangle().fill(Theme.hairline).frame(height: 1).padding(.top, Space.m)
+        }
     }
 }
 
-/// The Receipt's cards (axes, dimensions, gaps, provenance) as a plain stack —
-/// no ScrollBox of its own, so WorkPane can scroll it together with the session
-/// drill-down that follows it.
-struct ReceiptCards: View {
+// MARK: - Receipt dimensions
+
+/// The receipt-dimensions ledger: one row per dimension — name, value,
+/// provenance chips, and the dimension's own gaps inline as named amber facts.
+struct RecordDimensionsCard: View {
     let receipt: Receipt
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
-            axesCard
-            dimensionsCard
-            gapsCard
-            provenanceCard
-        }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(receipt.title ?? "Task").font(Type.titleCard)
-                .foregroundStyle(Theme.ink)
-            Text(receipt.taskId).font(Type.dataSmall).foregroundStyle(Theme.muted)
-        }
-    }
-
-    private var axesCard: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 10) {
-                axisRow(
-                    label: "Decision status",
-                    key: receipt.axes.decisionStatus.key,
-                    tint: receiptDecisionTint(receipt.axes.decisionStatus.key),
-                    detail: assertedText(receipt.axes.decisionStatus.assertedBy),
-                    note: receipt.axes.decisionStatus.statement
-                )
-                // Lifecycle marker, shown BESIDE the decision word (not instead of
-                // it) when it adds information the decision word does not state.
-                if let handoff = receipt.axes.handoff, handoff.handedOff == true,
-                   receipt.axes.decisionStatus.key != "handed_off" {
-                    axisRow(
-                        label: "Lifecycle",
-                        key: "↗ handed off",
-                        tint: Theme.muted,
-                        detail: assertedText(handoff.assertedBy),
-                        note: handoff.statement
-                    )
-                }
-                evidenceCoverageRow(receipt.axes.evidenceStrength)
-                if let orthogonality = receipt.axes.orthogonalityNote {
-                    Text(orthogonality).font(Type.caption).foregroundStyle(Theme.muted)
-                }
-            }
-        }
-    }
-
-    private func axisRow(label: String, key: String, tint: Color, detail: String?, note: String?) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 8) {
-                Text(label).font(Type.caption).foregroundStyle(Theme.muted).frame(width: 130, alignment: .leading)
-                Text(key.uppercased()).font(Face.sansFont(13, .bold)).foregroundStyle(tint)
-                if let detail { Text(detail).font(Type.caption).foregroundStyle(Theme.muted) }
-            }
-            if let note {
-                Text(note).font(Type.caption).foregroundStyle(Theme.muted)
-                    .padding(.leading, 138)
-            }
-        }
-    }
-
-    /// Evidence coverage: the ratio headline (NOT uppercased — it is counts) with
-    /// the honest ledger and the one-line definition beneath it.
-    private func evidenceCoverageRow(_ evidence: ReceiptEvidence) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Evidence coverage").font(Type.caption).foregroundStyle(Theme.muted)
-                    .frame(width: 130, alignment: .leading)
-                Text(evidence.headline).font(Face.sansFont(13, .bold))
-                    .foregroundStyle(receiptEvidenceTint(evidence.key))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if let ledger = evidence.ledger {
-                Text(ledger).font(Type.caption).foregroundStyle(Theme.muted).padding(.leading, 138)
-            }
-            if let definition = evidence.definition {
-                Text(definition).font(Type.caption).foregroundStyle(Theme.muted).padding(.leading, 138)
-            }
-        }
-    }
-
-    private var dimensionsCard: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 8) {
-                dimensionRow("Task", taskSummary, receipt.dimensions.task.provenance)
-                dimensionRow("Actors", actorsSummary, receipt.dimensions.actors.provenance)
+        Card(padding: Space.xl) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Receipt dimensions").font(Type.titleCard).foregroundStyle(Theme.ink)
+                Rectangle().fill(Theme.hairline).frame(height: 1).padding(.top, Space.m)
+                dimensionRow("Task", taskSummary,
+                             provenance: receipt.dimensions.task.provenance,
+                             gaps: receipt.dimensions.task.gaps)
+                hairline
+                dimensionRow("Actors", actorsSummary,
+                             provenance: receipt.dimensions.actors.provenance,
+                             gaps: receipt.dimensions.actors.gaps)
+                hairline
                 actionsRow
-                dimensionRow("Cost", costSummary, receipt.dimensions.cost.provenance)
-                dimensionRow("Evidence", evidenceSummary, receipt.dimensions.evidence.provenance)
-                dimensionRow("Outcome", outcomeSummary, receipt.dimensions.outcome.provenance)
+                hairline
+                dimensionRow("Cost", costSummary,
+                             provenance: receipt.dimensions.cost.provenance,
+                             gaps: receipt.dimensions.cost.gaps)
+                hairline
+                dimensionRow("Checks", evidenceSummary,
+                             provenance: receipt.dimensions.evidence.provenance,
+                             gaps: receipt.dimensions.evidence.gaps)
+                hairline
+                dimensionRow("Outcome", outcomeSummary,
+                             provenance: receipt.dimensions.outcome.provenance,
+                             gaps: receipt.dimensions.outcome.gaps,
+                             verbatimValue: true)
             }
         }
     }
 
-    private func dimensionRow(_ name: String, _ summary: String, _ provenance: [String]?) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(name).font(Type.captionSemibold).foregroundStyle(Theme.muted)
-                .frame(width: 74, alignment: .leading)
-            Text(summary).font(Type.body).foregroundStyle(Theme.ink)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            HStack(spacing: 4) {
-                ForEach(provenance ?? [], id: \.self) { source in
-                    ProvenanceChip(text: source, tint: receiptSourceTint(source))
+    private var hairline: some View {
+        Rectangle().fill(Theme.hairline).frame(height: 1)
+    }
+
+    private func dimensionRow(
+        _ name: String,
+        _ summary: String,
+        provenance: [String]?,
+        gaps: [String]?,
+        verbatimValue: Bool = false
+    ) -> some View {
+        HStack(alignment: .top, spacing: Space.l) {
+            Text(name).font(Type.rowLabel).foregroundStyle(Theme.ink)
+                .frame(width: 128, alignment: .leading)
+            VStack(alignment: .leading, spacing: 6) {
+                if verbatimValue {
+                    // Outcome statements quote agent text — never parse as markdown.
+                    Text(verbatim: summary).font(Type.body).foregroundStyle(Theme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(summary).font(Type.body).foregroundStyle(Theme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let provenance, !provenance.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(provenance, id: \.self) { source in
+                            ProvenanceChip(text: source)
+                        }
+                    }
+                }
+                ForEach(gaps ?? [], id: \.self) { gap in
+                    // A dimension's own blind spot, named where the value lives.
+                    HStack(spacing: 6) {
+                        EvidencePip(shape: .hollow, tint: Theme.amber)
+                        Text(gap).font(Type.caption).foregroundStyle(Theme.amber)
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .padding(.vertical, Space.m)
     }
 
-    // Actions gets its own row so the touched artifact PATHS render beneath the
-    // category summary. The paths were always captured; only the count was shown.
+    // Actions renders touched paths + commands beneath the category summary.
     private var actionsRow: some View {
         VStack(alignment: .leading, spacing: 2) {
-            dimensionRow("Actions", actionsSummary, receipt.dimensions.actions.provenance)
-            let preview = actionsTouchedPreview
-            if !preview.shown.isEmpty {
-                VStack(alignment: .leading, spacing: 1) {
-                    ForEach(preview.shown, id: \.self) { path in
+            dimensionRow("Actions", actionsSummary,
+                         provenance: receipt.dimensions.actions.provenance,
+                         gaps: receipt.dimensions.actions.gaps)
+            let files = actionsTouchedPreview
+            let commands = actionsCommandsPreview
+            if !files.shown.isEmpty || !commands.shown.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(files.shown, id: \.self) { path in
                         Text(path).font(Type.dataSmall).foregroundStyle(Theme.muted)
                             .lineLimit(1).truncationMode(.middle)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    if preview.elided > 0 {
-                        Text("… +\(preview.elided) more").font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    if files.elided > 0 {
+                        Text("… +\(files.elided) more files").font(Type.dataSmall).foregroundStyle(Theme.muted)
                     }
-                }
-                .padding(.leading, 82)  // align under the summary column (74 label + 8 spacing)
-            }
-            let commands = actionsCommandsPreview
-            if !commands.shown.isEmpty {
-                VStack(alignment: .leading, spacing: 1) {
                     ForEach(commands.shown, id: \.self) { cmd in
-                        // verbatim: a command is untrusted text — never interpret it as
-                        // markdown (Text's default LocalizedStringKey init would).
+                        // verbatim: a command is untrusted text — never interpret it
+                        // as markdown (Text's LocalizedStringKey init would).
                         Text(verbatim: "$ \(cmd)").font(Type.dataSmall).foregroundStyle(Theme.muted)
                             .lineLimit(1).truncationMode(.middle)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     if commands.elided > 0 {
-                        Text("… +\(commands.elided) more").font(Type.dataSmall).foregroundStyle(Theme.muted)
+                        Text("… +\(commands.elided) more commands").font(Type.dataSmall).foregroundStyle(Theme.muted)
                     }
                 }
-                .padding(.leading, 82)  // align the commands under the summary column
+                .padding(.leading, 128 + Space.l)
+                .padding(.bottom, Space.m)
+                .padding(.top, -Space.s)
             }
         }
     }
 
-    // The daemon computes the preview slice + overflow (the single source of truth
-    // for the cap); the app renders those directly so it can never drift from the
-    // CLI/TUI. Fallback (older payload without the fields): show the full list.
+    // The daemon computes the preview slice + overflow (the single source of
+    // truth for the cap); the app renders those directly so it can never drift
+    // from the CLI/TUI. Fallback (older payload): the full list.
     private var actionsTouchedPreview: (shown: [String], elided: Int) {
         let dim = receipt.dimensions.actions
         if let preview = dim.touchedFilesPreview {
@@ -264,8 +283,6 @@ struct ReceiptCards: View {
         return (dim.touchedFiles ?? [], 0)
     }
 
-    // Same daemon-capped preview + disclosed overflow for the commands an execute tool
-    // ran (fallback to the full list for an older payload without the preview fields).
     private var actionsCommandsPreview: (shown: [String], elided: Int) {
         let dim = receipt.dimensions.actions
         if let preview = dim.commandsPreview {
@@ -274,47 +291,7 @@ struct ReceiptCards: View {
         return (dim.commands ?? [], 0)
     }
 
-    @ViewBuilder
-    private var gapsCard: some View {
-        let items = receipt.dimensions.gaps.items ?? []
-        if !items.isEmpty {
-            Card {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Gaps (\(items.count)) — what could not be proven")
-                        .font(Type.titleCard).foregroundStyle(Theme.ink)
-                    ForEach(items) { item in
-                        HStack(alignment: .top, spacing: 6) {
-                            Text(item.dimension).font(Type.caption).foregroundStyle(Theme.muted)
-                                .frame(width: 70, alignment: .leading)
-                            Text(item.reason).font(Type.caption).foregroundStyle(Theme.muted)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var provenanceCard: some View {
-        let legend = receipt.dimensions.provenance.legend ?? [:]
-        if !legend.isEmpty {
-            Card {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Provenance").font(Type.titleCard).foregroundStyle(Theme.ink)
-                    ForEach(legend.keys.sorted(), id: \.self) { source in
-                        HStack(alignment: .top, spacing: 6) {
-                            Text(source).font(Type.captionSemibold)
-                                .foregroundStyle(receiptSourceTint(source))
-                                .frame(width: 78, alignment: .leading)
-                            Text(legend[source] ?? "").font(Type.caption).foregroundStyle(Theme.muted)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - dimension summaries
+    // MARK: dimension summaries
 
     private var taskSummary: String {
         let dim = receipt.dimensions.task
@@ -330,7 +307,7 @@ struct ReceiptCards: View {
         if let agent = dim.primaryAgent { parts.append(agent) }
         if let models = dim.models, !models.isEmpty { parts.append(models.joined(separator: ", ")) }
         if let subagents = dim.subagentSessionCount, subagents > 0 { parts.append("\(subagents) subagents") }
-        return parts.isEmpty ? "—" : parts.joined(separator: " · ")
+        return parts.isEmpty ? "no actor recorded" : parts.joined(separator: " · ")
     }
 
     private var actionsSummary: String {
@@ -343,8 +320,6 @@ struct ReceiptCards: View {
         if let commandCount = dim.commandCount, commandCount > 0 {
             summary += " · ran \(commandCount) command(s)"
         }
-        // The specific tools/connectors the agent used (daemon-ranked), with the
-        // disclosed overflow — surfaced beneath the coarse category counts.
         if let preview = dim.toolNamesPreview, !preview.isEmpty {
             var tools = preview.map { "\($0.name)×\($0.count)" }.joined(separator: "  ")
             let elided = dim.toolNamesElided ?? 0
@@ -356,7 +331,7 @@ struct ReceiptCards: View {
 
     private var costSummary: String {
         let dim = receipt.dimensions.cost
-        guard let cost = dim.estimatedCostUsd else { return "—" }
+        guard let cost = dim.estimatedCostUsd else { return "no priced usage" }
         let basis = dim.costBasis ?? "unknown basis"
         return String(format: "$%.2f · %@%@", cost, basis, (dim.costComplete ?? true) ? "" : " (partial)")
     }
@@ -368,11 +343,239 @@ struct ReceiptCards: View {
 
     private var outcomeSummary: String {
         let dim = receipt.dimensions.outcome
-        return "\(dim.decisionStatus ?? "—") · asserted by \(dim.assertedBy ?? "none")"
+        var line = "\(dim.decisionStatus ?? "unknown") · asserted by \(dim.assertedBy ?? "none")"
+        if let statement = dim.statement, !statement.isEmpty {
+            line += "\n“\(statement)”"
+        }
+        return line
+    }
+}
+
+// MARK: - Evidence coverage
+
+/// The evidence-coverage card: the checked/checkable headline, a coverage bar
+/// whose segment widths are strictly proportional to the tier counts, a
+/// counted legend wearing the pip shapes, and the honesty ledger.
+struct RecordCoverageCard: View {
+    let evidence: ReceiptEvidence
+    let schemaVersion: String
+
+    private var tiers: [(grade: String, count: Int)] {
+        let byTier = evidence.byTier
+        return [
+            ("externally_verified", byTier?.externallyVerified ?? 0),
+            ("independently_checked", byTier?.independentlyChecked ?? 0),
+            ("self_checked", byTier?.selfChecked ?? 0),
+            ("unchecked", byTier?.unchecked ?? 0),
+        ]
     }
 
-    private func assertedText(_ assertedBy: String?) -> String? {
-        guard let assertedBy else { return nil }
-        return "asserted by \(assertedBy)"
+    var body: some View {
+        Card(padding: Space.xl) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text("Evidence coverage").font(Type.titleCard).foregroundStyle(Theme.ink)
+                    Spacer()
+                    Text(schemaVersion).font(Type.dataSmall).foregroundStyle(Theme.muted)
+                }
+                Rectangle().fill(Theme.hairline).frame(height: 1).padding(.vertical, Space.m)
+
+                if evidence.gradeable == true, let checkable = evidence.checkableTotal, checkable > 0 {
+                    Text("\(evidence.checkedTotal ?? 0) of \(checkable) verifiable steps checked")
+                        .font(Face.sansFont(16, .semibold))
+                        .foregroundStyle(Theme.ink)
+                    CoverageBar(segments: tiers.map { CoverageSegment(count: $0.count, grade: $0.grade) })
+                        .padding(.top, Space.m)
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(tiers.filter { $0.count > 0 }, id: \.grade) { tier in
+                            let style = EvidenceTierStyle.forGrade(tier.grade)
+                            HStack(spacing: 7) {
+                                EvidencePip(shape: style.pip, tint: style.tint)
+                                Text(style.label).font(Type.caption).foregroundStyle(Theme.ink)
+                                Text("\(tier.count)").font(Type.dataSmall).foregroundStyle(Theme.muted)
+                            }
+                        }
+                    }
+                    .padding(.top, Space.m)
+                    if tiers.first(where: { $0.grade == "externally_verified" })?.count == 0 {
+                        Text("No independent verifier evidence on this receipt")
+                            .font(Type.caption).foregroundStyle(Theme.muted)
+                            .padding(.top, Space.s)
+                    }
+                } else {
+                    // No verifiable steps: a named state, never a fabricated 0/0.
+                    Text("Not gradeable").font(Face.sansFont(16, .semibold)).foregroundStyle(Theme.muted)
+                    Text("No verifiable steps recorded for this task.")
+                        .font(Type.caption).foregroundStyle(Theme.muted)
+                        .padding(.top, 4)
+                }
+
+                if let ledger = evidence.ledger {
+                    Text(ledger).font(Type.caption).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, Space.s)
+                }
+                if let definition = evidence.definition {
+                    Text(definition).font(Type.dataSmall).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, Space.s)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Checks
+
+/// Every check the store holds for this receipt, with its result mark and
+/// source. A pass wears green only when a machine observed it (hook/CI);
+/// an agent-reported pass stays ink — the source chip says why.
+struct RecordChecksCard: View {
+    let evidence: ReceiptEvidenceDim
+
+    var body: some View {
+        Card(padding: Space.xl) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 8) {
+                    Text("Checks").font(Type.titleCard).foregroundStyle(Theme.ink)
+                    if let total = evidence.checksTotal, total > 0 {
+                        Text("\(evidence.checksPassed ?? 0)/\(total) passed")
+                            .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    }
+                    Spacer()
+                }
+                Rectangle().fill(Theme.hairline).frame(height: 1).padding(.top, Space.m)
+                let checks = evidence.checks ?? []
+                if checks.isEmpty {
+                    Text("No checks recorded").font(Type.body).foregroundStyle(Theme.muted)
+                        .padding(.top, Space.m)
+                    Text("Machine checks land here when a hook or CI reports one.")
+                        .font(Type.caption).foregroundStyle(Theme.muted)
+                        .padding(.top, 2)
+                } else {
+                    ForEach(Array(checks.enumerated()), id: \.offset) { index, check in
+                        if index > 0 {
+                            Rectangle().fill(Theme.hairline).frame(height: 1)
+                        }
+                        RecordCheckRow(check: check)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct RecordCheckRow: View {
+    let check: ReceiptCheck
+
+    private var mark: (symbol: String, tint: Color) {
+        let machineObserved = ["hook", "ci"].contains(check.source ?? "")
+        switch check.result {
+        case "passed": return ("checkmark", machineObserved ? Theme.green : Theme.ink)
+        case "failed", "error": return ("xmark", Theme.coral)
+        case "skipped": return ("chevron.right.2", Theme.amber)
+        default: return ("circle.fill", Theme.muted)
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+            Image(systemName: mark.symbol)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(mark.tint)
+                .frame(width: 14)
+            Text(check.name ?? check.kind ?? "check")
+                .font(Type.body).foregroundStyle(Theme.ink)
+                .lineLimit(1).truncationMode(.middle)
+            if let scope = check.scope {
+                Text(scope).font(Type.dataSmall).foregroundStyle(Theme.muted)
+            }
+            Spacer(minLength: Space.s)
+            if let exit = check.exitCode {
+                Text("exit \(exit)").font(Type.dataSmall).foregroundStyle(Theme.muted)
+            }
+            if let source = check.source {
+                ProvenanceChip(text: source)
+            }
+        }
+        .padding(.vertical, 10)
+    }
+}
+
+// MARK: - Gaps
+
+struct RecordGapsCard: View {
+    let gaps: ReceiptGapsDim
+
+    var body: some View {
+        let items = gaps.items ?? []
+        if !items.isEmpty {
+            Card(padding: Space.xl) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Gaps (\(items.count)) — what could not be proven")
+                        .font(Type.titleCard).foregroundStyle(Theme.ink)
+                    Rectangle().fill(Theme.hairline).frame(height: 1).padding(.vertical, Space.m)
+                    VStack(alignment: .leading, spacing: Space.s) {
+                        ForEach(items) { item in
+                            HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                                Text(item.dimension).font(Type.captionSemibold).foregroundStyle(Theme.muted)
+                                    .frame(width: 70, alignment: .leading)
+                                Text(item.reason).font(Type.caption).foregroundStyle(Theme.muted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Evidence sources
+
+/// The receipt's evidence sources: which source kinds are present on this
+/// record, each with the daemon's legend sentence. When no independent
+/// verifier (CI) evidence exists, that is stated as a fact — never a meter.
+struct RecordSourcesCard: View {
+    let provenance: ReceiptProvenanceDim
+
+    private var presentSources: [String] {
+        if let present = provenance.sourcesPresent, !present.isEmpty { return present }
+        return (provenance.legend ?? [:]).keys.sorted()
+    }
+
+    var body: some View {
+        let legend = provenance.legend ?? [:]
+        if !presentSources.isEmpty {
+            Card(padding: Space.xl) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Evidence sources").font(Type.titleCard).foregroundStyle(Theme.ink)
+                    Rectangle().fill(Theme.hairline).frame(height: 1).padding(.top, Space.m)
+                    ForEach(Array(presentSources.enumerated()), id: \.element) { index, source in
+                        if index > 0 {
+                            Rectangle().fill(Theme.hairline).frame(height: 1)
+                        }
+                        HStack(alignment: .top, spacing: Space.m) {
+                            Text(source).font(Type.rowLabel).foregroundStyle(Theme.ink)
+                                .frame(width: 96, alignment: .leading)
+                            Text(legend[source] ?? "recorded on this receipt")
+                                .font(Type.caption).foregroundStyle(Theme.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(.vertical, Space.m)
+                    }
+                    if !presentSources.contains("ci") {
+                        Rectangle().fill(Theme.hairline).frame(height: 1)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("No CI evidence on this receipt")
+                                .font(Type.rowLabel).foregroundStyle(Theme.muted)
+                            Text("Independent evidence upgrades self-checked claims to verified.")
+                                .font(Type.caption).foregroundStyle(Theme.muted)
+                        }
+                        .padding(.top, Space.m)
+                    }
+                }
+            }
+        }
     }
 }

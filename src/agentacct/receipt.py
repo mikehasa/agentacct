@@ -1053,6 +1053,11 @@ def build_receipt_summary(
             "checkable_total": evidence_strength["checkable_total"],
             "checked_total": evidence_strength["checked_total"],
             "by_tier": evidence_strength["by_tier"],
+            # Check tallies for the list's checks column — same reducer values
+            # the full Receipt serves, so list and detail can never disagree.
+            "checks_total": evidence_strength["checks_total"],
+            "checks_passed": evidence_strength["checks_passed"],
+            "checks_failed": evidence_strength["checks_failed"],
             "hidden_in_subagents": evidence_strength["hidden_in_subagents"],
             "unattributed_checks": evidence_strength["unattributed_checks"],
         },

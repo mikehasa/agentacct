@@ -38,7 +38,9 @@ struct MainWindow: View {
             .id(selection.pane)
             .transition(.opacity)
             .animation(reduceMotion ? nil : Motion.paneCrossfade, value: selection.pane)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Top-anchored: snapshot mode renders full pane content, which
+            // must clip at the bottom, never lose the page header.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .background(WindowSurfaceBackground(role: .canvas))
         .frame(minWidth: 960, minHeight: 560)
