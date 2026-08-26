@@ -525,14 +525,46 @@ def reduce_task_outcome(
     # failed check may explain the blocker, but it must never demote a
     # recorded ``blocked``/``failed`` step (or explicit blocker text) into a
     # non-actionable finding.
-    if any(status in _BLOCKED_STATUSES for status in statuses) or any(
-        _text(item.get("blocker")) for item in items
-    ):
+    blocked_items = [
+        item
+        for item, status in zip(items, statuses)
+        if status in _BLOCKED_STATUSES or _text(item.get("blocker"))
+    ]
+    if blocked_items:
+        def _item_time(item: Mapping[str, Any]) -> float:
+            return _number(item.get("updated_at") or item.get("started_at"))
+
+        # The blocker the user must see: the newest one that carries TEXT (the
+        # agent's own words); only when no blocked step has text does the newest
+        # blocked step itself stand in (e.g. a bare ``failed``).
+        texted = [item for item in blocked_items if _text(item.get("blocker"))]
+        newest = max(texted or blocked_items, key=_item_time)
+        newest_at = _item_time(newest)
+        # Staleness, stated as a fact, never a re-grade: ``blocked`` is sticky by
+        # design (an explicit blocker is the user-action contract), but a count
+        # of successful steps recorded AFTER the newest blocker lets a surface
+        # say "the work moved on" without demoting the recorded state.
+        later_completed_steps = sum(
+            1
+            for item, status in zip(items, statuses)
+            if (status in _SUCCESS_STATUSES or status == _RESOLVED_STATUS)
+            and _item_time(item) > newest_at
+        )
+        blocker_detail = {
+            "step_title": _text(newest.get("title")) or None,
+            "section_id": _text(newest.get("section_id")) or None,
+            "text": _text(newest.get("blocker")) or None,
+            "next_step": _text(newest.get("next_step")) or None,
+            "updated_at": newest_at or None,
+            "blocked_step_count": len(blocked_items),
+            "later_completed_steps": later_completed_steps,
+        }
         return {
             "key": "blocked",
             "finding": None,
             "verification": None,
             "latest_checks": checks,
+            "blocker": blocker_detail,
             "max_work_updated_at": max_work_updated_at,
             "open_step_count": open_step_count,
             "handoff_current": handoff_current,
@@ -587,6 +619,7 @@ def reduce_task_outcome(
                 ),
                 "verification": None,
                 "latest_checks": checks,
+                "blocker": None,
                 "findings": standing_failures,
                 "finding_attention_state": attention_state,
                 "max_work_updated_at": max_work_updated_at,
@@ -602,6 +635,7 @@ def reduce_task_outcome(
             "finding": None,
             "verification": None,
             "latest_checks": checks,
+            "blocker": None,
             "findings": superseded_failures,
             "superseded_findings": superseded_failures,
             "max_work_updated_at": max_work_updated_at,
@@ -693,6 +727,7 @@ def reduce_task_outcome(
         "finding": None,
         "verification": verification,
         "latest_checks": checks,
+        "blocker": None,
         "max_work_updated_at": max_work_updated_at,
         "open_step_count": open_step_count,
         "handoff_current": handoff_current,

@@ -496,10 +496,35 @@ struct ReceiptDecision: Decodable {
     let label: String?
     let statement: String?
     let assertedBy: String?
+    // The newest blocker's own words (blocked/failed only; nil elsewhere and on
+    // older daemon payloads). Daemon-computed — the app never re-derives it.
+    let blocker: ReceiptBlocker?
 
     enum CodingKeys: String, CodingKey {
-        case key, label, statement
+        case key, label, statement, blocker
         case assertedBy = "asserted_by"
+    }
+}
+
+/// Why a Task reads blocked: the newest agent-recorded blocker (preferring the
+/// newest one that carries text), plus the staleness facts beside it.
+struct ReceiptBlocker: Decodable {
+    let stepTitle: String?
+    let sectionId: String?
+    let text: String?
+    let nextStep: String?
+    let updatedAt: Double?
+    let blockedStepCount: Int?
+    let laterCompletedSteps: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case text
+        case stepTitle = "step_title"
+        case sectionId = "section_id"
+        case nextStep = "next_step"
+        case updatedAt = "updated_at"
+        case blockedStepCount = "blocked_step_count"
+        case laterCompletedSteps = "later_completed_steps"
     }
 }
 
@@ -725,6 +750,8 @@ struct ReceiptActionsDim: Decodable {
     // disclosed overflow. Optional so an older payload without them still decodes.
     let toolNamesPreview: [ReceiptToolName]?
     let toolNamesElided: Int?
+    // The FULL name→count map behind the preview, for the expand-in-place view.
+    let toolNameCounts: [String: Int]?
     let provenance: [String]?
     let gaps: [String]?
 
@@ -741,6 +768,7 @@ struct ReceiptActionsDim: Decodable {
         case commandsElided = "commands_elided"
         case toolNamesPreview = "tool_names_preview"
         case toolNamesElided = "tool_names_elided"
+        case toolNameCounts = "tool_name_counts"
         case provenance, gaps
     }
 }
@@ -792,12 +820,25 @@ struct ReceiptCheck: Decodable, Identifiable {
     let exitCode: Int?
     let scope: String?
     let source: String?
+    // Detail-on-expand fields; every one optional so an older payload decodes.
+    let superseded: Bool?
+    let at: Double?
+    let summary: String?
+    let files: [String]?
+    // The store NEVER records command text (privacy: names/categories yes,
+    // args no); true says a command existed but was deliberately not captured.
+    let commandRedacted: Bool?
+    let artifactRef: String?
+    let artifactUrl: String?
 
     var id: String { "\(name ?? "check")-\(result ?? "")-\(exitCode ?? 0)" }
 
     enum CodingKeys: String, CodingKey {
-        case kind, name, result, scope, source
+        case kind, name, result, scope, source, superseded, at, summary, files
         case exitCode = "exit_code"
+        case commandRedacted = "command_redacted"
+        case artifactRef = "artifact_ref"
+        case artifactUrl = "artifact_url"
     }
 }
 

@@ -278,32 +278,45 @@ struct RecordDimensionsCard: View {
     }
 
     // Actions renders touched paths + commands beneath the category summary.
+    // Each list is an in-place disclosure: collapsed shows the daemon's honest
+    // preview exactly as before; "Show all N" grows a height-capped scroll
+    // region in place (no second-level page, no unbounded page growth).
     private var actionsRow: some View {
         VStack(alignment: .leading, spacing: 2) {
             dimensionRow("Actions", actionsSummary,
                          provenance: receipt.dimensions.actions.provenance,
                          gaps: receipt.dimensions.actions.gaps)
+            let dim = receipt.dimensions.actions
             let files = actionsTouchedPreview
             let commands = actionsCommandsPreview
-            if !files.shown.isEmpty || !commands.shown.isEmpty {
+            let toolRows = fullToolRows
+            // The tools disclosure must stay reachable for read/search-only
+            // receipts (tool names without any touched file or command).
+            let hasElidedTools = (dim.toolNamesElided ?? 0) > 0 && !toolRows.isEmpty
+            if !files.shown.isEmpty || !commands.shown.isEmpty || hasElidedTools {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(files.shown, id: \.self) { path in
-                        Text(path).font(Type.dataSmall).foregroundStyle(Theme.muted)
-                            .lineLimit(1).truncationMode(.middle)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    if files.elided > 0 {
-                        Text("… +\(files.elided) more files").font(Type.dataSmall).foregroundStyle(Theme.muted)
-                    }
-                    ForEach(commands.shown, id: \.self) { cmd in
-                        // verbatim: a command is untrusted text — never interpret it
-                        // as markdown (Text's LocalizedStringKey init would).
-                        Text(verbatim: "$ \(cmd)").font(Type.dataSmall).foregroundStyle(Theme.muted)
-                            .lineLimit(1).truncationMode(.middle)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    if commands.elided > 0 {
-                        Text("… +\(commands.elided) more commands").font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    ActionListDisclosure(
+                        preview: files.shown,
+                        elided: files.elided,
+                        full: dim.touchedFiles ?? files.shown,
+                        noun: "files",
+                        rowPrefix: ""
+                    )
+                    ActionListDisclosure(
+                        preview: commands.shown,
+                        elided: commands.elided,
+                        full: dim.commands ?? commands.shown,
+                        noun: "commands",
+                        rowPrefix: "$ "
+                    )
+                    if hasElidedTools {
+                        ActionListDisclosure(
+                            preview: [],
+                            elided: dim.toolNamesElided ?? 0,
+                            full: toolRows,
+                            noun: "tools",
+                            rowPrefix: ""
+                        )
                     }
                 }
                 .padding(.leading, 128 + Space.l)
@@ -311,6 +324,19 @@ struct RecordDimensionsCard: View {
                 .padding(.top, -Space.s)
             }
         }
+    }
+
+    /// The full tool tally as display rows, daemon order (count desc, name asc)
+    /// — the same ordering rule the daemon's preview uses.
+    private var fullToolRows: [String] {
+        let counts = receipt.dimensions.actions.toolNameCounts ?? [:]
+        return counts
+            .filter { $0.value > 0 }
+            .sorted { lhs, rhs in
+                if lhs.value != rhs.value { return lhs.value > rhs.value }
+                return lhs.key < rhs.key
+            }
+            .map { "\($0.key)×\($0.value)" }
     }
 
     // The daemon computes the preview slice + overflow (the single source of
@@ -413,6 +439,166 @@ struct RecordDimensionsCard: View {
             line += "\n“\(statement)”"
         }
         return line
+    }
+}
+
+// MARK: - Action list disclosure
+
+/// One Actions sub-list (files / commands / tools) as an in-place disclosure.
+///
+/// Collapsed = the daemon's capped preview verbatim (the cap stays the daemon's
+/// single source of truth) with the overflow line turned into a control.
+/// Expanded = the FULL list — already riding the payload, no extra fetch — in a
+/// height-capped internal scroll region, so 1,000 commands never stretch the
+/// record page and never need a second-level page. Rows wrap and are selectable
+/// when expanded: the point of expanding is to actually read and copy them.
+/// Snapshot mode renders the collapsed static text exactly as before (the
+/// offscreen renderer can't drive buttons or ScrollViews).
+private struct ActionListDisclosure: View {
+    let preview: [String]
+    let elided: Int
+    let full: [String]
+    let noun: String
+    let rowPrefix: String
+    @State private var expanded = false
+
+    var body: some View {
+        if expanded {
+            expandedList
+        } else {
+            collapsedList
+        }
+    }
+
+    @ViewBuilder
+    private var collapsedList: some View {
+        ForEach(Array(preview.enumerated()), id: \.offset) { _, row in
+            // verbatim: commands/paths are untrusted text — never interpret as
+            // markdown (Text's LocalizedStringKey init would).
+            Text(verbatim: rowPrefix + row).font(Type.dataSmall).foregroundStyle(Theme.muted)
+                .lineLimit(1).truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        if elided > 0 {
+            if SnapshotMode.enabled {
+                // Static overflow only under a rendered preview; a preview-less
+                // list (tools) would otherwise print a dangling duplicate of
+                // the summary's own "+N more".
+                if !preview.isEmpty {
+                    Text("… +\(elided) more \(noun)").font(Type.dataSmall).foregroundStyle(Theme.muted)
+                }
+            } else {
+                Button {
+                    withAnimation(Motion.contentUpdate) { expanded = true }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .semibold))
+                        Text("Show all \(full.count) \(noun)").font(Type.dataSmall)
+                    }
+                    .foregroundStyle(Theme.accent)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("receipt.actions.expand.\(noun)")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var expandedList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+            ScrollView(showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(full.enumerated()), id: \.offset) { _, row in
+                        Text(verbatim: rowPrefix + row).font(Type.dataSmall).foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(.vertical, Space.s)
+                .textSelection(.enabled)
+            }
+            .frame(maxHeight: 340)
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+        }
+        Button {
+            withAnimation(Motion.contentUpdate) { expanded = false }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "chevron.up").font(.system(size: 8, weight: .semibold))
+                Text("Collapse \(noun)").font(Type.dataSmall)
+            }
+            .foregroundStyle(Theme.accent)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("receipt.actions.collapse.\(noun)")
+    }
+}
+
+// MARK: - Blocker callout
+
+/// WHY a Task is blocked, in the agent's own words, right under the headline —
+/// previously this lived three clicks deep in an expanded step card. Shows the
+/// newest blocker (text, next step, when), and states staleness as a fact when
+/// later steps completed after it (never re-grading the sticky blocked word).
+struct BlockerCallout: View {
+    let blocker: ReceiptBlocker
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "hand.raised")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.coral)
+                    .accessibilityHidden(true)
+                Text(blocker.stepTitle ?? "Blocked step")
+                    .font(Type.rowLabel).foregroundStyle(Theme.ink)
+                    .lineLimit(2)
+                Spacer(minLength: Space.s)
+                // "last updated": the projection carries the step's last-activity
+                // time, which later non-terminal events can bump past the moment
+                // the blocker itself was recorded.
+                if let ago = agoText(blocker.updatedAt) {
+                    Text("last updated \(ago)").font(Type.dataSmall).foregroundStyle(Theme.muted)
+                }
+            }
+            if let text = blocker.text {
+                // verbatim: the blocker is agent-authored text, never markdown.
+                Text(verbatim: text)
+                    .font(Type.body).foregroundStyle(Theme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            if let next = blocker.nextStep {
+                Text(verbatim: "next: \(next)")
+                    .font(Type.caption).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            if let later = blocker.laterCompletedSteps, later > 0 {
+                // The count IS the fact; whether it cleared the blocker is not
+                // in the data, so the copy never speculates.
+                HStack(spacing: 6) {
+                    EvidencePip(shape: .hollow, tint: Theme.amber)
+                    Text("\(later) step\(later == 1 ? "" : "s") completed after this blocker's last update.")
+                        .font(Type.caption).foregroundStyle(Theme.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            if let count = blocker.blockedStepCount, count > 1 {
+                // "steps with recorded blockers": sticky blocker text keeps a
+                // step in this count even when its latest status moved on.
+                Text("+\(count - 1) more step\(count == 2 ? "" : "s") with recorded blockers in Sessions & steps below")
+                    .font(Type.dataSmall).foregroundStyle(Theme.muted)
+            }
+        }
+        .padding(Space.l)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.tintCoral, in: RoundedRectangle(cornerRadius: Metrics.radius))
+        .accessibilityIdentifier("receipt.blocker")
     }
 }
 
@@ -529,8 +715,13 @@ struct RecordChecksCard: View {
     }
 }
 
+/// One check: the scannable one-liner, now expandable in place for the detail
+/// behind it (summary, files, timestamp, superseded state, artifact refs — and
+/// an honest note that command text is never captured). Snapshot mode keeps
+/// the plain one-liner: the offscreen renderer can't drive the toggle.
 private struct RecordCheckRow: View {
     let check: ReceiptCheck
+    @State private var expanded = false
 
     private var mark: (symbol: String, tint: Color) {
         let machineObserved = ["hook", "ci"].contains(check.source ?? "")
@@ -542,15 +733,27 @@ private struct RecordCheckRow: View {
         }
     }
 
-    var body: some View {
+    private var headerLine: some View {
         HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+            if !SnapshotMode.enabled {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(Theme.muted)
+                    .frame(width: 10)
+                    .accessibilityHidden(true)
+            }
             Image(systemName: mark.symbol)
                 .font(.system(size: 10, weight: .bold))
                 .foregroundStyle(mark.tint)
                 .frame(width: 14)
+                .accessibilityHidden(true)  // the row label names the result
             Text(check.name ?? check.kind ?? "check")
                 .font(Type.body).foregroundStyle(Theme.ink)
                 .lineLimit(1).truncationMode(.middle)
+            if check.superseded == true {
+                Chip(text: "superseded", tint: Theme.muted)
+                    .help("A later run of the same-scope check passed; kept in history.")
+            }
             if let scope = check.scope {
                 Text(scope).font(Type.dataSmall).foregroundStyle(Theme.muted)
             }
@@ -563,6 +766,76 @@ private struct RecordCheckRow: View {
             }
         }
         .padding(.vertical, 10)
+        .contentShape(Rectangle())
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if SnapshotMode.enabled {
+                headerLine
+            } else {
+                Button {
+                    withAnimation(Motion.contentUpdate) { expanded.toggle() }
+                } label: {
+                    headerLine
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    "\(check.name ?? check.kind ?? "check"), \(check.result ?? "unknown")"
+                    + ", \(expanded ? "expanded" : "collapsed")"
+                )
+                .accessibilityIdentifier("receipt.check.\(check.name ?? "check")")
+            }
+            if expanded {
+                expandedBody
+                    .padding(.leading, 10 + Space.s + 14 + Space.s)
+                    .padding(.bottom, 10)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var expandedBody: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let summary = check.summary {
+                // verbatim: agent/hook-authored text, never markdown.
+                Text(verbatim: summary)
+                    .font(Type.caption).foregroundStyle(Theme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            if let at = check.at, let ago = agoText(at) {
+                Text("recorded \(ago)").font(Type.dataSmall).foregroundStyle(Theme.muted)
+            }
+            if let files = check.files, !files.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(files.enumerated()), id: \.offset) { _, path in
+                        Text(verbatim: path)
+                            .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                }
+                .textSelection(.enabled)
+            }
+            if check.commandRedacted == true {
+                // Absence is a named state: a command ran, and agentacct
+                // deliberately never records command text for checks.
+                Text("command text not captured for checks — agentacct records the check's name, result, and files, not the command itself")
+                    .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let artifact = check.artifactUrl ?? check.artifactRef {
+                Text(verbatim: "artifact: \(artifact)")
+                    .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    .lineLimit(1).truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+            if check.summary == nil, check.at == nil, (check.files ?? []).isEmpty,
+               check.commandRedacted != true, check.artifactUrl == nil, check.artifactRef == nil {
+                Text("no further detail recorded for this check")
+                    .font(Type.dataSmall).foregroundStyle(Theme.muted)
+            }
+        }
     }
 }
 

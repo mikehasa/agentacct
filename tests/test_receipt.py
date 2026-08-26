@@ -468,3 +468,74 @@ def test_gaps_rollup_flattens_dimension_gaps_with_labels() -> None:
     # A no-check completed step surfaces gaps under both cost (estimate) and
     # evidence (no machine checks / unverified step).
     assert "evidence" in dimensions_with_gaps
+
+
+def test_summary_decision_carries_statement_and_blocker_words() -> None:
+    from agentacct.receipt import build_receipt_summary
+
+    task = _task([
+        {
+            "latest_status": "blocked",
+            "title": "publish site",
+            "section_id": "s1",
+            "updated_at": 100.0,
+            "blocker": "need explicit approval to publish",
+            "next_step": "ask for approval",
+            "kind": "implementation",
+            "evidence_status": "none",
+            "evidence_events": [],
+        },
+    ])
+    summary = build_receipt_summary(task, public_task_id="task_x", title="t")
+    decision = summary["decision_status"]
+    assert decision["key"] == "blocked"
+    assert decision["statement"]
+    assert decision["blocker"]["text"] == "need explicit approval to publish"
+    assert decision["blocker"]["next_step"] == "ask for approval"
+
+    receipt = build_receipt(task, public_task_id="task_x", title="t")
+    axis = receipt["axes"]["decision_status"]
+    assert axis["blocker"]["text"] == "need explicit approval to publish"
+
+    # Non-blocked rows carry the key with a None value (uniform shape).
+    done = build_receipt_summary(
+        _task([
+            {
+                "latest_status": "completed",
+                "updated_at": 100.0,
+                "kind": "implementation",
+                "evidence_status": "none",
+                "evidence_events": [],
+            }
+        ]),
+        public_task_id="task_y",
+        title="t",
+    )
+    assert done["decision_status"]["blocker"] is None
+    assert done["decision_status"]["statement"]
+
+
+def test_receipt_checks_carry_detail_fields_without_command_text() -> None:
+    check = _check("passed", name="pytest", at=300.0)
+    check["summary"] = "pytest exited with code 0."
+    check["files"] = ["src/agentacct/receipt.py", ""]
+    check["command_redacted"] = True
+    task = _task(
+        [
+            {
+                "latest_status": "completed",
+                "updated_at": 100.0,
+                "kind": "implementation",
+                "evidence_status": "none",
+                "evidence_events": [],
+            }
+        ],
+        task_checks=[check],
+    )
+    receipt = build_receipt(task, public_task_id="task_x", title="t")
+    row = receipt["dimensions"]["evidence"]["checks"][0]
+    assert row["summary"] == "pytest exited with code 0."
+    assert row["files"] == ["src/agentacct/receipt.py"]
+    assert row["command_redacted"] is True
+    # The store never records command text; the payload must not invent one.
+    assert "command" not in row
