@@ -21,10 +21,17 @@ enum SnapshotRunner {
                 let dashboard = DashboardStore()
                 await dashboard.refresh()
                 let selection = AppSelection()
-                // refresh() also loads the Task list. Select the newest Task and
-                // preload its Receipt because ImageRenderer does not run the
-                // Work pane's SwiftUI `.task`.
-                if let flagship = dashboard.receiptTasks.first {
+                // refresh() also loads the Task list. Select the newest Task
+                // (or the one named by AGENTACCT_SNAPSHOT_TASK — id or prefix —
+                // so a design pass can render a specific record, e.g. a blocked
+                // one) and preload its Receipt because ImageRenderer does not
+                // run the Work pane's SwiftUI `.task`.
+                let wanted = ProcessInfo.processInfo.environment["AGENTACCT_SNAPSHOT_TASK"]
+                let flagship = dashboard.receiptTasks.first { task in
+                    guard let wanted, !wanted.isEmpty else { return false }
+                    return task.taskId == wanted || task.taskId.hasPrefix(wanted)
+                } ?? dashboard.receiptTasks.first
+                if let flagship {
                     selection.taskId = flagship.taskId
                     await dashboard.fetchReceipt(taskId: flagship.taskId)
                 }

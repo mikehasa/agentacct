@@ -534,6 +534,10 @@ private struct WorkTableRow: View {
                         label: task.decisionStatus.label ?? task.decisionStatus.key,
                         compact: true
                     )
+                    // Hover says WHY: the blocker's own words when blocked,
+                    // otherwise the daemon's one-line statement.
+                    .help(task.decisionStatus.blocker?.text
+                          ?? task.decisionStatus.statement ?? "")
                     // Parallel deliberate-stop marker, only when it adds info the
                     // decision word does not already state.
                     if task.handedOff == true && task.decisionStatus.key != "handed_off" {
@@ -744,6 +748,8 @@ private struct WorkRailRow: View {
                             .font(Type.labelCaps).tracking(Type.labelCapsTracking)
                             .foregroundStyle(statusTint)
                             .lineLimit(1)
+                            .help(task.decisionStatus.blocker?.text
+                                  ?? task.decisionStatus.statement ?? "")
                         // Parallel deliberate-stop marker (same rule as the
                         // table row: only when the word doesn't already say it).
                         if task.handedOff == true && task.decisionStatus.key != "handed_off" {
@@ -870,6 +876,12 @@ struct WorkRecordPage: View {
             if let statement = receipt.axes.decisionStatus.statement {
                 Text(verbatim: statementLine(statement))
                     .font(Type.caption).foregroundStyle(Theme.muted)
+            }
+            // WHY the Task is blocked, right under the headline — the newest
+            // blocker's own words instead of the generic statement alone.
+            if let blocker = receipt.axes.decisionStatus.blocker {
+                BlockerCallout(blocker: blocker)
+                    .padding(.top, Space.xs)
             }
         }
     }

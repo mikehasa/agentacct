@@ -253,6 +253,7 @@ def _project_checks(task: Mapping[str, Any]) -> list[dict[str, Any]]:
     for check in latest_task_checks(task):
         if not isinstance(check, Mapping):
             continue
+        files = check.get("files") if isinstance(check.get("files"), list) else []
         shaped.append(
             {
                 "kind": _text(check.get("evidence_type")) or "check",
@@ -268,6 +269,15 @@ def _project_checks(task: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "source": _check_source(check),
                 "superseded": _text(check.get("supersession_state")).lower() == "superseded",
                 "at": _number(check.get("created_at") or check.get("occurred_at")) or None,
+                # Detail-on-expand fields (additive). The store NEVER records
+                # command text (privacy line: names/categories yes, args no) —
+                # ``command_redacted`` says a command existed but was not
+                # captured, so the UI can name that absence instead of hiding it.
+                "summary": _text(check.get("summary")) or None,
+                "files": [_text(path) for path in files if _text(path)],
+                "command_redacted": bool(check.get("command_redacted")),
+                "artifact_ref": _text(check.get("artifact_ref")) or None,
+                "artifact_url": _text(check.get("artifact_url")) or None,
             }
         )
     return shaped
@@ -500,12 +510,20 @@ def _decision_status(
     elif key == "finding" and attention == "reviewed":
         statement = "Every current finding was reviewed; no passing check has replaced the failed evidence."
 
+    # The newest blocker's own words (agent-recorded text, next step, when, and
+    # how many successful steps were recorded AFTER it) — computed by the
+    # outcome reducer, passed through verbatim so every surface can finally SAY
+    # why a Task is blocked instead of only that it is. None off the
+    # blocked/failed keys.
+    blocker = canonical.get("blocker") if isinstance(canonical.get("blocker"), Mapping) else None
+
     return {
         "key": key,
         "label": key.replace("_", " ").title(),
         "statement": statement,
         "asserted_by": asserted_by,
         "finding_attention_state": attention or None,
+        "blocker": blocker,
     }
 
 
@@ -1043,6 +1061,10 @@ def build_receipt_summary(
             "key": decision["key"],
             "label": decision["label"],
             "asserted_by": decision["asserted_by"],
+            # The one-line explanation + (for blocked/failed) the newest
+            # blocker's own words, so list rows can say WHY without a click.
+            "statement": decision["statement"],
+            "blocker": decision.get("blocker"),
         },
         # The recency-aware handoff lifecycle marker for the list row's parallel
         # chip. A flat bool keeps the row compact; the detail Receipt carries the

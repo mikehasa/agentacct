@@ -659,3 +659,72 @@ def test_session_end_at_the_exact_step_time_reads_ended_open() -> None:
     # step's last-activity time still infers ended_open (>= not >). Pins the tie
     # so a >=-to-> regression is caught.
     assert reduce_task_outcome(_multi_task([_sitem("started", 100, ended=100)]))["key"] == "ended_open"
+
+
+def test_blocked_outcome_carries_the_newest_texted_blocker_and_staleness() -> None:
+    """The blocked early-return must SAY why: the newest blocker that carries the
+    agent's own text wins over a newer bare failure, and successes recorded
+    after it are counted as a staleness fact (never a re-grade)."""
+
+    task = {
+        "work_items": [
+            {
+                "latest_status": "blocked",
+                "title": "older blocker",
+                "section_id": "s1",
+                "updated_at": 100.0,
+                "blocker": "waiting on approval A",
+                "next_step": "ask the user",
+                "evidence_status": "none",
+                "evidence_events": [],
+            },
+            {
+                "latest_status": "failed",
+                "title": "newest failure, no text",
+                "section_id": "s2",
+                "updated_at": 300.0,
+                "blocker": None,
+                "evidence_status": "none",
+                "evidence_events": [],
+            },
+            {
+                "latest_status": "completed",
+                "title": "later deploy",
+                "section_id": "s3",
+                "updated_at": 200.0,
+                "evidence_status": "none",
+                "evidence_events": [],
+            },
+        ],
+        "task_evidence_events": [],
+        "sessions": [],
+        "usage": {"rows": 0},
+    }
+    outcome = reduce_task_outcome(task)
+    assert outcome["key"] == "blocked"
+    blocker = outcome["blocker"]
+    assert blocker["text"] == "waiting on approval A"
+    assert blocker["step_title"] == "older blocker"
+    assert blocker["next_step"] == "ask the user"
+    assert blocker["section_id"] == "s1"
+    assert blocker["updated_at"] == 100.0
+    assert blocker["blocked_step_count"] == 2
+    assert blocker["later_completed_steps"] == 1
+
+
+def test_bare_failed_blocker_detail_falls_back_to_newest_blocked_step() -> None:
+    task = _task(status="failed", updated_at=50.0)
+    outcome = reduce_task_outcome(task)
+    assert outcome["key"] == "blocked"
+    blocker = outcome["blocker"]
+    assert blocker["text"] is None
+    assert blocker["updated_at"] == 50.0
+    assert blocker["blocked_step_count"] == 1
+    assert blocker["later_completed_steps"] == 0
+
+
+def test_non_blocked_outcomes_carry_no_blocker_detail() -> None:
+    for status in ("completed", "started", "handed_off"):
+        outcome = reduce_task_outcome(_task(status=status))
+        assert outcome["key"] != "blocked"
+        assert outcome["blocker"] is None
