@@ -94,25 +94,35 @@ struct TopBar: View {
     @Namespace private var paneSelection
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private func paneTabs(iconOnly: Bool) -> some View {
+        HStack(spacing: 3) {
+            ForEach(MainPane.allCases) { pane in
+                PaneTab(
+                    pane: pane,
+                    selected: selection.pane == pane,
+                    iconOnly: iconOnly,
+                    selectionNamespace: paneSelection
+                ) {
+                    selection.pane = pane
+                }
+            }
+        }
+        .padding(3)
+        .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
+        .animation(reduceMotion ? nil : Motion.selection, value: selection.pane)
+    }
+
     var body: some View {
         HStack(spacing: 14) {
             BrandLockup()
                 .padding(.leading, 76)  // clear the traffic lights (hidden titlebar)
 
-            HStack(spacing: 3) {
-                ForEach(MainPane.allCases) { pane in
-                    PaneTab(
-                        pane: pane,
-                        selected: selection.pane == pane,
-                        selectionNamespace: paneSelection
-                    ) {
-                        selection.pane = pane
-                    }
-                }
+            // Five panes no longer fit a 960pt window with full labels; the
+            // tab strip degrades to icon-only before any label truncates.
+            ViewThatFits(in: .horizontal) {
+                paneTabs(iconOnly: false)
+                paneTabs(iconOnly: true)
             }
-            .padding(3)
-            .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
-            .animation(reduceMotion ? nil : Motion.selection, value: selection.pane)
 
             Spacer()
 
@@ -228,6 +238,7 @@ private struct WindowSurfaceBackground: View {
 struct PaneTab: View {
     let pane: MainPane
     let selected: Bool
+    var iconOnly = false
     let selectionNamespace: Namespace.ID
     let action: () -> Void
     @State private var hovering = false
@@ -240,8 +251,11 @@ struct PaneTab: View {
                     .font(.system(size: 12, weight: selected ? .semibold : .medium))
                     .symbolRenderingMode(.monochrome)
                     .frame(width: 14, height: 14)
-                Text(pane.rawValue)
-                    .font(Face.sansFont(12.5, selected ? .semibold : .medium))
+                if !iconOnly {
+                    Text(pane.rawValue)
+                        .font(Face.sansFont(12.5, selected ? .semibold : .medium))
+                        .fixedSize()
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
