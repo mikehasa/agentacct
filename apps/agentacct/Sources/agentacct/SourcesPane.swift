@@ -167,7 +167,7 @@ struct SourcesPane: View {
                 )
             VStack(alignment: .leading, spacing: 4) {
                 Text(source.source).font(Type.rowLabel).foregroundStyle(Theme.ink)
-                Text(sourceDetail(source))
+                Text(sourceDetail(source, watcherRunning: watcherRunning))
                     .font(Type.dataSmall).foregroundStyle(Theme.muted)
             }
             Spacer()
@@ -202,10 +202,13 @@ struct SourcesPane: View {
         return String([first, last]).uppercased()
     }
 
-    /// The row's fact line, built only from reported numbers.
-    private func sourceDetail(_ source: V1IngestionSource) -> String {
+    /// The row's fact line, built only from reported numbers. "watched" is a
+    /// live claim, so it degrades to "configured" while the importer is down.
+    private func sourceDetail(_ source: V1IngestionSource, watcherRunning: Bool) -> String {
         var parts: [String] = []
-        if let scope = source.scope { parts.append(scope) }
+        if let scope = source.scope {
+            parts.append(scope == "watched" && !watcherRunning ? "configured" : scope)
+        }
         if let discovered = source.discovered { parts.append("\(discovered) files discovered") }
         if let parsed = source.parsed { parts.append("\(parsed) parsed") }
         if let skipped = source.skipped, skipped > 0 { parts.append("\(skipped) skipped") }
@@ -315,10 +318,12 @@ struct SourcesPane: View {
                     VStack(alignment: .leading, spacing: Space.m) {
                         ForEach(issues) { issue in
                             HStack(alignment: .firstTextBaseline, spacing: Space.m) {
-                                CapsLabel(text: issue.code ?? "issue", tone: Theme.amber)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    if let source = issue.source {
-                                        Text(source).font(Type.captionSemibold).foregroundStyle(Theme.ink)
+                                    HStack(spacing: Space.s) {
+                                        Text(issueTitle(issue))
+                                            .font(Type.rowLabel).foregroundStyle(Theme.amber)
+                                        Text(issue.code ?? "")
+                                            .font(Type.dataSmall).foregroundStyle(Theme.muted)
                                     }
                                     Text(issue.action ?? "see `agentacct doctor`")
                                         .font(Type.caption).foregroundStyle(Theme.muted)
@@ -330,6 +335,17 @@ struct SourcesPane: View {
                 }
             }
         }
+    }
+
+    /// Human phrasing first; the raw code stays beside it for diagnostics.
+    private func issueTitle(_ issue: V1IngestionIssue) -> String {
+        let phrase = (issue.code ?? "issue")
+            .replacingOccurrences(of: "_", with: " ")
+        let sentence = phrase.prefix(1).uppercased() + phrase.dropFirst()
+        if let source = issue.source {
+            return "\(sentence) — \(source)"
+        }
+        return sentence
     }
 
     // MARK: verifier shelf
@@ -368,9 +384,7 @@ struct SourcesPane: View {
                         Text("→ verified").font(Type.captionSemibold).foregroundStyle(Theme.muted)
                     }
                 }
-                Text("Independent evidence upgrades self-checked claims to the verified tier.")
-                    .font(Type.caption).foregroundStyle(Theme.muted)
-                    .padding(.top, Space.m)
+
             }
         }
     }

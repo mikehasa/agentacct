@@ -77,9 +77,10 @@ struct LimitsPane: View {
                 }
             }
             if !showStale {
-                let hidden = snapshot.glance.limits.count - limits.count
-                if hidden > 0 {
-                    Text("\(hidden) stale reading\(hidden == 1 ? "" : "s") hidden — Show stale accounts to inspect")
+                let hiddenEntries = snapshot.glance.limits.filter { $0.stale == true }
+                if !hiddenEntries.isEmpty {
+                    let names = hiddenEntries.compactMap(\.client).joined(separator: ", ")
+                    Text("\(hiddenEntries.count) stale reading\(hiddenEntries.count == 1 ? "" : "s") hidden (\(names)) — Show stale accounts to inspect \(hiddenEntries.count == 1 ? "it" : "them")")
                         .font(Type.dataSmall).foregroundStyle(Theme.muted)
                         .padding(.top, Space.m)
                 }
@@ -154,7 +155,7 @@ struct LimitsPane: View {
                     if let resets = resetsAtText(window.resetsAt) {
                         Text(resets).font(Type.dataSmall).foregroundStyle(Theme.muted)
                     } else {
-                        Text("reset time unreported").font(Type.dataSmall).foregroundStyle(Theme.muted)
+                        Text("Reset time unreported").font(Type.dataSmall).foregroundStyle(Theme.muted)
                     }
                 }
             } else {

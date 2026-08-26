@@ -135,6 +135,23 @@
         "last_activity_at": 1787589340
       },
       {
+        "task_id": "task-provider-calibration",
+        "title": "Resolve provider calibration",
+        "decision_status": { "key": "blocked", "label": "Blocked", "asserted_by": "agent_report" },
+        "evidence_strength": {
+          "key": "not_gradeable",
+          "gradeable": false,
+          "checkable_total": 0,
+          "checked_total": 0,
+          "checks_total": 0,
+          "checks_passed": 0,
+          "checks_failed": 0
+        },
+        "cost": {},
+        "primary_root": { "client": "codex", "client_session_id": "fixture-blocked" },
+        "last_activity_at": 1787589100
+      },
+      {
         "task_id": "task-visual-regression",
         "title": "Review dashboard visual regression",
         "decision_status": { "key": "finding", "label": "Open finding", "asserted_by": "machine" },
@@ -157,23 +174,6 @@
         },
         "primary_root": { "client": "codex", "client_session_id": "fixture-failed" },
         "last_activity_at": 1787589280
-      },
-      {
-        "task_id": "task-provider-calibration",
-        "title": "Resolve provider calibration",
-        "decision_status": { "key": "blocked", "label": "Blocked", "asserted_by": "agent_report" },
-        "evidence_strength": {
-          "key": "not_gradeable",
-          "gradeable": false,
-          "checkable_total": 0,
-          "checked_total": 0,
-          "checks_total": 0,
-          "checks_passed": 0,
-          "checks_failed": 0
-        },
-        "cost": {},
-        "primary_root": { "client": "codex", "client_session_id": "fixture-blocked" },
-        "last_activity_at": 1787589100
       }
     ]
   },

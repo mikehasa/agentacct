@@ -402,8 +402,8 @@ private struct RecentWorkCard: View {
     private var workColumnLabels: some View {
         HStack(spacing: 12) {
             Text("Task").frame(maxWidth: .infinity, alignment: .leading)
-            Text("Outcome").frame(width: 104, alignment: .leading)
-            Text("Evidence").frame(width: 96, alignment: .leading)
+            Text("Outcome").frame(width: 116, alignment: .leading)
+            Text("Evidence").frame(width: 118, alignment: .leading)
             Text("Cost").frame(width: 68, alignment: .trailing)
             Color.clear.frame(width: 10, height: 1)
         }
@@ -436,7 +436,7 @@ private struct RecentWorkRow: View {
                 // Decision axis: a pip-less tinted badge (a filled dot here
                 // read as the independently-checked evidence pip).
                 DecisionBadge(key: item.outcomeKey, label: item.outcome, compact: true)
-                    .frame(width: 104, alignment: .leading)
+                    .frame(width: 116, alignment: .leading)
 
                 // Evidence axis: the strongest tier's pip shape + the ratio.
                 HStack(spacing: 6) {
@@ -449,8 +449,9 @@ private struct RecentWorkRow: View {
                     Text(item.evidence)
                         .font(Type.dataSmall)
                         .foregroundStyle(Theme.muted)
+                        .lineLimit(1)
                 }
-                .frame(width: 96, alignment: .leading)
+                .frame(width: 118, alignment: .leading)
 
                 Text(item.cost == "—" ? "unpriced" : item.cost)
                     .font(Type.dataSmall)
@@ -832,7 +833,7 @@ private struct DashboardUsageChart: View {
                         Spacer()
                         Divider().overlay(Theme.hairline)
                     }
-                    .padding(.bottom, 18)
+                    .padding(.bottom, 20)
 
                     HStack(alignment: .bottom, spacing: gap) {
                         ForEach(Array(periods.enumerated()), id: \.offset) { index, period in
@@ -846,7 +847,10 @@ private struct DashboardUsageChart: View {
                                             .fill(barColor(index))
                                             .frame(height: barHeight(for: period))
                                     }
-                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    // Fixed plot height so the max bar tops at
+                                    // the gridline its axis label names.
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 110)
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(DashboardChartBarStyle(active: activeIndex == index))
@@ -907,7 +911,7 @@ private struct DashboardUsageChart: View {
     private func barHeight(for period: PeriodBucket) -> CGFloat {
         let value = series.value(for: period)
         guard value > 0 else { return 0 }
-        return max(3, 106 * value / maximum)
+        return max(3, 110 * value / maximum)
     }
 
     private func axisText(_ value: Double) -> String {

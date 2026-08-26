@@ -394,7 +394,10 @@ private struct WorkTablePage: View {
                 let style = EvidenceTierStyle.forGrade(grade)
                 HStack(spacing: 6) {
                     EvidencePip(shape: style.pip, tint: style.tint)
-                    Text(style.label).font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    // The amber hollow pip carries both approved words (the
+                    // aggregate "unchecked" and the per-step grade "claimed").
+                    Text(grade == "unchecked" ? "unchecked · claimed" : style.label)
+                        .font(Type.dataSmall).foregroundStyle(Theme.muted)
                 }
             }
             HStack(spacing: 6) {
@@ -478,6 +481,11 @@ private struct WorkTableRow: View {
                 EvidencePip(shape: .hollow, tint: Theme.muted)
                 Text("not gradeable").font(Type.dataSmall).foregroundStyle(Theme.muted)
             }
+            .help(
+                (evidence.checksTotal ?? 0) > 0
+                    ? "No checkable steps — the recorded checks attach to no claim step"
+                    : "No checkable steps recorded for this task"
+            )
         }
     }
 
@@ -547,9 +555,15 @@ private struct WorkRail: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            CapsLabel(text: "Work receipts · \(dashboard.totalReceiptTasks ?? dashboard.receiptTasks.count)")
-                .padding(.horizontal, Space.l)
-                .padding(.vertical, Space.l)
+            VStack(alignment: .leading, spacing: 3) {
+                CapsLabel(text: "Work receipts · \(dashboard.totalReceiptTasks ?? dashboard.receiptTasks.count)")
+                if let total = dashboard.totalReceiptTasks, total > dashboard.receiptTasks.count {
+                    Text("latest \(dashboard.receiptTasks.count) loaded")
+                        .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                }
+            }
+            .padding(.horizontal, Space.l)
+            .padding(.vertical, Space.l)
             ScrollBox {
                 VStack(spacing: 0) {
                     ForEach(railTasks) { task in
