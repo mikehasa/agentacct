@@ -46,15 +46,14 @@ enum SnapshotRunner {
 
                     for pane in MainPane.allCases {
                         selection.pane = pane
-                        // The Work pane shows the record page (summary strip,
-                        // dimension ledger, checks, coverage) AND the steps
-                        // drill-down below it; render it taller so both fit.
-                        let height: CGFloat = pane == .work ? 2900 : 680
+                        // Width-only frame: the canvas grows to the pane's full
+                        // content height (ImageRenderer centers an overflowing
+                        // fixed frame, which would clip both ends).
                         let window = MainWindow()
                             .environmentObject(glance)
                             .environmentObject(dashboard)
                             .environmentObject(selection)
-                            .frame(width: 1120, height: height, alignment: .top)
+                            .frame(width: 1120, alignment: .top)
                             .environment(\.colorScheme, scheme)
                         try SnapshotImageWriter.render(
                             window,
@@ -72,7 +71,7 @@ enum SnapshotRunner {
                         .environmentObject(glance)
                         .environmentObject(dashboard)
                         .environmentObject(selection)
-                        .frame(width: 1120, height: 900, alignment: .top)
+                        .frame(width: 1120, alignment: .top)
                         .environment(\.colorScheme, scheme)
                     try SnapshotImageWriter.render(
                         tableWindow,
