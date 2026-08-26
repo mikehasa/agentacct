@@ -195,6 +195,10 @@ final class AppSelection: ObservableObject {
     @Published var sessionId: String?
     @Published var taskId: String?
     @Published var pane: MainPane = .dashboard
+    /// The Work surface's shared sort. Lives here (not in the table's @State)
+    /// so opening a record — which unmounts the table — never resets it, and
+    /// the record-mode rail stays on the same order as the table.
+    @Published var workSort: WorkSort = .latest
 
     /// Dashboard actions replace stale deep links before changing panes. This
     /// keeps a previous Task or session from overriding the control the user

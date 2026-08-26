@@ -372,9 +372,33 @@ struct RecordDimensionsCard: View {
 
     private var costSummary: String {
         let dim = receipt.dimensions.cost
-        guard let cost = dim.estimatedCostUsd else { return "no priced usage" }
+        // Token tally — same daemon-computed numbers, so a user can see the
+        // volume behind (or despite the absence of) the dollar estimate. Zero
+        // components stay silent; an older payload without the block shows
+        // nothing. Rendered even when nothing is priced: recorded volume is a
+        // fact, and "no priced usage" only names the missing dollars.
+        var tokensLine: String?
+        if let tokens = dim.tokens, let total = tokens.total, total > 0 {
+            var parts = ["\(UsageTotals.compact(total)) total"]
+            if let fresh = tokens.fresh, fresh > 0 {
+                parts.append("\(UsageTotals.compact(fresh)) fresh")
+            }
+            if let cacheCreation = tokens.cacheCreation, cacheCreation > 0 {
+                parts.append("\(UsageTotals.compact(cacheCreation)) cache write")
+            }
+            if let cacheRead = tokens.cacheRead, cacheRead > 0 {
+                parts.append("\(UsageTotals.compact(cacheRead)) cache read")
+            }
+            tokensLine = "tokens: " + parts.joined(separator: " · ")
+        }
+        guard let cost = dim.estimatedCostUsd else {
+            guard let tokensLine else { return "no priced usage" }
+            return "no priced usage\n" + tokensLine
+        }
         let display = receiptCostDisplay(cost, complete: dim.costComplete, confidence: dim.costConfidence)
-        return "\(display) · \(costBasisLabel(dim.costBasis))\((dim.costComplete ?? true) ? "" : " (partial)")"
+        var line = "\(display) · \(costBasisLabel(dim.costBasis))\((dim.costComplete ?? true) ? "" : " (partial)")"
+        if let tokensLine { line += "\n" + tokensLine }
+        return line
     }
 
     private var evidenceSummary: String {

@@ -103,7 +103,15 @@ struct TopBar: View {
                     iconOnly: iconOnly,
                     selectionNamespace: paneSelection
                 ) {
-                    selection.pane = pane
+                    // The Work tab always lands on the receipts table: without
+                    // clearing, a stale taskId makes the tab a no-op while a
+                    // record is open and resurrects the last record on the next
+                    // visit. Row/deep links still open records via open(.task).
+                    if pane == .work {
+                        selection.open(.work)
+                    } else {
+                        selection.pane = pane
+                    }
                 }
             }
         }
