@@ -784,17 +784,19 @@ def read_codex_rate_limits_latest(
     return None
 
 
-def latest_recorded_captured_at(
+def recorded_captured_ats(
     existing_events: Iterable[Mapping[str, Any]], *, client: str
-) -> float:
-    """The newest recorded ``captured_at`` for one client's limit stream.
+) -> set[float]:
+    """Every recorded ``captured_at`` for one client's limit stream.
 
-    The series importer's watermark: only in-file readings STRICTLY newer than
-    this are imported, so a re-scan never re-records history (transition dedup
-    alone compares only the latest state and would re-write a whole replayed
-    series)."""
+    The series importer's exclusion set: an in-file reading whose capture time
+    is already in the ledger is never imported again. Combined with the
+    importer's DETERMINISTIC transition-collapse (same files -> same survivor
+    set on every scan), this makes the backfill idempotent: readings BETWEEN
+    the sparse tick-recorded snapshots import exactly once, and a re-scan is
+    a no-op."""
 
-    newest = 0.0
+    captured: set[float] = set()
     for event in existing_events:
         if event.get("event_type") != EVENT_TYPE:
             continue
@@ -802,9 +804,9 @@ def latest_recorded_captured_at(
         if str(metadata.get("client") or "") != client:
             continue
         ordering = _event_ordering(event)
-        if ordering > newest:
-            newest = ordering
-    return newest
+        if ordering > 0:
+            captured.add(ordering)
+    return captured
 
 
 # Replayed rollout prefixes are stamped with FRESH outer timestamps
@@ -870,10 +872,21 @@ def _read_codex_file_rate_limit_series(path: Path) -> list[RateLimitSnapshot]:
     return collapsed
 
 
+def _snapshot_transition_key(snapshot: RateLimitSnapshot) -> str:
+    """The series' transition-collapse identity — EXACTLY the recorder's own
+    ``state_signature``, so any reading the recorder would treat as a no-op is
+    dropped deterministically before the exclusion filter. A near-copy with a
+    different field set (an early draft included the drifting credits balance
+    the signature deliberately excludes) let recorder-skipped readings
+    resurface on the next scan as phantom re-imports."""
+
+    return snapshot_state_signature(snapshot)
+
+
 def read_codex_rate_limits_series(
     codex_home: Path | str | None = None,
     *,
-    since_epoch: float = 0.0,
+    exclude_captured_at: Iterable[float] = (),
     now: float | None = None,
     max_files: int = 400,
 ) -> list[RateLimitSnapshot]:
@@ -881,17 +894,22 @@ def read_codex_rate_limits_series(
 
     The calibration-density companion to ``read_codex_rate_limits_latest``:
     that reader records one snapshot per scan tick, which starves the weekly
-    fit; this one imports the in-file history — bounded to readings STRICTLY
-    newer than ``since_epoch`` (the caller's recorded watermark) and to the
-    backfill window — with per-file replay bursts collapsed. Files whose mtime
-    predates the watermark cannot contain newer lines (rollouts only grow) and
-    are skipped unread.
+    fit; this one BACKFILLS the in-file history between those sparse ticks.
+    Bounds and idempotence:
+
+    * only the backfill window (older history cannot influence the fit);
+    * per-file replay bursts collapsed (see ``_CODEX_REPLAY_COLLAPSE_SECONDS``);
+    * a DETERMINISTIC transition-collapse over the merged series (consecutive
+      identical states drop), so every scan derives the same survivor set;
+    * survivors whose capture time is already recorded (``exclude_captured_at``,
+      from ``recorded_captured_ats``) are skipped — so the backfill happens
+      once and a re-scan is a no-op.
     """
 
     import time as _time
 
     now_epoch = now if now is not None else _time.time()
-    floor = max(since_epoch, now_epoch - _CODEX_SERIES_BACKFILL_DAYS * 86400.0)
+    floor = now_epoch - _CODEX_SERIES_BACKFILL_DAYS * 86400.0
     rollouts: list[Path] = []
     for root in _codex_sessions_roots(codex_home):
         try:
@@ -919,7 +937,17 @@ def read_codex_rate_limits_series(
             if float(snapshot.captured_at or 0) > floor
         )
     series.sort(key=lambda snapshot: float(snapshot.captured_at or 0))
-    return series
+    collapsed: list[RateLimitSnapshot] = []
+    for snapshot in series:
+        if collapsed and _snapshot_transition_key(collapsed[-1]) == _snapshot_transition_key(snapshot):
+            continue
+        collapsed.append(snapshot)
+    excluded = {float(value) for value in exclude_captured_at}
+    return [
+        snapshot
+        for snapshot in collapsed
+        if float(snapshot.captured_at or 0) not in excluded
+    ]
 
 
 def read_claude_plan_usage_latest(

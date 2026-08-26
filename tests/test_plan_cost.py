@@ -515,3 +515,46 @@ def test_stability_rejects_a_single_burst_day(tmp_path):
     weights = pc.calibrate_plan_weights(service.list_all_events(), client="claude-code", now=now)
     assert weights.confidence == "baseline"
     assert weights.scale == 1.0
+
+
+def test_regime_change_calibrates_on_the_trailing_window(tmp_path):
+    """A mid-window ratio regime change (the live 2026-08-27 shape: ~6x early,
+    ~2x recently) fails both the band and the split-half stability on the full
+    window — but the CURRENT regime is honest and in-band, so the trailing
+    ladder calibrates on it, with the shortened window disclosed."""
+
+    service = SentinelService(tmp_path)
+    opus = pc.baseline_weight_fresh("claude-opus-4-8")
+    tokens = 50_000_000
+    spacing = 8 * 3600
+    n = 40  # ~13 days at 8h spacing
+    t0 = 1_000_000
+    pct = 0.0
+    _record_7d(service, captured=float(t0), pct=pct, index=0)
+    for i in range(n):
+        ratio = 6.0 if i < n // 2 else 2.0  # regime change at the midpoint
+        _record_usage(service, client="claude-code", model="claude-opus-4-8",
+                      session_id=f"s{i}", tokens=tokens, updated_at=t0 + i * spacing + spacing // 2,
+                      cost=1.0)
+        pct += ratio * (tokens / 1_000_000.0 * opus)
+        _record_7d(service, captured=float(t0 + (i + 1) * spacing), pct=pct, index=i + 1)
+    now = float(t0 + (n + 1) * spacing)
+    weights = pc.calibrate_plan_weights(service.list_all_events(), client="claude-code", now=now)
+    assert weights.confidence == "calibrated"
+    assert "trailing" in weights.basis
+    assert pc._TRUSTED_SCALE_BAND[0] <= weights.scale <= pc._TRUSTED_SCALE_BAND[1]
+    assert abs(weights.scale - 2.0) < 0.35  # the CURRENT regime, not the blend
+    # The trailing ladder never rescues an out-of-band recent regime: flip the
+    # order (in-band early, wild recently) and the fit stays baseline.
+    service2 = SentinelService(tmp_path / "flipped")
+    pct = 0.0
+    _record_7d(service2, captured=float(t0), pct=pct, index=0)
+    for i in range(n):
+        ratio = 2.0 if i < n // 2 else 6.0
+        _record_usage(service2, client="claude-code", model="claude-opus-4-8",
+                      session_id=f"s{i}", tokens=tokens, updated_at=t0 + i * spacing + spacing // 2,
+                      cost=1.0)
+        pct += ratio * (tokens / 1_000_000.0 * opus)
+        _record_7d(service2, captured=float(t0 + (i + 1) * spacing), pct=pct, index=i + 1)
+    weights2 = pc.calibrate_plan_weights(service2.list_all_events(), client="claude-code", now=now)
+    assert weights2.confidence == "baseline"

@@ -69,31 +69,39 @@ def test_series_collapses_replay_bursts_and_merges_files(tmp_path: Path) -> None
     assert times == sorted(times)
 
 
-def test_series_respects_the_recorded_watermark(tmp_path: Path) -> None:
+def test_series_backfill_is_idempotent_via_the_exclusion_set(tmp_path: Path) -> None:
     home = tmp_path / "codex-home"
-    path = _write_rollout(
+    _write_rollout(
         home,
         "rollout-2026-08-26T00-00-00-cccc.jsonl",
         [
             _rollout_line("2026-08-26T10:00:00Z", 1.0),
+            _rollout_line("2026-08-26T10:30:00Z", 1.0),  # transition no-op, dropped
             _rollout_line("2026-08-26T11:00:00Z", 2.0),
             _rollout_line("2026-08-26T12:00:00Z", 3.0),
         ],
     )
     full = rl.read_codex_rate_limits_series(home, now=1788000000.0)
-    assert len(full) == 3
-    watermark = float(full[1].captured_at)  # the 11:00 reading is recorded
-    later = rl.read_codex_rate_limits_series(home, since_epoch=watermark, now=1788000000.0)
-    used = [window.used_percent for snapshot in later for window in snapshot.windows]
-    assert used == [3.0]  # strictly-newer only: no re-import bloat
-    # A file whose mtime predates the watermark is skipped unread.
-    import os
+    used = [window.used_percent for snapshot in full for window in snapshot.windows]
+    assert used == [1.0, 2.0, 3.0]  # deterministic transition-collapse
 
-    os.utime(path, (watermark - 10, watermark - 10))
-    assert rl.read_codex_rate_limits_series(home, since_epoch=watermark, now=1788000000.0) == []
+    # BACKFILL: sparse tick-recording caught only the 12:00 state — the
+    # readings BETWEEN recorded snapshots still import.
+    recorded = {float(full[-1].captured_at)}
+    backfill = rl.read_codex_rate_limits_series(
+        home, exclude_captured_at=recorded, now=1788000000.0
+    )
+    used = [window.used_percent for snapshot in backfill for window in snapshot.windows]
+    assert used == [1.0, 2.0]
+
+    # After the backfill, every survivor is recorded — a re-scan is a no-op.
+    recorded |= {float(snapshot.captured_at) for snapshot in backfill}
+    assert rl.read_codex_rate_limits_series(
+        home, exclude_captured_at=recorded, now=1788000000.0
+    ) == []
 
 
-def test_watermark_helper_reads_the_newest_recorded_codex_capture(tmp_path: Path) -> None:
+def test_recorded_captured_ats_reads_one_clients_stream(tmp_path: Path) -> None:
     events = [
         {
             "event_type": "rate_limit_observed",
@@ -112,5 +120,5 @@ def test_watermark_helper_reads_the_newest_recorded_codex_capture(tmp_path: Path
         },
         {"event_type": "other", "created_at": 999.0, "metadata": {"client": "codex"}},
     ]
-    assert rl.latest_recorded_captured_at(events, client="codex") == 120.0
-    assert rl.latest_recorded_captured_at([], client="codex") == 0.0
+    assert rl.recorded_captured_ats(events, client="codex") == {120.0, 80.0}
+    assert rl.recorded_captured_ats([], client="codex") == set()

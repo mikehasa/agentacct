@@ -7622,16 +7622,17 @@ def _local_usage_import_payload(
                     # of the real ~/.codex is gated behind the global-scan knob.
                     if codex_home is not None or _global_scan:
                         # Dense weekly-meter history first (calibration food):
-                        # bounded to readings newer than the recorded watermark,
-                        # so a re-scan never re-imports history. The single
-                        # freshest snapshot still rides last so the stream
-                        # always ends on the current state.
-                        _codex_since = _rate_limits.latest_recorded_captured_at(
+                        # backfills the in-file readings BETWEEN the sparse
+                        # tick-recorded snapshots, idempotently (deterministic
+                        # transition-collapse + already-recorded capture times
+                        # excluded). The single freshest snapshot still rides
+                        # last so the stream always ends on the current state.
+                        _codex_recorded = _rate_limits.recorded_captured_ats(
                             service.list_all_events(), client="codex"
                         )
                         _rl_snapshots.extend(
                             _rate_limits.read_codex_rate_limits_series(
-                                codex_home, since_epoch=_codex_since
+                                codex_home, exclude_captured_at=_codex_recorded
                             )
                         )
                         _codex_rl = _rate_limits.read_codex_rate_limits_latest(codex_home)
