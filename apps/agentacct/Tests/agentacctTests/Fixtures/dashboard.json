@@ -288,12 +288,32 @@
     "by_client": [
       {
         "client": "codex",
-        "sessions": 54,
-        "fresh_tokens": 48100000,
-        "cache_read_tokens": 148300000,
-        "estimated_cost_usd": 1087.42,
+        "sessions": 43,
+        "fresh_tokens": 31200000,
+        "cache_read_tokens": 96300000,
+        "estimated_cost_usd": 402.1,
         "cost_complete": true,
-        "known_additive_cost_usd": 1087.42,
+        "known_additive_cost_usd": 402.1,
+        "cost_confidence_label": "complete"
+      },
+      {
+        "client": "claude-code",
+        "sessions": 9,
+        "fresh_tokens": 16500000,
+        "cache_read_tokens": 51600000,
+        "estimated_cost_usd": 680.32,
+        "cost_complete": true,
+        "known_additive_cost_usd": 680.32,
+        "cost_confidence_label": "complete"
+      },
+      {
+        "client": "hermes",
+        "sessions": 2,
+        "fresh_tokens": 400000,
+        "cache_read_tokens": 400000,
+        "estimated_cost_usd": 5.0,
+        "cost_complete": true,
+        "known_additive_cost_usd": 5.0,
         "cost_confidence_label": "complete"
       }
     ],
@@ -306,7 +326,10 @@
         "cost_complete": true,
         "by_client": {
           "codex": {
-            "fresh_tokens": 1800000
+            "fresh_tokens": 1400000
+          },
+          "hermes": {
+            "fresh_tokens": 400000
           }
         }
       },
@@ -350,7 +373,10 @@
         "cost_complete": true,
         "by_client": {
           "codex": {
-            "fresh_tokens": 4800000
+            "fresh_tokens": 2700000
+          },
+          "claude-code": {
+            "fresh_tokens": 2100000
           }
         }
       },
@@ -361,7 +387,10 @@
         "cost_complete": true,
         "by_client": {
           "codex": {
-            "fresh_tokens": 12100000
+            "fresh_tokens": 6800000
+          },
+          "claude-code": {
+            "fresh_tokens": 5300000
           }
         }
       },
@@ -372,13 +401,16 @@
         "cost_complete": true,
         "by_client": {
           "codex": {
-            "fresh_tokens": 22500000
+            "fresh_tokens": 13400000
+          },
+          "claude-code": {
+            "fresh_tokens": 9100000
           }
         }
       }
     ],
     "totals": {
-      "client": "codex",
+      "client": null,
       "sessions": 54,
       "fresh_tokens": 48100000,
       "cache_read_tokens": 148300000,

@@ -179,6 +179,18 @@ struct DashboardPane: View {
         return snapshot.glance.usage.byClient ?? []
     }
 
+    /// Clients whose only limit readings are STALE — hidden from the live
+    /// meters, but "no limits reported" would be affirmatively false for them.
+    private var staleLimitClients: Set<String> {
+        guard case .connected(let snapshot) = glance.phase else { return [] }
+        let live = Set(liveLimits.compactMap(\.client))
+        return Set(
+            snapshot.glance.limits
+                .filter { $0.stale == true }
+                .compactMap(\.client)
+        ).subtracting(live)
+    }
+
     private var todayUsage: UsageTotals? {
         guard case .connected(let snapshot) = glance.phase else { return nil }
         return snapshot.glance.usage.windows.first { $0.label == "today" }?.totals
@@ -223,6 +235,7 @@ struct DashboardPane: View {
                     PlanAndUsageCard(
                         rows: DashboardAgentPlanRow.rows(
                             limits: liveLimits,
+                            staleClients: staleLimitClients,
                             planClients: dashboard.planClients,
                             usage: glanceUsageByClient
                         ),
@@ -611,38 +624,58 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
     let meterCaption: String
     let resetText: String?
     let calibrating: Bool
+    let calibratingDetail: String?
     let usageText: String?
 
     var id: String { client }
 
-    /// The row's full sentence for hover/accessibility (caption + reset time).
+    /// The row's full sentence for hover/accessibility: the caption, the
+    /// provenance (the caption itself stays short — the card footer states
+    /// provenance once for every meter), and the reset time when reported.
     var detailText: String {
-        resetText.map { "\(meterCaption) · \($0)" } ?? meterCaption
+        var parts = [meterCaption]
+        if usedPercent != nil { parts.append("provider reported") }
+        if let resetText { parts.append(resetText) }
+        return parts.joined(separator: " · ")
     }
 
-    init(client: String, limit: LimitEntry?, plan: V1PlanClient?, usage: GlanceClientUsage?) {
+    init(
+        client: String,
+        limit: LimitEntry?,
+        staleLimit: Bool = false,
+        plan: V1PlanClient?,
+        usage: GlanceClientUsage?
+    ) {
         self.client = client
         self.planType = limit?.planType
         let window = (limit?.windows ?? []).first { $0.kind == "7d" }
         self.usedPercent = window?.usedPercent
         if let used = window?.usedPercent {
-            // Reset time rides hover/accessibility, never the one-line caption
-            // (a truncated caption would silently drop the provenance words).
-            meterCaption = String(format: "%.0f%% used · provider reported", used)
+            // Short and window-anchored; provenance + reset time ride
+            // hover/accessibility and the card footer (a truncated caption
+            // would silently drop words).
+            meterCaption = String(format: "%.0f%% of 7-day limit", used)
             resetText = Theme.resetsIn(window?.resetsAt).map { "resets in \($0)" }
         } else if limit != nil {
-            meterCaption = "no provider-reported 7-day window"
+            meterCaption = "no 7-day window reported"
+            resetText = nil
+        } else if staleLimit {
+            // A stale reading is hidden, not never-reported — say so.
+            meterCaption = "limit reading stale — see Limits"
             resetText = nil
         } else {
-            meterCaption = "no limits reported by this client"
+            meterCaption = "no limits reported"
             resetText = nil
         }
         self.calibrating = plan?.calibrationState == "calibrating"
+        self.calibratingDetail = plan?.stateDetail
         if let usage {
-            // Compact: the card footer already names the fresh-token basis.
+            // "7d ·" anchors the figures to the card's window (the Usage
+            // pane's picker never moves these rows); the footer names the
+            // fresh-token basis.
             let cost = usage.costText ?? "unpriced"
             let tokens = usage.freshTokens.map { UsageTotals.compact($0) }
-            usageText = ([cost] + (tokens.map { [$0] } ?? [])).joined(separator: " · ")
+            usageText = "7d · " + ([cost] + (tokens.map { [$0] } ?? [])).joined(separator: " · ")
         } else {
             usageText = nil
         }
@@ -655,6 +688,7 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
     /// client is Limits-pane detail.
     static func rows(
         limits: [LimitEntry],
+        staleClients: Set<String> = [],
         planClients: [V1PlanClient],
         usage: [GlanceClientUsage]
     ) -> [DashboardAgentPlanRow] {
@@ -691,6 +725,7 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
             DashboardAgentPlanRow(
                 client: client,
                 limit: limitByClient[client],
+                staleLimit: staleClients.contains(client),
                 plan: planMap[client],
                 usage: usageMap[client]
             )
@@ -742,10 +777,10 @@ private struct PlanAndUsageCard: View {
                     Text("\(today?.costText ?? "—") · \(today?.tokensText ?? "—")")
                         .font(Face.monoFont(14, .semibold))
                         .foregroundStyle(Theme.ink)
-                    Text("Pricing estimate · client-reported fresh tokens")
+                    Text("Pricing estimate · fresh tokens client-reported · meters provider-reported")
                         .font(Type.caption)
                         .foregroundStyle(Theme.muted)
-                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.horizontal, Space.l)
                 .padding(.vertical, Space.m)
@@ -771,7 +806,8 @@ private struct AgentPlanRowView: View {
                     if row.calibrating {
                         Chip(text: "calibrating", tint: Theme.amber)
                             .fixedSize()
-                            .help("Weekly plan % is still calibrating for this client — see Limits")
+                            .help(row.calibratingDetail
+                                  ?? "Weekly plan % is still calibrating for this client — see Limits")
                     }
                 }
                 Text(row.meterCaption)

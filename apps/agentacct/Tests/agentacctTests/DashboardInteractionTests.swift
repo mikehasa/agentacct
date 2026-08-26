@@ -168,18 +168,25 @@ final class DashboardInteractionTests: XCTestCase {
 
         let noLimit = DashboardAgentPlanRow(client: "hermes", limit: nil, plan: nil, usage: nil)
         XCTAssertNil(noLimit.usedPercent)
-        XCTAssertEqual(noLimit.meterCaption, "no limits reported by this client")
+        XCTAssertEqual(noLimit.meterCaption, "no limits reported")
         XCTAssertNil(noLimit.usageText)
+
+        // A stale reading is hidden, not never-reported — the copy must not lie.
+        let stale = DashboardAgentPlanRow(
+            client: "claude-code", limit: nil, staleLimit: true, plan: nil, usage: nil
+        )
+        XCTAssertNil(stale.usedPercent)
+        XCTAssertEqual(stale.meterCaption, "limit reading stale — see Limits")
 
         let unavailable = DashboardAgentPlanRow(client: "codex", limit: fiveHourOnly, plan: nil, usage: nil)
         XCTAssertNil(unavailable.usedPercent)
-        XCTAssertEqual(unavailable.meterCaption, "no provider-reported 7-day window")
+        XCTAssertEqual(unavailable.meterCaption, "no 7-day window reported")
 
         let available = DashboardAgentPlanRow(client: "codex", limit: sevenDay, plan: nil, usage: nil)
         XCTAssertEqual(available.usedPercent, 39)
-        XCTAssertEqual(available.meterCaption, "39% used · provider reported")
+        XCTAssertEqual(available.meterCaption, "39% of 7-day limit")
         XCTAssertNil(available.resetText, "no reset time was reported — never fabricated")
-        XCTAssertEqual(available.detailText, available.meterCaption)
+        XCTAssertEqual(available.detailText, "39% of 7-day limit · provider reported")
     }
 
     func testAgentPlanRowsIncludeEveryRecordingClientWithoutFavoritism() throws {
@@ -217,8 +224,10 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(rows[1].planType, "pro")
         // The usage-only client keeps the honest hatched-track copy.
         XCTAssertNil(rows[2].usedPercent)
-        XCTAssertEqual(rows[2].meterCaption, "no limits reported by this client")
+        XCTAssertEqual(rows[2].meterCaption, "no limits reported")
         XCTAssertNotNil(rows[2].usageText)
+        // Every usage figure is anchored to the card's 7-day window.
+        XCTAssertTrue(rows[2].usageText?.hasPrefix("7d · ") == true)
     }
 
     func testActiveSessionResolutionNeverDropsAnUnmatchedSession() throws {
