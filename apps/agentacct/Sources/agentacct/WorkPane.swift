@@ -38,14 +38,16 @@ enum WorkGroup: String, CaseIterable, Identifiable {
     case reported = "Reported"
     case inProgress = "In progress"
     case observed = "Observed"
-    case handedOff = "Handed off"
+    case stopped = "Stopped"
     case other = "Other"
 
     var id: String { rawValue }
 
     /// Buckets never upgrade a claim: "Verified" holds only the machine-
     /// asserted key; agent claims of done-ness group under their own word
-    /// ("Reported"); ambient activity stays "Observed".
+    /// ("Reported"); ambient activity stays "Observed". "Stopped" holds both
+    /// stop shapes — the deliberate handoff and the inferred ended-open —
+    /// each row still wearing its own decision word.
     static func forKey(_ key: String?) -> WorkGroup {
         switch key {
         case "finding", "failed", "blocked": return .attention
@@ -53,8 +55,128 @@ enum WorkGroup: String, CaseIterable, Identifiable {
         case "reported", "resolved", "mostly_done", "finding_superseded": return .reported
         case "in_progress", "started", "checkpoint": return .inProgress
         case "observed": return .observed
-        case "handed_off": return .handedOff
+        case "handed_off", "ended_open": return .stopped
         default: return .other
+        }
+    }
+}
+
+/// The Work surface's shared sort modes. One state (`AppSelection.workSort`)
+/// drives both the receipts table and the record-mode rail, so a detail
+/// round-trip never resets the chosen order and the two surfaces agree.
+enum WorkSort: String, CaseIterable, Identifiable {
+    case attention, latest, cost
+    var id: String { rawValue }
+
+    var footerText: String {
+        switch self {
+        case .attention: return "attention first, then recency"
+        case .latest: return "most recent first"
+        case .cost: return "highest estimated cost first"
+        }
+    }
+}
+
+/// Shared ordering for the receipts table and the rail — one algorithm, so the
+/// two surfaces can never disagree. `.latest` is the daemon's own order
+/// (last_activity_at desc); `.attention` is a stable partition that keeps that
+/// recency inside each half.
+func sortedReceipts(_ rows: [ReceiptSummary], by sort: WorkSort) -> [ReceiptSummary] {
+    switch sort {
+    case .attention:
+        let attention = rows.filter { WorkGroup.forKey($0.decisionStatus.key) == .attention }
+        return attention + rows.filter { WorkGroup.forKey($0.decisionStatus.key) != .attention }
+    case .latest:
+        return rows  // server order: recency
+    case .cost:
+        return rows.sorted { ($0.cost.estimatedCostUsd ?? -1) > ($1.cost.estimatedCostUsd ?? -1) }
+    }
+}
+
+// MARK: - Decision-status legend
+
+/// One-line human definitions for every decision word, mirroring the daemon's
+/// own criteria (task_outcome/receipt statements). Presentation only — the
+/// words and their meanings stay the daemon's; this never re-derives a status.
+struct DecisionLegendEntry: Identifiable {
+    let key: String
+    let label: String
+    let definition: String
+    var id: String { key }
+}
+
+enum DecisionLegend {
+    /// Grouped by family: needs-you, live, proven, claimed, inferred, ambient.
+    static let entries: [DecisionLegendEntry] = [
+        .init(key: "blocked", label: "Blocked",
+              definition: "The agent recorded a blocker it never marked resolved."),
+        .init(key: "failed", label: "Failed",
+              definition: "The agent recorded a step as failed."),
+        .init(key: "finding", label: "Finding",
+              definition: "A machine check failed and no later run of it has passed."),
+        .init(key: "in_progress", label: "In progress",
+              definition: "Steps are still open and the session was not seen to end."),
+        .init(key: "verified", label: "Verified",
+              definition: "Recorded machine evidence verifies the latest outcome."),
+        .init(key: "reported", label: "Reported",
+              definition: "The agent says it finished; no check proves it."),
+        .init(key: "resolved", label: "Resolved",
+              definition: "A later passing check reports the blocker resolved — not a verified completion."),
+        .init(key: "mostly_done", label: "Mostly done",
+              definition: "Steps finished, some still open — later work moved elsewhere."),
+        .init(key: "handed_off", label: "Handed off",
+              definition: "The agent deliberately stopped and passed the work on."),
+        .init(key: "finding_superseded", label: "Finding superseded",
+              definition: "A check failed, but a later run of the same check passed."),
+        .init(key: "ended_open", label: "Ended open",
+              definition: "The session ended with steps still open; the stop is inferred, not stated."),
+        .init(key: "observed", label: "Observed",
+              definition: "Activity was recorded; no outcome was ever stated."),
+    ]
+}
+
+/// A small info affordance that opens the decision-word legend. Lives beside
+/// every surface that shows decision words (table controls, record title).
+struct DecisionLegendButton: View {
+    @State private var shown = false
+
+    var body: some View {
+        // Popovers need live interaction; the offscreen renderer draws the
+        // trigger as noise, so snapshots omit the control entirely.
+        if !SnapshotMode.enabled {
+            Button {
+                shown.toggle()
+            } label: {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.muted)
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(QuietButtonStyle(tint: Theme.muted, horizontalPadding: 0, verticalPadding: 0))
+            .help("What each status word means")
+            .accessibilityLabel("Status legend")
+            .accessibilityIdentifier("work.status-legend")
+            .popover(isPresented: $shown, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: Space.s) {
+                    CapsLabel(text: "Status words")
+                    ForEach(DecisionLegend.entries) { entry in
+                        HStack(alignment: .firstTextBaseline, spacing: Space.m) {
+                            DecisionBadge(key: entry.key, label: entry.label, compact: true)
+                                .frame(width: 132, alignment: .leading)
+                            Text(entry.definition)
+                                .font(Type.caption).foregroundStyle(Theme.ink)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    Text("Words come from the daemon's receipt — the legend explains, it never re-grades.")
+                        .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                        .padding(.top, Space.xs)
+                }
+                .padding(Space.l)
+                .frame(width: 440)
+            }
         }
     }
 }
@@ -161,20 +283,8 @@ private struct WorkTablePage: View {
     @EnvironmentObject var selection: AppSelection
     @State private var query = ""
     @State private var group: WorkGroup?
-    @State private var sort: WorkSort = .attention
 
-    enum WorkSort: String, CaseIterable, Identifiable {
-        case attention, latest, cost
-        var id: String { rawValue }
-
-        var footerText: String {
-            switch self {
-            case .attention: return "attention first, then recency"
-            case .latest: return "most recent first"
-            case .cost: return "highest estimated cost first"
-            }
-        }
-    }
+    private var sort: WorkSort { selection.workSort }
 
     private var groupCounts: [WorkGroup: Int] {
         Dictionary(grouping: dashboard.receiptTasks) { WorkGroup.forKey($0.decisionStatus.key) }
@@ -194,17 +304,7 @@ private struct WorkTablePage: View {
                     || ($0.primaryRoot?.client ?? "").lowercased().contains(needle)
             }
         }
-        switch sort {
-        case .attention:
-            // Stable partition: attention receipts first, server recency inside
-            // each partition.
-            let attention = rows.filter { WorkGroup.forKey($0.decisionStatus.key) == .attention }
-            return attention + rows.filter { WorkGroup.forKey($0.decisionStatus.key) != .attention }
-        case .latest:
-            return rows  // server order: recency
-        case .cost:
-            return rows.sorted { ($0.cost.estimatedCostUsd ?? -1) > ($1.cost.estimatedCostUsd ?? -1) }
-        }
+        return sortedReceipts(rows, by: sort)
     }
 
     var body: some View {
@@ -313,12 +413,13 @@ private struct WorkTablePage: View {
             if SnapshotMode.enabled {
                 Chip(text: "sort: \(sort.rawValue)", tint: Theme.accent)
             } else {
-                Picker("Sort", selection: $sort) {
+                Picker("Sort", selection: $selection.workSort) {
                     ForEach(WorkSort.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.menu)
                 .fixedSize()
             }
+            DecisionLegendButton()
             Spacer()
         }
     }
@@ -549,17 +650,46 @@ private struct WorkRail: View {
     /// clip) the whole record page; a snapshot shows a bounded slice and names
     /// the overflow instead.
     private var railTasks: [ReceiptSummary] {
-        guard SnapshotMode.enabled else { return dashboard.receiptTasks }
-        return Array(dashboard.receiptTasks.prefix(8))
+        let ordered = sortedReceipts(dashboard.receiptTasks, by: selection.workSort)
+        guard SnapshotMode.enabled else { return ordered }
+        return Array(ordered.prefix(8))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 3) {
-                CapsLabel(text: "Work receipts · \(dashboard.totalReceiptTasks ?? dashboard.receiptTasks.count)")
-                if let total = dashboard.totalReceiptTasks, total > dashboard.receiptTasks.count {
-                    Text("latest \(dashboard.receiptTasks.count) loaded")
-                        .font(Type.dataSmall).foregroundStyle(Theme.muted)
+            HStack(alignment: .top, spacing: Space.s) {
+                VStack(alignment: .leading, spacing: 3) {
+                    // Short label: beside the sort menu the long form wraps at
+                    // realistic counts (204pt column − padding − menu ≈ 136pt).
+                    CapsLabel(text: "Receipts · \(dashboard.totalReceiptTasks ?? dashboard.receiptTasks.count)")
+                        .lineLimit(1)
+                    if let total = dashboard.totalReceiptTasks, total > dashboard.receiptTasks.count {
+                        Text("latest \(dashboard.receiptTasks.count) loaded")
+                            .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    }
+                }
+                Spacer(minLength: 0)
+                // The same shared sort as the table (ImageRenderer draws a Menu
+                // as a placeholder, so snapshots skip the control).
+                if !SnapshotMode.enabled {
+                    Menu {
+                        Picker("Sort", selection: $selection.workSort) {
+                            ForEach(WorkSort.allCases) { Text($0.rawValue).tag($0) }
+                        }
+                    } label: {
+                        Image(systemName: "arrow.up.arrow.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Theme.muted)
+                            .frame(width: 20, height: 20)
+                            .contentShape(Rectangle())
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("Sort receipts · \(selection.workSort.footerText)")
+                    .accessibilityLabel("Sort receipts")
+                    .accessibilityIdentifier("work.rail.sort")
                 }
             }
             .padding(.horizontal, Space.l)
@@ -591,10 +721,13 @@ private struct WorkRailRow: View {
     let selected: Bool
     let action: () -> Void
 
+    /// The status word wears its decision family color (the same classes as
+    /// DecisionBadge) so the rail's word can never disagree with the record's
+    /// badge; unmapped keys stay quiet muted/ink.
     private var statusTint: Color {
-        let group = WorkGroup.forKey(task.decisionStatus.key)
-        if group == .attention { return Theme.coral }
-        return selected ? Theme.ink : Theme.muted
+        let tint = DecisionTintClass.forKey(task.decisionStatus.key)
+        if tint == .neutral { return selected ? Theme.ink : Theme.muted }
+        return tint.text
     }
 
     var body: some View {
@@ -611,10 +744,35 @@ private struct WorkRailRow: View {
                             .font(Type.labelCaps).tracking(Type.labelCapsTracking)
                             .foregroundStyle(statusTint)
                             .lineLimit(1)
+                        // Parallel deliberate-stop marker (same rule as the
+                        // table row: only when the word doesn't already say it).
+                        if task.handedOff == true && task.decisionStatus.key != "handed_off" {
+                            Text("↗")
+                                .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                                .help("Handed off")
+                                .accessibilityLabel("handed off")
+                        }
                         Spacer(minLength: 4)
                         let cost = DashboardWorkItem(task: task).cost
                         Text(cost == "—" ? "unpriced" : cost)
                             .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    }
+                    // Who did the work, and how fresh it is — both already in
+                    // the summary payload; absence stays silent, never dashed.
+                    if task.primaryRoot?.client != nil || task.lastActivityAt != nil {
+                        HStack(spacing: 4) {
+                            if let client = task.primaryRoot?.client {
+                                Text(client)
+                                    .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                                    .lineLimit(1).truncationMode(.tail)
+                            }
+                            if let ago = agoText(task.lastActivityAt) {
+                                if task.primaryRoot?.client != nil {
+                                    Text("·").font(Type.dataSmall).foregroundStyle(Theme.muted)
+                                }
+                                Text(ago).font(Type.dataSmall).foregroundStyle(Theme.muted)
+                            }
+                        }
                     }
                 }
                 .padding(.leading, Space.m + 4)
@@ -664,18 +822,29 @@ struct WorkRecordPage: View {
         .id(receipt.taskId)  // reset the drill-down's expansion state per Task
     }
 
+    /// An unmistakable back control (the old caps "WORK" read as a static path
+    /// label, not a button) + the path itself. Esc triggers the same return.
     private var breadcrumb: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: Space.m) {
             Button {
                 selection.taskId = nil
                 selection.sessionId = nil
             } label: {
-                CapsLabel(text: "Work", tone: Theme.accent)
-                    .contentShape(Rectangle())
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("All receipts").font(Type.captionSemibold)
+                }
+                .foregroundStyle(Theme.accent)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(QuietButtonStyle(horizontalPadding: 6, verticalPadding: 3))
+            .keyboardShortcut(.cancelAction)
+            .help("Back to the receipts list (Esc)")
             .accessibilityIdentifier("work.breadcrumb.back")
-            CapsLabel(text: "/ \(shortTaskRef)")
+            HStack(spacing: 6) {
+                CapsLabel(text: "Work")
+                CapsLabel(text: "/ \(shortTaskRef)")
+            }
         }
     }
 
@@ -694,6 +863,7 @@ struct WorkRecordPage: View {
                    receipt.axes.decisionStatus.key != "handed_off" {
                     Chip(text: "↗ handed off", tint: Theme.muted)
                 }
+                DecisionLegendButton()
                 Spacer()
             }
             Text(metaLine).font(Type.dataSmall).foregroundStyle(Theme.muted)

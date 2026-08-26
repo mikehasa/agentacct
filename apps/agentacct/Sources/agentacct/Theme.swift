@@ -209,7 +209,7 @@ enum Theme {
         switch status {
         case "blocked", "failed": return coral
         case "in_progress", "started", "checkpoint": return accent
-        case "completed", "handed_off": return ink
+        case "completed", "handed_off", "resolved": return ink
         default: return muted
         }
     }
@@ -457,10 +457,20 @@ struct TierBadge: View {
 
 /// Decision badge tint classes (no pip — the decision axis carries no
 /// evidence shapes). Green is reserved for machine-verified completion, the
-/// one decision key backed by independent evidence.
+/// one decision key backed by independent evidence. Families:
+/// * danger (coral) — needs the user: blocked / failed / failing check.
+/// * accent (cobalt, OUTLINED) — live right now; the outline (unfilled = still
+///   in flight) keeps it apart from the settled claimed family below.
+/// * claimed (cobalt on the accent wash) — done-ish on a claim's strength:
+///   the agent said so, or a stop was its deliberate last word. Never green.
+/// * inferredStop (amber) — agentacct inferred the stop; honestly weaker than
+///   a claim, so it wears the same claim≠proof amber as unverified evidence.
+/// * verified (green) — machine-verified completion only.
 enum DecisionTintClass {
     case neutral
     case accent
+    case claimed
+    case inferredStop
     case danger
     case verified
 
@@ -468,6 +478,9 @@ enum DecisionTintClass {
         switch key {
         case "blocked", "failed", "finding": return .danger
         case "in_progress", "started", "checkpoint": return .accent
+        case "reported", "resolved", "mostly_done", "handed_off", "finding_superseded":
+            return .claimed
+        case "ended_open": return .inferredStop
         case "verified": return .verified
         default: return .neutral
         }
@@ -476,7 +489,8 @@ enum DecisionTintClass {
     var text: Color {
         switch self {
         case .neutral: return Theme.ink
-        case .accent: return Theme.accent
+        case .accent, .claimed: return Theme.accent
+        case .inferredStop: return Theme.amber
         case .danger: return Theme.coral
         case .verified: return Theme.green
         }
@@ -485,11 +499,16 @@ enum DecisionTintClass {
     var wash: Color {
         switch self {
         case .neutral: return Theme.tintNeutral
-        case .accent: return Theme.tintAccent
+        case .accent: return .clear
+        case .claimed: return Theme.tintAccent
+        case .inferredStop: return Theme.tintAmber
         case .danger: return Theme.tintCoral
         case .verified: return Theme.tintGreen
         }
     }
+
+    /// Live states render as an outline; every settled class wears its wash.
+    var outlined: Bool { self == .accent }
 }
 
 /// Decision badge: h26 page variant / h20 row variant, rx4, no pip.
@@ -506,6 +525,12 @@ struct DecisionBadge: View {
             .padding(.horizontal, compact ? 8 : 12)
             .frame(height: compact ? Metrics.decisionBadgeRowH : Metrics.decisionBadgeH)
             .background(tint.wash, in: RoundedRectangle(cornerRadius: Metrics.radius))
+            .overlay {
+                if tint.outlined {
+                    RoundedRectangle(cornerRadius: Metrics.radius)
+                        .strokeBorder(tint.text.opacity(0.55), lineWidth: Metrics.borderW)
+                }
+            }
     }
 }
 

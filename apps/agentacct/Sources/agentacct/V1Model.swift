@@ -751,11 +751,27 @@ struct ReceiptToolName: Decodable, Identifiable {
     var id: String { name }
 }
 
+/// The receipt cost dimension's token tally (daemon-computed; the app never
+/// sums usage rows itself). Optional so an older payload still decodes.
+struct ReceiptCostTokens: Decodable {
+    let fresh: Int?
+    let cacheCreation: Int?
+    let cacheRead: Int?
+    let total: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case fresh, total
+        case cacheCreation = "cache_creation"
+        case cacheRead = "cache_read"
+    }
+}
+
 struct ReceiptCostDim: Decodable {
     let estimatedCostUsd: Double?
     let costBasis: String?
     let costConfidence: String?
     let costComplete: Bool?
+    let tokens: ReceiptCostTokens?
     let provenance: [String]?
     let gaps: [String]?
 
@@ -764,6 +780,7 @@ struct ReceiptCostDim: Decodable {
         case costBasis = "cost_basis"
         case costConfidence = "cost_confidence"
         case costComplete = "cost_complete"
+        case tokens
         case provenance, gaps
     }
 }
