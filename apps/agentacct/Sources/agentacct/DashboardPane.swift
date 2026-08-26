@@ -172,11 +172,23 @@ struct DashboardPane: View {
         return snapshot.glance.limits.filter { $0.stale != true }
     }
 
-    /// The dashboard shows the account with the least headroom; Limits remains
-    /// the complete multi-account surface. This bounds the overview as providers
-    /// are added without hiding the most actionable plan state.
-    private var primaryLimit: LimitEntry? {
-        liveLimits.max { sevenDayUsed($0) < sevenDayUsed($1) }
+    /// The glance 7-day per-client usage slice — what lets EVERY recording
+    /// agent appear on the plan card, not only the ones reporting limits.
+    private var glanceUsageByClient: [GlanceClientUsage] {
+        guard case .connected(let snapshot) = glance.phase else { return [] }
+        return snapshot.glance.usage.byClient ?? []
+    }
+
+    /// Clients whose only limit readings are STALE — hidden from the live
+    /// meters, but "no limits reported" would be affirmatively false for them.
+    private var staleLimitClients: Set<String> {
+        guard case .connected(let snapshot) = glance.phase else { return [] }
+        let live = Set(liveLimits.compactMap(\.client))
+        return Set(
+            snapshot.glance.limits
+                .filter { $0.stale == true }
+                .compactMap(\.client)
+        ).subtracting(live)
     }
 
     private var todayUsage: UsageTotals? {
@@ -221,8 +233,12 @@ struct DashboardPane: View {
                     }
                 } right: {
                     PlanAndUsageCard(
-                        limit: primaryLimit,
-                        accountCount: liveLimits.count,
+                        rows: DashboardAgentPlanRow.rows(
+                            limits: liveLimits,
+                            staleClients: staleLimitClients,
+                            planClients: dashboard.planClients,
+                            usage: glanceUsageByClient
+                        ),
                         today: todayUsage,
                         onViewLimits: { selection.open(.limits) }
                     )
@@ -267,9 +283,6 @@ struct DashboardPane: View {
         }
     }
 
-    private func sevenDayUsed(_ limit: LimitEntry) -> Double {
-        (limit.windows ?? []).first { $0.kind == "7d" }?.usedPercent ?? 0
-    }
 }
 
 private struct DashboardSplitLayout: Layout {
@@ -597,71 +610,138 @@ private struct ActiveWorkCard: View {
     }
 }
 
-struct DashboardPlanWindowPresentation: Equatable {
-    let titleSuffix: String
-    let remainingText: String
-    let remainingCaption: String
-    let remainingFraction: Double
+/// Per-agent presentation for the Plan and usage card. Every recording agent
+/// gets a row stating only what IT can prove: a meter only from a
+/// provider-reported 7-day percent, the hatched track (and words) when a
+/// client reports no limit, a calibrating chip only while a plan fit is
+/// genuinely pending, and the 7-day volume/cost from the glance cube. The old
+/// card elected a single "least headroom" account, which read as favoritism —
+/// Limits remains the full per-window surface.
+struct DashboardAgentPlanRow: Equatable, Identifiable {
+    let client: String
+    let planType: String?
     let usedPercent: Double?
-    let resetText: String
-    let provenanceText: String
+    let meterCaption: String
+    let resetText: String?
+    let calibrating: Bool
+    let calibratingDetail: String?
+    let usageText: String?
 
-    init(limit: LimitEntry?) {
-        guard let limit else {
-            titleSuffix = ""
-            remainingText = "—"
-            remainingCaption = "7-day"
-            remainingFraction = 0
-            usedPercent = nil
-            resetText = "Provider limit unavailable"
-            provenanceText = "No live provider data"
-            return
-        }
-        guard let window = (limit.windows ?? []).first(where: { $0.kind == "7d" }) else {
-            titleSuffix = ""
-            remainingText = "—"
-            remainingCaption = "7-day"
-            remainingFraction = 0
-            usedPercent = nil
-            resetText = "7-day limit unavailable"
-            provenanceText = "No provider-reported 7-day window"
-            return
-        }
+    var id: String { client }
 
-        let remaining = window.usedPercent.map { max(0, 100 - $0) }
-        titleSuffix = " · 7-day window"
-        remainingText = remaining.map { String(format: "%.0f%%", $0) } ?? "—"
-        remainingCaption = "remaining"
-        remainingFraction = (remaining ?? 0) / 100
-        usedPercent = window.usedPercent
-        resetText = Theme.resetsIn(window.resetsAt).map { "Resets in \($0)" }
-            ?? "Reset time unreported"
-        provenanceText = "Provider reported"
+    /// The row's full sentence for hover/accessibility: the caption, the
+    /// provenance (the caption itself stays short — the card footer states
+    /// provenance once for every meter), and the reset time when reported.
+    var detailText: String {
+        var parts = [meterCaption]
+        if usedPercent != nil { parts.append("provider reported") }
+        if let resetText { parts.append(resetText) }
+        return parts.joined(separator: " · ")
+    }
+
+    init(
+        client: String,
+        limit: LimitEntry?,
+        staleLimit: Bool = false,
+        plan: V1PlanClient?,
+        usage: GlanceClientUsage?
+    ) {
+        self.client = client
+        self.planType = limit?.planType
+        let window = (limit?.windows ?? []).first { $0.kind == "7d" }
+        self.usedPercent = window?.usedPercent
+        if let used = window?.usedPercent {
+            // Short and window-anchored; provenance + reset time ride
+            // hover/accessibility and the card footer (a truncated caption
+            // would silently drop words).
+            meterCaption = String(format: "%.0f%% of 7-day limit", used)
+            resetText = Theme.resetsIn(window?.resetsAt).map { "resets in \($0)" }
+        } else if limit != nil {
+            meterCaption = "no 7-day window reported"
+            resetText = nil
+        } else if staleLimit {
+            // A stale reading is hidden, not never-reported — say so.
+            meterCaption = "limit reading stale — see Limits"
+            resetText = nil
+        } else {
+            meterCaption = "no limits reported"
+            resetText = nil
+        }
+        self.calibrating = plan?.calibrationState == "calibrating"
+        self.calibratingDetail = plan?.stateDetail
+        if let usage {
+            // "7d ·" anchors the figures to the card's window (the Usage
+            // pane's picker never moves these rows); the footer names the
+            // fresh-token basis.
+            let cost = usage.costText ?? "unpriced"
+            let tokens = usage.freshTokens.map { UsageTotals.compact($0) }
+            usageText = "7d · " + ([cost] + (tokens.map { [$0] } ?? [])).joined(separator: " · ")
+        } else {
+            usageText = nil
+        }
+    }
+
+    /// Row set for the card: every non-stale limit client ∪ every client with
+    /// 7-day usage. Limit clients first (most-used first, so the least
+    /// headroom still leads), then usage-only clients in the cube's own
+    /// volume order. One row per client — a second org's entry for the same
+    /// client is Limits-pane detail.
+    static func rows(
+        limits: [LimitEntry],
+        staleClients: Set<String> = [],
+        planClients: [V1PlanClient],
+        usage: [GlanceClientUsage]
+    ) -> [DashboardAgentPlanRow] {
+        func sevenDayUsed(_ entry: LimitEntry) -> Double? {
+            (entry.windows ?? []).first { $0.kind == "7d" }?.usedPercent
+        }
+        var limitByClient: [String: LimitEntry] = [:]
+        for entry in limits {
+            guard let client = entry.client, !client.isEmpty else { continue }
+            if let existing = limitByClient[client] {
+                // Prefer the entry that actually reports a 7d percent; ties
+                // keep the higher-used one (least headroom is the honest pick).
+                let existingUsed = sevenDayUsed(existing)
+                let candidateUsed = sevenDayUsed(entry)
+                if (existingUsed ?? -1) < (candidateUsed ?? -1) {
+                    limitByClient[client] = entry
+                }
+            } else {
+                limitByClient[client] = entry
+            }
+        }
+        var order = limitByClient.keys.sorted {
+            let left = sevenDayUsed(limitByClient[$0]!) ?? -1
+            let right = sevenDayUsed(limitByClient[$1]!) ?? -1
+            if left != right { return left > right }
+            return $0 < $1
+        }
+        for entry in usage where !order.contains(entry.client) && !entry.client.isEmpty {
+            order.append(entry.client)
+        }
+        let usageMap = Dictionary(usage.map { ($0.client, $0) }) { first, _ in first }
+        let planMap = Dictionary(planClients.map { ($0.client, $0) }) { first, _ in first }
+        return order.map { client in
+            DashboardAgentPlanRow(
+                client: client,
+                limit: limitByClient[client],
+                staleLimit: staleClients.contains(client),
+                plan: planMap[client],
+                usage: usageMap[client]
+            )
+        }
     }
 }
 
 private struct PlanAndUsageCard: View {
-    let limit: LimitEntry?
-    let accountCount: Int
+    let rows: [DashboardAgentPlanRow]
     let today: UsageTotals?
     let onViewLimits: () -> Void
 
-    private var providerTitle: String {
-        guard let limit else { return "No live provider limit" }
-        let client = limit.client?.replacingOccurrences(of: "-", with: " ").capitalized
-        let plan = limit.planType?.capitalized
-        let title = [client, plan].compactMap { $0 }.joined(separator: " ")
-        return title.isEmpty ? "Provider limit" : title
-    }
-
     var body: some View {
-        let window = DashboardPlanWindowPresentation(limit: limit)
-
         Card(padding: 0, fillsHeight: true) {
             VStack(spacing: 0) {
-                // The card renders ONE provider meter; a multi-account badge
-                // here promised accounts the card never shows.
-                DashboardCardHeader("Plan and usage", count: nil) {
+                DashboardCardHeader("Plan and usage", count: rows.count > 1 ? rows.count : nil) {
                     Button(action: onViewLimits) {
                         Text("View limits").font(Type.captionSemibold)
                     }
@@ -670,74 +750,92 @@ private struct PlanAndUsageCard: View {
                     .accessibilityIdentifier("dashboard.plan.view-limits")
                 }
                 Divider().overlay(Theme.hairline)
-                HStack(spacing: Space.l) {
-                    PlanRing(
-                        fraction: window.remainingFraction,
-                        tint: window.usedPercent.map(Theme.limitColor) ?? Theme.muted
-                    )
-                    .frame(width: 82, height: 82)
-                    .overlay {
-                        VStack(spacing: 1) {
-                            Text(window.remainingText)
-                                .font(Face.monoFont(24, .bold))
-                                .foregroundStyle(Theme.ink)
-                            Text(window.remainingCaption)
-                                .font(Type.caption)
-                                .foregroundStyle(Theme.muted)
-                        }
+                if rows.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("No live provider data")
+                            .font(Type.rowLabel).foregroundStyle(Theme.muted)
+                        Text("Agent rows appear once usage or a provider limit is recorded.")
+                            .font(Type.caption).foregroundStyle(Theme.muted)
                     }
-
-                    VStack(alignment: .leading, spacing: Space.s) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(providerTitle + window.titleSuffix)
-                                .font(Type.caption)
-                                .foregroundStyle(Theme.muted)
-                                .lineLimit(1)
-                            Text(window.resetText)
-                                .font(Type.rowLabel)
-                                .foregroundStyle(Theme.ink)
-                            Text(window.provenanceText)
-                                .font(Type.caption)
-                                .foregroundStyle(Theme.muted)
-                        }
-
-                        Divider().overlay(Theme.hairline)
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Today")
-                                .font(Type.caption)
-                                .foregroundStyle(Theme.muted)
-                            Text("\(today?.costText ?? "—") · \(today?.tokensText ?? "—")")
-                                .font(Face.monoFont(14, .semibold))
-                                .foregroundStyle(Theme.ink)
-                            Text("Pricing estimate · client-reported fresh tokens")
-                                .font(Type.caption)
-                                .foregroundStyle(Theme.muted)
-                                .lineLimit(1)
-                        }
-                    }
+                    .padding(Space.l)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                        if index > 0 {
+                            Rectangle().fill(Theme.hairline).frame(height: 1)
+                                .padding(.horizontal, Space.l)
+                        }
+                        AgentPlanRowView(row: row)
+                    }
                 }
-                .padding(Space.l)
-                .frame(minHeight: 134)
+                Spacer(minLength: 0)
+                Divider().overlay(Theme.hairline)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Today · all agents")
+                        .font(Type.caption)
+                        .foregroundStyle(Theme.muted)
+                    Text("\(today?.costText ?? "—") · \(today?.tokensText ?? "—")")
+                        .font(Face.monoFont(14, .semibold))
+                        .foregroundStyle(Theme.ink)
+                    Text("Pricing estimate · fresh tokens client-reported · meters provider-reported")
+                        .font(Type.caption)
+                        .foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, Space.l)
+                .padding(.vertical, Space.m)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
 }
 
-struct PlanRing: View {
-    let fraction: Double
-    var tint: Color
+private struct AgentPlanRowView: View {
+    let row: DashboardAgentPlanRow
 
     var body: some View {
-        ZStack {
-            Circle().stroke(Theme.tintNeutral, lineWidth: 7)
-            Circle()
-                .trim(from: 0, to: min(max(fraction, 0), 1))
-                .stroke(tint, style: StrokeStyle(lineWidth: 7, lineCap: .round))
-                .rotationEffect(.degrees(-90))
+        HStack(alignment: .center, spacing: Space.l) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(row.client)
+                        .font(Type.rowLabel).foregroundStyle(Theme.ink)
+                        .lineLimit(1)
+                    if let plan = row.planType {
+                        Chip(text: plan, tint: Theme.muted)
+                    }
+                    if row.calibrating {
+                        Chip(text: "calibrating", tint: Theme.amber)
+                            .fixedSize()
+                            .help(row.calibratingDetail
+                                  ?? "Weekly plan % is still calibrating for this client — see Limits")
+                    }
+                }
+                Text(row.meterCaption)
+                    .font(Type.caption).foregroundStyle(Theme.muted)
+                    .lineLimit(1).truncationMode(.tail)
+                    .help(row.detailText)
+            }
+            Spacer(minLength: Space.m)
+            VStack(alignment: .trailing, spacing: 4) {
+                Group {
+                    if let used = row.usedPercent {
+                        LimitMeter(usedPercent: used)
+                    } else {
+                        HatchedTrack()
+                    }
+                }
+                .frame(width: 108)
+                // 7-day volume with the cost grammar; absence stays named.
+                Text(row.usageText ?? "no usage this week")
+                    .font(Type.dataSmall)
+                    .foregroundStyle(row.usageText == nil ? Theme.muted : Theme.ink)
+                    .lineLimit(1)
+            }
         }
-        .accessibilityHidden(true)
+        .padding(.horizontal, Space.l)
+        .padding(.vertical, 10)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("dashboard.plan.agent.\(row.client)")
     }
 }
 

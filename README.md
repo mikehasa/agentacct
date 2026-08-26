@@ -19,7 +19,7 @@ agentacct is local-first Agent Work Intelligence for coding agents. It reads the
 
 The same Task-primary view of your agents' work in the macOS app, in **`agentacct tui`** (a live terminal dashboard), and over a local JSON API — everything at a glance across all four agents, in light and dark, with a menu-bar glance always one click away:
 
-![agentacct — the macOS app dashboard: recent work with decision badges and evidence-tier pips, a needs-review card, live active work, the weekly plan ring, and the daily fresh-token history for the whole workspace](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-dashboard.png)
+![agentacct — the macOS app dashboard: recent work with decision badges and evidence-tier pips, a needs-review card, live active work, per-agent plan meters, and the daily fresh-token history for the whole workspace](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-dashboard.png)
 
 - **A receipts workbench.** Every task your agents touch becomes a row you can hold them to: lifecycle tabs that never inflate a claim (an agent's "done" files under *Reported* — *Verified* is reserved for machine-checked completion), an evidence column whose pip shape carries the tier, a checks column with real pass/fail tallies, and a cost column where every figure wears its basis (`≈` marks an estimate — a bare `$` is reserved for reported figures). Sorted latest-first, with an attention-first sort one click away when the one blocked task should outrank nine finished ones.
 

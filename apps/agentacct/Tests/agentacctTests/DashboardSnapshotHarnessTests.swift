@@ -25,9 +25,13 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
 
         XCTAssertEqual(store.receiptTasks.count, 4)
         XCTAssertEqual(store.totalReceiptTasks, 4)
-        XCTAssertEqual(store.planClients.count, 1)
+        // Two plan lanes + two limit clients: the fixture demos the
+        // multi-agent Plan and usage card (codex metered + claude-code
+        // metered/calibrating), plus a usage-only hermes row.
+        XCTAssertEqual(store.planClients.count, 2)
         XCTAssertEqual(store.usage?.byPeriod?.count, 7)
-        XCTAssertEqual(fixture.glance.limits.count, 1)
+        XCTAssertEqual(fixture.glance.limits.count, 2)
+        XCTAssertEqual(fixture.glance.usage.byClient?.count, 3)
         XCTAssertEqual(fixture.glance.recentSessions.count, 2)
         XCTAssertNotNil(fixture.glance.usage.windows.first { $0.label == "today" })
     }
