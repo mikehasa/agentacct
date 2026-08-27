@@ -158,10 +158,20 @@ PNG diff before committing it.
 The workflow has no repository write permission or secrets. It checks out the
 workflow's own commit as trusted tooling, checks out the requested source into
 a separate directory without persisted credentials, and fails before rendering
-unless the host matches the exact canonical renderer. Two fresh macOS runners
-then run the deterministic dashboard tests, build the release renderer, and
-package independent candidates. A separate Linux job publishes the 14-day
-verified artifact only when the two complete bundles are byte-identical.
+unless the host matches the exact canonical renderer. A cheap Linux preflight
+rejects malformed or unreachable commits before macOS capacity is allocated.
+Two fresh macOS runners then run the deterministic dashboard tests, build the
+release renderer, and package independent candidates. A separate Linux job
+publishes the 14-day verified artifact only when the two complete bundles are
+byte-identical.
+
+Candidate generation is manual and globally serialized: one request may use
+the two required macOS replicas, while at most the newest additional request
+waits. An in-progress proof is not cancelled, but a failed replica cancels its
+peer because no verified bundle can then be published. Unverified replica
+artifacts expire after one day; only the verified bundle is retained for 14
+days. Ordinary branch CI separately cancels superseded runs for the same PR or
+branch and bounds every job with a timeout.
 
 A successful run proves repeatable generation; it does not approve a visual
 change. Before promotion, verify the manifest's source and renderer identities
