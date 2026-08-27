@@ -3,8 +3,9 @@ name: tests
 on:
   push:
     branches: [main]
+  # Stacked UI changes target their predecessor branch until it merges, so
+  # every pull request must receive the same required checks as a main PR.
   pull_request:
-    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -110,7 +111,7 @@ jobs:
         if: ${{ !cancelled() && steps.visual-renderer.outputs.canonical == 'true' && steps.visual_references.outcome == 'failure' && steps.review_render.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
-          name: dashboard-baseline-candidate-macos-26.5.2-25F84-xcode-26.6-17F113-arm64-2x-${{ github.sha }}
+          name: dashboard-baseline-candidate-macos-26.6-25G72-xcode-26.6-17F113-arm64-2x-${{ github.sha }}
           path: ${{ runner.temp }}/agentacct-dashboard-review/*.png
           if-no-files-found: error
           retention-days: 14

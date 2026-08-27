@@ -302,7 +302,7 @@ The CLI fails before comparing or recording reviewed pixels unless the exact
 renderer is:
 
 ```text
-macos-26.5.2-25F84-xcode-26.6-17F113-arm64-2x
+macos-26.6-25G72-xcode-26.6-17F113-arm64-2x
 ```
 
 That identity includes macOS product and build, Xcode version and build,
