@@ -1,9 +1,9 @@
 # Visual snapshot testing
 
 This is the contributor entry point for reviewing macOS UI changes. The
-harness renders the real SwiftUI surface from versioned synthetic endpoint
-responses, so a human or coding agent can reproduce it without starting the
-daemon, connecting an account, or creating another snapshot system.
+harness renders the real application surfaces from deterministic inputs, so a
+human or coding agent can reproduce them without starting the daemon,
+connecting an account, or creating another snapshot system.
 
 ## Quick start
 
@@ -32,9 +32,9 @@ host or running Swift tests:
 ./Scripts/visual-snapshots platform-id
 ```
 
-This project currently discovers `DashboardVisualRegressionTests` and
-`MenuVisualRegressionTests`. An empty list remains valid for another project or
-branch before its first visual suite.
+This project currently discovers `AboutVisualRegressionTests`,
+`DashboardVisualRegressionTests`, and `MenuVisualRegressionTests`. An empty
+list remains valid for another project or branch before its first visual suite.
 
 Verify one suite before changing its UI:
 
@@ -301,6 +301,31 @@ open /tmp/agentacct-menu-review
 
 The canonical CLI owns these images too. A menu UI change is not visually
 verified until the matching source-tree references are reviewed and committed.
+
+## About review matrix
+
+The About renderer opens the same native AppKit panel as the live footer
+control. It runs through the app executable rather than XCTest so the test
+host's bundle metadata cannot change the panel layout. The application name,
+brand icon, release version, and representative Git hash are fixed inputs.
+
+| Artifact | Appearance | Pixel size |
+| --- | --- | --- |
+| `about-panel-light.png` | light | 568 × 340 px |
+| `about-panel-dark.png` | dark | 568 × 340 px |
+
+For an ad-hoc native panel render that does not compare or update references:
+
+```bash
+swift run agentacct --snapshot-about \
+  Resources/AppIcon.icns \
+  /tmp/agentacct-about-review
+open /tmp/agentacct-about-review
+```
+
+The canonical references keep the standard window controls in their inactive
+state because the deterministic renderer is headless. AppKit still owns the
+panel chrome, spacing, icon treatment, typography, and light/dark appearance.
 
 ## Color contrast guardrail
 
