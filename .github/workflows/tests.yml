@@ -24,13 +24,13 @@ jobs:
         # and is tracked as a separate follow-up.
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history: the Gate 1 evidence-binding test verifies git
           # provenance of recovery evidence and fails closed on a shallow
           # checkout that cannot see the referenced commits.
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install package
@@ -53,7 +53,7 @@ jobs:
       run:
         working-directory: apps/agentacct
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Test visual snapshot CLI
         run: ./Tests/visual-snapshots-cli-tests.sh
       - name: Test dashboard reference candidate packaging
@@ -80,7 +80,7 @@ jobs:
         run: ./Scripts/visual-snapshots verify DashboardVisualRegressionTests
       - name: Upload dashboard visual failures
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dashboard-diff-${{ github.sha }}
           path: ${{ runner.temp }}/agentacct-dashboard-diff/*.png
@@ -100,7 +100,7 @@ jobs:
             "$RUNNER_TEMP/agentacct-dashboard-review"
       - name: Upload dashboard review matrix
         if: ${{ !cancelled() && steps.review_render.outcome == 'success' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dashboard-review-${{ github.sha }}
           path: ${{ runner.temp }}/agentacct-dashboard-review/*.png
@@ -108,7 +108,7 @@ jobs:
           retention-days: 14
       - name: Upload canonical dashboard baseline candidates
         if: ${{ !cancelled() && steps.visual-renderer.outputs.canonical == 'true' && steps.visual_references.outcome == 'failure' && steps.review_render.outcome == 'success' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dashboard-baseline-candidate-macos-26.5.2-25F84-xcode-26.6-17F113-arm64-2x-${{ github.sha }}
           path: ${{ runner.temp }}/agentacct-dashboard-review/*.png

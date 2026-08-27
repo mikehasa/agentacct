@@ -35,7 +35,7 @@ jobs:
             exit 2
           fi
       - name: Check out requested source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
           path: source
@@ -69,13 +69,13 @@ jobs:
       TZ: UTC
     steps:
       - name: Check out trusted candidate tooling
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.workflow_sha }}
           path: trusted
           persist-credentials: false
       - name: Check out requested source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.preflight.outputs.source_commit }}
           path: source
@@ -125,7 +125,7 @@ jobs:
             --runner-image "$ImageOS" \
             --runner-image-version "$ImageVersion"
       - name: Upload replica
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dashboard-reference-candidate-${{ inputs.ref }}-${{ matrix.replica }}
           path: ${{ runner.temp }}/dashboard-reference-candidate
@@ -139,19 +139,19 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Download replica A
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dashboard-reference-candidate-${{ inputs.ref }}-a
           path: replicas/a
       - name: Download replica B
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dashboard-reference-candidate-${{ inputs.ref }}-b
           path: replicas/b
       - name: Require byte-identical bundles
         run: diff --recursive --brief --no-dereference replicas/a replicas/b
       - name: Upload verified candidate
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dashboard-reference-candidate-${{ inputs.ref }}
           path: replicas/a
