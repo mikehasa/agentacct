@@ -844,6 +844,22 @@ private struct WorkRailRow: View {
 
 // MARK: - Record page
 
+enum WorkRecordColumnMode: Equatable {
+    case stacked
+    case sideBySide
+}
+
+private enum WorkRecordColumnMetrics {
+    static let minimumMainWidth: CGFloat = 456
+    static let sideWidth: CGFloat = 344
+    static let spacing: CGFloat = Space.xl
+    static let sideBySideMinimumWidth = minimumMainWidth + sideWidth + spacing
+}
+
+func workRecordColumnMode(for availableWidth: CGFloat) -> WorkRecordColumnMode {
+    availableWidth >= WorkRecordColumnMetrics.sideBySideMinimumWidth ? .sideBySide : .stacked
+}
+
 /// One Work Receipt as an enterprise record page.
 struct WorkRecordPage: View {
     let receipt: Receipt
@@ -955,11 +971,19 @@ struct WorkRecordPage: View {
 
     private var columns: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(alignment: .top, spacing: Space.xl) {
-                mainColumn.frame(maxWidth: .infinity)
-                sideColumn.frame(width: 372)
+            WorkRecordSplitLayout(
+                minimumMainWidth: WorkRecordColumnMetrics.minimumMainWidth,
+                sideWidth: WorkRecordColumnMetrics.sideWidth,
+                spacing: WorkRecordColumnMetrics.spacing
+            ) {
+                mainColumn
+                sideColumn
             }
-            .frame(minWidth: 780)
+            // Force the same explicit breakpoint exercised by interaction and
+            // visual tests. The custom layout measures dense action text at
+            // its final column width, so intrinsic content cannot silently
+            // reject the horizontal candidate at the reference viewport.
+            .frame(minWidth: WorkRecordColumnMetrics.sideBySideMinimumWidth)
             VStack(alignment: .leading, spacing: Space.xl) {
                 mainColumn
                 sideColumn
@@ -1019,6 +1043,53 @@ struct WorkRecordPage: View {
                 }
             }
         }
+    }
+}
+
+private struct WorkRecordSplitLayout: Layout {
+    let minimumMainWidth: CGFloat
+    let sideWidth: CGFloat
+    let spacing: CGFloat
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        guard subviews.count == 2 else { return .zero }
+        // ViewThatFits first asks for the candidate's ideal width without a
+        // concrete proposal. Returning the dense ledger's intrinsic width here
+        // makes the candidate look too large even though every row wraps at the
+        // final column width. Report the real responsive minimum instead.
+        let width = proposal.width ?? (minimumMainWidth + spacing + sideWidth)
+        let widths = columnWidths(for: width)
+        let mainSize = subviews[0].sizeThatFits(.init(width: widths.main, height: nil))
+        let sideSize = subviews[1].sizeThatFits(.init(width: widths.side, height: nil))
+        return CGSize(width: width, height: max(mainSize.height, sideSize.height))
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        guard subviews.count == 2 else { return }
+        let widths = columnWidths(for: bounds.width)
+        subviews[0].place(
+            at: bounds.origin,
+            proposal: .init(width: widths.main, height: nil)
+        )
+        subviews[1].place(
+            at: CGPoint(x: bounds.minX + widths.main + spacing, y: bounds.minY),
+            proposal: .init(width: widths.side, height: nil)
+        )
+    }
+
+    private func columnWidths(for width: CGFloat) -> (main: CGFloat, side: CGFloat) {
+        let available = max(0, width - spacing)
+        let resolvedSide = min(sideWidth, available)
+        return (max(0, available - resolvedSide), resolvedSide)
     }
 }
 

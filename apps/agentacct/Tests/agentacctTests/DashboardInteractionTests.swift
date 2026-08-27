@@ -254,6 +254,12 @@ final class DashboardInteractionTests: XCTestCase {
         )
     }
 
+    func testWorkRecordUsesReferenceWidthForSideBySideEvidence() {
+        XCTAssertEqual(workRecordColumnMode(for: 823), .stacked)
+        XCTAssertEqual(workRecordColumnMode(for: 824), .sideBySide)
+        XCTAssertEqual(workRecordColumnMode(for: 860), .sideBySide)
+    }
+
     func testNeedsReviewProjectionUsesActionableTasks() throws {
         let tasks = try decode(
             [ReceiptSummary].self,
