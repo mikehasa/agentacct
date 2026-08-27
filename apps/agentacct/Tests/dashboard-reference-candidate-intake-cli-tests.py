@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dependency-free CLI tests for downloaded reference candidate validation."""
+"""Dependency-free CLI tests for downloaded reference candidate intake."""
 
 from __future__ import annotations
 
@@ -7,10 +7,11 @@ import json
 import os
 from pathlib import Path
 import shutil
-import subprocess
 import struct
+import subprocess
 import sys
 import tempfile
+import unittest
 from unittest import mock
 import zlib
 
@@ -33,21 +34,6 @@ def run(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, check=False, capture_output=True, text=True)
 
 
-def require(condition: bool, message: str) -> None:
-    if not condition:
-        raise AssertionError(message)
-
-
-def require_failure(result: subprocess.CompletedProcess[str], message: str) -> None:
-    require(result.returncode != 0, message)
-
-
-def package_candidate(candidate: Path, images: Path) -> None:
-    candidate.mkdir()
-    shutil.copytree(images, candidate / "images")
-    write_manifest(candidate)
-
-
 def write_manifest(candidate: Path) -> None:
     result = run(
         [
@@ -66,7 +52,14 @@ def write_manifest(candidate: Path) -> None:
             "test-image",
         ]
     )
-    require(result.returncode == 0, result.stderr)
+    if result.returncode != 0:
+        raise AssertionError(result.stderr)
+
+
+def package_candidate(candidate: Path, images: Path) -> None:
+    candidate.mkdir()
+    shutil.copytree(images, candidate / "images")
+    write_manifest(candidate)
 
 
 def validate(candidate: Path, **overrides: str) -> subprocess.CompletedProcess[str]:
@@ -116,9 +109,22 @@ def promote(
     return run(command)
 
 
+def read_manifest(candidate: Path) -> dict[str, object]:
+    return json.loads((candidate / "manifest.json").read_text(encoding="utf-8"))
+
+
+def replace_manifest(candidate: Path, manifest: dict[str, object]) -> None:
+    (candidate / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def directory_bytes(directory: Path) -> dict[str, bytes]:
+    return {path.name: path.read_bytes() for path in directory.iterdir()}
+
+
 def add_png_text_chunk(path: Path) -> None:
     payload = path.read_bytes()
-    require(payload[-8:-4] == b"IEND", "test PNG does not end in IEND")
+    if payload[-8:-4] != b"IEND":
+        raise AssertionError("test PNG does not end in IEND")
     chunk_type = b"tEXt"
     chunk_data = b"agentacct\x00reviewed-candidate"
     checksum = zlib.crc32(chunk_type + chunk_data) & 0xFFFFFFFF
@@ -131,112 +137,215 @@ def add_png_text_chunk(path: Path) -> None:
     path.write_bytes(payload[:-12] + chunk + payload[-12:])
 
 
-def main() -> None:
-    reference_directories = sorted(path for path in REFERENCE_ROOT.iterdir() if path.is_dir())
-    require(reference_directories, "expected at least one reference directory")
+class CandidateIntakeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        reference_directories = sorted(
+            path for path in REFERENCE_ROOT.iterdir() if path.is_dir()
+        )
+        if not reference_directories:
+            raise AssertionError("expected at least one reference directory")
+        cls.reference_directory = reference_directories[0]
 
-    with tempfile.TemporaryDirectory(prefix="agentacct-candidate-intake-tests-") as temporary:
-        root = Path(temporary)
-        candidate = root / "candidate"
-        package_candidate(candidate, reference_directories[0])
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(
+            prefix="agentacct-candidate-intake-tests-"
+        )
+        self.root = Path(self.temporary.name)
+        self.candidate = self.root / "candidate"
+        package_candidate(self.candidate, self.reference_directory)
 
-        valid = validate(candidate)
-        require(valid.returncode == 0, valid.stderr)
-        require("(4 images)" in valid.stdout, valid.stdout)
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
 
-        wrong_source = validate(candidate, source_commit=OTHER_COMMIT)
-        require_failure(wrong_source, "validator accepted the wrong expected source")
-        require("candidate source commit" in wrong_source.stderr, wrong_source.stderr)
+    def copy_candidate(self, name: str) -> Path:
+        copied = self.root / name
+        shutil.copytree(self.candidate, copied)
+        return copied
 
-        wrong_renderer = validate(candidate, renderer_id="macos-other-renderer")
-        require_failure(wrong_renderer, "validator accepted the wrong expected renderer")
-        require("candidate renderer" in wrong_renderer.stderr, wrong_renderer.stderr)
+    def changed_candidate(self, name: str = "changed-candidate") -> Path:
+        candidate = self.copy_candidate(name)
+        add_png_text_chunk(candidate / "images" / "dashboard-minimum-dark.png")
+        write_manifest(candidate)
+        return candidate
 
-        tampered = root / "tampered"
-        shutil.copytree(candidate, tampered)
+    def references(self, name: str, *, populated: bool = True) -> tuple[Path, Path]:
+        references_root = self.root / name
+        references_root.mkdir()
+        destination = references_root / RENDERER_ID
+        if populated:
+            shutil.copytree(self.reference_directory, destination)
+        return references_root, destination
+
+    def assert_failed(
+        self,
+        result: subprocess.CompletedProcess[str],
+        expected_error: str,
+    ) -> None:
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn(expected_error, result.stderr)
+
+    def assert_clean_root(self, references_root: Path) -> None:
+        self.assertEqual(
+            sorted(path.name for path in references_root.iterdir()),
+            [RENDERER_ID],
+        )
+
+    def test_valid_candidate_matches_expected_identity(self) -> None:
+        result = validate(self.candidate)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("(4 images)", result.stdout)
+
+    def test_wrong_source_or_renderer_is_rejected(self) -> None:
+        wrong_source = validate(self.candidate, source_commit=OTHER_COMMIT)
+        self.assert_failed(wrong_source, "candidate source commit")
+
+        wrong_renderer = validate(self.candidate, renderer_id="macos-other-renderer")
+        self.assert_failed(wrong_renderer, "candidate renderer")
+
+    def test_tampered_image_bytes_are_rejected(self) -> None:
+        tampered = self.copy_candidate("tampered")
         image = tampered / "images" / "dashboard-minimum-dark.png"
         payload = bytearray(image.read_bytes())
         payload[len(payload) // 2] ^= 1
         image.write_bytes(payload)
-        tampered_result = validate(tampered)
-        require_failure(tampered_result, "validator accepted tampered image bytes")
 
-        duplicate_key = root / "duplicate-key"
-        shutil.copytree(candidate, duplicate_key)
+        self.assertNotEqual(validate(tampered).returncode, 0)
+
+    def test_manifest_json_contract_is_strict(self) -> None:
+        duplicate_key = self.copy_candidate("duplicate-key")
         manifest_path = duplicate_key / "manifest.json"
         manifest_text = manifest_path.read_text(encoding="utf-8").rstrip()
         manifest_path.write_text(
-            manifest_text[:-1] + ', "schema_version": 1}\n', encoding="utf-8"
+            manifest_text[:-1] + ', "schema_version": 1}\n',
+            encoding="utf-8",
         )
-        duplicate_result = validate(duplicate_key)
-        require_failure(duplicate_result, "validator accepted a duplicate manifest key")
-        require("duplicate key" in duplicate_result.stderr, duplicate_result.stderr)
+        self.assert_failed(validate(duplicate_key), "duplicate key")
 
-        oversized_manifest = root / "oversized-manifest"
-        shutil.copytree(candidate, oversized_manifest)
-        (oversized_manifest / "manifest.json").write_bytes(b" " * (64 * 1024 + 1))
-        oversized_result = validate(oversized_manifest)
-        require_failure(oversized_result, "validator accepted an oversized manifest")
-        require("manifest exceeds" in oversized_result.stderr, oversized_result.stderr)
+        oversized = self.copy_candidate("oversized-manifest")
+        (oversized / "manifest.json").write_bytes(b" " * (64 * 1024 + 1))
+        self.assert_failed(validate(oversized), "manifest exceeds")
 
-        unknown_field = root / "unknown-field"
-        shutil.copytree(candidate, unknown_field)
-        unknown_manifest_path = unknown_field / "manifest.json"
-        unknown_manifest = json.loads(unknown_manifest_path.read_text(encoding="utf-8"))
+        unknown_field = self.copy_candidate("unknown-field")
+        unknown_manifest = read_manifest(unknown_field)
         unknown_manifest["untrusted"] = True
-        unknown_manifest_path.write_text(json.dumps(unknown_manifest), encoding="utf-8")
-        unknown_result = validate(unknown_field)
-        require_failure(unknown_result, "validator accepted an unknown manifest field")
-        require("fields mismatch" in unknown_result.stderr, unknown_result.stderr)
+        replace_manifest(unknown_field, unknown_manifest)
+        self.assert_failed(validate(unknown_field), "fields mismatch")
 
-        extra_root_file = root / "extra-root-file"
-        shutil.copytree(candidate, extra_root_file)
+    def test_manifest_types_and_artifact_order_are_strict(self) -> None:
+        boolean_schema = self.copy_candidate("boolean-schema")
+        boolean_manifest = read_manifest(boolean_schema)
+        boolean_manifest["schema_version"] = True
+        replace_manifest(boolean_schema, boolean_manifest)
+        self.assert_failed(validate(boolean_schema), "schema_version must be integer 1")
+
+        boolean_width = self.copy_candidate("boolean-width")
+        width_manifest = read_manifest(boolean_width)
+        artifacts = width_manifest["artifacts"]
+        self.assertIsInstance(artifacts, list)
+        artifacts[0]["pixel_width"] = True
+        replace_manifest(boolean_width, width_manifest)
+        self.assert_failed(validate(boolean_width), "width is invalid")
+
+        reordered = self.copy_candidate("reordered-artifacts")
+        reordered_manifest = read_manifest(reordered)
+        reordered_artifacts = reordered_manifest["artifacts"]
+        self.assertIsInstance(reordered_artifacts, list)
+        reordered_artifacts[0], reordered_artifacts[1] = (
+            reordered_artifacts[1],
+            reordered_artifacts[0],
+        )
+        replace_manifest(reordered, reordered_manifest)
+        self.assert_failed(validate(reordered), "artifact 0 must describe")
+
+    def test_candidate_inventory_must_be_exact_and_regular(self) -> None:
+        extra_root_file = self.copy_candidate("extra-root-file")
         (extra_root_file / "notes.txt").write_text("unexpected", encoding="utf-8")
-        extra_result = validate(extra_root_file)
-        require_failure(extra_result, "validator accepted an extra root file")
-        require("root inventory mismatch" in extra_result.stderr, extra_result.stderr)
+        self.assert_failed(validate(extra_root_file), "root inventory mismatch")
 
-        symlinked_manifest = root / "symlinked-manifest"
-        shutil.copytree(candidate, symlinked_manifest)
+        symlinked_manifest = self.copy_candidate("symlinked-manifest")
         linked_manifest = symlinked_manifest / "manifest.json"
         linked_manifest.unlink()
-        linked_manifest.symlink_to(candidate / "manifest.json")
-        symlink_result = validate(symlinked_manifest)
-        require_failure(symlink_result, "validator accepted a symlinked manifest")
-        require("regular file" in symlink_result.stderr, symlink_result.stderr)
+        linked_manifest.symlink_to(self.candidate / "manifest.json")
+        self.assert_failed(validate(symlinked_manifest), "regular file")
 
-        references_root = root / "references"
-        references_root.mkdir()
-        destination = references_root / RENDERER_ID
-        shutil.copytree(reference_directories[0], destination)
+        symlinked_images = self.copy_candidate("symlinked-images")
+        shutil.rmtree(symlinked_images / "images")
+        (symlinked_images / "images").symlink_to(
+            self.candidate / "images",
+            target_is_directory=True,
+        )
+        self.assert_failed(validate(symlinked_images), "regular directory")
 
-        not_reviewed = promote(candidate, references_root, reviewed=False)
-        require_failure(not_reviewed, "promoter accepted a candidate without review confirmation")
-        require("--reviewed" in not_reviewed.stderr, not_reviewed.stderr)
+        linked_candidate = self.root / "linked-candidate"
+        linked_candidate.symlink_to(self.candidate, target_is_directory=True)
+        self.assert_failed(validate(linked_candidate), "candidate must be a regular directory")
 
-        unchanged = promote(candidate, references_root)
-        require(unchanged.returncode == 0, unchanged.stderr)
-        require("no files changed" in unchanged.stdout, unchanged.stdout)
+    def test_promotion_requires_review_and_detects_noop(self) -> None:
+        references_root, _ = self.references("references")
 
-        changed_candidate = root / "changed-candidate"
-        shutil.copytree(candidate, changed_candidate)
-        add_png_text_chunk(changed_candidate / "images" / "dashboard-minimum-dark.png")
-        write_manifest(changed_candidate)
+        self.assert_failed(
+            promote(self.candidate, references_root, reviewed=False),
+            "--reviewed",
+        )
+        unchanged = promote(self.candidate, references_root)
+        self.assertEqual(unchanged.returncode, 0, unchanged.stderr)
+        self.assertIn("no files changed", unchanged.stdout)
 
-        rollback_root = root / "rollback-references"
-        rollback_root.mkdir()
-        rollback_destination = rollback_root / RENDERER_ID
-        shutil.copytree(reference_directories[0], rollback_destination)
-        rollback_before = {
-            path.name: path.read_bytes() for path in rollback_destination.iterdir()
-        }
+    def test_promotion_can_create_a_new_renderer_directory(self) -> None:
+        references_root, destination = self.references(
+            "new-renderer-references",
+            populated=False,
+        )
+
+        result = promote(self.candidate, references_root)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            directory_bytes(destination),
+            directory_bytes(self.candidate / "images"),
+        )
+        self.assert_clean_root(references_root)
+
+    def test_changed_promotion_is_complete_and_idempotent(self) -> None:
+        references_root, destination = self.references("changed-references")
+        changed = self.changed_candidate()
+
+        result = promote(changed, references_root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Promoted four reviewed reference images", result.stdout)
+        self.assertEqual(directory_bytes(destination), directory_bytes(changed / "images"))
+        self.assert_clean_root(references_root)
+
+        repeated = promote(changed, references_root)
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertIn("no files changed", repeated.stdout)
+
+    def test_rejected_identity_does_not_mutate_references(self) -> None:
+        references_root, destination = self.references("identity-references")
+        before = directory_bytes(destination)
+
+        result = promote(
+            self.changed_candidate(),
+            references_root,
+            source_commit=OTHER_COMMIT,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(directory_bytes(destination), before)
+
+    def test_failed_directory_swap_restores_original_references(self) -> None:
+        references_root, destination = self.references("rollback-references")
+        before = directory_bytes(destination)
+        changed = self.changed_candidate()
         real_replace = os.replace
 
         def fail_staging_swap(source: object, destination_path: object) -> None:
             source_path = Path(source)
             if (
                 source_path.name.startswith(f".{RENDERER_ID}.candidate-")
-                and Path(destination_path) == rollback_destination
+                and Path(destination_path) == destination
             ):
                 raise OSError("simulated candidate swap failure")
             real_replace(source, destination_path)
@@ -245,41 +354,25 @@ def main() -> None:
             "dashboard_reference_candidate.os.replace",
             side_effect=fail_staging_swap,
         ):
-            try:
+            with self.assertRaisesRegex(OSError, "simulated candidate swap failure"):
                 dashboard_reference_candidate.promote_candidate_bundle(
-                    changed_candidate,
+                    changed,
                     SOURCE_COMMIT,
                     RENDERER_ID,
-                    rollback_root,
+                    references_root,
                 )
-            except OSError as error:
-                require("simulated candidate swap failure" in str(error), str(error))
-            else:
-                raise AssertionError("promotion swap failure did not propagate")
-        require(
-            {
-                path.name: path.read_bytes()
-                for path in rollback_destination.iterdir()
-            }
-            == rollback_before,
-            "failed directory swap did not restore the original references",
-        )
-        require(
-            [path.name for path in rollback_root.iterdir()] == [RENDERER_ID],
-            "failed directory swap left staging or backup directories behind",
-        )
 
-        sync_failure_root = root / "sync-failure-references"
-        sync_failure_root.mkdir()
-        sync_failure_destination = sync_failure_root / RENDERER_ID
-        shutil.copytree(reference_directories[0], sync_failure_destination)
-        sync_failure_before = {
-            path.name: path.read_bytes() for path in sync_failure_destination.iterdir()
-        }
+        self.assertEqual(directory_bytes(destination), before)
+        self.assert_clean_root(references_root)
+
+    def test_failed_directory_sync_restores_original_references(self) -> None:
+        references_root, destination = self.references("sync-failure-references")
+        before = directory_bytes(destination)
+        changed = self.changed_candidate()
         real_sync_directory = dashboard_reference_candidate._sync_directory
 
         def fail_reference_root_sync(path: Path) -> None:
-            if path == sync_failure_root:
+            if path == references_root:
                 raise OSError("simulated reference-root sync failure")
             real_sync_directory(path)
 
@@ -287,78 +380,35 @@ def main() -> None:
             "dashboard_reference_candidate._sync_directory",
             side_effect=fail_reference_root_sync,
         ):
-            try:
+            with self.assertRaisesRegex(OSError, "simulated reference-root sync failure"):
                 dashboard_reference_candidate.promote_candidate_bundle(
-                    changed_candidate,
+                    changed,
                     SOURCE_COMMIT,
                     RENDERER_ID,
-                    sync_failure_root,
+                    references_root,
                 )
-            except OSError as error:
-                require("simulated reference-root sync failure" in str(error), str(error))
-            else:
-                raise AssertionError("promotion sync failure did not propagate")
-        require(
-            {
-                path.name: path.read_bytes()
-                for path in sync_failure_destination.iterdir()
-            }
-            == sync_failure_before,
-            "failed reference-root sync did not restore the original references",
+
+        self.assertEqual(directory_bytes(destination), before)
+        self.assert_clean_root(references_root)
+
+    def test_destination_must_be_an_exact_regular_directory(self) -> None:
+        symlink_root, symlink_destination = self.references(
+            "symlink-references",
+            populated=False,
         )
-        require(
-            [path.name for path in sync_failure_root.iterdir()] == [RENDERER_ID],
-            "failed reference-root sync left staging or backup directories behind",
+        symlink_destination.symlink_to(self.reference_directory)
+        self.assert_failed(
+            promote(self.candidate, symlink_root),
+            "must not be a symlink",
         )
 
-        before_wrong_identity = {
-            path.name: path.read_bytes() for path in destination.iterdir()
-        }
-        rejected_promotion = promote(
-            changed_candidate,
-            references_root,
-            source_commit=OTHER_COMMIT,
-        )
-        require_failure(rejected_promotion, "promoter accepted the wrong source identity")
-        require(
-            {path.name: path.read_bytes() for path in destination.iterdir()}
-            == before_wrong_identity,
-            "failed promotion changed references",
-        )
-
-        promoted = promote(changed_candidate, references_root)
-        require(promoted.returncode == 0, promoted.stderr)
-        require("Promoted four reviewed reference images" in promoted.stdout, promoted.stdout)
-        require(
-            {path.name: path.read_bytes() for path in destination.iterdir()}
-            == {
-                path.name: path.read_bytes()
-                for path in (changed_candidate / "images").iterdir()
-            },
-            "promotion did not install the complete candidate set",
-        )
-
-        repeated = promote(changed_candidate, references_root)
-        require(repeated.returncode == 0, repeated.stderr)
-        require("no files changed" in repeated.stdout, repeated.stdout)
-
-        symlink_root = root / "symlink-references"
-        symlink_root.mkdir()
-        (symlink_root / RENDERER_ID).symlink_to(reference_directories[0])
-        symlink_destination = promote(candidate, symlink_root)
-        require_failure(symlink_destination, "promoter followed a destination symlink")
-        require("must not be a symlink" in symlink_destination.stderr, symlink_destination.stderr)
-
+        references_root, destination = self.references("extra-destination-references")
         (destination / "notes.txt").write_text("unexpected", encoding="utf-8")
-        unexpected_destination = promote(candidate, references_root)
-        require_failure(
-            unexpected_destination,
-            "promoter replaced a destination with unexpected files",
+        self.assert_failed(
+            promote(self.candidate, references_root),
+            "inventory mismatch",
         )
-        require("inventory mismatch" in unexpected_destination.stderr, unexpected_destination.stderr)
-
-    print("dashboard reference candidate intake CLI tests passed")
 
 
 if __name__ == "__main__":
-    main()
+    unittest.main()
