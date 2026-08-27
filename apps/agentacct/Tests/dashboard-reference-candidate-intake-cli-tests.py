@@ -172,6 +172,13 @@ def main() -> None:
         require_failure(duplicate_result, "validator accepted a duplicate manifest key")
         require("duplicate key" in duplicate_result.stderr, duplicate_result.stderr)
 
+        oversized_manifest = root / "oversized-manifest"
+        shutil.copytree(candidate, oversized_manifest)
+        (oversized_manifest / "manifest.json").write_bytes(b" " * (64 * 1024 + 1))
+        oversized_result = validate(oversized_manifest)
+        require_failure(oversized_result, "validator accepted an oversized manifest")
+        require("manifest exceeds" in oversized_result.stderr, oversized_result.stderr)
+
         unknown_field = root / "unknown-field"
         shutil.copytree(candidate, unknown_field)
         unknown_manifest_path = unknown_field / "manifest.json"

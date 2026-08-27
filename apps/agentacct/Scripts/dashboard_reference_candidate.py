@@ -60,10 +60,10 @@ def validate_renderer_id(value: object) -> str:
 def checked_png_dimensions(path: Path) -> tuple[int, int]:
     if path.is_symlink() or not path.is_file():
         raise CandidateError(f"candidate image must be a regular file: {path.name}")
-    if path.stat().st_size > MAX_PNG_BYTES:
+    with path.open("rb") as stream:
+        data = stream.read(MAX_PNG_BYTES + 1)
+    if len(data) > MAX_PNG_BYTES:
         raise CandidateError(f"candidate image exceeds {MAX_PNG_BYTES} bytes: {path.name}")
-
-    data = path.read_bytes()
     if not data.startswith(PNG_SIGNATURE):
         raise CandidateError(f"candidate image is not a PNG: {path.name}")
 
@@ -109,8 +109,12 @@ def checked_png_dimensions(path: Path) -> tuple[int, int]:
 
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
+    total = 0
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            total += len(chunk)
+            if total > MAX_PNG_BYTES:
+                raise CandidateError(f"candidate image exceeds {MAX_PNG_BYTES} bytes: {path.name}")
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -223,10 +227,12 @@ def _exact_keys(value: object, name: str, expected: set[str]) -> dict[str, objec
 def _load_manifest(path: Path) -> dict[str, object]:
     if path.is_symlink() or not path.is_file():
         raise CandidateError("candidate manifest must be a regular file")
-    if path.stat().st_size > MAX_MANIFEST_BYTES:
-        raise CandidateError(f"candidate manifest exceeds {MAX_MANIFEST_BYTES} bytes")
     try:
-        payload = path.read_text(encoding="utf-8")
+        with path.open("rb") as stream:
+            raw_payload = stream.read(MAX_MANIFEST_BYTES + 1)
+        if len(raw_payload) > MAX_MANIFEST_BYTES:
+            raise CandidateError(f"candidate manifest exceeds {MAX_MANIFEST_BYTES} bytes")
+        payload = raw_payload.decode("utf-8")
         parsed = json.loads(
             payload,
             object_pairs_hook=_unique_object,
@@ -317,7 +323,14 @@ def validate_candidate_bundle(
 
 def _copy_regular_file(source: Path, destination: Path) -> None:
     with source.open("rb") as source_stream, destination.open("xb") as destination_stream:
-        shutil.copyfileobj(source_stream, destination_stream, length=1024 * 1024)
+        total = 0
+        for chunk in iter(lambda: source_stream.read(1024 * 1024), b""):
+            total += len(chunk)
+            if total > MAX_PNG_BYTES:
+                raise CandidateError(
+                    f"candidate image exceeds {MAX_PNG_BYTES} bytes: {source.name}"
+                )
+            destination_stream.write(chunk)
         destination_stream.flush()
         os.fsync(destination_stream.fileno())
 
