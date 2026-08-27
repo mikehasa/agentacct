@@ -55,6 +55,26 @@ rejected in CI. If a new render is already within the narrow antialiasing
 tolerance, the command retains the existing reference byte-for-byte to prevent
 meaningless Git churn.
 
+If `check-environment` rejects the local Mac, never override the platform ID or
+record that machine's pixels under the canonical directory. Push the UI branch
+for review instead. The macOS CI job keeps rendering after an intentional
+baseline mismatch and, only when its renderer is canonical, uploads
+`dashboard-baseline-candidate-<platform-id>-<sha>`. After reviewing all four
+images, download that artifact and copy its PNGs into the matching directory:
+
+```bash
+gh run download <run-id> \
+  --name dashboard-baseline-candidate-<platform-id>-<sha> \
+  --dir /tmp/agentacct-dashboard-baseline
+cp /tmp/agentacct-dashboard-baseline/dashboard-*.png \
+  Tests/agentacctTests/ReferenceImages/<platform-id>/
+git diff -- Tests/agentacctTests/ReferenceImages
+```
+
+Commit the reviewed references with the UI change and let the next CI run prove
+that the canonical renderer matches them. CI never writes accepted references
+back to the repository.
+
 GitHub displays a changed PNG as a
 [2-up, swipe, or onion-skin comparison](https://docs.github.com/en/repositories/working-with-files/using-files/working-with-non-code-files#rendering-and-diffing-images).
 The reference update is therefore the reviewer-facing before/after artifact.
@@ -133,7 +153,7 @@ The CLI fails before comparing or recording reviewed pixels unless the exact
 renderer is:
 
 ```text
-macos-26.5.2-25F84-xcode-26.6-17F113-arm64-2x
+macos-26.6.2-25G83-xcode-26.6-17F113-arm64-2x
 ```
 
 That identity includes macOS product and build, Xcode version and build,

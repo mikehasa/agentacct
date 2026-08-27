@@ -63,6 +63,7 @@ jobs:
               "deterministic render tests and the review artifact still run on this hosted image."
           fi
       - name: Verify dashboard visual references
+        id: visual_references
         if: steps.visual-renderer.outputs.canonical == 'true'
         env:
           AGENTACCT_SNAPSHOT_ARTIFACT_DIR: ${{ runner.temp }}/agentacct-dashboard-diff
@@ -76,17 +77,30 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - name: Build release executable
+        id: review_build
+        if: ${{ !cancelled() }}
         run: swift build -c release
       - name: Render dashboard review matrix
+        id: review_render
+        if: ${{ !cancelled() && steps.review_build.outcome == 'success' }}
         run: |
           .build/release/agentacct \
             --snapshot-dashboard-fixture \
             Tests/agentacctTests/Fixtures/dashboard.json \
             "$RUNNER_TEMP/agentacct-dashboard-review"
       - name: Upload dashboard review matrix
+        if: ${{ !cancelled() && steps.review_render.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: dashboard-review-${{ github.sha }}
+          path: ${{ runner.temp }}/agentacct-dashboard-review/*.png
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload canonical dashboard baseline candidates
+        if: ${{ !cancelled() && steps.visual-renderer.outputs.canonical == 'true' && steps.visual_references.outcome == 'failure' && steps.review_render.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-baseline-candidate-macos-26.6.2-25G83-xcode-26.6-17F113-arm64-2x-${{ github.sha }}
           path: ${{ runner.temp }}/agentacct-dashboard-review/*.png
           if-no-files-found: error
           retention-days: 14
