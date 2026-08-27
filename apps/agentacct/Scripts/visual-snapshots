@@ -23,6 +23,7 @@ usage() {
   cat >&2 <<'EOF'
 usage:
   ./Scripts/visual-snapshots list [test-selector-or-path ...]
+  ./Scripts/visual-snapshots platform-id
   ./Scripts/visual-snapshots check-environment
   ./Scripts/visual-snapshots verify [test-selector-or-path ...]
   ./Scripts/visual-snapshots record [test-selector-or-path ...]
@@ -198,9 +199,15 @@ run_selected() {
 action="$1"
 shift
 case "$action" in
-  list|check-environment|verify|record) ;;
+  list|platform-id|check-environment|verify|record) ;;
   *) usage ;;
 esac
+
+if [[ "$action" == "platform-id" ]]; then
+  [[ $# -eq 0 ]] || usage
+  printf '%s\n' "$platform_id"
+  exit 0
+fi
 
 if [[ "$action" == "check-environment" ]]; then
   [[ $# -eq 0 ]] || usage

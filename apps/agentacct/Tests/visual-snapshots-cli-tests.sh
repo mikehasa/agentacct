@@ -72,6 +72,13 @@ fail() {
   exit 1
 }
 
+declared_platform="$(AGENTACCT_FAKE_OS_BUILD=unexpected \
+  "$app_dir/Scripts/visual-snapshots" platform-id)"
+[[ "$declared_platform" == "$platform_id" ]] \
+  || fail "platform-id returned the wrong canonical platform: $declared_platform"
+[[ ! -s "$AGENTACCT_FAKE_SWIFT_LOG" ]] \
+  || fail "platform-id performed unnecessary test discovery"
+
 detected_platform="$("$app_dir/Scripts/visual-snapshots" check-environment)"
 [[ "$detected_platform" == "$platform_id" ]] \
   || fail "environment check returned the wrong platform id: $detected_platform"
