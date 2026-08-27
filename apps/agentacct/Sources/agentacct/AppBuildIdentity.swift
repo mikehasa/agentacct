@@ -28,50 +28,12 @@ struct AppBuildIdentity: Equatable {
         buildDescription?.hasSuffix("-dirty") == true
     }
 
-    var compactLabel: String {
-        switch (releaseVersion, shortCommit) {
-        case let (version?, commit?):
-            return "v\(version) · \(commit)" + (isDirty ? " · dirty" : "")
-        case let (version?, nil):
-            return "v\(version)"
-        case let (nil, commit?):
-            return "build \(commit)" + (isDirty ? " · dirty" : "")
-        case (nil, nil):
-            return "development build"
-        }
+    var aboutPanelApplicationVersion: String? {
+        releaseVersion
     }
 
-    var accessibilityLabel: String {
-        var label = "agentacct"
-        if let releaseVersion {
-            label += " version \(releaseVersion)"
-        }
-        if let shortCommit {
-            label += ", build \(shortCommit)"
-        }
-        if isDirty {
-            label += ", dirty working tree"
-        }
-        if releaseVersion == nil, shortCommit == nil {
-            label += " development build"
-        }
-        return label
-    }
-
-    var detailLabel: String {
-        if let buildDescription, let gitCommit {
-            return "\(buildDescription) · commit \(gitCommit)"
-        }
-        if let buildDescription {
-            return buildDescription
-        }
-        if let gitCommit {
-            return "commit \(gitCommit)"
-        }
-        if let releaseVersion {
-            return "agentacct \(releaseVersion) · no commit identity embedded"
-        }
-        return "No packaged build identity"
+    var aboutPanelBuildVersion: String? {
+        shortCommit.map { $0 + (isDirty ? "-dirty" : "") }
     }
 
     private static func nonBlankString(_ value: Any?) -> String? {
