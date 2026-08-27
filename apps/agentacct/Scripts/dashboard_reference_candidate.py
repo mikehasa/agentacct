@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import struct
 import tempfile
 import zlib
@@ -312,3 +313,85 @@ def validate_candidate_bundle(
     if normalized_artifacts != actual_artifacts:
         raise CandidateError("candidate manifest does not match the candidate image bytes")
     return manifest
+
+
+def _copy_regular_file(source: Path, destination: Path) -> None:
+    with source.open("rb") as source_stream, destination.open("xb") as destination_stream:
+        shutil.copyfileobj(source_stream, destination_stream, length=1024 * 1024)
+        destination_stream.flush()
+        os.fsync(destination_stream.fileno())
+
+
+def _sync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def promote_candidate_bundle(
+    candidate: Path,
+    expected_source_commit: object,
+    expected_renderer_id: object,
+    references_root: Path,
+) -> tuple[Path, bool]:
+    manifest = validate_candidate_bundle(
+        candidate,
+        expected_source_commit,
+        expected_renderer_id,
+    )
+    if references_root.is_symlink() or not references_root.is_dir():
+        raise CandidateError("reference root must be an existing regular directory")
+
+    renderer_id = validate_renderer_id(manifest["renderer_id"])
+    destination = references_root / renderer_id
+    if destination.is_symlink():
+        raise CandidateError("reference destination must not be a symlink")
+    if destination.exists():
+        existing_artifacts = candidate_artifacts(destination)
+        if existing_artifacts == manifest["artifacts"]:
+            return destination, False
+
+    staging: Path | None = Path(
+        tempfile.mkdtemp(prefix=f".{renderer_id}.candidate-", dir=references_root)
+    )
+    staging.chmod(0o755)
+    backup: Path | None = None
+    try:
+        for filename in EXPECTED_IMAGES:
+            _copy_regular_file(candidate / "images" / filename, staging / filename)
+        if candidate_artifacts(staging) != manifest["artifacts"]:
+            raise CandidateError("staged reference bytes do not match the validated candidate")
+        _sync_directory(staging)
+
+        if destination.exists():
+            backup = Path(
+                tempfile.mkdtemp(prefix=f".{renderer_id}.backup-", dir=references_root)
+            )
+            backup.rmdir()
+            os.replace(destination, backup)
+        try:
+            os.replace(staging, destination)
+            staging = None
+        except OSError:
+            if backup is not None:
+                os.replace(backup, destination)
+                backup = None
+            raise
+        _sync_directory(references_root)
+
+        if backup is not None:
+            shutil.rmtree(backup)
+            backup = None
+            _sync_directory(references_root)
+    finally:
+        if staging is not None and staging.exists():
+            shutil.rmtree(staging)
+        if backup is not None and backup.exists():
+            if not destination.exists():
+                os.replace(backup, destination)
+            else:
+                shutil.rmtree(backup)
+
+    return destination, True
