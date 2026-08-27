@@ -102,6 +102,10 @@ jobs:
             Tests/agentacctTests/Fixtures/dashboard.json \
             "$RUNNER_TEMP/agentacct-ui-review"
           .build/release/agentacct \
+            --snapshot-usage-fixture \
+            Tests/agentacctTests/Fixtures/dashboard.json \
+            "$RUNNER_TEMP/agentacct-ui-review"
+          .build/release/agentacct \
             --snapshot-menu-fixture \
             Tests/agentacctTests/Fixtures/dashboard.json \
             "$RUNNER_TEMP/agentacct-ui-review"

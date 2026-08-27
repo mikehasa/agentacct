@@ -430,7 +430,7 @@ struct RecordDimensionsCard: View {
         var line = "\(display) · \(costBasisLabel(dim.costBasis))\((dim.costComplete ?? true) ? "" : " (partial)")"
         // The task's share of the weekly plan — shown only once calibrated
         // (the daemon sends null until then; absence stays a named state on
-        // the Limits pane, never a number here).
+        // the merged Usage & limits pane, never a number here).
         if let share = dim.planShare?.text {
             line += " · \(share)"
         }

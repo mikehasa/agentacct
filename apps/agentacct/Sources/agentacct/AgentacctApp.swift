@@ -1,10 +1,10 @@
 import SwiftUI
 
 // agentacct, native: a persistent MenuBarExtra glance plus the full window
-// (task-first Work Receipts, Usage, and Limits). The menu bar is for looking;
-// the window is for digging — clicking a recent session resolves its Task in
-// Work. All aggregation and honesty logic lives in the Python daemon; this
-// process only renders what the API vouches for.
+// (task-first Work Receipts, merged Usage & limits, and Sources). The menu bar
+// is for looking; the window is for digging — clicking a recent session
+// resolves its Task in Work. All aggregation and honesty logic lives in the
+// Python daemon; this process only renders what the API vouches for.
 
 struct AgentacctApp: App {
     @StateObject private var glance = GlanceState()
