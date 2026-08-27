@@ -23,13 +23,16 @@ interpreter-emulation entry in `pyinstaller_entry.py`.
 
 | Script | What it does |
 | --- | --- |
-| `freeze-cli.sh` | Freeze the CLI to `packaging/dist/agentacct/` (onedir). Isolated build venv; smoke-tests `mcp serve` / `serve` / `onboard`. |
+| `freeze-cli.sh` | Freeze the CLI to `packaging/dist/agentacct/` (onedir). Requires a clean source tree, records its provenance, then smoke-tests `mcp serve` / `serve` / `onboard`. |
 | `build-dmg.sh` | Full release: freeze → build the app (embeds the CLI) → sign (if configured) → DMG → notarize (if configured). Output in `packaging/release/`. |
 | `pyinstaller_entry.py` | The frozen binary's entry point (CLI + hook-interpreter emulation). |
 | `entitlements.plist` | Hardened-runtime entitlements the embedded PyInstaller binary needs to run notarized. |
 
 `apps/agentacct/Scripts/build-app.sh` embeds `packaging/dist/agentacct/` into
-`agentacct.app/Contents/Resources/cli/` when it exists (dev builds skip it).
+`agentacct.app/Contents/Resources/cli/` only when its recorded commit and clean
+source description match the app build. Missing CLI output remains a normal
+fast dev build; stale, dirty, or unstamped output fails closed. `build-dmg.sh`
+always refreshes the frozen CLI first.
 
 ## What the app's setup does
 

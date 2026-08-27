@@ -1,9 +1,9 @@
 # Visual snapshot testing
 
 This is the contributor entry point for reviewing macOS UI changes. The
-harness renders the real SwiftUI surface from versioned synthetic endpoint
-responses, so a human or coding agent can reproduce it without starting the
-daemon, connecting an account, or creating another snapshot system.
+harness renders the real application surfaces from deterministic inputs, so a
+human or coding agent can reproduce them without starting the daemon,
+connecting an account, or creating another snapshot system.
 
 ## Quick start
 
@@ -32,7 +32,8 @@ host or running Swift tests:
 ./Scripts/visual-snapshots platform-id
 ```
 
-This project currently discovers `DashboardVisualRegressionTests`. An empty
+This project currently discovers `AboutVisualRegressionTests`,
+`DashboardVisualRegressionTests`, and `MenuVisualRegressionTests`. An empty
 list remains valid for another project or branch before its first visual suite.
 
 Verify one suite before changing its UI:
@@ -149,11 +150,13 @@ git diff --stat -- Tests/agentacctTests/ReferenceImages
 ```
 
 Promotion repeats the full validation, requires an explicit review
-confirmation, stages all four files before replacing the renderer directory,
-and restores the original directory if the replacement fails. An already
-identical candidate is a no-op. The command never renders locally, stages Git
-changes, commits, pushes, or approves the visual change; review the resulting
-PNG diff before committing it.
+confirmation, and stages all four Dashboard files alongside byte-preserved,
+validated PNGs owned by other visual suites before atomically replacing the
+shared renderer directory. It rejects symlinks, non-PNG entries, and partial
+Dashboard sets, and restores the original directory if the replacement fails.
+An already identical candidate is a no-op. The command never renders locally,
+stages Git changes, commits, pushes, or approves the visual change; review the
+resulting PNG diff before committing it.
 
 The workflow has no repository write permission or secrets. It checks out the
 workflow's own commit as trusted tooling, checks out the requested source into
@@ -274,6 +277,55 @@ open /tmp/agentacct-dashboard-review
 ```
 
 Keep ad-hoc PNGs outside the repository.
+
+## Menu review matrix
+
+The connected menu fixture renders the real 360 pt menu in both appearances at
+2x scale. Its About identity, login-item state, and relative clock are injected
+so the harness never depends on the current checkout, machine settings, or wall
+clock.
+
+| Artifact | Appearance | Pixel size |
+| --- | --- | --- |
+| `menu-connected-light.png` | light | 720 × 966 px |
+| `menu-connected-dark.png` | dark | 720 × 966 px |
+
+For an ad-hoc menu render that does not compare or update references:
+
+```bash
+swift run agentacct --snapshot-menu-fixture \
+  Tests/agentacctTests/Fixtures/dashboard.json \
+  /tmp/agentacct-menu-review
+open /tmp/agentacct-menu-review
+```
+
+The canonical CLI owns these images too. A menu UI change is not visually
+verified until the matching source-tree references are reviewed and committed.
+
+## About review matrix
+
+The About renderer opens the same native AppKit panel as the live footer
+control. It runs through the app executable rather than XCTest so the test
+host's bundle metadata cannot change the panel layout. The application name,
+brand icon, release version, and representative Git hash are fixed inputs.
+
+| Artifact | Appearance | Pixel size |
+| --- | --- | --- |
+| `about-panel-light.png` | light | 568 × 340 px |
+| `about-panel-dark.png` | dark | 568 × 340 px |
+
+For an ad-hoc native panel render that does not compare or update references:
+
+```bash
+swift run agentacct --snapshot-about \
+  Resources/AppIcon.icns \
+  /tmp/agentacct-about-review
+open /tmp/agentacct-about-review
+```
+
+The canonical references keep the standard window controls in their inactive
+state because the deterministic renderer is headless. AppKit still owns the
+panel chrome, spacing, icon treatment, typography, and light/dark appearance.
 
 ## Color contrast guardrail
 

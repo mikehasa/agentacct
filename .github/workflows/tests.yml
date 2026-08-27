@@ -42,7 +42,7 @@ jobs:
         run: pytest -q
 
   macos-app:
-    name: macOS app and dashboard snapshots
+    name: macOS app and UI snapshots
     runs-on: macos-26
     timeout-minutes: 20
     env:
@@ -63,6 +63,8 @@ jobs:
         run: ./Tests/dashboard-reference-candidate-intake-cli-tests.py
       - name: Run Swift tests
         run: swift test
+      - name: Test app bundle identity
+        run: ./Tests/build-app-identity-tests.sh
       - name: Detect canonical visual renderer
         id: visual-renderer
         run: |
@@ -73,38 +75,42 @@ jobs:
             echo "::notice::Reviewed pixel references require the exact canonical renderer;" \
               "deterministic render tests and the review artifact still run on this hosted image."
           fi
-      - name: Verify dashboard visual references
+      - name: Verify UI visual references
         id: visual_references
         if: steps.visual-renderer.outputs.canonical == 'true'
         env:
-          AGENTACCT_SNAPSHOT_ARTIFACT_DIR: ${{ runner.temp }}/agentacct-dashboard-diff
-        run: ./Scripts/visual-snapshots verify DashboardVisualRegressionTests
-      - name: Upload dashboard visual failures
+          AGENTACCT_SNAPSHOT_ARTIFACT_DIR: ${{ runner.temp }}/agentacct-ui-diff
+        run: ./Scripts/visual-snapshots verify
+      - name: Upload UI visual failures
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: dashboard-diff-${{ github.sha }}
-          path: ${{ runner.temp }}/agentacct-dashboard-diff/*.png
+          name: ui-diff-${{ github.sha }}
+          path: ${{ runner.temp }}/agentacct-ui-diff/*.png
           if-no-files-found: ignore
           retention-days: 14
       - name: Build release executable
         id: review_build
         if: ${{ !cancelled() }}
         run: swift build -c release
-      - name: Render dashboard review matrix
+      - name: Render UI review matrix
         id: review_render
         if: ${{ !cancelled() && steps.review_build.outcome == 'success' }}
         run: |
           .build/release/agentacct \
             --snapshot-dashboard-fixture \
             Tests/agentacctTests/Fixtures/dashboard.json \
-            "$RUNNER_TEMP/agentacct-dashboard-review"
-      - name: Upload dashboard review matrix
+            "$RUNNER_TEMP/agentacct-ui-review"
+          .build/release/agentacct \
+            --snapshot-menu-fixture \
+            Tests/agentacctTests/Fixtures/dashboard.json \
+            "$RUNNER_TEMP/agentacct-ui-review"
+      - name: Upload UI review matrix
         if: ${{ !cancelled() && steps.review_render.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
-          name: dashboard-review-${{ github.sha }}
-          path: ${{ runner.temp }}/agentacct-dashboard-review/*.png
+          name: ui-review-${{ github.sha }}
+          path: ${{ runner.temp }}/agentacct-ui-review/*.png
           if-no-files-found: error
           retention-days: 14
       - name: Upload canonical dashboard baseline candidates
@@ -112,6 +118,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: dashboard-baseline-candidate-macos-26.6-25G72-xcode-26.6-17F113-arm64-2x-${{ github.sha }}
-          path: ${{ runner.temp }}/agentacct-dashboard-review/*.png
+          path: ${{ runner.temp }}/agentacct-ui-review/dashboard-*.png
           if-no-files-found: error
           retention-days: 14

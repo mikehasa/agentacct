@@ -58,7 +58,10 @@ def write_manifest(candidate: Path) -> None:
 
 def package_candidate(candidate: Path, images: Path) -> None:
     candidate.mkdir()
-    shutil.copytree(images, candidate / "images")
+    candidate_images = candidate / "images"
+    candidate_images.mkdir()
+    for filename in dashboard_reference_candidate.EXPECTED_IMAGES:
+        shutil.copy2(images / filename, candidate_images / filename)
     write_manifest(candidate)
 
 
@@ -140,8 +143,12 @@ def add_png_text_chunk(path: Path) -> None:
 class CandidateIntakeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        expected_names = set(dashboard_reference_candidate.EXPECTED_IMAGES)
         reference_directories = sorted(
-            path for path in REFERENCE_ROOT.iterdir() if path.is_dir()
+            path
+            for path in REFERENCE_ROOT.iterdir()
+            if path.is_dir()
+            and expected_names.issubset({child.name for child in path.iterdir()})
         )
         if not reference_directories:
             raise AssertionError("expected at least one reference directory")
@@ -175,6 +182,12 @@ class CandidateIntakeTests(unittest.TestCase):
         destination = references_root / RENDERER_ID
         if populated:
             shutil.copytree(self.reference_directory, destination)
+            extra_reference = destination / "other-suite-reference.png"
+            if not extra_reference.exists():
+                shutil.copy2(
+                    destination / "dashboard-minimum-dark.png",
+                    extra_reference,
+                )
         return references_root, destination
 
     def assert_failed(
@@ -310,12 +323,31 @@ class CandidateIntakeTests(unittest.TestCase):
 
     def test_changed_promotion_is_complete_and_idempotent(self) -> None:
         references_root, destination = self.references("changed-references")
+        dashboard_names = set(dashboard_reference_candidate.EXPECTED_IMAGES)
+        before = directory_bytes(destination)
+        preserved = {
+            filename: payload
+            for filename, payload in before.items()
+            if filename not in dashboard_names
+        }
         changed = self.changed_candidate()
 
         result = promote(changed, references_root)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Promoted four reviewed reference images", result.stdout)
-        self.assertEqual(directory_bytes(destination), directory_bytes(changed / "images"))
+        after = directory_bytes(destination)
+        self.assertEqual(
+            {filename: after[filename] for filename in dashboard_names},
+            directory_bytes(changed / "images"),
+        )
+        self.assertEqual(
+            {
+                filename: payload
+                for filename, payload in after.items()
+                if filename not in dashboard_names
+            },
+            preserved,
+        )
         self.assert_clean_root(references_root)
 
         repeated = promote(changed, references_root)
@@ -391,7 +423,7 @@ class CandidateIntakeTests(unittest.TestCase):
         self.assertEqual(directory_bytes(destination), before)
         self.assert_clean_root(references_root)
 
-    def test_destination_must_be_an_exact_regular_directory(self) -> None:
+    def test_destination_must_be_a_safe_shared_directory(self) -> None:
         symlink_root, symlink_destination = self.references(
             "symlink-references",
             populated=False,
@@ -407,6 +439,24 @@ class CandidateIntakeTests(unittest.TestCase):
         self.assert_failed(
             promote(self.candidate, references_root),
             "inventory mismatch",
+        )
+
+        partial_root, partial_destination = self.references(
+            "partial-dashboard-references"
+        )
+        (partial_destination / "dashboard-minimum-dark.png").unlink()
+        self.assert_failed(
+            promote(self.candidate, partial_root),
+            "Dashboard inventory mismatch",
+        )
+
+        malformed_root, malformed_destination = self.references(
+            "malformed-shared-reference"
+        )
+        (malformed_destination / "other-suite-reference.png").write_bytes(b"not a PNG")
+        self.assert_failed(
+            promote(self.candidate, malformed_root),
+            "is not a PNG",
         )
 
 
