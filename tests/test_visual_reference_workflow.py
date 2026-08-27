@@ -36,7 +36,7 @@ def test_visual_reference_workflow_is_manual_and_read_only() -> None:
 def test_visual_reference_workflow_uses_two_fresh_canonical_renderers() -> None:
     render = _workflow()["jobs"]["render"]
     assert render["runs-on"] == "macos-26"
-    assert render["strategy"]["fail-fast"] is False
+    assert render["strategy"]["fail-fast"] is True
     assert render["strategy"]["matrix"]["replica"] == ["a", "b"]
     assert render["env"] == {
         "DEVELOPER_DIR": "/Applications/Xcode_26.6.app/Contents/Developer",
@@ -51,15 +51,34 @@ def test_visual_reference_workflow_uses_two_fresh_canonical_renderers() -> None:
         "Run deterministic dashboard render tests"
     )
     combined = _combined_steps(render)
-    assert "^[0-9a-f]{40}$" in combined
     assert "visual-snapshots check-environment" in combined
     assert "DashboardSnapshotHarnessTests" in combined
     assert "swift build -c release" in combined
 
 
+def test_visual_reference_workflow_fails_cheap_before_allocating_macos() -> None:
+    jobs = _workflow()["jobs"]
+    preflight = jobs["preflight"]
+    assert preflight["runs-on"] == "ubuntu-latest"
+    assert preflight["timeout-minutes"] == 5
+    assert preflight["outputs"] == {
+        "source_commit": "${{ steps.source.outputs.commit }}"
+    }
+    assert jobs["render"]["needs"] == "preflight"
+
+    combined = _combined_steps(preflight)
+    assert "^[0-9a-f]{40}$" in combined
+    assert "git -C source rev-parse HEAD" in combined
+    assert 'echo "commit=$actual_commit" >> "$GITHUB_OUTPUT"' in combined
+
+
 def test_visual_reference_workflow_keeps_trusted_tools_outside_requested_source() -> None:
     render = _workflow()["jobs"]["render"]
-    checkout_steps = [step for step in render["steps"] if step.get("uses") == "actions/checkout@v4"]
+    checkout_steps = [
+        step
+        for step in render["steps"]
+        if step.get("uses", "").startswith("actions/checkout@")
+    ]
     assert len(checkout_steps) == 2
     assert checkout_steps[0]["with"] == {
         "ref": "${{ github.workflow_sha }}",
@@ -67,7 +86,7 @@ def test_visual_reference_workflow_keeps_trusted_tools_outside_requested_source(
         "persist-credentials": False,
     }
     assert checkout_steps[1]["with"] == {
-        "ref": "${{ inputs.ref }}",
+        "ref": "${{ needs.preflight.outputs.source_commit }}",
         "path": "source",
         "fetch-depth": 1,
         "persist-credentials": False,
@@ -105,7 +124,11 @@ def test_visual_reference_workflow_promotes_only_identical_replicas_to_artifact(
     assert "dashboard-reference-candidate-${{ inputs.ref }}-b" in combined
     assert "diff --recursive --brief --no-dereference replicas/a replicas/b" in combined
 
-    final_upload = next(step for step in verify["steps"] if step["name"] == "Upload verified candidate")
+    final_upload = next(
+        step
+        for step in verify["steps"]
+        if step["name"] == "Upload verified candidate"
+    )
     assert final_upload["with"]["name"] == "dashboard-reference-candidate-${{ inputs.ref }}"
     assert final_upload["with"]["path"] == "replicas/a"
     assert final_upload["with"]["retention-days"] == 14
