@@ -189,6 +189,45 @@ and baseline approval as separate review gates.
 | downloaded candidate validation | identity, schema, inventory, PNG, dimension, or hash evidence does not match |
 | candidate promotion | visual review was not confirmed or the existing reference destination is unsafe to replace |
 
+## Monitor hosted renderer availability
+
+The `visual renderer canary` workflow checks every Monday at 05:17 UTC whether
+GitHub's current `macos-26` image still matches the repository's canonical
+macOS, Xcode, architecture, and Xcode selection. Run the same check manually
+after a runner-image announcement or while investigating a candidate failure:
+
+```bash
+gh workflow run visual-renderer-canary.yml
+```
+
+This is availability monitoring, not candidate generation. Each run allocates
+one macOS runner for at most three minutes, checks out the renderer definition
+without persisted credentials, and invokes only `check-environment`. It does
+not discover or compile tests, build the app, render images, upload artifacts,
+read secrets, or write to the repository. Overlapping scheduled and manual
+runs cancel each other. Scheduled workflows run from the default branch, so a
+canary change takes effect only after its PR is merged.
+
+A canary failure means the hosted image drifted; it does not mean the reviewed
+pixels are wrong. Keep candidate generation paused and follow the explicit
+renderer migration procedure in [CI behavior](#ci-behavior). The failed run is
+the alert—this workflow deliberately does not create issues or other persistent
+repository writes.
+
+### Why a daily-use Mac mini is not a runner
+
+Do not register a developer's daily-use Mac mini as a self-hosted runner for
+this service. A separate user, process, container, or VM can isolate files and
+credentials, but it cannot guarantee zero effect on the interactive machine:
+CPU/GPU, unified memory, storage I/O, thermals, OS updates, and graphical login
+state remain shared. Hosted ephemeral macOS runners are therefore the service's
+isolation boundary and also remove developer macOS-version differences.
+
+If hosted macOS runners ever become unsuitable, the supported fallback is a
+dedicated Mac that is never used interactively, not stronger scheduling rules
+on a shared developer machine. Until then, keeping generation manual and the
+weekly canary identity-only is the smaller and more scalable design.
+
 ## Selecting tests
 
 The canonical identity is the specifier reported by `swift test list`. The CLI
