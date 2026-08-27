@@ -123,7 +123,9 @@ struct TopBar: View {
     var body: some View {
         HStack(spacing: 14) {
             BrandLockup()
-                .padding(.leading, 76)  // clear the traffic lights (hidden titlebar)
+                // Anchor the brand to the window gutter while preserving a
+                // distinct navigation column, as in the product lockup.
+                .padding(.trailing, 76)
 
             // Five panes no longer fit a 960pt window with full labels; the
             // tab strip degrades to icon-only before any label truncates.
