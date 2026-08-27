@@ -42,6 +42,16 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         XCTAssertTrue(store.receiptTasks.contains { $0.decisionStatus.key == "finding" })
         XCTAssertGreaterThanOrEqual(work.receipt.dimensions.actions.touchedFileCount ?? 0, 12)
         XCTAssertGreaterThanOrEqual(work.receipt.dimensions.actions.commandCount ?? 0, 20)
+        XCTAssertEqual(
+            work.receipt.dimensions.actions.touchedFiles?.count,
+            work.receipt.dimensions.actions.touchedFileCount,
+            "The fixture must exercise the complete in-place files disclosure"
+        )
+        XCTAssertEqual(
+            work.receipt.dimensions.actions.commands?.count,
+            work.receipt.dimensions.actions.commandCount,
+            "The fixture must exercise the complete in-place commands disclosure"
+        )
         XCTAssertGreaterThanOrEqual(work.receipt.dimensions.evidence.checks?.count ?? 0, 6)
         XCTAssertFalse(work.receipt.dimensions.provenance.sourcesPresent?.contains("ci") ?? false)
         XCTAssertGreaterThanOrEqual(work.receipt.sessions?.count ?? 0, 2)

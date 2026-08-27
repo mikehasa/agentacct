@@ -278,44 +278,42 @@ struct RecordDimensionsCard: View {
         .padding(.vertical, Space.m)
     }
 
-    // Actions renders touched paths + commands beneath the category summary.
-    // Each list is an in-place disclosure: collapsed shows the daemon's honest
-    // preview exactly as before; "Show all N" grows a height-capped scroll
-    // region in place (no second-level page, no unbounded page growth).
+    // Actions keeps the first scan compact, then reveals every available file,
+    // command, or tool in a height-capped in-place disclosure. No second-level
+    // page and no unbounded receipt growth.
     private var actionsRow: some View {
         VStack(alignment: .leading, spacing: 2) {
             dimensionRow("Actions", actionsSummary,
                          provenance: receipt.dimensions.actions.provenance,
                          gaps: receipt.dimensions.actions.gaps)
-            let dim = receipt.dimensions.actions
-            let files = actionsTouchedPreview
-            let commands = actionsCommandsPreview
-            let toolRows = fullToolRows
-            // The tools disclosure must stay reachable for read/search-only
-            // receipts (tool names without any touched file or command).
-            let hasElidedTools = (dim.toolNamesElided ?? 0) > 0 && !toolRows.isEmpty
-            if !files.shown.isEmpty || !commands.shown.isEmpty || hasElidedTools {
+            let actionDim = receipt.dimensions.actions
+            let files = availableTouchedFiles
+            let commands = availableCommands
+            let toolRows = availableToolRows
+            if !files.isEmpty || !commands.isEmpty || !toolRows.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
-                    ActionListDisclosure(
-                        preview: files.shown,
-                        elided: files.elided,
-                        full: dim.touchedFiles ?? files.shown,
-                        noun: "files",
-                        rowPrefix: ""
-                    )
-                    ActionListDisclosure(
-                        preview: commands.shown,
-                        elided: commands.elided,
-                        full: dim.commands ?? commands.shown,
-                        noun: "commands",
-                        rowPrefix: "$ "
-                    )
-                    if hasElidedTools {
+                    if !files.isEmpty {
                         ActionListDisclosure(
-                            preview: [],
-                            elided: dim.toolNamesElided ?? 0,
-                            full: toolRows,
+                            rows: files,
+                            noun: "files",
+                            totalCount: actionDim.touchedFileCount,
+                            rowPrefix: ""
+                        )
+                    }
+                    if !commands.isEmpty {
+                        ActionListDisclosure(
+                            rows: commands,
+                            noun: "commands",
+                            totalCount: actionDim.commandCount,
+                            rowPrefix: "$ "
+                        )
+                    }
+                    // Keep tools reachable for read/search-only receipts too.
+                    if !toolRows.isEmpty {
+                        ActionListDisclosure(
+                            rows: toolRows,
                             noun: "tools",
+                            totalCount: toolNameTotalCount,
                             rowPrefix: ""
                         )
                     }
@@ -327,36 +325,43 @@ struct RecordDimensionsCard: View {
         }
     }
 
-    /// The full tool tally as display rows, daemon order (count desc, name asc)
-    /// — the same ordering rule the daemon's preview uses.
-    private var fullToolRows: [String] {
-        let counts = receipt.dimensions.actions.toolNameCounts ?? [:]
-        return counts
-            .filter { $0.value > 0 }
-            .sorted { lhs, rhs in
-                if lhs.value != rhs.value { return lhs.value > rhs.value }
-                return lhs.key < rhs.key
-            }
-            .map { "\($0.key)×\($0.value)" }
+    /// Tool tallies as display rows, daemon order (count desc, name asc). Older
+    /// payloads without the full map keep their ranked preview reachable.
+    private var availableToolRows: [String] {
+        let dim = receipt.dimensions.actions
+        if let counts = dim.toolNameCounts, !counts.isEmpty {
+            return counts
+                .filter { $0.value > 0 }
+                .sorted { lhs, rhs in
+                    if lhs.value != rhs.value { return lhs.value > rhs.value }
+                    return lhs.key < rhs.key
+                }
+                .map { "\($0.key)×\($0.value)" }
+        }
+        return (dim.toolNamesPreview ?? []).map { "\($0.name)×\($0.count)" }
     }
 
-    // The daemon computes the preview slice + overflow (the single source of
-    // truth for the cap); the app renders those directly so it can never drift
-    // from the CLI/TUI. Fallback (older payload): the full list.
-    private var actionsTouchedPreview: (shown: [String], elided: Int) {
+    private var toolNameTotalCount: Int {
         let dim = receipt.dimensions.actions
-        if let preview = dim.touchedFilesPreview {
-            return (preview, dim.touchedFilesElided ?? 0)
+        if let counts = dim.toolNameCounts, !counts.isEmpty {
+            return counts.values.filter { $0 > 0 }.count
         }
-        return (dim.touchedFiles ?? [], 0)
+        return (dim.toolNamesPreview?.count ?? 0) + (dim.toolNamesElided ?? 0)
     }
 
-    private var actionsCommandsPreview: (shown: [String], elided: Int) {
+    // Current payloads carry the complete lists for in-place disclosure. Keep
+    // the daemon preview as an honest older-payload fallback rather than
+    // inventing detail that was not delivered.
+    private var availableTouchedFiles: [String] {
         let dim = receipt.dimensions.actions
-        if let preview = dim.commandsPreview {
-            return (preview, dim.commandsElided ?? 0)
-        }
-        return (dim.commands ?? [], 0)
+        if let rows = dim.touchedFiles, !rows.isEmpty { return rows }
+        return dim.touchedFilesPreview ?? []
+    }
+
+    private var availableCommands: [String] {
+        let dim = receipt.dimensions.actions
+        if let rows = dim.commands, !rows.isEmpty { return rows }
+        return dim.commandsPreview ?? []
     }
 
     // MARK: dimension summaries
@@ -455,21 +460,36 @@ struct RecordDimensionsCard: View {
 
 // MARK: - Action list disclosure
 
+func actionDisclosureLabel(
+    noun: String,
+    availableCount: Int,
+    totalCount: Int?,
+    expanded: Bool
+) -> String? {
+    guard availableCount > 0 else { return nil }
+    if expanded { return "Collapse \(noun)" }
+    let resolvedTotal = max(availableCount, totalCount ?? availableCount)
+    let countedNoun = resolvedTotal == 1 && noun.hasSuffix("s") ? String(noun.dropLast()) : noun
+    if resolvedTotal > availableCount {
+        return "Show \(availableCount) of \(resolvedTotal) \(countedNoun)"
+    }
+    return "Show \(availableCount) \(countedNoun)"
+}
+
 /// One Actions sub-list (files / commands / tools) as an in-place disclosure.
 ///
-/// Collapsed = the daemon's capped preview verbatim (the cap stays the daemon's
-/// single source of truth) with the overflow line turned into a control.
-/// Expanded = the FULL list — already riding the payload, no extra fetch — in a
-/// height-capped internal scroll region, so 1,000 commands never stretch the
+/// Collapsed = one compact, counted control; it never dumps paths or commands
+/// into the receipt's first scan. Expanded = every available row — already
+/// riding the payload, no extra fetch — in a height-capped internal scroll
+/// region, so 1,000 commands never stretch the
 /// record page and never need a second-level page. Rows wrap and are selectable
 /// when expanded: the point of expanding is to actually read and copy them.
-/// Snapshot mode renders the collapsed static text exactly as before (the
-/// offscreen renderer can't drive buttons or ScrollViews).
+/// Snapshot mode renders the same collapsed affordance statically because the
+/// offscreen renderer cannot drive buttons or ScrollViews.
 private struct ActionListDisclosure: View {
-    let preview: [String]
-    let elided: Int
-    let full: [String]
+    let rows: [String]
     let noun: String
+    let totalCount: Int?
     let rowPrefix: String
     @State private var expanded = false
 
@@ -483,29 +503,27 @@ private struct ActionListDisclosure: View {
 
     @ViewBuilder
     private var collapsedList: some View {
-        ForEach(Array(preview.enumerated()), id: \.offset) { _, row in
-            // verbatim: commands/paths are untrusted text — never interpret as
-            // markdown (Text's LocalizedStringKey init would).
-            Text(verbatim: rowPrefix + row).font(Type.dataSmall).foregroundStyle(Theme.muted)
-                .lineLimit(1).truncationMode(.middle)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        if elided > 0 {
+        if let label = actionDisclosureLabel(
+            noun: noun,
+            availableCount: rows.count,
+            totalCount: totalCount,
+            expanded: false
+        ) {
             if SnapshotMode.enabled {
-                // Static overflow only under a rendered preview; a preview-less
-                // list (tools) would otherwise print a dangling duplicate of
-                // the summary's own "+N more".
-                if !preview.isEmpty {
-                    Text("… +\(elided) more \(noun)").font(Type.dataSmall).foregroundStyle(Theme.muted)
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .semibold))
+                    Text(label).font(Type.dataSmall)
                 }
+                .foregroundStyle(Theme.accent)
             } else {
                 Button {
                     withAnimation(Motion.contentUpdate) { expanded = true }
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: "chevron.down")
+                        Image(systemName: "chevron.right")
                             .font(.system(size: 8, weight: .semibold))
-                        Text("Show all \(full.count) \(noun)").font(Type.dataSmall)
+                        Text(label).font(Type.dataSmall)
                     }
                     .foregroundStyle(Theme.accent)
                     .contentShape(Rectangle())
@@ -522,7 +540,7 @@ private struct ActionListDisclosure: View {
             Rectangle().fill(Theme.hairline).frame(height: 1)
             ScrollView(showsIndicators: true) {
                 LazyVStack(alignment: .leading, spacing: 3) {
-                    ForEach(Array(full.enumerated()), id: \.offset) { _, row in
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                         Text(verbatim: rowPrefix + row).font(Type.dataSmall).foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -539,7 +557,13 @@ private struct ActionListDisclosure: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "chevron.up").font(.system(size: 8, weight: .semibold))
-                Text("Collapse \(noun)").font(Type.dataSmall)
+                Text(actionDisclosureLabel(
+                    noun: noun,
+                    availableCount: rows.count,
+                    totalCount: totalCount,
+                    expanded: true
+                ) ?? "Collapse")
+                    .font(Type.dataSmall)
             }
             .foregroundStyle(Theme.accent)
             .contentShape(Rectangle())
