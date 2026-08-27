@@ -69,14 +69,20 @@ def main() -> None:
         path
         for path in REFERENCE_ROOT.iterdir()
         if path.is_dir()
-        and {image.name for image in path.glob("*.png")} == set(EXPECTED_DIMENSIONS)
+        and set(EXPECTED_DIMENSIONS).issubset(
+            image.name for image in path.glob("*.png")
+        )
     )
     require(reference_directories, "expected at least one complete reference directory")
 
     with tempfile.TemporaryDirectory(prefix="agentacct-candidate-tests-") as temporary:
         temporary_root = Path(temporary)
         images = temporary_root / "images"
-        shutil.copytree(reference_directories[0], images)
+        images.mkdir()
+        # Renderer directories are shared by every visual suite. Exercise the
+        # Dashboard packager with its four inputs, not unrelated Menu or Work PNGs.
+        for filename in EXPECTED_DIMENSIONS:
+            shutil.copy(reference_directories[0] / filename, images / filename)
         output = temporary_root / "manifest.json"
 
         first = run_packager(images, output)
