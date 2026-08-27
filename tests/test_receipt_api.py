@@ -613,7 +613,7 @@ def test_plan_share_stamp_is_client_scoped_and_names_never_for_plan_less_clients
     _stamp_task_plan_shares(projection, events)
     cross, hermes, cc = (task["plan_share"] for task in projection["tasks"])
     assert cross["pct"] is None and cross["client"] == "codex"
-    assert cross["calibration_state"] == "never"
+    assert cross["calibration_state"] == "calibrating"
     assert hermes["pct"] is None and hermes["calibration_state"] == "never"
     assert cc["pct"] is not None and cc["pct"] > 0
     assert cc["covered_sessions"] == 1  # the codex member never counted

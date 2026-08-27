@@ -784,6 +784,172 @@ def read_codex_rate_limits_latest(
     return None
 
 
+def recorded_captured_ats(
+    existing_events: Iterable[Mapping[str, Any]], *, client: str
+) -> set[float]:
+    """Every recorded ``captured_at`` for one client's limit stream.
+
+    The series importer's exclusion set: an in-file reading whose capture time
+    is already in the ledger is never imported again. Combined with the
+    importer's DETERMINISTIC transition-collapse (same files -> same survivor
+    set on every scan), this makes the backfill idempotent: readings BETWEEN
+    the sparse tick-recorded snapshots import exactly once, and a re-scan is
+    a no-op."""
+
+    captured: set[float] = set()
+    for event in existing_events:
+        if event.get("event_type") != EVENT_TYPE:
+            continue
+        metadata = event.get("metadata") or {}
+        if str(metadata.get("client") or "") != client:
+            continue
+        ordering = _event_ordering(event)
+        if ordering > 0:
+            captured.add(ordering)
+    return captured
+
+
+# Replayed rollout prefixes are stamped with FRESH outer timestamps
+# milliseconds apart (the recorder re-stamps each copied TokenCount at replay
+# time), so a burst of near-simultaneous readings is replay noise, not a real
+# series: collapse each burst to its LAST line — the state at the fork point,
+# which IS the genuine account state at that moment.
+_CODEX_REPLAY_COLLAPSE_SECONDS = 5.0
+# The series import backfills at most this far (the calibration window plus
+# margin) — older history cannot influence the fit and only bloats the ledger.
+_CODEX_SERIES_BACKFILL_DAYS = 30
+
+
+def _read_codex_file_rate_limit_series(path: Path) -> list[RateLimitSnapshot]:
+    """Every DEFAULT-bucket rate-limit snapshot in one rollout, chronological,
+    with replay bursts collapsed. Fails soft to an empty list."""
+
+    snapshots: list[RateLimitSnapshot] = []
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if '"rate_limits"' not in line:
+                    continue
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(obj, Mapping):
+                    continue
+                payload = obj.get("payload")
+                if not isinstance(payload, Mapping):
+                    continue
+                try:
+                    snapshot = normalize_codex_rate_limits(
+                        payload.get("rate_limits"),
+                        captured_at=obj.get("timestamp"),
+                        session_id=_codex_session_id_from_path(path),
+                        source_file=str(path),
+                    )
+                except Exception:  # noqa: BLE001 - one poison line must not abort the file.
+                    continue
+                if (
+                    snapshot is not None
+                    and _is_default_codex_bucket(snapshot)
+                    and snapshot.captured_at is not None
+                    and snapshot.captured_at > 0
+                ):
+                    snapshots.append(snapshot)
+    except OSError:
+        return []
+    # Collapse bursts: keep a reading only when the NEXT one is not within the
+    # replay window (the last of each burst always survives).
+    collapsed: list[RateLimitSnapshot] = []
+    for index, snapshot in enumerate(snapshots):
+        if index + 1 < len(snapshots):
+            gap = float(snapshots[index + 1].captured_at or 0) - float(snapshot.captured_at or 0)
+            if 0 <= gap < _CODEX_REPLAY_COLLAPSE_SECONDS:
+                continue
+        collapsed.append(snapshot)
+    return collapsed
+
+
+def _snapshot_transition_key(snapshot: RateLimitSnapshot) -> str:
+    """The series' transition-collapse identity — EXACTLY the recorder's own
+    ``state_signature``, so any reading the recorder would treat as a no-op is
+    dropped deterministically before the exclusion filter. A near-copy with a
+    different field set (an early draft included the drifting credits balance
+    the signature deliberately excludes) let recorder-skipped readings
+    resurface on the next scan as phantom re-imports."""
+
+    return snapshot_state_signature(snapshot)
+
+
+def read_codex_rate_limits_series(
+    codex_home: Path | str | None = None,
+    *,
+    exclude_captured_at: Iterable[float] = (),
+    now: float | None = None,
+    max_files: int = 400,
+) -> list[RateLimitSnapshot]:
+    """The DEFAULT-bucket weekly-meter series across recent rollouts, ascending.
+
+    The calibration-density companion to ``read_codex_rate_limits_latest``:
+    that reader records one snapshot per scan tick, which starves the weekly
+    fit; this one BACKFILLS the in-file history between those sparse ticks.
+    Bounds and idempotence:
+
+    * only the backfill window (older history cannot influence the fit);
+    * per-file replay bursts collapsed (see ``_CODEX_REPLAY_COLLAPSE_SECONDS``);
+    * a DETERMINISTIC transition-collapse over the merged series (consecutive
+      identical states drop), so every scan derives the same survivor set;
+    * survivors whose capture time is already recorded (``exclude_captured_at``,
+      from ``recorded_captured_ats``) are skipped — so the backfill happens
+      once and a re-scan is a no-op.
+    """
+
+    import time as _time
+
+    now_epoch = now if now is not None else _time.time()
+    floor = now_epoch - _CODEX_SERIES_BACKFILL_DAYS * 86400.0
+    rollouts: list[Path] = []
+    for root in _codex_sessions_roots(codex_home):
+        try:
+            rollouts.extend(root.rglob("rollout-*.jsonl"))
+        except OSError:
+            continue
+
+    def _mtime(p: Path) -> float:
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    rollouts = [path for path in rollouts if _mtime(path) >= floor]
+    rollouts.sort(key=lambda p: (_mtime(p), str(p)), reverse=True)
+    series: list[RateLimitSnapshot] = []
+    for path in rollouts[: max(1, max_files)]:
+        try:
+            file_series = _read_codex_file_rate_limit_series(path)
+        except Exception:  # noqa: BLE001 - fail soft per the module contract.
+            continue
+        series.extend(
+            snapshot
+            for snapshot in file_series
+            if float(snapshot.captured_at or 0) > floor
+        )
+    series.sort(key=lambda snapshot: float(snapshot.captured_at or 0))
+    collapsed: list[RateLimitSnapshot] = []
+    for snapshot in series:
+        if collapsed and _snapshot_transition_key(collapsed[-1]) == _snapshot_transition_key(snapshot):
+            continue
+        collapsed.append(snapshot)
+    excluded = {float(value) for value in exclude_captured_at}
+    return [
+        snapshot
+        for snapshot in collapsed
+        if float(snapshot.captured_at or 0) not in excluded
+    ]
+
+
 def read_claude_plan_usage_latest(
     path: Path | str | None = None,
 ) -> list[RateLimitSnapshot]:

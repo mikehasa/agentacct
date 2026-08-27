@@ -328,12 +328,11 @@ def test_raw_scale_discloses_the_unclamped_fit(tmp_path):
     assert weights.raw_scale is not None and weights.raw_scale > 10.0
 
 
-def test_codex_never_calibrates_even_with_numerically_clean_history(tmp_path):
-    """A rolling meter can land 3 clean intervals in the trusted band by
-    coincidence, but codex's weekly plan % is UNDEFINED by design — the gate
-    lives in calibrate_plan_weights so NO surface can ever receive a
-    'calibrated' codex fit (adversarial-review finding: /v1/plan served
-    confidently-labeled aggregates of an undefined quantity)."""
+def test_codex_calibrates_from_clean_weekly_history(tmp_path):
+    """codex's meter became week-reset cumulative (2026-08-27), so the same
+    interval machinery that fits claude-code now fits codex — with in-band
+    history it calibrates; a client with no calibratable meter still reads
+    'never' (see the hermes case below)."""
 
     service = SentinelService(tmp_path)
     t0 = 1_000_000
@@ -348,6 +347,16 @@ def test_codex_never_calibrates_even_with_numerically_clean_history(tmp_path):
         _record_7d(service, captured=float(t0 + (i + 1) * 3600), pct=pct, client="codex", index=i + 1)
     weights = pc.calibrate_plan_weights(service.list_all_events(), client="codex",
                                         now=float(t0 + 5 * 3600))
+    assert weights.confidence == "calibrated"
+    assert pc.calibration_state(weights) == "calibrated"
+    assert abs(weights.scale - 1.0) < 0.15
+
+
+def test_non_calibratable_client_still_reads_never(tmp_path):
+    """The undefined-plan gate survives for clients without a weekly meter."""
+
+    service = SentinelService(tmp_path)
+    weights = pc.calibrate_plan_weights(service.list_all_events(), client="hermes")
     assert weights.confidence == "baseline"
     assert pc.calibration_state(weights) == "never"
     assert "undefined" in weights.basis
@@ -506,3 +515,46 @@ def test_stability_rejects_a_single_burst_day(tmp_path):
     weights = pc.calibrate_plan_weights(service.list_all_events(), client="claude-code", now=now)
     assert weights.confidence == "baseline"
     assert weights.scale == 1.0
+
+
+def test_regime_change_calibrates_on_the_trailing_window(tmp_path):
+    """A mid-window ratio regime change (the live 2026-08-27 shape: ~6x early,
+    ~2x recently) fails both the band and the split-half stability on the full
+    window — but the CURRENT regime is honest and in-band, so the trailing
+    ladder calibrates on it, with the shortened window disclosed."""
+
+    service = SentinelService(tmp_path)
+    opus = pc.baseline_weight_fresh("claude-opus-4-8")
+    tokens = 50_000_000
+    spacing = 8 * 3600
+    n = 40  # ~13 days at 8h spacing
+    t0 = 1_000_000
+    pct = 0.0
+    _record_7d(service, captured=float(t0), pct=pct, index=0)
+    for i in range(n):
+        ratio = 6.0 if i < n // 2 else 2.0  # regime change at the midpoint
+        _record_usage(service, client="claude-code", model="claude-opus-4-8",
+                      session_id=f"s{i}", tokens=tokens, updated_at=t0 + i * spacing + spacing // 2,
+                      cost=1.0)
+        pct += ratio * (tokens / 1_000_000.0 * opus)
+        _record_7d(service, captured=float(t0 + (i + 1) * spacing), pct=pct, index=i + 1)
+    now = float(t0 + (n + 1) * spacing)
+    weights = pc.calibrate_plan_weights(service.list_all_events(), client="claude-code", now=now)
+    assert weights.confidence == "calibrated"
+    assert "trailing" in weights.basis
+    assert pc._TRUSTED_SCALE_BAND[0] <= weights.scale <= pc._TRUSTED_SCALE_BAND[1]
+    assert abs(weights.scale - 2.0) < 0.35  # the CURRENT regime, not the blend
+    # The trailing ladder never rescues an out-of-band recent regime: flip the
+    # order (in-band early, wild recently) and the fit stays baseline.
+    service2 = SentinelService(tmp_path / "flipped")
+    pct = 0.0
+    _record_7d(service2, captured=float(t0), pct=pct, index=0)
+    for i in range(n):
+        ratio = 2.0 if i < n // 2 else 6.0
+        _record_usage(service2, client="claude-code", model="claude-opus-4-8",
+                      session_id=f"s{i}", tokens=tokens, updated_at=t0 + i * spacing + spacing // 2,
+                      cost=1.0)
+        pct += ratio * (tokens / 1_000_000.0 * opus)
+        _record_7d(service2, captured=float(t0 + (i + 1) * spacing), pct=pct, index=i + 1)
+    weights2 = pc.calibrate_plan_weights(service2.list_all_events(), client="claude-code", now=now)
+    assert weights2.confidence == "baseline"

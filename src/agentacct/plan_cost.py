@@ -97,6 +97,15 @@ _STABILITY_HALF_AGREEMENT = 0.35
 # * and the fit sits inside a wide hard ceiling — beyond it no amount of
 #   stability makes the number credible (something structural is wrong).
 _STABILITY_HARD_BAND = (0.2, 8.0)
+# When the FULL window fails its gates because the account's ratio genuinely
+# regime-changed inside it (a model-mix or plan change makes the halves
+# disagree; measured live 2026-08-27: ~5.5-6.5 before 08-22, ~2.1-2.8 after),
+# the CURRENT regime still predicts current sessions. Retry the fit on
+# trailing sub-windows, longest first, and accept only under the ORIGINAL
+# strict gate — in the trusted band, with a real interval floor. No stability
+# lane on sub-windows: a shortened window earns no extra leniency.
+_REGIME_FALLBACK_WINDOW_DAYS = (14, 10, 7, 5)
+_REGIME_FALLBACK_MIN_INTERVALS = 12
 
 # The two-component token model. The weekly meter is driven by FRESH work
 # (input + output + cache_creation); cache READS barely move it — measured on
@@ -118,12 +127,21 @@ _FRESH_COMPONENT_REF_FACTOR = 8.3
 _ALPHA_GRID_STEPS = 100
 
 # Plan-bearing clients whose meter can actually CALIBRATE to per-session weekly
-# percentages — i.e. a clean weekly-reset cumulative meter. codex's 7-day meter is
-# rolling and opaque (Σdeltas ≫ the window, resets unobservable), so a weekly plan %
-# is undefined for it: it must never be shown as "calibrating", because that promises
-# a number that will never arrive. This is the single source of truth; shells
-# (TUI plan column, glance/app payloads) derive their three-state display from it.
-CALIBRATABLE_CLIENTS = ("claude-code",)
+# percentages — i.e. a clean weekly-reset cumulative meter. This is the single
+# source of truth; shells (TUI plan column, glance/app payloads) derive their
+# three-state display from it.
+#
+# codex joined 2026-08-27: its rate_limits shape changed — the meter now
+# reports a single primary window (window_minutes=10080) with an observable
+# resets_at, and the local rollouts show week-reset-cumulative behavior
+# (monotonic climb within an epoch, drop to 0 at a new resets_at ≈ +7d),
+# the same semantics the fit requires. The 2026-08-05 "rolling and opaque"
+# verdict described the OLD shape and no longer holds. Residual noise the
+# machinery already absorbs: integer-quantized percents (transition-recorded,
+# so consecutive readings differ by ≥1 point), irregular resets (any drop is
+# skipped as a reset), and fork/replay contamination (the series importer
+# collapses replay bursts; the latest reader is mtime-anchored).
+CALIBRATABLE_CLIENTS = ("claude-code", "codex")
 
 
 @dataclass(frozen=True)
@@ -428,18 +446,17 @@ def calibrate_plan_weights(
     default_base = BASELINE_MODEL_WEIGHTS["claude-opus-4-8"] * _FRESH_COMPONENT_REF_FACTOR
 
     if client not in CALIBRATABLE_CLIENTS:
-        # A rolling/opaque meter (codex) can land 3 numerically-clean intervals
-        # inside the trusted band by coincidence — but its weekly plan % is
-        # UNDEFINED by design, so a fit here would confidently label a number
-        # that means nothing (adversarial-review finding: /v1/plan served
-        # "calibrated" codex aggregates). The gate lives HERE, not in each
-        # display surface, so no surface can ever receive one.
+        # A client without a calibratable weekly-reset meter can still land
+        # numerically-clean intervals by coincidence — but its weekly plan %
+        # is UNDEFINED, so a fit here would confidently label a number that
+        # means nothing. The gate lives HERE, not in each display surface, so
+        # no surface can ever receive one.
         return PlanWeights(
             weights=base,
             default_weight=default_base,
             scale=1.0,
             confidence="baseline",
-            basis="weekly plan % is undefined for this client's rolling meter (it never calibrates)",
+            basis="weekly plan % is undefined for this client (no calibratable weekly meter)",
             intervals_used=0,
             client=client,
         )
@@ -469,39 +486,45 @@ def calibrate_plan_weights(
             continue
         points.append((t1, delta, fresh_pred, read_pred))
 
-    intervals = len(points)
-    raw_scale = 1.0
-    alpha = 0.0
-    if points:
+    def _grid_fit(fit_points: list[tuple[float, float, float, float]]) -> tuple[float, float]:
+        """(alpha, raw_scale) for one point set — the closed-form-per-alpha grid.
+
+        SMALLEST alpha within tolerance of the best fit wins. alpha is a
+        second degree of freedom the trusted band never inspects: untracked
+        meter movement that co-occurs with cache-read-heavy days would
+        otherwise be absorbed into alpha, silently multiplying every
+        cache-heavy session's share while reporting "calibrated"
+        (adversarial-review finding). Reads are only charged when the data
+        clearly demands it; a collinear cache mix (alpha unidentifiable)
+        deterministically lands on 0.
+        """
+
+        if not fit_points:
+            return 0.0, 1.0
         candidates: list[tuple[float, float, float]] = []  # (alpha, scale, sse)
-        observed_sum = sum(delta for _t, delta, _a, _b in points)
+        observed_sum = sum(delta for _t, delta, _a, _b in fit_points)
         for step in range(_ALPHA_GRID_STEPS + 1):
             candidate_alpha = step / _ALPHA_GRID_STEPS
-            predicted_sum = sum(a + candidate_alpha * b for _t, _d, a, b in points)
+            predicted_sum = sum(a + candidate_alpha * b for _t, _d, a, b in fit_points)
             if predicted_sum <= 0:
                 continue
             candidate_scale = observed_sum / predicted_sum
             sse = sum(
                 (delta - candidate_scale * (a + candidate_alpha * b)) ** 2
-                for _t, delta, a, b in points
+                for _t, delta, a, b in fit_points
             )
             candidates.append((candidate_alpha, candidate_scale, sse))
-        if candidates:
-            # SMALLEST alpha within tolerance of the best fit wins. alpha is a
-            # second degree of freedom the trusted band never inspects:
-            # untracked meter movement that co-occurs with cache-read-heavy
-            # days would otherwise be absorbed into alpha, silently multiplying
-            # every cache-heavy session's share while reporting "calibrated"
-            # (adversarial-review finding). Reads are only charged when the
-            # data clearly demands it; a collinear cache mix (alpha
-            # unidentifiable) deterministically lands on 0.
-            best_sse = min(sse for _a, _s, sse in candidates)
-            tolerance = best_sse * 1.05 + 1e-12
-            for candidate_alpha, candidate_scale, sse in candidates:  # ascending alpha
-                if sse <= tolerance:
-                    alpha = candidate_alpha
-                    raw_scale = candidate_scale
-                    break
+        if not candidates:
+            return 0.0, 1.0
+        best_sse = min(sse for _a, _s, sse in candidates)
+        tolerance = best_sse * 1.05 + 1e-12
+        for candidate_alpha, candidate_scale, sse in candidates:  # ascending alpha
+            if sse <= tolerance:
+                return candidate_alpha, candidate_scale
+        return 0.0, 1.0
+
+    intervals = len(points)
+    alpha, raw_scale = _grid_fit(points)
     trusted = _TRUSTED_SCALE_BAND[0] <= raw_scale <= _TRUSTED_SCALE_BAND[1]
     stability_accepted = (
         intervals >= _MIN_SCALE_INTERVALS
@@ -523,15 +546,40 @@ def calibrate_plan_weights(
                 "(may include usage from untracked Claude surfaces)"
             )
     else:
-        # Too little clean history, or a fit outside the trusted band (heavy
-        # untracked Claude usage or a very different plan tier we can't
-        # identify) → keep the shipped baseline rather than apply an
-        # unreliable scale. alpha stays 0 under baseline: cache reads are
-        # excluded rather than guessed (the measured reference behavior).
-        scale = 1.0
-        alpha = 0.0
-        confidence = "baseline"
-        basis = "shipped baseline (record more 7-day limit history from tracked clients to calibrate)"
+        # The full window failed its gates. Before shipping the baseline, try
+        # the trailing regime windows (see _REGIME_FALLBACK_WINDOW_DAYS): a
+        # ratio that regime-changed mid-window still has an honest CURRENT
+        # value when the recent points alone fit inside the trusted band.
+        trailing_hit = None
+        for trailing_days in _REGIME_FALLBACK_WINDOW_DAYS:
+            trailing_start = now_epoch - trailing_days * 86400.0
+            trailing_points = [point for point in points if point[0] >= trailing_start]
+            if len(trailing_points) < _REGIME_FALLBACK_MIN_INTERVALS:
+                continue
+            trailing_alpha, trailing_scale = _grid_fit(trailing_points)
+            if _TRUSTED_SCALE_BAND[0] <= trailing_scale <= _TRUSTED_SCALE_BAND[1]:
+                trailing_hit = (trailing_days, trailing_points, trailing_alpha, trailing_scale)
+                break
+        if trailing_hit is not None:
+            trailing_days, trailing_points, alpha, raw_scale = trailing_hit
+            intervals = len(trailing_points)
+            scale = raw_scale
+            confidence = "calibrated"
+            basis = (
+                f"two-component fit x{scale:.2f}, cache-read discount {alpha:.2f} "
+                f"({intervals} intervals in the trailing {trailing_days} days — the full "
+                "window mixes a ratio regime change)"
+            )
+        else:
+            # Too little clean history, or a fit outside the trusted band (heavy
+            # untracked Claude usage or a very different plan tier we can't
+            # identify) → keep the shipped baseline rather than apply an
+            # unreliable scale. alpha stays 0 under baseline: cache reads are
+            # excluded rather than guessed (the measured reference behavior).
+            scale = 1.0
+            alpha = 0.0
+            confidence = "baseline"
+            basis = "shipped baseline (record more 7-day limit history from tracked clients to calibrate)"
 
     weights = {m: w * scale for m, w in base.items()}
     return PlanWeights(

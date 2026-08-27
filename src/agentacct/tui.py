@@ -221,8 +221,9 @@ def _session_badge(entry: dict) -> str:
 # Clients that have a weekly subscription plan agentacct can estimate against.
 _PLAN_CLIENTS = ("claude-code", "codex")
 # Of those, the ones whose meter can actually calibrate to a per-session weekly %.
-# The rationale (codex's rolling 7-day meter never yields a weekly-reset %) and the
-# authoritative tuple live in plan_cost; this alias keeps existing call sites.
+# The rationale and the authoritative tuple live in plan_cost (codex joined
+# 2026-08-27 when its meter became week-reset cumulative); this alias keeps
+# existing call sites.
 _CALIBRATABLE_CLIENTS = CALIBRATABLE_CLIENTS
 
 
@@ -243,8 +244,9 @@ def _plan_pct_cell(
     yet — but only if its meter can actually calibrate (see ``_CALIBRATABLE_CLIENTS``) —
     shows ``⋯``, an honest "calibrating from your own usage" rather than a number from a
     shipped equation, so the column is not misread as "no weekly plan". A non-plan
-    client, a client whose meter never calibrates (codex), or a zero-token session of an
-    already-calibrated client, shows ``—``. The full nuance is in the session detail."""
+    client, a client whose meter cannot calibrate (no weekly-reset meter), or a
+    zero-token session of an already-calibrated client, shows ``—``. The full nuance
+    is in the session detail."""
 
     client = str(entry.get("client") or "")
     if client not in _PLAN_CLIENTS:
@@ -253,7 +255,7 @@ def _plan_pct_cell(
     if isinstance(pct, (int, float)) and not isinstance(pct, bool) and pct > 0:
         return f"≈{pct:.1f}%" if pct >= 0.1 else "≈<0.1%"
     # A calibratable client with no number yet is warming up → say so, don't dash.
-    # A non-calibratable plan client (codex) never reaches a number, so it stays "—".
+    # A plan client with no calibratable weekly meter never reaches a number → "—".
     if client in _CALIBRATABLE_CLIENTS and (confidence_by_client or {}).get(client) == "baseline":
         return _PLAN_CALIBRATING_CELL
     return "—"

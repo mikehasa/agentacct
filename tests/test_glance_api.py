@@ -603,8 +603,11 @@ def test_glance_plan_entries_carry_three_state_and_basis(tmp_path):
     assert plan["claude-code"]["confidence"] == "baseline"  # the original key survives
     assert plan["claude-code"]["calibration_state"] == "calibrating"
     assert plan["claude-code"]["calibratable"] is True
-    assert plan["codex"]["calibration_state"] == "never"
-    assert plan["codex"]["calibratable"] is False
+    # codex's meter became week-reset cumulative (2026-08-27): it is now a
+    # calibratable plan client and honestly reads "calibrating" until enough
+    # recorded weekly history accrues.
+    assert plan["codex"]["calibration_state"] == "calibrating"
+    assert plan["codex"]["calibratable"] is True
     assert plan["claude-code"]["basis"]
 
 
