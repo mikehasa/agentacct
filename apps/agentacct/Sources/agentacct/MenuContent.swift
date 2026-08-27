@@ -42,7 +42,6 @@ struct MenuContent: View {
             case .connected(let snapshot):
                 connectedView(snapshot: snapshot)
             }
-            buildIdentityLine
             footer
         }
         .padding(14)
@@ -244,6 +243,17 @@ struct MenuContent: View {
             .foregroundStyle(Theme.muted)
             .help("Refresh now")
             Button {
+                AppAbout.present(identity: buildIdentity)
+            } label: {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 11))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.muted)
+            .help("About agentacct")
+            .accessibilityLabel("About agentacct")
+            .accessibilityIdentifier("menu.about")
+            Button {
                 NSApplication.shared.terminate(nil)
             } label: {
                 Image(systemName: "power")
@@ -254,16 +264,6 @@ struct MenuContent: View {
             .help("Quit agentacct")
         }
         .padding(.top, 2)
-    }
-
-    private var buildIdentityLine: some View {
-        Text(buildIdentity.compactLabel)
-            .font(Type.dataSmall)
-            .foregroundStyle(Theme.muted)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .help(buildIdentity.detailLabel)
-            .accessibilityLabel(buildIdentity.accessibilityLabel)
-            .accessibilityIdentifier("menu.build-identity")
     }
 
     private func openMain(selecting sessionId: String?) {
