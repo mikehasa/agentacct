@@ -105,6 +105,10 @@ jobs:
             --snapshot-menu-fixture \
             Tests/agentacctTests/Fixtures/dashboard.json \
             "$RUNNER_TEMP/agentacct-ui-review"
+          .build/release/agentacct \
+            --snapshot-work-fixture \
+            Tests/agentacctTests/Fixtures/dashboard.json \
+            "$RUNNER_TEMP/agentacct-ui-review"
       - name: Upload UI review matrix
         if: ${{ !cancelled() && steps.review_render.outcome == 'success' }}
         uses: actions/upload-artifact@v7

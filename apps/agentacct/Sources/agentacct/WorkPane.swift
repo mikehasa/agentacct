@@ -207,6 +207,10 @@ struct WorkPane: View {
             }
         }
         .task(id: selectionKey) {
+            // The fixture renderer injects the exact Work state under review.
+            // Starting a live fetch here would immediately clear an injected
+            // error and collapse error/loading snapshots into the same frame.
+            guard !SnapshotMode.enabled else { return }
             await resolveSelection()
         }
     }
@@ -275,7 +279,22 @@ struct WorkPane: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .accessibilityIdentifier("work.unresolved-session")
         } else if selection.taskId != nil {
-            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            // ImageRenderer substitutes a warning tile for AppKit's native
+            // progress control. Keep the live spinner, but give reviewed
+            // snapshots a stable equivalent with the same loading copy.
+            VStack(spacing: Space.s) {
+                if SnapshotMode.enabled {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(Theme.muted)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+                Text("Loading receipt…")
+                    .font(Type.body)
+                    .foregroundStyle(Theme.muted)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             Color.clear
         }

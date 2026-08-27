@@ -13,9 +13,10 @@ struct DashboardSnapshotFixture: Decodable {
     let plan: V1PlanPayload
     let tasks: ReceiptTasksPayload
     let usage: UsageSummary
+    let work: WorkSnapshotFixture?
 
     enum CodingKeys: String, CodingKey {
-        case glance, plan, tasks, usage
+        case glance, plan, tasks, usage, work
         case daemonVersion = "daemon_version"
     }
 
@@ -46,6 +47,22 @@ struct DashboardSnapshotFixture: Decodable {
                 expected: supportedTasksSchema
             )
         }
+        if let work = fixture.work {
+            guard work.receipt.schemaVersion == supportedTasksSchema else {
+                throw SnapshotError.unsupportedSchema(
+                    payload: "work receipt",
+                    actual: work.receipt.schemaVersion,
+                    expected: supportedTasksSchema
+                )
+            }
+            for session in work.sessions where session.schema != WorkSnapshotFixture.supportedSessionSchema {
+                throw SnapshotError.unsupportedSchema(
+                    payload: "work session",
+                    actual: session.schema,
+                    expected: WorkSnapshotFixture.supportedSessionSchema
+                )
+            }
+        }
         return fixture
     }
 
@@ -54,9 +71,21 @@ struct DashboardSnapshotFixture: Decodable {
     }
 }
 
+/// Detailed endpoint payloads needed by the Work record. The table reuses
+/// `tasks`; the selected receipt and expanded session rows need their own
+/// fixture lane because deterministic rendering cannot wait for network-backed
+/// SwiftUI `.task` loaders.
+struct WorkSnapshotFixture: Decodable {
+    static let supportedSessionSchema = "agentacct.v1-session-detail.v1"
+
+    let receipt: Receipt
+    let sessions: [V1SessionDetail]
+}
+
 enum SnapshotError: LocalizedError {
     case unsupportedSchema(payload: String, actual: String, expected: String)
     case missingFixtureDate
+    case missingWorkFixture
     case renderProducedNoImage
     case pngEncodingFailed
 
@@ -66,6 +95,8 @@ enum SnapshotError: LocalizedError {
             return "fixture \(payload) payload serves \(actual); expected \(expected)"
         case .missingFixtureDate:
             return "fixture glance.generated_at is required to pin relative time labels"
+        case .missingWorkFixture:
+            return "fixture work payload is required to render Work review snapshots"
         case .renderProducedNoImage:
             return "render produced no image"
         case .pngEncodingFailed:

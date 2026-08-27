@@ -24,8 +24,8 @@ enum SnapshotRunner {
                 // refresh() also loads the Task list. Select the newest Task
                 // (or the one named by AGENTACCT_SNAPSHOT_TASK — id or prefix —
                 // so a design pass can render a specific record, e.g. a blocked
-                // one) and preload its Receipt because ImageRenderer does not
-                // run the Work pane's SwiftUI `.task`.
+                // one) and preload its Receipt because snapshot mode suppresses
+                // the Work pane's network-backed SwiftUI `.task`.
                 let wanted = ProcessInfo.processInfo.environment["AGENTACCT_SNAPSHOT_TASK"]
                 let requested = dashboard.receiptTasks.first { task in
                     guard let wanted, !wanted.isEmpty else { return false }
@@ -156,6 +156,31 @@ enum SnapshotRunner {
             } catch {
                 exitCode = 1
                 FileHandle.standardError.write(Data("menu snapshot failed: \(error)\n".utf8))
+            }
+        }
+        while !finished {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        exit(exitCode)
+    }
+
+    static func runWorkFixture(fixturePath: String, outputDir: String) {
+        let fixtureURL = URL(fileURLWithPath: (fixturePath as NSString).expandingTildeInPath)
+        let outputURL = URL(fileURLWithPath: (outputDir as NSString).expandingTildeInPath)
+        var finished = false
+        var exitCode: Int32 = 0
+        Task { @MainActor in
+            defer { finished = true }
+            do {
+                let fixture = try DashboardSnapshotFixture.load(from: fixtureURL)
+                let rendered = try WorkSnapshotRenderer.render(
+                    fixture: fixture,
+                    outputDirectory: outputURL
+                )
+                print("work snapshots written to \(outputURL.path): \(rendered.count) files")
+            } catch {
+                exitCode = 1
+                FileHandle.standardError.write(Data("work snapshot failed: \(error)\n".utf8))
             }
         }
         while !finished {

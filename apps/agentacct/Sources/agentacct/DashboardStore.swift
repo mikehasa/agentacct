@@ -1,6 +1,17 @@
 import Foundation
 import SwiftUI
 
+/// Named state variants used only by deterministic offscreen review tooling.
+/// Keeping the mutation inside DashboardStore preserves its private setters;
+/// the live initializer and network lifecycle remain unchanged.
+enum SnapshotWorkStoreState {
+    case populated
+    case empty
+    case listError
+    case receiptLoading
+    case receiptError
+}
+
 // Data for the full window: /v1/tasks and /v1/receipt supply task-level work
 // evidence, /v1/session supplies each Receipt's expandable session detail, and
 // /v1/plan supplies attributed aggregates. The legacy /usage/summary cube
@@ -18,8 +29,8 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var receiptError: String?
     /// Session deep views preloaded by key ("client::session"). Only the offscreen
     /// snapshot path fills this (the live app loads each drill row lazily via a
-    /// SwiftUI `.task`, which ImageRenderer does not run); a drill row reads it as
-    /// a fallback so its steps render in a snapshot.
+    /// SwiftUI `.task`, while deterministic rendering cannot wait on network
+    /// work); a drill row reads it as a fallback so its steps render in a snapshot.
     @Published private(set) var preloadedSessions: [String: V1SessionDetail] = [:]
     @Published private(set) var errorText: String?
     /// Source/watcher health from /v1/ingestion (the Sources pane).
@@ -44,11 +55,35 @@ final class DashboardStore: ObservableObject {
 
     /// Design-review tooling: populate the same state the daemon endpoints
     /// would, without network access or a developer's local account data.
-    init(preloaded fixture: DashboardSnapshotFixture) {
+    init(
+        preloaded fixture: DashboardSnapshotFixture,
+        workState: SnapshotWorkStoreState = .populated
+    ) {
         planClients = fixture.plan.clients
         usage = fixture.usage
-        receiptTasks = fixture.tasks.tasks
-        totalReceiptTasks = fixture.tasks.total
+        switch workState {
+        case .populated:
+            receiptTasks = fixture.tasks.tasks
+            totalReceiptTasks = fixture.tasks.total
+            receipt = fixture.work?.receipt
+            for session in fixture.work?.sessions ?? [] {
+                let key = "\(session.session.client)::\(session.session.clientSessionId)"
+                preloadedSessions[key] = session
+            }
+        case .empty:
+            receiptTasks = []
+            totalReceiptTasks = 0
+        case .listError:
+            receiptTasks = []
+            receiptListError = "receipts fetch failed: synthetic review error"
+        case .receiptLoading:
+            receiptTasks = fixture.tasks.tasks
+            totalReceiptTasks = fixture.tasks.total
+        case .receiptError:
+            receiptTasks = fixture.tasks.tasks
+            totalReceiptTasks = fixture.tasks.total
+            receiptError = "receipt fetch failed: synthetic review error"
+        }
         lastUpdated = fixture.glance.generatedAt.map(Date.init(timeIntervalSince1970:))
     }
 
