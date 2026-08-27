@@ -25,8 +25,9 @@ Check whether the current host exactly matches the reviewed-reference renderer:
 ./Scripts/visual-snapshots check-environment
 ```
 
-This project currently discovers `DashboardVisualRegressionTests`. An empty
-list remains valid for another project or branch before its first visual suite.
+This project currently discovers `DashboardVisualRegressionTests` and
+`MenuVisualRegressionTests`. An empty list remains valid for another project or
+branch before its first visual suite.
 
 Verify one suite before changing its UI:
 
@@ -105,6 +106,30 @@ open /tmp/agentacct-dashboard-review
 ```
 
 Keep ad-hoc PNGs outside the repository.
+
+## Menu review matrix
+
+The connected menu fixture renders the real 360 pt menu in both appearances at
+2x scale. Its build identity, login-item state, and relative clock are injected
+so the reviewed pixels never depend on the current checkout, machine settings,
+or wall clock.
+
+| Artifact | Appearance | Pixel size |
+| --- | --- | --- |
+| `menu-connected-light.png` | light | 720 × 1020 px |
+| `menu-connected-dark.png` | dark | 720 × 1020 px |
+
+For an ad-hoc menu render that does not compare or update references:
+
+```bash
+swift run agentacct --snapshot-menu-fixture \
+  Tests/agentacctTests/Fixtures/dashboard.json \
+  /tmp/agentacct-menu-review
+open /tmp/agentacct-menu-review
+```
+
+The canonical CLI owns these images too. A menu UI change is not visually
+verified until the matching source-tree references are reviewed and committed.
 
 ## Color contrast guardrail
 

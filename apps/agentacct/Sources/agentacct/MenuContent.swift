@@ -14,6 +14,19 @@ struct MenuContent: View {
     @EnvironmentObject var dashboard: DashboardStore
     @EnvironmentObject var selection: AppSelection
     @Environment(\.openWindow) private var openWindow
+    private let buildIdentity: AppBuildIdentity
+    private let lastUpdatedTextOverride: String?
+    private let launchAtLoginInitialState: Bool?
+
+    init(
+        buildIdentity: AppBuildIdentity = .current,
+        lastUpdatedTextOverride: String? = nil,
+        launchAtLoginInitialState: Bool? = nil
+    ) {
+        self.buildIdentity = buildIdentity
+        self.lastUpdatedTextOverride = lastUpdatedTextOverride
+        self.launchAtLoginInitialState = launchAtLoginInitialState
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -29,6 +42,7 @@ struct MenuContent: View {
             case .connected(let snapshot):
                 connectedView(snapshot: snapshot)
             }
+            buildIdentityLine
             footer
         }
         .padding(14)
@@ -81,7 +95,13 @@ struct MenuContent: View {
                 if state.isRefreshing {
                     ProgressView().controlSize(.mini)
                 } else if let updated = state.lastUpdated {
-                    Text(updated, style: .relative)
+                    Group {
+                        if let lastUpdatedTextOverride {
+                            Text(lastUpdatedTextOverride)
+                        } else {
+                            Text(updated, style: .relative)
+                        }
+                    }
                         .font(Type.dataSmall)
                         .foregroundStyle(Theme.muted)
                 }
@@ -213,7 +233,7 @@ struct MenuContent: View {
             .buttonStyle(.plain)
             .foregroundStyle(Theme.accent)
             Spacer()
-            LaunchAtLoginToggle()
+            LaunchAtLoginToggle(initialEnabled: launchAtLoginInitialState)
             Button {
                 state.refreshNow()
             } label: {
@@ -236,6 +256,16 @@ struct MenuContent: View {
         .padding(.top, 2)
     }
 
+    private var buildIdentityLine: some View {
+        Text(buildIdentity.compactLabel)
+            .font(Type.dataSmall)
+            .foregroundStyle(Theme.muted)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(buildIdentity.detailLabel)
+            .accessibilityLabel(buildIdentity.accessibilityLabel)
+            .accessibilityIdentifier("menu.build-identity")
+    }
+
     private func openMain(selecting sessionId: String?) {
         if let sessionId {
             // The Work surface is Task-primary; it resolves this session key to
@@ -254,7 +284,13 @@ struct MenuContent: View {
 /// so the toggle always reflects reality, including changes made in System
 /// Settings.
 struct LaunchAtLoginToggle: View {
-    @State private var enabled = SMAppService.mainApp.status == .enabled
+    @State private var enabled: Bool
+
+    init(initialEnabled: Bool? = nil) {
+        _enabled = State(
+            initialValue: initialEnabled ?? (SMAppService.mainApp.status == .enabled)
+        )
+    }
 
     var body: some View {
         Toggle(isOn: Binding(
@@ -274,12 +310,29 @@ struct LaunchAtLoginToggle: View {
             }
         )) {
             Text("Login")
-                .font(Type.caption)
-                .foregroundStyle(Theme.muted)
         }
-        .toggleStyle(.checkbox)
-        .controlSize(.small)
+        .toggleStyle(MenuCheckboxToggleStyle())
         .help("Launch agentacct at login")
+    }
+}
+
+/// A SwiftUI-only checkbox keeps the production control fully keyboard and
+/// accessibility operable while remaining identical in off-screen snapshots.
+private struct MenuCheckboxToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            configuration.isOn.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: configuration.isOn ? "checkmark.square" : "square")
+                configuration.label
+            }
+            .font(Type.caption)
+            .foregroundStyle(Theme.muted)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Launch agentacct at login")
+        .accessibilityValue(configuration.isOn ? "On" : "Off")
     }
 }
 
