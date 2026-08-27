@@ -25,6 +25,13 @@ Check whether the current host exactly matches the reviewed-reference renderer:
 ./Scripts/visual-snapshots check-environment
 ```
 
+Read the repository's declared renderer identity without checking the current
+host or running Swift tests:
+
+```bash
+./Scripts/visual-snapshots platform-id
+```
+
 This project currently discovers `DashboardVisualRegressionTests` and
 `MenuVisualRegressionTests`. An empty list remains valid for another project or
 branch before its first visual suite.
@@ -60,21 +67,23 @@ If `check-environment` rejects the local Mac, never override the platform ID or
 record that machine's pixels under the canonical directory. Push the UI branch
 for review instead. The macOS CI job keeps rendering after an intentional
 baseline mismatch and, only when its renderer is canonical, uploads
-`dashboard-baseline-candidate-<platform-id>-<sha>`. After reviewing all four
-images, download that artifact and copy its PNGs into the matching directory:
+`dashboard-baseline-candidate-<platform-id>-<sha>`. That single-run artifact is
+a review aid: download and inspect it to understand the mismatch, but do not
+copy it directly into reviewed references because it has no manifest or second
+independent replica.
 
 ```bash
 gh run download <run-id> \
   --name dashboard-baseline-candidate-<platform-id>-<sha> \
   --dir /tmp/agentacct-dashboard-baseline
-cp /tmp/agentacct-dashboard-baseline/dashboard-*.png \
-  Tests/agentacctTests/ReferenceImages/<platform-id>/
-git diff -- Tests/agentacctTests/ReferenceImages
+open /tmp/agentacct-dashboard-baseline
 ```
 
-Commit the reviewed references with the UI change and let the next CI run prove
-that the canonical renderer matches them. CI never writes accepted references
-back to the repository.
+For promotion, request the authoritative two-replica candidate for the same
+source SHA and follow the validation and promotion flow below. Commit the
+reviewed references with the UI change and let the next CI run prove that the
+canonical renderer matches them. CI never writes accepted references back to
+the repository.
 
 GitHub displays a changed PNG as a
 [2-up, swipe, or onion-skin comparison](https://docs.github.com/en/repositories/working-with-files/using-files/working-with-non-code-files#rendering-and-diffing-images).
@@ -107,13 +116,63 @@ The artifact contains `manifest.json` and an `images` directory with the four
 dashboard PNGs. The manifest binds the bundle to the source commit, canonical
 renderer, hosted-runner image, exact dimensions, and SHA-256 of every image.
 
+Validate the downloaded bundle against the commit you requested and the
+renderer declared by the source checkout. Do not copy the expected renderer
+from the candidate manifest; that would make the candidate assert its own
+trust boundary.
+
+```bash
+candidate_dir=/tmp/agentacct-dashboard-reference-candidate
+renderer_id="$(./Scripts/visual-snapshots platform-id)"
+./Scripts/validate-dashboard-reference-candidate \
+  --candidate "$candidate_dir" \
+  --source-commit "$source_commit" \
+  --renderer-id "$renderer_id"
+open "$candidate_dir/images"
+```
+
+Validation is read-only and does not depend on the developer's macOS version.
+It rejects unknown or duplicate manifest fields, malformed identities, extra
+files, symlinks, invalid PNG structure or dimensions, and any manifest hash
+that does not match the downloaded bytes. Inspect every light/dark and
+minimum/reference image after validation.
+
+Only after that visual review, promote the exact validated set:
+
+```bash
+./Scripts/promote-dashboard-reference-candidate \
+  --candidate "$candidate_dir" \
+  --source-commit "$source_commit" \
+  --renderer-id "$renderer_id" \
+  --reviewed
+git status --short -- Tests/agentacctTests/ReferenceImages
+git diff --stat -- Tests/agentacctTests/ReferenceImages
+```
+
+Promotion repeats the full validation, requires an explicit review
+confirmation, stages all four files before replacing the renderer directory,
+and restores the original directory if the replacement fails. An already
+identical candidate is a no-op. The command never renders locally, stages Git
+changes, commits, pushes, or approves the visual change; review the resulting
+PNG diff before committing it.
+
 The workflow has no repository write permission or secrets. It checks out the
 workflow's own commit as trusted tooling, checks out the requested source into
 a separate directory without persisted credentials, and fails before rendering
-unless the host matches the exact canonical renderer. Two fresh macOS runners
-then run the deterministic dashboard tests, build the release renderer, and
-package independent candidates. A separate Linux job publishes the 14-day
-verified artifact only when the two complete bundles are byte-identical.
+unless the host matches the exact canonical renderer. A cheap Linux preflight
+rejects malformed or unreachable commits before macOS capacity is allocated.
+Two fresh macOS runners then run the deterministic dashboard tests, build the
+release renderer, and package independent candidates. A separate Linux job
+publishes the 14-day verified artifact only when the two complete bundles are
+byte-identical.
+
+Candidate generation is manual and globally serialized: one request may use
+the two required macOS replicas, while at most the newest additional request
+waits. An in-progress proof is not cancelled, but a failed replica cancels its
+peer because no verified bundle can then be published. Unverified replica
+artifacts expire after one day; only the verified bundle is retained for 14
+days. Ordinary branch CI separately cancels superseded runs for the same PR or
+branch and bounds every job with a timeout.
 
 A successful run proves repeatable generation; it does not approve a visual
 change. Before promotion, verify the manifest's source and renderer identities
@@ -128,6 +187,8 @@ and baseline approval as separate review gates.
 | dashboard test, build, or render | the requested source cannot produce the fixed review matrix |
 | candidate packaging | the image inventory, PNG structure, dimensions, or identity evidence is invalid |
 | independent bundle comparison | the renderer or host image was not reproducible; no verified candidate is published |
+| downloaded candidate validation | identity, schema, inventory, PNG, dimension, or hash evidence does not match |
+| candidate promotion | visual review was not confirmed or the existing reference destination is unsafe to replace |
 
 ## Selecting tests
 
