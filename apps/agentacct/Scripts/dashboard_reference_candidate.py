@@ -22,6 +22,7 @@ EXPECTED_IMAGES = {
 }
 FULL_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 SAFE_RENDERER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+SAFE_REFERENCE_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.png")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_PNG_BYTES = 64 * 1024 * 1024
@@ -119,22 +120,7 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def candidate_artifacts(images: Path) -> list[dict[str, object]]:
-    if images.is_symlink() or not images.is_dir():
-        raise CandidateError(f"candidate image directory must be a regular directory: {images}")
-
-    actual_names = {path.name for path in images.iterdir()}
-    expected_names = set(EXPECTED_IMAGES)
-    if actual_names != expected_names:
-        missing = sorted(expected_names - actual_names)
-        unexpected = sorted(actual_names - expected_names)
-        details = []
-        if missing:
-            details.append(f"missing: {', '.join(missing)}")
-        if unexpected:
-            details.append(f"unexpected: {', '.join(unexpected)}")
-        raise CandidateError("candidate image inventory mismatch (" + "; ".join(details) + ")")
-
+def _expected_artifacts(images: Path) -> list[dict[str, object]]:
     artifacts = []
     for filename, expected_dimensions in EXPECTED_IMAGES.items():
         path = images / filename
@@ -155,6 +141,55 @@ def candidate_artifacts(images: Path) -> list[dict[str, object]]:
             }
         )
     return artifacts
+
+
+def candidate_artifacts(images: Path) -> list[dict[str, object]]:
+    if images.is_symlink() or not images.is_dir():
+        raise CandidateError(f"candidate image directory must be a regular directory: {images}")
+
+    actual_names = {path.name for path in images.iterdir()}
+    expected_names = set(EXPECTED_IMAGES)
+    if actual_names != expected_names:
+        missing = sorted(expected_names - actual_names)
+        unexpected = sorted(actual_names - expected_names)
+        details = []
+        if missing:
+            details.append(f"missing: {', '.join(missing)}")
+        if unexpected:
+            details.append(f"unexpected: {', '.join(unexpected)}")
+        raise CandidateError("candidate image inventory mismatch (" + "; ".join(details) + ")")
+
+    return _expected_artifacts(images)
+
+
+def _reference_files(directory: Path) -> dict[str, Path]:
+    """Validate a shared renderer directory and return its safe PNG files."""
+    if directory.is_symlink() or not directory.is_dir():
+        raise CandidateError("reference destination must be a regular directory")
+
+    files: dict[str, Path] = {}
+    for path in directory.iterdir():
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or SAFE_REFERENCE_NAME_PATTERN.fullmatch(path.name) is None
+        ):
+            raise CandidateError(
+                "reference destination inventory mismatch "
+                "(expected only regular PNG files with safe names)"
+            )
+        checked_png_dimensions(path)
+        files[path.name] = path
+
+    expected_names = set(EXPECTED_IMAGES)
+    present_dashboard_names = set(files) & expected_names
+    if present_dashboard_names and present_dashboard_names != expected_names:
+        missing = sorted(expected_names - present_dashboard_names)
+        raise CandidateError(
+            "reference destination Dashboard inventory mismatch "
+            f"(missing: {', '.join(missing)})"
+        )
+    return files
 
 
 def build_manifest(
@@ -409,9 +444,12 @@ def promote_candidate_bundle(
     destination = references_root / renderer_id
     if destination.is_symlink():
         raise CandidateError("reference destination must not be a symlink")
+    existing_files: dict[str, Path] = {}
     if destination.exists():
-        existing_artifacts = candidate_artifacts(destination)
-        if existing_artifacts == manifest["artifacts"]:
+        existing_files = _reference_files(destination)
+        if set(EXPECTED_IMAGES).issubset(existing_files) and (
+            _expected_artifacts(destination) == manifest["artifacts"]
+        ):
             return destination, False
 
     staging = _temporary_directory(
@@ -419,9 +457,26 @@ def promote_candidate_bundle(
         f".{renderer_id}.candidate-",
     )
     try:
+        preserved_hashes: dict[str, str] = {}
+        for filename, source in sorted(existing_files.items()):
+            if filename in EXPECTED_IMAGES:
+                continue
+            preserved_hashes[filename] = file_sha256(source)
+            _copy_regular_file(source, staging / filename)
         for filename in EXPECTED_IMAGES:
             _copy_regular_file(candidate / "images" / filename, staging / filename)
-        if candidate_artifacts(staging) != manifest["artifacts"]:
+        staged_files = _reference_files(staging)
+        expected_staged_names = (set(existing_files) - set(EXPECTED_IMAGES)) | set(
+            EXPECTED_IMAGES
+        )
+        if set(staged_files) != expected_staged_names:
+            raise CandidateError("staged reference inventory is incomplete")
+        for filename, expected_hash in preserved_hashes.items():
+            if file_sha256(staged_files[filename]) != expected_hash:
+                raise CandidateError(
+                    f"staged reference bytes changed for preserved image: {filename}"
+                )
+        if _expected_artifacts(staging) != manifest["artifacts"]:
             raise CandidateError("staged reference bytes do not match the validated candidate")
         _sync_directory(staging)
 

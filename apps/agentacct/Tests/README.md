@@ -149,11 +149,13 @@ git diff --stat -- Tests/agentacctTests/ReferenceImages
 ```
 
 Promotion repeats the full validation, requires an explicit review
-confirmation, stages all four files before replacing the renderer directory,
-and restores the original directory if the replacement fails. An already
-identical candidate is a no-op. The command never renders locally, stages Git
-changes, commits, pushes, or approves the visual change; review the resulting
-PNG diff before committing it.
+confirmation, and stages all four Dashboard files alongside byte-preserved,
+validated PNGs owned by other visual suites before atomically replacing the
+shared renderer directory. It rejects symlinks, non-PNG entries, and partial
+Dashboard sets, and restores the original directory if the replacement fails.
+An already identical candidate is a no-op. The command never renders locally,
+stages Git changes, commits, pushes, or approves the visual change; review the
+resulting PNG diff before committing it.
 
 The workflow has no repository write permission or secrets. It checks out the
 workflow's own commit as trusted tooling, checks out the requested source into
