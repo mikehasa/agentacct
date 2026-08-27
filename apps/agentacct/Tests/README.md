@@ -284,13 +284,15 @@ Keep ad-hoc PNGs outside the repository.
 The Work renderer drives the real `MainWindow` through the browse and selected-
 receipt paths. Its versioned fixture includes long action previews, six checks,
 missing CI evidence, two root-session groups, and a subagent. The two primary
-states render at both supported window sizes; transient states render at the
-standard viewport in both appearances.
+states render at both supported window sizes; the expanded action inspector has
+a taller detail viewport; transient states render at the standard viewport. All
+states cover both appearances.
 
 | State | Viewport coverage | Source-tree artifacts |
 | --- | --- | --- |
 | populated table | 960 × 560 pt and 1120 × 800 pt, light/dark | `work-table-*.png` |
 | populated receipt | 960 × 560 pt and 1120 × 800 pt, light/dark | `work-receipt-{minimum,reference}-*.png` |
+| action details: Files, Commands, Tools selected | 1120 × 1000 pt each, light/dark | `work-receipt-actions-{files,commands,tools}-detail-*.png` |
 | empty table | 1120 × 800 pt, light/dark | `work-empty-reference-*.png` |
 | list error | 1120 × 800 pt, light/dark | `work-list-error-reference-*.png` |
 | receipt loading | 1120 × 800 pt, light/dark | `work-receipt-loading-reference-*.png` |
@@ -306,7 +308,7 @@ open /tmp/agentacct-work-review
 ```
 
 Ad-hoc and CI artifact images are review aids only. The visual test reads the
-16 canonical PNGs from `Tests/agentacctTests/ReferenceImages/<platform-id>`, so
+22 canonical PNGs from `Tests/agentacctTests/ReferenceImages/<platform-id>`, so
 a Work UI change is not visually verified until those source-tree files are
 reviewed and committed.
 

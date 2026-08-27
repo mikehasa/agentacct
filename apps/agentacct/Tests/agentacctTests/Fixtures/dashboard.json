@@ -422,8 +422,7 @@
             "update_plan": 2,
             "open": 1
           },
-          "provenance": ["client_log"],
-          "gaps": ["14 additional touched paths are available through disclosure"]
+          "provenance": ["client_log"]
         },
         "cost": {
           "estimated_cost_usd": 4.82,
@@ -520,9 +519,8 @@
           "provenance": ["agent_report", "client_hook"]
         },
         "gaps": {
-          "count": 3,
+          "count": 2,
           "items": [
-            {"dimension": "actions", "reason": "14 touched paths are collapsed behind the disclosure."},
             {"dimension": "evidence", "reason": "No hosted CI evidence is attached to this receipt."},
             {"dimension": "cost", "reason": "Dollar cost is estimated from the pricing table."}
           ]

@@ -3,6 +3,9 @@ import SwiftUI
 enum WorkSnapshotState: String {
     case table
     case receipt
+    case receiptActionsFiles = "receipt-actions-files"
+    case receiptActionsCommands = "receipt-actions-commands"
+    case receiptActionsTools = "receipt-actions-tools"
     case empty
     case listError = "list-error"
     case receiptLoading = "receipt-loading"
@@ -10,7 +13,8 @@ enum WorkSnapshotState: String {
 
     var storeState: SnapshotWorkStoreState {
         switch self {
-        case .table, .receipt: return .populated
+        case .table, .receipt, .receiptActionsFiles, .receiptActionsCommands, .receiptActionsTools:
+            return .populated
         case .empty: return .empty
         case .listError: return .listError
         case .receiptLoading: return .receiptLoading
@@ -20,8 +24,19 @@ enum WorkSnapshotState: String {
 
     var selectsReceipt: Bool {
         switch self {
-        case .receipt, .receiptLoading, .receiptError: return true
+        case .receipt, .receiptActionsFiles, .receiptActionsCommands, .receiptActionsTools,
+             .receiptLoading, .receiptError:
+            return true
         case .table, .empty, .listError: return false
+        }
+    }
+
+    var actionDetailKind: ActionDetailKind? {
+        switch self {
+        case .receiptActionsFiles: return .files
+        case .receiptActionsCommands: return .commands
+        case .receiptActionsTools: return .tools
+        case .table, .receipt, .empty, .listError, .receiptLoading, .receiptError: return nil
         }
     }
 }
@@ -58,7 +73,22 @@ struct WorkSnapshotConfiguration {
                 Self(state: state, viewport: "reference", width: 1120, height: 800, colorScheme: .dark),
             ]
         }
-        return core + transient
+        let actionDetails = [
+            WorkSnapshotState.receiptActionsFiles,
+            .receiptActionsCommands,
+            .receiptActionsTools,
+        ].flatMap { state in
+            [ColorScheme.light, .dark].map { scheme in
+                Self(
+                    state: state,
+                    viewport: "detail",
+                    width: 1120,
+                    height: 1000,
+                    colorScheme: scheme
+                )
+            }
+        }
+        return core + actionDetails + transient
     }()
 }
 
@@ -131,6 +161,7 @@ enum WorkSnapshotRenderer {
                 .environment(\.controlSize, .regular)
                 .environment(\.legibilityWeight, nil)
                 .environment(\.appearsActive, true)
+                .environment(\.workActionDetailsSelectionForSnapshot, configuration.state.actionDetailKind)
                 .transaction { transaction in
                     transaction.disablesAnimations = true
                 }

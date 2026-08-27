@@ -20,6 +20,12 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "work-receipt-minimum-dark.png", pixelsWide: 1920, pixelsHigh: 1120),
         ExpectedArtifact(filename: "work-receipt-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-receipt-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "work-receipt-actions-files-detail-light.png", pixelsWide: 2240, pixelsHigh: 2000),
+        ExpectedArtifact(filename: "work-receipt-actions-files-detail-dark.png", pixelsWide: 2240, pixelsHigh: 2000),
+        ExpectedArtifact(filename: "work-receipt-actions-commands-detail-light.png", pixelsWide: 2240, pixelsHigh: 2000),
+        ExpectedArtifact(filename: "work-receipt-actions-commands-detail-dark.png", pixelsWide: 2240, pixelsHigh: 2000),
+        ExpectedArtifact(filename: "work-receipt-actions-tools-detail-light.png", pixelsWide: 2240, pixelsHigh: 2000),
+        ExpectedArtifact(filename: "work-receipt-actions-tools-detail-dark.png", pixelsWide: 2240, pixelsHigh: 2000),
         ExpectedArtifact(filename: "work-empty-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-empty-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-list-error-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
@@ -52,6 +58,11 @@ final class WorkSnapshotHarnessTests: XCTestCase {
             work.receipt.dimensions.actions.commandCount,
             "The fixture must exercise the complete in-place commands disclosure"
         )
+        XCTAssertTrue(
+            work.receipt.dimensions.actions.gaps?.isEmpty ?? true,
+            "Fully available action details must not be described as missing evidence"
+        )
+        XCTAssertEqual(work.receipt.dimensions.gaps.count, 2)
         XCTAssertGreaterThanOrEqual(work.receipt.dimensions.evidence.checks?.count ?? 0, 6)
         XCTAssertFalse(work.receipt.dimensions.provenance.sourcesPresent?.contains("ci") ?? false)
         XCTAssertGreaterThanOrEqual(work.receipt.sessions?.count ?? 0, 2)
@@ -127,6 +138,24 @@ final class WorkSnapshotHarnessTests: XCTestCase {
             transientDifference.changedPixelFraction,
             0.001,
             "Loading and error states must remain visually distinguishable"
+        )
+        let disclosureDifference = try VisualSnapshotHarness.compare(
+            expectedURL: firstDirectory.appendingPathComponent("work-receipt-reference-light.png"),
+            actualURL: firstDirectory.appendingPathComponent("work-receipt-actions-files-detail-light.png")
+        )
+        XCTAssertGreaterThan(
+            disclosureDifference.changedPixelFraction,
+            0.005,
+            "Collapsed and expanded action details must remain visually distinguishable"
+        )
+        let categoryDifference = try VisualSnapshotHarness.compare(
+            expectedURL: firstDirectory.appendingPathComponent("work-receipt-actions-files-detail-light.png"),
+            actualURL: firstDirectory.appendingPathComponent("work-receipt-actions-commands-detail-light.png")
+        )
+        XCTAssertGreaterThan(
+            categoryDifference.changedPixelFraction,
+            0.005,
+            "Each selected action category must render distinct content and state"
         )
         XCTAssertFalse(SnapshotMode.enabled)
         XCTAssertFalse(SnapshotMode.boundsScrollContentToViewport)

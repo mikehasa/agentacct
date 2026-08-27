@@ -291,36 +291,19 @@ struct RecordDimensionsCard: View {
             let commands = availableCommands
             let toolRows = availableToolRows
             if !files.isEmpty || !commands.isEmpty || !toolRows.isEmpty {
-                VStack(alignment: .leading, spacing: 2) {
-                    if !files.isEmpty {
-                        ActionListDisclosure(
-                            rows: files,
-                            noun: "files",
-                            totalCount: actionDim.touchedFileCount,
-                            rowPrefix: ""
-                        )
-                    }
-                    if !commands.isEmpty {
-                        ActionListDisclosure(
-                            rows: commands,
-                            noun: "commands",
-                            totalCount: actionDim.commandCount,
-                            rowPrefix: "$ "
-                        )
-                    }
-                    // Keep tools reachable for read/search-only receipts too.
-                    if !toolRows.isEmpty {
-                        ActionListDisclosure(
-                            rows: toolRows,
-                            noun: "tools",
-                            totalCount: toolNameTotalCount,
-                            rowPrefix: ""
-                        )
-                    }
-                }
+                // One grouped inspector keeps the first scan quiet while every
+                // delivered row remains reachable without another page or fetch.
+                ActionDetailsDisclosure(
+                    files: files,
+                    fileTotal: actionDim.touchedFileCount,
+                    commands: commands,
+                    commandTotal: actionDim.commandCount,
+                    tools: toolRows,
+                    toolTotal: toolNameTotalCount
+                )
                 .padding(.leading, 128 + Space.l)
                 .padding(.bottom, Space.m)
-                .padding(.top, -Space.s)
+                .padding(.top, -Space.xs)
             }
         }
     }
@@ -458,118 +441,268 @@ struct RecordDimensionsCard: View {
     }
 }
 
-// MARK: - Action list disclosure
+// MARK: - Action details disclosure
 
-func actionDisclosureLabel(
+func actionDisclosureCountLabel(
     noun: String,
     availableCount: Int,
-    totalCount: Int?,
-    expanded: Bool
+    totalCount: Int?
 ) -> String? {
     guard availableCount > 0 else { return nil }
-    if expanded { return "Collapse \(noun)" }
     let resolvedTotal = max(availableCount, totalCount ?? availableCount)
     let countedNoun = resolvedTotal == 1 && noun.hasSuffix("s") ? String(noun.dropLast()) : noun
     if resolvedTotal > availableCount {
-        return "Show \(availableCount) of \(resolvedTotal) \(countedNoun)"
+        return "\(availableCount) of \(resolvedTotal) \(countedNoun)"
     }
-    return "Show \(availableCount) \(countedNoun)"
+    return "\(availableCount) \(countedNoun)"
 }
 
-/// One Actions sub-list (files / commands / tools) as an in-place disclosure.
-///
-/// Collapsed = one compact, counted control; it never dumps paths or commands
-/// into the receipt's first scan. Expanded = every available row — already
-/// riding the payload, no extra fetch — in a height-capped internal scroll
-/// region, so 1,000 commands never stretch the
-/// record page and never need a second-level page. Rows wrap and are selectable
-/// when expanded: the point of expanding is to actually read and copy them.
-/// Snapshot mode renders the same collapsed affordance statically because the
-/// offscreen renderer cannot drive buttons or ScrollViews.
-private struct ActionListDisclosure: View {
+private struct WorkActionDetailsSelectionForSnapshotKey: EnvironmentKey {
+    static let defaultValue: ActionDetailKind? = nil
+}
+
+extension EnvironmentValues {
+    var workActionDetailsSelectionForSnapshot: ActionDetailKind? {
+        get { self[WorkActionDetailsSelectionForSnapshotKey.self] }
+        set { self[WorkActionDetailsSelectionForSnapshotKey.self] = newValue }
+    }
+}
+
+enum ActionDetailKind: String, CaseIterable, Identifiable {
+    case files
+    case commands
+    case tools
+
+    var id: Self { self }
+    var title: String { rawValue.capitalized }
+
+    var symbol: String {
+        switch self {
+        case .files: return "doc.text"
+        case .commands: return "terminal"
+        case .tools: return "wrench.and.screwdriver"
+        }
+    }
+}
+
+private struct ActionDetailGroup: Identifiable {
+    let kind: ActionDetailKind
     let rows: [String]
-    let noun: String
     let totalCount: Int?
     let rowPrefix: String
-    @State private var expanded = false
 
-    var body: some View {
-        if expanded {
-            expandedList
-        } else {
-            collapsedList
-        }
+    var id: ActionDetailKind { kind }
+
+    var countLabel: String {
+        actionDisclosureCountLabel(
+            noun: kind.rawValue,
+            availableCount: rows.count,
+            totalCount: totalCount
+        ) ?? kind.rawValue
+    }
+
+    var compactCount: String {
+        let total = max(rows.count, totalCount ?? rows.count)
+        return total > rows.count ? "\(rows.count)/\(total)" : "\(rows.count)"
+    }
+}
+
+/// A single inspector-style disclosure for all detailed action evidence.
+/// Collapsed, it is one calm, counted control instead of three link rows.
+/// Expanded, it keeps files, commands, and tools in a bounded category browser;
+/// rows remain selectable and no network work or second-level page is required.
+private struct ActionDetailsDisclosure: View {
+    let files: [String]
+    let fileTotal: Int?
+    let commands: [String]
+    let commandTotal: Int?
+    let tools: [String]
+    let toolTotal: Int?
+
+    @State private var expanded = false
+    @State private var selectedKind: ActionDetailKind = .files
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.workActionDetailsSelectionForSnapshot) private var snapshotSelection
+
+    private var groups: [ActionDetailGroup] {
+        [
+            ActionDetailGroup(kind: .files, rows: files, totalCount: fileTotal, rowPrefix: ""),
+            ActionDetailGroup(kind: .commands, rows: commands, totalCount: commandTotal, rowPrefix: "$ "),
+            ActionDetailGroup(kind: .tools, rows: tools, totalCount: toolTotal, rowPrefix: ""),
+        ].filter { !$0.rows.isEmpty }
+    }
+
+    private var isExpanded: Bool {
+        SnapshotMode.enabled ? snapshotSelection != nil : expanded
+    }
+
+    private var activeGroup: ActionDetailGroup? {
+        let activeKind = SnapshotMode.enabled ? snapshotSelection : selectedKind
+        return groups.first { $0.kind == activeKind } ?? groups.first
+    }
+
+    private var countSummary: String {
+        groups.map(\.countLabel).joined(separator: " · ")
     }
 
     @ViewBuilder
-    private var collapsedList: some View {
-        if let label = actionDisclosureLabel(
-            noun: noun,
-            availableCount: rows.count,
-            totalCount: totalCount,
-            expanded: false
-        ) {
-            if SnapshotMode.enabled {
-                HStack(spacing: 4) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 8, weight: .semibold))
-                    Text(label).font(Type.dataSmall)
-                }
-                .foregroundStyle(Theme.accent)
-            } else {
-                Button {
-                    withAnimation(Motion.contentUpdate) { expanded = true }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 8, weight: .semibold))
-                        Text(label).font(Type.dataSmall)
+    var body: some View {
+        if let activeGroup {
+            VStack(alignment: .leading, spacing: 0) {
+                if SnapshotMode.enabled {
+                    header
+                } else {
+                    Button {
+                        withAnimation(reduceMotion ? nil : Motion.contentUpdate) {
+                            expanded.toggle()
+                        }
+                    } label: {
+                        header
                     }
-                    .foregroundStyle(Theme.accent)
+                    .buttonStyle(QuietButtonStyle(
+                        tint: Theme.accent,
+                        horizontalPadding: 0,
+                        verticalPadding: 0
+                    ))
+                    .accessibilityLabel(isExpanded ? "Hide action details" : "Show action details")
+                    .accessibilityValue(countSummary)
+                    .accessibilityIdentifier("receipt.actions.toggle")
+                    .help(countSummary)
+                }
+
+                if isExpanded {
+                    Rectangle().fill(Theme.cardLine).frame(height: Metrics.borderW)
+                    categoryPicker(activeKind: activeGroup.kind)
+                    Rectangle().fill(Theme.hairline).frame(height: 1)
+                    detailRows(activeGroup)
+                }
+            }
+            .background(
+                Theme.tintNeutral.opacity(0.38),
+                in: RoundedRectangle(cornerRadius: Metrics.radius)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Metrics.radius)
+                    .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW)
+            )
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: Space.s) {
+            Image(systemName: "list.bullet.rectangle")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.accent)
+                .frame(width: 26, height: 26)
+                .background(Theme.tintAccent, in: RoundedRectangle(cornerRadius: 3))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Action details")
+                    .font(Type.dataSmallSemibold)
+                    .foregroundStyle(Theme.ink)
+                HStack(spacing: 10) {
+                    ForEach(groups) { group in
+                        HStack(spacing: 4) {
+                            Image(systemName: group.kind.symbol)
+                                .font(.system(size: 9, weight: .medium))
+                            Text(group.compactCount)
+                                .font(Type.dataSmall)
+                                .monospacedDigit()
+                        }
+                    }
+                }
+                .foregroundStyle(Theme.muted)
+            }
+            Spacer(minLength: Space.s)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Theme.accent)
+                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private func categoryPicker(activeKind: ActionDetailKind) -> some View {
+        HStack(spacing: Space.xs) {
+            ForEach(groups) { group in
+                let selected = group.kind == activeKind
+                Button {
+                    withAnimation(reduceMotion ? nil : Motion.feedback) {
+                        selectedKind = group.kind
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: group.kind.symbol)
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(group.kind.title)
+                            .font(Type.dataSmallSemibold)
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(selected ? Theme.accent : Theme.muted)
+                    .padding(.horizontal, 6)
+                    .frame(maxWidth: .infinity, minHeight: Metrics.buttonHCompact)
+                    .background(
+                        selected ? Theme.card : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 3)
+                    )
+                    .overlay {
+                        if selected {
+                            RoundedRectangle(cornerRadius: 3)
+                                .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW)
+                        }
+                    }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityIdentifier("receipt.actions.expand.\(noun)")
+                .accessibilityLabel("\(group.kind.title), \(group.countLabel)")
+                .accessibilityAddTraits(selected ? .isSelected : [])
+                .accessibilityIdentifier("receipt.actions.category.\(group.kind.rawValue)")
+                .help("\(group.kind.title): \(group.countLabel)")
             }
         }
+        .padding(Space.xs)
     }
 
     @ViewBuilder
-    private var expandedList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Rectangle().fill(Theme.hairline).frame(height: 1)
-            ScrollView(showsIndicators: true) {
-                LazyVStack(alignment: .leading, spacing: 3) {
-                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                        Text(verbatim: rowPrefix + row).font(Type.dataSmall).foregroundStyle(Theme.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+    private func detailRows(_ group: ActionDetailGroup) -> some View {
+        if SnapshotMode.enabled {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(group.rows.enumerated()), id: \.offset) { index, row in
+                    detailRow(row, prefix: group.rowPrefix)
+                    if index < group.rows.count - 1 {
+                        Rectangle().fill(Theme.hairline).frame(height: 1)
                     }
                 }
-                .padding(.vertical, Space.s)
+            }
+            .frame(maxHeight: 276, alignment: .top)
+            .clipped()
+        } else {
+            ScrollView(showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(group.rows.enumerated()), id: \.offset) { index, row in
+                        detailRow(row, prefix: group.rowPrefix)
+                        if index < group.rows.count - 1 {
+                            Rectangle().fill(Theme.hairline).frame(height: 1)
+                        }
+                    }
+                }
                 .textSelection(.enabled)
             }
-            .frame(maxHeight: 340)
-            Rectangle().fill(Theme.hairline).frame(height: 1)
+            .frame(maxHeight: 276)
         }
-        Button {
-            withAnimation(Motion.contentUpdate) { expanded = false }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "chevron.up").font(.system(size: 8, weight: .semibold))
-                Text(actionDisclosureLabel(
-                    noun: noun,
-                    availableCount: rows.count,
-                    totalCount: totalCount,
-                    expanded: true
-                ) ?? "Collapse")
-                    .font(Type.dataSmall)
-            }
-            .foregroundStyle(Theme.accent)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("receipt.actions.collapse.\(noun)")
+    }
+
+    private func detailRow(_ row: String, prefix: String) -> some View {
+        Text(verbatim: prefix + row)
+            .font(Type.dataSmall)
+            .foregroundStyle(Theme.muted)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
     }
 }
 
