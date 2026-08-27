@@ -1,0 +1,130 @@
+name: visual reference candidates
+run-name: Visual reference candidate for ${{ inputs.ref }}
+
+"on":
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Full commit SHA to render from this repository
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: visual-reference-candidate-${{ inputs.ref }}
+  cancel-in-progress: false
+
+jobs:
+  render:
+    name: Render candidate (${{ matrix.replica }})
+    runs-on: macos-26
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [a, b]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      TZ: UTC
+    steps:
+      - name: Validate requested commit
+        env:
+          REQUESTED_COMMIT: ${{ inputs.ref }}
+        run: |
+          if [[ ! "$REQUESTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ref must be a full lowercase 40-character commit SHA" >&2
+            exit 2
+          fi
+      - name: Check out trusted candidate tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Check out requested source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify checked-out source identity
+        env:
+          REQUESTED_COMMIT: ${{ inputs.ref }}
+        run: |
+          actual_commit="$(git -C source rev-parse HEAD)"
+          if [[ "$actual_commit" != "$REQUESTED_COMMIT" ]]; then
+            echo "requested $REQUESTED_COMMIT but checked out $actual_commit" >&2
+            exit 2
+          fi
+      - name: Check canonical renderer
+        id: renderer
+        run: |
+          renderer_id="$(trusted/apps/agentacct/Scripts/visual-snapshots check-environment)"
+          echo "renderer_id=$renderer_id" >> "$GITHUB_OUTPUT"
+      - name: Run deterministic dashboard render tests
+        working-directory: source/apps/agentacct
+        run: swift test --filter DashboardSnapshotHarnessTests
+      - name: Build release renderer
+        working-directory: source/apps/agentacct
+        run: swift build -c release
+      - name: Render dashboard candidate
+        working-directory: source/apps/agentacct
+        run: |
+          candidate_root="$RUNNER_TEMP/dashboard-reference-candidate"
+          mkdir -p "$candidate_root/images"
+          .build/release/agentacct \
+            --snapshot-dashboard-fixture \
+            Tests/agentacctTests/Fixtures/dashboard.json \
+            "$candidate_root/images"
+      - name: Package candidate manifest
+        env:
+          RENDERER_ID: ${{ steps.renderer.outputs.renderer_id }}
+          REQUESTED_COMMIT: ${{ inputs.ref }}
+        run: |
+          : "${ImageOS:?GitHub-hosted runner did not set ImageOS}"
+          : "${ImageVersion:?GitHub-hosted runner did not set ImageVersion}"
+          trusted/apps/agentacct/Scripts/package-dashboard-reference-candidate \
+            --images "$RUNNER_TEMP/dashboard-reference-candidate/images" \
+            --output "$RUNNER_TEMP/dashboard-reference-candidate/manifest.json" \
+            --source-commit "$REQUESTED_COMMIT" \
+            --renderer-id "$RENDERER_ID" \
+            --runner-image "$ImageOS" \
+            --runner-image-version "$ImageVersion"
+      - name: Upload replica
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-reference-candidate-${{ inputs.ref }}-${{ matrix.replica }}
+          path: ${{ runner.temp }}/dashboard-reference-candidate
+          if-no-files-found: error
+          retention-days: 1
+
+  verify:
+    name: Verify independent candidates
+    needs: render
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download replica A
+        uses: actions/download-artifact@v4
+        with:
+          name: dashboard-reference-candidate-${{ inputs.ref }}-a
+          path: replicas/a
+      - name: Download replica B
+        uses: actions/download-artifact@v4
+        with:
+          name: dashboard-reference-candidate-${{ inputs.ref }}-b
+          path: replicas/b
+      - name: Require byte-identical bundles
+        run: diff --recursive --brief --no-dereference replicas/a replicas/b
+      - name: Upload verified candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-reference-candidate-${{ inputs.ref }}
+          path: replicas/a
+          if-no-files-found: error
+          retention-days: 14
