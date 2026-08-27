@@ -26,7 +26,7 @@ OTHER_COMMIT = "89abcdef0123456789abcdef0123456789abcdef"
 RENDERER_ID = "macos-test-build-xcode-test-build-arm64-2x"
 
 sys.path.insert(0, str(APP_DIR / "Scripts"))
-from dashboard_reference_candidate import promote_candidate_bundle  # noqa: E402
+import dashboard_reference_candidate  # noqa: E402
 
 
 def run(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -246,7 +246,7 @@ def main() -> None:
             side_effect=fail_staging_swap,
         ):
             try:
-                promote_candidate_bundle(
+                dashboard_reference_candidate.promote_candidate_bundle(
                     changed_candidate,
                     SOURCE_COMMIT,
                     RENDERER_ID,
@@ -267,6 +267,48 @@ def main() -> None:
         require(
             [path.name for path in rollback_root.iterdir()] == [RENDERER_ID],
             "failed directory swap left staging or backup directories behind",
+        )
+
+        sync_failure_root = root / "sync-failure-references"
+        sync_failure_root.mkdir()
+        sync_failure_destination = sync_failure_root / RENDERER_ID
+        shutil.copytree(reference_directories[0], sync_failure_destination)
+        sync_failure_before = {
+            path.name: path.read_bytes() for path in sync_failure_destination.iterdir()
+        }
+        real_sync_directory = dashboard_reference_candidate._sync_directory
+
+        def fail_reference_root_sync(path: Path) -> None:
+            if path == sync_failure_root:
+                raise OSError("simulated reference-root sync failure")
+            real_sync_directory(path)
+
+        with mock.patch(
+            "dashboard_reference_candidate._sync_directory",
+            side_effect=fail_reference_root_sync,
+        ):
+            try:
+                dashboard_reference_candidate.promote_candidate_bundle(
+                    changed_candidate,
+                    SOURCE_COMMIT,
+                    RENDERER_ID,
+                    sync_failure_root,
+                )
+            except OSError as error:
+                require("simulated reference-root sync failure" in str(error), str(error))
+            else:
+                raise AssertionError("promotion sync failure did not propagate")
+        require(
+            {
+                path.name: path.read_bytes()
+                for path in sync_failure_destination.iterdir()
+            }
+            == sync_failure_before,
+            "failed reference-root sync did not restore the original references",
+        )
+        require(
+            [path.name for path in sync_failure_root.iterdir()] == [RENDERER_ID],
+            "failed reference-root sync left staging or backup directories behind",
         )
 
         before_wrong_identity = {

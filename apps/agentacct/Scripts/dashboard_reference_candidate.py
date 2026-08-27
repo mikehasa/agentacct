@@ -343,6 +343,54 @@ def _sync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _temporary_directory(references_root: Path, prefix: str) -> Path:
+    path = Path(tempfile.mkdtemp(prefix=prefix, dir=references_root))
+    path.chmod(0o755)
+    return path
+
+
+def _install_staged_references(
+    staging: Path,
+    destination: Path,
+    references_root: Path,
+) -> Path | None:
+    """Install staging and restore the previous directory if commit fails."""
+    backup: Path | None = None
+    installed = False
+    try:
+        if destination.exists():
+            backup = _temporary_directory(
+                references_root,
+                f".{destination.name}.backup-",
+            )
+            backup.rmdir()
+            os.replace(destination, backup)
+
+        os.replace(staging, destination)
+        installed = True
+        _sync_directory(references_root)
+    except OSError:
+        try:
+            if installed:
+                os.replace(destination, staging)
+            if backup is not None:
+                os.replace(backup, destination)
+                backup = None
+        except OSError as rollback_error:
+            backup_hint = (
+                f"; the previous references remain at {backup}"
+                if backup is not None and backup.exists()
+                else ""
+            )
+            raise CandidateError(
+                "reference promotion failed and rollback could not restore the previous "
+                f"directory{backup_hint}"
+            ) from rollback_error
+        raise
+
+    return backup
+
+
 def promote_candidate_bundle(
     candidate: Path,
     expected_source_commit: object,
@@ -366,11 +414,10 @@ def promote_candidate_bundle(
         if existing_artifacts == manifest["artifacts"]:
             return destination, False
 
-    staging: Path | None = Path(
-        tempfile.mkdtemp(prefix=f".{renderer_id}.candidate-", dir=references_root)
+    staging = _temporary_directory(
+        references_root,
+        f".{renderer_id}.candidate-",
     )
-    staging.chmod(0o755)
-    backup: Path | None = None
     try:
         for filename in EXPECTED_IMAGES:
             _copy_regular_file(candidate / "images" / filename, staging / filename)
@@ -378,33 +425,17 @@ def promote_candidate_bundle(
             raise CandidateError("staged reference bytes do not match the validated candidate")
         _sync_directory(staging)
 
-        if destination.exists():
-            backup = Path(
-                tempfile.mkdtemp(prefix=f".{renderer_id}.backup-", dir=references_root)
-            )
-            backup.rmdir()
-            os.replace(destination, backup)
-        try:
-            os.replace(staging, destination)
-            staging = None
-        except OSError:
-            if backup is not None:
-                os.replace(backup, destination)
-                backup = None
-            raise
-        _sync_directory(references_root)
-
+        backup = _install_staged_references(staging, destination, references_root)
         if backup is not None:
-            shutil.rmtree(backup)
-            backup = None
-            _sync_directory(references_root)
-    finally:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
-        if backup is not None and backup.exists():
-            if not destination.exists():
-                os.replace(backup, destination)
-            else:
+            try:
                 shutil.rmtree(backup)
+            except OSError as error:
+                raise CandidateError(
+                    "references were promoted, but the previous reference backup could not "
+                    f"be removed: {backup}"
+                ) from error
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
 
     return destination, True
