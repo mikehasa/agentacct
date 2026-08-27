@@ -1,11 +1,23 @@
 import SwiftUI
 
 // Entry point. `agentacct --snapshot <dir>` renders every pane from live daemon
-// data; the versioned fixture flags render deterministic dashboard, Work, or
-// menu review matrices without network or account data. Anything else launches
-// the app.
+// data; the fixture flags render deterministic About, dashboard, Work, or menu
+// review surfaces without network or account data. Anything else launches the
+// app.
 
-if let flagIndex = CommandLine.arguments.firstIndex(of: "--snapshot-work-fixture") {
+if let flagIndex = CommandLine.arguments.firstIndex(of: "--snapshot-about") {
+    if CommandLine.arguments.count > flagIndex + 2 {
+        SnapshotRunner.runAbout(
+            applicationIconPath: CommandLine.arguments[flagIndex + 1],
+            outputDir: CommandLine.arguments[flagIndex + 2]
+        )
+    } else {
+        FileHandle.standardError.write(
+            Data("usage: agentacct --snapshot-about <app-icon> <output-dir>\n".utf8)
+        )
+        exit(2)
+    }
+} else if let flagIndex = CommandLine.arguments.firstIndex(of: "--snapshot-work-fixture") {
     if CommandLine.arguments.count > flagIndex + 2 {
         SnapshotRunner.runWorkFixture(
             fixturePath: CommandLine.arguments[flagIndex + 1],
