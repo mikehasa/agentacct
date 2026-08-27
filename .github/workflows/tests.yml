@@ -90,6 +90,10 @@ jobs:
             --snapshot-menu-fixture \
             Tests/agentacctTests/Fixtures/dashboard.json \
             "$RUNNER_TEMP/agentacct-ui-review"
+          .build/release/agentacct \
+            --snapshot-work-fixture \
+            Tests/agentacctTests/Fixtures/dashboard.json \
+            "$RUNNER_TEMP/agentacct-ui-review"
       - name: Upload UI review matrix
         uses: actions/upload-artifact@v4
         with:

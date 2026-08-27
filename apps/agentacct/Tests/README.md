@@ -25,9 +25,9 @@ Check whether the current host exactly matches the reviewed-reference renderer:
 ./Scripts/visual-snapshots check-environment
 ```
 
-This project currently discovers `DashboardVisualRegressionTests` and
-`MenuVisualRegressionTests`. An empty list remains valid for another project or
-branch before its first visual suite.
+This project currently discovers `DashboardVisualRegressionTests`,
+`WorkVisualRegressionTests`, and `MenuVisualRegressionTests`. An empty list
+remains valid for another project or branch before its first visual suite.
 
 Verify one suite before changing its UI:
 
@@ -106,6 +106,37 @@ open /tmp/agentacct-dashboard-review
 ```
 
 Keep ad-hoc PNGs outside the repository.
+
+## Work review matrix
+
+The Work renderer drives the real `MainWindow` through the browse and selected-
+receipt paths. Its versioned fixture includes long action previews, six checks,
+missing CI evidence, two root-session groups, and a subagent. The two primary
+states render at both supported window sizes; transient states render at the
+standard viewport in both appearances.
+
+| State | Viewport coverage | Source-tree artifacts |
+| --- | --- | --- |
+| populated table | 960 × 560 pt and 1120 × 800 pt, light/dark | `work-table-*.png` |
+| populated receipt | 960 × 560 pt and 1120 × 800 pt, light/dark | `work-receipt-{minimum,reference}-*.png` |
+| empty table | 1120 × 800 pt, light/dark | `work-empty-reference-*.png` |
+| list error | 1120 × 800 pt, light/dark | `work-list-error-reference-*.png` |
+| receipt loading | 1120 × 800 pt, light/dark | `work-receipt-loading-reference-*.png` |
+| receipt error | 1120 × 800 pt, light/dark | `work-receipt-error-reference-*.png` |
+
+For an ad-hoc render that does not compare or update references:
+
+```bash
+swift run agentacct --snapshot-work-fixture \
+  Tests/agentacctTests/Fixtures/dashboard.json \
+  /tmp/agentacct-work-review
+open /tmp/agentacct-work-review
+```
+
+Ad-hoc and CI artifact images are review aids only. The visual test reads the
+16 canonical PNGs from `Tests/agentacctTests/ReferenceImages/<platform-id>`, so
+a Work UI change is not visually verified until those source-tree files are
+reviewed and committed.
 
 ## Menu review matrix
 
@@ -195,8 +226,9 @@ control:
 Dimensions must match exactly. Do not loosen the pixel budget to make a real
 change pass.
 
-The normal deterministic test renders the four-image matrix twice. When
-adopting a new renderer environment, also stress separate processes:
+The Dashboard deterministic test renders its four-image matrix twice; the Work
+test does the same for all 16 Work states and appearances. When adopting a new
+renderer environment, also stress separate Dashboard processes:
 
 ```bash
 for run_index in {1..10}; do
@@ -221,6 +253,11 @@ from pixels without repeating view-tree assertions.
 missing appearance or viewport, wrong dimensions, wall-clock leaks, dynamic
 content, animation, and same-process instability. It runs wherever Swift tests
 run and does not need approved images.
+
+`WorkSnapshotHarnessTests` applies the same deterministic contract to Work. It
+also rejects unsupported receipt/session schemas, verifies the fixture carries
+action overflow, checks, missing CI, and multiple session roots, and requires
+loading and error states to remain visually distinct.
 
 `VisualSnapshotHarnessTests` checks the dependency-free image lifecycle:
 normalization, strict magnitude and changed-area tolerances, honest dimension

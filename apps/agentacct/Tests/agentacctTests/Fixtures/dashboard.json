@@ -284,6 +284,483 @@
       }
     ]
   },
+  "work": {
+    "receipt": {
+      "schema_version": "agentacct.receipt.v1",
+      "task_id": "task-snapshot-harness",
+      "title": "Build reusable snapshot harness",
+      "duration_seconds": 5247,
+      "axes": {
+        "decision_status": {
+          "key": "verified",
+          "label": "Verified",
+          "statement": "The deterministic snapshot harness is implemented and its renderer checks passed.",
+          "asserted_by": "machine"
+        },
+        "evidence_strength": {
+          "key": "independently_checked",
+          "gradeable": true,
+          "strongest_tier": "independently_checked",
+          "checkable_total": 4,
+          "checked_total": 4,
+          "by_tier": {
+            "independently_checked": 4
+          },
+          "not_checkable": 1,
+          "open_or_incomplete": 0,
+          "hidden_in_subagents": 1,
+          "unattributed_checks": 2,
+          "total_steps": 5,
+          "checks_total": 6,
+          "checks_passed": 6,
+          "checks_failed": 0,
+          "definition": "Passing checks observed by a client hook cover every checkable step."
+        },
+        "orthogonality_note": "Evidence coverage and decision status are separate axes: an agent reporting done never adds a passing check, and a human review never counts as machine verification."
+      },
+      "dimensions": {
+        "task": {
+          "objectives": [
+            "Render the real Work surface from a deterministic versioned fixture",
+            "Protect light and dark layouts at minimum and reference window sizes"
+          ],
+          "boundary": {
+            "project": "agentacct-gui",
+            "identity_scope": "repository",
+            "session_count": 3
+          },
+          "provenance": ["agent_report", "client_log"]
+        },
+        "actors": {
+          "primary_agent": "codex",
+          "models": ["gpt-5.6-sol"],
+          "subagent_session_count": 1,
+          "child_session_count": 1,
+          "provenance": ["client_log"]
+        },
+        "actions": {
+          "tool_category_counts": {
+            "edit": 7,
+            "execute": 24,
+            "read": 38,
+            "search": 11
+          },
+          "tool_category_total": 80,
+          "touched_file_count": 18,
+          "touched_files_preview": [
+            "apps/agentacct/Sources/agentacct/DashboardSnapshotHarness.swift",
+            "apps/agentacct/Sources/agentacct/DashboardStore.swift",
+            "apps/agentacct/Sources/agentacct/WorkPane.swift",
+            "apps/agentacct/Tests/agentacctTests/DashboardSnapshotHarnessTests.swift"
+          ],
+          "touched_files_elided": 14,
+          "command_count": 24,
+          "commands_preview": [
+            "swift test --filter WorkSnapshotHarnessTests",
+            "./Scripts/visual-snapshots verify",
+            "swift build -c release"
+          ],
+          "commands_elided": 21,
+          "tool_names_preview": [
+            {"name": "exec_command", "count": 24},
+            {"name": "apply_patch", "count": 7},
+            {"name": "view_image", "count": 4}
+          ],
+          "tool_names_elided": 4,
+          "tool_name_counts": {
+            "exec_command": 24,
+            "apply_patch": 7,
+            "view_image": 4,
+            "record_machine_check": 3,
+            "record_section": 3,
+            "update_plan": 2,
+            "open": 1
+          },
+          "provenance": ["client_log"],
+          "gaps": ["14 additional touched paths are available through disclosure"]
+        },
+        "cost": {
+          "estimated_cost_usd": 4.82,
+          "cost_basis": "pricing_table",
+          "cost_confidence": "estimated",
+          "cost_complete": true,
+          "plan_share": {
+            "pct": 2.7,
+            "client": "codex",
+            "calibration_state": "calibrated",
+            "covered_sessions": 3,
+            "session_count": 3
+          },
+          "tokens": {
+            "fresh": 184200,
+            "cache_creation": 22400,
+            "cache_read": 612800,
+            "total": 819400
+          },
+          "provenance": ["client_log", "pricing_table"]
+        },
+        "evidence": {
+          "checks_total": 6,
+          "checks_passed": 6,
+          "checks_failed": 0,
+          "checks": [
+            {
+              "kind": "test",
+              "name": "Swift semantic suite",
+              "result": "passed",
+              "exit_code": 0,
+              "scope": "app",
+              "source": "hook",
+              "at": 1787589700,
+              "summary": "All Swift unit and interaction tests passed.",
+              "command_redacted": true
+            },
+            {
+              "kind": "test",
+              "name": "Deterministic repeat render",
+              "result": "passed",
+              "exit_code": 0,
+              "scope": "visual harness",
+              "source": "hook",
+              "at": 1787589740,
+              "summary": "Two fixture renders stayed inside the one-channel antialiasing budget.",
+              "artifact_ref": "snapshot-matrix"
+            },
+            {
+              "kind": "test",
+              "name": "Light and dark references",
+              "result": "passed",
+              "exit_code": 0,
+              "scope": "visual baselines",
+              "source": "hook",
+              "at": 1787589780
+            },
+            {
+              "kind": "build",
+              "name": "Release app build",
+              "result": "passed",
+              "exit_code": 0,
+              "scope": "macOS arm64",
+              "source": "hook",
+              "at": 1787589820
+            },
+            {
+              "kind": "lint",
+              "name": "Snapshot CLI contract",
+              "result": "passed",
+              "exit_code": 0,
+              "scope": "shell harness",
+              "source": "hook",
+              "at": 1787589840
+            },
+            {
+              "kind": "artifact",
+              "name": "Review PNG validation",
+              "result": "passed",
+              "exit_code": 0,
+              "scope": "8 images",
+              "source": "hook",
+              "at": 1787589860,
+              "files": ["Tests/agentacctTests/ReferenceImages"]
+            }
+          ],
+          "provenance": ["client_hook"],
+          "gaps": ["No hosted CI result is attached to this local receipt"]
+        },
+        "outcome": {
+          "decision_status": "verified",
+          "statement": "Deterministic fixture rendering and reviewed references are ready.",
+          "asserted_by": "machine",
+          "provenance": ["agent_report", "client_hook"]
+        },
+        "gaps": {
+          "count": 3,
+          "items": [
+            {"dimension": "actions", "reason": "14 touched paths are collapsed behind the disclosure."},
+            {"dimension": "evidence", "reason": "No hosted CI evidence is attached to this receipt."},
+            {"dimension": "cost", "reason": "Dollar cost is estimated from the pricing table."}
+          ]
+        },
+        "provenance": {
+          "by_dimension": {
+            "task": ["agent_report", "client_log"],
+            "actors": ["client_log"],
+            "actions": ["client_log"],
+            "cost": ["client_log", "pricing_table"],
+            "evidence": ["client_hook"],
+            "outcome": ["agent_report", "client_hook"]
+          },
+          "sources_present": ["agent_report", "client_log", "client_hook", "pricing_table"],
+          "legend": {
+            "agent_report": "Outcome and task objective reported by the agent.",
+            "client_log": "Actions and actors observed in the local client transcript.",
+            "client_hook": "Machine result observed by the local client integration.",
+            "pricing_table": "Estimated dollars derived from recorded token usage."
+          }
+        }
+      },
+      "sessions": [
+        {
+          "root": {"client": "codex", "client_session_id": "fixture-active-02"},
+          "role": "primary",
+          "lineage_state": "linked",
+          "supporting_count": 1,
+          "members": [
+            {
+              "client": "codex",
+              "client_session_id": "fixture-active-02",
+              "session_kind": "root",
+              "role": "root",
+              "title": "Build reusable snapshot harness",
+              "project": "agentacct-gui",
+              "last_activity_at": 1787589880
+            },
+            {
+              "client": "codex",
+              "client_session_id": "fixture-active-02:agent-review",
+              "session_kind": "review",
+              "role": "subagent",
+              "title": "Audit snapshot determinism",
+              "project": "agentacct-gui",
+              "last_activity_at": 1787589720
+            }
+          ]
+        },
+        {
+          "root": {"client": "codex", "client_session_id": "fixture-continuation-01"},
+          "role": "continuation",
+          "lineage_state": "linked",
+          "supporting_count": 0,
+          "members": [
+            {
+              "client": "codex",
+              "client_session_id": "fixture-continuation-01",
+              "session_kind": "root",
+              "role": "root",
+              "title": "Record reviewed visual references",
+              "project": "agentacct-gui",
+              "last_activity_at": 1787589860
+            }
+          ]
+        }
+      ]
+    },
+    "sessions": [
+      {
+        "schema": "agentacct.v1-session-detail.v1",
+        "generated_at": 1787590000,
+        "session": {
+          "session_key": "codex::fixture-active-02",
+          "client": "codex",
+          "client_session_id": "fixture-active-02",
+          "client_session_id_short": "fixture-",
+          "session_kind": "root",
+          "title": "Build reusable snapshot harness",
+          "project": "agentacct-gui",
+          "status": "completed",
+          "first_activity_at": 1787584633,
+          "last_activity_at": 1787589880,
+          "duration_seconds": 5247,
+          "instrumentation_state": "recording",
+          "observed_models": ["gpt-5.6-sol"],
+          "usage": {
+            "rows": 18,
+            "fresh_tokens": 142000,
+            "cache_read_tokens": 488000,
+            "total_tokens": 630000,
+            "estimated_cost_usd": 3.64,
+            "cost_confidence": "estimated"
+          },
+          "plan_pct": 2.1
+        },
+        "steps": [
+          {
+            "work_id": "snapshot-scope",
+            "section_id": "scope",
+            "title": "Define the review matrix",
+            "latest_status": "completed",
+            "kind": "planning",
+            "phase": "scope",
+            "started_at": 1787584633,
+            "updated_at": 1787586000,
+            "summary": "Pinned the two Work states, two viewports, and both appearances.",
+            "join_confidence": "exact",
+            "evidence_status": "passed",
+            "evidence_grade": "independently_checked",
+            "checks": [
+              {
+                "event_id": "check-scope",
+                "created_at": 1787586000,
+                "evidence_type": "test",
+                "result": "passed",
+                "summary": "Configuration contract covers all eight images.",
+                "exit_code": 0,
+                "source_type": "client_hook",
+                "check_identity": "work-matrix"
+              }
+            ]
+          },
+          {
+            "work_id": "snapshot-implement",
+            "section_id": "implementation",
+            "title": "Render real Work surfaces from the fixture",
+            "latest_status": "completed",
+            "kind": "implementation",
+            "phase": "rendering",
+            "started_at": 1787586000,
+            "updated_at": 1787588800,
+            "summary": "The table and selected receipt now use the same MainWindow path as the app.",
+            "files": [
+              "apps/agentacct/Sources/agentacct/WorkSnapshotHarness.swift",
+              "apps/agentacct/Tests/agentacctTests/Fixtures/dashboard.json"
+            ],
+            "join_confidence": "exact",
+            "evidence_status": "passed",
+            "evidence_grade": "independently_checked",
+            "checks": [
+              {
+                "event_id": "check-render",
+                "created_at": 1787588800,
+                "evidence_type": "test",
+                "result": "passed",
+                "summary": "Repeated renders stayed deterministic.",
+                "exit_code": 0,
+                "source_type": "client_hook",
+                "check_identity": "work-render"
+              }
+            ]
+          },
+          {
+            "work_id": "snapshot-review",
+            "section_id": "review",
+            "title": "Review the generated PNG matrix",
+            "latest_status": "completed",
+            "kind": "review",
+            "phase": "visual-qa",
+            "started_at": 1787588800,
+            "updated_at": 1787589880,
+            "summary": "Inspected table density, receipt hierarchy, and light/dark contrast at both sizes.",
+            "join_confidence": "exact",
+            "evidence_status": "passed",
+            "evidence_grade": "independently_checked",
+            "checks": [
+              {
+                "event_id": "check-review",
+                "created_at": 1787589880,
+                "evidence_type": "artifact",
+                "result": "passed",
+                "summary": "All eight PNGs are valid source-tree references.",
+                "exit_code": 0,
+                "source_type": "client_hook",
+                "check_identity": "work-pngs"
+              }
+            ]
+          },
+          {
+            "work_id": "snapshot-docs",
+            "section_id": "docs",
+            "title": "Document the canonical renderer workflow",
+            "latest_status": "completed",
+            "kind": "documentation",
+            "phase": "handoff",
+            "updated_at": 1787589860,
+            "summary": "Documented how to render, verify, and record only the Work suite.",
+            "join_confidence": "exact",
+            "evidence_status": "not_checked",
+            "evidence_grade": "claimed",
+            "checks": []
+          }
+        ],
+        "descendants": [
+          {
+            "client": "codex",
+            "client_session_id": "fixture-active-02:agent-review",
+            "client_session_id_short": "agent-review",
+            "title": "Audit snapshot determinism",
+            "status": "completed",
+            "last_activity_at": 1787589720,
+            "agent_type": "review",
+            "task": "Audit the Work snapshot harness for unstable inputs."
+          }
+        ],
+        "plan": {
+          "client": "codex",
+          "confidence": "calibrated",
+          "calibration_state": "calibrated",
+          "basis": "token_share",
+          "pct_own": 1.8,
+          "pct_children": 0.3,
+          "pct": 2.1
+        }
+      },
+      {
+        "schema": "agentacct.v1-session-detail.v1",
+        "generated_at": 1787590000,
+        "session": {
+          "session_key": "codex::fixture-active-02:agent-review",
+          "client": "codex",
+          "client_session_id": "fixture-active-02:agent-review",
+          "client_session_id_short": "agent-review",
+          "session_kind": "review",
+          "title": "Audit snapshot determinism",
+          "project": "agentacct-gui",
+          "status": "completed",
+          "first_activity_at": 1787587100,
+          "last_activity_at": 1787589720,
+          "duration_seconds": 2620,
+          "instrumentation_state": "recording",
+          "observed_models": ["gpt-5.6-sol"]
+        },
+        "steps": [
+          {
+            "work_id": "snapshot-adversarial-review",
+            "section_id": "adversarial-review",
+            "title": "Probe renderer nondeterminism",
+            "latest_status": "completed",
+            "kind": "review",
+            "summary": "Checked clocks, locale, animations, viewport bounds, and async loaders.",
+            "evidence_status": "passed",
+            "evidence_grade": "independently_checked",
+            "checks": []
+          }
+        ],
+        "descendants": []
+      },
+      {
+        "schema": "agentacct.v1-session-detail.v1",
+        "generated_at": 1787590000,
+        "session": {
+          "session_key": "codex::fixture-continuation-01",
+          "client": "codex",
+          "client_session_id": "fixture-continuation-01",
+          "client_session_id_short": "fixture-",
+          "session_kind": "root",
+          "title": "Record reviewed visual references",
+          "project": "agentacct-gui",
+          "status": "completed",
+          "first_activity_at": 1787589000,
+          "last_activity_at": 1787589860,
+          "duration_seconds": 860,
+          "instrumentation_state": "recording",
+          "observed_models": ["gpt-5.6-sol"]
+        },
+        "steps": [
+          {
+            "work_id": "snapshot-record",
+            "section_id": "record",
+            "title": "Record canonical Work references",
+            "latest_status": "completed",
+            "kind": "testing",
+            "summary": "Recorded and immediately re-verified the source-tree PNGs.",
+            "evidence_status": "passed",
+            "evidence_grade": "independently_checked",
+            "checks": []
+          }
+        ],
+        "descendants": []
+      }
+    ]
+  },
   "usage": {
     "by_client": [
       {
