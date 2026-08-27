@@ -56,9 +56,78 @@ rejected in CI. If a new render is already within the narrow antialiasing
 tolerance, the command retains the existing reference byte-for-byte to prevent
 meaningless Git churn.
 
+If `check-environment` rejects the local Mac, never override the platform ID or
+record that machine's pixels under the canonical directory. Push the UI branch
+for review instead. The macOS CI job keeps rendering after an intentional
+baseline mismatch and, only when its renderer is canonical, uploads
+`dashboard-baseline-candidate-<platform-id>-<sha>`. After reviewing all four
+images, download that artifact and copy its PNGs into the matching directory:
+
+```bash
+gh run download <run-id> \
+  --name dashboard-baseline-candidate-<platform-id>-<sha> \
+  --dir /tmp/agentacct-dashboard-baseline
+cp /tmp/agentacct-dashboard-baseline/dashboard-*.png \
+  Tests/agentacctTests/ReferenceImages/<platform-id>/
+git diff -- Tests/agentacctTests/ReferenceImages
+```
+
+Commit the reviewed references with the UI change and let the next CI run prove
+that the canonical renderer matches them. CI never writes accepted references
+back to the repository.
+
 GitHub displays a changed PNG as a
 [2-up, swipe, or onion-skin comparison](https://docs.github.com/en/repositories/working-with-files/using-files/working-with-non-code-files#rendering-and-diffing-images).
 The reference update is therefore the reviewer-facing before/after artifact.
+
+## Request an authoritative candidate remotely
+
+Developer machines are not authoritative renderers. To generate a candidate
+without using or reconfiguring a developer's Mac, push the source commit to
+this repository and request its full lowercase commit SHA:
+
+```bash
+source_commit="$(git rev-parse HEAD)"
+gh workflow run visual-reference-candidates.yml -f ref="$source_commit"
+```
+
+The commit must exist in this repository; a local-only commit or a commit that
+exists only in a fork cannot be checked out. Find the resulting manual run and
+download its verified artifact after it succeeds:
+
+```bash
+gh run list --workflow visual-reference-candidates.yml --event workflow_dispatch --limit 5
+gh run watch <run-id>
+gh run download <run-id> \
+  --name "dashboard-reference-candidate-$source_commit" \
+  --dir /tmp/agentacct-dashboard-reference-candidate
+```
+
+The artifact contains `manifest.json` and an `images` directory with the four
+dashboard PNGs. The manifest binds the bundle to the source commit, canonical
+renderer, hosted-runner image, exact dimensions, and SHA-256 of every image.
+
+The workflow has no repository write permission or secrets. It checks out the
+workflow's own commit as trusted tooling, checks out the requested source into
+a separate directory without persisted credentials, and fails before rendering
+unless the host matches the exact canonical renderer. Two fresh macOS runners
+then run the deterministic dashboard tests, build the release renderer, and
+package independent candidates. A separate Linux job publishes the 14-day
+verified artifact only when the two complete bundles are byte-identical.
+
+A successful run proves repeatable generation; it does not approve a visual
+change. Before promotion, verify the manifest's source and renderer identities
+and inspect every light/dark and minimum/reference PNG. This workflow never
+records, commits, or replaces reviewed references. Keep candidate generation
+and baseline approval as separate review gates.
+
+| Failure | Meaning |
+| --- | --- |
+| invalid or unreachable commit | the input is not a full commit in this repository |
+| canonical renderer check | GitHub's mutable host image drifted; perform an explicit renderer migration |
+| dashboard test, build, or render | the requested source cannot produce the fixed review matrix |
+| candidate packaging | the image inventory, PNG structure, dimensions, or identity evidence is invalid |
+| independent bundle comparison | the renderer or host image was not reproducible; no verified candidate is published |
 
 ## Selecting tests
 
