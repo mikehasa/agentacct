@@ -6,6 +6,70 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-08-27
+
+Work Receipts get an honest exit from red states, readable actions and
+checks, per-agent plan visibility, and weekly-plan calibration that finally
+lights up — a round of receipt-UI and calibration fixes across the macOS app
+and the daemon.
+
+### Added
+
+- macOS app: an in-record back control and Esc both return to the receipts
+  list, and the Work tab always lands on the table instead of silently
+  re-opening the last record; receipts default to latest-first sorting with
+  attention/cost still one click away, shared with the record-mode rail. (#130)
+- macOS app: decision words gain color families — claimed done-ish states
+  (reported, resolved, mostly done, handed off, finding superseded) wear the
+  accent wash, ended-open wears amber (an inferred stop), live states render
+  outlined, green stays reserved for machine-verified — plus a status-legend
+  popover explaining each word, and `ended_open` now files under a Stopped
+  tab instead of "Other". (#130)
+- macOS app: the receipt cost dimension shows the token tally (total / fresh /
+  cache write / cache read), including for unpriced tasks. (#130)
+- Receipt: a blocked Task now says *why* — the newest recorded blocker's own
+  words (step, text, next step, staleness) surface under the headline instead
+  of a generic statement, on both the list rows and the record page. (#131)
+- macOS app: the Actions lists (files / commands / tools) and the Checks rows
+  expand in place — the daemon's capped preview stays the collapsed state and
+  a height-capped scroll region shows the full, selectable list, so a
+  thousand-command receipt is readable without a second-level page. (#131)
+- Receipt checks carry detail fields (summary, files, timestamp, artifact
+  refs, and an honest "command text not captured for checks" note). (#131)
+- Plan: per-Task weekly-plan share (`plan_share`) is stamped on every task
+  surface — the sum of the Task's calibrated per-session percentages,
+  client-scoped, calibrated-or-nothing — and rendered on the receipt cost
+  line, the summary strip, the rail, and the table. (#132)
+- macOS app: the Dashboard "Plan and usage" card shows one row per recording
+  agent — each with only what it can prove (a provider-reported meter, the
+  hatched track when no limit is reported, an amber calibrating chip, and the
+  7-day volume/cost) — instead of a single "least headroom" account. (#133)
+- Receipt / macOS app: a user resolve lane — `POST /v1/disposition` (the /v1
+  lane's first user write; bearer-gated, optimistic-revision, note-required
+  resolve) and Mark reviewed / Resolve / Reopen controls on failing checks
+  and blockers, so a red finding or blocker has an honest exit. A
+  human-resolved finding reads *Finding resolved* and a human-dismissed
+  blocker reads *Blocker resolved* (both asserted by the human, never machine
+  verification and never a fabricated completion). (#134)
+- Plan: codex weekly-plan calibration — codex's meter became week-reset
+  cumulative, so it joins the calibratable clients; a dense in-file
+  meter-series backfill (idempotent) feeds the fit, and codex tasks now carry
+  real weekly shares. (#136)
+
+### Changed
+
+- Plan: an out-of-band calibration fit is accepted when it is persistent and
+  split-half-stable (unsticking accounts whose true ratio sits just past the
+  trusted band), and a mid-window ratio regime change calibrates on the
+  trailing window instead of certifying the blend or reading "calibrating
+  forever". (#132, #136)
+
+### Fixed
+
+- Plan: the calibration state that read "calibrating" forever for a
+  heavy-usage account whose fit sat just outside the trusted band now
+  calibrates on stable or trailing evidence. (#132, #136)
+
 ## [0.10.0] — 2026-08-26
 
 The macOS app adopts the v7 brand design system end to end: a semantic
@@ -734,7 +798,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.1
 [0.10.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.0
 [0.9.4]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.4
 [0.9.3]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.3
