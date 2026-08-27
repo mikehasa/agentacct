@@ -35,8 +35,10 @@ The Dashboard leads with recent task outcomes and their evidence, followed by
 review, active work, plan headroom, and usage history.
 
 Packaged builds show `v<release> · <commit>` in the menu footer. The release
-comes from the repository's `pyproject.toml`; the exact commit and dirty state
-come from Git, so the installed app can identify the source that produced it.
+and bundle version come from the repository's `pyproject.toml`, independent of
+clone depth. The exact commit and dirty state come from Git (including
+untracked source), so the installed app can identify the source that produced
+it.
 
 ## Test the dashboard UI
 

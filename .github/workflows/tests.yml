@@ -49,10 +49,6 @@ jobs:
         working-directory: apps/agentacct
     steps:
       - uses: actions/checkout@v4
-        with:
-          # CFBundleVersion is the repository commit count, so the packaged
-          # build needs complete history to produce the release build number.
-          fetch-depth: 0
       - name: Test visual snapshot CLI
         run: ./Tests/visual-snapshots-cli-tests.sh
       - name: Run Swift tests
