@@ -281,14 +281,14 @@ Keep ad-hoc PNGs outside the repository.
 ## Menu review matrix
 
 The connected menu fixture renders the real 360 pt menu in both appearances at
-2x scale. Its build identity, login-item state, and relative clock are injected
-so the reviewed pixels never depend on the current checkout, machine settings,
-or wall clock.
+2x scale. Its About identity, login-item state, and relative clock are injected
+so the harness never depends on the current checkout, machine settings, or wall
+clock.
 
 | Artifact | Appearance | Pixel size |
 | --- | --- | --- |
-| `menu-connected-light.png` | light | 720 × 1020 px |
-| `menu-connected-dark.png` | dark | 720 × 1020 px |
+| `menu-connected-light.png` | light | 720 × 966 px |
+| `menu-connected-dark.png` | dark | 720 × 966 px |
 
 For an ad-hoc menu render that does not compare or update references:
 
