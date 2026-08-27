@@ -124,6 +124,7 @@ def _record_7d_limit(service: SentinelService, *, captured: float, pct: float, c
         "event_id": f"evt_rl_{client}_{index}",
         "created_at": captured,
         "source": client,
+        "run_id": f"test-limit:{client}",
         "event_type": "rate_limit_observed",
         "metadata": {
             "client": client,
@@ -296,6 +297,7 @@ def test_glance_payload_shape_and_agreement(tmp_path):
     assert len(payload["limits"]) == 1
     limit = payload["limits"][0]
     assert limit["client"] == "claude-code"
+    assert limit["stream_id"] == "test-limit:claude-code"
     assert limit["stale"] is False
     assert limit["windows"][0]["used_percent"] == 37.5
 

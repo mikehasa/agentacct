@@ -313,14 +313,18 @@ reviewed and committed.
 ## Menu review matrix
 
 The connected menu fixture renders the real 360 pt menu in both appearances at
-2x scale. Its About identity, login-item state, and relative clock are injected
-so the harness never depends on the current checkout, machine settings, or wall
-clock.
+2x scale. The sparse lane reproduces the single-limit, untitled-session state;
+the dense lane pins a 420 pt top-of-scroll review viewport with three secondary
+limits. The renderer verifies the live body's height cap, but not scroll input.
+Its About identity, login-item state, and relative clock are injected so the
+harness never depends on the current checkout, machine settings, or wall clock.
 
 | Artifact | Appearance | Pixel size |
 | --- | --- | --- |
-| `menu-connected-light.png` | light | 720 × 966 px |
-| `menu-connected-dark.png` | dark | 720 × 966 px |
+| `menu-connected-sparse-light.png` | sparse, light | 720 × 880 px |
+| `menu-connected-sparse-dark.png` | sparse, dark | 720 × 880 px |
+| `menu-connected-dense-light.png` | dense, light | 720 × 928 px |
+| `menu-connected-dense-dark.png` | dense, dark | 720 × 928 px |
 
 For an ad-hoc menu render that does not compare or update references:
 

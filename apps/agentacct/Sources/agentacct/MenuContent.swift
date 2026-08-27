@@ -1,14 +1,9 @@
 import ServiceManagement
 import SwiftUI
 
-// The dropdown: a glance, not a workspace. The weekly-plan hero (account
-// truth, the subscription user's real question), today's cost as reference,
-// live limit meters, and root sessions — click anything deep to open the
-// full window. Honesty rules carried from the TUI: costs are complete-$ /
-// partial-~$ / em-dash (never a fabricated $0), plan shares only when
-// calibrated, statuses use the server-side reduction. Stale limit accounts
-// are hidden here (the full window has the toggle).
-
+// The menu-bar surface is an instrument panel, not a second dashboard. It
+// answers the account question first, keeps usage and quota evidence distinct,
+// and sends deeper work to the main window.
 struct MenuContent: View {
     @EnvironmentObject var state: GlanceState
     @EnvironmentObject var dashboard: DashboardStore
@@ -17,38 +12,69 @@ struct MenuContent: View {
     private let buildIdentity: AppBuildIdentity
     private let lastUpdatedTextOverride: String?
     private let launchAtLoginInitialState: Bool?
+    private let snapshotBodyMaxHeight: CGFloat?
 
     init(
         buildIdentity: AppBuildIdentity = .current,
         lastUpdatedTextOverride: String? = nil,
-        launchAtLoginInitialState: Bool? = nil
+        launchAtLoginInitialState: Bool? = nil,
+        snapshotBodyMaxHeight: CGFloat? = nil
     ) {
         self.buildIdentity = buildIdentity
         self.lastUpdatedTextOverride = lastUpdatedTextOverride
         self.launchAtLoginInitialState = launchAtLoginInitialState
+        self.snapshotBodyMaxHeight = snapshotBodyMaxHeight
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 0) {
             switch state.phase {
             case .connecting:
                 waitingView("Connecting to the agentacct daemon…")
+                    .padding(14)
             case .disconnected(let reason):
                 disconnectedView(reason: reason)
+                    .padding(14)
             case .incompatible(let message):
-                Label { Text(message) } icon: { Image(systemName: "exclamationmark.triangle.fill") }
+                Label(message, systemImage: "exclamationmark.triangle.fill")
                     .font(Type.caption)
                     .foregroundStyle(Theme.amber)
+                    .padding(14)
             case .connected(let snapshot):
-                connectedView(snapshot: snapshot)
+                menuBody {
+                    connectedView(snapshot: snapshot)
+                }
             }
+
+            Rectangle()
+                .fill(Theme.hairline)
+                .frame(height: 1)
             footer
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
         }
-        .padding(14)
         .frame(width: 360)
     }
 
-    // MARK: states
+    @ViewBuilder
+    private func menuBody<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        if SnapshotMode.enabled, let snapshotBodyMaxHeight {
+            content()
+                .padding(14)
+                .frame(height: snapshotBodyMaxHeight, alignment: .top)
+                .clipped()
+        } else if SnapshotMode.enabled {
+            content()
+                .padding(14)
+        } else {
+            ScrollView(showsIndicators: true) {
+                content()
+                    .padding(14)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(maxHeight: 420)
+        }
+    }
 
     private func waitingView(_ text: String) -> some View {
         HStack(spacing: 8) {
@@ -79,198 +105,420 @@ struct MenuContent: View {
 
     // MARK: connected
 
-    @ViewBuilder
     private func connectedView(snapshot: GlanceSnapshot) -> some View {
         let glance = snapshot.glance
-        let windows = Dictionary(uniqueKeysWithValues: glance.usage.windows.map { ($0.label, $0.totals) })
-        let sevenDay = GlanceState.sevenDayUsedPercent(glance)
+        let limits = MenuLimitPresentation(glance: glance)
+        let usage = MenuUsagePresentation(usage: glance.usage)
 
-        // Hero: the weekly plan (account truth). Falls back to today's cost
-        // when no provider reading exists — never a fabricated %.
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline) {
-                CapsLabel(text: sevenDay != nil ? "WEEKLY PLAN · 7D" : "TODAY")
-                Spacer()
-                if state.isRefreshing {
-                    ProgressView().controlSize(.mini)
-                } else if let updated = state.lastUpdated {
-                    Group {
-                        if let lastUpdatedTextOverride {
-                            Text(lastUpdatedTextOverride)
-                        } else {
-                            Text(updated, style: .relative)
-                        }
+        return VStack(alignment: .leading, spacing: Space.m) {
+            limitHero(limits)
+            usageLedger(usage)
+
+            if !limits.secondary.isEmpty {
+                otherLimits(limits)
+            }
+
+            sessions(glance.recentSessions, plan: glance.plan)
+        }
+    }
+
+    private func limitHero(_ limits: MenuLimitPresentation) -> some View {
+        Button {
+            openMain(selecting: .limits)
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline) {
+                    CapsLabel(text: "WEEKLY LIMIT")
+                    Spacer()
+                    if state.isRefreshing {
+                        ProgressView().controlSize(.mini)
+                            .accessibilityLabel("Refreshing")
+                    } else if let updated = state.lastUpdated {
+                        Text("Updated \(lastUpdatedTextOverride ?? dashboardFreshnessText(updated))")
+                            .font(Type.dataSmall)
+                            .foregroundStyle(Theme.muted)
                     }
-                        .font(Type.dataSmall)
+                }
+
+                if let primary = limits.primary {
+                    HStack(alignment: .lastTextBaseline, spacing: 7) {
+                        Text(primary.percentageText)
+                            .font(Face.monoFont(28, .bold))
+                            .foregroundStyle(Theme.ink)
+                        Text("used")
+                            .font(Type.captionSemibold)
+                            .foregroundStyle(Theme.muted)
+                        Spacer()
+                        Image(systemName: "chevron.forward")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Theme.muted)
+                    }
+                    MenuLimitMeter(usedPercent: primary.usedPercent)
+                    HStack(spacing: 8) {
+                        Text(primary.sourceLabel)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        Text(primary.resetText.map { "Resets in \($0)" } ?? "Reset not reported")
+                            .layoutPriority(1)
+                    }
+                    .font(Type.caption)
+                    .foregroundStyle(Theme.muted)
+                } else {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Unavailable")
+                            .font(Face.monoFont(22, .bold))
+                            .foregroundStyle(Theme.ink)
+                        Spacer()
+                        Image(systemName: "chevron.forward")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Theme.muted)
+                    }
+                    MenuLimitMeter(usedPercent: nil)
+                    Text(limits.hasStaleLimits ? "Live 7-day usage is stale" : "No live 7-day limit was reported")
+                        .font(Type.caption)
                         .foregroundStyle(Theme.muted)
                 }
             }
-            if let used = sevenDay {
-                Text("\(Int(used.rounded()))%")
-                    .font(Face.monoFont(24, .bold))
-                LimitMeter(usedPercent: used)
-                    .padding(.vertical, 2)
-                Text("today \(windows["today"]?.costText ?? "—") · \(windows["today"]?.tokensText ?? "—") fresh tok")
-                    .font(Type.dataSmall)
-                    .foregroundStyle(Theme.muted)
-            } else {
-                Text(windows["today"]?.costText ?? "—")
-                    .font(Face.monoFont(24, .bold))
-                Text("\(windows["today"]?.tokensText ?? "—") fresh tokens")
-                    .font(Type.dataSmall)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(QuietButtonStyle(horizontalPadding: 0, verticalPadding: 0))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(heroAccessibilityLabel(limits.primary))
+        .accessibilityHint("Opens limits")
+        .accessibilityIdentifier("menu.weekly-limit")
+    }
+
+    private func heroAccessibilityLabel(_ primary: MenuLimitItem?) -> String {
+        let limit: String
+        if let primary {
+            let reset = primary.resetText.map { ", resets in \($0)" } ?? ", reset not reported"
+            limit = "Weekly limit, \(primary.percentageText) used, \(primary.sourceLabel)\(reset)"
+        } else {
+            limit = "Weekly limit unavailable"
+        }
+        if state.isRefreshing {
+            return "\(limit), refreshing"
+        }
+        guard let updated = state.lastUpdated else { return limit }
+        return "\(limit), updated \(lastUpdatedTextOverride ?? dashboardFreshnessText(updated))"
+    }
+
+    private func usageLedger(_ usage: MenuUsagePresentation) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline) {
+                SectionCaption(text: "Tracked usage")
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                Text("fresh tokens")
+                    .font(Type.caption)
                     .foregroundStyle(Theme.muted)
             }
-        }
-
-        HStack(spacing: 8) {
-            StatTile(label: "7 days",
-                     value: windows["last 7 days"]?.costText ?? "—",
-                     detail: (windows["last 7 days"]?.tokensText).map { "\($0) tok" })
-            StatTile(label: "30 days",
-                     value: windows["last 30 days"]?.costText ?? "—",
-                     detail: (windows["last 30 days"]?.tokensText).map { "\($0) tok" })
-        }
-        Text("≈ costs are pricing estimates from client-reported tokens")
-            .font(Type.caption)
-            .foregroundStyle(Theme.muted)
-
-        let liveLimits = glance.limits.filter { $0.stale != true }
-        if !liveLimits.isEmpty {
-            VStack(alignment: .leading, spacing: 7) {
-                SectionCaption(text: "Limits")
-                ForEach(Array(liveLimits.enumerated()), id: \.offset) { _, limit in
-                    limitRows(limit)
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(usage.rows.enumerated()), id: \.element.id) { index, row in
+                    if index > 0 {
+                        Rectangle()
+                            .fill(Theme.hairline)
+                            .frame(height: 1)
+                    }
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(row.label)
+                            .font(Type.captionSemibold)
+                            .foregroundStyle(Theme.ink)
+                            .frame(width: 82, alignment: .leading)
+                        Spacer(minLength: 4)
+                        Text(row.costText)
+                            .font(Type.dataSmallSemibold)
+                            .foregroundStyle(Theme.ink)
+                            .lineLimit(1)
+                        Text(row.tokenText)
+                            .font(Type.dataSmall)
+                            .foregroundStyle(Theme.muted)
+                            .frame(width: 96, alignment: .trailing)
+                            .lineLimit(1)
+                    }
+                    .padding(.vertical, 5)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(usageAccessibilityLabel(row))
                 }
             }
-        }
 
-        if !glance.recentSessions.isEmpty {
-            VStack(alignment: .leading, spacing: 3) {
-                SectionCaption(text: "Sessions")
-                ForEach(Array(glance.recentSessions.prefix(6).enumerated()), id: \.offset) { _, session in
+            if let legend = usage.legendText {
+                Text("Client-token pricing · \(legend)")
+                    .font(Type.caption)
+                    .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func usageAccessibilityLabel(_ row: MenuUsageRow) -> String {
+        let tokens = row.tokenText == "Not reported"
+            ? "fresh tokens not reported"
+            : "\(row.tokenText) fresh tokens"
+        return "\(row.label), \(row.costText), \(tokens)"
+    }
+
+    private func otherLimits(_ limits: MenuLimitPresentation) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline) {
+                SectionCaption(text: "Other limits")
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                if limits.hiddenSecondaryCount > 0 {
+                    Button("+\(limits.hiddenSecondaryCount) in Limits") {
+                        openMain(selecting: .limits)
+                    }
+                    .buttonStyle(QuietButtonStyle(horizontalPadding: 3, verticalPadding: 0))
+                    .font(Type.caption)
+                    .foregroundStyle(Theme.accent)
+                    .frame(minHeight: 28)
+                    .accessibilityHint("Opens all limits")
+                    .accessibilityIdentifier("menu.limits-more")
+                }
+            }
+
+            ForEach(limits.secondary) { item in
+                Button {
+                    openMain(selecting: .limits)
+                } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(item.sourceLabel)
+                                .font(Type.captionSemibold)
+                                .foregroundStyle(Theme.ink)
+                                .lineLimit(1)
+                            Spacer(minLength: 8)
+                            Text(item.percentageText)
+                                .font(Type.dataSmallSemibold)
+                                .foregroundStyle(Theme.ink)
+                        }
+                        HStack(spacing: 8) {
+                            MenuLimitMeter(usedPercent: item.usedPercent)
+                            Text(item.resetText.map { "Resets in \($0)" } ?? "Reset not reported")
+                                .font(Type.dataSmall)
+                                .foregroundStyle(Theme.muted)
+                                .fixedSize()
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(QuietButtonStyle(horizontalPadding: 6, verticalPadding: 6))
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(limitAccessibilityLabel(item))
+                .accessibilityHint("Opens limits")
+                .accessibilityIdentifier("menu.limit.\(item.id)")
+            }
+        }
+    }
+
+    private func limitAccessibilityLabel(_ item: MenuLimitItem) -> String {
+        let reset = item.resetText.map { "resets in \($0)" } ?? "reset not reported"
+        return "\(item.sourceLabel), \(item.percentageText) used, \(reset)"
+    }
+
+    private func sessions(_ allSessions: [RecentSession], plan: [PlanEntry]) -> some View {
+        let visible = Array(allSessions.prefix(2))
+        let hiddenCount = max(0, allSessions.count - visible.count)
+        let calibration = MenuCalibrationPresentation(plan)
+
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline) {
+                SectionCaption(text: "Recent sessions")
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                Text("last 6 hours")
+                    .font(Type.caption)
+                    .foregroundStyle(Theme.muted)
+                if hiddenCount > 0 {
+                    Button("+\(hiddenCount) in Work") {
+                        openMain(selecting: .work)
+                    }
+                    .buttonStyle(QuietButtonStyle(horizontalPadding: 3, verticalPadding: 0))
+                    .font(Type.captionSemibold)
+                    .foregroundStyle(Theme.accent)
+                    .frame(minHeight: 28)
+                    .accessibilityHint("Opens all recent sessions")
+                    .accessibilityIdentifier("menu.sessions-more")
+                }
+            }
+
+            if visible.isEmpty {
+                Text("No recent sessions")
+                    .font(Type.caption)
+                    .foregroundStyle(Theme.muted)
+                    .padding(.vertical, 6)
+            } else {
+                ForEach(visible, id: \.sessionId) { session in
                     sessionRow(session)
                 }
             }
-        }
 
-        planFootnote(glance.plan)
-    }
-
-    @ViewBuilder
-    private func limitRows(_ limit: LimitEntry) -> some View {
-        ForEach(Array((limit.windows ?? []).enumerated()), id: \.offset) { _, window in
-            if let used = window.usedPercent {
-                HStack(spacing: 8) {
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(Theme.muted)
-                        .frame(width: 3, height: 12)
-                    Text("\(limit.client ?? "?") \(window.kind ?? "")")
-                        .font(Type.caption)
-                        .foregroundStyle(Theme.muted)
-                        .frame(width: 96, alignment: .leading)
-                    LimitMeter(usedPercent: used)
-                    Text(String(format: "%.0f%%", used))
-                        .font(Type.dataSmallSemibold)
-                        .frame(width: 34, alignment: .trailing)
-                    Text(Theme.resetsIn(window.resetsAt) ?? "")
-                        .font(Type.dataSmall)
-                        .foregroundStyle(Theme.muted)
-                        .frame(width: 44, alignment: .trailing)
-                }
+            if let calibration {
+                Label(calibration.summary, systemImage: "circle.dotted")
+                    .font(Type.caption)
+                    .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help("Share appears after enough stable weekly-limit history is recorded.")
+                    .accessibilityHint(calibration.detail ?? "More stable limit history is needed.")
+                    .padding(.top, 2)
             }
         }
     }
 
     private func sessionRow(_ session: RecentSession) -> some View {
-        MenuHoverButton {
-            openMain(selecting: "\(session.client)::\(session.sessionId)")
-        } content: {
+        Button {
+            openMain(selecting: .session("\(session.client)::\(session.sessionId)"))
+        } label: {
             HStack(spacing: 8) {
-                // Lifecycle marker as a bar, not a dot — filled circles are
-                // the evidence-tier pip vocabulary.
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(Theme.statusColor(session.status))
-                    .frame(width: 3, height: 14)
-                Text(session.title ?? "\(session.client) · \(session.shortSessionId)")
-                    .font(Type.caption)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: 8)
-                if let pct = session.planPctText {
-                    Text(pct)
-                        .font(Type.dataSmallSemibold)
+                Image(systemName: sessionStatusSymbol(session.status))
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Theme.statusColor(session.status))
+                    .frame(width: 14)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(session.title ?? "\(MenuLimitPresentation.clientLabel(session.client)) session")
+                            .font(Type.captionSemibold)
+                            .foregroundStyle(Theme.ink)
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        if let pct = session.planPctText {
+                            Text("\(pct) share")
+                                .font(Type.dataSmallSemibold)
+                                .foregroundStyle(Theme.muted)
+                                .fixedSize()
+                        }
+                    }
+                    Text(sessionMetadata(session))
+                        .font(Type.dataSmall)
                         .foregroundStyle(Theme.muted)
+                        .lineLimit(1)
                 }
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 8, weight: .semibold))
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.forward")
+                    .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(Theme.muted)
             }
+            .frame(minHeight: 30)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(QuietButtonStyle(horizontalPadding: 6, verticalPadding: 3))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(sessionAccessibilityLabel(session))
+        .accessibilityHint("Opens this work session")
+        .accessibilityIdentifier("menu.session.\(session.sessionId)")
+    }
+
+    private func sessionMetadata(_ session: RecentSession) -> String {
+        [session.shortSessionId, statusLabel(session.status), agoText(session.lastActivityAt)]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+    }
+
+    private func sessionAccessibilityLabel(_ session: RecentSession) -> String {
+        let title = session.title ?? "\(MenuLimitPresentation.clientLabel(session.client)) session"
+        return [
+            title,
+            session.shortSessionId,
+            statusLabel(session.status),
+            agoText(session.lastActivityAt),
+            session.planPctText.map { "\($0) plan share" },
+        ]
+            .compactMap { $0 }
+            .joined(separator: ", ")
+    }
+
+    private func statusLabel(_ status: String?) -> String? {
+        status?.replacingOccurrences(of: "_", with: " ")
+    }
+
+    private func sessionStatusSymbol(_ status: String?) -> String {
+        switch status {
+        case "blocked", "failed": return "exclamationmark.triangle.fill"
+        case "handed_off": return "arrow.up.right"
+        case "completed": return "checkmark"
+        case "in_progress", "started", "checkpoint": return "circle.fill"
+        default: return "circle"
         }
     }
 
-    @ViewBuilder
-    private func planFootnote(_ plan: [PlanEntry]) -> some View {
-        // Only clients the daemon says are actually warming up. "never"
-        // clients (codex) must not be promised a number that will not arrive,
-        // and an old daemon without the field gets no claim at all.
-        let calibrating = plan.filter { $0.calibrationState == "calibrating" }.map(\.client)
-        if !calibrating.isEmpty {
-            Text("plan share calibrating from your own limit history: \(calibrating.joined(separator: ", "))")
-                .font(Type.caption)
-                .foregroundStyle(Theme.muted)
-        }
-    }
+    // MARK: footer
 
     private var footer: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 3) {
             Button {
                 openMain(selecting: nil)
             } label: {
-                Label("Open agentacct", systemImage: "macwindow")
+                Label("Open", systemImage: "macwindow")
                     .font(Type.captionSemibold)
+                    .foregroundStyle(Theme.accent)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(Theme.accent)
-            Spacer()
+            .buttonStyle(QuietButtonStyle(horizontalPadding: 4, verticalPadding: 7))
+            .accessibilityLabel("Open agentacct")
+            .accessibilityHint("Opens the main window")
+            .accessibilityIdentifier("menu.open")
+
+            Spacer(minLength: 2)
             LaunchAtLoginToggle(initialEnabled: launchAtLoginInitialState)
-            Button {
-                state.refreshNow()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 11))
+
+            Group {
+                if state.isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 28, height: 28)
+                        .accessibilityLabel("Refreshing")
+                } else {
+                    footerButton(
+                        systemImage: "arrow.clockwise",
+                        help: "Refresh now",
+                        identifier: "menu.refresh"
+                    ) {
+                        state.refreshNow()
+                    }
+                    .keyboardShortcut("r", modifiers: .command)
+                }
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(Theme.muted)
-            .help("Refresh now")
-            Button {
+
+            footerButton(
+                systemImage: "info.circle",
+                help: "About agentacct",
+                identifier: "menu.about"
+            ) {
                 AppAbout.present(identity: buildIdentity)
-            } label: {
-                Image(systemName: "info.circle")
-                    .font(.system(size: 11))
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(Theme.muted)
-            .help("About agentacct")
-            .accessibilityLabel("About agentacct")
-            .accessibilityIdentifier("menu.about")
-            Button {
+
+            footerButton(
+                systemImage: "power",
+                help: "Quit agentacct",
+                identifier: "menu.quit"
+            ) {
                 NSApplication.shared.terminate(nil)
-            } label: {
-                Image(systemName: "power")
-                    .font(.system(size: 11))
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(Theme.muted)
-            .help("Quit agentacct")
+            .keyboardShortcut("q", modifiers: .command)
         }
-        .padding(.top, 2)
     }
 
-    private func openMain(selecting sessionId: String?) {
-        if let sessionId {
-            // The Work surface is Task-primary; it resolves this session key to
-            // its Task when the compact task summary carries an exact match.
-            selection.open(.session(sessionId))
+    private func footerButton(
+        systemImage: String,
+        help: String,
+        identifier: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Theme.muted)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(QuietButtonStyle(horizontalPadding: 0, verticalPadding: 0))
+        .help(help)
+        .accessibilityLabel(help)
+        .accessibilityIdentifier(identifier)
+    }
+
+    private func openMain(selecting destination: DashboardDestination?) {
+        if let destination {
+            selection.open(destination)
         }
         openWindow(id: "main")
         NSApp.activate(ignoringOtherApps: true)
@@ -278,11 +526,31 @@ struct MenuContent: View {
     }
 }
 
-/// "Launch at Login" via SMAppService — the app registers ITSELF (the OS
-/// shows it in System Settings › Login Items under this app's name; no
-/// hidden helpers, nothing system-wide). State reads back from the service
-/// so the toggle always reflects reality, including changes made in System
-/// Settings.
+private struct MenuLimitMeter: View {
+    let usedPercent: Double?
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                if let usedPercent {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Theme.rule)
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Theme.limitColor(usedPercent: usedPercent))
+                        .frame(width: proxy.size.width * max(0, min(usedPercent, 100)) / 100)
+                } else {
+                    RoundedRectangle(cornerRadius: 2)
+                        .strokeBorder(Theme.rule, style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                }
+            }
+        }
+        .frame(height: 6)
+        .accessibilityHidden(true)
+    }
+}
+
+/// "Launch at Login" via SMAppService — the app registers itself. State reads
+/// back from the service so the control reflects changes made in Settings.
 struct LaunchAtLoginToggle: View {
     @State private var enabled: Bool
 
@@ -303,21 +571,19 @@ struct LaunchAtLoginToggle: View {
                         try SMAppService.mainApp.unregister()
                     }
                 } catch {
-                    // Registration can fail for an unsigned dev build moved
-                    // mid-run; reflect reality rather than pretending.
+                    // Reflect the service's actual state for unsigned/moved builds.
                 }
                 enabled = SMAppService.mainApp.status == .enabled
             }
         )) {
-            Text("Login")
+            Text("Launch at login")
         }
         .toggleStyle(MenuCheckboxToggleStyle())
         .help("Launch agentacct at login")
+        .accessibilityIdentifier("menu.launch-at-login")
     }
 }
 
-/// A SwiftUI-only checkbox keeps the production control fully keyboard and
-/// accessibility operable while remaining identical in off-screen snapshots.
 private struct MenuCheckboxToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         Button {
@@ -329,31 +595,11 @@ private struct MenuCheckboxToggleStyle: ToggleStyle {
             }
             .font(Type.caption)
             .foregroundStyle(Theme.muted)
+            .frame(minHeight: 28)
+            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(QuietButtonStyle(horizontalPadding: 4, verticalPadding: 0))
         .accessibilityLabel("Launch agentacct at login")
         .accessibilityValue(configuration.isOn ? "On" : "Off")
-    }
-}
-
-/// A plain row button with a soft hover highlight (menu-item feel).
-struct MenuHoverButton<Content: View>: View {
-    let action: () -> Void
-    @ViewBuilder let content: () -> Content
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            content()
-                .padding(.horizontal, 7)
-                .padding(.vertical, 4.5)
-                .background(
-                    hovering ? AnyShapeStyle(Theme.tintNeutral) : AnyShapeStyle(.clear),
-                    in: RoundedRectangle(cornerRadius: Metrics.radius)
-                )
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
     }
 }

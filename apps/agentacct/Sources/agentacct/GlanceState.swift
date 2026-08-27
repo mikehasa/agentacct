@@ -69,19 +69,4 @@ final class GlanceState: ObservableObject {
             phase = .disconnected(error.localizedDescription)
         }
     }
-
-
-    /// The provider-reported 7d used %% for the label + dropdown hero:
-    /// claude-code's live reading first (the primary plan), else the hottest
-    /// live 7d window across accounts. nil when nothing live reports one.
-    static func sevenDayUsedPercent(_ glance: Glance, client: String = "claude-code") -> Double? {
-        let live = glance.limits.filter { $0.stale != true }
-        let sevenDay: (LimitEntry) -> Double? = { entry in
-            (entry.windows ?? []).first { $0.kind == "7d" }?.usedPercent
-        }
-        if let primary = live.first(where: { $0.client == client }), let used = sevenDay(primary) {
-            return used
-        }
-        return live.compactMap(sevenDay).max()
-    }
 }

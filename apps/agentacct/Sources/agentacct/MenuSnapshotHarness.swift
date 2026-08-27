@@ -1,16 +1,23 @@
 import SwiftUI
 
 struct MenuSnapshotConfiguration {
+    enum Density: String {
+        case sparse, dense
+    }
+
+    let density: Density
     let colorScheme: ColorScheme
 
     var filename: String {
         let appearance = colorScheme == .dark ? "dark" : "light"
-        return "menu-connected-\(appearance).png"
+        return "menu-connected-\(density.rawValue)-\(appearance).png"
     }
 
     static let reviewConfigurations: [Self] = [
-        Self(colorScheme: .light),
-        Self(colorScheme: .dark),
+        Self(density: .sparse, colorScheme: .light),
+        Self(density: .sparse, colorScheme: .dark),
+        Self(density: .dense, colorScheme: .light),
+        Self(density: .dense, colorScheme: .dark),
     ]
 }
 
@@ -54,16 +61,26 @@ enum MenuSnapshotRenderer {
             SnapshotScheme.override = nil
         }
 
-        let glance = GlanceState(preloaded: fixture.glanceSnapshot)
-        let dashboard = DashboardStore(preloaded: fixture)
-        let selection = AppSelection()
-
         return try configurations.map { configuration in
+            let selectedGlance: Glance
+            switch configuration.density {
+            case .sparse:
+                selectedGlance = fixture.menuSparseGlance ?? fixture.glance
+            case .dense:
+                selectedGlance = fixture.glance
+            }
+            let glance = GlanceState(preloaded: GlanceSnapshot(
+                glance: selectedGlance,
+                daemonVersion: fixture.daemonVersion
+            ))
+            let dashboard = DashboardStore(preloaded: fixture)
+            let selection = AppSelection()
             SnapshotScheme.override = configuration.colorScheme
             let view = MenuContent(
                 buildIdentity: buildIdentity,
                 lastUpdatedTextOverride: "just now",
-                launchAtLoginInitialState: false
+                launchAtLoginInitialState: false,
+                snapshotBodyMaxHeight: configuration.density == .dense ? 420 : nil
             )
             .environmentObject(glance)
             .environmentObject(dashboard)

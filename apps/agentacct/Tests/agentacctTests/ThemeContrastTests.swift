@@ -4,6 +4,7 @@ import XCTest
 
 final class ThemeContrastTests: XCTestCase {
     private let minimumSmallTextContrast = 4.5
+    private let minimumNonTextContrast = 3.0
 
     func testTextRolesMeetContrastTargetOnEverySurface() {
         let foregrounds: [(String, Theme.AdaptiveColor)] = [
@@ -97,6 +98,19 @@ final class ThemeContrastTests: XCTestCase {
                 against: Theme.Palette.accent.hex(for: scheme),
                 minimum: minimumSmallTextContrast,
                 context: "onAccent on accent in \(scheme) mode"
+            )
+        }
+    }
+
+    /// The unfilled portion communicates how much limit capacity remains, so
+    /// it must stay perceptible independently of the colored used segment.
+    func testMenuLimitTrackMeetsNonTextContrastTarget() {
+        for scheme in [ColorScheme.light, .dark] {
+            assertContrast(
+                Theme.Palette.rule.hex(for: scheme),
+                against: Theme.Palette.canvas.hex(for: scheme),
+                minimum: minimumNonTextContrast,
+                context: "menu limit track on canvas in \(scheme) mode"
             )
         }
     }
