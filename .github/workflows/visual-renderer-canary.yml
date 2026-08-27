@@ -1,0 +1,36 @@
+name: visual renderer canary
+run-name: Visual renderer canary
+
+"on":
+  schedule:
+    # Avoid the start of the hour, when scheduled workflow delivery is busiest.
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: visual-renderer-canary
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check canonical visual renderer
+    runs-on: macos-26
+    timeout-minutes: 3
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      TZ: UTC
+    defaults:
+      run:
+        working-directory: apps/agentacct
+    steps:
+      - name: Check out renderer definition
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check canonical renderer
+        run: ./Scripts/visual-snapshots check-environment
