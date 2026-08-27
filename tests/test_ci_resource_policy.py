@@ -10,6 +10,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TESTS_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
 VISUAL_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "visual-reference-candidates.yml"
+CANARY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "visual-renderer-canary.yml"
 
 
 def _workflow(path: Path) -> dict:
@@ -48,7 +49,11 @@ def test_candidate_generation_is_manual_and_globally_serialized() -> None:
 
 
 def test_touched_workflows_use_supported_hosted_action_majors() -> None:
-    actions = _used_actions(TESTS_WORKFLOW) + _used_actions(VISUAL_WORKFLOW)
+    actions = (
+        _used_actions(TESTS_WORKFLOW)
+        + _used_actions(VISUAL_WORKFLOW)
+        + _used_actions(CANARY_WORKFLOW)
+    )
     expected_majors = {
         "actions/checkout": "v7",
         "actions/setup-python": "v7",
