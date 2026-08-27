@@ -7,9 +7,14 @@ on:
   # every pull request must receive the same required checks as a main PR.
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -20,13 +25,13 @@ jobs:
         # and is tracked as a separate follow-up.
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history: the Gate 1 evidence-binding test verifies git
           # provenance of recovery evidence and fails closed on a shallow
           # checkout that cannot see the referenced commits.
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install package
@@ -39,6 +44,7 @@ jobs:
   macos-app:
     name: macOS app and dashboard snapshots
     runs-on: macos-26
+    timeout-minutes: 20
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       LANG: en_US.UTF-8
@@ -48,11 +54,13 @@ jobs:
       run:
         working-directory: apps/agentacct
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Test visual snapshot CLI
         run: ./Tests/visual-snapshots-cli-tests.sh
       - name: Test dashboard reference candidate packaging
         run: ./Tests/dashboard-reference-candidate-cli-tests.py
+      - name: Test dashboard reference candidate intake
+        run: ./Tests/dashboard-reference-candidate-intake-cli-tests.py
       - name: Run Swift tests
         run: swift test
       - name: Detect canonical visual renderer
@@ -73,7 +81,7 @@ jobs:
         run: ./Scripts/visual-snapshots verify DashboardVisualRegressionTests
       - name: Upload dashboard visual failures
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dashboard-diff-${{ github.sha }}
           path: ${{ runner.temp }}/agentacct-dashboard-diff/*.png
@@ -93,7 +101,7 @@ jobs:
             "$RUNNER_TEMP/agentacct-dashboard-review"
       - name: Upload dashboard review matrix
         if: ${{ !cancelled() && steps.review_render.outcome == 'success' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dashboard-review-${{ github.sha }}
           path: ${{ runner.temp }}/agentacct-dashboard-review/*.png
@@ -101,7 +109,7 @@ jobs:
           retention-days: 14
       - name: Upload canonical dashboard baseline candidates
         if: ${{ !cancelled() && steps.visual-renderer.outputs.canonical == 'true' && steps.visual_references.outcome == 'failure' && steps.review_render.outcome == 'success' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dashboard-baseline-candidate-macos-26.6-25G72-xcode-26.6-17F113-arm64-2x-${{ github.sha }}
           path: ${{ runner.temp }}/agentacct-dashboard-review/*.png

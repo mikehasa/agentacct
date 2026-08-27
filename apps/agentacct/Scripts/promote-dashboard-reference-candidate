@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Promote one explicitly reviewed dashboard candidate into reference files."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from dashboard_reference_candidate import CandidateError, promote_candidate_bundle
+
+
+APP_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_REFERENCE_ROOT = APP_DIR / "Tests" / "agentacctTests" / "ReferenceImages"
+
+
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Validate and promote an explicitly reviewed dashboard reference candidate."
+    )
+    parser.add_argument("--candidate", required=True, type=Path)
+    parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--renderer-id", required=True)
+    parser.add_argument(
+        "--references-root",
+        type=Path,
+        default=DEFAULT_REFERENCE_ROOT,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--reviewed",
+        action="store_true",
+        required=True,
+        help="Confirm that all four candidate images were visually reviewed.",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    arguments = parse_arguments()
+    try:
+        destination, changed = promote_candidate_bundle(
+            arguments.candidate,
+            arguments.source_commit,
+            arguments.renderer_id,
+            arguments.references_root,
+        )
+    except (CandidateError, OSError) as error:
+        raise SystemExit(f"promote-dashboard-reference-candidate: {error}") from error
+
+    if changed:
+        print(
+            f"Promoted four reviewed reference images to {destination}. "
+            "Review the Git diff before committing."
+        )
+    else:
+        print(f"Reviewed references already match {destination}; no files changed.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
