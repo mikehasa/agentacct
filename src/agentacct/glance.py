@@ -727,6 +727,12 @@ def build_glance_snapshot(
     limits: list[dict[str, Any]] = []
     for limit in live.limits:
         entry = limit.to_json_entry()
+        # The snapshot layer keeps independent streams by
+        # (client, org, run_id). Preserve that identity for native-shell rows
+        # so two provider buckets with the same visible labels cannot collide.
+        # This is glance-only and additive: the shared `limits --json` shape
+        # remains byte-stable.
+        entry["stream_id"] = limit.raw_event.get("run_id")
         entry["stale"] = limit_is_stale(limit, moment)
         limits.append(entry)
 

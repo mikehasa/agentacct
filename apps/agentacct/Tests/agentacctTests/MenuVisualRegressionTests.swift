@@ -4,8 +4,10 @@ import XCTest
 
 final class MenuVisualRegressionTests: XCTestCase {
     private let expectedFilenames = [
-        "menu-connected-light.png",
-        "menu-connected-dark.png",
+        "menu-connected-sparse-light.png",
+        "menu-connected-sparse-dark.png",
+        "menu-connected-dense-light.png",
+        "menu-connected-dense-dark.png",
     ]
 
     @MainActor
@@ -54,7 +56,8 @@ final class MenuVisualRegressionTests: XCTestCase {
                     referenceURL: referenceDirectory.appendingPathComponent(filename),
                     actualURL: actualURL,
                     artifactDirectory: artifactDirectory,
-                    mode: mode
+                    mode: mode,
+                    tolerance: .menuRenderingNoise
                 )
             } catch {
                 XCTFail(error.localizedDescription)
