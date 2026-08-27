@@ -13,23 +13,18 @@ permissions:
   contents: read
 
 concurrency:
-  group: visual-reference-candidate-${{ inputs.ref }}
+  # Preserve an in-progress proof, retain only the newest pending request, and
+  # never allocate more than the two required canonical macOS replicas at once.
+  group: visual-reference-candidates
   cancel-in-progress: false
 
 jobs:
-  render:
-    name: Render candidate (${{ matrix.replica }})
-    runs-on: macos-26
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        replica: [a, b]
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
-      LANG: en_US.UTF-8
-      LC_ALL: en_US.UTF-8
-      TZ: UTC
+  preflight:
+    name: Validate candidate request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      source_commit: ${{ steps.source.outputs.commit }}
     steps:
       - name: Validate requested commit
         env:
@@ -39,22 +34,56 @@ jobs:
             echo "ref must be a full lowercase 40-character commit SHA" >&2
             exit 2
           fi
-      - name: Check out trusted candidate tooling
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.workflow_sha }}
-          path: trusted
-          persist-credentials: false
       - name: Check out requested source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
           path: source
           fetch-depth: 1
           persist-credentials: false
       - name: Verify checked-out source identity
+        id: source
         env:
           REQUESTED_COMMIT: ${{ inputs.ref }}
+        run: |
+          actual_commit="$(git -C source rev-parse HEAD)"
+          if [[ "$actual_commit" != "$REQUESTED_COMMIT" ]]; then
+            echo "requested $REQUESTED_COMMIT but checked out $actual_commit" >&2
+            exit 2
+          fi
+          echo "commit=$actual_commit" >> "$GITHUB_OUTPUT"
+
+  render:
+    name: Render candidate (${{ matrix.replica }})
+    needs: preflight
+    runs-on: macos-26
+    timeout-minutes: 20
+    strategy:
+      fail-fast: true
+      matrix:
+        replica: [a, b]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      TZ: UTC
+    steps:
+      - name: Check out trusted candidate tooling
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Check out requested source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.preflight.outputs.source_commit }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify checked-out source identity
+        env:
+          REQUESTED_COMMIT: ${{ needs.preflight.outputs.source_commit }}
         run: |
           actual_commit="$(git -C source rev-parse HEAD)"
           if [[ "$actual_commit" != "$REQUESTED_COMMIT" ]]; then
@@ -84,7 +113,7 @@ jobs:
       - name: Package candidate manifest
         env:
           RENDERER_ID: ${{ steps.renderer.outputs.renderer_id }}
-          REQUESTED_COMMIT: ${{ inputs.ref }}
+          REQUESTED_COMMIT: ${{ needs.preflight.outputs.source_commit }}
         run: |
           : "${ImageOS:?GitHub-hosted runner did not set ImageOS}"
           : "${ImageVersion:?GitHub-hosted runner did not set ImageVersion}"
@@ -96,7 +125,7 @@ jobs:
             --runner-image "$ImageOS" \
             --runner-image-version "$ImageVersion"
       - name: Upload replica
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dashboard-reference-candidate-${{ inputs.ref }}-${{ matrix.replica }}
           path: ${{ runner.temp }}/dashboard-reference-candidate
@@ -110,19 +139,19 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Download replica A
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dashboard-reference-candidate-${{ inputs.ref }}-a
           path: replicas/a
       - name: Download replica B
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dashboard-reference-candidate-${{ inputs.ref }}-b
           path: replicas/b
       - name: Require byte-identical bundles
         run: diff --recursive --brief --no-dereference replicas/a replicas/b
       - name: Upload verified candidate
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dashboard-reference-candidate-${{ inputs.ref }}
           path: replicas/a
