@@ -1,10 +1,34 @@
 import SwiftUI
 
 // Entry point. `agentacct --snapshot <dir>` renders every pane from live daemon
-// data; `--snapshot-dashboard-fixture <fixture> <dir>` renders the dashboard
-// review matrix without network or account data. Anything else launches the app.
+// data; the fixture flags render deterministic review surfaces without network
+// or account data. Anything else launches the app.
 
-if let flagIndex = CommandLine.arguments.firstIndex(of: "--snapshot-dashboard-fixture") {
+if let flagIndex = CommandLine.arguments.firstIndex(of: "--snapshot-about") {
+    if CommandLine.arguments.count > flagIndex + 2 {
+        SnapshotRunner.runAbout(
+            applicationIconPath: CommandLine.arguments[flagIndex + 1],
+            outputDir: CommandLine.arguments[flagIndex + 2]
+        )
+    } else {
+        FileHandle.standardError.write(
+            Data("usage: agentacct --snapshot-about <app-icon> <output-dir>\n".utf8)
+        )
+        exit(2)
+    }
+} else if let flagIndex = CommandLine.arguments.firstIndex(of: "--snapshot-menu-fixture") {
+    if CommandLine.arguments.count > flagIndex + 2 {
+        SnapshotRunner.runMenuFixture(
+            fixturePath: CommandLine.arguments[flagIndex + 1],
+            outputDir: CommandLine.arguments[flagIndex + 2]
+        )
+    } else {
+        FileHandle.standardError.write(
+            Data("usage: agentacct --snapshot-menu-fixture <fixture.json> <output-dir>\n".utf8)
+        )
+        exit(2)
+    }
+} else if let flagIndex = CommandLine.arguments.firstIndex(of: "--snapshot-dashboard-fixture") {
     if CommandLine.arguments.count > flagIndex + 2 {
         SnapshotRunner.runDashboardFixture(
             fixturePath: CommandLine.arguments[flagIndex + 1],

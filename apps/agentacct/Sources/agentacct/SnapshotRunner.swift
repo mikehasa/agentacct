@@ -138,4 +138,56 @@ enum SnapshotRunner {
         }
         exit(exitCode)
     }
+
+    static func runMenuFixture(fixturePath: String, outputDir: String) {
+        let fixtureURL = URL(fileURLWithPath: (fixturePath as NSString).expandingTildeInPath)
+        let outputURL = URL(fileURLWithPath: (outputDir as NSString).expandingTildeInPath)
+        var finished = false
+        var exitCode: Int32 = 0
+        Task { @MainActor in
+            defer { finished = true }
+            do {
+                let fixture = try DashboardSnapshotFixture.load(from: fixtureURL)
+                let rendered = try MenuSnapshotRenderer.render(
+                    fixture: fixture,
+                    outputDirectory: outputURL
+                )
+                print("menu snapshots written to \(outputURL.path): \(rendered.count) files")
+            } catch {
+                exitCode = 1
+                FileHandle.standardError.write(Data("menu snapshot failed: \(error)\n".utf8))
+            }
+        }
+        while !finished {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        exit(exitCode)
+    }
+
+    static func runAbout(applicationIconPath: String, outputDir: String) {
+        let iconURL = URL(fileURLWithPath: (applicationIconPath as NSString).expandingTildeInPath)
+        let outputURL = URL(fileURLWithPath: (outputDir as NSString).expandingTildeInPath)
+        var finished = false
+        var exitCode: Int32 = 0
+        Task { @MainActor in
+            defer { finished = true }
+            do {
+                guard let applicationIcon = NSImage(contentsOf: iconURL) else {
+                    throw AboutSnapshotError.applicationIconUnavailable(iconURL)
+                }
+                let rendered = try AboutSnapshotRenderer.render(
+                    outputDirectory: outputURL,
+                    applicationIcon: applicationIcon
+                )
+                print("About snapshots written to \(outputURL.path): \(rendered.count) files")
+            } catch {
+                exitCode = 1
+                FileHandle.standardError.write(Data("About snapshot failed: \(error)\n".utf8))
+            }
+        }
+        while !finished {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        exit(exitCode)
+    }
 }

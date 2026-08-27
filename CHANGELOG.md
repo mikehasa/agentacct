@@ -6,6 +6,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- macOS app: packaged builds derive their release version from the same
+  `pyproject.toml` used by the CLI and use it as the clone-independent bundle
+  version. They embed the exact Git commit and an untracked-aware dirty state;
+  the native About panel shows the release and abbreviated source commit without
+  adding identity noise to the everyday menu. Distributable builds also reject
+  a frozen CLI whose clean-source provenance does not match the app.
+
 ## [0.10.1] — 2026-08-27
 
 Work Receipts get an honest exit from red states, readable actions and

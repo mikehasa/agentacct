@@ -22,6 +22,13 @@ REPO_ROOT="$(cd "$HERE/.." && pwd)"
 BUILD_VENV="$HERE/.buildvenv"
 DIST_DIR="$HERE/dist"
 WORK_DIR="$HERE/build"
+source "$HERE/source-provenance.sh"
+
+# A commit plus a clean worktree is an exact source identity. Capture it before
+# the expensive freeze and confirm it did not change before stamping the output.
+agentacct_require_clean_source "$REPO_ROOT"
+SOURCE_COMMIT_BEFORE="$(agentacct_source_commit "$REPO_ROOT")"
+SOURCE_DESCRIPTION_BEFORE="$(agentacct_source_description "$REPO_ROOT")"
 
 echo "==> agentacct CLI freeze (PyInstaller onedir)"
 cd "$REPO_ROOT"
@@ -66,5 +73,13 @@ echo "==> smoke-testing the frozen binary"
 "$BIN" mcp serve --help >/dev/null && echo "    mcp serve: ok"
 "$BIN" serve --help >/dev/null && echo "    serve: ok"
 "$BIN" onboard --help >/dev/null && echo "    onboard: ok"
+
+SOURCE_COMMIT_AFTER="$(agentacct_source_commit "$REPO_ROOT")"
+SOURCE_DESCRIPTION_AFTER="$(agentacct_source_description "$REPO_ROOT")"
+if [[ "$SOURCE_COMMIT_AFTER" != "$SOURCE_COMMIT_BEFORE" || "$SOURCE_DESCRIPTION_AFTER" != "$SOURCE_DESCRIPTION_BEFORE" ]]; then
+    echo "ERROR: source tree changed while freezing the CLI; discard the output and rerun" >&2
+    exit 1
+fi
+agentacct_write_source_provenance "$REPO_ROOT" "$DIST_DIR/agentacct"
 
 echo "==> done: $DIST_DIR/agentacct  ($(du -sh "$DIST_DIR/agentacct" | awk '{print $1}'))"
