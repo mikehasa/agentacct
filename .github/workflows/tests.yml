@@ -100,7 +100,7 @@ jobs:
         if: ${{ !cancelled() && steps.visual-renderer.outputs.canonical == 'true' && steps.visual_references.outcome == 'failure' && steps.review_render.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
-          name: dashboard-baseline-candidate-macos-26.6.2-25G83-xcode-26.6-17F113-arm64-2x-${{ github.sha }}
+          name: dashboard-baseline-candidate-macos-26.5.2-25F84-xcode-26.6-17F113-arm64-2x-${{ github.sha }}
           path: ${{ runner.temp }}/agentacct-dashboard-review/*.png
           if-no-files-found: error
           retention-days: 14
