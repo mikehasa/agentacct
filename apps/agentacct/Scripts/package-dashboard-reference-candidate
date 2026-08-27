@@ -4,29 +4,9 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
-import os
 from pathlib import Path
-import re
-import struct
-import tempfile
-import zlib
 
-
-PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-EXPECTED_IMAGES = {
-    "dashboard-minimum-dark.png": (1920, 1120),
-    "dashboard-minimum-light.png": (1920, 1120),
-    "dashboard-reference-dark.png": (2240, 1600),
-    "dashboard-reference-light.png": (2240, 1600),
-}
-FULL_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
-SAFE_RENDERER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-
-
-class CandidateError(ValueError):
-    """A candidate bundle violated the promotion contract."""
+from dashboard_reference_candidate import CandidateError, build_manifest, write_manifest
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -42,140 +22,16 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def single_line(name: str, value: str) -> str:
-    if not value or value.strip() != value or "\n" in value or "\r" in value:
-        raise CandidateError(f"{name} must be a non-empty single-line value")
-    return value
-
-
-def validate_identity(arguments: argparse.Namespace) -> None:
-    if FULL_COMMIT_PATTERN.fullmatch(arguments.source_commit) is None:
-        raise CandidateError("source commit must be a full lowercase 40-character Git SHA")
-    if SAFE_RENDERER_PATTERN.fullmatch(arguments.renderer_id) is None:
-        raise CandidateError("renderer id must be a safe path component")
-    single_line("runner image", arguments.runner_image)
-    single_line("runner image version", arguments.runner_image_version)
-
-
-def checked_png_dimensions(path: Path) -> tuple[int, int]:
-    if path.is_symlink() or not path.is_file():
-        raise CandidateError(f"candidate image must be a regular file: {path.name}")
-
-    data = path.read_bytes()
-    if not data.startswith(PNG_SIGNATURE):
-        raise CandidateError(f"candidate image is not a PNG: {path.name}")
-
-    offset = len(PNG_SIGNATURE)
-    dimensions: tuple[int, int] | None = None
-    saw_image_data = False
-    saw_end = False
-    while offset < len(data):
-        if len(data) - offset < 12:
-            raise CandidateError(f"candidate PNG is truncated: {path.name}")
-        length = struct.unpack(">I", data[offset : offset + 4])[0]
-        chunk_type = data[offset + 4 : offset + 8]
-        chunk_end = offset + 12 + length
-        if chunk_end > len(data):
-            raise CandidateError(f"candidate PNG is truncated: {path.name}")
-        chunk_data = data[offset + 8 : offset + 8 + length]
-        expected_crc = struct.unpack(">I", data[offset + 8 + length : chunk_end])[0]
-        actual_crc = zlib.crc32(chunk_type + chunk_data) & 0xFFFFFFFF
-        if actual_crc != expected_crc:
-            raise CandidateError(f"candidate PNG has an invalid checksum: {path.name}")
-
-        if dimensions is None:
-            if chunk_type != b"IHDR" or length != 13:
-                raise CandidateError(f"candidate PNG has an invalid header: {path.name}")
-            width, height = struct.unpack(">II", chunk_data[:8])
-            dimensions = (width, height)
-        elif chunk_type == b"IHDR":
-            raise CandidateError(f"candidate PNG has more than one header: {path.name}")
-        elif chunk_type == b"IDAT":
-            saw_image_data = True
-
-        offset = chunk_end
-        if chunk_type == b"IEND":
-            if length != 0 or not saw_image_data or offset != len(data):
-                raise CandidateError(f"candidate PNG has an invalid end marker: {path.name}")
-            saw_end = True
-            break
-
-    if dimensions is None or not saw_image_data or not saw_end:
-        raise CandidateError(f"candidate PNG is incomplete: {path.name}")
-    return dimensions
-
-
-def candidate_artifacts(images: Path) -> list[dict[str, object]]:
-    if not images.is_dir():
-        raise CandidateError(f"candidate image directory does not exist: {images}")
-
-    actual_names = {path.name for path in images.iterdir()}
-    expected_names = set(EXPECTED_IMAGES)
-    if actual_names != expected_names:
-        missing = sorted(expected_names - actual_names)
-        unexpected = sorted(actual_names - expected_names)
-        details = []
-        if missing:
-            details.append(f"missing: {', '.join(missing)}")
-        if unexpected:
-            details.append(f"unexpected: {', '.join(unexpected)}")
-        raise CandidateError("candidate image inventory mismatch (" + "; ".join(details) + ")")
-
-    artifacts = []
-    for filename, expected_dimensions in EXPECTED_IMAGES.items():
-        path = images / filename
-        dimensions = checked_png_dimensions(path)
-        if dimensions != expected_dimensions:
-            expected_width, expected_height = expected_dimensions
-            actual_width, actual_height = dimensions
-            raise CandidateError(
-                f"candidate image {filename} must be {expected_width}x{expected_height}; "
-                f"got {actual_width}x{actual_height}"
-            )
-        artifacts.append(
-            {
-                "filename": filename,
-                "pixel_height": dimensions[1],
-                "pixel_width": dimensions[0],
-                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-            }
-        )
-    return artifacts
-
-
-def write_manifest(path: Path, manifest: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as temporary:
-            temporary.write(payload)
-            temporary.flush()
-            os.fsync(temporary.fileno())
-            temporary_path = Path(temporary.name)
-        os.replace(temporary_path, path)
-        temporary_path = None
-    finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
-
-
 def main() -> int:
     arguments = parse_arguments()
     try:
-        validate_identity(arguments)
-        manifest = {
-            "artifacts": candidate_artifacts(arguments.images),
-            "renderer_id": arguments.renderer_id,
-            "runner_image": {
-                "name": single_line("runner image", arguments.runner_image),
-                "version": single_line(
-                    "runner image version", arguments.runner_image_version
-                ),
-            },
-            "schema_version": 1,
-            "source_commit": arguments.source_commit,
-        }
+        manifest = build_manifest(
+            arguments.images,
+            arguments.source_commit,
+            arguments.renderer_id,
+            arguments.runner_image,
+            arguments.runner_image_version,
+        )
         write_manifest(arguments.output, manifest)
     except (CandidateError, OSError) as error:
         raise SystemExit(f"package-dashboard-reference-candidate: {error}") from error

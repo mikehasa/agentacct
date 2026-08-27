@@ -52,6 +52,8 @@ jobs:
         run: ./Tests/visual-snapshots-cli-tests.sh
       - name: Test dashboard reference candidate packaging
         run: ./Tests/dashboard-reference-candidate-cli-tests.py
+      - name: Test dashboard reference candidate intake
+        run: ./Tests/dashboard-reference-candidate-intake-cli-tests.py
       - name: Run Swift tests
         run: swift test
       - name: Detect canonical visual renderer
