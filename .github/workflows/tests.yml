@@ -3,8 +3,9 @@ name: tests
 on:
   push:
     branches: [main]
+  # Stacked UI changes target their predecessor branch until it merges, so
+  # every pull request must receive the same required checks as a main PR.
   pull_request:
-    branches: [main]
 
 jobs:
   pytest:
