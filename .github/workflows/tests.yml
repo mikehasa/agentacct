@@ -50,6 +50,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test visual snapshot CLI
         run: ./Tests/visual-snapshots-cli-tests.sh
+      - name: Test dashboard reference candidate packaging
+        run: ./Tests/dashboard-reference-candidate-cli-tests.py
       - name: Run Swift tests
         run: swift test
       - name: Detect canonical visual renderer
