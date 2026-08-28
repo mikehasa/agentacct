@@ -410,9 +410,94 @@ struct ReceiptTasksPayload: Decodable {
     let truncated: Bool?
 }
 
+/// Complete review classification plus one page from `/v1/attention`. Unlike
+/// `/v1/tasks`, `total` and `counts` classify every visible Task before paging,
+/// so a client can make an honest empty or aggregate claim without scanning a
+/// recent-work page locally.
+struct V1AttentionPayload: Decodable {
+    let schema: String
+    let items: [ReceiptSummary]
+    let total: Int
+    let counts: V1AttentionCounts
+    let snapshot: String?
+    let offset: Int
+    let limit: Int
+    let truncated: Bool
+
+    init(
+        schema: String,
+        items: [ReceiptSummary],
+        total: Int,
+        counts: V1AttentionCounts,
+        snapshot: String?,
+        offset: Int,
+        limit: Int,
+        truncated: Bool
+    ) {
+        self.schema = schema
+        self.items = items
+        self.total = total
+        self.counts = counts
+        self.snapshot = snapshot
+        self.offset = offset
+        self.limit = limit
+        self.truncated = truncated
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schema, items, total, counts, snapshot, offset, limit, truncated
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schema = try container.decode(String.self, forKey: .schema)
+        items = try container.decode([ReceiptSummary].self, forKey: .items)
+        total = try container.decode(Int.self, forKey: .total)
+        counts = try container.decode(V1AttentionCounts.self, forKey: .counts)
+        snapshot = try container.decodeIfPresent(String.self, forKey: .snapshot)
+        offset = try container.decodeIfPresent(Int.self, forKey: .offset) ?? 0
+        limit = try container.decode(Int.self, forKey: .limit)
+        truncated = try container.decode(Bool.self, forKey: .truncated)
+    }
+}
+
+struct V1AttentionCounts: Decodable, Equatable {
+    let failedCheck: Int
+    let failedStep: Int
+    let blocker: Int
+
+    enum CodingKeys: String, CodingKey {
+        case failedCheck = "failed_check"
+        case failedStep = "failed_step"
+        case blocker
+    }
+}
+
+/// The server-selected leading reason for one attention Task. The summary and
+/// next step are recorded evidence; a missing `next_step` deliberately remains
+/// nil so the UI cannot turn a generic suggestion into an agent claim.
+struct ReceiptAttention: Decodable {
+    let kind: String
+    let summary: String
+    let nextStep: String?
+    let observedAt: Double?
+    let source: String?
+
+    enum CodingKeys: String, CodingKey {
+        case kind, summary, source
+        case nextStep = "next_step"
+        case observedAt = "observed_at"
+    }
+}
+
 struct ReceiptSummary: Decodable, Identifiable {
     let taskId: String
     let title: String?
+    /// Present on the attention projection; optional for older `/v1/tasks`
+    /// payloads and older daemons.
+    let project: String?
+    /// Present only on `/v1/attention` rows.
+    let attention: ReceiptAttention?
     let decisionStatus: ReceiptDecision
     let evidenceStrength: ReceiptEvidence
     let cost: ReceiptCost
@@ -427,7 +512,7 @@ struct ReceiptSummary: Decodable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case taskId = "task_id"
-        case title
+        case title, project, attention
         case decisionStatus = "decision_status"
         case evidenceStrength = "evidence_strength"
         case cost

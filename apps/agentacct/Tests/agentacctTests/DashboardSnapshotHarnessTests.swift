@@ -16,6 +16,8 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "dashboard-minimum-dark.png", pixelsWide: 1920, pixelsHigh: 1120),
         ExpectedArtifact(filename: "dashboard-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "dashboard-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "dashboard-trust-unavailable-light.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "dashboard-trust-unavailable-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
     ]
 
     @MainActor
@@ -27,6 +29,10 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
 
         XCTAssertEqual(store.receiptTasks.count, 4)
         XCTAssertEqual(store.totalReceiptTasks, 4)
+        XCTAssertEqual(store.attention?.total, 2)
+        XCTAssertEqual(store.attention?.counts.failedCheck, 1)
+        XCTAssertEqual(store.attention?.counts.blocker, 1)
+        XCTAssertEqual(store.ingestion?.state, "healthy")
         // Two plan lanes + two limit clients: the fixture demos the
         // multi-agent Plan and usage card (codex metered + claude-code
         // metered/calibrating), plus a usage-only hermes row.
@@ -36,6 +42,20 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         XCTAssertEqual(fixture.glance.usage.byClient?.count, 3)
         XCTAssertEqual(fixture.glance.recentSessions.count, 2)
         XCTAssertNotNil(fixture.glance.usage.windows.first { $0.label == "today" })
+    }
+
+    @MainActor
+    func testUnavailableTrustStateRetainsSuccessOnlyToProveErrorPrecedence() throws {
+        let fixture = try DashboardSnapshotFixture.load(from: dashboardFixtureURL())
+        let store = DashboardStore(
+            preloaded: fixture,
+            workState: .shiftBriefUnavailable
+        )
+
+        XCTAssertNotNil(store.attention)
+        XCTAssertEqual(store.ingestion?.state, "healthy")
+        XCTAssertNotNil(store.attentionError)
+        XCTAssertNotNil(store.ingestionError)
     }
 
     @MainActor
@@ -113,6 +133,7 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         let schemas = [
             (payload: "glance", supported: GlanceClient.supportedGlanceSchema),
             (payload: "plan", supported: DashboardSnapshotFixture.supportedPlanSchema),
+            (payload: "attention", supported: DashboardSnapshotFixture.supportedAttentionSchema),
             (payload: "tasks", supported: DashboardSnapshotFixture.supportedTasksSchema),
         ]
 

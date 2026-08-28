@@ -3,6 +3,318 @@ import XCTest
 @testable import agentacct
 
 final class DashboardInteractionTests: XCTestCase {
+    func testAttentionPayloadPreservesCompleteCountsAndRecordedReason() throws {
+        let payload = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [
+                {
+                  "task_id": "task-finding",
+                  "title": "Verify dashboard hierarchy",
+                  "project": "agentacct-gui",
+                  "decision_status": { "key": "finding", "label": "Open finding" },
+                  "evidence_strength": {
+                    "key": "unchecked",
+                    "gradeable": true,
+                    "checkable_total": 1,
+                    "checked_total": 0,
+                    "checks_failed": 1
+                  },
+                  "cost": {},
+                  "primary_root": { "client": "codex", "client_session_id": "session-1" },
+                  "attention": {
+                    "kind": "failed_check",
+                    "summary": "The reference image changed unexpectedly",
+                    "next_step": "Inspect the reference and rerun the snapshot check",
+                    "observed_at": 1000,
+                    "source": "mcp"
+                  }
+                }
+              ],
+              "total": 3,
+              "counts": { "failed_check": 2, "failed_step": 0, "blocker": 1 },
+              "limit": 1,
+              "truncated": true
+            }
+            """
+        )
+
+        XCTAssertEqual(payload.schema, "agentacct.v1-attention.v1")
+        XCTAssertEqual(payload.total, 3)
+        XCTAssertEqual(payload.counts.failedCheck, 2)
+        XCTAssertEqual(payload.counts.failedStep, 0)
+        XCTAssertEqual(payload.counts.blocker, 1)
+        XCTAssertEqual(payload.items.first?.project, "agentacct-gui")
+        XCTAssertEqual(payload.items.first?.attention?.kind, "failed_check")
+        XCTAssertEqual(
+            payload.items.first?.attention?.nextStep,
+            "Inspect the reference and rerun the snapshot check"
+        )
+        XCTAssertTrue(payload.truncated)
+    }
+
+    func testShiftBriefUsesServerReasonWithoutInventingRecoveryCopy() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-finding",
+              "title": "Verify dashboard hierarchy",
+              "project": "agentacct-gui",
+              "decision_status": { "key": "finding", "label": "Open finding" },
+              "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+              "cost": {},
+              "attention": {
+                "kind": "failed_check",
+                "summary": "The reference image changed unexpectedly",
+                "next_step": null,
+                "observed_at": 1000,
+                "source": "mcp"
+              }
+            }
+            """
+        )
+
+        let focus = try XCTUnwrap(DashboardAttentionItem(task: task))
+        XCTAssertEqual(focus.reasonLabel, "Failed check")
+        XCTAssertEqual(focus.summary, "The reference image changed unexpectedly")
+        XCTAssertNil(focus.nextStep)
+        XCTAssertEqual(focus.project, "agentacct-gui")
+        XCTAssertEqual(focus.sourceLabel, "MCP record")
+    }
+
+    func testShiftBriefNeverTurnsLoadingUnavailableOrMalformedDataIntoAllClear() throws {
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: nil, error: nil),
+            .loading
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: nil, error: nil).dashboardHeadline,
+            "Checking recorded work"
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: nil, error: "daemon unavailable"),
+            .unavailable("daemon unavailable")
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: nil, error: "daemon unavailable").dashboardHeadline,
+            "Review status unavailable"
+        )
+
+        let clear = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [],
+              "total": 0,
+              "counts": { "failed_check": 0, "failed_step": 0, "blocker": 0 },
+              "limit": 5,
+              "truncated": false
+            }
+            """
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: clear, error: nil),
+            .clear
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: clear, error: nil).dashboardHeadline,
+            "No recorded work needs review"
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: clear, error: "refresh failed"),
+            .unavailable("refresh failed")
+        )
+
+        let falseClear = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "hidden-finding",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 0,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 0 },
+              "limit": 5,
+              "truncated": false
+            }
+            """
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: falseClear, error: nil),
+            .inconsistent(total: 0)
+        )
+
+        let inconsistent = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [],
+              "total": 1,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 0 },
+              "limit": 5,
+              "truncated": true
+            }
+            """
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: inconsistent, error: nil),
+            .inconsistent(total: 1)
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: inconsistent, error: nil).dashboardHeadline,
+            "Review details unavailable"
+        )
+
+        let mismatchedCounts = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "finding",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 0 },
+              "limit": 5,
+              "truncated": false
+            }
+            """
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: mismatchedCounts, error: nil),
+            .inconsistent(total: 2)
+        )
+    }
+
+    func testShiftBriefHeadlineUsesTheLeadingRecordedTaskInsteadOfStaticCopy() throws {
+        let payload = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "task-finding",
+                "title": "Verify dashboard hierarchy",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "limit": 1,
+              "truncated": true
+            }
+            """
+        )
+
+        let presentation = DashboardAttentionPresentation(payload: payload, error: nil)
+        XCTAssertEqual(presentation.dashboardHeadline, "Verify dashboard hierarchy")
+        XCTAssertEqual(presentation.dashboardStatus, "2 review items")
+        XCTAssertFalse(presentation.dashboardStatusIsWarning)
+    }
+
+    func testSignalRailNeverPresentsRetainedSourceHealthAsCurrentAfterAnError() throws {
+        let healthy = try decode(
+            V1IngestionSnapshot.self,
+            from: """
+            {
+              "state": "healthy",
+              "last_success_at": 1000,
+              "issues": []
+            }
+            """
+        )
+
+        XCTAssertEqual(
+            DashboardIngestionPresentation(snapshot: healthy, error: "source refresh failed"),
+            DashboardIngestionPresentation(
+                title: "Source status unavailable",
+                detail: "source refresh failed",
+                tone: .warning
+            )
+        )
+        XCTAssertEqual(
+            DashboardIngestionPresentation(snapshot: healthy, error: nil).title,
+            "Sources healthy"
+        )
+        XCTAssertEqual(
+            DashboardIngestionPresentation(snapshot: nil, error: nil),
+            DashboardIngestionPresentation(
+                title: "Checking source status",
+                detail: "Waiting for the current ingestion record.",
+                tone: .muted
+            )
+        )
+    }
+
+    func testWorkAttentionEmptyCopyRequiresAnAuthoritativeZero() throws {
+        let clear = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [], "total": 0,
+              "counts": { "failed_check": 0, "failed_step": 0, "blocker": 0 },
+              "limit": 5, "truncated": false
+            }
+            """
+        )
+        let inconsistent = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [], "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "limit": 5, "truncated": true
+            }
+            """
+        )
+        let filtered = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "task-finding",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "limit": 1, "truncated": true
+            }
+            """
+        )
+
+        XCTAssertEqual(WorkAttentionEmptyCopy(payload: clear, query: "").title, "No current review items")
+        XCTAssertEqual(
+            WorkAttentionEmptyCopy(payload: filtered, query: "visual").title,
+            "No review items match this filter"
+        )
+        XCTAssertEqual(
+            WorkAttentionEmptyCopy(payload: inconsistent, query: "visual").title,
+            "Review queue details unavailable"
+        )
+    }
+
     @MainActor
     func testDestinationsReplaceStaleDashboardSelection() {
         let cases: [(DashboardDestination, MainPane, String?, String?)] = [
@@ -10,6 +322,7 @@ final class DashboardInteractionTests: XCTestCase {
             (.task("task-1"), .work, "task-1", nil),
             (.session("codex::session-1"), .work, nil, "codex::session-1"),
             (.limits, .usage, nil, nil),
+            (.sources, .sources, nil, nil),
         ]
 
         for (destination, pane, taskID, sessionID) in cases {
@@ -23,6 +336,102 @@ final class DashboardInteractionTests: XCTestCase {
             XCTAssertEqual(selection.taskId, taskID, "destination: \(destination)")
             XCTAssertEqual(selection.sessionId, sessionID, "destination: \(destination)")
         }
+    }
+
+    @MainActor
+    func testReviewQueueDestinationSelectsTheBoundedAttentionQueue() {
+        let selection = AppSelection()
+        selection.workSort = .latest
+        selection.workGroup = nil
+
+        selection.open(.reviewQueue)
+
+        XCTAssertEqual(selection.pane, .work)
+        XCTAssertNil(selection.taskId)
+        XCTAssertNil(selection.sessionId)
+        XCTAssertEqual(selection.workGroup, .attention)
+        XCTAssertEqual(selection.workSort, .attention)
+    }
+
+    @MainActor
+    func testTaskDestinationCarriesItsQueueOriginExplicitly() {
+        let selection = AppSelection()
+        selection.workGroup = .attention
+
+        selection.open(.task("recent-task"))
+        XCTAssertNil(selection.workGroup, "Recent work must not inherit a stale review filter")
+
+        selection.open(.attentionTask("review-task"))
+        XCTAssertEqual(selection.taskId, "review-task")
+        XCTAssertEqual(selection.workGroup, .attention, "Review-item back navigation should return to the queue")
+    }
+
+    func testAttentionRequestGenerationRejectsAStaleResponse() {
+        var generation = LatestRequestGeneration()
+        let slowRefresh = generation.begin()
+        let dispositionRefresh = generation.begin()
+
+        XCTAssertFalse(generation.accepts(slowRefresh))
+        XCTAssertTrue(generation.accepts(dispositionRefresh))
+    }
+
+    func testAttentionPagesMergeWithoutHidingLaterItems() throws {
+        let first = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "task-1",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked" },
+                "cost": {}
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "snapshot": "queue-v1",
+              "offset": 0, "limit": 1, "truncated": true
+            }
+            """
+        )
+        let second = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "task-2",
+                "decision_status": { "key": "blocked" },
+                "evidence_strength": { "key": "unchecked" },
+                "cost": {}
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "snapshot": "queue-v1",
+              "offset": 1, "limit": 1, "truncated": false
+            }
+            """
+        )
+
+        let merged = mergedAttentionPages(first, second)
+
+        XCTAssertEqual(merged.items.map(\.taskId), ["task-1", "task-2"])
+        XCTAssertEqual(merged.offset, 0)
+        XCTAssertEqual(merged.limit, 2)
+        XCTAssertFalse(merged.truncated)
+        XCTAssertTrue(attentionPageCanAppend(first, second))
+
+        let changedQueue = V1AttentionPayload(
+            schema: second.schema,
+            items: second.items,
+            total: 3,
+            counts: second.counts,
+            snapshot: "queue-v2",
+            offset: second.offset,
+            limit: second.limit,
+            truncated: true
+        )
+        XCTAssertFalse(attentionPageCanAppend(first, changedQueue))
     }
 
     func testRecentWorkProjectionKeepsDecisionEvidenceAndCostSeparate() throws {
@@ -258,63 +667,6 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(workRecordColumnMode(for: 823), .stacked)
         XCTAssertEqual(workRecordColumnMode(for: 824), .sideBySide)
         XCTAssertEqual(workRecordColumnMode(for: 860), .sideBySide)
-    }
-
-    func testNeedsReviewProjectionUsesActionableTasks() throws {
-        let tasks = try decode(
-            [ReceiptSummary].self,
-            from: """
-            [
-              {
-                "task_id": "failed-check",
-                "decision_status": { "key": "reported", "label": "Agent reported" },
-                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
-                "cost": {}
-              },
-              {
-                "task_id": "blocked",
-                "decision_status": {
-                  "key": "blocked", "label": "Blocked", "asserted_by": "agent_report"
-                },
-                "evidence_strength": { "key": "not_gradeable" },
-                "cost": {}
-              },
-              {
-                "task_id": "complete",
-                "decision_status": { "key": "verified", "label": "Verified" },
-                "evidence_strength": { "key": "independently_checked" },
-                "cost": {}
-              },
-              {
-                "task_id": "finding",
-                "decision_status": { "key": "finding", "label": "Open finding" },
-                "evidence_strength": { "key": "unchecked" },
-                "cost": {}
-              },
-              {
-                "task_id": "superseded",
-                "decision_status": { "key": "finding_superseded", "label": "Finding superseded" },
-                "evidence_strength": { "key": "self_checked", "checks_failed": 1 },
-                "cost": {}
-              }
-            ]
-            """
-        )
-        let items = tasks.map(DashboardWorkItem.init)
-
-        XCTAssertTrue(items[0].needsReview)
-        XCTAssertTrue(items[0].hasFinding)
-        XCTAssertEqual(items[0].failedChecks, 1)
-        XCTAssertTrue(items[1].needsReview)
-        XCTAssertFalse(items[1].hasFinding)
-        XCTAssertEqual(items[1].outcomeSource, "agent reported")
-        XCTAssertFalse(items[2].needsReview)
-        XCTAssertTrue(items[3].needsReview)
-        XCTAssertTrue(items[3].hasFinding)
-        // A superseded finding's failed check belongs to the finding that
-        // superseded it — it never resurfaces as needing review.
-        XCTAssertFalse(items[4].needsReview)
-        XCTAssertFalse(items[4].hasFinding)
     }
 
     @MainActor

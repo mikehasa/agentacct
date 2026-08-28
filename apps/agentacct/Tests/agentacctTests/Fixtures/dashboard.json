@@ -263,6 +263,98 @@
       }
     ]
   },
+  "ingestion": {
+    "schema": "agentacct.v1-ingestion.v1",
+    "ingestion": {
+      "state": "healthy",
+      "last_success_at": 1787589970,
+      "issues": []
+    }
+  },
+  "attention": {
+    "schema": "agentacct.v1-attention.v1",
+    "total": 2,
+    "counts": {
+      "failed_check": 1,
+      "failed_step": 0,
+      "blocker": 1
+    },
+    "limit": 5,
+    "truncated": false,
+    "items": [
+      {
+        "task_id": "task-visual-regression",
+        "title": "Review dashboard visual regression",
+        "project": "agentacct-gui",
+        "decision_status": {
+          "key": "finding",
+          "label": "Open finding",
+          "asserted_by": "machine"
+        },
+        "evidence_strength": {
+          "key": "unchecked",
+          "gradeable": true,
+          "strongest_tier": "unchecked",
+          "checkable_total": 1,
+          "checked_total": 0,
+          "by_tier": { "unchecked": 1 },
+          "checks_total": 1,
+          "checks_passed": 0,
+          "checks_failed": 1
+        },
+        "cost": {
+          "estimated_cost_usd": 1.08,
+          "cost_basis": "pricing_table",
+          "cost_confidence": "estimated",
+          "cost_complete": true
+        },
+        "primary_root": {
+          "client": "codex",
+          "client_session_id": "fixture-failed"
+        },
+        "last_activity_at": 1787589280,
+        "attention": {
+          "kind": "failed_check",
+          "summary": "The minimum-window snapshot differs from its reviewed reference.",
+          "next_step": "Inspect the changed hierarchy before accepting a new reference.",
+          "observed_at": 1787589280,
+          "source": "mcp"
+        }
+      },
+      {
+        "task_id": "task-provider-calibration",
+        "title": "Resolve provider calibration",
+        "project": "agentacct-gui",
+        "decision_status": {
+          "key": "blocked",
+          "label": "Blocked",
+          "asserted_by": "agent_report"
+        },
+        "evidence_strength": {
+          "key": "not_gradeable",
+          "gradeable": false,
+          "checkable_total": 0,
+          "checked_total": 0,
+          "checks_total": 0,
+          "checks_passed": 0,
+          "checks_failed": 0
+        },
+        "cost": {},
+        "primary_root": {
+          "client": "codex",
+          "client_session_id": "fixture-blocked"
+        },
+        "last_activity_at": 1787589100,
+        "attention": {
+          "kind": "blocker",
+          "summary": "Provider allowance calibration is waiting for a complete observation window.",
+          "next_step": "Review the recorded calibration state before changing provider settings.",
+          "observed_at": 1787589100,
+          "source": "mcp"
+        }
+      }
+    ]
+  },
   "tasks": {
     "schema": "agentacct.receipt.v1",
     "total": 4,

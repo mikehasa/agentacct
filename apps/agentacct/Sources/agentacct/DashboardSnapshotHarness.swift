@@ -7,17 +7,20 @@ import SwiftUI
 struct DashboardSnapshotFixture: Decodable {
     static let supportedPlanSchema = "agentacct.plan.v1"
     static let supportedTasksSchema = "agentacct.receipt.v1"
+    static let supportedAttentionSchema = "agentacct.v1-attention.v1"
 
     let daemonVersion: String
     let glance: Glance
     let menuSparseGlance: Glance?
     let plan: V1PlanPayload
+    let attention: V1AttentionPayload
+    let ingestion: V1IngestionPayload?
     let tasks: ReceiptTasksPayload
     let usage: UsageSummary
     let work: WorkSnapshotFixture?
 
     enum CodingKeys: String, CodingKey {
-        case glance, plan, tasks, usage, work
+        case glance, plan, attention, ingestion, tasks, usage, work
         case menuSparseGlance = "menu_sparse_glance"
         case daemonVersion = "daemon_version"
     }
@@ -56,6 +59,13 @@ struct DashboardSnapshotFixture: Decodable {
                 payload: "tasks",
                 actual: fixture.tasks.schema,
                 expected: supportedTasksSchema
+            )
+        }
+        guard fixture.attention.schema == supportedAttentionSchema else {
+            throw SnapshotError.unsupportedSchema(
+                payload: "attention",
+                actual: fixture.attention.schema,
+                expected: supportedAttentionSchema
             )
         }
         if let work = fixture.work {
@@ -124,6 +134,7 @@ struct DashboardSnapshotConfiguration {
     let width: CGFloat
     let height: CGFloat
     let colorScheme: ColorScheme
+    let workState: SnapshotWorkStoreState
 
     var filename: String {
         let appearance = colorScheme == .dark ? "dark" : "light"
@@ -131,13 +142,15 @@ struct DashboardSnapshotConfiguration {
     }
 
     static let reviewConfigurations: [Self] = [
-        Self(viewport: "minimum", width: 960, height: 560, colorScheme: .light),
-        Self(viewport: "minimum", width: 960, height: 560, colorScheme: .dark),
-        // The reference viewport must show the complete dashboard, including
-        // chart labels. The shorter minimum pair intentionally verifies the
-        // real top-of-scroll experience instead.
-        Self(viewport: "reference", width: 1120, height: 800, colorScheme: .light),
-        Self(viewport: "reference", width: 1120, height: 800, colorScheme: .dark),
+        Self(viewport: "minimum", width: 960, height: 560, colorScheme: .light, workState: .populated),
+        Self(viewport: "minimum", width: 960, height: 560, colorScheme: .dark, workState: .populated),
+        // The reference viewport verifies the full decision brief and work
+        // ledger at the standard window size; usage history remains the next
+        // scroll region (its chart has a dedicated interactive test surface).
+        Self(viewport: "reference", width: 1120, height: 800, colorScheme: .light, workState: .populated),
+        Self(viewport: "reference", width: 1120, height: 800, colorScheme: .dark, workState: .populated),
+        Self(viewport: "trust-unavailable", width: 1120, height: 800, colorScheme: .light, workState: .shiftBriefUnavailable),
+        Self(viewport: "trust-unavailable", width: 1120, height: 800, colorScheme: .dark, workState: .shiftBriefUnavailable),
     ]
 }
 
@@ -178,13 +191,15 @@ enum DashboardSnapshotRenderer {
             SnapshotScheme.override = nil
         }
 
-        let glance = GlanceState(preloaded: fixture.glanceSnapshot)
-        let dashboard = DashboardStore(preloaded: fixture)
-        let selection = AppSelection()
-        selection.pane = .dashboard
-
         return try configurations.map { configuration in
             SnapshotScheme.override = configuration.colorScheme
+            let glance = GlanceState(preloaded: fixture.glanceSnapshot)
+            let dashboard = DashboardStore(
+                preloaded: fixture,
+                workState: configuration.workState
+            )
+            let selection = AppSelection()
+            selection.pane = .dashboard
             // A packaged app consistently offers setup here. Injecting that
             // state keeps SwiftPM and packaged-build snapshots identical.
             let view = MainWindow(canSetUpOverride: true)
