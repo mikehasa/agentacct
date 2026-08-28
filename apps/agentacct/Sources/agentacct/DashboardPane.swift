@@ -360,7 +360,9 @@ enum DashboardUsageSeries: String, CaseIterable, Identifiable {
                 ["client_reported", "provider_billed"].contains($0.costConfidence ?? "")
             }
             let prefix = reported ? "$" : (complete ? "≈$" : "~$")
-            return "\(Fmt.dollars(available.reduce(0, +), prefix: prefix)) total"
+            let total = available.reduce(0, +)
+            guard total.isFinite else { return "—" }
+            return "\(Fmt.dollars(total, prefix: prefix)) total"
         }
     }
 

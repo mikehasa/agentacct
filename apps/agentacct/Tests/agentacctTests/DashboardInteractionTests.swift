@@ -785,6 +785,17 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 12.34), "$12")
         XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 999_999), "$999k")
         XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 9e18), "$9e18")
+
+        let overflowingTotal = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "estimated_cost_usd": 1.7976931348623157e308 },
+              { "period": "2026-08-25", "estimated_cost_usd": 1.7976931348623157e308 }
+            ]
+            """
+        )
+        XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: overflowingTotal), "—")
     }
 
     func testActiveWorkIncludesOnlyRunningStates() {
