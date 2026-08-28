@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import select
 import signal
 import subprocess
 import sys
@@ -26,11 +27,7 @@ import signal
 import sys
 
 gate = int(sys.argv[1])
-token = os.read(gate, 1)
-os.close(gate)
-if token != b"1":
-    raise SystemExit(126)
-
+ready = int(sys.argv[2])
 cancel_requested = False
 
 def on_term(_signum, _frame):
@@ -38,10 +35,17 @@ def on_term(_signum, _frame):
     cancel_requested = True
 
 signal.signal(signal.SIGTERM, on_term)
+os.write(ready, b"1")
+os.close(ready)
+token = os.read(gate, 1)
+os.close(gate)
+if token != b"1":
+    raise SystemExit(126)
+
 child = os.fork()
 if child == 0:
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
-    os.execvpe(sys.argv[2], sys.argv[2:], os.environ)
+    os.execvpe(sys.argv[3], sys.argv[3:], os.environ)
 while True:
     try:
         _, status = os.waitpid(child, 0)
@@ -222,29 +226,46 @@ def start_guarded_run(command: list[str], options: RunOptions | None = None) -> 
         }
     )
 
-    gate_read, gate_write = os.pipe()
+    gate_read = -1
+    gate_write = -1
+    ready_read = -1
+    ready_write = -1
     proc: subprocess.Popen[str] | None = None
     pgid: int | None = None
     process_birth_time: float | None = None
     process_executable: str | None = None
     process_cwd: str | None = None
     try:
+        gate_read, gate_write = os.pipe()
+        ready_read, ready_write = os.pipe()
         proc = subprocess.Popen(
-            [sys.executable, "-c", _RUNNER_SHIM, str(gate_read), *command],
+            [sys.executable, "-c", _RUNNER_SHIM, str(gate_read), str(ready_write), *command],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
             start_new_session=True,
-            pass_fds=(gate_read,),
+            pass_fds=(gate_read, ready_write),
             env=child_env,
             cwd=options.cwd,
         )
         os.close(gate_read)
         gate_read = -1
+        os.close(ready_write)
+        ready_write = -1
         pgid = os.getpgid(proc.pid)
         live_process = psutil.Process(proc.pid)
         process_birth_time = float(live_process.create_time())
+        process_executable = str(Path(live_process.exe()).resolve())
+        process_cwd = str(Path(live_process.cwd()).resolve())
+        readable, _, _ = select.select([ready_read], [], [], 5.0)
+        if not readable or os.read(ready_read, 1) != b"1":
+            raise RuntimeError("process launch readiness handshake failed")
+        os.close(ready_read)
+        ready_read = -1
+        # The child acknowledges only after the interpreter is executing the
+        # shim, so launchers that re-exec cannot leave a transient path behind.
+        live_process = psutil.Process(proc.pid)
         process_executable = str(Path(live_process.exe()).resolve())
         process_cwd = str(Path(live_process.cwd()).resolve())
         metadata = {
@@ -275,11 +296,12 @@ def start_guarded_run(command: list[str], options: RunOptions | None = None) -> 
         store.write_metadata(run_id, metadata)
         os.write(gate_write, b"1")
     except Exception:
-        if gate_read >= 0:
-            try:
-                os.close(gate_read)
-            except OSError:
-                pass
+        for descriptor in (gate_read, ready_read, ready_write):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
         _abort_blocked_runner(
             proc,
             gate_write,
