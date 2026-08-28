@@ -27,6 +27,16 @@ final class SetupModel: ObservableObject {
     @Published private(set) var log: [String] = []
 
     private let fm = FileManager.default
+    private let installer: (() throws -> URL)?
+    private let processRunner: (URL, [String]) -> AsyncThrowingStream<String, Error>
+
+    init(
+        installer: (() throws -> URL)? = nil,
+        processRunner: @escaping (URL, [String]) -> AsyncThrowingStream<String, Error> = ProcessRunner.run
+    ) {
+        self.installer = installer
+        self.processRunner = processRunner
+    }
 
     // MARK: locations
 
@@ -57,9 +67,14 @@ final class SetupModel: ObservableObject {
         guard case .idle = phase else { return }
         log = []
         do {
-            try installCLI()
-            try await runOnboard()
+            try Task.checkCancellation()
+            let executable = try installer?() ?? installCLI()
+            try Task.checkCancellation()
+            try await runOnboard(executable: executable)
+            try Task.checkCancellation()
             phase = .done
+        } catch is CancellationError {
+            phase = .idle
         } catch {
             phase = .failed(error.localizedDescription)
             append("error: \(error.localizedDescription)")
@@ -70,7 +85,7 @@ final class SetupModel: ObservableObject {
 
     // MARK: steps
 
-    private func installCLI() throws {
+    private func installCLI() throws -> URL {
         guard let bundled = bundledCLIDir else {
             throw SetupError.noEmbeddedCLI
         }
@@ -91,18 +106,16 @@ final class SetupModel: ObservableObject {
         try script.write(to: wrapper, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wrapper.path)
         append("Wrote ~/.local/bin/agentacct")
+        return installedBinary
     }
 
-    private func runOnboard() async throws {
+    private func runOnboard(executable: URL) async throws {
         phase = .working("Configuring your coding agents…")
         append("Running: agentacct onboard --agent auto --yes")
         // Run from the INSTALLED binary so onboard stamps the stable installed
         // path into every hook/MCP config (verified end-to-end).
-        let stream = try ProcessRunner.run(
-            executable: installedBinary,
-            arguments: ["onboard", "--agent", "auto", "--yes"]
-        )
-        for await line in stream {
+        let stream = processRunner(executable, ["onboard", "--agent", "auto", "--yes"])
+        for try await line in stream {
             append(line)
         }
     }
@@ -129,8 +142,8 @@ final class SetupModel: ObservableObject {
 
 enum ProcessRunner {
     /// Launch a process and yield its merged stdout+stderr line by line. The
-    /// AsyncStream finishes when the process exits.
-    static func run(executable: URL, arguments: [String]) throws -> AsyncStream<String> {
+    /// stream succeeds only when the process exits with status zero.
+    static func run(executable: URL, arguments: [String]) -> AsyncThrowingStream<String, Error> {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
@@ -141,7 +154,7 @@ enum ProcessRunner {
         // (HOME, PATH) so onboard writes to the real ~/.claude, ~/.codex.
         process.environment = ProcessInfo.processInfo.environment
 
-        return AsyncStream<String> { continuation in
+        return AsyncThrowingStream<String, Error> { continuation in
             let handle = pipe.fileHandleForReading
             var buffer = Data()
             let drainTail: () -> Void = {
@@ -169,20 +182,35 @@ enum ProcessRunner {
                     }
                 }
             }
-            process.terminationHandler = { _ in
+            process.terminationHandler = { process in
                 // Finish the stream. `buffer` is deliberately NOT touched here —
                 // it is owned by the readability queue, and the EOF read above
                 // drains the final tail; racing it from this queue would be a
                 // data race for a log-only line. Post-finish yields are ignored.
                 handle.readabilityHandler = nil
-                continuation.finish()
+                if process.terminationStatus == 0 {
+                    continuation.finish()
+                } else {
+                    continuation.finish(throwing: ProcessRunnerError.nonzeroExit(process.terminationStatus))
+                }
             }
             do {
                 try process.run()
             } catch {
-                continuation.yield("failed to launch: \(error.localizedDescription)")
-                continuation.finish()
+                handle.readabilityHandler = nil
+                continuation.finish(throwing: error)
             }
+        }
+    }
+}
+
+enum ProcessRunnerError: LocalizedError, Equatable {
+    case nonzeroExit(Int32)
+
+    var errorDescription: String? {
+        switch self {
+        case .nonzeroExit(let status):
+            return "Recorder setup exited with status \(status)."
         }
     }
 }

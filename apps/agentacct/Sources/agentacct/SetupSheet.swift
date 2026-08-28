@@ -40,6 +40,7 @@ struct SetupSheet: View {
                                     .font(Type.dataSmall)
                                     .foregroundStyle(Theme.muted)
                                     .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
                                     .id(i)
                             }
                         }
@@ -100,6 +101,11 @@ struct SetupSheet: View {
                     Text("Setup didn't finish").font(Face.sansFont(14, .medium)).foregroundStyle(Theme.ink)
                 }
                 Text(message).font(Type.caption).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                Text("Review the final log lines, resolve the reported issue, then try again.")
+                    .font(Type.caption)
+                    .foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Button("Close", action: onClose).buttonStyle(.plain).foregroundStyle(Theme.muted)
