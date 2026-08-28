@@ -33,18 +33,13 @@ struct SetupSheet: View {
 
             if !setup.log.isEmpty {
                 ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(Array(setup.log.enumerated()), id: \.offset) { i, line in
-                                Text(line)
-                                    .font(Type.dataSmall)
-                                    .foregroundStyle(Theme.muted)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .textSelection(.enabled)
-                                    .id(i)
-                            }
+                    Group {
+                        if SnapshotMode.enabled {
+                            setupLog
+                                .frame(maxHeight: .infinity, alignment: .top)
+                        } else {
+                            ScrollView { setupLog }
                         }
-                        .padding(8)
                     }
                     .frame(height: 150)
                     .background(Theme.chrome, in: RoundedRectangle(cornerRadius: Metrics.radius))
@@ -60,6 +55,20 @@ struct SetupSheet: View {
         .padding(Space.l)
         .frame(width: 460)
         .background(Theme.canvas)
+    }
+
+    private var setupLog: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(setup.log.enumerated()), id: \.offset) { i, line in
+                Text(line)
+                    .font(Type.dataSmall)
+                    .foregroundStyle(Theme.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .id(i)
+            }
+        }
+        .padding(8)
     }
 
     @ViewBuilder

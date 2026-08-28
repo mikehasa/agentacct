@@ -38,6 +38,16 @@ final class SetupModel: ObservableObject {
         self.processRunner = processRunner
     }
 
+    /// Deterministic state injection for offscreen review renders. Live setup
+    /// still uses the production initializer above and reaches these states
+    /// only through `setUp()`.
+    init(preloaded phase: Phase, log: [String]) {
+        self.phase = phase
+        self.log = Array(log.suffix(200))
+        installer = nil
+        processRunner = ProcessRunner.run
+    }
+
     // MARK: locations
 
     /// The CLI embedded in the app bundle (Contents/Resources/cli), if this is
