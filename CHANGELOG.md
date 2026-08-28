@@ -6,6 +6,27 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.2] — 2026-08-29
+
+Restores claude-code usage ingestion (frozen by a new Workflow-tool journal
+row) and surfaces the weekly-plan share as its own receipt row, on top of the
+receipt, dashboard, and usage UI refinements merged since 0.10.1.
+
+### Fixed
+
+- Ingestion: accept the Claude Code Workflow tool's `failed` journal row. Its
+  new per-agent lifecycle row raised `claude_workflow_journal_schema_drift`,
+  which fails closed for the whole home and froze claude-code usage/cost import
+  while already-stored sessions kept rendering. A journal row that carries token
+  usage still fails closed. (#169)
+
+### Added
+
+- Receipt: a dedicated "Weekly plan" row (macOS app, CLI, TUI) showing the
+  Task's calibrated share of its client's weekly plan — calibrated-or-nothing,
+  a named calibration state instead of a fabricated number when uncalibrated.
+  (#169)
+
 ### Changed
 
 - macOS app: packaged builds derive their release version from the same
@@ -807,7 +828,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.2
 [0.10.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.1
 [0.10.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.0
 [0.9.4]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.4
