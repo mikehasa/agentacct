@@ -36,6 +36,8 @@ final class DashboardStore: ObservableObject {
     /// Source/watcher health from /v1/ingestion (the Sources pane).
     @Published private(set) var ingestion: V1IngestionSnapshot?
     @Published private(set) var ingestionError: String?
+    @Published private(set) var ingestionLastUpdated: Date?
+    @Published private(set) var isRefreshingIngestion = false
     @Published private(set) var isRefreshing = false
     @Published private(set) var lastUpdated: Date?
     /// Freshness of the independently published plan + recorded-usage pair.
@@ -60,7 +62,9 @@ final class DashboardStore: ObservableObject {
     /// would, without network access or a developer's local account data.
     init(
         preloaded fixture: DashboardSnapshotFixture,
-        workState: SnapshotWorkStoreState = .populated
+        workState: SnapshotWorkStoreState = .populated,
+        ingestion: V1IngestionSnapshot? = nil,
+        ingestionError: String? = nil
     ) {
         planClients = fixture.plan.clients
         usage = fixture.usage
@@ -90,6 +94,11 @@ final class DashboardStore: ObservableObject {
         let updated = fixture.glance.generatedAt.map(Date.init(timeIntervalSince1970:))
         lastUpdated = updated
         usageLastUpdated = updated
+        self.ingestion = ingestion
+        self.ingestionError = ingestionError
+        if ingestion != nil, ingestionError == nil {
+            ingestionLastUpdated = updated
+        }
     }
 
     func refresh() async {
@@ -104,7 +113,7 @@ final class DashboardStore: ObservableObject {
         async let tasksRequest: ReceiptTasksPayload = client.getAuthed("/v1/tasks?limit=200")
         async let planRequest: V1PlanPayload = client.getAuthed("/v1/plan?days=\(days)")
         async let usageRequest: UsageSummary = client.getLocal("/usage/summary?days=\(days)")
-        async let ingestionRequest: V1IngestionPayload = client.getAuthed("/v1/ingestion")
+        async let ingestionRefresh: Void = refreshIngestion()
 
         var tasksSucceeded = false
         do {
@@ -120,33 +129,51 @@ final class DashboardStore: ObservableObject {
         }
 
         do {
-            let payload = try await ingestionRequest
+            let (plan, summary) = try await (planRequest, usageRequest)
+            if rangeGeneration == usageDaysGeneration, days == usageDays {
+                planClients = plan.clients
+                usage = summary
+                errorText = nil
+                let updated = Date()
+                usageLastUpdated = updated
+                if tasksSucceeded { lastUpdated = updated }
+            }
+        } catch GlanceClientError.noDiscovery(_) {
+            if rangeGeneration == usageDaysGeneration {
+                errorText = "daemon not running (no discovery file) — start it with `agentacct start`"
+            }
+        } catch {
+            if rangeGeneration == usageDaysGeneration {
+                errorText = "daemon fetch failed: \(error.localizedDescription)"
+            }
+        }
+
+        _ = await ingestionRefresh
+    }
+
+    /// Refresh only the Sources pane's endpoint. This keeps its retry action
+    /// independent from slower receipt, plan, and usage requests while still
+    /// letting the full-window refresh launch every lane concurrently.
+    func refreshIngestion() async {
+        guard !isRefreshingIngestion else { return }
+        isRefreshingIngestion = true
+        defer { isRefreshingIngestion = false }
+
+        do {
+            let payload: V1IngestionPayload = try await client.getAuthed("/v1/ingestion")
             ingestion = payload.ingestion
             ingestionError = nil
+            ingestionLastUpdated = Date()
         } catch GlanceClientError.http(404) {
             // An older daemon without the route: a named state, not an error toast.
             ingestionError = "this daemon predates /v1/ingestion"
         } catch GlanceClientError.noDiscovery(_) {
             ingestionError = "daemon not running (no discovery file) — start it with `agentacct start`"
         } catch {
+            // A parent view disappearing may cancel its full refresh. Do not
+            // turn that lifecycle event into a false source-health failure.
+            guard !Task.isCancelled else { return }
             ingestionError = "source health fetch failed: \(error.localizedDescription)"
-        }
-
-        do {
-            let (plan, summary) = try await (planRequest, usageRequest)
-            guard rangeGeneration == usageDaysGeneration, days == usageDays else { return }
-            planClients = plan.clients
-            usage = summary
-            errorText = nil
-            let updated = Date()
-            usageLastUpdated = updated
-            if tasksSucceeded { lastUpdated = updated }
-        } catch GlanceClientError.noDiscovery(_) {
-            guard rangeGeneration == usageDaysGeneration else { return }
-            errorText = "daemon not running (no discovery file) — start it with `agentacct start`"
-        } catch {
-            guard rangeGeneration == usageDaysGeneration else { return }
-            errorText = "daemon fetch failed: \(error.localizedDescription)"
         }
     }
 

@@ -34,8 +34,9 @@ host or running Swift tests:
 
 This project currently discovers `AboutVisualRegressionTests`,
 `DashboardVisualRegressionTests`, `MenuVisualRegressionTests`,
-`UsageVisualRegressionTests`, and `WorkVisualRegressionTests`. An empty list
-remains valid for another project or branch before its first visual suite.
+`SourcesVisualRegressionTests`, `UsageVisualRegressionTests`, and
+`WorkVisualRegressionTests`. An empty list remains valid for another project
+or branch before its first visual suite.
 
 Verify one suite before changing its UI:
 

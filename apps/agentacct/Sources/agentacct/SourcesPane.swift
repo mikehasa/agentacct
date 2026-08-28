@@ -67,6 +67,28 @@ struct V1IngestionIssue: Decodable, Identifiable {
     var id: String { "\(code ?? "?")-\(source ?? "*")" }
 }
 
+/// Resolves the Sources pane from the current request result, not merely the
+/// last snapshot the store happened to retain. A refresh failure therefore
+/// cannot leave stale source and watcher rows looking live.
+enum SourcesPresentationState {
+    case loading
+    case connected(V1IngestionSnapshot)
+    case unavailable(message: String, hasRetainedSnapshot: Bool)
+
+    static func resolve(snapshot: V1IngestionSnapshot?, error: String?) -> Self {
+        if let error {
+            return .unavailable(
+                message: error,
+                hasRetainedSnapshot: snapshot != nil
+            )
+        }
+        if let snapshot {
+            return .connected(snapshot)
+        }
+        return .loading
+    }
+}
+
 // MARK: - Pane
 
 struct SourcesPane: View {
@@ -96,23 +118,83 @@ struct SourcesPane: View {
 
     @ViewBuilder
     private var content: some View {
-        if let snapshot = dashboard.ingestion {
+        switch SourcesPresentationState.resolve(
+            snapshot: dashboard.ingestion,
+            error: dashboard.ingestionError
+        ) {
+        case .connected(let snapshot):
             connectedCard(snapshot)
             watcherCard(snapshot.watcher).padding(.top, Space.xl)
             issuesCard(snapshot.issues ?? []).padding(.top, Space.xl)
             verifierShelf.padding(.top, Space.xl)
             scopeCard.padding(.top, Space.xl)
-        } else if let error = dashboard.ingestionError {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Source health unavailable").font(Type.rowLabel).foregroundStyle(Theme.ink)
-                Text(error).font(Type.caption).foregroundStyle(Theme.muted)
-                Text("An older daemon serves no /v1/ingestion — update and restart it.")
-                    .font(Type.caption).foregroundStyle(Theme.muted)
-            }
+        case .unavailable(let message, let hasRetainedSnapshot):
+            unavailableCard(
+                message: message,
+                hasRetainedSnapshot: hasRetainedSnapshot
+            )
             verifierShelf.padding(.top, Space.xl)
             scopeCard.padding(.top, Space.xl)
-        } else {
+        case .loading:
             Text("Loading source health…").font(Type.body).foregroundStyle(Theme.muted)
+        }
+    }
+
+    private func unavailableCard(
+        message: String,
+        hasRetainedSnapshot: Bool
+    ) -> some View {
+        Card(padding: Space.xl) {
+            HStack(alignment: .top, spacing: Space.l) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.amber)
+                    .frame(width: 20, height: 20)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: Space.s) {
+                    Text("Source health unavailable")
+                        .font(Type.rowLabel)
+                        .foregroundStyle(Theme.ink)
+                    Text(message)
+                        .font(Type.caption)
+                        .foregroundStyle(Theme.muted)
+                        .textSelection(.enabled)
+                    if hasRetainedSnapshot {
+                        Text("Last known status is hidden so stale sources are not shown as live.")
+                            .font(Type.caption)
+                            .foregroundStyle(Theme.muted)
+                    }
+                    Text("Make the local daemon available and current, then try again.")
+                        .font(Type.caption)
+                        .foregroundStyle(Theme.muted)
+
+                    Button {
+                        Task { await dashboard.refreshIngestion() }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 11.5, weight: .medium))
+                            Text(dashboard.isRefreshingIngestion ? "Refreshing…" : "Try again")
+                                .font(Type.captionSemibold)
+                        }
+                        .foregroundStyle(Theme.accent)
+                    }
+                    .buttonStyle(QuietButtonStyle(
+                        prominent: true,
+                        horizontalPadding: 8,
+                        verticalPadding: 5
+                    ))
+                    .disabled(dashboard.isRefreshingIngestion)
+                    .accessibilityLabel(
+                        dashboard.isRefreshingIngestion
+                            ? "Refreshing source health"
+                            : "Retry source health"
+                    )
+                    .accessibilityIdentifier("sources.retry")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -399,7 +481,7 @@ struct SourcesPane: View {
                     Text("Local only — nothing leaves this machine")
                         .font(Type.rowLabel).foregroundStyle(Theme.ink)
                     Spacer()
-                    Text("store: \(GlanceClient.storeDir().path)")
+                    Text("store: \(SnapshotMode.currentStorePath)")
                         .font(Type.dataSmall).foregroundStyle(Theme.muted)
                         .lineLimit(1).truncationMode(.middle)
                         .frame(maxWidth: 420, alignment: .trailing)

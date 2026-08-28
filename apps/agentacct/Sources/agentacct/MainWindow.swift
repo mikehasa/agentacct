@@ -119,6 +119,44 @@ struct TopBar: View {
         .animation(reduceMotion ? nil : Motion.selection, value: selection.pane)
     }
 
+    @ViewBuilder
+    private var freshnessStatus: some View {
+        if selection.pane == .sources, dashboard.ingestionError != nil {
+            HStack(spacing: 5) {
+                Circle().fill(Theme.amber).frame(width: 5, height: 5)
+                Text("Source health unavailable")
+            }
+            .font(Type.dataSmall)
+            .foregroundStyle(Theme.muted)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Source health unavailable")
+        } else if selection.pane == .sources,
+                  let updated = dashboard.ingestionLastUpdated
+        {
+            let freshness = dashboardFreshnessText(updated)
+            HStack(spacing: 5) {
+                Circle().fill(Theme.green).frame(width: 5, height: 5)
+                Text("Source health · \(freshness)")
+            }
+            .font(Type.dataSmall)
+            .foregroundStyle(Theme.muted)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Source health updated \(freshness)")
+        } else if selection.pane != .sources,
+                  let updated = dashboard.lastUpdated
+        {
+            let freshness = dashboardFreshnessText(updated)
+            HStack(spacing: 5) {
+                Circle().fill(Theme.green).frame(width: 5, height: 5)
+                Text("Local data · \(freshness)")
+            }
+            .font(Type.dataSmall)
+            .foregroundStyle(Theme.muted)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Local data updated \(freshness)")
+        }
+    }
+
     var body: some View {
         HStack(spacing: 14) {
             BrandLockup()
@@ -148,22 +186,19 @@ struct TopBar: View {
                 .help("Install the recorder and configure your coding agents")
                 .accessibilityIdentifier("dashboard.setup-recording")
             }
-            if let updated = dashboard.lastUpdated {
-                let freshness = dashboardFreshnessText(updated)
-                HStack(spacing: 5) {
-                    Circle().fill(Theme.green).frame(width: 5, height: 5)
-                    Text("Local data · \(freshness)")
-                }
-                .font(Type.dataSmall)
-                .foregroundStyle(Theme.muted)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Local data updated \(freshness)")
-            }
-            if dashboard.isRefreshing || glance.isRefreshing {
+            freshnessStatus
+            if dashboard.isRefreshing
+                || glance.isRefreshing
+                || (selection.pane == .sources && dashboard.isRefreshingIngestion)
+            {
                 ProgressView()
                     .controlSize(.small)
                     .tint(Theme.muted)
-                    .accessibilityLabel("Refreshing local data")
+                    .accessibilityLabel(
+                        selection.pane == .sources
+                            ? "Refreshing source health"
+                            : "Refreshing local data"
+                    )
             } else {
                 Button {
                     glance.refreshNow()
