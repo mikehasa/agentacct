@@ -147,8 +147,12 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
     func testRejectsFixtureWithoutSnapshotClock() throws {
         let fixtureURL = try dashboardFixtureURL()
         var fixtureJSON = try String(contentsOf: fixtureURL, encoding: .utf8)
-        let generatedAtLine = "    \"generated_at\": 1787590000,\n"
-        let generatedAtRange = try XCTUnwrap(fixtureJSON.range(of: generatedAtLine))
+        let generatedAtRange = try XCTUnwrap(
+            fixtureJSON.range(
+                of: #"    "generated_at": [0-9]+,\n"#,
+                options: .regularExpression
+            )
+        )
         fixtureJSON.removeSubrange(generatedAtRange)
         let fixture = try DashboardSnapshotFixture.decode(Data(fixtureJSON.utf8))
 

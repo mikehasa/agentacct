@@ -2,7 +2,7 @@
   "daemon_version": "0.9.3",
   "glance": {
     "schema": "agentacct.glance.v1",
-    "generated_at": 1787590000,
+    "generated_at": 1787618800,
     "usage": {
       "windows": [
         {
@@ -81,7 +81,7 @@
             "kind": "7d",
             "used_percent": 39,
             "window_minutes": 10080,
-            "resets_at": 1788155200
+            "resets_at": 1788184000
           },
           {
             "kind": "5h",
@@ -130,20 +130,20 @@
         "session_id": "fixture-active-01",
         "title": "Dashboard design system",
         "status": "in_progress",
-        "last_activity_at": 1787589988
+        "last_activity_at": 1787618788
       },
       {
         "client": "codex",
         "session_id": "fixture-active-02",
         "title": "Snapshot harness",
         "status": "checkpoint",
-        "last_activity_at": 1787589952
+        "last_activity_at": 1787618752
       }
     ]
   },
   "menu_sparse_glance": {
     "schema": "agentacct.glance.v1",
-    "generated_at": 1787590000,
+    "generated_at": 1787618800,
     "usage": {
       "windows": [
         {
@@ -192,7 +192,7 @@
             "kind": "7d",
             "used_percent": 4,
             "window_minutes": 10080,
-            "resets_at": 1788115600
+            "resets_at": 1788144400
           }
         ]
       }
@@ -217,27 +217,27 @@
         "client": "codex",
         "session_id": "01a041c8-fixture",
         "status": "in_progress",
-        "last_activity_at": 1787589988,
+        "last_activity_at": 1787618788,
         "plan_pct": 1.2
       },
       {
         "client": "codex",
         "session_id": "01a04201-fixture",
         "status": "checkpoint",
-        "last_activity_at": 1787589952
+        "last_activity_at": 1787618752
       },
       {
         "client": "claude-code",
         "session_id": "01a04255-fixture",
         "title": "Limit calibration",
         "status": "completed",
-        "last_activity_at": 1787589900
+        "last_activity_at": 1787618700
       }
     ]
   },
   "plan": {
     "schema": "agentacct.plan.v1",
-    "generated_at": 1787590000,
+    "generated_at": 1787618800,
     "days": 7,
     "clients": [
       {
@@ -267,7 +267,7 @@
     "schema": "agentacct.v1-ingestion.v1",
     "ingestion": {
       "state": "healthy",
-      "last_success_at": 1787589970,
+      "last_success_at": 1787618770,
       "issues": []
     }
   },
@@ -312,12 +312,12 @@
           "client": "codex",
           "client_session_id": "fixture-failed"
         },
-        "last_activity_at": 1787589280,
+        "last_activity_at": 1787618080,
         "attention": {
           "kind": "failed_check",
           "summary": "The minimum-window snapshot differs from its reviewed reference.",
           "next_step": "Inspect the changed hierarchy before accepting a new reference.",
-          "observed_at": 1787589280,
+          "observed_at": 1787618080,
           "source": "mcp"
         }
       },
@@ -344,12 +344,12 @@
           "client": "codex",
           "client_session_id": "fixture-blocked"
         },
-        "last_activity_at": 1787589100,
+        "last_activity_at": 1787617900,
         "attention": {
           "kind": "blocker",
           "summary": "Provider allowance calibration is waiting for a complete observation window.",
           "next_step": "Review the recorded calibration state before changing provider settings.",
-          "observed_at": 1787589100,
+          "observed_at": 1787617900,
           "source": "mcp"
         }
       }
@@ -391,7 +391,7 @@
           "client": "codex",
           "client_session_id": "fixture-active-02"
         },
-        "last_activity_at": 1787589880
+        "last_activity_at": 1787618680
       },
       {
         "task_id": "task-dashboard-hierarchy",
@@ -425,7 +425,7 @@
           "client": "codex",
           "client_session_id": "fixture-active-01"
         },
-        "last_activity_at": 1787589340
+        "last_activity_at": 1787618140
       },
       {
         "task_id": "task-provider-calibration",
@@ -449,7 +449,7 @@
           "client": "codex",
           "client_session_id": "fixture-blocked"
         },
-        "last_activity_at": 1787589100
+        "last_activity_at": 1787617900
       },
       {
         "task_id": "task-visual-regression",
@@ -482,7 +482,7 @@
           "client": "codex",
           "client_session_id": "fixture-failed"
         },
-        "last_activity_at": 1787589280
+        "last_activity_at": 1787618080
       }
     ]
   },
@@ -658,7 +658,7 @@
               "exit_code": 0,
               "scope": "app",
               "source": "hook",
-              "at": 1787589700,
+              "at": 1787618500,
               "summary": "All Swift unit and interaction tests passed.",
               "command_redacted": true
             },
@@ -669,7 +669,7 @@
               "exit_code": 0,
               "scope": "visual harness",
               "source": "hook",
-              "at": 1787589740,
+              "at": 1787618540,
               "summary": "Two fixture renders stayed inside the one-channel antialiasing budget.",
               "artifact_ref": "snapshot-matrix"
             },
@@ -680,7 +680,7 @@
               "exit_code": 0,
               "scope": "visual baselines",
               "source": "hook",
-              "at": 1787589780
+              "at": 1787618580
             },
             {
               "kind": "build",
@@ -689,7 +689,7 @@
               "exit_code": 0,
               "scope": "macOS arm64",
               "source": "hook",
-              "at": 1787589820
+              "at": 1787618620
             },
             {
               "kind": "lint",
@@ -698,7 +698,7 @@
               "exit_code": 0,
               "scope": "shell harness",
               "source": "hook",
-              "at": 1787589840
+              "at": 1787618640
             },
             {
               "kind": "artifact",
@@ -707,7 +707,7 @@
               "exit_code": 0,
               "scope": "8 images",
               "source": "hook",
-              "at": 1787589860,
+              "at": 1787618660,
               "files": ["Tests/agentacctTests/ReferenceImages"]
             }
           ],
@@ -759,7 +759,7 @@
               "role": "root",
               "title": "Build reusable snapshot harness",
               "project": "agentacct-gui",
-              "last_activity_at": 1787589880
+              "last_activity_at": 1787618680
             },
             {
               "client": "codex",
@@ -768,7 +768,7 @@
               "role": "subagent",
               "title": "Audit snapshot determinism",
               "project": "agentacct-gui",
-              "last_activity_at": 1787589720
+              "last_activity_at": 1787618520
             }
           ]
         },
@@ -785,7 +785,7 @@
               "role": "root",
               "title": "Record reviewed visual references",
               "project": "agentacct-gui",
-              "last_activity_at": 1787589860
+              "last_activity_at": 1787618660
             }
           ]
         }
@@ -794,7 +794,7 @@
     "sessions": [
       {
         "schema": "agentacct.v1-session-detail.v1",
-        "generated_at": 1787590000,
+        "generated_at": 1787618800,
         "session": {
           "session_key": "codex::fixture-active-02",
           "client": "codex",
@@ -804,8 +804,8 @@
           "title": "Build reusable snapshot harness",
           "project": "agentacct-gui",
           "status": "completed",
-          "first_activity_at": 1787584633,
-          "last_activity_at": 1787589880,
+          "first_activity_at": 1787613433,
+          "last_activity_at": 1787618680,
           "duration_seconds": 5247,
           "instrumentation_state": "recording",
           "observed_models": ["gpt-5.6-sol"],
@@ -827,8 +827,8 @@
             "latest_status": "completed",
             "kind": "planning",
             "phase": "scope",
-            "started_at": 1787584633,
-            "updated_at": 1787586000,
+            "started_at": 1787613433,
+            "updated_at": 1787614800,
             "summary": "Pinned the two Work states, two viewports, and both appearances.",
             "join_confidence": "exact",
             "evidence_status": "passed",
@@ -836,7 +836,7 @@
             "checks": [
               {
                 "event_id": "check-scope",
-                "created_at": 1787586000,
+                "created_at": 1787614800,
                 "evidence_type": "test",
                 "result": "passed",
                 "summary": "Configuration contract covers all eight images.",
@@ -853,8 +853,8 @@
             "latest_status": "completed",
             "kind": "implementation",
             "phase": "rendering",
-            "started_at": 1787586000,
-            "updated_at": 1787588800,
+            "started_at": 1787614800,
+            "updated_at": 1787617600,
             "summary": "The table and selected receipt now use the same MainWindow path as the app.",
             "files": [
               "apps/agentacct/Sources/agentacct/WorkSnapshotHarness.swift",
@@ -866,7 +866,7 @@
             "checks": [
               {
                 "event_id": "check-render",
-                "created_at": 1787588800,
+                "created_at": 1787617600,
                 "evidence_type": "test",
                 "result": "passed",
                 "summary": "Repeated renders stayed deterministic.",
@@ -883,8 +883,8 @@
             "latest_status": "completed",
             "kind": "review",
             "phase": "visual-qa",
-            "started_at": 1787588800,
-            "updated_at": 1787589880,
+            "started_at": 1787617600,
+            "updated_at": 1787618680,
             "summary": "Inspected table density, receipt hierarchy, and light/dark contrast at both sizes.",
             "join_confidence": "exact",
             "evidence_status": "passed",
@@ -892,7 +892,7 @@
             "checks": [
               {
                 "event_id": "check-review",
-                "created_at": 1787589880,
+                "created_at": 1787618680,
                 "evidence_type": "artifact",
                 "result": "passed",
                 "summary": "All eight PNGs are valid source-tree references.",
@@ -909,7 +909,7 @@
             "latest_status": "completed",
             "kind": "documentation",
             "phase": "handoff",
-            "updated_at": 1787589860,
+            "updated_at": 1787618660,
             "summary": "Documented how to render, verify, and record only the Work suite.",
             "join_confidence": "exact",
             "evidence_status": "not_checked",
@@ -924,7 +924,7 @@
             "client_session_id_short": "agent-review",
             "title": "Audit snapshot determinism",
             "status": "completed",
-            "last_activity_at": 1787589720,
+            "last_activity_at": 1787618520,
             "agent_type": "review",
             "task": "Audit the Work snapshot harness for unstable inputs."
           }
@@ -941,7 +941,7 @@
       },
       {
         "schema": "agentacct.v1-session-detail.v1",
-        "generated_at": 1787590000,
+        "generated_at": 1787618800,
         "session": {
           "session_key": "codex::fixture-active-02:agent-review",
           "client": "codex",
@@ -951,8 +951,8 @@
           "title": "Audit snapshot determinism",
           "project": "agentacct-gui",
           "status": "completed",
-          "first_activity_at": 1787587100,
-          "last_activity_at": 1787589720,
+          "first_activity_at": 1787615900,
+          "last_activity_at": 1787618520,
           "duration_seconds": 2620,
           "instrumentation_state": "recording",
           "observed_models": ["gpt-5.6-sol"]
@@ -974,7 +974,7 @@
       },
       {
         "schema": "agentacct.v1-session-detail.v1",
-        "generated_at": 1787590000,
+        "generated_at": 1787618800,
         "session": {
           "session_key": "codex::fixture-continuation-01",
           "client": "codex",
@@ -984,8 +984,8 @@
           "title": "Record reviewed visual references",
           "project": "agentacct-gui",
           "status": "completed",
-          "first_activity_at": 1787589000,
-          "last_activity_at": 1787589860,
+          "first_activity_at": 1787617800,
+          "last_activity_at": 1787618660,
           "duration_seconds": 860,
           "instrumentation_state": "recording",
           "observed_models": ["gpt-5.6-sol"]

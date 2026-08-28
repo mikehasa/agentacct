@@ -506,6 +506,91 @@ final class DashboardInteractionTests: XCTestCase {
         }
     }
 
+    func testActiveWorkSignalNamesRecordedInactivityWithoutCallingItStalled() throws {
+        let sessions = try decode(
+            [RecentSession].self,
+            from: """
+            [
+              {
+                "client": "codex", "session_id": "quiet",
+                "title": "Snapshot harness", "status": "in_progress",
+                "last_activity_at": 100
+              },
+              {
+                "client": "codex", "session_id": "recent",
+                "title": "Dashboard hierarchy", "status": "checkpoint",
+                "last_activity_at": 990
+              },
+              {
+                "client": "codex", "session_id": "unknown-time",
+                "title": "Unknown timestamp", "status": "in_progress"
+              }
+            ]
+            """
+        )
+
+        let signal = DashboardActiveWorkSignal(
+            sessions: sessions,
+            availability: .connected,
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+
+        XCTAssertEqual(signal.title, "Session activity last seen 15m ago")
+        XCTAssertEqual(signal.detail, "Snapshot harness · 3 active sessions recorded")
+        XCTAssertTrue(signal.promotesInactivity)
+        XCTAssertFalse(signal.title.localizedCaseInsensitiveContains("stalled"))
+    }
+
+    func testActiveWorkSignalKeepsLoadingEmptyAndMissingTimeDistinct() throws {
+        XCTAssertEqual(
+            DashboardActiveWorkSignal(
+                sessions: [], availability: .loading,
+                now: Date(timeIntervalSince1970: 1_000)
+            ).title,
+            "Checking active work"
+        )
+        XCTAssertEqual(
+            DashboardActiveWorkSignal(
+                sessions: [], availability: .connected,
+                now: Date(timeIntervalSince1970: 1_000)
+            ).title,
+            "No active work"
+        )
+
+        let missingTime = try decode(
+            [RecentSession].self,
+            from: """
+            [{ "client": "codex", "session_id": "unknown", "status": "in_progress" }]
+            """
+        )
+        let signal = DashboardActiveWorkSignal(
+            sessions: missingTime,
+            availability: .connected,
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+        XCTAssertEqual(signal.title, "1 active session")
+        XCTAssertEqual(signal.detail, "Activity time unavailable for the recorded session.")
+        XCTAssertFalse(signal.promotesInactivity)
+
+        let emptyTitle = try decode(
+            [RecentSession].self,
+            from: """
+            [{
+              "client": "codex", "session_id": "unknown", "title": "  ",
+              "status": "in_progress", "last_activity_at": 990
+            }]
+            """
+        )
+        XCTAssertEqual(
+            DashboardActiveWorkSignal(
+                sessions: emptyTitle,
+                availability: .connected,
+                now: Date(timeIntervalSince1970: 1_000)
+            ).detail,
+            "codex · unknown · activity 10s ago"
+        )
+    }
+
     func testAgentPlanRowCopyRequiresARealSevenDayWindow() throws {
         // The per-agent row must never fabricate a meter or a reset time: a
         // 5h-only client says so, a limit-less client says so, and only a
@@ -552,6 +637,222 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(available.meterCaption, "39% of 7-day limit")
         XCTAssertNil(available.resetText, "no reset time was reported — never fabricated")
         XCTAssertEqual(available.detailText, "39% of 7-day limit · provider reported")
+        XCTAssertEqual(available.decisionTitle, "codex · 61% headroom")
+
+        let exceeded = try decode(
+            LimitEntry.self,
+            from: """
+            { "client": "codex", "windows": [{ "kind": "7d", "used_percent": 104 }] }
+            """
+        )
+        let exceededRow = DashboardAgentPlanRow(client: "codex", limit: exceeded, plan: nil, usage: nil)
+        XCTAssertEqual(exceededRow.decisionTitle, "codex · limit exceeded")
+
+        let invalid = try decode(
+            LimitEntry.self,
+            from: """
+            { "client": "codex", "windows": [{ "kind": "7d", "used_percent": -3 }] }
+            """
+        )
+        let invalidRow = DashboardAgentPlanRow(client: "codex", limit: invalid, plan: nil, usage: nil)
+        XCTAssertNil(invalidRow.usedPercent)
+        XCTAssertEqual(invalidRow.decisionTitle, "codex")
+
+        let missingPercent = try decode(
+            LimitEntry.self,
+            from: """
+            { "client": "codex", "windows": [{ "kind": "7d" }] }
+            """
+        )
+        let missingRow = DashboardAgentPlanRow(client: "codex", limit: missingPercent, plan: nil, usage: nil)
+        XCTAssertEqual(missingRow.meterCaption, "7-day usage not reported")
+    }
+
+    func testUsagePulseComparesCompletedRecordedBucketsWithoutAnomalyLanguage() throws {
+        let periods = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-23", "fresh_tokens": 4800000 },
+              { "period": "2026-08-24", "fresh_tokens": 12100000 },
+              { "period": "2026-08-25", "fresh_tokens": 22500000 }
+            ]
+            """
+        )
+
+        let pulse = usagePulse(periods: periods)
+        XCTAssertEqual(pulse.state, .ready)
+        XCTAssertEqual(pulse.title, "Fresh tokens 86% higher")
+        XCTAssertEqual(
+            pulse.detail,
+            "22.5M on 2026-08-25 · 12.1M on 2026-08-24 · client reported"
+        )
+        XCTAssertFalse(pulse.title.localizedCaseInsensitiveContains("anomaly"))
+        XCTAssertFalse(pulse.title.localizedCaseInsensitiveContains("caused"))
+    }
+
+    func testUsagePulseGuardsLoadingErrorsSparseHistoryAndZeroBaselines() throws {
+        XCTAssertEqual(usagePulse(periods: nil, isLoaded: false).state, .loading)
+        XCTAssertEqual(usagePulse(periods: nil).title, "Usage history not reported")
+        XCTAssertEqual(
+            usagePulse(periods: nil, isLoaded: false, error: "usage unavailable").title,
+            "Usage comparison unavailable"
+        )
+
+        let sparse = try decode(
+            [PeriodBucket].self,
+            from: """
+            [{ "period": "2026-08-25", "fresh_tokens": 10 }]
+            """
+        )
+        XCTAssertEqual(usagePulse(periods: sparse).state, .insufficient)
+        XCTAssertEqual(
+            usagePulse(periods: sparse, error: "refresh failed").state,
+            .unavailable,
+            "a refresh error must not leave an old comparison looking current"
+        )
+
+        let zeroBaseline = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "fresh_tokens": 0 },
+              { "period": "2026-08-25", "fresh_tokens": 1200 }
+            ]
+            """
+        )
+        XCTAssertEqual(
+            usagePulse(periods: zeroBaseline).title,
+            "Fresh tokens rose from 0"
+        )
+
+        let invalid = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "fresh_tokens": -1 },
+              { "period": "2026-08-25", "fresh_tokens": 1200 }
+            ]
+            """
+        )
+        XCTAssertEqual(usagePulse(periods: invalid).state, .insufficient)
+
+        let duplicateDate = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-25", "fresh_tokens": 1200 },
+              { "period": "2026-08-25", "fresh_tokens": 1400 }
+            ]
+            """
+        )
+        XCTAssertEqual(
+            usagePulse(periods: duplicateDate).title,
+            "Usage comparison ambiguous"
+        )
+
+        let malformedDate = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-02-30", "fresh_tokens": 1200 },
+              { "period": "latest", "fresh_tokens": 1400 }
+            ]
+            """
+        )
+        XCTAssertEqual(usagePulse(periods: malformedDate).state, .insufficient)
+    }
+
+    func testUsagePulseNamesPartialDailyAndWeeklyBucketsWithoutComparingThem() throws {
+        let daily = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "fresh_tokens": 12100000 },
+              { "period": "2026-08-25", "fresh_tokens": 22500000 }
+            ]
+            """
+        )
+        let dailyPulse = usagePulse(
+            periods: daily,
+            now: Date(timeIntervalSince1970: 1_787_659_200)
+        )
+        XCTAssertEqual(dailyPulse.title, "Today so far · 22.5M")
+        XCTAssertEqual(dailyPulse.detail, "12.1M on 2026-08-24 · client reported")
+
+        let weekly = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-17", "fresh_tokens": 12100000 },
+              { "period": "2026-08-24", "fresh_tokens": 22500000 }
+            ]
+            """
+        )
+        let weeklyPulse = usagePulse(
+            periods: weekly,
+            rangeDays: 90,
+            now: Date(timeIntervalSince1970: 1_787_832_000)
+        )
+        XCTAssertEqual(weeklyPulse.title, "This week so far · 22.5M")
+        XCTAssertEqual(
+            weeklyPulse.detail,
+            "12.1M in week of 2026-08-17 · client reported"
+        )
+    }
+
+    func testUsagePulseFailsClosedOnNewestInvalidBucketAndBoundsExtremeRatios() throws {
+        let newestInvalid = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-23", "fresh_tokens": 10 },
+              { "period": "2026-08-24", "fresh_tokens": 20 },
+              { "period": "2026-08-25", "fresh_tokens": -1 }
+            ]
+            """
+        )
+        XCTAssertEqual(usagePulse(periods: newestInvalid).title, "Usage comparison incomplete")
+
+        let malformedNewest = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-23", "fresh_tokens": 10 },
+              { "period": "2026-08-24", "fresh_tokens": 20 },
+              { "period": "latest", "fresh_tokens": 30 }
+            ]
+            """
+        )
+        XCTAssertEqual(usagePulse(periods: malformedNewest).title, "Usage comparison ambiguous")
+
+        let extreme = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "fresh_tokens": 1 },
+              { "period": "2026-08-25", "fresh_tokens": 9223372036854775807 }
+            ]
+            """
+        )
+        XCTAssertEqual(usagePulse(periods: extreme).title, "Fresh tokens >999% higher")
+
+        let future = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "fresh_tokens": 10 },
+              { "period": "2026-08-25", "fresh_tokens": 20 }
+            ]
+            """
+        )
+        XCTAssertEqual(
+            usagePulse(
+                periods: future,
+                now: Date(timeIntervalSince1970: 1_787_572_800)
+            ).title,
+            "Usage history is ahead of local time"
+        )
     }
 
     func testAgentPlanRowsIncludeEveryRecordingClientWithoutFavoritism() throws {
@@ -593,6 +894,30 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertNotNil(rows[2].usageText)
         // Every usage figure is anchored to the card's 7-day window.
         XCTAssertTrue(rows[2].usageText?.hasPrefix("7d · ") == true)
+
+        let invalidDuplicate = try decode(
+            LimitEntry.self,
+            from: """
+            { "client": "codex", "windows": [{ "kind": "7d", "used_percent": -4 }] }
+            """
+        )
+        let deduplicated = DashboardAgentPlanRow.rows(
+            limits: [invalidDuplicate, codex], planClients: [], usage: usage
+        )
+        XCTAssertEqual(
+            deduplicated.first(where: { $0.client == "codex" })?.usedPercent,
+            5,
+            "an invalid duplicate must not hide a valid provider reading"
+        )
+
+        let staleOnly = DashboardAgentPlanRow.rows(
+            limits: [],
+            staleClients: ["claude-code"],
+            planClients: [],
+            usage: []
+        )
+        XCTAssertEqual(staleOnly.map(\.client), ["claude-code"])
+        XCTAssertEqual(staleOnly[0].meterCaption, "limit reading stale — see Usage")
     }
 
     func testActiveSessionResolutionNeverDropsAnUnmatchedSession() throws {
@@ -667,5 +992,22 @@ final class DashboardInteractionTests: XCTestCase {
 
     private func decode<Value: Decodable>(_ type: Value.Type, from json: String) throws -> Value {
         try JSONDecoder().decode(type, from: Data(json.utf8))
+    }
+
+    private func usagePulse(
+        periods: [PeriodBucket]?,
+        isLoaded: Bool = true,
+        rangeDays: Int = 7,
+        error: String? = nil,
+        now: Date = Date(timeIntervalSince1970: 1_787_745_600)
+    ) -> DashboardUsagePulse {
+        return DashboardUsagePulse(
+            periods: periods,
+            isLoaded: isLoaded,
+            rangeDays: rangeDays,
+            error: error,
+            now: now,
+            timeZone: TimeZone(secondsFromGMT: 0)!
+        )
     }
 }

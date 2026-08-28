@@ -313,6 +313,244 @@ func isActiveWorkStatus(_ status: String?) -> Bool {
     }
 }
 
+/// A factual active-work digest. After 15 minutes it promotes one old recorded
+/// activity timestamp for triage, but deliberately never calls it the oldest
+/// overall—or the session stalled, abandoned, or blocked—because the bounded
+/// glance projection cannot prove any of those states.
+struct DashboardActiveWorkSignal: Equatable {
+    let title: String
+    let detail: String
+    let promotesInactivity: Bool
+
+    init(
+        sessions: [RecentSession],
+        availability: DashboardSignalAvailability,
+        now: Date = SnapshotMode.currentDate
+    ) {
+        switch availability {
+        case .loading:
+            title = "Checking active work"
+            detail = "Waiting for the local glance projection."
+            promotesInactivity = false
+            return
+        case .unavailable(let message):
+            title = "Active work unavailable"
+            detail = message
+            promotesInactivity = false
+            return
+        case .connected:
+            break
+        }
+
+        guard !sessions.isEmpty else {
+            title = "No active work"
+            detail = "Recorded agent activity will appear here."
+            promotesInactivity = false
+            return
+        }
+
+        let activeCount = sessions.count
+        let validActivity = sessions.compactMap { session -> (RecentSession, TimeInterval)? in
+            guard let lastActivityAt = session.lastActivityAt, lastActivityAt > 0 else { return nil }
+            let elapsed = now.timeIntervalSince1970 - lastActivityAt
+            guard elapsed >= 0, elapsed.isFinite else { return nil }
+            return (session, elapsed)
+        }
+
+        if let oldestVisible = validActivity.max(by: { $0.1 < $1.1 }), oldestVisible.1 >= 15 * 60 {
+            title = "Session activity last seen \(Self.elapsedText(oldestVisible.1)) ago"
+            detail = "\(Self.sessionLabel(oldestVisible.0)) · \(activeCount) active session\(activeCount == 1 ? "" : "s") recorded"
+            promotesInactivity = true
+            return
+        }
+
+        title = "\(activeCount) active session\(activeCount == 1 ? "" : "s")"
+        if let mostRecent = validActivity.min(by: { $0.1 < $1.1 }) {
+            detail = "\(Self.sessionLabel(mostRecent.0)) · activity \(Self.elapsedText(mostRecent.1)) ago"
+        } else {
+            detail = "Activity time unavailable for the recorded session\(activeCount == 1 ? "." : "s.")"
+        }
+        promotesInactivity = false
+    }
+
+    private static func sessionLabel(_ session: RecentSession) -> String {
+        if let title = session.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            return title
+        }
+        return "\(session.client) · \(session.shortSessionId)"
+    }
+
+    private static func elapsedText(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds)
+        if total < 60 { return "\(total)s" }
+        if total < 3_600 { return "\(total / 60)m" }
+        if total < 86_400 { return "\(total / 3_600)h" }
+        return "\(total / 86_400)d"
+    }
+}
+
+/// Summarizes the latest two dated fresh-token buckets without forecasting or
+/// assigning causes. A current day/week is labeled as partial and shown as an
+/// absolute value; completed periods may use bounded comparison copy. Compact
+/// values disclose scale while full period labels keep the interval explicit.
+struct DashboardUsagePulse: Equatable {
+    enum State: Equatable {
+        case loading
+        case unavailable
+        case insufficient
+        case ready
+    }
+
+    let state: State
+    let title: String
+    let detail: String
+
+    init(
+        periods: [PeriodBucket]?,
+        isLoaded: Bool,
+        rangeDays: Int,
+        error: String?,
+        now: Date = SnapshotMode.currentDate,
+        timeZone: TimeZone = .current
+    ) {
+        if let error {
+            state = .unavailable
+            title = "Usage comparison unavailable"
+            detail = error
+            return
+        }
+        guard isLoaded else {
+            state = .loading
+            title = "Checking usage change"
+            detail = "Waiting for recorded usage buckets."
+            return
+        }
+        guard let periods else {
+            state = .insufficient
+            title = "Usage history not reported"
+            detail = "The loaded usage summary has no period history."
+            return
+        }
+
+        guard !periods.contains(where: { period in
+            guard let label = period.period else { return true }
+            return label != "unknown" && !Self.isDateLabel(label)
+        }) else {
+            state = .insufficient
+            title = "Usage comparison ambiguous"
+            detail = "A usage bucket has an unsupported period label."
+            return
+        }
+
+        let dated = periods.compactMap { period -> (String, Int?)? in
+            guard let label = period.period, Self.isDateLabel(label) else { return nil }
+            return (label, period.freshTokens)
+        }.sorted { $0.0 < $1.0 }
+
+        guard Set(dated.map(\.0)).count == dated.count else {
+            state = .insufficient
+            title = "Usage comparison ambiguous"
+            detail = "Multiple fresh-token buckets share a date."
+            return
+        }
+
+        guard dated.count >= 2 else {
+            state = .insufficient
+            title = "Usage comparison needs history"
+            detail = "Two dated fresh-token buckets are required."
+            return
+        }
+
+        let previousBucket = dated[dated.count - 2]
+        let latestBucket = dated[dated.count - 1]
+        guard let previousTokens = previousBucket.1, previousTokens >= 0,
+              let latestTokens = latestBucket.1, latestTokens >= 0 else {
+            state = .insufficient
+            title = "Usage comparison incomplete"
+            detail = "The latest two dated buckets need fresh-token values."
+            return
+        }
+
+        let previous = (previousBucket.0, previousTokens)
+        let latest = (latestBucket.0, latestTokens)
+        let weekly = rangeDays >= 90
+        let currentPeriod = Self.currentPeriodLabel(now: now, weekly: weekly, timeZone: timeZone)
+        guard latest.0 <= currentPeriod else {
+            state = .insufficient
+            title = "Usage history is ahead of local time"
+            detail = "Latest recorded period: \(latest.0)."
+            return
+        }
+        state = .ready
+        if latest.0 == currentPeriod {
+            title = "\(weekly ? "This week" : "Today") so far · \(UsageTotals.compact(latest.1))"
+            detail = "\(Self.bucketDescription(previous, weekly: weekly)) · client reported"
+            return
+        }
+
+        if previous.1 == 0 {
+            title = latest.1 == 0
+                ? "Fresh tokens unchanged at 0"
+                : "Fresh tokens rose from 0"
+        } else {
+            let change = ((Double(latest.1) - Double(previous.1)) / Double(previous.1)) * 100
+            let rounded = abs(change).rounded()
+            if latest.1 == previous.1 {
+                title = "Fresh tokens unchanged"
+            } else if rounded < 1 {
+                title = "Fresh tokens roughly unchanged"
+            } else if change > 999 {
+                title = "Fresh tokens >999% higher"
+            } else {
+                title = "Fresh tokens \(String(format: "%.0f", rounded))% \(change > 0 ? "higher" : "lower")"
+            }
+        }
+        detail = "\(Self.bucketDescription(latest, weekly: weekly)) · "
+            + "\(Self.bucketDescription(previous, weekly: weekly)) · client reported"
+    }
+
+    private static func bucketDescription(_ bucket: (String, Int), weekly: Bool) -> String {
+        let interval = weekly ? "in week of \(bucket.0)" : "on \(bucket.0)"
+        return "\(UsageTotals.compact(bucket.1)) \(interval)"
+    }
+
+    private static func isDateLabel(_ label: String) -> Bool {
+        let pieces = label.split(separator: "-", omittingEmptySubsequences: false)
+        guard pieces.count == 3,
+              pieces[0].count == 4, pieces[1].count == 2, pieces[2].count == 2,
+              let year = Int(pieces[0]), let month = Int(pieces[1]), let day = Int(pieces[2])
+        else { return false }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        guard let date = calendar.date(from: DateComponents(year: year, month: month, day: day)) else {
+            return false
+        }
+        let resolved = calendar.dateComponents([.year, .month, .day], from: date)
+        return resolved.year == year && resolved.month == month && resolved.day == day
+    }
+
+    private static func currentPeriodLabel(now: Date, weekly: Bool, timeZone: TimeZone) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let date: Date
+        if weekly {
+            let weekday = calendar.component(.weekday, from: now)
+            let daysSinceMonday = (weekday + 5) % 7
+            date = calendar.date(byAdding: .day, value: -daysSinceMonday, to: now) ?? now
+        } else {
+            date = now
+        }
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(
+            format: "%04d-%02d-%02d",
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0
+        )
+    }
+}
+
 struct DashboardPane: View {
     @EnvironmentObject var dashboard: DashboardStore
     @EnvironmentObject var glance: GlanceState
@@ -390,6 +628,12 @@ struct DashboardPane: View {
                         sessions: recentSessions,
                         planRows: planRows,
                         availability: glanceAvailability,
+                        usagePulse: DashboardUsagePulse(
+                            periods: dashboard.usage?.byPeriod,
+                            isLoaded: dashboard.usage != nil,
+                            rangeDays: dashboard.usageDays,
+                            error: dashboard.errorText
+                        ),
                         ingestion: dashboard.ingestion,
                         ingestionError: dashboard.ingestionError
                     ) { destination in
@@ -791,12 +1035,22 @@ private struct DashboardSignalRail: View {
     let sessions: [RecentSession]
     let planRows: [DashboardAgentPlanRow]
     let availability: DashboardSignalAvailability
+    let usagePulse: DashboardUsagePulse
     let ingestion: V1IngestionSnapshot?
     let ingestionError: String?
     let open: (DashboardDestination) -> Void
 
     private var capacity: DashboardAgentPlanRow? {
-        planRows.max { ($0.usedPercent ?? -1) < ($1.usedPercent ?? -1) }
+        planRows.filter { $0.usedPercent != nil }
+            .max { ($0.usedPercent ?? 0) < ($1.usedPercent ?? 0) }
+    }
+
+    private var rowsWithoutValidCapacity: [DashboardAgentPlanRow] {
+        planRows.filter { $0.usedPercent == nil }
+    }
+
+    private var active: DashboardActiveWorkSignal {
+        DashboardActiveWorkSignal(sessions: sessions, availability: availability)
     }
 
     var body: some View {
@@ -806,9 +1060,9 @@ private struct DashboardSignalRail: View {
                 Divider().overlay(Theme.hairline)
                 DashboardSignalRow(
                     eyebrow: "WORKING NOW",
-                    title: activeTitle,
-                    detail: activeDetail,
-                    tint: sessions.isEmpty ? Theme.muted : Theme.accent,
+                    title: active.title,
+                    detail: active.detail,
+                    tint: active.promotesInactivity ? Theme.amber : (sessions.isEmpty ? Theme.muted : Theme.accent),
                     action: { open(.work) }
                 )
                 Divider().overlay(Theme.hairline).padding(.leading, Space.l)
@@ -817,6 +1071,14 @@ private struct DashboardSignalRail: View {
                     title: capacityTitle,
                     detail: capacityDetail,
                     tint: capacityTint,
+                    action: { open(.limits) }
+                )
+                Divider().overlay(Theme.hairline).padding(.leading, Space.l)
+                DashboardSignalRow(
+                    eyebrow: "USAGE CHANGE",
+                    title: usagePulse.title,
+                    detail: usagePulse.detail,
+                    tint: usagePulse.state == .ready ? Theme.accent : Theme.muted,
                     action: { open(.limits) }
                 )
                 Divider().overlay(Theme.hairline).padding(.leading, Space.l)
@@ -832,35 +1094,14 @@ private struct DashboardSignalRail: View {
         .accessibilityIdentifier("dashboard.shift-brief.signal-rail")
     }
 
-    private var activeTitle: String {
-        switch availability {
-        case .loading: return "Checking active work"
-        case .unavailable: return "Active work unavailable"
-        case .connected: break
-        }
-        guard !sessions.isEmpty else { return "No active work" }
-        return "\(sessions.count) active session\(sessions.count == 1 ? "" : "s")"
-    }
-
-    private var activeDetail: String {
-        switch availability {
-        case .loading: return "Waiting for the local glance projection."
-        case .unavailable(let message): return message
-        case .connected: break
-        }
-        guard let session = sessions.first else { return "Recorded agent activity will appear here." }
-        return session.title ?? "\(session.client) · \(session.shortSessionId)"
-    }
-
     private var capacityTitle: String {
         switch availability {
         case .loading: return "Checking provider limits"
         case .unavailable: return "Live allowance unavailable"
         case .connected: break
         }
-        guard let capacity else { return "No live allowance" }
-        guard let used = capacity.usedPercent else { return capacity.client }
-        return "\(capacity.client) · \(Int(used.rounded()))% used"
+        if let capacity { return capacity.decisionTitle }
+        return rowsWithoutValidCapacity.isEmpty ? "No live allowance" : "No valid 7-day allowance"
     }
 
     private var capacityDetail: String {
@@ -869,7 +1110,14 @@ private struct DashboardSignalRail: View {
         case .unavailable(let message): return message
         case .connected: break
         }
-        return capacity?.detailText ?? "Open Usage for recorded volume and provider limits."
+        if let capacity { return capacity.detailText }
+        if rowsWithoutValidCapacity.count == 1, let row = rowsWithoutValidCapacity.first {
+            return "\(row.client) · \(row.detailText)"
+        }
+        if !rowsWithoutValidCapacity.isEmpty {
+            return "\(rowsWithoutValidCapacity.count) recording clients lack a valid 7-day reading."
+        }
+        return "Open Usage for recorded volume and provider limits."
     }
 
     private var capacityTint: Color {
@@ -1122,6 +1370,17 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
 
     var id: String { client }
 
+    /// Conservative provider headroom derived from a valid live 7-day used
+    /// percentage. Rounds down so the compact title never overstates room.
+    var decisionTitle: String {
+        guard let usedPercent else { return client }
+        if usedPercent > 100 { return "\(client) · limit exceeded" }
+        if usedPercent == 100 { return "\(client) · no headroom" }
+        let headroom = 100 - usedPercent
+        if headroom < 1 { return "\(client) · <1% headroom" }
+        return "\(client) · \(Int(headroom.rounded(.down)))% headroom"
+    }
+
     /// Full capacity sentence: window, provenance, and reset when reported.
     var detailText: String {
         var parts = [meterCaption]
@@ -1140,12 +1399,22 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
         self.client = client
         self.planType = limit?.planType
         let window = (limit?.windows ?? []).first { $0.kind == "7d" }
-        self.usedPercent = window?.usedPercent
-        if let used = window?.usedPercent {
+        let reportedUsed = window?.usedPercent
+        let validUsed = reportedUsed.flatMap { value in
+            value.isFinite && value >= 0 ? value : nil
+        }
+        self.usedPercent = validUsed
+        if let used = validUsed {
             // Short and window-anchored; provenance + reset time remain in the
             // signal detail sentence.
             meterCaption = String(format: "%.0f%% of 7-day limit", used)
             resetText = Theme.resetsIn(window?.resetsAt).map { "resets in \($0)" }
+        } else if reportedUsed != nil {
+            meterCaption = "invalid 7-day value reported"
+            resetText = nil
+        } else if window != nil {
+            meterCaption = "7-day usage not reported"
+            resetText = nil
         } else if limit != nil {
             meterCaption = "no 7-day window reported"
             resetText = nil
@@ -1182,7 +1451,9 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
         usage: [GlanceClientUsage]
     ) -> [DashboardAgentPlanRow] {
         func sevenDayUsed(_ entry: LimitEntry) -> Double? {
-            (entry.windows ?? []).first { $0.kind == "7d" }?.usedPercent
+            guard let used = (entry.windows ?? []).first(where: { $0.kind == "7d" })?.usedPercent,
+                  used.isFinite, used >= 0 else { return nil }
+            return used
         }
         var limitByClient: [String: LimitEntry] = [:]
         for entry in limits {
@@ -1204,6 +1475,9 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
             let right = sevenDayUsed(limitByClient[$1]!) ?? -1
             if left != right { return left > right }
             return $0 < $1
+        }
+        for client in staleClients.sorted() where !order.contains(client) && !client.isEmpty {
+            order.append(client)
         }
         for entry in usage where !order.contains(entry.client) && !entry.client.isEmpty {
             order.append(entry.client)
