@@ -10,8 +10,9 @@ show "usage · cost · plan · active sessions" at a glance. Design contract:
   number another surface would not show.
 * **Cheap under polling** — the payload is rebuilt when the event list changes
   (``events_fingerprint``) or when the cached build is older than the cache
-  TTL; a poll that hits the cache skips the aggregation rebuild (each poll
-  still loads the event list once to compute the change key). The TTL exists
+  TTL; a poll that hits the cache skips the aggregation rebuild. The native API
+  supplies a fingerprint from its revisioned shared event snapshot, so sibling
+  refresh routes neither reload nor re-hash an unchanged ledger. The TTL exists
   because the payload is calendar/time-dependent (the "today" window, the
   recency cutoff, ``limits[].stale``) — an unchanged event list must still
   refresh across midnight. The expensive work-ledger build is deliberately NOT
@@ -811,9 +812,10 @@ class GlanceCache:
         store_dir: Path | str,
         version: str,
         now: float | None = None,
+        fingerprint: int | None = None,
     ) -> dict[str, Any]:
         moment = time.time() if now is None else float(now)
-        fingerprint = events_fingerprint(events)
+        fingerprint = events_fingerprint(events) if fingerprint is None else fingerprint
         cached = self._cached
         if self._fresh(cached, fingerprint, moment):
             return cached[2]  # type: ignore[index]

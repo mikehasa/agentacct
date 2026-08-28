@@ -207,9 +207,9 @@ enum DashboardSnapshotRenderer {
             // A packaged app consistently offers setup here. Injecting that
             // state keeps SwiftPM and packaged-build snapshots identical.
             let view = MainWindow(canSetUpOverride: true)
-                .environmentObject(glance)
-                .environmentObject(dashboard)
-                .environmentObject(selection)
+                .environment(glance)
+                .environment(dashboard)
+                .environment(selection)
                 .frame(
                     width: configuration.width,
                     height: configuration.height,

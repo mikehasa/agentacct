@@ -484,8 +484,8 @@ struct DecisionLegendButton: View {
 }
 
 struct WorkPane: View {
-    @EnvironmentObject var dashboard: DashboardStore
-    @EnvironmentObject var selection: AppSelection
+    @Environment(DashboardStore.self) var dashboard
+    @Environment(AppSelection.self) var selection
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var unresolvedSessionId: String?
@@ -679,8 +679,8 @@ struct WorkPane: View {
 /// Loading and failure states keep the record shell navigable. A failed or slow
 /// request must not trap compact-window and keyboard users on a blank surface.
 private struct WorkRecordPlaceholder: View {
-    @EnvironmentObject var selection: AppSelection
-    @EnvironmentObject var dashboard: DashboardStore
+    @Environment(AppSelection.self) var selection
+    @Environment(DashboardStore.self) var dashboard
     let title: String
     let message: String
     let symbol: String
@@ -768,9 +768,19 @@ private struct WorkRecordPlaceholder: View {
 
 // MARK: - Work receipts table
 
+struct WorkTaskPresentation {
+    let groupCounts: [WorkGroup: Int]
+    let visibleTasks: [ReceiptSummary]
+
+    init(tasks: [ReceiptSummary], group: WorkGroup?, query: String, sort: WorkSort) {
+        groupCounts = Dictionary(grouping: tasks, by: WorkGroup.forTask).mapValues(\.count)
+        visibleTasks = visibleWorkReceipts(tasks, query: query, group: group, sort: sort)
+    }
+}
+
 private struct WorkTablePage: View {
-    @EnvironmentObject var dashboard: DashboardStore
-    @EnvironmentObject var selection: AppSelection
+    @Environment(DashboardStore.self) var dashboard
+    @Environment(AppSelection.self) var selection
     @ObservedObject var browse: WorkBrowseState
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -779,41 +789,54 @@ private struct WorkTablePage: View {
     @AccessibilityFocusState private var searchAccessibilityFocused: Bool
     @AccessibilityFocusState private var accessibilityFocusedTaskId: String?
 
-    private var groupCounts: [WorkGroup: Int] {
-        Dictionary(grouping: dashboard.receiptTasks) { WorkGroup.forTask($0) }
-            .mapValues(\.count)
-    }
-
-    private var visibleTasks: [ReceiptSummary] {
-        browse.visibleTasks(in: dashboard.receiptTasks)
-    }
-
     var body: some View {
+        let presentation = WorkTaskPresentation(
+            tasks: dashboard.receiptTasks,
+            group: browse.group,
+            query: browse.query,
+            sort: browse.sort
+        )
         ScrollViewReader { scrollProxy in
             ScrollBox {
                 VStack(alignment: .leading, spacing: 0) {
                     header
-                    tabs.padding(.top, Space.xl)
+                    tabs(
+                        groupCounts: presentation.groupCounts,
+                        visibleCount: presentation.visibleTasks.count
+                    )
+                    .padding(.top, Space.xl)
                     filterRow.padding(.top, Space.m)
                     if let error = dashboard.receiptListError {
                         listStatusBanner(error).padding(.top, Space.m)
                     }
-                    tableCard.padding(.top, dashboard.receiptListError == nil ? Space.l : Space.m)
-                    footer.padding(.top, Space.m)
+                    tableCard(visibleTasks: presentation.visibleTasks)
+                        .padding(.top, dashboard.receiptListError == nil ? Space.l : Space.m)
+                    footer(visibleTasks: presentation.visibleTasks).padding(.top, Space.m)
                     legend.padding(.top, Space.l)
                 }
                 .padding(Space.gutter)
                 .frame(maxWidth: 1172 + Space.gutter * 2, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .onMoveCommand { moveTableFocus($0, scrollProxy: scrollProxy) }
-            .onAppear { restoreReturnFocus(scrollProxy: scrollProxy) }
-            .onChange(of: browse.query) { clearInvalidPendingFocus() }
-            .onChange(of: browse.group) { clearInvalidPendingFocus() }
+            .onMoveCommand {
+                moveTableFocus($0, visibleTasks: presentation.visibleTasks, scrollProxy: scrollProxy)
+            }
+            .onAppear {
+                restoreReturnFocus(visibleTasks: presentation.visibleTasks, scrollProxy: scrollProxy)
+            }
+            .onChange(of: browse.query) {
+                clearInvalidPendingFocus(visibleTasks: presentation.visibleTasks)
+            }
+            .onChange(of: browse.group) {
+                clearInvalidPendingFocus(visibleTasks: presentation.visibleTasks)
+            }
         }
     }
 
-    private func restoreReturnFocus(scrollProxy: ScrollViewProxy) {
+    private func restoreReturnFocus(
+        visibleTasks: [ReceiptSummary],
+        scrollProxy: ScrollViewProxy
+    ) {
         guard !SnapshotMode.enabled else { return }
         if let taskId = browse.pendingFocusRestorationTaskId,
            visibleTasks.contains(where: { $0.taskId == taskId }) {
@@ -835,7 +858,7 @@ private struct WorkTablePage: View {
         }
     }
 
-    private func clearInvalidPendingFocus() {
+    private func clearInvalidPendingFocus(visibleTasks: [ReceiptSummary]) {
         guard let taskId = browse.pendingFocusRestorationTaskId,
               !visibleTasks.contains(where: { $0.taskId == taskId }) else { return }
         browse.pendingFocusRestorationTaskId = nil
@@ -843,6 +866,7 @@ private struct WorkTablePage: View {
 
     private func moveTableFocus(
         _ direction: MoveCommandDirection,
+        visibleTasks: [ReceiptSummary],
         scrollProxy: ScrollViewProxy
     ) {
         guard direction == .up || direction == .down, !visibleTasks.isEmpty else { return }
@@ -877,7 +901,10 @@ private struct WorkTablePage: View {
         }
     }
 
-    private var tabs: some View {
+    private func tabs(
+        groupCounts: [WorkGroup: Int],
+        visibleCount: Int
+    ) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             if dynamicTypeSize.isAccessibilitySize {
                 HStack(spacing: Space.m) {
@@ -893,7 +920,7 @@ private struct WorkTablePage: View {
                         .pickerStyle(.menu)
                         .accessibilityIdentifier("work.table.status")
                     }
-                    Text("\(visibleTasks.count) shown")
+                    Text("\(visibleCount) shown")
                         .workFont(.dataSmall).foregroundStyle(Theme.muted)
                     Spacer(minLength: 0)
                 }
@@ -984,7 +1011,7 @@ private struct WorkTablePage: View {
         }
     }
 
-    private var tableCard: some View {
+    private func tableCard(visibleTasks: [ReceiptSummary]) -> some View {
         Card(padding: 0) {
             VStack(spacing: 0) {
                 if !dynamicTypeSize.isAccessibilitySize {
@@ -1036,20 +1063,22 @@ private struct WorkTablePage: View {
                     // Offscreen full-content renders cap the rows and name the
                     // overflow; the live app scrolls the full set.
                     let rows = SnapshotMode.enabled ? Array(visibleTasks.prefix(9)) : visibleTasks
-                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, task in
-                        if index > 0 {
-                            Rectangle().fill(Theme.hairline).frame(height: 1)
-                                .padding(.horizontal, Space.xl)
-                        }
-                        if SnapshotMode.enabled {
-                            tableRow(task).id(task.taskId)
-                        } else {
-                            tableRow(task)
-                                .id(task.taskId)
-                                .accessibilityFocused(
-                                    $accessibilityFocusedTaskId,
-                                    equals: task.taskId
-                                )
+                    ScrollContentStack(spacing: 0) {
+                        ForEach(Array(rows.enumerated()), id: \.element.id) { index, task in
+                            if index > 0 {
+                                Rectangle().fill(Theme.hairline).frame(height: 1)
+                                    .padding(.horizontal, Space.xl)
+                            }
+                            if SnapshotMode.enabled {
+                                tableRow(task).id(task.taskId)
+                            } else {
+                                tableRow(task)
+                                    .id(task.taskId)
+                                    .accessibilityFocused(
+                                        $accessibilityFocusedTaskId,
+                                        equals: task.taskId
+                                    )
+                            }
                         }
                     }
                     if SnapshotMode.enabled, visibleTasks.count > rows.count {
@@ -1130,7 +1159,7 @@ private struct WorkTablePage: View {
         .frame(height: Metrics.rowHeader)
     }
 
-    private var footer: some View {
+    private func footer(visibleTasks: [ReceiptSummary]) -> some View {
         Text(
             workBrowseCountText(
                 visible: visibleTasks.count,
@@ -1417,8 +1446,8 @@ private struct WorkAccessibleTableRow: View {
 /// the exact query/group/sort model and keeps enough evidence context visible
 /// to compare Tasks while a receipt is open.
 private struct WorkMasterList: View {
-    @EnvironmentObject var dashboard: DashboardStore
-    @EnvironmentObject var selection: AppSelection
+    @Environment(DashboardStore.self) var dashboard
+    @Environment(AppSelection.self) var selection
     @ObservedObject var browse: WorkBrowseState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var focusedTaskId: String?
@@ -1498,7 +1527,7 @@ private struct WorkMasterList: View {
 
             ScrollViewReader { scrollProxy in
                 ScrollBox {
-                    VStack(spacing: 0) {
+                    ScrollContentStack(spacing: 0) {
                     if dashboard.isLoadingReceipts, dashboard.receiptTasks.isEmpty {
                         masterEmpty(
                             title: "Loading receipts",
@@ -1753,8 +1782,8 @@ struct WorkRecordPage: View {
     let refreshError: String?
     let isRefreshing: Bool
     let autoFocusEntry: Bool
-    @EnvironmentObject var selection: AppSelection
-    @EnvironmentObject var dashboard: DashboardStore
+    @Environment(AppSelection.self) var selection
+    @Environment(DashboardStore.self) var dashboard
     @FocusState private var backFocused: Bool
     @AccessibilityFocusState private var backAccessibilityFocused: Bool
 
@@ -1976,11 +2005,13 @@ struct WorkRecordPage: View {
                                 }
                             }
                         }
-                        ForEach(group.members) { member in
-                            SessionDrillRow(
-                                member: member,
-                                initiallyExpanded: group.role == "primary" && member.role == "root"
-                            )
+                        ScrollContentStack(alignment: .leading, spacing: 5) {
+                            ForEach(group.members) { member in
+                                SessionDrillRow(
+                                    member: member,
+                                    initiallyExpanded: group.role == "primary" && member.role == "root"
+                                )
+                            }
                         }
                     }
                 }
@@ -2124,7 +2155,7 @@ private struct WorkRecordSplitLayout: Layout {
 private struct SessionDrillRow: View {
     let member: ReceiptSessionMember
     let initiallyExpanded: Bool
-    @EnvironmentObject var dashboard: DashboardStore
+    @Environment(DashboardStore.self) var dashboard
     @State private var expanded: Bool
     @State private var detail: V1SessionDetail?
     @State private var loading = false
@@ -2218,8 +2249,10 @@ private struct SessionDrillRow: View {
                             + detail.steps.filter { ($0.checks?.isEmpty ?? true) }.prefix(1).map(\.id)
                           )
                         : []
-                    ForEach(detail.steps) { step in
-                        StepCard(step: step, initiallyExpanded: opened.contains(step.id))
+                    ScrollContentStack(alignment: .leading, spacing: 6) {
+                        ForEach(detail.steps) { step in
+                            StepCard(step: step, initiallyExpanded: opened.contains(step.id))
+                        }
                     }
                 }
                 // The Task's subagents are already listed once, flat and

@@ -67,8 +67,9 @@ struct AttributedWork: Decodable, Identifiable {
     let title: String?
     let joinStrategy: String?
     let joinConfidence: String?
+    private let fallbackId = UUID().uuidString
 
-    var id: String { workId ?? sectionId ?? UUID().uuidString }
+    var id: String { workId ?? sectionId ?? fallbackId }
 
     enum CodingKeys: String, CodingKey {
         case title
@@ -106,8 +107,9 @@ struct WorkItem: Decodable, Identifiable {
     let title: String?
     let latestStatus: String?
     let evidenceStatus: String?
+    private let fallbackId = UUID().uuidString
 
-    var id: String { workId ?? sectionId ?? UUID().uuidString }
+    var id: String { workId ?? sectionId ?? fallbackId }
 
     enum CodingKeys: String, CodingKey {
         case workId = "work_id"

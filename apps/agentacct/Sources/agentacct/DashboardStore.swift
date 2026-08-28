@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import SwiftUI
 
 /// Named state variants used only by deterministic offscreen review tooling.
@@ -23,48 +24,49 @@ enum SnapshotWorkStoreState {
 // store never re-derives a number.
 
 @MainActor
-final class DashboardStore: ObservableObject {
-    @Published private(set) var planClients: [V1PlanClient] = []
-    @Published private(set) var usage: UsageSummary?
-    @Published private(set) var receiptTasks: [ReceiptSummary] = []
-    @Published private(set) var totalReceiptTasks: Int?
-    @Published private(set) var receiptTasksTruncated: Bool?
-    @Published private(set) var receiptAttention: ReceiptAttentionPayload?
-    @Published private(set) var receipt: Receipt?
-    @Published private(set) var receiptListError: String?
-    @Published private(set) var receiptError: String?
-    @Published private(set) var receiptErrorTaskId: String?
-    @Published private(set) var receiptLoadingTaskId: String?
+@Observable
+final class DashboardStore {
+    private(set) var planClients: [V1PlanClient] = []
+    private(set) var usage: UsageSummary?
+    private(set) var receiptTasks: [ReceiptSummary] = []
+    private(set) var totalReceiptTasks: Int?
+    private(set) var receiptTasksTruncated: Bool?
+    private(set) var receiptAttention: ReceiptAttentionPayload?
+    private(set) var receipt: Receipt?
+    private(set) var receiptListError: String?
+    private(set) var receiptError: String?
+    private(set) var receiptErrorTaskId: String?
+    private(set) var receiptLoadingTaskId: String?
     /// Session deep views preloaded by key ("client::session"). Only the offscreen
     /// snapshot path fills this (the live app loads each drill row lazily via a
     /// SwiftUI `.task`, while deterministic rendering cannot wait on network
     /// work); a drill row reads it as a fallback so its steps render in a snapshot.
-    @Published private(set) var preloadedSessions: [String: V1SessionDetail] = [:]
-    @Published private(set) var errorText: String?
+    private(set) var preloadedSessions: [String: V1SessionDetail] = [:]
+    private(set) var errorText: String?
     /// Source/watcher health from /v1/ingestion (the Sources pane).
-    @Published private(set) var ingestion: V1IngestionSnapshot?
-    @Published private(set) var ingestionError: String?
-    @Published private(set) var isRefreshing = false
-    @Published private(set) var isLoadingReceipts = false
-    @Published private(set) var lastUpdated: Date?
+    private(set) var ingestion: V1IngestionSnapshot?
+    private(set) var ingestionError: String?
+    private(set) var isRefreshing = false
+    private(set) var isLoadingReceipts = false
+    private(set) var lastUpdated: Date?
     /// Freshness of the independently published receipt collection.
     /// A Work-only retry must not relabel the other dashboard panes as fresh.
-    @Published private(set) var receiptListLastUpdated: Date?
+    private(set) var receiptListLastUpdated: Date?
     /// Freshness of the independently published plan + recorded-usage pair.
     /// Receipt-list failures must not make a successful usage refresh look old.
-    @Published private(set) var usageLastUpdated: Date?
+    private(set) var usageLastUpdated: Date?
 
     /// The usage-pane range (7/30/90 trailing days). Defaults to 7 so the
     /// per-model plan breakdown lines up with the 7d headline out of the box
     /// (a 30-day accumulation reads as >100% of a weekly plan and confuses);
     /// the today/7d headline windows are fixed regardless of this.
-    @Published private(set) var usageDays = 7
+    private(set) var usageDays = 7
 
     /// Monotonic token so rapid range switches can't land out of order and a
     /// failed fetch can't leave the old data labeled with the new range.
-    private var usageDaysGeneration = 0
+    @ObservationIgnored private var usageDaysGeneration = 0
 
-    private let client = GlanceClient()
+    @ObservationIgnored private let client = GlanceClient()
 
     init() {}
 
@@ -244,8 +246,8 @@ final class DashboardStore: ObservableObject {
     /// fetch may write, so a late straggler can never wedge another task's
     /// page. A same-task refresh keeps the current receipt on screen instead
     /// of unmounting the record page for the rebuild.
-    private var receiptGeneration = 0
-    private var receiptListGeneration = 0
+    @ObservationIgnored private var receiptGeneration = 0
+    @ObservationIgnored private var receiptListGeneration = 0
 
     @discardableResult
     private func beginReceiptListLoad() -> Int {
@@ -404,11 +406,16 @@ struct DispositionResponse: Decodable {
 
 /// The menu bar → main window selection channel.
 @MainActor
-final class AppSelection: ObservableObject {
-    @Published var sessionId: String?
-    @Published var taskId: String?
-    @Published var pane: MainPane = .dashboard
+@Observable
+final class AppSelection {
+    var sessionId: String?
+    var taskId: String?
+    var pane: MainPane = .dashboard
     let workBrowse = WorkBrowseState()
+    var workSort: WorkSort {
+        get { workBrowse.sort }
+        set { workBrowse.sort = newValue }
+    }
 
     /// Dashboard actions replace stale deep links before changing panes. This
     /// keeps a previous Task or session from overriding the control the user

@@ -1029,7 +1029,7 @@ struct DispositionControls: View {
     let taskId: String
     var targetDigest: String? = nil
     var blockedEventId: String? = nil
-    @EnvironmentObject var dashboard: DashboardStore
+    @Environment(DashboardStore.self) var dashboard
     @State private var resolvePopoverShown = false
     @State private var note = ""
     @State private var busy = false
@@ -1339,11 +1339,13 @@ struct RecordChecksCard: View {
                         .workFont(.caption).foregroundStyle(Theme.muted)
                         .padding(.top, 2)
                 } else {
-                    ForEach(Array(checks.enumerated()), id: \.offset) { index, check in
-                        if index > 0 {
-                            Rectangle().fill(Theme.hairline).frame(height: 1)
+                    ScrollContentStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(checks.enumerated()), id: \.offset) { index, check in
+                            if index > 0 {
+                                Rectangle().fill(Theme.hairline).frame(height: 1)
+                            }
+                            RecordCheckRow(check: check, taskId: taskId)
                         }
-                        RecordCheckRow(check: check, taskId: taskId)
                     }
                 }
             }
@@ -1449,7 +1451,7 @@ private struct RecordCheckRow: View {
                 Text("recorded \(ago)").workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
             if let files = check.files, !files.isEmpty {
-                VStack(alignment: .leading, spacing: 2) {
+                ScrollContentStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(files.enumerated()), id: \.offset) { _, path in
                         Text(verbatim: path)
                             .workFont(.dataSmall).foregroundStyle(Theme.muted)
@@ -1513,7 +1515,7 @@ struct RecordGapsCard: View {
                         .workFont(.titleCard).foregroundStyle(Theme.ink)
                         .accessibilityAddTraits(.isHeader)
                     Rectangle().fill(Theme.hairline).frame(height: 1).padding(.vertical, Space.m)
-                    VStack(alignment: .leading, spacing: Space.s) {
+                    ScrollContentStack(alignment: .leading, spacing: Space.s) {
                         ForEach(items) { item in
                             HStack(alignment: .firstTextBaseline, spacing: Space.s) {
                                 Text(item.dimension).workFont(.captionSemibold).foregroundStyle(Theme.muted)

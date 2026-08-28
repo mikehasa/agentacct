@@ -76,9 +76,9 @@ enum UsageSnapshotRenderer {
             let selection = AppSelection()
             selection.pane = .usage
             let view = MainWindow(canSetUpOverride: true)
-                .environmentObject(glance)
-                .environmentObject(dashboard)
-                .environmentObject(selection)
+                .environment(glance)
+                .environment(dashboard)
+                .environment(selection)
                 .frame(width: configuration.width, height: configuration.height, alignment: .top)
                 .clipped()
                 .environment(\.colorScheme, configuration.colorScheme)

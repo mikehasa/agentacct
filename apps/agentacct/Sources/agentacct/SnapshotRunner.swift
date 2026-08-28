@@ -63,9 +63,9 @@ enum SnapshotRunner {
                         // content height (ImageRenderer centers an overflowing
                         // fixed frame, which would clip both ends).
                         let window = MainWindow()
-                            .environmentObject(glance)
-                            .environmentObject(dashboard)
-                            .environmentObject(selection)
+                            .environment(glance)
+                            .environment(dashboard)
+                            .environment(selection)
                             .frame(width: 1120, alignment: .top)
                             .environment(\.colorScheme, scheme)
                         try SnapshotImageWriter.render(
@@ -81,9 +81,9 @@ enum SnapshotRunner {
                     selection.pane = .work
                     selection.taskId = nil
                     let tableWindow = MainWindow()
-                        .environmentObject(glance)
-                        .environmentObject(dashboard)
-                        .environmentObject(selection)
+                        .environment(glance)
+                        .environment(dashboard)
+                        .environment(selection)
                         .frame(width: 1120, alignment: .top)
                         .environment(\.colorScheme, scheme)
                     try SnapshotImageWriter.render(
@@ -93,9 +93,9 @@ enum SnapshotRunner {
                     selection.taskId = recordTaskId
 
                     let menu = MenuContent()
-                        .environmentObject(glance)
-                        .environmentObject(dashboard)
-                        .environmentObject(selection)
+                        .environment(glance)
+                        .environment(dashboard)
+                        .environment(selection)
                         .background(Theme.canvas)
                         .frame(width: 360)
                         .environment(\.colorScheme, scheme)

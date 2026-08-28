@@ -215,9 +215,9 @@ func isActiveWorkStatus(_ status: String?) -> Bool {
 }
 
 struct DashboardPane: View {
-    @EnvironmentObject var dashboard: DashboardStore
-    @EnvironmentObject var glance: GlanceState
-    @EnvironmentObject var selection: AppSelection
+    @Environment(DashboardStore.self) var dashboard
+    @Environment(GlanceState.self) var glance
+    @Environment(AppSelection.self) var selection
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var presentedError: String? {
