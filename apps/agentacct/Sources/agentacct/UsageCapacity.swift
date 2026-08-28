@@ -560,11 +560,18 @@ struct LimitMeter: View {
                         .fill(Theme.limitColor(usedPercent: usedPercent))
                         .frame(width: max(1, proxy.size.width * min(usedPercent / 100, 1)))
                 }
-                ForEach([0.75, 0.9], id: \.self) { notch in
-                    Rectangle()
-                        .fill(Theme.rule)
-                        .frame(width: 1.5, height: Metrics.meterH + 4)
-                        .offset(x: proxy.size.width * notch, y: -2)
+            }
+            .overlay {
+                ZStack {
+                    ForEach([0.75, 0.9], id: \.self) { notch in
+                        Rectangle()
+                            .fill(Theme.rule)
+                            .frame(width: 1.5, height: Metrics.meterH + 4)
+                            .position(
+                                x: proxy.size.width * notch,
+                                y: proxy.size.height / 2
+                            )
+                    }
                 }
             }
         }
