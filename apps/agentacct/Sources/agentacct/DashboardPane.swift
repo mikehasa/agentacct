@@ -497,7 +497,7 @@ struct DashboardActiveWorkSignal: Equatable {
         let statuslessSessions = sessions.filter { $0.status == nil }
 
         if activeSessions.isEmpty, !statuslessSessions.isEmpty {
-            title = "Recent activity · work status unavailable"
+            title = "Work status unavailable"
             let validActivity = Self.validActivity(statuslessSessions, now: now)
             if let mostRecent = validActivity.min(by: { $0.1 < $1.1 }) {
                 detail = "\(Self.sessionLabel(mostRecent.0)) · activity \(Self.elapsedText(mostRecent.1)) ago · \(statuslessSessions.count)/\(sessions.count) shown with no work status"
@@ -524,7 +524,7 @@ struct DashboardActiveWorkSignal: Equatable {
             : " · \(statuslessSessions.count) more shown without work status"
 
         if let oldestVisible = validActivity.max(by: { $0.1 < $1.1 }), oldestVisible.1 >= 15 * 60 {
-            title = "Session activity last seen \(Self.elapsedText(oldestVisible.1)) ago"
+            title = "One session last active \(Self.elapsedText(oldestVisible.1)) ago"
             detail = "\(Self.sessionLabel(oldestVisible.0)) · \(activeCount) recent active session\(activeCount == 1 ? "" : "s") shown\(unknownStatusSuffix)"
             promotesInactivity = true
             hasConfirmedActiveWork = true
@@ -736,6 +736,11 @@ struct DashboardPane: View {
     @EnvironmentObject var glance: GlanceState
     @EnvironmentObject var selection: AppSelection
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var presentedError: String? {
+        dashboard.errorText ?? dashboard.receiptListError
+    }
 
     private var recentWork: [DashboardWorkItem] {
         dashboard.receiptTasks.prefix(3).map(DashboardWorkItem.init)
@@ -840,15 +845,21 @@ struct DashboardPane: View {
             )
         }
         .overlay(alignment: .bottom) {
-            if let error = dashboard.errorText {
+            if let error = presentedError {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .dashboardFont(.caption)
                     .foregroundStyle(Theme.coral)
                     .padding(Space.s)
                     .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
                     .padding(.bottom, 10)
+                    .id(error)
+                    .transition(.opacity)
             }
         }
+        .animation(
+            reduceMotion ? Motion.reducedCrossfade : Motion.phaseCrossfade,
+            value: presentedError
+        )
     }
 
     private func splitRow<Left: View, Right: View>(
@@ -1117,7 +1128,7 @@ private struct DashboardAttentionBriefCard: View {
 
             HStack(spacing: Space.s) {
                 Button {
-                    open(.task(focus.id))
+                    open(.attentionTask(focus.id))
                 } label: {
                     Label("Review evidence", systemImage: "doc.text.magnifyingglass")
                         .dashboardFont(.captionSemibold)
@@ -1141,10 +1152,17 @@ private struct DashboardAttentionBriefCard: View {
                         copyFeedbackToken = nil
                     }
                 } label: {
-                    Label(
-                        copySucceeded ? "Copied" : (copyFailed ? "Copy failed" : brief.buttonTitle),
-                        systemImage: copySucceeded ? "checkmark" : "doc.on.doc"
-                    )
+                    ZStack {
+                        // Reserve the idle label's full width so copy feedback
+                        // cannot shove the primary action sideways.
+                        Label(brief.buttonTitle, systemImage: "doc.on.doc")
+                            .hidden()
+                            .accessibilityHidden(true)
+                        Label(
+                            copySucceeded ? "Copied" : (copyFailed ? "Copy failed" : brief.buttonTitle),
+                            systemImage: copySucceeded ? "checkmark" : "doc.on.doc"
+                        )
+                    }
                     .dashboardFont(.captionSemibold)
                 }
                 .buttonStyle(.bordered)
@@ -2134,7 +2152,7 @@ private struct DashboardUsageChart: View {
                                 .buttonStyle(DashboardChartBarStyle(active: activeIndex == index))
                                 .focused($focusedIndex, equals: index)
                                 .onHover { inside in
-                                    withAnimation(reduceMotion ? nil : Motion.hover) {
+                                    withAnimation(Motion.hover) {
                                         if inside {
                                             hoveredIndex = index
                                         } else if hoveredIndex == index {
@@ -2158,6 +2176,13 @@ private struct DashboardUsageChart: View {
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .animation(
+                        Motion.animatesChartGeometry(
+                            bucketCount: periods.count,
+                            reduceMotion: reduceMotion
+                        ) ? Motion.contentUpdate : nil,
+                        value: series
+                    )
 
                     if let index = activeIndex, periods.indices.contains(index) {
                         DashboardChartTooltip(
@@ -2231,21 +2256,40 @@ private struct DashboardSeriesButtonStyle: ButtonStyle {
 private struct DashboardSeriesButtonBody: View {
     let configuration: ButtonStyleConfiguration
     let selected: Bool
+    @State private var hovering = false
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.isEnabled) private var isEnabled
+
+    private var phase: ButtonInteractionPhase {
+        buttonInteractionPhase(
+            isEnabled: isEnabled,
+            isPressed: configuration.isPressed,
+            isHovering: hovering
+        )
+    }
 
     var body: some View {
         configuration.label
             .foregroundStyle(selected ? Theme.ink : Theme.muted)
-            .background(
-                selected ? Theme.card : (configuration.isPressed ? Theme.hairline.opacity(0.6) : Color.clear),
-                in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
-            )
+            .background {
+                RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
+                    .fill(selected ? Theme.card : Color.clear)
+                RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
+                    .fill(Theme.accent.opacity(ButtonFeedback.surfaceFillOpacity(for: phase)))
+            }
+            .opacity(ButtonFeedback.labelOpacity(for: phase, pressed: 0.82))
             .overlay {
-                if isFocused {
+                if isFocused && isEnabled {
                     RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
                         .strokeBorder(Theme.accent, lineWidth: Metrics.focusW)
                 }
             }
+            .onHover { inside in
+                withAnimation(Motion.hover) {
+                    hovering = inside
+                }
+            }
+            .animation(Motion.feedback, value: phase)
     }
 }
 
@@ -2261,6 +2305,7 @@ private struct DashboardChartBarStyle: ButtonStyle {
                         .strokeBorder(Theme.accent.opacity(0.55), lineWidth: Metrics.borderW)
                 }
             }
+            .animation(Motion.feedback, value: configuration.isPressed)
     }
 }
 
@@ -2274,7 +2319,6 @@ private struct DashboardRowButtonBody: View {
     let configuration: ButtonStyleConfiguration
     @State private var hovering = false
     @Environment(\.isFocused) private var isFocused
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         configuration.label
@@ -2289,11 +2333,11 @@ private struct DashboardRowButtonBody: View {
                 }
             }
             .onHover { inside in
-                withAnimation(reduceMotion ? nil : Motion.hover) {
+                withAnimation(Motion.hover) {
                     hovering = inside
                 }
             }
-            .animation(reduceMotion ? nil : Motion.feedback, value: configuration.isPressed)
+            .animation(Motion.feedback, value: configuration.isPressed)
     }
 }
 

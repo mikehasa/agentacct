@@ -79,16 +79,17 @@ GET http://127.0.0.1:8765/v1/attention?limit=5&offset=0
 
 `/v1/attention` computes complete, exclusive counts by each Task's leading
 review reason (failed check, failed step, or blocker) over all visible Tasks,
-then returns only the bounded operational queue. Current failed checks and
+then applies `offset` and `limit` to return one operational queue page. Current failed checks and
 recorded failed steps lead unresolved blockers—even when a Task has both a
 failure and a blocker—and recency orders Tasks within each class. This is review
 ordering, not a claim about business priority. Each row includes its recorded
 reason and next step when available; agentacct does not invent a recovery action
-for a failed check. The complete classification and ordering are cached with the
-parent Task projection, so repeated dashboard polls rebuild them only when that
-projection changes. Clients can load later ranked rows with `offset`; every
-page carries the same complete counts and a ranking revision so a client can
-reject pages from a changed projection instead of skipping or repeating work.
+for a failed check. Every page carries the same opaque ranking `revision` and
+complete counts while that classification is stable; clients restart paging if
+the revision changes. The complete classification and ordering are cached with
+the parent Task projection, so repeated dashboard polls rebuild them only when
+that projection changes. Clients load later ranked rows with `offset` and reject
+pages from a changed projection instead of skipping or repeating work.
 
 ## Owned execution boundary
 

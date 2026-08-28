@@ -840,6 +840,19 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(selection.workSort, .attention)
     }
 
+    @MainActor
+    func testTaskDestinationCarriesItsQueueOriginExplicitly() {
+        let selection = AppSelection()
+        selection.workGroup = .attention
+
+        selection.open(.task("recent-task"))
+        XCTAssertNil(selection.workGroup, "Recent work must not inherit a stale review filter")
+
+        selection.open(.attentionTask("review-task"))
+        XCTAssertEqual(selection.taskId, "review-task")
+        XCTAssertEqual(selection.workGroup, .attention, "Review-item back navigation should return to the queue")
+    }
+
     func testRecentWorkProjectionKeepsDecisionEvidenceAndCostSeparate() throws {
         let task = try decode(
             ReceiptSummary.self,
@@ -1112,7 +1125,7 @@ final class DashboardInteractionTests: XCTestCase {
             now: Date(timeIntervalSince1970: 1_000)
         )
 
-        XCTAssertEqual(signal.title, "Session activity last seen 15m ago")
+        XCTAssertEqual(signal.title, "One session last active 15m ago")
         XCTAssertEqual(signal.detail, "Snapshot harness · 3 recent active sessions shown")
         XCTAssertTrue(signal.promotesInactivity)
         XCTAssertTrue(signal.hasConfirmedActiveWork)
@@ -1193,7 +1206,7 @@ final class DashboardInteractionTests: XCTestCase {
             now: Date(timeIntervalSince1970: 1_000)
         )
 
-        XCTAssertEqual(signal.title, "Recent activity · work status unavailable")
+        XCTAssertEqual(signal.title, "Work status unavailable")
         XCTAssertEqual(signal.detail, "codex · usage-on · activity 10s ago · 2/2 shown with no work status")
         XCTAssertFalse(signal.promotesInactivity)
         XCTAssertFalse(signal.hasConfirmedActiveWork)

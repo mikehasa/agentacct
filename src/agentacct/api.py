@@ -3139,7 +3139,7 @@ def create_local_api_app(
         limit: int = Query(5, ge=1, le=50),
         offset: int = Query(0, ge=0),
     ) -> dict[str, Any]:
-        """A complete but bounded review queue over every visible Task.
+        """A complete, paged review queue over every visible Task.
 
         This is deliberately separate from ``/v1/tasks``: deriving attention
         after paginating recent work makes both the count and queue incomplete.
