@@ -196,11 +196,27 @@ struct DashboardActionBrief: Equatable {
 }
 
 @MainActor
-private enum DashboardClipboard {
-    static func copy(_ text: String) -> Bool {
-        let pasteboard = NSPasteboard.general
+enum DashboardClipboard {
+    static func copy(
+        _ text: String,
+        to pasteboard: NSPasteboard = .general
+    ) -> Bool {
         pasteboard.clearContents()
         return pasteboard.setString(text, forType: .string)
+    }
+}
+
+enum DashboardCopyFeedback: Equatable {
+    case idle
+    case copied(String)
+    case failed(String)
+
+    mutating func record(succeeded: Bool, text: String) {
+        self = succeeded ? .copied(text) : .failed(text)
+    }
+
+    mutating func clear() {
+        self = .idle
     }
 }
 
@@ -554,8 +570,7 @@ private struct DashboardAttentionBriefCard: View {
     let payload: V1AttentionPayload?
     let error: String?
     let open: (DashboardDestination) -> Void
-    @State private var copiedBriefText: String?
-    @State private var failedBriefText: String?
+    @State private var copyFeedback = DashboardCopyFeedback.idle
     @State private var copyFeedbackToken: UUID?
 
     private var presentation: DashboardAttentionPresentation {
@@ -621,8 +636,8 @@ private struct DashboardAttentionBriefCard: View {
 
     private func focusContent(total: Int, focus: DashboardAttentionItem) -> some View {
         let brief = DashboardActionBrief(focus: focus)
-        let copySucceeded = copiedBriefText == brief.text
-        let copyFailed = failedBriefText == brief.text
+        let copySucceeded = copyFeedback == .copied(brief.text)
+        let copyFailed = copyFeedback == .failed(brief.text)
         return VStack(alignment: .leading, spacing: Space.l) {
             HStack(spacing: Space.s) {
                 Text("PRIMARY ATTENTION")
@@ -689,18 +704,14 @@ private struct DashboardAttentionBriefCard: View {
                 Button {
                     let feedbackToken = UUID()
                     copyFeedbackToken = feedbackToken
-                    if DashboardClipboard.copy(brief.text) {
-                        copiedBriefText = brief.text
-                        failedBriefText = nil
-                    } else {
-                        copiedBriefText = nil
-                        failedBriefText = brief.text
-                    }
+                    copyFeedback.record(
+                        succeeded: DashboardClipboard.copy(brief.text),
+                        text: brief.text
+                    )
                     Task { @MainActor in
                         try? await Task.sleep(for: .seconds(2))
                         guard copyFeedbackToken == feedbackToken else { return }
-                        copiedBriefText = nil
-                        failedBriefText = nil
+                        copyFeedback.clear()
                         copyFeedbackToken = nil
                     }
                 } label: {

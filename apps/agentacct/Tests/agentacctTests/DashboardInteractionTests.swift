@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 @testable import agentacct
@@ -206,6 +207,23 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertTrue(brief.text.contains("Recorded attention: Recorded blocker — Canonical renderer is offline"))
         XCTAssertTrue(brief.text.contains("Recorded next step: Retry when the renderer is available"))
         XCTAssertTrue(brief.text.contains("Observed: Not recorded"))
+    }
+
+    @MainActor
+    func testActionBriefClipboardBoundaryAndFeedbackStates() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+
+        XCTAssertTrue(DashboardClipboard.copy("recorded brief", to: pasteboard))
+        XCTAssertEqual(pasteboard.string(forType: .string), "recorded brief")
+
+        var feedback = DashboardCopyFeedback.idle
+        feedback.record(succeeded: true, text: "recorded brief")
+        XCTAssertEqual(feedback, .copied("recorded brief"))
+        feedback.record(succeeded: false, text: "new brief")
+        XCTAssertEqual(feedback, .failed("new brief"))
+        feedback.clear()
+        XCTAssertEqual(feedback, .idle)
     }
 
     func testShiftBriefNeverTurnsLoadingUnavailableOrMalformedDataIntoAllClear() throws {
