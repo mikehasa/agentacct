@@ -137,6 +137,7 @@ struct DashboardSnapshotConfiguration {
     let workState: SnapshotWorkStoreState
     let glanceState: DashboardSnapshotGlanceState
     let dynamicTypeSize: DynamicTypeSize
+    let capturesFullContent: Bool
 
     init(
         viewport: String,
@@ -145,7 +146,8 @@ struct DashboardSnapshotConfiguration {
         colorScheme: ColorScheme,
         workState: SnapshotWorkStoreState,
         glanceState: DashboardSnapshotGlanceState = .fixture,
-        dynamicTypeSize: DynamicTypeSize = .medium
+        dynamicTypeSize: DynamicTypeSize = .medium,
+        capturesFullContent: Bool = false
     ) {
         self.viewport = viewport
         self.width = width
@@ -154,6 +156,7 @@ struct DashboardSnapshotConfiguration {
         self.workState = workState
         self.glanceState = glanceState
         self.dynamicTypeSize = dynamicTypeSize
+        self.capturesFullContent = capturesFullContent
     }
 
     var filename: String {
@@ -173,23 +176,56 @@ struct DashboardSnapshotConfiguration {
         Self(viewport: "trust-unavailable", width: 1120, height: 800, colorScheme: .dark, workState: .shiftBriefUnavailable),
         Self(viewport: "old-daemon-statusless", width: 1120, height: 800, colorScheme: .light, workState: .oldDaemonUnavailable, glanceState: .statuslessUsage),
         Self(viewport: "old-daemon-statusless", width: 1120, height: 800, colorScheme: .dark, workState: .oldDaemonUnavailable, glanceState: .statuslessUsage),
-        // Pair the largest accessibility category with the app's minimum
-        // supported width so reflow is proven under the tightest real window.
+        // Exercise both sides of the layout transition at minimum width. One
+        // appearance is sufficient here because the assertion is geometric;
+        // the maximum-size pair below still covers both color schemes.
+        Self(
+            viewport: "xlarge-minimum",
+            width: 960,
+            height: 800,
+            colorScheme: .light,
+            workState: .populated,
+            dynamicTypeSize: .xLarge
+        ),
+        Self(
+            viewport: "xxlarge-minimum",
+            width: 960,
+            height: 2050,
+            colorScheme: .light,
+            workState: .populated,
+            dynamicTypeSize: .xxLarge,
+            capturesFullContent: true
+        ),
+        // Full-content renders prove that reflow remains readable under the
+        // tightest real window without silently accepting a clipped canvas.
         Self(
             viewport: "accessibility5-minimum",
             width: 960,
-            height: 2000,
+            height: 2700,
             colorScheme: .light,
             workState: .populated,
-            dynamicTypeSize: .accessibility5
+            dynamicTypeSize: .accessibility5,
+            capturesFullContent: true
         ),
         Self(
             viewport: "accessibility5-minimum",
             width: 960,
-            height: 2000,
+            height: 2700,
             colorScheme: .dark,
             workState: .populated,
-            dynamicTypeSize: .accessibility5
+            dynamicTypeSize: .accessibility5,
+            capturesFullContent: true
+        ),
+        // A realistic retained-cache failure proves that a multi-line alert
+        // participates in layout instead of obscuring the final scroll rows.
+        Self(
+            viewport: "accessibility5-error-minimum",
+            width: 960,
+            height: 2900,
+            colorScheme: .light,
+            workState: .retainedLongListError,
+            dynamicTypeSize: .accessibility5,
+            capturesFullContent: true
         ),
     ]
 }
@@ -232,10 +268,10 @@ enum DashboardSnapshotGlanceState {
 }
 
 enum DashboardSnapshotRenderer {
-    private static let snapshotLocale = Locale(identifier: "en_US_POSIX")
-    private static let snapshotTimeZone = TimeZone(secondsFromGMT: 0)!
+    fileprivate static let snapshotLocale = Locale(identifier: "en_US_POSIX")
+    fileprivate static let snapshotTimeZone = TimeZone(secondsFromGMT: 0)!
 
-    private static var snapshotCalendar: Calendar {
+    fileprivate static var snapshotCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.locale = snapshotLocale
         calendar.timeZone = snapshotTimeZone
@@ -279,31 +315,45 @@ enum DashboardSnapshotRenderer {
             )
             let selection = AppSelection()
             selection.pane = .dashboard
+            let environment = DashboardSnapshotEnvironment(
+                configuration: configuration,
+                glance: glance,
+                dashboard: dashboard,
+                selection: selection
+            )
+            if configuration.capturesFullContent {
+                SnapshotMode.boundsScrollContentToViewport = false
+                let intrinsicScene = VStack(spacing: 0) {
+                    TopBar(canSetUp: true)
+                    Rectangle().fill(Theme.rule).frame(height: 1)
+                    DashboardPane(usesScrollViewport: false)
+                }
+                .modifier(environment)
+                .frame(width: configuration.width, alignment: .topLeading)
+                .fixedSize(horizontal: false, vertical: true)
+                let requiredSize = try SnapshotImageWriter.renderedSize(
+                    intrinsicScene,
+                    proposedSize: ProposedViewSize(width: configuration.width, height: nil)
+                )
+                SnapshotMode.boundsScrollContentToViewport = true
+                guard requiredSize.height <= configuration.height else {
+                    throw SnapshotError.snapshotContentExceedsCanvas(
+                        filename: configuration.filename,
+                        requiredHeight: Int(ceil(requiredSize.height)),
+                        availableHeight: Int(configuration.height)
+                    )
+                }
+            }
             // A packaged app consistently offers setup here. Injecting that
             // state keeps SwiftPM and packaged-build snapshots identical.
             let view = MainWindow(canSetUpOverride: true)
-                .environmentObject(glance)
-                .environmentObject(dashboard)
-                .environmentObject(selection)
+                .modifier(environment)
                 .frame(
                     width: configuration.width,
                     height: configuration.height,
                     alignment: .top
                 )
                 .clipped()
-                .environment(\.colorScheme, configuration.colorScheme)
-                .environment(\.locale, snapshotLocale)
-                .environment(\.calendar, snapshotCalendar)
-                .environment(\.timeZone, snapshotTimeZone)
-                .environment(\.displayScale, 2)
-                .environment(\.layoutDirection, .leftToRight)
-                .environment(\.dynamicTypeSize, configuration.dynamicTypeSize)
-                .environment(\.controlSize, .regular)
-                .environment(\.legibilityWeight, nil)
-                .environment(\.appearsActive, true)
-                .transaction { transaction in
-                    transaction.disablesAnimations = true
-                }
             let outputURL = outputDirectory.appendingPathComponent(configuration.filename)
             try SnapshotImageWriter.render(
                 view,
@@ -312,6 +362,33 @@ enum DashboardSnapshotRenderer {
             )
             return outputURL
         }
+    }
+}
+
+private struct DashboardSnapshotEnvironment: ViewModifier {
+    let configuration: DashboardSnapshotConfiguration
+    let glance: GlanceState
+    let dashboard: DashboardStore
+    let selection: AppSelection
+
+    func body(content: Content) -> some View {
+        content
+            .environmentObject(glance)
+            .environmentObject(dashboard)
+            .environmentObject(selection)
+            .environment(\.colorScheme, configuration.colorScheme)
+            .environment(\.locale, DashboardSnapshotRenderer.snapshotLocale)
+            .environment(\.calendar, DashboardSnapshotRenderer.snapshotCalendar)
+            .environment(\.timeZone, DashboardSnapshotRenderer.snapshotTimeZone)
+            .environment(\.displayScale, 2)
+            .environment(\.layoutDirection, .leftToRight)
+            .environment(\.dynamicTypeSize, configuration.dynamicTypeSize)
+            .environment(\.controlSize, .regular)
+            .environment(\.legibilityWeight, nil)
+            .environment(\.appearsActive, true)
+            .transaction { transaction in
+                transaction.disablesAnimations = true
+            }
     }
 }
 

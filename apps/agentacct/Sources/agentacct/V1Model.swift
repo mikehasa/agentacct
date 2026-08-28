@@ -428,6 +428,51 @@ struct V1AttentionPayload: Decodable {
     let truncated: Bool
 
     var resolvedOffset: Int { offset ?? 0 }
+
+    init(
+        schema: String,
+        items: [ReceiptSummary],
+        total: Int,
+        counts: V1AttentionCounts,
+        revision: String?,
+        offset: Int?,
+        limit: Int,
+        truncated: Bool
+    ) {
+        self.schema = schema
+        self.items = items
+        self.total = total
+        self.counts = counts
+        self.revision = revision
+        self.offset = offset
+        self.limit = limit
+        self.truncated = truncated
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schema, items, total, counts, revision, snapshot, offset, limit, truncated
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schema = try container.decode(String.self, forKey: .schema)
+        items = try container.decode([ReceiptSummary].self, forKey: .items)
+        total = try container.decode(Int.self, forKey: .total)
+        counts = try container.decode(V1AttentionCounts.self, forKey: .counts)
+        let currentRevision = try container.decodeIfPresent(String.self, forKey: .revision)
+        let legacySnapshot = try container.decodeIfPresent(String.self, forKey: .snapshot)
+        if let currentRevision, let legacySnapshot, currentRevision != legacySnapshot {
+            throw DecodingError.dataCorruptedError(
+                forKey: .revision,
+                in: container,
+                debugDescription: "revision and snapshot identify different attention queues"
+            )
+        }
+        revision = currentRevision ?? legacySnapshot
+        offset = try container.decodeIfPresent(Int.self, forKey: .offset)
+        limit = try container.decode(Int.self, forKey: .limit)
+        truncated = try container.decode(Bool.self, forKey: .truncated)
+    }
 }
 
 struct V1AttentionCounts: Decodable, Equatable {
@@ -442,11 +487,76 @@ struct V1AttentionCounts: Decodable, Equatable {
     }
 }
 
+private func observedAttentionCounts(
+    in items: [ReceiptSummary]
+) -> V1AttentionCounts? {
+    var failedCheck = 0
+    var failedStep = 0
+    var blocker = 0
+    for item in items {
+        guard let attention = item.attention,
+              !attention.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return nil
+        }
+        switch attention.kind {
+        case "failed_check": failedCheck += 1
+        case "failed_step": failedStep += 1
+        case "blocker": blocker += 1
+        default: return nil
+        }
+    }
+    return V1AttentionCounts(
+        failedCheck: failedCheck,
+        failedStep: failedStep,
+        blocker: blocker
+    )
+}
+
+private func attentionCounts(
+    _ observed: V1AttentionCounts,
+    fitWithin reported: V1AttentionCounts
+) -> Bool {
+    observed.failedCheck <= reported.failedCheck
+        && observed.failedStep <= reported.failedStep
+        && observed.blocker <= reported.blocker
+}
+
+/// Failed checks and failed steps share the leading operational class; all of
+/// them precede blockers. A partial prefix may stop within that leading class,
+/// but it cannot expose a blocker while a reported failure row is still unseen.
+private func hasConsistentAttentionPrefixOrder(
+    _ items: [ReceiptSummary],
+    reported: V1AttentionCounts
+) -> Bool {
+    let leadingTotal = reported.failedCheck.addingReportingOverflow(reported.failedStep)
+    guard !leadingTotal.overflow else { return false }
+
+    var observedLeading = 0
+    var reachedBlockers = false
+    for item in items {
+        switch item.attention?.kind {
+        case "failed_check", "failed_step":
+            guard !reachedBlockers else { return false }
+            observedLeading += 1
+        case "blocker":
+            guard observedLeading == leadingTotal.partialValue else { return false }
+            reachedBlockers = true
+        default:
+            return false
+        }
+    }
+    return true
+}
+
 /// Validate the complete-count and first-page contract before any surface uses
 /// an attention response. Legacy daemons omit both paging fields; current
 /// daemons must supply both. A partial or contradictory envelope is not safe to
 /// present as a complete review projection.
 func hasConsistentAttentionHeadEnvelope(_ payload: V1AttentionPayload) -> Bool {
+    let taskIDs = payload.items.map {
+        $0.taskId.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
     guard payload.schema == "agentacct.v1-attention.v1",
           payload.total >= 0,
           (1 ... 50).contains(payload.limit),
@@ -455,11 +565,9 @@ func hasConsistentAttentionHeadEnvelope(_ payload: V1AttentionPayload) -> Bool {
           payload.counts.blocker >= 0,
           payload.items.count <= payload.limit,
           payload.items.count <= payload.total,
-          payload.items.allSatisfy({
-              !$0.taskId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                  && $0.attention != nil
-          }),
-          Set(payload.items.map(\.taskId)).count == payload.items.count,
+          taskIDs.allSatisfy({ !$0.isEmpty }),
+          zip(payload.items.map(\.taskId), taskIDs).allSatisfy({ $0.0 == $0.1 }),
+          Set(taskIDs).count == payload.items.count,
           (payload.revision == nil) == (payload.offset == nil),
           payload.resolvedOffset == 0,
           payload.truncated == (payload.items.count < payload.total),
@@ -479,7 +587,15 @@ func hasConsistentAttentionHeadEnvelope(_ payload: V1AttentionPayload) -> Bool {
     )
     guard !first.overflow else { return false }
     let total = first.partialValue.addingReportingOverflow(payload.counts.blocker)
-    return !total.overflow && total.partialValue == payload.total
+    guard !total.overflow,
+          total.partialValue == payload.total,
+          let observed = observedAttentionCounts(in: payload.items),
+          attentionCounts(observed, fitWithin: payload.counts),
+          hasConsistentAttentionPrefixOrder(payload.items, reported: payload.counts)
+    else {
+        return false
+    }
+    return payload.items.count < payload.total || observed == payload.counts
 }
 
 /// Refresh the leading rows without discarding pages the user already loaded.
@@ -532,8 +648,12 @@ func mergedAttentionItems(
     summary: V1AttentionPayload,
     page: V1AttentionPayload
 ) -> [ReceiptSummary]? {
-    let summaryIDs = summary.items.map(\.taskId)
-    let existingIDsInOrder = existing.map(\.taskId)
+    let summaryIDs = summary.items.map {
+        $0.taskId.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    let existingIDsInOrder = existing.map {
+        $0.taskId.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
     guard hasConsistentAttentionHeadEnvelope(summary),
           summary.offset != nil,
           summary.resolvedOffset == 0,
@@ -566,14 +686,32 @@ func mergedAttentionItems(
     }
 
     let existingIDs = Set(existingIDsInOrder)
-    let pageIDs = page.items.map(\.taskId)
+    let pageIDs = page.items.map {
+        $0.taskId.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    let merged = existing + page.items
     guard existingIDs.count == existing.count,
+          pageIDs.allSatisfy({ !$0.isEmpty }),
+          zip(page.items.map(\.taskId), pageIDs).allSatisfy({ $0.0 == $0.1 }),
           Set(pageIDs).count == pageIDs.count,
-          existingIDs.isDisjoint(with: pageIDs)
+          existingIDs.isDisjoint(with: pageIDs),
+          let observed = observedAttentionCounts(in: merged),
+          attentionCounts(observed, fitWithin: summary.counts),
+          hasConsistentAttentionPrefixOrder(merged, reported: summary.counts),
+          end.partialValue < page.total || observed == summary.counts
     else {
         return nil
     }
-    return existing + page.items
+    return merged
+}
+
+func recordedTaskDisplayTitle(_ title: String?, taskId: String) -> String {
+    guard let title = title?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !title.isEmpty
+    else {
+        return taskId
+    }
+    return title
 }
 
 /// The server-selected leading reason for one attention Task. The summary and

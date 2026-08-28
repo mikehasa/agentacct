@@ -528,7 +528,7 @@ struct UsageDailyChart: View {
         case .cost:
             return period.costText == "—" ? "unpriced" : period.costText
         case .tokens:
-            if let tokens = value(period) { return UsageTotals.compact(Int(tokens)) }
+            if let tokens = value(period) { return UsageTotals.compact(tokens) }
             return "none recorded"
         }
     }
@@ -538,7 +538,7 @@ struct UsageDailyChart: View {
         case .cost:
             return "$" + String(format: maxValue * fraction >= 10 ? "%.0f" : "%.2f", maxValue * fraction)
         case .tokens:
-            return UsageTotals.compact(Int(maxValue * fraction))
+            return UsageTotals.compact(maxValue * fraction)
         }
     }
 

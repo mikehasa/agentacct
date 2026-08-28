@@ -223,10 +223,14 @@ enum Theme {
     }
 
     static func resetsIn(_ resetsAt: Double?, now: Date = SnapshotMode.currentDate) -> String? {
-        guard let resetsAt else { return nil }
+        guard let resetsAt, resetsAt.isFinite else { return nil }
         let delta = resetsAt - now.timeIntervalSince1970
-        guard delta > 0 else { return nil }
-        let total = Int(delta)
+        guard delta.isFinite,
+              delta > 0,
+              let total = Int(exactly: delta.rounded(.towardZero))
+        else {
+            return nil
+        }
         let days = total / 86400
         let hours = (total % 86400) / 3600
         let minutes = (total % 3600) / 60

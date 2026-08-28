@@ -19,9 +19,11 @@ enum DashboardDaemonFeature {
 /// the live initializer and network lifecycle remain unchanged.
 enum SnapshotWorkStoreState {
     case populated
+    case loading
     case empty
     case listError
     case retainedListError
+    case retainedLongListError
     case shiftBriefUnavailable
     case oldDaemonUnavailable
     case attentionOverflow
@@ -103,6 +105,8 @@ final class DashboardStore: ObservableObject {
                 let key = "\(session.session.client)::\(session.session.clientSessionId)"
                 preloadedSessions[key] = session
             }
+        case .loading:
+            break
         case .empty:
             hasLoadedReceiptTasks = true
             receiptTasks = []
@@ -125,6 +129,11 @@ final class DashboardStore: ObservableObject {
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
             receiptListError = "receipts fetch failed: synthetic review error"
+        case .retainedLongListError:
+            hasLoadedReceiptTasks = true
+            receiptTasks = fixture.tasks.tasks
+            totalReceiptTasks = fixture.tasks.total
+            receiptListError = "receipts fetch failed: The local service returned an incomplete response while refreshing cached work. Existing items remain visible and may be stale."
         case .shiftBriefUnavailable:
             hasLoadedReceiptTasks = true
             receiptTasks = fixture.tasks.tasks
@@ -262,10 +271,19 @@ final class DashboardStore: ObservableObject {
 
     /// The Task list for the Receipts pane (one compact Receipt summary each).
     func fetchReceipts() async {
+        // The window refresh already owns this lane. Starting a second request
+        // here would advance the generation; if Work then disappears and its
+        // task is cancelled, the still-valid window response could be rejected.
+        guard !isRefreshing else { return }
         let requestGeneration = beginReceiptListRequest()
         do {
             let payload: ReceiptTasksPayload = try await client.getAuthed("/v1/tasks?limit=200")
+            guard !Task.isCancelled else { return }
             publishReceiptList(payload, requestGeneration: requestGeneration)
+        } catch is CancellationError {
+            return
+        } catch let error as URLError where error.code == .cancelled {
+            return
         } catch GlanceClientError.noDiscovery(_) {
             publishReceiptListFailure(
                 "daemon not running (no discovery file) — start it with `agentacct start`",
@@ -382,7 +400,7 @@ final class DashboardStore: ObservableObject {
     /// publishing so older daemons that ignore `offset` cannot duplicate page
     /// one and make a bounded queue look complete.
     func fetchMoreAttention() async {
-        guard let summary = attention,
+        guard attention != nil,
               canLoadMoreAttention,
               !isLoadingMoreAttention
         else {
@@ -402,18 +420,7 @@ final class DashboardStore: ObservableObject {
                 "/v1/attention?limit=50&offset=\(offset)"
             )
             guard !Task.isCancelled, generation == attentionGeneration else { return }
-            guard let merged = mergedAttentionItems(
-                existing: attentionQueueItems,
-                summary: summary,
-                page: page
-            ) else {
-                attentionPageError = page.offset == nil
-                    ? "Update agentacct, then restart its local service to load the complete review queue."
-                    : "The review queue changed while loading. Refresh before acting on it."
-                return
-            }
-            attentionQueueItems = merged
-            attentionPageError = nil
+            publishAttentionPage(page, requestGeneration: generation)
         } catch is CancellationError {
             return
         } catch let error as URLError where error.code == .cancelled {
@@ -428,6 +435,32 @@ final class DashboardStore: ObservableObject {
             guard generation == attentionGeneration else { return }
             attentionPageError = "review queue page failed: \(error.localizedDescription)"
         }
+    }
+
+    func publishAttentionPage(_ page: V1AttentionPayload, requestGeneration: Int) {
+        guard requestGeneration == attentionGeneration, let summary = attention else { return }
+        if let summaryRevision = summary.revision,
+           let pageRevision = page.revision,
+           pageRevision != summaryRevision
+        {
+            attention = nil
+            attentionQueueItems = []
+            attentionError = "Review queue changed while loading. Refresh before acting on it."
+            attentionPageError = nil
+            return
+        }
+        guard let merged = mergedAttentionItems(
+            existing: attentionQueueItems,
+            summary: summary,
+            page: page
+        ) else {
+            attentionPageError = page.offset == nil
+                ? "Update agentacct, then restart its local service to load the complete review queue."
+                : "The review queue changed while loading. Refresh before acting on it."
+            return
+        }
+        attentionQueueItems = merged
+        attentionPageError = nil
     }
 
     /// One Task's full Receipt. 404 (task unknown / recorded elsewhere) is a

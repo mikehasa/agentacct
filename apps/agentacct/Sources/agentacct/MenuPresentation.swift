@@ -10,8 +10,14 @@ struct MenuLimitItem: Identifiable, Equatable {
 
     var percentageText: String {
         guard let usedPercent else { return "Not reported" }
+        guard usedPercent.isFinite,
+              usedPercent >= 0,
+              let rounded = Int(exactly: usedPercent.rounded())
+        else {
+            return "Invalid percentage"
+        }
         if usedPercent > 0, usedPercent < 1 { return "<1%" }
-        return "\(Int(usedPercent.rounded()))%"
+        return "\(rounded)%"
     }
 
     var sourceLabel: String { "\(clientLabel) · \(windowLabel)" }

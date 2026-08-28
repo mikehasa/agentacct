@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import agentacct
 
@@ -20,8 +21,11 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "dashboard-trust-unavailable-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "dashboard-old-daemon-statusless-light.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "dashboard-old-daemon-statusless-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
-        ExpectedArtifact(filename: "dashboard-accessibility5-minimum-light.png", pixelsWide: 1920, pixelsHigh: 4000),
-        ExpectedArtifact(filename: "dashboard-accessibility5-minimum-dark.png", pixelsWide: 1920, pixelsHigh: 4000),
+        ExpectedArtifact(filename: "dashboard-xlarge-minimum-light.png", pixelsWide: 1920, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "dashboard-xxlarge-minimum-light.png", pixelsWide: 1920, pixelsHigh: 4100),
+        ExpectedArtifact(filename: "dashboard-accessibility5-minimum-light.png", pixelsWide: 1920, pixelsHigh: 5400),
+        ExpectedArtifact(filename: "dashboard-accessibility5-minimum-dark.png", pixelsWide: 1920, pixelsHigh: 5400),
+        ExpectedArtifact(filename: "dashboard-accessibility5-error-minimum-light.png", pixelsWide: 1920, pixelsHigh: 5800),
     ]
 
     @MainActor
@@ -46,6 +50,84 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         XCTAssertEqual(fixture.glance.usage.byClient?.count, 3)
         XCTAssertEqual(fixture.glance.recentSessions.count, 2)
         XCTAssertNotNil(fixture.glance.usage.windows.first { $0.label == "today" })
+    }
+
+    @MainActor
+    func testFullContentConfigurationsRejectClippedCanvases() throws {
+        let fixture = try DashboardSnapshotFixture.load(from: dashboardFixtureURL())
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentacct-dashboard-clipping-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outputDirectory) }
+        let cases: [(String, DynamicTypeSize)] = [
+            ("xxlarge-too-short", .xxLarge),
+            ("accessibility5-too-short", .accessibility5),
+        ]
+
+        for (viewport, dynamicTypeSize) in cases {
+            let configuration = DashboardSnapshotConfiguration(
+                viewport: viewport,
+                width: 960,
+                height: 560,
+                colorScheme: .light,
+                workState: .populated,
+                dynamicTypeSize: dynamicTypeSize,
+                capturesFullContent: true
+            )
+
+            XCTAssertThrowsError(
+                try DashboardSnapshotRenderer.render(
+                    fixture: fixture,
+                    outputDirectory: outputDirectory,
+                    configurations: [configuration]
+                )
+            ) { error in
+                guard case SnapshotError.snapshotContentExceedsCanvas(
+                    let filename,
+                    let requiredHeight,
+                    let availableHeight
+                ) = error else {
+                    return XCTFail("Unexpected error: \(error)")
+                }
+                XCTAssertEqual(filename, "dashboard-\(viewport)-light.png")
+                XCTAssertGreaterThan(requiredHeight, availableHeight)
+                XCTAssertEqual(availableHeight, 560)
+            }
+        }
+    }
+
+    @MainActor
+    func testMaximumTextErrorAlertParticipatesInFullContentLayout() throws {
+        let fixture = try DashboardSnapshotFixture.load(from: dashboardFixtureURL())
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentacct-dashboard-error-layout-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outputDirectory) }
+        let configuration = DashboardSnapshotConfiguration(
+            viewport: "accessibility5-error-too-short",
+            width: 960,
+            height: 2700,
+            colorScheme: .light,
+            workState: .retainedLongListError,
+            dynamicTypeSize: .accessibility5,
+            capturesFullContent: true
+        )
+
+        XCTAssertThrowsError(
+            try DashboardSnapshotRenderer.render(
+                fixture: fixture,
+                outputDirectory: outputDirectory,
+                configurations: [configuration]
+            )
+        ) { error in
+            guard case SnapshotError.snapshotContentExceedsCanvas(
+                _,
+                let requiredHeight,
+                let availableHeight
+            ) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertGreaterThan(requiredHeight, availableHeight)
+            XCTAssertEqual(availableHeight, 2700)
+        }
     }
 
     @MainActor
@@ -131,6 +213,70 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         XCTAssertNil(SnapshotScheme.override)
     }
 
+    @MainActor
+    func testMinimumViewportKeepsRecentWorkInTheInitialReadingPath() throws {
+        let fixture = try DashboardSnapshotFixture.load(from: dashboardFixtureURL())
+        let configurations = DashboardSnapshotConfiguration.reviewConfigurations.filter {
+            $0.viewport == "minimum"
+        }
+        XCTAssertEqual(configurations.count, 2, "Both minimum-window appearances must be covered")
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentacct-dashboard-layout-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outputDirectory) }
+
+        let rendered = try DashboardSnapshotRenderer.render(
+            fixture: fixture,
+            outputDirectory: outputDirectory,
+            configurations: configurations
+        )
+        for imageURL in rendered {
+            let image = try VisualSnapshotImage(contentsOf: imageURL)
+            let windowBackground = rgba(in: image, x: 10, topY: 200)
+
+            // At 2x, the 16pt section spacing should leave a visible background
+            // separator before y=500pt. Sampling both columns prevents a shorter
+            // attention-card background from hiding an over-tall signal rail.
+            let separatorRows = (850..<1_000).filter { topY in
+                pixelsMatch(rgba(in: image, x: 100, topY: topY), windowBackground)
+                    && pixelsMatch(rgba(in: image, x: 1_280, topY: topY), windowBackground)
+            }
+            XCTAssertGreaterThanOrEqual(
+                longestConsecutiveRun(separatorRows),
+                24,
+                "\(imageURL.lastPathComponent) must expose Recent work after the decision row; supporting signals must not consume the entire first viewport"
+            )
+        }
+    }
+
+    @MainActor
+    func testExtremeTokenBucketsRenderWithoutTrapping() throws {
+        let fixtureURL = try dashboardFixtureURL()
+        let original = try String(contentsOf: fixtureURL, encoding: .utf8)
+        let extreme = original.replacingOccurrences(
+            of: #""fresh_tokens": 22500000"#,
+            with: #""fresh_tokens": 9223372036854775807"#
+        )
+        XCTAssertNotEqual(extreme, original, "The test must replace a real token bucket")
+
+        let fixture = try DashboardSnapshotFixture.decode(Data(extreme.utf8))
+        let configuration = try XCTUnwrap(
+            DashboardSnapshotConfiguration.reviewConfigurations.first {
+                $0.filename == "dashboard-minimum-light.png"
+            }
+        )
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentacct-dashboard-extreme-tokens-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outputDirectory) }
+
+        let rendered = try DashboardSnapshotRenderer.render(
+            fixture: fixture,
+            outputDirectory: outputDirectory,
+            configurations: [configuration]
+        )
+        XCTAssertEqual(rendered.count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(rendered.first).path))
+    }
+
     func testRejectsUnsupportedVersionedFixtureSchemas() throws {
         let fixtureURL = try dashboardFixtureURL()
         let validFixture = try String(contentsOf: fixtureURL, encoding: .utf8)
@@ -194,6 +340,9 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         defer { SnapshotMode.setFixtureDate(nil) }
 
         XCTAssertEqual(Theme.resetsIn(1_000_000 + 6 * 86_400 + 13 * 3_600), "6d 13h")
+        XCTAssertNil(Theme.resetsIn(.greatestFiniteMagnitude))
+        XCTAssertNil(Theme.resetsIn(.infinity))
+        XCTAssertNil(Theme.resetsIn(.nan))
         XCTAssertEqual(agoText(1_000_000 - 3_600), "1h ago")
     }
 
@@ -201,5 +350,49 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         try XCTUnwrap(
             Bundle.module.url(forResource: "dashboard", withExtension: "json")
         )
+    }
+
+    private func rgba(
+        in image: VisualSnapshotImage,
+        x: Int,
+        topY: Int
+    ) -> (UInt8, UInt8, UInt8, UInt8) {
+        precondition((0..<image.width).contains(x))
+        precondition((0..<image.height).contains(topY))
+        return image.rgba.withUnsafeBytes { storage in
+            let pixels = storage.bindMemory(to: UInt8.self)
+            let offset = (topY * image.width + x) * 4
+            return (
+                pixels[offset],
+                pixels[offset + 1],
+                pixels[offset + 2],
+                pixels[offset + 3]
+            )
+        }
+    }
+
+    private func pixelsMatch(
+        _ left: (UInt8, UInt8, UInt8, UInt8),
+        _ right: (UInt8, UInt8, UInt8, UInt8),
+        tolerance: Int = 1
+    ) -> Bool {
+        zip([left.0, left.1, left.2, left.3], [right.0, right.1, right.2, right.3])
+            .allSatisfy { abs(Int($0.0) - Int($0.1)) <= tolerance }
+    }
+
+    private func longestConsecutiveRun(_ values: [Int]) -> Int {
+        guard var previous = values.first else { return 0 }
+        var longest = 1
+        var current = 1
+        for value in values.dropFirst() {
+            if value == previous + 1 {
+                current += 1
+                longest = max(longest, current)
+            } else {
+                current = 1
+            }
+            previous = value
+        }
+        return longest
     }
 }

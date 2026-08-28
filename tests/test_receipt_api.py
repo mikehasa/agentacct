@@ -288,6 +288,7 @@ def test_attention_empty_state_and_query_bounds(tmp_path: Path) -> None:
     payload = client.get("/v1/attention", headers=_auth()).json()
     revision = payload.pop("revision")
     assert isinstance(revision, str) and revision
+    assert payload.pop("snapshot") == revision
     assert payload == {
         "schema": V1_ATTENTION_SCHEMA_VERSION,
         "items": [],
@@ -352,6 +353,7 @@ def test_attention_is_complete_bounded_and_operationally_ordered(
         "total",
         "counts",
         "revision",
+        "snapshot",
         "offset",
         "limit",
         "truncated",
@@ -360,6 +362,7 @@ def test_attention_is_complete_bounded_and_operationally_ordered(
     assert attention["total"] == 2
     assert attention["counts"] == {"failed_check": 1, "failed_step": 0, "blocker": 1}
     assert isinstance(attention["revision"], str) and attention["revision"]
+    assert attention["snapshot"] == attention["revision"]
     assert attention["offset"] == 0
     assert attention["limit"] == 1
     assert attention["truncated"] is True
@@ -386,6 +389,7 @@ def test_attention_is_complete_bounded_and_operationally_ordered(
     assert next_attention["total"] == attention["total"]
     assert next_attention["counts"] == attention["counts"]
     assert next_attention["revision"] == attention["revision"]
+    assert next_attention["snapshot"] == attention["snapshot"]
     assert next_attention["offset"] == 1
     assert next_attention["limit"] == 1
     assert next_attention["truncated"] is False

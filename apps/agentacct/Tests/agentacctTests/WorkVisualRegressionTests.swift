@@ -14,6 +14,8 @@ final class WorkVisualRegressionTests: XCTestCase {
         "work-receipt-minimum-dark.png",
         "work-receipt-reference-light.png",
         "work-receipt-reference-dark.png",
+        "work-loading-reference-light.png",
+        "work-loading-reference-dark.png",
         "work-empty-reference-light.png",
         "work-empty-reference-dark.png",
         "work-list-error-reference-light.png",

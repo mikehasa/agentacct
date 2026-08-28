@@ -1,12 +1,31 @@
 import AppKit
 import Foundation
+import SwiftUI
 import XCTest
 @testable import agentacct
 
 final class DashboardInteractionTests: XCTestCase {
+    @MainActor
+    func testDashboardAccessibilityTextIsMateriallyLargerInTheNativeHost() throws {
+        func renderedSize(_ dynamicTypeSize: DynamicTypeSize) throws -> CGSize {
+            try SnapshotImageWriter.renderedSize(
+                Text("Readable dashboard")
+                    .dashboardFont(.body)
+                    .environment(\.dynamicTypeSize, dynamicTypeSize)
+            )
+        }
+
+        let medium = try renderedSize(.medium)
+        let accessibility5 = try renderedSize(.accessibility5)
+
+        XCTAssertGreaterThan(accessibility5.width, medium.width * 1.7)
+        XCTAssertGreaterThan(accessibility5.height, medium.height * 1.7)
+    }
+
     func testDashboardAccessibleLayoutStartsBeforeFixedGeometryBecomesUnsafe() {
         XCTAssertFalse(dashboardUsesAccessibilityLayout(.medium))
-        XCTAssertFalse(dashboardUsesAccessibilityLayout(.xxLarge))
+        XCTAssertFalse(dashboardUsesAccessibilityLayout(.xLarge))
+        XCTAssertTrue(dashboardUsesAccessibilityLayout(.xxLarge))
         XCTAssertTrue(dashboardUsesAccessibilityLayout(.xxxLarge))
         XCTAssertTrue(dashboardUsesAccessibilityLayout(.accessibility1))
         XCTAssertTrue(dashboardUsesAccessibilityLayout(.accessibility3))
@@ -279,6 +298,26 @@ final class DashboardInteractionTests: XCTestCase {
             .unavailable("refresh failed")
         )
 
+        let nonHeadClear = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [],
+              "total": 0,
+              "counts": { "failed_check": 0, "failed_step": 0, "blocker": 0 },
+              "offset": 5,
+              "limit": 5,
+              "truncated": false
+            }
+            """
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: nonHeadClear, error: nil),
+            .inconsistent(total: 0),
+            "Only the head page can support a complete all-clear claim"
+        )
+
         let falseClear = try decode(
             V1AttentionPayload.self,
             from: """
@@ -350,6 +389,36 @@ final class DashboardInteractionTests: XCTestCase {
         )
     }
 
+    func testShiftBriefRejectsInvalidAttentionTaskIdentity() throws {
+        let item = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "duplicate",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+              "cost": {},
+              "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+            }
+            """
+        )
+        let duplicateIDs = V1AttentionPayload(
+            schema: "agentacct.v1-attention.v1",
+            items: [item, item],
+            total: 2,
+            counts: V1AttentionCounts(failedCheck: 2, failedStep: 0, blocker: 0),
+            revision: "duplicate-test",
+            offset: 0,
+            limit: 5,
+            truncated: false
+        )
+
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: duplicateIDs, error: nil),
+            .inconsistent(total: 2)
+        )
+    }
+
     func testShiftBriefHeadlineUsesTheLeadingRecordedTaskInsteadOfStaticCopy() throws {
         let payload = try decode(
             V1AttentionPayload.self,
@@ -366,6 +435,8 @@ final class DashboardInteractionTests: XCTestCase {
               }],
               "total": 2,
               "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "snapshot": "queue-headline",
+              "offset": 0,
               "limit": 1,
               "truncated": true
             }
@@ -551,6 +622,63 @@ final class DashboardInteractionTests: XCTestCase {
             }
             """
         )
+        let whitespaceDuplicate = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": " failed-check ",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "revision": "revision-1",
+              "offset": 1, "limit": 1, "truncated": false
+            }
+            """
+        )
+        let blankIdentity = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "   ",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "revision": "revision-1",
+              "offset": 1, "limit": 1, "truncated": false
+            }
+            """
+        )
+        let contradictoryCompletion = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "another-failed-check",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "another failure" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "revision": "revision-1",
+              "offset": 1, "limit": 1, "truncated": false
+            }
+            """
+        )
 
         XCTAssertEqual(first.resolvedOffset, 0)
         XCTAssertEqual(
@@ -560,6 +688,18 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertNil(
             mergedAttentionItems(existing: first.items, summary: first, page: first),
             "a daemon that ignores offset must fail closed instead of repeating page one"
+        )
+        XCTAssertNil(
+            mergedAttentionItems(existing: first.items, summary: first, page: whitespaceDuplicate),
+            "whitespace-equivalent task ids must not appear as additional queue coverage"
+        )
+        XCTAssertNil(
+            mergedAttentionItems(existing: first.items, summary: first, page: blankIdentity),
+            "a blank task id must not count as additional queue coverage"
+        )
+        XCTAssertNil(
+            mergedAttentionItems(existing: first.items, summary: first, page: contradictoryCompletion),
+            "a complete queue must reconcile its recorded reasons with aggregate counts"
         )
 
         let loaded = try XCTUnwrap(
@@ -625,6 +765,25 @@ final class DashboardInteractionTests: XCTestCase {
             }
             """
         )
+        let prematureBlocker = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "blocker",
+                "decision_status": { "key": "blocked" },
+                "evidence_strength": { "key": "unchecked" },
+                "cost": {},
+                "attention": { "kind": "blocker", "summary": "waiting for approval" }
+              }],
+              "total": 3,
+              "counts": { "failed_check": 2, "failed_step": 0, "blocker": 1 },
+              "revision": "revision-1",
+              "offset": 1, "limit": 1, "truncated": true
+            }
+            """
+        )
 
         XCTAssertNil(
             mergedAttentionItems(existing: first.items, summary: first, page: changedQueue),
@@ -633,6 +792,69 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertNil(
             mergedAttentionItems(existing: first.items, summary: first, page: emptyMiddlePage),
             "a truncated continuation cannot make progress with an empty page"
+        )
+        XCTAssertNil(
+            mergedAttentionItems(existing: first.items, summary: first, page: prematureBlocker),
+            "a blocker cannot appear while a reported failure-class row remains unseen"
+        )
+    }
+
+    @MainActor
+    func testAttentionRevisionDriftInvalidatesTheDashboardHead() throws {
+        let head = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "failed-check",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "revision": "revision-1",
+              "offset": 0, "limit": 1, "truncated": true
+            }
+            """
+        )
+        let driftedPage = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "blocker",
+                "decision_status": { "key": "blocked" },
+                "evidence_strength": { "key": "unchecked" },
+                "cost": {},
+                "attention": { "kind": "blocker", "summary": "waiting" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "revision": "revision-2",
+              "offset": 1, "limit": 1, "truncated": false
+            }
+            """
+        )
+
+        let store = DashboardStore()
+        let generation = store.beginAttentionRequest()
+        store.publishAttentionHead(head, requestGeneration: generation)
+        store.publishAttentionPage(driftedPage, requestGeneration: generation)
+
+        XCTAssertNil(store.attention)
+        XCTAssertTrue(store.attentionQueueItems.isEmpty)
+        XCTAssertNil(store.attentionPageError)
+        XCTAssertEqual(
+            store.attentionError,
+            "Review queue changed while loading. Refresh before acting on it."
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: store.attention, error: store.attentionError),
+            .unavailable("Review queue changed while loading. Refresh before acting on it.")
         )
     }
 
@@ -734,6 +956,115 @@ final class DashboardInteractionTests: XCTestCase {
         )
         XCTAssertTrue(hasConsistentAttentionHeadEnvelope(validLegacy))
 
+        let legacyTruncated = V1AttentionPayload(
+            schema: validLegacy.schema,
+            items: [item],
+            total: 2,
+            counts: V1AttentionCounts(failedCheck: 2, failedStep: 0, blocker: 0),
+            revision: nil,
+            offset: nil,
+            limit: 1,
+            truncated: true
+        )
+        XCTAssertTrue(hasConsistentAttentionHeadEnvelope(legacyTruncated))
+        let legacyStore = DashboardStore()
+        legacyStore.publishAttentionHead(
+            legacyTruncated,
+            requestGeneration: legacyStore.beginAttentionRequest()
+        )
+        XCTAssertTrue(legacyStore.hasMoreAttention)
+        XCTAssertFalse(legacyStore.supportsAttentionPaging)
+        XCTAssertFalse(legacyStore.canLoadMoreAttention)
+
+        let predecessorHead = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "failed-check",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 2, "failed_step": 0, "blocker": 0 },
+              "snapshot": "predecessor-queue",
+              "offset": 0, "limit": 1, "truncated": true
+            }
+            """
+        )
+        XCTAssertEqual(predecessorHead.revision, "predecessor-queue")
+        XCTAssertTrue(hasConsistentAttentionHeadEnvelope(predecessorHead))
+        let predecessorStore = DashboardStore()
+        predecessorStore.publishAttentionHead(
+            predecessorHead,
+            requestGeneration: predecessorStore.beginAttentionRequest()
+        )
+        XCTAssertTrue(predecessorStore.canLoadMoreAttention)
+
+        XCTAssertThrowsError(try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1", "items": [], "total": 0,
+              "counts": { "failed_check": 0, "failed_step": 0, "blocker": 0 },
+              "revision": "new", "snapshot": "old",
+              "offset": 0, "limit": 5, "truncated": false
+            }
+            """
+        ))
+
+        let whitespaceEquivalentItem = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": " failed-check ",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+              "cost": {},
+              "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+            }
+            """
+        )
+        let blankSummaryItem = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "blank-summary",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+              "cost": {},
+              "attention": { "kind": "failed_check", "summary": "   " }
+            }
+            """
+        )
+        let unknownKindItem = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "unknown-kind",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+              "cost": {},
+              "attention": { "kind": "future_kind", "summary": "needs review" }
+            }
+            """
+        )
+        let blockerItem = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "blocker-kind",
+              "decision_status": { "key": "blocked" },
+              "evidence_strength": { "key": "unchecked" },
+              "cost": {},
+              "attention": { "kind": "blocker", "summary": "waiting" }
+            }
+            """
+        )
+
         let malformed = [
             V1AttentionPayload(
                 schema: validLegacy.schema,
@@ -754,6 +1085,66 @@ final class DashboardInteractionTests: XCTestCase {
                 offset: 0,
                 limit: 5,
                 truncated: false
+            ),
+            V1AttentionPayload(
+                schema: validLegacy.schema,
+                items: [item, whitespaceEquivalentItem],
+                total: 2,
+                counts: V1AttentionCounts(failedCheck: 2, failedStep: 0, blocker: 0),
+                revision: "trimmed-duplicate-ids",
+                offset: 0,
+                limit: 5,
+                truncated: false
+            ),
+            V1AttentionPayload(
+                schema: validLegacy.schema,
+                items: [whitespaceEquivalentItem],
+                total: 1,
+                counts: validLegacy.counts,
+                revision: "padded-id",
+                offset: 0,
+                limit: 5,
+                truncated: false
+            ),
+            V1AttentionPayload(
+                schema: validLegacy.schema,
+                items: [blankSummaryItem],
+                total: 1,
+                counts: validLegacy.counts,
+                revision: "blank-summary",
+                offset: 0,
+                limit: 5,
+                truncated: false
+            ),
+            V1AttentionPayload(
+                schema: validLegacy.schema,
+                items: [unknownKindItem],
+                total: 1,
+                counts: validLegacy.counts,
+                revision: "unknown-kind",
+                offset: 0,
+                limit: 5,
+                truncated: false
+            ),
+            V1AttentionPayload(
+                schema: validLegacy.schema,
+                items: [blockerItem],
+                total: 1,
+                counts: validLegacy.counts,
+                revision: "kind-count-mismatch",
+                offset: 0,
+                limit: 5,
+                truncated: false
+            ),
+            V1AttentionPayload(
+                schema: validLegacy.schema,
+                items: [blockerItem],
+                total: 2,
+                counts: V1AttentionCounts(failedCheck: 1, failedStep: 0, blocker: 1),
+                revision: "blocker-before-failure",
+                offset: 0,
+                limit: 1,
+                truncated: true
             ),
             V1AttentionPayload(
                 schema: validLegacy.schema,
@@ -895,6 +1286,35 @@ final class DashboardInteractionTests: XCTestCase {
             .populated,
             "retained rows remain useful even when the latest refresh fails"
         )
+    }
+
+    func testWhitespaceTaskTitleFallsBackToRecordedIdentity() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-fallback",
+              "title": "   ",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+              "cost": {},
+              "attention": {
+                "kind": "failed_check", "summary": "  snapshot failed  ",
+                "next_step": "   "
+              }
+            }
+            """
+        )
+
+        XCTAssertEqual(
+            recordedTaskDisplayTitle(task.title, taskId: task.taskId),
+            "task-fallback"
+        )
+        XCTAssertEqual(DashboardWorkItem(task: task).title, "task-fallback")
+        let attention = try XCTUnwrap(DashboardAttentionItem(task: task))
+        XCTAssertEqual(attention.title, "task-fallback")
+        XCTAssertEqual(attention.summary, "snapshot failed")
+        XCTAssertNil(attention.nextStep)
     }
 
     func testRecentWorkLoadingFailureAndEmptyStatesStayDistinct() {
@@ -1076,6 +1496,79 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: [periods[2]]), "—")
     }
 
+    func testUsageSeriesFormatsExtremeTokenValuesWithoutOverflow() throws {
+        let periods = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "fresh_tokens": 9223372036854775807 },
+              { "period": "2026-08-25", "fresh_tokens": 9223372036854775807 }
+            ]
+            """
+        )
+
+        XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: periods), "2e19 total")
+        let axisText = DashboardUsageSeries.tokens.axisText(for: Double(Int.max))
+        XCTAssertEqual(axisText, "9e18")
+        XCTAssertLessThanOrEqual(axisText.count, 5)
+        XCTAssertEqual(
+            DashboardUsageSeries.tokens.axisText(for: 999_900_000_000_000),
+            "1000T"
+        )
+        XCTAssertEqual(UsageTotals.compact(Int.min), "-9e18")
+        XCTAssertEqual(UsageTotals.compact(999.9), "999")
+    }
+
+    func testUsageSeriesAndPulseRejectNegativeHistoricalTokens() throws {
+        let periods = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-23", "fresh_tokens": -5 },
+              { "period": "2026-08-24", "fresh_tokens": 1200000 },
+              { "period": "2026-08-25", "fresh_tokens": 300000 }
+            ]
+            """
+        )
+
+        XCTAssertEqual(DashboardUsageSeries.tokens.value(for: periods[0]), 0)
+        XCTAssertEqual(DashboardUsageSeries.tokens.valueText(for: periods[0]), "—")
+        XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: periods), "~1.5M total")
+        XCTAssertEqual(usagePulse(periods: periods).state, .insufficient)
+        XCTAssertEqual(usagePulse(periods: periods).title, "Usage comparison incomplete")
+    }
+
+    func testUsageSeriesRejectsNegativeCostsAndKeepsAxisLabelsCompact() throws {
+        let periods = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "estimated_cost_usd": -5 },
+              { "period": "2026-08-25", "estimated_cost_usd": 12.34 }
+            ]
+            """
+        )
+
+        XCTAssertEqual(DashboardUsageSeries.cost.value(for: periods[0]), 0)
+        XCTAssertEqual(DashboardUsageSeries.cost.valueText(for: periods[0]), "—")
+        XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: periods), "~$12.34 total")
+        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 9.999), "$9.99")
+        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 12.34), "$12")
+        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 999_999), "$999k")
+        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 9e18), "$9e18")
+
+        let overflowingTotal = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "estimated_cost_usd": 1.7976931348623157e308 },
+              { "period": "2026-08-25", "estimated_cost_usd": 1.7976931348623157e308 }
+            ]
+            """
+        )
+        XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: overflowingTotal), "—")
+    }
+
     func testActiveWorkIncludesOnlyRunningStates() {
         let cases: [(status: String?, isActive: Bool)] = [
             ("started", true),
@@ -1207,7 +1700,10 @@ final class DashboardInteractionTests: XCTestCase {
         )
 
         XCTAssertEqual(signal.title, "Work status unavailable")
-        XCTAssertEqual(signal.detail, "codex · usage-on · activity 10s ago · 2/2 shown with no work status")
+        XCTAssertEqual(
+            signal.detail,
+            "codex · usage-on · activity 10s ago · 2/2 shown with no work status"
+        )
         XCTAssertFalse(signal.promotesInactivity)
         XCTAssertFalse(signal.hasConfirmedActiveWork)
     }
@@ -1590,6 +2086,33 @@ final class DashboardInteractionTests: XCTestCase {
         )
         XCTAssertEqual(staleOnly.map(\.client), ["claude-code"])
         XCTAssertEqual(staleOnly[0].meterCaption, "limit reading stale — see Usage")
+
+        let liveShortWindow = try decode(
+            LimitEntry.self,
+            from: """
+            { "client": "codex", "windows": [{ "kind": "5h", "used_percent": 12 }] }
+            """
+        )
+        let staleSevenDay = try decode(
+            LimitEntry.self,
+            from: """
+            {
+              "client": "codex", "stale": true,
+              "windows": [{ "kind": "7d", "used_percent": 34 }]
+            }
+            """
+        )
+        let mixedStaleClients = staleSevenDayLimitClients(
+            in: [liveShortWindow, staleSevenDay]
+        )
+        XCTAssertEqual(mixedStaleClients, Set(["codex"]))
+        let mixedWindowRows = DashboardAgentPlanRow.rows(
+            limits: [liveShortWindow],
+            staleClients: mixedStaleClients,
+            planClients: [],
+            usage: []
+        )
+        XCTAssertEqual(mixedWindowRows[0].meterCaption, "limit reading stale — see Usage")
     }
 
     func testActiveSessionResolutionNeverDropsAnUnmatchedSession() throws {

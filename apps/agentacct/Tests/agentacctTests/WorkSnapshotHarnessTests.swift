@@ -20,6 +20,8 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "work-receipt-minimum-dark.png", pixelsWide: 1920, pixelsHigh: 1120),
         ExpectedArtifact(filename: "work-receipt-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-receipt-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "work-loading-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "work-loading-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-empty-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-empty-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-list-error-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
@@ -69,8 +71,13 @@ final class WorkSnapshotHarnessTests: XCTestCase {
     @MainActor
     func testTransientTableStatesKeepAttentionEvidenceConsistent() throws {
         let fixture = try DashboardSnapshotFixture.load(from: fixtureURL())
+        let loading = DashboardStore(preloaded: fixture, workState: .loading)
         let empty = DashboardStore(preloaded: fixture, workState: .empty)
         let listError = DashboardStore(preloaded: fixture, workState: .listError)
+
+        XCTAssertFalse(loading.hasLoadedReceiptTasks)
+        XCTAssertTrue(loading.receiptTasks.isEmpty)
+        XCTAssertNil(loading.receiptListError)
 
         XCTAssertEqual(empty.totalReceiptTasks, 0)
         XCTAssertEqual(empty.attention?.total, 0)
