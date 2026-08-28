@@ -333,15 +333,79 @@ enum Metrics {
     static let pipR: CGFloat = 4
 }
 
-/// Productive motion only: quick feedback, a brief content update, and one
-/// zero-bounce geometry transition for persistent selection. Views must still
-/// disable geometry motion when `accessibilityReduceMotion` is enabled.
+/// Productive motion only. Color and opacity feedback remains available with
+/// Reduce Motion; every call site that moves geometry must opt out explicitly.
 enum Motion {
-    static let feedback = Animation.easeOut(duration: 0.07)
+    static let feedback = Animation.easeOut(duration: 0.10)
     static let hover = Animation.easeOut(duration: 0.10)
-    static let contentUpdate = Animation.easeOut(duration: 0.16)
+    static let contentUpdate = Animation.easeInOut(duration: 0.18)
     static let selection = Animation.spring(duration: 0.22, bounce: 0)
-    static let paneCrossfade = Animation.easeOut(duration: 0.14)
+    static let paneCrossfade = Animation.easeOut(duration: 0.18)
+    static let detailNavigation = Animation.easeOut(duration: 0.20)
+    static let phaseCrossfade = Animation.easeOut(duration: 0.16)
+    static let reducedCrossfade = Animation.easeOut(duration: 0.12)
+
+    static func animatesChartGeometry(bucketCount: Int, reduceMotion: Bool) -> Bool {
+        !reduceMotion && bucketCount <= 30
+    }
+}
+
+/// One deterministic interaction state for every custom button. Disabled wins
+/// over pressed, and pressed wins over hover, so rapid pointer/keyboard input
+/// cannot leave competing visual states behind.
+enum ButtonInteractionPhase: Equatable {
+    case idle
+    case hovered
+    case pressed
+    case disabled
+}
+
+func buttonInteractionPhase(
+    isEnabled: Bool,
+    isPressed: Bool,
+    isHovering: Bool
+) -> ButtonInteractionPhase {
+    guard isEnabled else { return .disabled }
+    if isPressed { return .pressed }
+    if isHovering { return .hovered }
+    return .idle
+}
+
+enum ButtonFeedback {
+    /// Compact macOS chrome can stay visually small while preserving a target
+    /// above WCAG 2.5.8's 24pt floor.
+    static let minimumHitDimension: CGFloat = 28
+
+    static func quietFillOpacity(
+        for phase: ButtonInteractionPhase,
+        prominent: Bool
+    ) -> Double {
+        switch phase {
+        case .idle: return prominent ? 0.065 : 0
+        case .hovered: return 0.10
+        case .pressed: return 0.14
+        case .disabled: return prominent ? 0.035 : 0
+        }
+    }
+
+    static func surfaceFillOpacity(for phase: ButtonInteractionPhase) -> Double {
+        switch phase {
+        case .idle, .disabled: return 0
+        case .hovered: return 0.055
+        case .pressed: return 0.10
+        }
+    }
+
+    static func labelOpacity(
+        for phase: ButtonInteractionPhase,
+        pressed: Double = 1
+    ) -> Double {
+        switch phase {
+        case .pressed: return pressed
+        case .disabled: return 0.42
+        case .idle, .hovered: return 1
+        }
+    }
 }
 
 // MARK: - Evidence tier grammar
@@ -690,8 +754,8 @@ struct PanelTile: View {
 }
 
 /// A quiet macOS action: no fill at rest unless it is the local primary
-/// action, then short color-only hover and press feedback. The nested body
-/// reads Reduce Motion so every use shares the same accessibility behavior.
+/// action, then short color-only hover and press feedback. These non-spatial
+/// acknowledgements remain enabled when Reduce Motion is on.
 struct QuietButtonStyle: ButtonStyle {
     var tint: Color = Theme.accent
     var prominent = false
@@ -717,13 +781,15 @@ private struct QuietButtonBody: View {
     let verticalPadding: CGFloat
 
     @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.isEnabled) private var isEnabled
 
-    private var fillOpacity: Double {
-        if configuration.isPressed { return 0.14 }
-        if hovering { return 0.10 }
-        return prominent ? 0.065 : 0
+    private var phase: ButtonInteractionPhase {
+        buttonInteractionPhase(
+            isEnabled: isEnabled,
+            isPressed: configuration.isPressed,
+            isHovering: hovering
+        )
     }
 
     var body: some View {
@@ -731,22 +797,135 @@ private struct QuietButtonBody: View {
             .padding(.horizontal, horizontalPadding)
             .padding(.vertical, verticalPadding)
             .background(
-                tint.opacity(fillOpacity),
+                tint.opacity(ButtonFeedback.quietFillOpacity(for: phase, prominent: prominent)),
                 in: RoundedRectangle(cornerRadius: Metrics.radius)
             )
+            .opacity(ButtonFeedback.labelOpacity(for: phase))
             .overlay {
-                if isFocused {
+                if isFocused && isEnabled {
                     RoundedRectangle(cornerRadius: Metrics.radius)
                         .strokeBorder(Theme.accent, lineWidth: Metrics.focusW)
                 }
             }
             .contentShape(Rectangle())
             .onHover { inside in
-                withAnimation(reduceMotion ? nil : Motion.hover) {
+                withAnimation(Motion.hover) {
                     hovering = inside
                 }
             }
-            .animation(reduceMotion ? nil : Motion.feedback, value: configuration.isPressed)
+            .animation(Motion.feedback, value: phase)
+    }
+}
+
+/// Full-width rows, tabs, and disclosure headers that visually own their
+/// geometry but still need common hover, press, focus, and disabled feedback.
+/// This replaces `.plain`, whose lack of acknowledgement made several controls
+/// in Work look like static text. The call site retains all layout ownership.
+struct SurfaceButtonStyle: ButtonStyle {
+    var tint: Color = Theme.accent
+    var cornerRadius: CGFloat = Metrics.radius
+    var focusInset: CGFloat = 0
+
+    @ViewBuilder
+    func makeBody(configuration: Configuration) -> some View {
+        if SnapshotMode.enabled {
+            // Stateful styles inside an offscreen ScrollView alter its
+            // unbounded size proposal. Snapshots verify resting endpoints, so
+            // render the identical resting label and reserve stateful feedback
+            // for the live app where hover, press, and focus can occur.
+            configuration.label
+        } else {
+            SurfaceButtonBody(
+                configuration: configuration,
+                tint: tint,
+                cornerRadius: cornerRadius,
+                focusInset: focusInset
+            )
+        }
+    }
+}
+
+private struct SurfaceButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    let tint: Color
+    let cornerRadius: CGFloat
+    let focusInset: CGFloat
+
+    @State private var hovering = false
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.isEnabled) private var isEnabled
+
+    private var phase: ButtonInteractionPhase {
+        buttonInteractionPhase(
+            isEnabled: isEnabled,
+            isPressed: configuration.isPressed,
+            isHovering: hovering
+        )
+    }
+
+    var body: some View {
+        configuration.label
+            .background(tint.opacity(ButtonFeedback.surfaceFillOpacity(for: phase)))
+            .opacity(ButtonFeedback.labelOpacity(for: phase))
+            .overlay {
+                if isFocused && isEnabled {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(Theme.accent, lineWidth: Metrics.focusW)
+                        .padding(focusInset)
+                }
+            }
+            .contentShape(Rectangle())
+            .onHover { inside in
+                withAnimation(Motion.hover) {
+                    hovering = inside
+                }
+            }
+            .animation(Motion.feedback, value: phase)
+    }
+}
+
+/// Controls such as chart bars already encode hover/selection in their own
+/// geometry. They still receive press, focus, disabled, and hit-target feedback
+/// without adding a second background treatment.
+struct TransparentButtonStyle: ButtonStyle {
+    var cornerRadius: CGFloat = Metrics.radius
+
+    func makeBody(configuration: Configuration) -> some View {
+        TransparentButtonBody(
+            configuration: configuration,
+            cornerRadius: cornerRadius
+        )
+    }
+}
+
+private struct TransparentButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    let cornerRadius: CGFloat
+
+    @State private var hovering = false
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.isEnabled) private var isEnabled
+
+    private var phase: ButtonInteractionPhase {
+        buttonInteractionPhase(
+            isEnabled: isEnabled,
+            isPressed: configuration.isPressed,
+            isHovering: hovering
+        )
+    }
+
+    var body: some View {
+        configuration.label
+            .opacity(ButtonFeedback.labelOpacity(for: phase, pressed: 0.72))
+            .overlay {
+                if isFocused && isEnabled {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(Theme.accent, lineWidth: Metrics.focusW)
+                }
+            }
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+            .animation(Motion.feedback, value: phase)
     }
 }
 

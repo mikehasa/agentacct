@@ -12,9 +12,9 @@ struct MainWindow: View {
     @EnvironmentObject var dashboard: DashboardStore
     @EnvironmentObject var glance: GlanceState
     @EnvironmentObject var selection: AppSelection
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var setup = SetupModel()
     @State private var showSetup = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Design-review renders cannot infer whether the executable was packaged
     /// with the recorder. Live windows leave this nil and use SetupModel.
     var canSetUpOverride: Bool? = nil
@@ -27,17 +27,26 @@ struct MainWindow: View {
         VStack(spacing: 0) {
             TopBar(canSetUp: canSetUp) { showSetup = true }
             Rectangle().fill(Theme.rule).frame(height: 1)
-            Group {
-                switch selection.pane {
-                case .dashboard: DashboardPane()
-                case .work: WorkPane()
-                case .usage: UsagePane()
-                case .sources: SourcesPane()
+            // Keep the window's content slot stable while old and new panes
+            // overlap for the fade. Replacing the VStack child itself lets
+            // both heavy pane trees participate in parent layout mid-flight,
+            // which reads as a vertical shove instead of a crossfade.
+            ZStack(alignment: .top) {
+                Group {
+                    switch selection.pane {
+                    case .dashboard: DashboardPane()
+                    case .work: WorkPane()
+                    case .usage: UsagePane()
+                    case .sources: SourcesPane()
+                    }
                 }
+                .id(selection.pane)
+                .transition(.opacity)
             }
-            .id(selection.pane)
-            .transition(.opacity)
-            .animation(reduceMotion ? nil : Motion.paneCrossfade, value: selection.pane)
+            .animation(
+                reduceMotion ? Motion.reducedCrossfade : Motion.paneCrossfade,
+                value: selection.pane
+            )
             // Top-anchored: snapshot mode renders full pane content, which
             // must clip at the bottom, never lose the page header.
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -83,6 +92,21 @@ struct MainWindow: View {
 
 // MARK: - Top bar
 
+func refreshProgressVisible(isRefreshing: Bool, delayElapsed: Bool) -> Bool {
+    isRefreshing && delayElapsed
+}
+
+func topBarRefreshActive(
+    dashboardRefreshing: Bool,
+    glanceRefreshing: Bool,
+    showingSources: Bool,
+    ingestionRefreshing: Bool
+) -> Bool {
+    dashboardRefreshing
+        || glanceRefreshing
+        || (showingSources && ingestionRefreshing)
+}
+
 struct TopBar: View {
     @EnvironmentObject var dashboard: DashboardStore
     @EnvironmentObject var glance: GlanceState
@@ -92,6 +116,16 @@ struct TopBar: View {
     var onSetUp: () -> Void = {}
     @Namespace private var paneSelection
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var showsRefreshProgress = false
+
+    private var isRefreshing: Bool {
+        topBarRefreshActive(
+            dashboardRefreshing: dashboard.isRefreshing,
+            glanceRefreshing: glance.isRefreshing,
+            showingSources: selection.pane == .sources,
+            ingestionRefreshing: dashboard.isRefreshingIngestion
+        )
+    }
 
     private func paneTabs(iconOnly: Bool) -> some View {
         HStack(spacing: 3) {
@@ -187,37 +221,60 @@ struct TopBar: View {
                 .accessibilityIdentifier("dashboard.setup-recording")
             }
             freshnessStatus
-            if dashboard.isRefreshing
-                || glance.isRefreshing
-                || (selection.pane == .sources && dashboard.isRefreshingIngestion)
-            {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(Theme.muted)
+            ZStack {
+                if showsRefreshProgress {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(Theme.muted)
+                        .accessibilityLabel(
+                            selection.pane == .sources
+                                ? "Refreshing source health"
+                                : "Refreshing local data"
+                        )
+                        .transition(.opacity)
+                } else {
+                    Button {
+                        glance.refreshNow()
+                        Task { await dashboard.refresh() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(Theme.muted)
+                            .frame(width: 28, height: 28)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(QuietButtonStyle(
+                        tint: Theme.muted,
+                        horizontalPadding: 0,
+                        verticalPadding: 0
+                    ))
+                    .disabled(isRefreshing)
+                    .help("Refresh local data")
                     .accessibilityLabel(
                         selection.pane == .sources
-                            ? "Refreshing source health"
-                            : "Refreshing local data"
+                            ? "Refresh source health and local data"
+                            : "Refresh local data"
                     )
-            } else {
-                Button {
-                    glance.refreshNow()
-                    Task { await dashboard.refresh() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(Theme.muted)
-                        .frame(width: 28, height: 28)
-                        .contentShape(Rectangle())
+                    .accessibilityIdentifier("dashboard.refresh")
+                    .transition(.opacity)
                 }
-                .buttonStyle(QuietButtonStyle(
-                    tint: Theme.muted,
-                    horizontalPadding: 0,
-                    verticalPadding: 0
-                ))
-                .help("Refresh local data")
-                .accessibilityLabel("Refresh local data")
-                .accessibilityIdentifier("dashboard.refresh")
+            }
+            .frame(width: 28, height: 28)
+            .animation(
+                reduceMotion ? Motion.reducedCrossfade : Motion.phaseCrossfade,
+                value: showsRefreshProgress
+            )
+            .task(id: isRefreshing) {
+                guard isRefreshing else {
+                    showsRefreshProgress = false
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled else { return }
+                showsRefreshProgress = refreshProgressVisible(
+                    isRefreshing: isRefreshing,
+                    delayElapsed: true
+                )
             }
         }
         .padding(.horizontal, 14)
@@ -286,7 +343,6 @@ struct PaneTab: View {
     let selectionNamespace: Namespace.ID
     let action: () -> Void
     @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: action) {
@@ -320,7 +376,7 @@ struct PaneTab: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("navigation.\(pane.rawValue.lowercased())")
         .onHover { inside in
-            withAnimation(reduceMotion ? nil : Motion.hover) {
+            withAnimation(Motion.hover) {
                 hovering = inside
             }
         }
@@ -335,7 +391,6 @@ private struct PaneTabPressStyle: ButtonStyle {
 
 private struct PaneTabPressBody: View {
     let configuration: ButtonStyleConfiguration
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
@@ -347,7 +402,7 @@ private struct PaneTabPressBody: View {
                         .strokeBorder(Theme.accent, lineWidth: Metrics.focusW)
                 }
             }
-            .animation(reduceMotion ? nil : Motion.feedback, value: configuration.isPressed)
+            .animation(Motion.feedback, value: configuration.isPressed)
     }
 }
 
