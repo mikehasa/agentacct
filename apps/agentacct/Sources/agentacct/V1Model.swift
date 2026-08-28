@@ -634,20 +634,35 @@ struct ReceiptEvidence: Decodable {
     /// The coverage ratio, tier by tier. The one non-ratio case is
     /// ``Not gradeable`` (no checkable step — a 0/0 ratio is meaningless).
     var headline: String {
-        if gradeable != true { return "Not gradeable (no verifiable steps recorded)" }
-        let total = checkableTotal ?? 0
+        let presentation = ReceiptCoveragePresentation(evidence: self)
+        if presentation.isInconsistent {
+            return "\(presentation.value) (\(presentation.qualifier))"
+        }
+        guard gradeable != false, let total = checkableTotal, total > 0 else {
+            return "\(presentation.value) (\(presentation.qualifier))"
+        }
         var parts: [String] = []
         if let value = byTier?.externallyVerified, value > 0 { parts.append("\(value)/\(total) externally-verified") }
         if let value = byTier?.independentlyChecked, value > 0 { parts.append("\(value)/\(total) independently-checked") }
         if let value = byTier?.selfChecked, value > 0 { parts.append("\(value)/\(total) self-checked") }
         if let value = byTier?.unchecked, value > 0 { parts.append("\(value) unchecked") }
-        return parts.isEmpty ? "0/\(total) checked" : parts.joined(separator: " · ")
+        return parts.isEmpty
+            ? "\(presentation.value) \(presentation.qualifier)"
+            : parts.joined(separator: " · ")
     }
 
-    /// A compact list-row form: "checked/checkable" tinted by the strongest tier.
+    /// A compact dashboard form. "Supported" names claim coverage without
+    /// conflating it with recorded check runs, while fitting the small column.
     var compactHeadline: String {
-        if gradeable != true { return "not gradeable" }
-        return "\(checkedTotal ?? 0)/\(checkableTotal ?? 0) checked"
+        let presentation = ReceiptCoveragePresentation(evidence: self)
+        if presentation.isInconsistent { return presentation.rowText }
+        if gradeable != false,
+           let checked = checkedTotal,
+           let total = checkableTotal,
+           total > 0 {
+            return "\(checked)/\(total) supported"
+        }
+        return presentation.rowText
     }
 
     /// The honest ledger: where the evidence is, and what the ratio does not cover.
@@ -658,6 +673,132 @@ struct ReceiptEvidence: Decodable {
         if let value = unattributedChecks, value > 0 { bits.append("\(value) check(s) attach to no step") }
         if let value = openOrIncomplete, value > 0 { bits.append("\(value) step(s) still open") }
         return bits.isEmpty ? nil : bits.joined(separator: " · ")
+    }
+}
+
+/// One honest rendering contract for claim coverage across summaries, Work,
+/// and Receipt detail. Only an explicit `gradeable: false` becomes "Not
+/// gradeable"; missing counts stay missing and supplied partial counts remain
+/// visible.
+struct ReceiptCoveragePresentation {
+    let value: String
+    let qualifier: String
+    let rowText: String
+    let isInconsistent: Bool
+    let tierBreakdownAvailable: Bool
+    let tierBreakdownNotice: String?
+
+    init(evidence: ReceiptEvidence) {
+        let total = evidence.checkableTotal
+        let checked = evidence.checkedTotal
+
+        let tierCounts = evidence.byTier.map {
+            [
+                $0.externallyVerified ?? 0,
+                $0.independentlyChecked ?? 0,
+                $0.selfChecked ?? 0,
+                $0.unchecked ?? 0,
+            ]
+        }
+        let tierTotal = tierCounts?.reduce(0, +)
+        let checkedByTier = evidence.byTier.map {
+            ($0.externallyVerified ?? 0)
+                + ($0.independentlyChecked ?? 0)
+                + ($0.selfChecked ?? 0)
+        }
+        let negativeTierCounts = tierCounts?.contains(where: { $0 < 0 }) == true
+        let tierTotalConflict = if let total, let tierTotal {
+            total != tierTotal
+        } else {
+            false
+        }
+        let checkedTierConflict = if let checked, let checkedByTier {
+            checked != checkedByTier
+        } else {
+            false
+        }
+        if evidence.byTier == nil {
+            tierBreakdownAvailable = false
+            tierBreakdownNotice = "Evidence-tier breakdown not reported."
+        } else if negativeTierCounts {
+            tierBreakdownAvailable = false
+            tierBreakdownNotice = "Evidence-tier breakdown contains invalid negative counts."
+        } else if tierTotalConflict, let total, let tierTotal {
+            tierBreakdownAvailable = false
+            tierBreakdownNotice = "Evidence-tier breakdown reports \(tierTotal) of \(total) checkable claims."
+        } else if checkedTierConflict, let checked, let checkedByTier {
+            tierBreakdownAvailable = false
+            tierBreakdownNotice = "Evidence tiers report \(checkedByTier) supported claims; the summary reports \(checked)."
+        } else {
+            tierBreakdownAvailable = true
+            tierBreakdownNotice = nil
+        }
+
+        let supportedExceedsCheckable = if let total, let checked {
+            checked > total
+        } else {
+            false
+        }
+        let primaryCountsConflict = total.map { $0 < 0 } == true
+            || checked.map { $0 < 0 } == true
+            || supportedExceedsCheckable
+            || (evidence.gradeable == false && ((total ?? 0) > 0 || (checked ?? 0) > 0))
+            || (evidence.gradeable == true && total == 0)
+        let tierCountsConflict = evidence.byTier != nil
+            && (negativeTierCounts || tierTotalConflict || checkedTierConflict)
+        isInconsistent = primaryCountsConflict || tierCountsConflict
+
+        if primaryCountsConflict {
+            value = "Inconsistent counts"
+            switch (checked, total) {
+            case let (.some(checked), .some(total)):
+                qualifier = "\(checked) supported · \(total) checkable reported"
+                rowText = "inconsistent coverage · \(checked) supported of \(total) reported"
+            case let (.some(checked), .none):
+                qualifier = "\(checked) supported · checkable total unavailable"
+                rowText = "inconsistent coverage · \(checked) supported · total not reported"
+            case let (.none, .some(total)):
+                qualifier = "support count unavailable · \(total) checkable reported"
+                rowText = "inconsistent coverage · support count missing · \(total) checkable"
+            case (.none, .none):
+                qualifier = "coverage fields conflict"
+                rowText = "inconsistent coverage counts"
+            }
+        } else if tierCountsConflict {
+            value = "Inconsistent counts"
+            qualifier = "tier breakdown conflicts with reported coverage"
+            rowText = "inconsistent coverage · tier breakdown conflicts"
+        } else if evidence.gradeable == false {
+            value = "Not gradeable"
+            qualifier = "no checkable claims recorded"
+            rowText = "not gradeable"
+        } else if let total, total > 0, let checked {
+            value = "\(checked) of \(total)"
+            qualifier = evidence.gradeable == nil
+                ? "claims supported · gradeability not reported"
+                : "claims supported"
+            rowText = "\(checked)/\(total) claims supported"
+        } else if let total, total > 0 {
+            value = "Not reported"
+            qualifier = "support count unavailable · \(total) checkable claims"
+                + (evidence.gradeable == nil ? " · gradeability not reported" : "")
+            rowText = "support count not reported · \(total) checkable claims"
+        } else if total == 0 {
+            value = "No checkable claims"
+            qualifier = "zero checkable claims reported"
+                + (evidence.gradeable == nil ? " · gradeability not reported" : "")
+            rowText = "no checkable claims"
+        } else if let checked {
+            value = "Total not reported"
+            qualifier = "\(checked) supported reported · checkable total unavailable"
+                + (evidence.gradeable == nil ? " · gradeability not reported" : "")
+            rowText = "\(checked) supported · checkable total not reported"
+        } else {
+            value = "Not reported"
+            qualifier = "claim-coverage counts unavailable"
+                + (evidence.gradeable == nil ? " · gradeability not reported" : "")
+            rowText = "claim coverage not reported"
+        }
     }
 }
 
@@ -905,6 +1046,103 @@ struct ReceiptEvidenceDim: Decodable {
         case checksPassed = "checks_passed"
         case checksFailed = "checks_failed"
         case provenance, gaps
+    }
+}
+
+/// Recorded check runs are independent from claim coverage. This presentation
+/// preserves any passed/failed tally even when the total is absent or
+/// inconsistent, instead of silently converting missing values to zero.
+struct ReceiptCheckRunsPresentation {
+    let value: String
+    let qualifier: String
+    let rowText: String
+    let headerText: String
+    let isInconsistent: Bool
+
+    init(total: Int?, passed: Int?, failed: Int?) {
+        let genericCountsConflict = Self.genericCountsConflict(
+            total: total,
+            passed: passed,
+            failed: failed
+        )
+        let zeroTotalConflict = total == 0 && ((passed ?? 0) != 0 || (failed ?? 0) != 0)
+        isInconsistent = genericCountsConflict || zeroTotalConflict
+        if genericCountsConflict {
+            value = "Inconsistent counts"
+            let tallies = Self.tallies(passed: passed, failed: failed)
+            let totalText = total.map { "\($0) total reported" } ?? "total not reported"
+            qualifier = "\(tallies) · \(totalText)"
+            rowText = "inconsistent check runs · \(tallies) · "
+                + (total.map { "\($0) total" } ?? "total not reported")
+            headerText = "inconsistent · \(tallies) · "
+                + (total.map { "\($0) total" } ?? "total not reported")
+        } else if let total, total > 0 {
+            if let passed {
+                value = "\(passed) of \(total)"
+                qualifier = "check runs passed" + Self.failedSuffix(failed)
+                rowText = "\(passed)/\(total) check runs passed" + Self.failedSuffix(failed)
+                headerText = "\(passed)/\(total) passed" + Self.failedSuffix(failed)
+            } else {
+                value = "Not reported"
+                qualifier = "passes unavailable · \(total) runs" + Self.failedSuffix(failed)
+                rowText = "passes not reported · \(total) check runs" + Self.failedSuffix(failed)
+                headerText = "passes not reported · \(total) total" + Self.failedSuffix(failed)
+            }
+        } else if total == 0, (passed ?? 0) == 0, (failed ?? 0) == 0 {
+            value = "None"
+            qualifier = "no check runs recorded"
+            rowText = "no check runs"
+            headerText = "no check runs"
+        } else if total == 0 {
+            value = "0 total reported"
+            let tallies = Self.tallies(passed: passed, failed: failed)
+            qualifier = tallies + " · tallies conflict with total"
+            rowText = "0 total reported · \(tallies)"
+            headerText = rowText
+        } else {
+            value = "Total not reported"
+            let tallies = Self.tallies(passed: passed, failed: failed)
+            qualifier = tallies == "no tallies reported"
+                ? "check-run totals unavailable"
+                : tallies
+            rowText = tallies == "no tallies reported"
+                ? "check runs not reported"
+                : "total not reported · \(tallies)"
+            headerText = rowText
+        }
+    }
+
+    private static func failedSuffix(_ failed: Int?) -> String {
+        guard let failed, failed > 0 else { return "" }
+        return " · \(failed) failed"
+    }
+
+    private static func tallies(passed: Int?, failed: Int?) -> String {
+        var parts: [String] = []
+        if let passed { parts.append("\(passed) passed") }
+        if let failed { parts.append("\(failed) failed") }
+        return parts.isEmpty ? "no tallies reported" : parts.joined(separator: " · ")
+    }
+
+    private static func genericCountsConflict(
+        total: Int?,
+        passed: Int?,
+        failed: Int?
+    ) -> Bool {
+        if total.map({ $0 < 0 }) == true
+            || passed.map({ $0 < 0 }) == true
+            || failed.map({ $0 < 0 }) == true {
+            return true
+        }
+        guard let total else { return false }
+        // The dedicated zero-total branch preserves supplied tallies and says
+        // they conflict with the reported total in more concrete language.
+        if total == 0 { return false }
+        if passed.map({ $0 > total }) == true || failed.map({ $0 > total }) == true {
+            return true
+        }
+        if let passed, let failed, passed + failed > total { return true }
+        return false
     }
 }
 

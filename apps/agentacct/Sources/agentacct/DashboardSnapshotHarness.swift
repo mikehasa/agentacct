@@ -68,6 +68,14 @@ struct DashboardSnapshotFixture: Decodable {
                     expected: supportedTasksSchema
                 )
             }
+            if let attentionReceipt = work.attentionReceipt,
+               attentionReceipt.schemaVersion != supportedTasksSchema {
+                throw SnapshotError.unsupportedSchema(
+                    payload: "attention work receipt",
+                    actual: attentionReceipt.schemaVersion,
+                    expected: supportedTasksSchema
+                )
+            }
             for session in work.sessions where session.schema != WorkSnapshotFixture.supportedSessionSchema {
                 throw SnapshotError.unsupportedSchema(
                     payload: "work session",
@@ -92,7 +100,13 @@ struct WorkSnapshotFixture: Decodable {
     static let supportedSessionSchema = "agentacct.v1-session-detail.v1"
 
     let receipt: Receipt
+    let attentionReceipt: Receipt?
     let sessions: [V1SessionDetail]
+
+    enum CodingKeys: String, CodingKey {
+        case receipt, sessions
+        case attentionReceipt = "attention_receipt"
+    }
 }
 
 enum SnapshotError: LocalizedError {

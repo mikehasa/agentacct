@@ -37,6 +37,11 @@ enum GlanceClientError: Error, CustomStringConvertible {
     }
 }
 
+func requestWasCancelled(_ error: Error, taskIsCancelled: Bool) -> Bool {
+    if taskIsCancelled || error is CancellationError { return true }
+    return (error as? URLError)?.code == .cancelled
+}
+
 // Without LocalizedError, `error.localizedDescription` renders the generic
 // Cocoa "couldn't be completed" — hiding the daemon's own conflict copy that
 // postAuthed extracts verbatim. This conformance is what lets a 409's
@@ -169,6 +174,7 @@ final class GlanceClient {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
+            if requestWasCancelled(error, taskIsCancelled: Task.isCancelled) { throw error }
             throw GlanceClientError.transport(error.localizedDescription)
         }
         guard let http = response as? HTTPURLResponse else {
@@ -199,6 +205,7 @@ final class GlanceClient {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
+            if requestWasCancelled(error, taskIsCancelled: Task.isCancelled) { throw error }
             throw GlanceClientError.transport(error.localizedDescription)
         }
         guard let http = response as? HTTPURLResponse else {

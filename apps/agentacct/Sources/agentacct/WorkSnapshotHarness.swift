@@ -3,25 +3,31 @@ import SwiftUI
 enum WorkSnapshotState: String {
     case table
     case receipt
+    case attentionReceipt = "attention-receipt"
+    case listLoading = "list-loading"
     case empty
     case listError = "list-error"
     case receiptLoading = "receipt-loading"
     case receiptError = "receipt-error"
+    case receiptStale = "receipt-stale"
 
     var storeState: SnapshotWorkStoreState {
         switch self {
         case .table, .receipt: return .populated
+        case .attentionReceipt: return .attentionReceipt
+        case .listLoading: return .listLoading
         case .empty: return .empty
         case .listError: return .listError
         case .receiptLoading: return .receiptLoading
         case .receiptError: return .receiptError
+        case .receiptStale: return .receiptStale
         }
     }
 
     var selectsReceipt: Bool {
         switch self {
-        case .receipt, .receiptLoading, .receiptError: return true
-        case .table, .empty, .listError: return false
+        case .receipt, .attentionReceipt, .receiptLoading, .receiptError, .receiptStale: return true
+        case .table, .listLoading, .empty, .listError: return false
         }
     }
 }
@@ -38,6 +44,14 @@ struct WorkSnapshotConfiguration {
         return "work-\(state.rawValue)-\(viewport)-\(appearance).png"
     }
 
+    var dynamicTypeSize: DynamicTypeSize {
+        switch viewport {
+        case "accessibility": return .accessibility1
+        case "accessibility-maximum": return .accessibility5
+        default: return .medium
+        }
+    }
+
     static let reviewConfigurations: [Self] = {
         let core = [WorkSnapshotState.table, .receipt].flatMap { state in
             [
@@ -48,17 +62,32 @@ struct WorkSnapshotConfiguration {
             ]
         }
         let transient = [
+            WorkSnapshotState.listLoading,
             WorkSnapshotState.empty,
             .listError,
             .receiptLoading,
             .receiptError,
+            .receiptStale,
+            .attentionReceipt,
         ].flatMap { state in
             [
                 Self(state: state, viewport: "reference", width: 1120, height: 800, colorScheme: .light),
                 Self(state: state, viewport: "reference", width: 1120, height: 800, colorScheme: .dark),
             ]
         }
-        return core + transient
+        let accessibility = [WorkSnapshotState.table, .receipt].flatMap { state in
+            [
+                Self(state: state, viewport: "accessibility", width: 1120, height: 800, colorScheme: .light),
+                Self(state: state, viewport: "accessibility", width: 1120, height: 800, colorScheme: .dark),
+            ]
+        }
+        let accessibilityMaximum = [WorkSnapshotState.table, .receipt].flatMap { state in
+            [
+                Self(state: state, viewport: "accessibility-maximum", width: 1120, height: 1000, colorScheme: .light),
+                Self(state: state, viewport: "accessibility-maximum", width: 1120, height: 1000, colorScheme: .dark),
+            ]
+        }
+        return core + transient + accessibility + accessibilityMaximum
     }()
 }
 
@@ -109,7 +138,11 @@ enum WorkSnapshotRenderer {
             )
             let selection = AppSelection()
             selection.pane = .work
-            selection.taskId = configuration.state.selectsReceipt ? work.receipt.taskId : nil
+            if configuration.state == .attentionReceipt {
+                selection.taskId = work.attentionReceipt?.taskId
+            } else {
+                selection.taskId = configuration.state.selectsReceipt ? work.receipt.taskId : nil
+            }
 
             let view = MainWindow(canSetUpOverride: true)
                 .environment(glance)
@@ -127,7 +160,7 @@ enum WorkSnapshotRenderer {
                 .environment(\.timeZone, snapshotTimeZone)
                 .environment(\.displayScale, 2)
                 .environment(\.layoutDirection, .leftToRight)
-                .environment(\.dynamicTypeSize, .medium)
+                .environment(\.dynamicTypeSize, configuration.dynamicTypeSize)
                 .environment(\.controlSize, .regular)
                 .environment(\.legibilityWeight, nil)
                 .environment(\.appearsActive, true)
