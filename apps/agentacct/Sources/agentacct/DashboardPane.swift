@@ -405,7 +405,7 @@ struct DashboardActiveWorkSignal: Equatable {
         }
 
         if let oldestVisible = validActivity.max(by: { $0.1 < $1.1 }), oldestVisible.1 >= 15 * 60 {
-            title = "Session activity last seen \(Self.elapsedText(oldestVisible.1)) ago"
+            title = "One session last active \(Self.elapsedText(oldestVisible.1)) ago"
             detail = "\(Self.sessionLabel(oldestVisible.0)) · \(activeCount) active session\(activeCount == 1 ? "" : "s") recorded"
             promotesInactivity = true
             return

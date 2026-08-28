@@ -720,7 +720,7 @@ final class DashboardInteractionTests: XCTestCase {
             now: Date(timeIntervalSince1970: 1_000)
         )
 
-        XCTAssertEqual(signal.title, "Session activity last seen 15m ago")
+        XCTAssertEqual(signal.title, "One session last active 15m ago")
         XCTAssertEqual(signal.detail, "Snapshot harness · 3 active sessions recorded")
         XCTAssertTrue(signal.promotesInactivity)
         XCTAssertFalse(signal.title.localizedCaseInsensitiveContains("stalled"))
