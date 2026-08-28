@@ -371,19 +371,23 @@ struct UsagePeriodPresentation {
     let value: String?
     let absent: String
     private let unit: String
+    private let bucketDescription: String?
 
     init(usage: UsageSummary) {
         switch usage.filtersEcho?.granularity {
         case "daily":
             unit = "day"
+            bucketDescription = nil
             label = "Active days"
             absent = "no daily series"
         case "weekly":
             unit = "week"
+            bucketDescription = "weekly buckets"
             label = "Active weeks"
             absent = "no weekly series"
         default:
             unit = "period"
+            bucketDescription = "period buckets"
             label = "Active periods"
             absent = "no period series"
         }
@@ -405,6 +409,12 @@ struct UsagePeriodPresentation {
     var previousAccessibilityLabel: String { "Previous usage \(unit)" }
     var nextAccessibilityLabel: String { "Next usage \(unit)" }
     var selectionAccessibilityHint: String { "Selects this \(unit)'s value" }
+    var pinAccessibilityHint: String { "Pins or clears this \(unit)'s value" }
+
+    func historyRangeDescription(days: Int) -> String {
+        let range = "last \(days) days"
+        return bucketDescription.map { "\(range) · \($0)" } ?? range
+    }
 }
 
 private struct UsagePlanClientDetail: View {

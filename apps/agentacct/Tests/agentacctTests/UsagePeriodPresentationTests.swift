@@ -14,6 +14,7 @@ final class UsagePeriodPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.tokenChartTitle(group: nil), "Fresh tokens per day")
         XCTAssertEqual(presentation.previousAccessibilityLabel, "Previous usage day")
         XCTAssertEqual(presentation.selectionAccessibilityHint, "Selects this day's value")
+        XCTAssertEqual(presentation.pinAccessibilityHint, "Pins or clears this day's value")
     }
 
     func testUsesEffectiveWeeklyGranularity() throws {
@@ -31,6 +32,7 @@ final class UsagePeriodPresentationTests: XCTestCase {
         )
         XCTAssertEqual(presentation.nextAccessibilityLabel, "Next usage week")
         XCTAssertEqual(presentation.selectionAccessibilityHint, "Selects this week's value")
+        XCTAssertEqual(presentation.pinAccessibilityHint, "Pins or clears this week's value")
     }
 
     func testUnknownOrMissingGranularityUsesTruthfulGenericCopy() throws {
@@ -44,6 +46,7 @@ final class UsagePeriodPresentationTests: XCTestCase {
             XCTAssertEqual(presentation.absent, "no period series")
             XCTAssertEqual(presentation.costChartTitle, "Cost per period")
             XCTAssertEqual(presentation.previousAccessibilityLabel, "Previous usage period")
+            XCTAssertEqual(presentation.pinAccessibilityHint, "Pins or clears this period's value")
         }
     }
 

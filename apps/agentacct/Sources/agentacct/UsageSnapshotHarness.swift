@@ -7,26 +7,12 @@ struct UsageSnapshotConfiguration {
         case disconnected
     }
 
-    enum RecordedUsageState {
-        case sevenDays
-        case ninetyDays
-
-        func storeState(for fixture: DashboardSnapshotFixture) -> SnapshotUsageStoreState {
-            switch self {
-            case .sevenDays:
-                return SnapshotUsageStoreState(days: 7, summary: fixture.usage)
-            case .ninetyDays:
-                return SnapshotUsageStoreState(days: 90, summary: fixture.usage90Days)
-            }
-        }
-    }
-
     let viewport: String
     let width: CGFloat
     let height: CGFloat
     let colorScheme: ColorScheme
     let capacityState: CapacityState
-    let recordedUsageState: RecordedUsageState
+    let recordedUsageState: SnapshotRecordedUsageState
 
     var filename: String {
         let appearance = colorScheme == .dark ? "dark" : "light"

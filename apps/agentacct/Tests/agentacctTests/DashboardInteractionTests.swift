@@ -121,6 +121,42 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: [periods[2]]), "—")
     }
 
+    func testUsageSeriesDescribesTheSelectedRangeAndEffectiveGranularity() throws {
+        let daily = try usagePeriodPresentation(granularity: "daily")
+        let weekly = try usagePeriodPresentation(granularity: "weekly")
+        let unknown = try usagePeriodPresentation(granularity: nil)
+
+        XCTAssertEqual(
+            DashboardUsageSeries.tokens.subtitle(
+                rangeDays: 7,
+                periodPresentation: daily
+            ),
+            "Fresh tokens · last 7 days · client reported"
+        )
+        XCTAssertEqual(
+            DashboardUsageSeries.tokens.subtitle(
+                rangeDays: 90,
+                periodPresentation: weekly
+            ),
+            "Fresh tokens · last 90 days · weekly buckets · client reported"
+        )
+        XCTAssertEqual(
+            DashboardUsageSeries.cost.subtitle(
+                rangeDays: 90,
+                periodPresentation: weekly
+            ),
+            "Estimated cost · last 90 days · weekly buckets · pricing-table basis"
+        )
+        XCTAssertEqual(
+            DashboardUsageSeries.tokens.subtitle(
+                rangeDays: 30,
+                periodPresentation: unknown
+            ),
+            "Fresh tokens · last 30 days · period buckets · client reported"
+        )
+        XCTAssertEqual(weekly.pinAccessibilityHint, "Pins or clears this week's value")
+    }
+
     func testActiveWorkIncludesOnlyRunningStates() {
         let cases: [(status: String?, isActive: Bool)] = [
             ("started", true),
@@ -1041,5 +1077,16 @@ final class DashboardInteractionTests: XCTestCase {
 
     private func decode<Value: Decodable>(_ type: Value.Type, from json: String) throws -> Value {
         try JSONDecoder().decode(type, from: Data(json.utf8))
+    }
+
+    private func usagePeriodPresentation(granularity: String?) throws -> UsagePeriodPresentation {
+        let filtersEcho = granularity.map {
+            ",\"filters_echo\":{\"granularity\":\"\($0)\"}"
+        } ?? ""
+        let usage = try decode(
+            UsageSummary.self,
+            from: "{\"by_client\":[],\"by_model\":[]\(filtersEcho)}"
+        )
+        return UsagePeriodPresentation(usage: usage)
     }
 }
