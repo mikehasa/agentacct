@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import signal
 import stat
 import sys
@@ -13,6 +14,7 @@ from pathlib import Path
 import psutil
 import pytest
 
+import agentacct.supervisor as supervisor_module
 from agentacct.control_plane import ControlStore
 from agentacct.storage import OWNERSHIP_SCHEMA_VERSION, RunStore
 from agentacct.supervisor import OwnedSupervisor, SupervisorAlreadyRunning, SupervisorError
@@ -336,12 +338,48 @@ def test_direct_shebang_agent_keeps_verifiable_shim_identity(tmp_path):
             assert time.time() < deadline
             time.sleep(0.02)
         metadata = RunStore(state).verify_owned_process(attempt.attempt_id)
-        assert metadata["process_executable"] == str(Path(sys.executable).resolve())
+        live_executable = psutil.Process(metadata["pid"]).exe()
+        assert metadata["process_executable"] == str(Path(live_executable).resolve())
         assert supervisor.cancel_attempt(
             attempt.attempt_id,
             idempotency_key="cancel:shebang",
         ).execution_state == "cancelled"
     finally:
+        supervisor.close()
+
+
+def test_supervisor_waits_for_the_live_shim_before_recording_its_executable(tmp_path, monkeypatch):
+    state, _control, attempt = _attempt(
+        tmp_path,
+        "import time\nprint('READY', flush=True)\nwhile True:\n    time.sleep(0.1)\n",
+    )
+    real_python = sys.executable
+    launcher = tmp_path / "python-launcher"
+    launcher.write_text(
+        f"#!/bin/sh\nsleep 0.5\nexec {shlex.quote(real_python)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    launcher.chmod(0o700)
+    monkeypatch.setattr(supervisor_module.sys, "executable", str(launcher))
+    supervisor = OwnedSupervisor(state, cancel_grace_seconds=0.05)
+    launched = supervisor.launch_attempt(attempt.attempt_id, idempotency_key="launch:delayed-exec")
+
+    try:
+        deadline = time.time() + 3
+        while "READY" not in launched.run_dir.joinpath("stdout.log").read_text(errors="replace"):
+            assert time.time() < deadline
+            time.sleep(0.02)
+        metadata = RunStore(state).verify_owned_process(attempt.attempt_id)
+        live_executable = psutil.Process(metadata["pid"]).exe()
+        assert metadata["process_executable"] == str(Path(live_executable).resolve())
+        assert supervisor.cancel_attempt(
+            attempt.attempt_id,
+            idempotency_key="cancel:delayed-exec",
+        ).execution_state == "cancelled"
+    finally:
+        metadata = RunStore(state).read_metadata(attempt.attempt_id)
+        if psutil.pid_exists(metadata["pid"]):
+            os.killpg(metadata["process_group_id"], signal.SIGKILL)
         supervisor.close()
 
 
