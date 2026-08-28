@@ -4,8 +4,8 @@ import SwiftUI
 // recorded usage second. The two lanes share client rows but never a denominator,
 // freshness claim, error state, or range control.
 struct UsagePane: View {
-    @EnvironmentObject var dashboard: DashboardStore
-    @EnvironmentObject var glance: GlanceState
+    @Environment(DashboardStore.self) var dashboard
+    @Environment(GlanceState.self) var glance
     @State private var showStale = false
     @State private var showAbout = false
 
@@ -401,8 +401,10 @@ private struct UsagePlanClientDetail: View {
             }
             if !presentation.modelRows.isEmpty {
                 CapsLabel(text: presentation.modelHeading)
-                ForEach(Array(presentation.modelRows.enumerated()), id: \.offset) { _, row in
-                    Text(row).font(Type.caption).foregroundStyle(Theme.muted)
+                ScrollContentStack(alignment: .leading, spacing: Space.s) {
+                    ForEach(Array(presentation.modelRows.enumerated()), id: \.offset) { _, row in
+                        Text(row).font(Type.caption).foregroundStyle(Theme.muted)
+                    }
                 }
             }
         }
@@ -823,11 +825,7 @@ struct UsageBreakdownTable: View {
                         .padding(Space.xl)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    if SnapshotMode.enabled {
-                        VStack(spacing: 0) { populatedRows }
-                    } else {
-                        LazyVStack(spacing: 0) { populatedRows }
-                    }
+                    ScrollContentStack(spacing: 0) { populatedRows }
                 }
             }
         }

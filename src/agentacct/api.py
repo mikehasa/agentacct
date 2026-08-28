@@ -3,10 +3,10 @@ import hashlib
 import hmac
 import html
 import json
-import threading
 import math
 import os
 import secrets
+import threading
 import time
 # ``field`` is aliased: several helpers below use ``field`` as a loop variable.
 from dataclasses import dataclass, replace
@@ -2673,6 +2673,27 @@ def create_local_api_app(
     install_localhost_guard(app, extra_allowed_hosts=extra_allowed_hosts)
 
     service = SentinelService(store_dir)
+    # One parsed event snapshot + one content fingerprint per durable ledger
+    # revision. The native app refreshes glance, tasks, plan, ingestion, and
+    # usage together; without this boundary every route independently loaded,
+    # decoded, and hashed the complete ledger before its own cache could answer.
+    dashboard_event_snapshot_lock = threading.Lock()
+    dashboard_event_snapshot_cache: dict[str, Any] = {}
+
+    def _dashboard_events() -> tuple[list[dict[str, Any]], int]:
+        snapshot = service.all_events_snapshot()
+        cached = dashboard_event_snapshot_cache.get("value")
+        if cached is not None and cached[0] is snapshot:
+            return list(snapshot.events), cached[1]
+        with dashboard_event_snapshot_lock:
+            cached = dashboard_event_snapshot_cache.get("value")
+            if cached is not None and cached[0] is snapshot:
+                return list(snapshot.events), cached[1]
+            loaded = list(snapshot.events)
+            fingerprint = events_fingerprint(loaded)
+            dashboard_event_snapshot_cache["value"] = (snapshot, fingerprint)
+            return loaded, fingerprint
+
     cost_ledger = CostLedger(store_dir)
     ingestion_health = IngestionHealthStore(store_dir)
     continuation_store = ContinuationTaskStore(store_dir)
@@ -2745,10 +2766,11 @@ def create_local_api_app(
     ) -> dict[str, Any]:
         """The derived ledger, fingerprint + TTL cached (see WorkLedgerCache).
 
-        Every ledger-backed route shares one cache: a poll that finds no event
-        change pays one store read + an O(n) hash, never the multi-second
-        rebuild. ``events``/``fingerprint`` may be passed pre-computed by a
-        route that already loaded them (avoids a second store read/hash).
+        Every ledger-backed route shares one cache. Native app routes pass the
+        revisioned event snapshot and its one precomputed fingerprint, so an
+        unchanged poll skips both ledger decoding and O(n) hashing as well as
+        the multi-second rebuild. Other callers may still pass their own
+        ``events``/``fingerprint`` pair to avoid duplicate work.
         """
 
         if events is None:
@@ -2917,14 +2939,19 @@ def create_local_api_app(
         """The glance snapshot (usage · cost · plan · recent sessions).
 
         Fingerprint + TTL cached: a poll that finds no event change skips the
-        aggregation REBUILD (the expensive part) — each poll still reads the
-        event list once to compute the change key, so per-request cost is one
-        store read + an O(n) hash, never a re-aggregation (see
-        :mod:`agentacct.glance` for the schema contract)."""
+        aggregation rebuild. The fingerprint comes from the native API's
+        revisioned shared snapshot, so unchanged sibling requests do not read,
+        parse, or hash the full ledger again (see :mod:`agentacct.glance` for
+        the schema contract)."""
 
         _require_v1_token(request)
-        events = service.list_all_events()
-        return glance_cache.snapshot(events, store_dir=store_dir, version=_dashboard_importer_version())
+        events, fingerprint = _dashboard_events()
+        return glance_cache.snapshot(
+            events,
+            store_dir=store_dir,
+            version=_dashboard_importer_version(),
+            fingerprint=fingerprint,
+        )
 
     v1_sessions_cache = V1SessionsCache()
 
@@ -2946,8 +2973,7 @@ def create_local_api_app(
         """
 
         _require_v1_token(request)
-        events = service.list_all_events()
-        fingerprint = events_fingerprint(events)
+        events, fingerprint = _dashboard_events()
         view = v1_sessions_cache.view(
             fingerprint,
             lambda: build_v1_sessions_view(
@@ -2970,8 +2996,7 @@ def create_local_api_app(
         never an empty fabrication."""
 
         _require_v1_token(request)
-        events = service.list_all_events()
-        fingerprint = events_fingerprint(events)
+        events, fingerprint = _dashboard_events()
         ledger = _derived_work_ledger(events, fingerprint=fingerprint)
         view = v1_sessions_cache.view(
             fingerprint,
@@ -2998,8 +3023,7 @@ def create_local_api_app(
         — a different quantity, deliberately not duplicated here."""
 
         _require_v1_token(request)
-        events = service.list_all_events()
-        fingerprint = events_fingerprint(events)
+        events, fingerprint = _dashboard_events()
         moment = time.time()
         cached = v1_plan_cache.get(days)
         if cached is not None and cached[0] == fingerprint and (moment - cached[1]) < 30.0:
@@ -3028,8 +3052,7 @@ def create_local_api_app(
         # so those fingerprint-invisible inputs (cost/run-report/mechanical-obs
         # imports) can lag up to ~60s here — the SAME staleness class and the
         # SAME reused-ledger profile the sessions lane already accepts.
-        events = service.list_all_events()
-        fingerprint = events_fingerprint(events)
+        events, fingerprint = _dashboard_events()
         cached = v1_receipt_projection_cache.get("projection")
         if cached is not None and cached[0] == fingerprint and (time.time() - cached[1]) < 30.0:
             return cached[2]
@@ -3926,7 +3949,8 @@ def create_local_api_app(
             raise HTTPException(status_code=422, detail=f"unknown days filter: {days}")
         if granularity not in {"auto", *USAGE_CUBE_GRANULARITY_CHOICES}:
             raise HTTPException(status_code=422, detail=f"unknown granularity: {granularity}")
-        usage_view = _build_usage_view([], service.list_all_events())
+        events, _ = _dashboard_events()
+        usage_view = _build_usage_view([], events)
         records = usage_view.saved_records
         cube_records = [*records, *usage_view.excluded_saved_records]
         effective_granularity = resolve_granularity(days, granularity)

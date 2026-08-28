@@ -111,9 +111,9 @@ final class MenuSnapshotHarnessTests: XCTestCase {
             lastUpdatedTextOverride: "just now",
             launchAtLoginInitialState: false
         )
-        .environmentObject(glance)
-        .environmentObject(dashboard)
-        .environmentObject(selection)
+        .environment(glance)
+        .environment(dashboard)
+        .environment(selection)
 
         let hostingView = NSHostingView(rootView: CompressedMenuHost { view })
         let fittingSize = hostingView.fittingSize

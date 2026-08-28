@@ -137,8 +137,9 @@ struct V1Step: Decodable, Identifiable {
     let evidenceGradeReason: String?
     let models: [V1ModelLane]?
     let checks: [V1Check]?
+    private let fallbackId = UUID().uuidString
 
-    var id: String { workId ?? sectionId ?? UUID().uuidString }
+    var id: String { workId ?? sectionId ?? fallbackId }
 
     enum CodingKeys: String, CodingKey {
         case title, kind, phase, summary, files, blocker, usage, models, checks
@@ -215,8 +216,9 @@ struct V1Check: Decodable, Identifiable {
     let artifactPath: String?
     let artifactUrl: String?
     let commandRedacted: Bool?
+    private let fallbackId = UUID().uuidString
 
-    var id: String { eventId ?? UUID().uuidString }
+    var id: String { eventId ?? fallbackId }
 
     /// How independent of the agent this check is — the honest counter to a
     /// check whose free-text summary claims "CI green" while its source is only
@@ -261,8 +263,9 @@ struct V1Descendant: Decodable, Identifiable {
     /// type (Explore / Plan / workflow-subagent / …) and its Task prompt.
     let agentType: String?
     let task: String?
+    private let fallbackId = UUID().uuidString
 
-    var id: String { "\(client ?? "?")::\(clientSessionId ?? UUID().uuidString)" }
+    var id: String { "\(client ?? "?")::\(clientSessionId ?? fallbackId)" }
 
     /// The best human label: Task prompt first line > recorded title >
     /// agent type > short id.

@@ -82,9 +82,9 @@ enum MenuSnapshotRenderer {
                 launchAtLoginInitialState: false,
                 snapshotBodyMaxHeight: configuration.density == .dense ? 420 : nil
             )
-            .environmentObject(glance)
-            .environmentObject(dashboard)
-            .environmentObject(selection)
+            .environment(glance)
+            .environment(dashboard)
+            .environment(selection)
             .background(Theme.canvas)
             .environment(\.colorScheme, configuration.colorScheme)
             .environment(\.locale, snapshotLocale)

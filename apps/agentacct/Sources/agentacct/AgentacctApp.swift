@@ -7,16 +7,16 @@ import SwiftUI
 // Python daemon; this process only renders what the API vouches for.
 
 struct AgentacctApp: App {
-    @StateObject private var glance = GlanceState()
-    @StateObject private var dashboard = DashboardStore()
-    @StateObject private var selection = AppSelection()
+    @State private var glance = GlanceState()
+    @State private var dashboard = DashboardStore()
+    @State private var selection = AppSelection()
 
     var body: some Scene {
         MenuBarExtra {
             MenuContent()
-                .environmentObject(glance)
-                .environmentObject(dashboard)
-                .environmentObject(selection)
+                .environment(glance)
+                .environment(dashboard)
+                .environment(selection)
         } label: {
             // The Stamped Tile mark as a template image, so the system tints
             // it for light/dark/tinted menu bars. The weekly-plan % lives in
@@ -29,9 +29,9 @@ struct AgentacctApp: App {
 
         Window("agentacct", id: "main") {
             MainWindow()
-                .environmentObject(glance)
-                .environmentObject(dashboard)
-                .environmentObject(selection)
+                .environment(glance)
+                .environment(dashboard)
+                .environment(selection)
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1040, height: 640)

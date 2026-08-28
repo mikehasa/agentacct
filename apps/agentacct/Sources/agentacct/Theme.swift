@@ -1079,3 +1079,31 @@ struct ScrollBox<Content: View>: View {
         }
     }
 }
+
+/// Repeated content inside a ScrollBox: lazy in the live app, eager in the
+/// deterministic ImageRenderer path (which cannot lay out lazy containers).
+/// Keeping that renderer exception here prevents performance fixes from
+/// forking production and review markup at every large collection.
+struct ScrollContentStack<Content: View>: View {
+    let alignment: HorizontalAlignment
+    let spacing: CGFloat?
+    @ViewBuilder let content: () -> Content
+
+    init(
+        alignment: HorizontalAlignment = .center,
+        spacing: CGFloat? = nil,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.alignment = alignment
+        self.spacing = spacing
+        self.content = content
+    }
+
+    var body: some View {
+        if SnapshotMode.enabled {
+            VStack(alignment: alignment, spacing: spacing, content: content)
+        } else {
+            LazyVStack(alignment: alignment, spacing: spacing, content: content)
+        }
+    }
+}
