@@ -9,6 +9,8 @@ struct MenuContent: View {
     @EnvironmentObject var dashboard: DashboardStore
     @EnvironmentObject var selection: AppSelection
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var showsRefreshProgress = false
     private let buildIdentity: AppBuildIdentity
     private let lastUpdatedTextOverride: String?
     private let launchAtLoginInitialState: Bool?
@@ -463,12 +465,12 @@ struct MenuContent: View {
             Spacer(minLength: 2)
             LaunchAtLoginToggle(initialEnabled: launchAtLoginInitialState)
 
-            Group {
-                if state.isRefreshing {
+            ZStack {
+                if showsRefreshProgress {
                     ProgressView()
                         .controlSize(.small)
-                        .frame(width: 28, height: 28)
                         .accessibilityLabel("Refreshing")
+                        .transition(.opacity)
                 } else {
                     footerButton(
                         systemImage: "arrow.clockwise",
@@ -477,8 +479,27 @@ struct MenuContent: View {
                     ) {
                         state.refreshNow()
                     }
+                    .disabled(state.isRefreshing)
                     .keyboardShortcut("r", modifiers: .command)
+                    .transition(.opacity)
                 }
+            }
+            .frame(width: 28, height: 28)
+            .animation(
+                reduceMotion ? Motion.reducedCrossfade : Motion.phaseCrossfade,
+                value: showsRefreshProgress
+            )
+            .task(id: state.isRefreshing) {
+                guard state.isRefreshing else {
+                    showsRefreshProgress = false
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled else { return }
+                showsRefreshProgress = refreshProgressVisible(
+                    isRefreshing: state.isRefreshing,
+                    delayElapsed: true
+                )
             }
 
             footerButton(

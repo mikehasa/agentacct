@@ -19,6 +19,53 @@ enum WorkSessionResolution: Equatable {
     case unresolved(String)
 }
 
+enum WorkSurface: Equatable {
+    case list
+    case detail
+}
+
+enum WorkFocusTarget: Hashable {
+    case table
+    case task(String)
+}
+
+func workSurface(taskId: String?, unresolvedSessionId: String?) -> WorkSurface {
+    taskId != nil || unresolvedSessionId != nil ? .detail : .list
+}
+
+func workFocusTarget(lastOpenedTaskId: String?, visibleTaskIds: Set<String>) -> WorkFocusTarget {
+    guard let lastOpenedTaskId, visibleTaskIds.contains(lastOpenedTaskId) else {
+        return .table
+    }
+    return .task(lastOpenedTaskId)
+}
+
+enum WorkRecordPhaseKey: Hashable {
+    case loading(taskId: String)
+    case loaded(taskId: String)
+    case failed(taskId: String)
+    case unresolved(sessionId: String)
+    case empty
+}
+
+func workRecordPhaseKey(
+    selectedTaskId: String?,
+    sessionId: String?,
+    unresolvedSessionId: String?,
+    receiptTaskId: String?,
+    errorPresent: Bool
+) -> WorkRecordPhaseKey {
+    if let selectedTaskId {
+        if receiptTaskId == selectedTaskId { return .loaded(taskId: selectedTaskId) }
+        if errorPresent { return .failed(taskId: selectedTaskId) }
+        return .loading(taskId: selectedTaskId)
+    }
+    if let sessionId, sessionId == unresolvedSessionId {
+        return .unresolved(sessionId: sessionId)
+    }
+    return .empty
+}
+
 func workSessionResolution(
     for sessionId: String,
     in tasks: [ReceiptSummary]
@@ -156,10 +203,17 @@ struct DecisionLegendButton: View {
                 Image(systemName: "info.circle")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Theme.muted)
-                    .frame(width: 20, height: 20)
+                    .frame(
+                        width: ButtonFeedback.minimumHitDimension,
+                        height: ButtonFeedback.minimumHitDimension
+                    )
                     .contentShape(Rectangle())
             }
-            .buttonStyle(QuietButtonStyle(tint: Theme.muted, horizontalPadding: 0, verticalPadding: 0))
+            .buttonStyle(QuietButtonStyle(
+                tint: Theme.muted,
+                horizontalPadding: 0,
+                verticalPadding: 0
+            ))
             .help("What each status word means")
             .accessibilityLabel("Status legend")
             .accessibilityIdentifier("work.status-legend")
@@ -190,7 +244,12 @@ struct DecisionLegendButton: View {
 struct WorkPane: View {
     @EnvironmentObject var dashboard: DashboardStore
     @EnvironmentObject var selection: AppSelection
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var unresolvedSessionId: String?
+    @State private var query = ""
+    @State private var group: WorkGroup?
+    @State private var lastOpenedTaskId: String?
+    @FocusState private var focusedTarget: WorkFocusTarget?
 
     private var selectionKey: String {
         if let taskId = selection.taskId { return "task:\(taskId)" }
@@ -198,14 +257,55 @@ struct WorkPane: View {
         return "list"
     }
 
+    private var surface: WorkSurface {
+        workSurface(taskId: selection.taskId, unresolvedSessionId: unresolvedSessionId)
+    }
+
+    private var phaseKey: WorkRecordPhaseKey {
+        workRecordPhaseKey(
+            selectedTaskId: selection.taskId,
+            sessionId: selection.sessionId,
+            unresolvedSessionId: unresolvedSessionId,
+            receiptTaskId: dashboard.receipt?.taskId,
+            errorPresent: dashboard.receiptError != nil
+        )
+    }
+
+    private var listTransition: AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        return .asymmetric(
+            insertion: .opacity.combined(with: .offset(x: -12)),
+            removal: .opacity.combined(with: .offset(x: -12))
+        )
+    }
+
+    private var detailTransition: AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        return .asymmetric(
+            insertion: .opacity.combined(with: .offset(x: 12)),
+            removal: .opacity.combined(with: .offset(x: 12))
+        )
+    }
+
     var body: some View {
-        Group {
-            if selection.taskId != nil || unresolvedSessionId != nil {
+        ZStack(alignment: .top) {
+            if surface == .detail {
                 recordLayout
+                    .transition(detailTransition)
             } else {
-                WorkTablePage()
+                WorkTablePage(
+                    query: $query,
+                    group: $group,
+                    focusedTarget: $focusedTarget,
+                    openTask: openTask
+                )
+                .transition(listTransition)
             }
         }
+        .animation(
+            reduceMotion ? Motion.reducedCrossfade : Motion.detailNavigation,
+            value: surface
+        )
         .task(id: selectionKey) {
             // The fixture renderer injects the exact Work state under review.
             // Starting a live fetch here would immediately clear an injected
@@ -219,10 +319,28 @@ struct WorkPane: View {
         // Top-aligned: in snapshot mode the rail renders its full content and
         // would otherwise center the record column against it.
         HStack(alignment: .top, spacing: 0) {
-            WorkRail()
+            WorkRail(openTask: openTask)
             Rectangle().fill(Theme.rule).frame(width: 1)
             recordDetail.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
+    }
+
+    private func openTask(_ taskId: String) {
+        lastOpenedTaskId = taskId
+        unresolvedSessionId = nil
+        selection.sessionId = nil
+        selection.taskId = taskId
+    }
+
+    private func showList() {
+        let taskId = selection.taskId ?? lastOpenedTaskId
+        unresolvedSessionId = nil
+        selection.taskId = nil
+        selection.sessionId = nil
+        focusedTarget = workFocusTarget(
+            lastOpenedTaskId: taskId,
+            visibleTaskIds: Set(dashboard.receiptTasks.map(\.taskId))
+        )
     }
 
     /// Keep list navigation, direct Task links, and menu-bar session links on
@@ -234,6 +352,7 @@ struct WorkPane: View {
             await dashboard.fetchReceipts()
         }
         if let taskId = selection.taskId {
+            lastOpenedTaskId = taskId
             await dashboard.fetchReceipt(taskId: taskId)
             return
         }
@@ -252,51 +371,241 @@ struct WorkPane: View {
 
     @ViewBuilder
     private var recordDetail: some View {
-        if let receipt = dashboard.receipt, receipt.taskId == selection.taskId {
-            WorkRecordPage(
-                receipt: receipt,
-                summary: dashboard.receiptTasks.first { $0.taskId == receipt.taskId }
-            )
-        } else if let error = dashboard.receiptError, selection.taskId != nil {
-            Text(error).font(Type.body).foregroundStyle(Theme.muted).padding()
-        } else if let unresolvedSessionId, selection.sessionId == unresolvedSessionId {
-            VStack(spacing: 8) {
-                Image(systemName: "arrow.triangle.branch")
-                    .font(.largeTitle)
-                    .foregroundStyle(Theme.muted)
-                    .accessibilityHidden(true)
-                Text("Task link unavailable")
-                    .font(Type.rowLabel)
-                    .foregroundStyle(Theme.ink)
-                Text("This active session is not identified in the task summary. "
-                    + "Select its Task from the list to inspect the full receipt.")
-                    .font(Type.body)
-                    .foregroundStyle(Theme.muted)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 360)
+        // The rail/HStack owns one permanent detail slot. Only the phase child
+        // changes identity, so loading, error, and ready views overlap inside
+        // this ZStack instead of briefly becoming competing HStack children.
+        ZStack(alignment: .topLeading) {
+            Group {
+                switch phaseKey {
+                case .loaded(let taskId):
+                    if let receipt = dashboard.receipt, receipt.taskId == taskId {
+                        WorkRecordPage(
+                            receipt: receipt,
+                            summary: dashboard.receiptTasks.first { $0.taskId == taskId },
+                            showList: showList
+                        )
+                    }
+                case .failed(let taskId):
+                    WorkRecordErrorPage(
+                        taskId: taskId,
+                        summary: dashboard.receiptTasks.first { $0.taskId == taskId },
+                        message: dashboard.receiptError ?? "Receipt unavailable",
+                        showList: showList
+                    ) {
+                        Task { await dashboard.fetchReceipt(taskId: taskId) }
+                    }
+                case .unresolved(let sessionId):
+                    WorkUnresolvedSessionPage(sessionId: sessionId, showList: showList)
+                case .loading(let taskId):
+                    WorkRecordPlaceholder(
+                        taskId: taskId,
+                        summary: dashboard.receiptTasks.first { $0.taskId == taskId },
+                        showList: showList
+                    )
+                case .empty:
+                    Color.clear
+                }
             }
-            .padding()
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .accessibilityIdentifier("work.unresolved-session")
-        } else if selection.taskId != nil {
-            // ImageRenderer substitutes a warning tile for AppKit's native
-            // progress control. Keep the live spinner, but give reviewed
-            // snapshots a stable equivalent with the same loading copy.
-            VStack(spacing: Space.s) {
-                if SnapshotMode.enabled {
-                    Image(systemName: "arrow.triangle.2.circlepath")
+            .id(phaseKey)
+            .transition(.opacity)
+        }
+        .animation(
+            reduceMotion ? Motion.reducedCrossfade : Motion.phaseCrossfade,
+            value: phaseKey
+        )
+    }
+}
+
+private struct WorkRecordStatusPage<Content: View>: View {
+    let reference: String
+    let title: String
+    let summary: ReceiptSummary?
+    let showList: () -> Void
+    let content: Content
+
+    init(
+        reference: String,
+        title: String,
+        summary: ReceiptSummary?,
+        showList: @escaping () -> Void,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.reference = reference
+        self.title = title
+        self.summary = summary
+        self.showList = showList
+        self.content = content()
+    }
+
+    var body: some View {
+        ScrollBox {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: Space.m) {
+                    Button(action: showList) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text("All receipts").font(Type.captionSemibold)
+                        }
+                        .foregroundStyle(Theme.accent)
+                    }
+                    .buttonStyle(QuietButtonStyle(
+                        horizontalPadding: 6,
+                        verticalPadding: 3
+                    ))
+                    .keyboardShortcut(.cancelAction)
+                    .help("Back to the receipts list (Esc)")
+                    .accessibilityIdentifier("work.breadcrumb.back")
+                    CapsLabel(text: "Work")
+                    CapsLabel(text: "/ \(shortReference)")
+                }
+                HStack(alignment: .center, spacing: Space.m) {
+                    Text(title)
+                        .font(Type.titlePage).tracking(Type.titlePageTracking)
+                        .foregroundStyle(Theme.ink)
+                        .lineLimit(2)
+                    if let summary {
+                        DecisionBadge(
+                            key: summary.decisionStatus.key,
+                            label: summary.decisionStatus.label ?? summary.decisionStatus.key
+                        )
+                    }
+                    Spacer()
+                }
+                .padding(.top, Space.m)
+                Text(metaLine)
+                    .font(Type.dataSmall)
+                    .foregroundStyle(Theme.muted)
+                    .padding(.top, Space.s)
+                content.padding(.top, Space.xl)
+            }
+            .padding(Space.gutter)
+            .frame(maxWidth: 1172 + Space.gutter * 2, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var shortReference: String {
+        guard reference.count > 13 else { return reference }
+        return String(reference.prefix(13))
+    }
+
+    private var metaLine: String {
+        [reference, summary?.primaryRoot?.client].compactMap { $0 }.joined(separator: " · ")
+    }
+}
+
+private struct WorkRecordPlaceholder: View {
+    let taskId: String
+    let summary: ReceiptSummary?
+    let showList: () -> Void
+
+    var body: some View {
+        WorkRecordStatusPage(
+            reference: taskId,
+            title: summary?.title ?? taskId,
+            summary: summary,
+            showList: showList
+        ) {
+            VStack(alignment: .leading, spacing: Space.xl) {
+                HStack(spacing: Space.s) {
+                    if SnapshotMode.enabled {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(Theme.muted)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text("Loading receipt…")
+                        .font(Type.caption)
+                        .foregroundStyle(Theme.muted)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Loading receipt for \(summary?.title ?? taskId)")
+                placeholder(height: 84)
+                HStack(alignment: .top, spacing: Space.xl) {
+                    placeholder(height: 220)
+                    placeholder(height: 220)
+                }
+            }
+            .accessibilityIdentifier("work.receipt-loading")
+        }
+    }
+
+    private func placeholder(height: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: Metrics.radius)
+            .fill(Theme.card)
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+            .overlay(
+                RoundedRectangle(cornerRadius: Metrics.radius)
+                    .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW)
+            )
+            .redacted(reason: .placeholder)
+            .accessibilityHidden(true)
+    }
+}
+
+private struct WorkRecordErrorPage: View {
+    let taskId: String
+    let summary: ReceiptSummary?
+    let message: String
+    let showList: () -> Void
+    let retry: () -> Void
+
+    var body: some View {
+        WorkRecordStatusPage(
+            reference: taskId,
+            title: summary?.title ?? taskId,
+            summary: summary,
+            showList: showList
+        ) {
+            Card {
+                VStack(alignment: .leading, spacing: Space.m) {
+                    Text("Receipt unavailable")
+                        .font(Type.rowLabel)
+                        .foregroundStyle(Theme.ink)
+                    Text(message)
+                        .font(Type.body)
+                        .foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Try again", action: retry)
+                        .buttonStyle(QuietButtonStyle(prominent: true))
+                        .accessibilityIdentifier("work.receipt.retry")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .accessibilityIdentifier("work.receipt-error")
+        }
+    }
+}
+
+private struct WorkUnresolvedSessionPage: View {
+    let sessionId: String
+    let showList: () -> Void
+
+    var body: some View {
+        WorkRecordStatusPage(
+            reference: sessionId,
+            title: "Task link unavailable",
+            summary: nil,
+            showList: showList
+        ) {
+            Card {
+                HStack(alignment: .top, spacing: Space.m) {
+                    Image(systemName: "arrow.triangle.branch")
                         .font(.system(size: 18, weight: .medium))
                         .foregroundStyle(Theme.muted)
-                } else {
-                    ProgressView().controlSize(.small)
+                        .accessibilityHidden(true)
+                    Text("This active session is not identified in the task summary. "
+                        + "Select its Task from the list to inspect the full receipt.")
+                        .font(Type.body)
+                        .foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Text("Loading receipt…")
-                    .font(Type.body)
-                    .foregroundStyle(Theme.muted)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            Color.clear
+            .accessibilityIdentifier("work.unresolved-session")
         }
     }
 }
@@ -306,8 +615,10 @@ struct WorkPane: View {
 private struct WorkTablePage: View {
     @EnvironmentObject var dashboard: DashboardStore
     @EnvironmentObject var selection: AppSelection
-    @State private var query = ""
-    @State private var group: WorkGroup?
+    @Binding var query: String
+    @Binding var group: WorkGroup?
+    let focusedTarget: FocusState<WorkFocusTarget?>.Binding
+    let openTask: (String) -> Void
 
     private var sort: WorkSort { selection.workSort }
 
@@ -345,6 +656,13 @@ private struct WorkTablePage: View {
             .padding(Space.gutter)
             .frame(maxWidth: 1172 + Space.gutter * 2, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .onAppear {
+            guard case .task(let taskId) = focusedTarget.wrappedValue else { return }
+            focusedTarget.wrappedValue = workFocusTarget(
+                lastOpenedTaskId: taskId,
+                visibleTaskIds: Set(visibleTasks.map(\.taskId))
+            )
         }
     }
 
@@ -409,7 +727,7 @@ private struct WorkTablePage: View {
             }
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SurfaceButtonStyle())
         .accessibilityAddTraits(active ? .isSelected : [])
         .accessibilityIdentifier("work.tab.\(label.lowercased().replacingOccurrences(of: " ", with: "-"))")
     }
@@ -475,9 +793,8 @@ private struct WorkTablePage: View {
                             Rectangle().fill(Theme.hairline).frame(height: 1)
                                 .padding(.horizontal, Space.xl)
                         }
-                        WorkTableRow(task: task) {
-                            selection.sessionId = nil
-                            selection.taskId = task.taskId
+                        WorkTableRow(task: task, focusedTarget: focusedTarget) {
+                            openTask(task.taskId)
                         }
                     }
                     if SnapshotMode.enabled, visibleTasks.count > rows.count {
@@ -491,6 +808,9 @@ private struct WorkTablePage: View {
                 }
             }
         }
+        .focusable()
+        .focused(focusedTarget, equals: .table)
+        .accessibilityIdentifier("work.table")
     }
 
     private var columnHeader: some View {
@@ -541,10 +861,8 @@ private struct WorkTablePage: View {
 /// ratio, client chip, checks-passed rail, cost, recency.
 private struct WorkTableRow: View {
     let task: ReceiptSummary
+    let focusedTarget: FocusState<WorkFocusTarget?>.Binding
     let action: () -> Void
-    @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     private var evidence: ReceiptEvidence { task.evidenceStrength }
 
     var body: some View {
@@ -581,13 +899,13 @@ private struct WorkTableRow: View {
             }
             .padding(.horizontal, Space.xl)
             .frame(minHeight: Metrics.rowTable)
-            .background(hovering ? Theme.selected.opacity(0.5) : .clear)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .onHover { inside in
-            withAnimation(reduceMotion ? nil : Motion.hover) { hovering = inside }
-        }
+        .buttonStyle(SurfaceButtonStyle(
+            cornerRadius: 0,
+            focusInset: 2
+        ))
+        .focused(focusedTarget, equals: .task(task.taskId))
         .accessibilityIdentifier("work.table.task.\(task.taskId)")
         .accessibilityLabel(
             "\(task.title ?? task.taskId), \(task.decisionStatus.label ?? task.decisionStatus.key), "
@@ -676,6 +994,7 @@ private struct WorkTableRow: View {
 private struct WorkRail: View {
     @EnvironmentObject var dashboard: DashboardStore
     @EnvironmentObject var selection: AppSelection
+    let openTask: (String) -> Void
 
     /// Offscreen full-content renders would let a long rail stretch (and then
     /// clip) the whole record page; a snapshot shows a bounded slice and names
@@ -711,11 +1030,18 @@ private struct WorkRail: View {
                         Image(systemName: "arrow.up.arrow.down")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(Theme.muted)
-                            .frame(width: 20, height: 20)
+                            .frame(
+                                width: ButtonFeedback.minimumHitDimension,
+                                height: ButtonFeedback.minimumHitDimension
+                            )
                             .contentShape(Rectangle())
                     }
                     .menuStyle(.button)
-                    .buttonStyle(.plain)
+                    .buttonStyle(QuietButtonStyle(
+                        tint: Theme.muted,
+                        horizontalPadding: 0,
+                        verticalPadding: 0
+                    ))
                     .menuIndicator(.hidden)
                     .fixedSize()
                     .help("Sort receipts · \(selection.workSort.footerText)")
@@ -729,8 +1055,7 @@ private struct WorkRail: View {
                 VStack(spacing: 0) {
                     ForEach(railTasks) { task in
                         WorkRailRow(task: task, selected: task.taskId == selection.taskId) {
-                            selection.sessionId = nil
-                            selection.taskId = task.taskId
+                            openTask(task.taskId)
                         }
                     }
                     if SnapshotMode.enabled, dashboard.receiptTasks.count > railTasks.count {
@@ -828,7 +1153,7 @@ private struct WorkRailRow: View {
             .background(selected ? Theme.selected : .clear)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SurfaceButtonStyle(cornerRadius: 0, focusInset: 2))
         // The selection bar rides as an overlay so it can never stretch the row.
         .overlay(alignment: .leading) {
             if selected {
@@ -864,7 +1189,7 @@ func workRecordColumnMode(for availableWidth: CGFloat) -> WorkRecordColumnMode {
 struct WorkRecordPage: View {
     let receipt: Receipt
     let summary: ReceiptSummary?
-    @EnvironmentObject var selection: AppSelection
+    let showList: () -> Void
 
     var body: some View {
         ScrollBox {
@@ -887,10 +1212,7 @@ struct WorkRecordPage: View {
     /// label, not a button) + the path itself. Esc triggers the same return.
     private var breadcrumb: some View {
         HStack(spacing: Space.m) {
-            Button {
-                selection.taskId = nil
-                selection.sessionId = nil
-            } label: {
+            Button(action: showList) {
                 HStack(spacing: 4) {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 10, weight: .semibold))
@@ -898,7 +1220,10 @@ struct WorkRecordPage: View {
                 }
                 .foregroundStyle(Theme.accent)
             }
-            .buttonStyle(QuietButtonStyle(horizontalPadding: 6, verticalPadding: 3))
+            .buttonStyle(QuietButtonStyle(
+                horizontalPadding: 6,
+                verticalPadding: 3
+            ))
             .keyboardShortcut(.cancelAction)
             .help("Back to the receipts list (Esc)")
             .accessibilityIdentifier("work.breadcrumb.back")
@@ -1107,6 +1432,7 @@ private struct SessionDrillRow: View {
     @State private var detail: V1SessionDetail?
     @State private var loading = false
     @State private var failed = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(member: ReceiptSessionMember, initiallyExpanded: Bool = false) {
         self.member = member
@@ -1140,12 +1466,13 @@ private struct SessionDrillRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(Motion.contentUpdate) { expanded.toggle() }
+                expanded.toggle()
                 if expanded, detail == nil, !loading { Task { await load() } }
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    Image(systemName: "chevron.right")
                         .font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.muted).frame(width: 10)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
                     Chip(text: member.role == "subagent" ? (member.sessionKind ?? "subagent") : "root",
                          tint: member.role == "subagent" ? Theme.muted : Theme.accent)
                     Text(label).font(Type.body).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.tail)
@@ -1159,12 +1486,15 @@ private struct SessionDrillRow: View {
                 }
                 .padding(.horizontal, 10).padding(.vertical, 7).contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(SurfaceButtonStyle(focusInset: 2))
 
             if expanded {
-                expandedBody.padding(.horizontal, 12).padding(.bottom, 10).padding(.leading, 6)
+                expandedBody
+                    .padding(.horizontal, 12).padding(.bottom, 10).padding(.leading, 6)
+                    .transition(.opacity)
             }
         }
+        .animation(reduceMotion ? nil : Motion.contentUpdate, value: expanded)
         .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
         .overlay(RoundedRectangle(cornerRadius: Metrics.radius).strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW))
         .task {
