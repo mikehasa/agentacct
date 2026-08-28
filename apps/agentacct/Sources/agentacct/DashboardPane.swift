@@ -707,7 +707,8 @@ private struct DashboardAttentionBriefCard: View {
                     Label("Review evidence", systemImage: "doc.text.magnifyingglass")
                         .font(Type.captionSemibold)
                 }
-                .buttonStyle(QuietButtonStyle(prominent: true))
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
                 .accessibilityHint("Opens this task in Work")
                 .accessibilityIdentifier("dashboard.shift-brief.review-evidence")
 
@@ -725,13 +726,21 @@ private struct DashboardAttentionBriefCard: View {
                         copyFeedbackToken = nil
                     }
                 } label: {
-                    Label(
-                        copySucceeded ? "Copied" : (copyFailed ? "Copy failed" : brief.buttonTitle),
-                        systemImage: copySucceeded ? "checkmark" : "doc.on.doc"
-                    )
+                    ZStack {
+                        // Reserve the idle label's full width so copy feedback
+                        // cannot shove the primary action sideways.
+                        Label(brief.buttonTitle, systemImage: "doc.on.doc")
+                            .hidden()
+                            .accessibilityHidden(true)
+                        Label(
+                            copySucceeded ? "Copied" : (copyFailed ? "Copy failed" : brief.buttonTitle),
+                            systemImage: copySucceeded ? "checkmark" : "doc.on.doc"
+                        )
+                    }
                     .font(Type.captionSemibold)
                 }
-                .buttonStyle(QuietButtonStyle(tint: copyFailed ? Theme.coral : Theme.accent))
+                .buttonStyle(.bordered)
+                .tint(copyFailed ? Theme.coral : Theme.accent)
                 .accessibilityLabel(
                     copySucceeded
                         ? brief.copiedAccessibilityLabel
