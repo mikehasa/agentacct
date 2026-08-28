@@ -502,7 +502,8 @@ struct RecordSummaryStrip: View {
         if let usd = cost.estimatedCostUsd {
             var qualifier = costBasisLabel(cost.costBasis)
             if cost.costComplete == false { qualifier += " · partial" }
-            if let pct = Fmt.planPct(cost.planShare?.pct) { qualifier += " · \(pct) wkly" }
+            // Weekly-plan share lives in its own "Weekly plan" receipt row now;
+            // don't duplicate it (in a second phrasing) on the cost KPI tile.
             costCell = Cell(
                 id: "cost",
                 label: "Est. cost",
@@ -865,6 +866,10 @@ struct RecordDimensionsCard: View {
                              provenance: receipt.dimensions.cost.provenance,
                              gaps: receipt.dimensions.cost.gaps)
                 hairline
+                dimensionRow("Weekly plan", weeklyPlanSummary,
+                             provenance: nil,
+                             gaps: nil)
+                hairline
                 dimensionRow("Checks", evidenceSummary,
                              provenance: receipt.dimensions.evidence.provenance,
                              gaps: receipt.dimensions.evidence.gaps)
@@ -977,23 +982,22 @@ struct RecordDimensionsCard: View {
             tokensLine = "tokens: " + parts.joined(separator: " · ")
         }
         guard let cost = dim.estimatedCostUsd else {
-            // The share is token-derived, not dollar-derived — an unpriced
-            // task with a calibrated share still states it.
-            var absent = "no priced usage"
-            if let share = dim.planShare?.text { absent += " · \(share)" }
+            let absent = "no priced usage"
             guard let tokensLine else { return absent }
             return absent + "\n" + tokensLine
         }
         let display = receiptCostDisplay(cost, complete: dim.costComplete, confidence: dim.costConfidence)
         var line = "\(display) · \(costBasisLabel(dim.costBasis))\((dim.costComplete ?? true) ? "" : " (partial)")"
-        // The task's share of the weekly plan — shown only once calibrated
-        // (the daemon sends null until then; absence stays a named state on
-        // the merged Usage & limits pane, never a number here).
-        if let share = dim.planShare?.text {
-            line += " · \(share)"
-        }
+        // The Task's weekly-plan share has its own "Weekly plan" row below.
         if let tokensLine { line += "\n" + tokensLine }
         return line
+    }
+
+    // The Task's share of its client's weekly plan, as its own receipt row:
+    // the calibrated percentage, or a named calibration state — never a
+    // fabricated number (calibrated-or-nothing). Absent payload → "—".
+    private var weeklyPlanSummary: String {
+        receipt.dimensions.cost.planShare?.rowSummary ?? "—"
     }
 
     private var evidenceSummary: String {

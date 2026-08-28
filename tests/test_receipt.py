@@ -14,6 +14,7 @@ from agentacct.receipt import (
     RECEIPT_SCHEMA_VERSION,
     build_attention_reason,
     build_receipt,
+    plan_share_headline,
 )
 
 
@@ -659,3 +660,31 @@ def test_receipt_checks_carry_detail_fields_without_command_text() -> None:
     assert row["command_redacted"] is True
     # The store never records command text; the payload must not invent one.
     assert "command" not in row
+
+
+def test_plan_share_headline_is_calibrated_or_nothing() -> None:
+    # Calibrated: a real percentage, with the <0.1% band and an honest ≈0%.
+    assert (
+        plan_share_headline({"pct": 12.2, "calibration_state": "calibrated"})
+        == "≈12.2% of weekly plan"
+    )
+    assert (
+        plan_share_headline({"pct": 0.05, "calibration_state": "calibrated"})
+        == "≈<0.1% of weekly plan"
+    )
+    assert (
+        plan_share_headline({"pct": 0.0, "calibration_state": "calibrated"})
+        == "≈0% of weekly plan"
+    )
+    # Not calibrated: a NAMED state, never a number — even when a pct is present.
+    assert (
+        plan_share_headline({"pct": 9.9, "calibration_state": "calibrating"})
+        == "calibrating — not enough 7-day history yet"
+    )
+    assert (
+        plan_share_headline({"pct": None, "calibration_state": "never"})
+        == "undefined for this client"
+    )
+    # Absent payload stays a dash, never a fabricated zero.
+    assert plan_share_headline(None) == "—"
+    assert plan_share_headline({}) == "—"

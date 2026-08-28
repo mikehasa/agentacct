@@ -826,6 +826,21 @@ struct ReceiptPlanShare: Decodable {
         guard let formatted = Fmt.planPct(pct) else { return nil }
         return "\(formatted) of weekly plan"
     }
+
+    /// The dedicated "Weekly plan" receipt row. Calibrated → the percentage
+    /// (≈0% when calibrated-but-negligible, never a bare "—"); otherwise a
+    /// named calibration state, never a fabricated number. Mirrors
+    /// receipt.plan_share_headline so every surface reads identically.
+    var rowSummary: String {
+        if calibrationState == "calibrated", let pct {
+            return (Fmt.planPct(pct) ?? "≈0%") + " of weekly plan"
+        }
+        switch calibrationState {
+        case "calibrating": return "calibrating — not enough 7-day history yet"
+        case "never": return "undefined for this client"
+        default: return "—"
+        }
+    }
 }
 
 struct ReceiptCost: Decodable {
