@@ -198,10 +198,15 @@ enum SnapshotRunner {
             defer { finished = true }
             do {
                 let fixture = try DashboardSnapshotFixture.load(from: fixtureURL)
-                let rendered = try WorkSnapshotRenderer.render(
+                let pages = try WorkSnapshotRenderer.render(
                     fixture: fixture,
                     outputDirectory: outputURL
                 )
+                let sessionSteps = try SessionStepsSnapshotRenderer.render(
+                    fixture: fixture,
+                    outputDirectory: outputURL
+                )
+                let rendered = pages + sessionSteps
                 print("work snapshots written to \(outputURL.path): \(rendered.count) files")
             } catch {
                 exitCode = 1

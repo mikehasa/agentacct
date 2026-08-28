@@ -333,6 +333,15 @@ text sizes, and both appearances; transient states render at the standard viewpo
 | saved stale receipt | 1120 × 800 pt, light/dark | `work-receipt-stale-reference-*.png` |
 | blocked attention receipt | 1120 × 800 pt, light/dark | `work-attention-receipt-reference-*.png` |
 | focused Checks ledger | exception-first overview, all-pass, expanded evidence, 360 pt compact, compact accessibility5, and accessibility5 RTL, light/dark | `work-checks-*.png` |
+| Session/step hierarchy | 760 × 1050 pt, light/dark | `work-session-steps-hierarchy-*.png` |
+| dense check preview | 760 × 1200 pt, light/dark | `work-session-steps-dense-checks-*.png` |
+| expanded current checks | 760 × 2500 pt, light/dark | `work-session-steps-expanded-current-*.png` |
+| expanded check history | 760 × 1450 pt, light/dark | `work-session-steps-expanded-history-*.png` |
+| session load failure | 760 × 240 pt, light/dark | `work-session-steps-load-failure-*.png` |
+| in-place Retry progress | 760 × 240 pt, light/dark | `work-session-steps-retrying-*.png` |
+| compact check preview | 360 × 1600 pt, light/dark | `work-session-steps-compact-checks-*.png` |
+| Arabic RTL/mixed-text stress | 760 × 1250 pt, light/dark | `work-session-steps-rtl-stress-*.png` |
+| accessibility5 compact and Arabic RTL stress | 360 × 4000 pt, light/dark | `work-session-steps-{compact,rtl}-accessibility-*.png` |
 
 For an ad-hoc render that does not compare or update references:
 
@@ -343,8 +352,9 @@ swift run agentacct --snapshot-work-fixture \
 open /tmp/agentacct-work-review
 ```
 
-Ad-hoc and CI artifact images are review aids only. The visual test reads the
-54 canonical PNGs from `Tests/agentacctTests/ReferenceImages/<platform-id>`, so
+Ad-hoc and CI artifact images are review aids only. Including the focused
+Checks, Session/steps, and action matrices, the visual test reads 74 canonical PNGs from
+`Tests/agentacctTests/ReferenceImages/<platform-id>`, so
 a Work UI change is not visually verified until those source-tree files are
 reviewed and committed.
 

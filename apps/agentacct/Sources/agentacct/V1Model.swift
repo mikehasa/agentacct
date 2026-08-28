@@ -209,13 +209,17 @@ struct V1Check: Decodable, Identifiable {
     let sourceType: String?
     let checkIdentity: String?
     let supersessionState: String?
+    let supersededByEventId: String?
     let resolutionScope: String?
     let resolutionSummary: String?
+    let resolvesBlockedEventId: String?
     let files: [String]?
     let artifactRef: String?
     let artifactPath: String?
     let artifactUrl: String?
     let commandRedacted: Bool?
+    let artifactPathRedacted: Bool?
+    let artifactUrlRedacted: Bool?
     private let fallbackId = UUID().uuidString
 
     var id: String { eventId ?? fallbackId }
@@ -241,12 +245,16 @@ struct V1Check: Decodable, Identifiable {
         case sourceType = "source_type"
         case checkIdentity = "check_identity"
         case supersessionState = "supersession_state"
+        case supersededByEventId = "superseded_by_event_id"
         case resolutionScope = "resolution_scope"
         case resolutionSummary = "resolution_summary"
+        case resolvesBlockedEventId = "resolves_blocked_event_id"
         case artifactRef = "artifact_ref"
         case artifactPath = "artifact_path"
         case artifactUrl = "artifact_url"
         case commandRedacted = "command_redacted"
+        case artifactPathRedacted = "artifact_path_redacted"
+        case artifactUrlRedacted = "artifact_url_redacted"
     }
 }
 

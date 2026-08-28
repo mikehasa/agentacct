@@ -896,7 +896,7 @@
                 "created_at": 1787586000,
                 "evidence_type": "test",
                 "result": "passed",
-                "summary": "Configuration contract covers all eight images.",
+                "summary": "Configuration contract covers the full review matrix.",
                 "exit_code": 0,
                 "source_type": "client_hook",
                 "check_identity": "work-matrix"

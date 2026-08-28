@@ -36,6 +36,26 @@ final class WorkVisualRegressionTests: XCTestCase {
         "work-table-accessibility-maximum-dark.png",
         "work-receipt-accessibility-maximum-light.png",
         "work-receipt-accessibility-maximum-dark.png",
+        "work-session-steps-hierarchy-light.png",
+        "work-session-steps-hierarchy-dark.png",
+        "work-session-steps-dense-checks-light.png",
+        "work-session-steps-dense-checks-dark.png",
+        "work-session-steps-expanded-current-light.png",
+        "work-session-steps-expanded-current-dark.png",
+        "work-session-steps-expanded-history-light.png",
+        "work-session-steps-expanded-history-dark.png",
+        "work-session-steps-load-failure-light.png",
+        "work-session-steps-load-failure-dark.png",
+        "work-session-steps-retrying-light.png",
+        "work-session-steps-retrying-dark.png",
+        "work-session-steps-compact-checks-light.png",
+        "work-session-steps-compact-checks-dark.png",
+        "work-session-steps-rtl-stress-light.png",
+        "work-session-steps-rtl-stress-dark.png",
+        "work-session-steps-compact-accessibility-light.png",
+        "work-session-steps-compact-accessibility-dark.png",
+        "work-session-steps-rtl-accessibility-light.png",
+        "work-session-steps-rtl-accessibility-dark.png",
         "work-actions-exact-regular-light.png",
         "work-actions-exact-regular-dark.png",
         "work-actions-exact-compact-light.png",
@@ -90,13 +110,17 @@ final class WorkVisualRegressionTests: XCTestCase {
             fixture: fixture,
             outputDirectory: outputDirectory
         )
+        let sessionStepsRendered = try SessionStepsSnapshotRenderer.render(
+            fixture: fixture,
+            outputDirectory: outputDirectory
+        )
         let actionRendered = try ReceiptActionSnapshotRenderer.render(
             outputDirectory: outputDirectory
         )
         let checkRendered = try ReceiptCheckSnapshotRenderer.render(
             outputDirectory: outputDirectory
         )
-        let rendered = workRendered + actionRendered + checkRendered
+        let rendered = workRendered + sessionStepsRendered + actionRendered + checkRendered
         XCTAssertEqual(rendered.map(\.lastPathComponent), expectedFilenames)
 
         let mode = try VisualSnapshotMode.resolve(environment: environment)
