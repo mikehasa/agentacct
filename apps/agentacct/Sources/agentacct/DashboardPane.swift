@@ -130,8 +130,16 @@ enum DashboardAttentionPresentation: Equatable {
     case inconsistent(total: Int)
 
     init(payload: V1AttentionPayload?, error: String?) {
+        if let error {
+            self = .unavailable(error)
+            return
+        }
         guard let payload else {
-            self = error.map(Self.unavailable) ?? .loading
+            self = .loading
+            return
+        }
+        guard Self.hasConsistentEnvelope(payload) else {
+            self = .inconsistent(total: max(0, payload.total))
             return
         }
         guard payload.total > 0 else {
@@ -143,6 +151,29 @@ enum DashboardAttentionPresentation: Equatable {
         } else {
             self = .inconsistent(total: payload.total)
         }
+    }
+
+    private static func hasConsistentEnvelope(_ payload: V1AttentionPayload) -> Bool {
+        guard payload.schema == "agentacct.v1-attention.v1",
+              payload.total >= 0,
+              (1 ... 50).contains(payload.limit),
+              payload.counts.failedCheck >= 0,
+              payload.counts.failedStep >= 0,
+              payload.counts.blocker >= 0,
+              payload.items.count <= payload.limit,
+              payload.items.count <= payload.total,
+              payload.items.allSatisfy({ $0.attention != nil }),
+              payload.truncated == (payload.total > payload.items.count)
+        else {
+            return false
+        }
+
+        let first = payload.counts.failedCheck.addingReportingOverflow(
+            payload.counts.failedStep
+        )
+        guard !first.overflow else { return false }
+        let total = first.partialValue.addingReportingOverflow(payload.counts.blocker)
+        return !total.overflow && total.partialValue == payload.total
     }
 
     var dashboardHeadline: String {
@@ -663,6 +694,65 @@ private struct DashboardBriefUnavailableState: View {
     }
 }
 
+enum DashboardIngestionTone: Equatable {
+    case muted
+    case healthy
+    case warning
+}
+
+struct DashboardIngestionPresentation: Equatable {
+    let title: String
+    let detail: String
+    let tone: DashboardIngestionTone
+
+    init(title: String, detail: String, tone: DashboardIngestionTone) {
+        self.title = title
+        self.detail = detail
+        self.tone = tone
+    }
+
+    init(snapshot: V1IngestionSnapshot?, error: String?) {
+        if let error {
+            self.init(
+                title: "Source status unavailable",
+                detail: error,
+                tone: .warning
+            )
+            return
+        }
+        guard let snapshot else {
+            self.init(
+                title: "Checking source status",
+                detail: "Waiting for the current ingestion record.",
+                tone: .muted
+            )
+            return
+        }
+
+        let issueCount = snapshot.issues?.count ?? 0
+        let detail: String
+        if issueCount > 0 {
+            detail = "\(issueCount) recorded issue\(issueCount == 1 ? "" : "s") · inspect Sources"
+        } else if let last = agoText(snapshot.lastSuccessAt) {
+            detail = "Last successful ingest \(last)"
+        } else {
+            detail = "Open Sources for the current ingestion record."
+        }
+
+        if snapshot.state == "healthy" {
+            self.init(title: "Sources healthy", detail: detail, tone: .healthy)
+        } else if let state = snapshot.state, !state.isEmpty {
+            self.init(
+                title: state.replacingOccurrences(of: "_", with: " ").capitalized,
+                detail: detail,
+                tone: .warning
+            )
+        } else {
+            self.init(title: "Source status unavailable", detail: detail, tone: .warning)
+        }
+    }
+}
+
 private struct DashboardSignalRail: View {
     let sessions: [RecentSession]
     let planRows: [DashboardAgentPlanRow]
@@ -673,6 +763,10 @@ private struct DashboardSignalRail: View {
 
     private var capacity: DashboardAgentPlanRow? {
         planRows.max { ($0.usedPercent ?? -1) < ($1.usedPercent ?? -1) }
+    }
+
+    private var ingestionPresentation: DashboardIngestionPresentation {
+        DashboardIngestionPresentation(snapshot: ingestion, error: ingestionError)
     }
 
     var body: some View {
@@ -755,24 +849,19 @@ private struct DashboardSignalRail: View {
     }
 
     private var ingestionTitle: String {
-        if ingestion?.state == "healthy" { return "Sources healthy" }
-        if let state = ingestion?.state, !state.isEmpty {
-            return state.replacingOccurrences(of: "_", with: " ").capitalized
-        }
-        return "Source status unavailable"
+        ingestionPresentation.title
     }
 
     private var ingestionDetail: String {
-        if let issueCount = ingestion?.issues?.count, issueCount > 0 {
-            return "\(issueCount) recorded issue\(issueCount == 1 ? "" : "s") · inspect Sources"
-        }
-        if let last = agoText(ingestion?.lastSuccessAt) { return "Last successful ingest \(last)" }
-        return ingestionError ?? "Open Sources for the current ingestion record."
+        ingestionPresentation.detail
     }
 
     private var ingestionTint: Color {
-        if ingestion?.state == "healthy" { return Theme.green }
-        return ingestion == nil ? Theme.muted : Theme.amber
+        switch ingestionPresentation.tone {
+        case .muted: return Theme.muted
+        case .healthy: return Theme.green
+        case .warning: return Theme.amber
+        }
     }
 }
 
