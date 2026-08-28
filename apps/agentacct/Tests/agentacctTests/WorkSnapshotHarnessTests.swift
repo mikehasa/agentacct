@@ -54,6 +54,18 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "work-actions-layout-stress-dark.png", pixelsWide: 1840, pixelsHigh: 1520),
         ExpectedArtifact(filename: "work-actions-dynamic-type-stress-light.png", pixelsWide: 1840, pixelsHigh: 2700),
         ExpectedArtifact(filename: "work-actions-dynamic-type-stress-dark.png", pixelsWide: 1840, pixelsHigh: 2700),
+        ExpectedArtifact(filename: "work-checks-overview-light.png", pixelsWide: 1520, pixelsHigh: 1360),
+        ExpectedArtifact(filename: "work-checks-overview-dark.png", pixelsWide: 1520, pixelsHigh: 1360),
+        ExpectedArtifact(filename: "work-checks-all-passed-light.png", pixelsWide: 1520, pixelsHigh: 920),
+        ExpectedArtifact(filename: "work-checks-all-passed-dark.png", pixelsWide: 1520, pixelsHigh: 920),
+        ExpectedArtifact(filename: "work-checks-expanded-light.png", pixelsWide: 1520, pixelsHigh: 2280),
+        ExpectedArtifact(filename: "work-checks-expanded-dark.png", pixelsWide: 1520, pixelsHigh: 2280),
+        ExpectedArtifact(filename: "work-checks-compact-light.png", pixelsWide: 720, pixelsHigh: 1440),
+        ExpectedArtifact(filename: "work-checks-compact-dark.png", pixelsWide: 720, pixelsHigh: 1440),
+        ExpectedArtifact(filename: "work-checks-compact-accessibility-light.png", pixelsWide: 720, pixelsHigh: 640),
+        ExpectedArtifact(filename: "work-checks-compact-accessibility-dark.png", pixelsWide: 720, pixelsHigh: 640),
+        ExpectedArtifact(filename: "work-checks-accessibility-rtl-light.png", pixelsWide: 1520, pixelsHigh: 1400),
+        ExpectedArtifact(filename: "work-checks-accessibility-rtl-dark.png", pixelsWide: 1520, pixelsHigh: 1400),
     ]
 
     @MainActor
@@ -110,6 +122,7 @@ final class WorkSnapshotHarnessTests: XCTestCase {
 
         let workRendered: [URL]
         let actionRendered: [URL]
+        let checkRendered: [URL]
         do {
             workRendered = try WorkSnapshotRenderer.render(
                 fixture: fixture,
@@ -125,6 +138,14 @@ final class WorkSnapshotHarnessTests: XCTestCase {
             )
         } catch {
             XCTFail("First focused Action render failed: \(error)")
+            throw error
+        }
+        do {
+            checkRendered = try ReceiptCheckSnapshotRenderer.render(
+                outputDirectory: firstDirectory
+            )
+        } catch {
+            XCTFail("First focused Checks render failed: \(error)")
             throw error
         }
         do {
@@ -144,7 +165,15 @@ final class WorkSnapshotHarnessTests: XCTestCase {
             XCTFail("Second focused Action render failed: \(error)")
             throw error
         }
-        let rendered = workRendered + actionRendered
+        do {
+            _ = try ReceiptCheckSnapshotRenderer.render(
+                outputDirectory: secondDirectory
+            )
+        } catch {
+            XCTFail("Second focused Checks render failed: \(error)")
+            throw error
+        }
+        let rendered = workRendered + actionRendered + checkRendered
 
         XCTAssertEqual(rendered.map(\.lastPathComponent), expectedArtifacts.map(\.filename))
         for artifact in expectedArtifacts {
@@ -252,7 +281,64 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: outputDirectory) }
 
         let rendered = try ReceiptActionSnapshotRenderer.render(outputDirectory: outputDirectory)
-        let expected = Array(expectedArtifacts.suffix(12))
+        let expected = expectedArtifacts.filter { $0.filename.hasPrefix("work-actions-") }
+        XCTAssertEqual(rendered.map(\.lastPathComponent), expected.map(\.filename))
+        for artifact in expected {
+            let image = try XCTUnwrap(
+                NSImage(contentsOf: outputDirectory.appendingPathComponent(artifact.filename)),
+                artifact.filename
+            )
+            let representation = try XCTUnwrap(image.representations.first, artifact.filename)
+            XCTAssertEqual(representation.pixelsWide, artifact.pixelsWide)
+            XCTAssertEqual(representation.pixelsHigh, artifact.pixelsHigh)
+        }
+        XCTAssertFalse(SnapshotMode.enabled)
+        XCTAssertNil(SnapshotScheme.override)
+    }
+
+    @MainActor
+    func testFocusedChecksRendererRejectsAClippedCanvas() throws {
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentacct-clipped-checks-snapshot-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outputDirectory) }
+        let configuration = ReceiptCheckSnapshotConfiguration(
+            kind: .compact,
+            width: 360,
+            height: 100,
+            colorScheme: .light,
+            dynamicTypeSize: .medium,
+            layoutDirection: .leftToRight
+        )
+
+        XCTAssertThrowsError(
+            try ReceiptCheckSnapshotRenderer.render(
+                outputDirectory: outputDirectory,
+                configurations: [configuration]
+            )
+        ) { error in
+            guard case SnapshotError.snapshotContentExceedsCanvas(
+                let filename,
+                let requiredHeight,
+                let availableHeight
+            ) = error else {
+                return XCTFail("Expected clipped-canvas failure; got \(error)")
+            }
+            XCTAssertEqual(filename, configuration.filename)
+            XCTAssertGreaterThan(requiredHeight, availableHeight)
+            XCTAssertEqual(availableHeight, 100)
+        }
+        XCTAssertFalse(SnapshotMode.enabled)
+        XCTAssertNil(SnapshotScheme.override)
+    }
+
+    @MainActor
+    func testFocusedChecksReviewConfigurationsFitTheirCanvases() throws {
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentacct-checks-snapshot-matrix-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outputDirectory) }
+
+        let rendered = try ReceiptCheckSnapshotRenderer.render(outputDirectory: outputDirectory)
+        let expected = expectedArtifacts.filter { $0.filename.hasPrefix("work-checks-") }
         XCTAssertEqual(rendered.map(\.lastPathComponent), expected.map(\.filename))
         for artifact in expected {
             let image = try XCTUnwrap(
