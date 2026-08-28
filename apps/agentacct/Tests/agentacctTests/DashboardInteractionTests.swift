@@ -260,24 +260,6 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(workRecordColumnMode(for: 860), .sideBySide)
     }
 
-    func testActionDisclosureCopyNamesAvailableAndReportedCounts() {
-        XCTAssertEqual(
-            actionDisclosureCountLabel(noun: "files", availableCount: 18, totalCount: 18),
-            "18 files"
-        )
-        XCTAssertEqual(
-            actionDisclosureCountLabel(noun: "files", availableCount: 1, totalCount: 1),
-            "1 file"
-        )
-        XCTAssertEqual(
-            actionDisclosureCountLabel(noun: "files", availableCount: 4, totalCount: 18),
-            "4 of 18 files"
-        )
-        XCTAssertNil(
-            actionDisclosureCountLabel(noun: "tools", availableCount: 0, totalCount: 7)
-        )
-    }
-
     func testNeedsReviewProjectionUsesActionableTasks() throws {
         let tasks = try decode(
             [ReceiptSummary].self,

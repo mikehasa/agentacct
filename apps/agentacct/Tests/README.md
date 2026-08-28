@@ -282,17 +282,15 @@ Keep ad-hoc PNGs outside the repository.
 ## Work review matrix
 
 The Work renderer drives the real `MainWindow` through the browse and selected-
-receipt paths. Its versioned fixture includes long action previews, six checks,
+receipt paths. Its versioned fixture includes representative action counts, six checks,
 missing CI evidence, two root-session groups, and a subagent. The two primary
-states render at both supported window sizes; the expanded action inspector has
-a taller detail viewport; transient states render at the standard viewport. All
-states cover both appearances.
+states render at both supported window sizes; transient states render at the
+standard viewport in both appearances.
 
 | State | Viewport coverage | Source-tree artifacts |
 | --- | --- | --- |
 | populated table | 960 × 560 pt and 1120 × 800 pt, light/dark | `work-table-*.png` |
 | populated receipt | 960 × 560 pt and 1120 × 800 pt, light/dark | `work-receipt-{minimum,reference}-*.png` |
-| action details: Files, Commands, Tools selected | 1120 × 1000 pt each, light/dark | `work-receipt-actions-{files,commands,tools}-detail-*.png` |
 | empty table | 1120 × 800 pt, light/dark | `work-empty-reference-*.png` |
 | list error | 1120 × 800 pt, light/dark | `work-list-error-reference-*.png` |
 | receipt loading | 1120 × 800 pt, light/dark | `work-receipt-loading-reference-*.png` |
@@ -308,7 +306,7 @@ open /tmp/agentacct-work-review
 ```
 
 Ad-hoc and CI artifact images are review aids only. The visual test reads the
-22 canonical PNGs from `Tests/agentacctTests/ReferenceImages/<platform-id>`, so
+28 canonical PNGs from `Tests/agentacctTests/ReferenceImages/<platform-id>`, so
 a Work UI change is not visually verified until those source-tree files are
 reviewed and committed.
 
@@ -425,9 +423,13 @@ control:
 Dimensions must match exactly. Do not loosen the pixel budget to make a real
 change pass.
 
-The Dashboard deterministic test renders its four-image matrix twice; the Work
-test does the same for all 16 Work states and appearances. When adopting a new
-renderer environment, also stress separate Dashboard processes:
+The Dashboard deterministic test renders its four-image matrix twice. The Work
+test does the same for 16 full-page states and 12 focused Action Digest
+references covering regular and compact widths, light and dark appearances,
+semantic integrity states, long translated content, right-to-left geometry,
+compact accessibility-size text, and the maximum bounded taxonomy. When
+adopting a new renderer environment, also stress
+separate Dashboard processes:
 
 ```bash
 for run_index in {1..10}; do
@@ -453,10 +455,17 @@ missing appearance or viewport, wrong dimensions, wall-clock leaks, dynamic
 content, animation, and same-process instability. It runs wherever Swift tests
 run and does not need approved images.
 
+The focused Action renderer first measures every scene at its fixed review
+width and fails if the content needs more height than its canvas. This keeps a
+later semantic state, translated string, taxonomy row, or accessibility text
+size from being silently removed by the snapshot crop.
+
 `WorkSnapshotHarnessTests` applies the same deterministic contract to Work. It
 also rejects unsupported receipt/session schemas, verifies the fixture carries
 action overflow, checks, missing CI, and multiple session roots, and requires
-loading and error states to remain visually distinct.
+loading and error states to remain visually distinct. Its focused Action Digest
+matrix splits core and edge semantic states into reviewable source-tree PNGs so
+no tall gallery can silently clip later states.
 
 `VisualSnapshotHarnessTests` checks the dependency-free image lifecycle:
 normalization, strict magnitude and changed-area tolerances, honest dimension

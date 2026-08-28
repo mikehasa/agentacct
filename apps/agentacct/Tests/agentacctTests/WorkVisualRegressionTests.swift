@@ -14,12 +14,6 @@ final class WorkVisualRegressionTests: XCTestCase {
         "work-receipt-minimum-dark.png",
         "work-receipt-reference-light.png",
         "work-receipt-reference-dark.png",
-        "work-receipt-actions-files-detail-light.png",
-        "work-receipt-actions-files-detail-dark.png",
-        "work-receipt-actions-commands-detail-light.png",
-        "work-receipt-actions-commands-detail-dark.png",
-        "work-receipt-actions-tools-detail-light.png",
-        "work-receipt-actions-tools-detail-dark.png",
         "work-empty-reference-light.png",
         "work-empty-reference-dark.png",
         "work-list-error-reference-light.png",
@@ -28,6 +22,18 @@ final class WorkVisualRegressionTests: XCTestCase {
         "work-receipt-loading-reference-dark.png",
         "work-receipt-error-reference-light.png",
         "work-receipt-error-reference-dark.png",
+        "work-actions-exact-regular-light.png",
+        "work-actions-exact-regular-dark.png",
+        "work-actions-exact-compact-light.png",
+        "work-actions-exact-compact-dark.png",
+        "work-actions-semantic-gallery-light.png",
+        "work-actions-semantic-gallery-dark.png",
+        "work-actions-semantic-edge-cases-light.png",
+        "work-actions-semantic-edge-cases-dark.png",
+        "work-actions-layout-stress-light.png",
+        "work-actions-layout-stress-dark.png",
+        "work-actions-dynamic-type-stress-light.png",
+        "work-actions-dynamic-type-stress-dark.png",
     ]
 
     @MainActor
@@ -54,10 +60,14 @@ final class WorkVisualRegressionTests: XCTestCase {
             .appendingPathComponent("agentacct-work-visuals-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: outputDirectory) }
 
-        let rendered = try WorkSnapshotRenderer.render(
+        let workRendered = try WorkSnapshotRenderer.render(
             fixture: fixture,
             outputDirectory: outputDirectory
         )
+        let actionRendered = try ReceiptActionSnapshotRenderer.render(
+            outputDirectory: outputDirectory
+        )
+        let rendered = workRendered + actionRendered
         XCTAssertEqual(rendered.map(\.lastPathComponent), expectedFilenames)
 
         let mode = try VisualSnapshotMode.resolve(environment: environment)
