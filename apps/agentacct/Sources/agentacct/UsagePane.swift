@@ -200,7 +200,10 @@ struct UsagePane: View {
             if let usage = dashboard.usage {
                 summaryStrip(usage)
                 if let periods = usage.byPeriod, periods.count > 1 {
-                    UsageDailyChart(periods: periods)
+                    UsagePeriodChart(
+                        periods: periods,
+                        presentation: UsagePeriodPresentation(usage: usage)
+                    )
                 }
                 if !capacityIsConnected {
                     UsageBreakdownTable(
@@ -257,7 +260,7 @@ struct UsagePane: View {
 
     private func summaryStrip(_ usage: UsageSummary) -> some View {
         let totals = usage.totals
-        let activity = UsagePeriodActivityPresentation(usage: usage)
+        let activity = UsagePeriodPresentation(usage: usage)
 
         return StripRow(cells: [
             StripRow.Cell(
@@ -363,20 +366,24 @@ struct UsagePane: View {
     }
 }
 
-struct UsagePeriodActivityPresentation {
+struct UsagePeriodPresentation {
     let label: String
     let value: String?
     let absent: String
+    private let unit: String
 
     init(usage: UsageSummary) {
         switch usage.filtersEcho?.granularity {
         case "daily":
+            unit = "day"
             label = "Active days"
             absent = "no daily series"
         case "weekly":
+            unit = "week"
             label = "Active weeks"
             absent = "no weekly series"
         default:
+            unit = "period"
             label = "Active periods"
             absent = "no period series"
         }
@@ -387,6 +394,17 @@ struct UsagePeriodActivityPresentation {
         }.count
         value = periods.isEmpty ? nil : "\(activeCount)/\(periods.count)"
     }
+
+    var costChartTitle: String { "Cost per \(unit)" }
+
+    func tokenChartTitle(group: String?) -> String {
+        let title = "Fresh tokens per \(unit)"
+        return group.map { "\(title) · \($0)" } ?? title
+    }
+
+    var previousAccessibilityLabel: String { "Previous usage \(unit)" }
+    var nextAccessibilityLabel: String { "Next usage \(unit)" }
+    var selectionAccessibilityHint: String { "Selects this \(unit)'s value" }
 }
 
 private struct UsagePlanClientDetail: View {
@@ -483,14 +501,15 @@ struct StripRow: View {
     }
 }
 
-// MARK: - Daily chart (one series per chart)
+// MARK: - Period chart (one series per chart)
 
-/// The daily usage chart: estimated cost per day, or fresh tokens per day with
+/// The usage chart: estimated cost or fresh tokens per API-reported period, with
 /// an optional single-client group filter. Always ONE series — a stack never
-/// appears (v7 chart discipline). Days without a priced value render as flat
+/// appears (v7 chart discipline). Periods without a priced value render as flat
 /// neutral stubs and their tooltip says so; heights are strictly proportional.
-struct UsageDailyChart: View {
+struct UsagePeriodChart: View {
     let periods: [PeriodBucket]
+    let presentation: UsagePeriodPresentation
 
     enum Series: String, CaseIterable, Identifiable {
         case cost = "Cost"
@@ -506,8 +525,9 @@ struct UsageDailyChart: View {
     @FocusState private var focusedIndex: Int?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(periods: [PeriodBucket]) {
+    init(periods: [PeriodBucket], presentation: UsagePeriodPresentation) {
         self.periods = periods
+        self.presentation = presentation
         let initialSeries: Series = periods.contains { $0.estimatedCostUsd != nil } ? .cost : .tokens
         _series = State(initialValue: initialSeries)
         _selectedIndex = State(initialValue: periods.indices.last)
@@ -521,8 +541,8 @@ struct UsageDailyChart: View {
         return seen.sorted()
     }
 
-    /// The plotted value for a day, or nil when the day has no value to plot
-    /// (an unpriced day is NOT a $0 day).
+    /// The plotted value for a period, or nil when it has no value to plot
+    /// (an unpriced period is NOT a $0 period).
     private func value(_ period: PeriodBucket) -> Double? {
         switch series {
         case .cost:
@@ -596,8 +616,8 @@ struct UsageDailyChart: View {
 
     private var chartTitle: String {
         switch series {
-        case .cost: return "Cost per day"
-        case .tokens: return group.map { "Fresh tokens per day · \($0)" } ?? "Fresh tokens per day"
+        case .cost: return presentation.costChartTitle
+        case .tokens: return presentation.tokenChartTitle(group: group)
         }
     }
 
@@ -622,7 +642,7 @@ struct UsageDailyChart: View {
                             verticalPadding: 2
                         ))
                         .disabled(selectedIndex == periods.startIndex)
-                        .accessibilityLabel("Previous usage day")
+                        .accessibilityLabel(presentation.previousAccessibilityLabel)
 
                         Text("\(periods[selectedIndex].shortLabel) · \(valueText(periods[selectedIndex]))")
                             .font(Type.dataSmallSemibold)
@@ -643,7 +663,7 @@ struct UsageDailyChart: View {
                             verticalPadding: 2
                         ))
                         .disabled(selectedIndex == periods.index(before: periods.endIndex))
-                        .accessibilityLabel("Next usage day")
+                        .accessibilityLabel(presentation.nextAccessibilityLabel)
                     }
                     if SnapshotMode.enabled {
                         Chip(text: series.rawValue, tint: Theme.accent)
@@ -710,7 +730,7 @@ struct UsageDailyChart: View {
                                                               ? Theme.chartBar : Theme.chartBarDim)
                                                         .frame(height: max(1, Self.plotHeight * dayValue / maxValue))
                                                 } else {
-                                                    // A day with no plottable value: a flat
+                                                    // A period with no plottable value: a flat
                                                     // neutral stub, never a zero-height lie.
                                                     RoundedRectangle(cornerRadius: 1)
                                                         .fill(Theme.tintNeutral)
@@ -722,7 +742,7 @@ struct UsageDailyChart: View {
                                         }
                                         // Preserve proportional 7/30/90-day geometry. The
                                         // 28pt Previous/Next controls above are equivalent
-                                        // controls for reaching every day at a large target.
+                                        // controls for reaching every period at a large target.
                                         .buttonStyle(TransparentButtonStyle(cornerRadius: 2))
                                         .focused($focusedIndex, equals: index)
                                         .onHover { inside in
@@ -735,7 +755,7 @@ struct UsageDailyChart: View {
                                         .accessibilityLabel(
                                             "\(period.period ?? period.shortLabel), \(valueText(period))"
                                         )
-                                        .accessibilityHint("Selects this day's value")
+                                        .accessibilityHint(presentation.selectionAccessibilityHint)
                                         .accessibilityAddTraits(selectedIndex == index ? .isSelected : [])
                                         .accessibilityIdentifier("usage.history.day.\(index)")
                                     }
