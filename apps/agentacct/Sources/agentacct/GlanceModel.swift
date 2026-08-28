@@ -126,12 +126,16 @@ struct UsageTotals: Decodable {
 
 struct LimitEntry: Decodable {
     let client: String?
+    let streamID: String?
+    let origin: String?
+    let org: String?
     let planType: String?
     let stale: Bool?
     let windows: [LimitWindow]?
 
     enum CodingKeys: String, CodingKey {
-        case client
+        case client, origin, org
+        case streamID = "stream_id"
         case planType = "plan_type"
         case stale, windows
     }
@@ -159,11 +163,17 @@ struct PlanEntry: Decodable {
     /// meter cannot yield a weekly plan % — codex). Optional so a pre-field
     /// daemon still decodes; absent means "don't claim calibrating".
     let calibrationState: String?
+    let intervalsUsed: Int?
+    let intervalsNeeded: Int?
+    let stateDetail: String?
 
     enum CodingKeys: String, CodingKey {
         case client
         case confidence
         case calibrationState = "calibration_state"
+        case intervalsUsed = "intervals_used"
+        case intervalsNeeded = "intervals_needed"
+        case stateDetail = "state_detail"
     }
 }
 

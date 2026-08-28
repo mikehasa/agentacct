@@ -26,6 +26,17 @@
             "cost_complete": true,
             "known_additive_cost_usd": 1087.42
           }
+        },
+        {
+          "label": "30d",
+          "days": 30,
+          "totals": {
+            "fresh_tokens": 93400000,
+            "total_tokens_including_cached": 382100000,
+            "estimated_cost_usd": 2146.88,
+            "cost_complete": true,
+            "known_additive_cost_usd": 2146.88
+          }
         }
       ],
       "usage_record_count": 54,
@@ -62,6 +73,7 @@
     "limits": [
       {
         "client": "codex",
+        "stream_id": "codex_rate_limit",
         "plan_type": "pro",
         "stale": false,
         "windows": [
@@ -80,6 +92,7 @@
       },
       {
         "client": "claude-code",
+        "stream_id": "claude_code_rate_limit",
         "plan_type": null,
         "stale": false,
         "windows": [
@@ -105,7 +118,10 @@
       {
         "client": "claude-code",
         "confidence": "baseline",
-        "calibration_state": "calibrating"
+        "calibration_state": "calibrating",
+        "intervals_used": 9,
+        "intervals_needed": 24,
+        "state_detail": "9 intervals recorded; calibration needs 24 or more stable intervals spanning at least one week"
       }
     ],
     "recent_sessions": [
@@ -122,6 +138,100 @@
         "title": "Snapshot harness",
         "status": "checkpoint",
         "last_activity_at": 1787589952
+      }
+    ]
+  },
+  "menu_sparse_glance": {
+    "schema": "agentacct.glance.v1",
+    "generated_at": 1787590000,
+    "usage": {
+      "windows": [
+        {
+          "label": "today",
+          "days": 1,
+          "totals": {
+            "fresh_tokens": 8000000,
+            "estimated_cost_usd": 200.67,
+            "cost_complete": true,
+            "known_additive_cost_usd": 200.67
+          }
+        },
+        {
+          "label": "last 7 days",
+          "days": 7,
+          "totals": {
+            "fresh_tokens": 39300000,
+            "estimated_cost_usd": 949.36,
+            "cost_complete": true,
+            "known_additive_cost_usd": 949.36
+          }
+        },
+        {
+          "label": "last 30 days",
+          "days": 30,
+          "totals": {
+            "fresh_tokens": 41900000,
+            "estimated_cost_usd": 990.99,
+            "cost_complete": false,
+            "known_additive_cost_usd": 990.99
+          }
+        }
+      ],
+      "usage_record_count": 18,
+      "by_client": []
+    },
+    "limits": [
+      {
+        "client": "codex",
+        "stream_id": "codex_rate_limit",
+        "org": "personal",
+        "plan_type": "pro",
+        "stale": false,
+        "windows": [
+          {
+            "kind": "7d",
+            "used_percent": 4,
+            "window_minutes": 10080,
+            "resets_at": 1788115600
+          }
+        ]
+      }
+    ],
+    "plan": [
+      {
+        "client": "codex",
+        "confidence": "provider_reported",
+        "calibration_state": "never"
+      },
+      {
+        "client": "claude-code",
+        "confidence": "baseline",
+        "calibration_state": "calibrating",
+        "intervals_used": 9,
+        "intervals_needed": 24,
+        "state_detail": "9 intervals recorded; calibration needs 24 or more stable intervals spanning at least one week"
+      }
+    ],
+    "recent_sessions": [
+      {
+        "client": "codex",
+        "session_id": "01a041c8-fixture",
+        "status": "in_progress",
+        "last_activity_at": 1787589988,
+        "plan_pct": 1.2
+      },
+      {
+        "client": "codex",
+        "session_id": "01a04201-fixture",
+        "status": "checkpoint",
+        "last_activity_at": 1787589952
+      },
+      {
+        "client": "claude-code",
+        "session_id": "01a04255-fixture",
+        "title": "Limit calibration",
+        "status": "completed",
+        "last_activity_at": 1787589900
       }
     ]
   },
