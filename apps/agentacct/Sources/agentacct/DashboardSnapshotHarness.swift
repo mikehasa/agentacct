@@ -109,6 +109,20 @@ struct WorkSnapshotFixture: Decodable {
     }
 }
 
+enum SnapshotRecordedUsageState {
+    case sevenDays
+    case ninetyDays
+
+    func storeState(for fixture: DashboardSnapshotFixture) -> SnapshotUsageStoreState {
+        switch self {
+        case .sevenDays:
+            return SnapshotUsageStoreState(days: 7, summary: fixture.usage)
+        case .ninetyDays:
+            return SnapshotUsageStoreState(days: 90, summary: fixture.usage90Days)
+        }
+    }
+}
+
 enum SnapshotError: LocalizedError {
     case unsupportedSchema(payload: String, actual: String, expected: String)
     case missingFixtureDate
@@ -141,6 +155,7 @@ struct DashboardSnapshotConfiguration {
     let height: CGFloat
     let colorScheme: ColorScheme
     let workState: SnapshotWorkStoreState
+    let recordedUsageState: SnapshotRecordedUsageState
 
     var filename: String {
         let appearance = colorScheme == .dark ? "dark" : "light"
@@ -148,15 +163,17 @@ struct DashboardSnapshotConfiguration {
     }
 
     static let reviewConfigurations: [Self] = [
-        Self(viewport: "minimum", width: 960, height: 560, colorScheme: .light, workState: .populated),
-        Self(viewport: "minimum", width: 960, height: 560, colorScheme: .dark, workState: .populated),
+        Self(viewport: "minimum", width: 960, height: 560, colorScheme: .light, workState: .populated, recordedUsageState: .sevenDays),
+        Self(viewport: "minimum", width: 960, height: 560, colorScheme: .dark, workState: .populated, recordedUsageState: .sevenDays),
         // The reference viewport must show the complete dashboard, including
         // chart labels. The shorter minimum pair intentionally verifies the
         // real top-of-scroll experience instead.
-        Self(viewport: "reference", width: 1120, height: 800, colorScheme: .light, workState: .populated),
-        Self(viewport: "reference", width: 1120, height: 800, colorScheme: .dark, workState: .populated),
-        Self(viewport: "attention-unavailable", width: 1120, height: 800, colorScheme: .light, workState: .listErrorWithRetainedData),
-        Self(viewport: "attention-unavailable", width: 1120, height: 800, colorScheme: .dark, workState: .listErrorWithRetainedData),
+        Self(viewport: "reference", width: 1120, height: 800, colorScheme: .light, workState: .populated, recordedUsageState: .sevenDays),
+        Self(viewport: "reference", width: 1120, height: 800, colorScheme: .dark, workState: .populated, recordedUsageState: .sevenDays),
+        Self(viewport: "weekly-reference", width: 1120, height: 900, colorScheme: .light, workState: .populated, recordedUsageState: .ninetyDays),
+        Self(viewport: "weekly-reference", width: 1120, height: 900, colorScheme: .dark, workState: .populated, recordedUsageState: .ninetyDays),
+        Self(viewport: "attention-unavailable", width: 1120, height: 800, colorScheme: .light, workState: .listErrorWithRetainedData, recordedUsageState: .sevenDays),
+        Self(viewport: "attention-unavailable", width: 1120, height: 800, colorScheme: .dark, workState: .listErrorWithRetainedData, recordedUsageState: .sevenDays),
     ]
 }
 
@@ -202,7 +219,8 @@ enum DashboardSnapshotRenderer {
             let glance = GlanceState(preloaded: fixture.glanceSnapshot)
             let dashboard = DashboardStore(
                 preloaded: fixture,
-                workState: configuration.workState
+                workState: configuration.workState,
+                usageState: configuration.recordedUsageState.storeState(for: fixture)
             )
             let selection = AppSelection()
             selection.pane = .dashboard

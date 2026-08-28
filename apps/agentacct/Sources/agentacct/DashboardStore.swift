@@ -380,7 +380,7 @@ final class DashboardStore {
     }
 
     /// Switch the pane range and refetch BOTH the plan lane and the cost cube
-    /// so the plan breakdown, the daily bars, and the $ view stay on one window.
+    /// so the plan breakdown, the period bars, and the $ view stay on one window.
     /// The range label only flips once both payloads have landed, and only the
     /// newest in-flight switch is allowed to write.
     func setUsageDays(_ days: Int) async {

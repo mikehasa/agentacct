@@ -199,10 +199,11 @@ enum DashboardUsageSeries: String, CaseIterable, Identifiable {
         }
     }
 
-    func subtitle(dayCount: Int) -> String {
+    func subtitle(rangeDays: Int, periodPresentation: UsagePeriodPresentation) -> String {
+        let range = periodPresentation.historyRangeDescription(days: rangeDays)
         switch self {
-        case .tokens: return "Fresh tokens · last \(dayCount) days · client reported"
-        case .cost: return "Estimated cost · last \(dayCount) days · pricing-table basis"
+        case .tokens: return "Fresh tokens · \(range) · client reported"
+        case .cost: return "Estimated cost · \(range) · pricing-table basis"
         }
     }
 }
@@ -306,8 +307,15 @@ struct DashboardPane: View {
                     )
                 }
 
-                if let periods = dashboard.usage?.byPeriod, periods.count > 1 {
-                    DashboardUsageChart(periods: periods)
+                if let usage = dashboard.usage,
+                   let periods = usage.byPeriod,
+                   periods.count > 1
+                {
+                    DashboardUsageChart(
+                        periods: periods,
+                        rangeDays: dashboard.usageDays,
+                        periodPresentation: UsagePeriodPresentation(usage: usage)
+                    )
                 }
             }
             .padding(Space.gutter)
@@ -931,6 +939,8 @@ private struct AgentPlanRowView: View {
 
 private struct DashboardUsageChart: View {
     let periods: [PeriodBucket]
+    let rangeDays: Int
+    let periodPresentation: UsagePeriodPresentation
 
     @State private var series: DashboardUsageSeries = .tokens
     @State private var hoveredIndex: Int?
@@ -949,7 +959,12 @@ private struct DashboardUsageChart: View {
                         Text("Usage history")
                             .font(Type.titleCard)
                             .foregroundStyle(Theme.muted)
-                        Text(series.subtitle(dayCount: periods.count))
+                        Text(
+                            series.subtitle(
+                                rangeDays: rangeDays,
+                                periodPresentation: periodPresentation
+                            )
+                        )
                             .font(Type.caption)
                             .foregroundStyle(Theme.muted)
                     }
@@ -1053,7 +1068,7 @@ private struct DashboardUsageChart: View {
                                 .accessibilityLabel(
                                     "\(period.period ?? period.shortLabel), \(series.valueText(for: period))"
                                 )
-                                .accessibilityHint("Pins or clears this day's value")
+                                .accessibilityHint(periodPresentation.pinAccessibilityHint)
                                 .accessibilityAddTraits(pinnedIndex == index ? .isSelected : [])
                                 .accessibilityIdentifier("dashboard.usage.day.\(index)")
 
