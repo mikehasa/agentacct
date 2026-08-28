@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import SwiftUI
 
 // The app's one state machine. Poll cadence is a fixed 30s in the skeleton
@@ -7,7 +8,8 @@ import SwiftUI
 // a daemon that is down or incompatible is an explicit, labeled UI state.
 
 @MainActor
-final class GlanceState: ObservableObject {
+@Observable
+final class GlanceState {
     enum Phase {
         case connecting
         case disconnected(String)
@@ -15,12 +17,12 @@ final class GlanceState: ObservableObject {
         case connected(GlanceSnapshot)
     }
 
-    @Published private(set) var phase: Phase = .connecting
-    @Published private(set) var lastUpdated: Date?
-    @Published private(set) var isRefreshing = false
+    private(set) var phase: Phase = .connecting
+    private(set) var lastUpdated: Date?
+    private(set) var isRefreshing = false
 
-    private let client = GlanceClient()
-    private var pollTask: Task<Void, Never>?
+    @ObservationIgnored private let client = GlanceClient()
+    @ObservationIgnored private var pollTask: Task<Void, Never>?
     private let pollIntervalSeconds: UInt64 = 30
 
     init() {

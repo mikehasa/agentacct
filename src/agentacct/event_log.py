@@ -79,6 +79,30 @@ CREATE TABLE IF NOT EXISTS event_lines (
 );
 CREATE INDEX IF NOT EXISTS idx_event_lines_run ON event_lines(run_id);
 CREATE INDEX IF NOT EXISTS idx_event_lines_event_id ON event_lines(event_id);
+-- A constant-time, cross-process cache key for the parsed ledger. Triggers
+-- live in SQLite rather than only in RawEventLog's Python write methods so an
+-- older agentacct process or a direct repair transaction cannot leave a live
+-- daemon serving a stale in-memory snapshot.
+CREATE TABLE IF NOT EXISTS event_log_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    revision INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO event_log_state(singleton, revision) VALUES (1, 0);
+CREATE TRIGGER IF NOT EXISTS event_lines_revision_insert
+AFTER INSERT ON event_lines
+BEGIN
+    UPDATE event_log_state SET revision = revision + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS event_lines_revision_update
+AFTER UPDATE ON event_lines
+BEGIN
+    UPDATE event_log_state SET revision = revision + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS event_lines_revision_delete
+AFTER DELETE ON event_lines
+BEGIN
+    UPDATE event_log_state SET revision = revision + 1 WHERE singleton = 1;
+END;
 -- Durable record of every flat-file line already drained into the log during a
 -- rolling upgrade (see absorb_new_events). Its keys OUTLIVE a log rewrite that
 -- removes the row, which is what stops a deliberately-removed event from being
@@ -200,6 +224,17 @@ class RawEventLog:
     def count(self) -> int:
         with self._connect() as connection:
             return int(connection.execute("SELECT COUNT(*) FROM event_lines").fetchone()[0])
+
+    def revision(self) -> int:
+        """Return the persistent mutation revision without scanning event rows."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT revision FROM event_log_state WHERE singleton = 1"
+            ).fetchone()
+        if row is None:  # Defensive: _SCHEMA always creates the singleton.
+            raise sqlite3.DatabaseError("event log revision row is missing")
+        return int(row[0])
 
     def read_lines(self) -> list[str]:
         with self._connect() as connection:

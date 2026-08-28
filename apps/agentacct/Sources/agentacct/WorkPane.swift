@@ -242,8 +242,8 @@ struct DecisionLegendButton: View {
 }
 
 struct WorkPane: View {
-    @EnvironmentObject var dashboard: DashboardStore
-    @EnvironmentObject var selection: AppSelection
+    @Environment(DashboardStore.self) var dashboard
+    @Environment(AppSelection.self) var selection
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var unresolvedSessionId: String?
     @State private var query = ""
@@ -612,9 +612,34 @@ private struct WorkUnresolvedSessionPage: View {
 
 // MARK: - Work receipts table
 
+struct WorkTaskPresentation {
+    let groupCounts: [WorkGroup: Int]
+    let visibleTasks: [ReceiptSummary]
+
+    init(tasks: [ReceiptSummary], group: WorkGroup?, query: String, sort: WorkSort) {
+        groupCounts = Dictionary(grouping: tasks) {
+            WorkGroup.forKey($0.decisionStatus.key)
+        }.mapValues(\.count)
+
+        var visible = tasks
+        if let group {
+            visible = visible.filter { WorkGroup.forKey($0.decisionStatus.key) == group }
+        }
+        if !query.isEmpty {
+            let needle = query.lowercased()
+            visible = visible.filter {
+                ($0.title ?? "").lowercased().contains(needle)
+                    || $0.taskId.lowercased().contains(needle)
+                    || ($0.primaryRoot?.client ?? "").lowercased().contains(needle)
+            }
+        }
+        visibleTasks = sortedReceipts(visible, by: sort)
+    }
+}
+
 private struct WorkTablePage: View {
-    @EnvironmentObject var dashboard: DashboardStore
-    @EnvironmentObject var selection: AppSelection
+    @Environment(DashboardStore.self) var dashboard
+    @Environment(AppSelection.self) var selection
     @Binding var query: String
     @Binding var group: WorkGroup?
     let focusedTarget: FocusState<WorkFocusTarget?>.Binding
@@ -622,35 +647,20 @@ private struct WorkTablePage: View {
 
     private var sort: WorkSort { selection.workSort }
 
-    private var groupCounts: [WorkGroup: Int] {
-        Dictionary(grouping: dashboard.receiptTasks) { WorkGroup.forKey($0.decisionStatus.key) }
-            .mapValues(\.count)
-    }
-
-    private var visibleTasks: [ReceiptSummary] {
-        var rows = dashboard.receiptTasks
-        if let group {
-            rows = rows.filter { WorkGroup.forKey($0.decisionStatus.key) == group }
-        }
-        if !query.isEmpty {
-            let needle = query.lowercased()
-            rows = rows.filter {
-                ($0.title ?? "").lowercased().contains(needle)
-                    || $0.taskId.lowercased().contains(needle)
-                    || ($0.primaryRoot?.client ?? "").lowercased().contains(needle)
-            }
-        }
-        return sortedReceipts(rows, by: sort)
-    }
-
     var body: some View {
+        let presentation = WorkTaskPresentation(
+            tasks: dashboard.receiptTasks,
+            group: group,
+            query: query,
+            sort: sort
+        )
         ScrollBox {
             VStack(alignment: .leading, spacing: 0) {
                 header
-                tabs.padding(.top, Space.xl)
+                tabs(groupCounts: presentation.groupCounts).padding(.top, Space.xl)
                 filterRow.padding(.top, Space.m)
-                tableCard.padding(.top, Space.l)
-                footer.padding(.top, Space.m)
+                tableCard(visibleTasks: presentation.visibleTasks).padding(.top, Space.l)
+                footer(visibleTasks: presentation.visibleTasks).padding(.top, Space.m)
                 legend.padding(.top, Space.l)
             }
             .padding(Space.gutter)
@@ -661,7 +671,7 @@ private struct WorkTablePage: View {
             guard case .task(let taskId) = focusedTarget.wrappedValue else { return }
             focusedTarget.wrappedValue = workFocusTarget(
                 lastOpenedTaskId: taskId,
-                visibleTaskIds: Set(visibleTasks.map(\.taskId))
+                visibleTaskIds: Set(presentation.visibleTasks.map(\.taskId))
             )
         }
     }
@@ -688,7 +698,7 @@ private struct WorkTablePage: View {
         }
     }
 
-    private var tabs: some View {
+    private func tabs(groupCounts: [WorkGroup: Int]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Space.xl) {
                 let truncated = (dashboard.totalReceiptTasks ?? 0) > dashboard.receiptTasks.count
@@ -733,7 +743,8 @@ private struct WorkTablePage: View {
     }
 
     private var filterRow: some View {
-        HStack(spacing: Space.m) {
+        @Bindable var selection = selection
+        return HStack(spacing: Space.m) {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11)).foregroundStyle(Theme.muted)
@@ -767,7 +778,7 @@ private struct WorkTablePage: View {
         }
     }
 
-    private var tableCard: some View {
+    private func tableCard(visibleTasks: [ReceiptSummary]) -> some View {
         Card(padding: 0) {
             VStack(spacing: 0) {
                 columnHeader
@@ -788,13 +799,15 @@ private struct WorkTablePage: View {
                     // Offscreen full-content renders cap the rows and name the
                     // overflow; the live app scrolls the full set.
                     let rows = SnapshotMode.enabled ? Array(visibleTasks.prefix(9)) : visibleTasks
-                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, task in
-                        if index > 0 {
-                            Rectangle().fill(Theme.hairline).frame(height: 1)
-                                .padding(.horizontal, Space.xl)
-                        }
-                        WorkTableRow(task: task, focusedTarget: focusedTarget) {
-                            openTask(task.taskId)
+                    ScrollContentStack(spacing: 0) {
+                        ForEach(rows) { task in
+                            if task.id != rows.first?.id {
+                                Rectangle().fill(Theme.hairline).frame(height: 1)
+                                    .padding(.horizontal, Space.xl)
+                            }
+                            WorkTableRow(task: task, focusedTarget: focusedTarget) {
+                                openTask(task.taskId)
+                            }
                         }
                     }
                     if SnapshotMode.enabled, visibleTasks.count > rows.count {
@@ -826,7 +839,7 @@ private struct WorkTablePage: View {
         .frame(height: Metrics.rowHeader)
     }
 
-    private var footer: some View {
+    private func footer(visibleTasks: [ReceiptSummary]) -> some View {
         Text("\(visibleTasks.count) of \(dashboard.totalReceiptTasks ?? dashboard.receiptTasks.count) receipts · \(sort.footerText)")
             .font(Type.dataSmall).foregroundStyle(Theme.muted)
     }
@@ -992,8 +1005,8 @@ private struct WorkTableRow: View {
 /// The 204pt receipt rail beside an open record: every receipt, current one
 /// washed + accent-barred, each row carrying its decision word and cost.
 private struct WorkRail: View {
-    @EnvironmentObject var dashboard: DashboardStore
-    @EnvironmentObject var selection: AppSelection
+    @Environment(DashboardStore.self) var dashboard
+    @Environment(AppSelection.self) var selection
     let openTask: (String) -> Void
 
     /// Offscreen full-content renders would let a long rail stretch (and then
@@ -1006,6 +1019,7 @@ private struct WorkRail: View {
     }
 
     var body: some View {
+        @Bindable var selection = selection
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: Space.s) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -1052,7 +1066,7 @@ private struct WorkRail: View {
             .padding(.horizontal, Space.l)
             .padding(.vertical, Space.l)
             ScrollBox {
-                VStack(spacing: 0) {
+                ScrollContentStack(spacing: 0) {
                     ForEach(railTasks) { task in
                         WorkRailRow(task: task, selected: task.taskId == selection.taskId) {
                             openTask(task.taskId)
@@ -1358,11 +1372,13 @@ struct WorkRecordPage: View {
                                 }
                             }
                         }
-                        ForEach(group.members) { member in
-                            SessionDrillRow(
-                                member: member,
-                                initiallyExpanded: group.role == "primary" && member.role == "root"
-                            )
+                        ScrollContentStack(alignment: .leading, spacing: 5) {
+                            ForEach(group.members) { member in
+                                SessionDrillRow(
+                                    member: member,
+                                    initiallyExpanded: group.role == "primary" && member.role == "root"
+                                )
+                            }
                         }
                     }
                 }
@@ -1427,7 +1443,7 @@ private struct WorkRecordSplitLayout: Layout {
 private struct SessionDrillRow: View {
     let member: ReceiptSessionMember
     let initiallyExpanded: Bool
-    @EnvironmentObject var dashboard: DashboardStore
+    @Environment(DashboardStore.self) var dashboard
     @State private var expanded: Bool
     @State private var detail: V1SessionDetail?
     @State private var loading = false
@@ -1521,8 +1537,10 @@ private struct SessionDrillRow: View {
                             + detail.steps.filter { ($0.checks?.isEmpty ?? true) }.prefix(1).map(\.id)
                           )
                         : []
-                    ForEach(detail.steps) { step in
-                        StepCard(step: step, initiallyExpanded: opened.contains(step.id))
+                    ScrollContentStack(alignment: .leading, spacing: 6) {
+                        ForEach(detail.steps) { step in
+                            StepCard(step: step, initiallyExpanded: opened.contains(step.id))
+                        }
                     }
                 }
                 // The Task's subagents are already listed once, flat and

@@ -9,9 +9,9 @@ import SwiftUI
 // their session drill-down), the merged UsagePane, and SourcesPane.
 
 struct MainWindow: View {
-    @EnvironmentObject var dashboard: DashboardStore
-    @EnvironmentObject var glance: GlanceState
-    @EnvironmentObject var selection: AppSelection
+    @Environment(DashboardStore.self) var dashboard
+    @Environment(GlanceState.self) var glance
+    @Environment(AppSelection.self) var selection
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var setup = SetupModel()
     @State private var showSetup = false
@@ -97,9 +97,9 @@ func refreshProgressVisible(isRefreshing: Bool, delayElapsed: Bool) -> Bool {
 }
 
 struct TopBar: View {
-    @EnvironmentObject var dashboard: DashboardStore
-    @EnvironmentObject var glance: GlanceState
-    @EnvironmentObject var selection: AppSelection
+    @Environment(DashboardStore.self) var dashboard
+    @Environment(GlanceState.self) var glance
+    @Environment(AppSelection.self) var selection
     /// Packaged build → show the "Set up recording" entry point.
     var canSetUp: Bool = false
     var onSetUp: () -> Void = {}
