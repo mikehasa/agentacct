@@ -257,8 +257,7 @@ struct UsagePane: View {
 
     private func summaryStrip(_ usage: UsageSummary) -> some View {
         let totals = usage.totals
-        let periods = usage.byPeriod ?? []
-        let activeDays = periods.filter { ($0.freshTokens ?? 0) > 0 || $0.estimatedCostUsd != nil }.count
+        let activity = UsagePeriodActivityPresentation(usage: usage)
 
         return StripRow(cells: [
             StripRow.Cell(
@@ -283,11 +282,11 @@ struct UsagePane: View {
                 absent: "no priced usage"
             ),
             StripRow.Cell(
-                id: "days",
-                label: "Active days",
-                value: periods.isEmpty ? nil : "\(activeDays)/\(periods.count)",
+                id: "periods",
+                label: activity.label,
+                value: activity.value,
                 qualifier: "with recorded usage",
-                absent: "no daily series"
+                absent: activity.absent
             ),
         ])
     }
@@ -361,6 +360,32 @@ struct UsagePane: View {
                 }
             }
         }
+    }
+}
+
+struct UsagePeriodActivityPresentation {
+    let label: String
+    let value: String?
+    let absent: String
+
+    init(usage: UsageSummary) {
+        switch usage.filtersEcho?.granularity {
+        case "daily":
+            label = "Active days"
+            absent = "no daily series"
+        case "weekly":
+            label = "Active weeks"
+            absent = "no weekly series"
+        default:
+            label = "Active periods"
+            absent = "no period series"
+        }
+
+        let periods = usage.byPeriod ?? []
+        let activeCount = periods.filter {
+            ($0.freshTokens ?? 0) > 0 || $0.estimatedCostUsd != nil
+        }.count
+        value = periods.isEmpty ? nil : "\(activeCount)/\(periods.count)"
     }
 }
 

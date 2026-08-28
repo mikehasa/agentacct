@@ -169,13 +169,19 @@ struct UsageSummary: Decodable {
     let byModel: [UsageBucket]
     let byPeriod: [PeriodBucket]?
     let totals: UsageBucket?
+    let filtersEcho: UsageFiltersEcho?
 
     enum CodingKeys: String, CodingKey {
         case byClient = "by_client"
         case byModel = "by_model"
         case byPeriod = "by_period"
         case totals
+        case filtersEcho = "filters_echo"
     }
+}
+
+struct UsageFiltersEcho: Decodable {
+    let granularity: String?
 }
 
 struct PeriodBucket: Decodable {

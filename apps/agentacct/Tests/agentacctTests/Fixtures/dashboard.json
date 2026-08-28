@@ -1079,6 +1079,11 @@
         }
       }
     ],
+    "filters_echo": {
+      "days": "7",
+      "granularity": "daily",
+      "granularity_requested": "auto"
+    },
     "totals": {
       "client": null,
       "sessions": 54,
