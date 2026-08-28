@@ -247,6 +247,34 @@ final class DashboardInteractionTests: XCTestCase {
             DashboardAttentionPresentation(payload: clear, error: nil).dashboardHeadline,
             "No recorded work needs review"
         )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: clear, error: "refresh failed"),
+            .unavailable("refresh failed")
+        )
+
+        let falseClear = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "hidden-finding",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 0,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 0 },
+              "limit": 5,
+              "truncated": false
+            }
+            """
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: falseClear, error: nil),
+            .inconsistent(total: 0)
+        )
 
         let inconsistent = try decode(
             V1AttentionPayload.self,
@@ -268,6 +296,30 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(
             DashboardAttentionPresentation(payload: inconsistent, error: nil).dashboardHeadline,
             "Review details unavailable"
+        )
+
+        let mismatchedCounts = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "finding",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 0 },
+              "limit": 5,
+              "truncated": false
+            }
+            """
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: mismatchedCounts, error: nil),
+            .inconsistent(total: 2)
         )
     }
 
@@ -297,6 +349,40 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(presentation.dashboardHeadline, "Verify dashboard hierarchy")
         XCTAssertEqual(presentation.dashboardStatus, "2 review items")
         XCTAssertFalse(presentation.dashboardStatusIsWarning)
+    }
+
+    func testSignalRailNeverPresentsRetainedSourceHealthAsCurrentAfterAnError() throws {
+        let healthy = try decode(
+            V1IngestionSnapshot.self,
+            from: """
+            {
+              "state": "healthy",
+              "last_success_at": 1000,
+              "issues": []
+            }
+            """
+        )
+
+        XCTAssertEqual(
+            DashboardIngestionPresentation(snapshot: healthy, error: "source refresh failed"),
+            DashboardIngestionPresentation(
+                title: "Source status unavailable",
+                detail: "source refresh failed",
+                tone: .warning
+            )
+        )
+        XCTAssertEqual(
+            DashboardIngestionPresentation(snapshot: healthy, error: nil).title,
+            "Sources healthy"
+        )
+        XCTAssertEqual(
+            DashboardIngestionPresentation(snapshot: nil, error: nil),
+            DashboardIngestionPresentation(
+                title: "Checking source status",
+                detail: "Waiting for the current ingestion record.",
+                tone: .muted
+            )
+        )
     }
 
     func testWorkAttentionEmptyCopyRequiresAnAuthoritativeZero() throws {
