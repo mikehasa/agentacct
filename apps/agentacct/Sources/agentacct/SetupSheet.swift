@@ -5,10 +5,32 @@ import SwiftUI
 // agents (MCP servers, hooks, standing instructions) — the same `agentacct
 // onboard` the CLI docs describe, driven from a window instead of a terminal.
 
+enum SetupPhaseKey: Equatable {
+    case idle
+    case working
+    case done
+    case failed
+}
+
+@MainActor
+func setupPhaseKey(for phase: SetupModel.Phase) -> SetupPhaseKey {
+    switch phase {
+    case .idle: return .idle
+    case .working: return .working
+    case .done: return .done
+    case .failed: return .failed
+    }
+}
+
 struct SetupSheet: View {
     @ObservedObject var setup: SetupModel
     var onClose: () -> Void
     @State private var setupTask: Task<Void, Never>?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var phaseKey: SetupPhaseKey {
+        setupPhaseKey(for: setup.phase)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.l) {
@@ -46,12 +68,28 @@ struct SetupSheet: View {
                     .background(Theme.chrome, in: RoundedRectangle(cornerRadius: Metrics.radius))
                     .overlay(RoundedRectangle(cornerRadius: Metrics.radius).strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW))
                     .onChange(of: setup.log.count) {
-                        withAnimation { proxy.scrollTo(setup.log.count - 1, anchor: .bottom) }
+                        guard setup.log.count > 0 else { return }
+                        if reduceMotion {
+                            proxy.scrollTo(setup.log.count - 1, anchor: .bottom)
+                        } else {
+                            withAnimation(Motion.contentUpdate) {
+                                proxy.scrollTo(setup.log.count - 1, anchor: .bottom)
+                            }
+                        }
                     }
                 }
             }
 
-            footer
+            ZStack(alignment: .topLeading) {
+                footer
+                    .id(phaseKey)
+                    .transition(.opacity)
+            }
+            .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
+            .animation(
+                reduceMotion ? Motion.reducedCrossfade : Motion.phaseCrossfade,
+                value: phaseKey
+            )
         }
         .padding(Space.l)
         .frame(width: 460)
@@ -81,7 +119,9 @@ struct SetupSheet: View {
         switch setup.phase {
         case .idle:
             HStack {
-                Button("Not now", action: onClose).buttonStyle(.plain).foregroundStyle(Theme.muted)
+                Button("Not now", action: onClose)
+                    .buttonStyle(QuietButtonStyle(tint: Theme.muted))
+                    .foregroundStyle(Theme.muted)
                 Spacer()
                 Button(action: startSetup) {
                     Text("Set up recording").font(Face.sansFont(13, .semibold))
@@ -120,7 +160,9 @@ struct SetupSheet: View {
                     .foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    Button("Close", action: onClose).buttonStyle(.plain).foregroundStyle(Theme.muted)
+                    Button("Close", action: onClose)
+                        .buttonStyle(QuietButtonStyle(tint: Theme.muted))
+                        .foregroundStyle(Theme.muted)
                     Spacer()
                     Button("Try again") {
                         setup.reset()
