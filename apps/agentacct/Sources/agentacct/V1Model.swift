@@ -522,6 +522,33 @@ private func attentionCounts(
         && observed.blocker <= reported.blocker
 }
 
+/// Failed checks and failed steps share the leading operational class; all of
+/// them precede blockers. A partial prefix may stop within that leading class,
+/// but it cannot expose a blocker while a reported failure row is still unseen.
+private func hasConsistentAttentionPrefixOrder(
+    _ items: [ReceiptSummary],
+    reported: V1AttentionCounts
+) -> Bool {
+    let leadingTotal = reported.failedCheck.addingReportingOverflow(reported.failedStep)
+    guard !leadingTotal.overflow else { return false }
+
+    var observedLeading = 0
+    var reachedBlockers = false
+    for item in items {
+        switch item.attention?.kind {
+        case "failed_check", "failed_step":
+            guard !reachedBlockers else { return false }
+            observedLeading += 1
+        case "blocker":
+            guard observedLeading == leadingTotal.partialValue else { return false }
+            reachedBlockers = true
+        default:
+            return false
+        }
+    }
+    return true
+}
+
 /// Validate the complete-count and first-page contract before any surface uses
 /// an attention response. Legacy daemons omit both paging fields; current
 /// daemons must supply both. A partial or contradictory envelope is not safe to
@@ -563,7 +590,8 @@ func hasConsistentAttentionHeadEnvelope(_ payload: V1AttentionPayload) -> Bool {
     guard !total.overflow,
           total.partialValue == payload.total,
           let observed = observedAttentionCounts(in: payload.items),
-          attentionCounts(observed, fitWithin: payload.counts)
+          attentionCounts(observed, fitWithin: payload.counts),
+          hasConsistentAttentionPrefixOrder(payload.items, reported: payload.counts)
     else {
         return false
     }
@@ -669,6 +697,7 @@ func mergedAttentionItems(
           existingIDs.isDisjoint(with: pageIDs),
           let observed = observedAttentionCounts(in: merged),
           attentionCounts(observed, fitWithin: summary.counts),
+          hasConsistentAttentionPrefixOrder(merged, reported: summary.counts),
           end.partialValue < page.total || observed == summary.counts
     else {
         return nil

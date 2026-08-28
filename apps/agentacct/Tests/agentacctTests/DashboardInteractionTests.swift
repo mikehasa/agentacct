@@ -737,6 +737,25 @@ final class DashboardInteractionTests: XCTestCase {
             }
             """
         )
+        let prematureBlocker = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "blocker",
+                "decision_status": { "key": "blocked" },
+                "evidence_strength": { "key": "unchecked" },
+                "cost": {},
+                "attention": { "kind": "blocker", "summary": "waiting for approval" }
+              }],
+              "total": 3,
+              "counts": { "failed_check": 2, "failed_step": 0, "blocker": 1 },
+              "revision": "revision-1",
+              "offset": 1, "limit": 1, "truncated": true
+            }
+            """
+        )
 
         XCTAssertNil(
             mergedAttentionItems(existing: first.items, summary: first, page: changedQueue),
@@ -745,6 +764,10 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertNil(
             mergedAttentionItems(existing: first.items, summary: first, page: emptyMiddlePage),
             "a truncated continuation cannot make progress with an empty page"
+        )
+        XCTAssertNil(
+            mergedAttentionItems(existing: first.items, summary: first, page: prematureBlocker),
+            "a blocker cannot appear while a reported failure-class row remains unseen"
         )
     }
 
@@ -1084,6 +1107,16 @@ final class DashboardInteractionTests: XCTestCase {
                 offset: 0,
                 limit: 5,
                 truncated: false
+            ),
+            V1AttentionPayload(
+                schema: validLegacy.schema,
+                items: [blockerItem],
+                total: 2,
+                counts: V1AttentionCounts(failedCheck: 1, failedStep: 0, blocker: 1),
+                revision: "blocker-before-failure",
+                offset: 0,
+                limit: 1,
+                truncated: true
             ),
             V1AttentionPayload(
                 schema: validLegacy.schema,

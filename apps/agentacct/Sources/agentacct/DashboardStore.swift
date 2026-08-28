@@ -265,6 +265,10 @@ final class DashboardStore: ObservableObject {
 
     /// The Task list for the Receipts pane (one compact Receipt summary each).
     func fetchReceipts() async {
+        // The window refresh already owns this lane. Starting a second request
+        // here would advance the generation; if Work then disappears and its
+        // task is cancelled, the still-valid window response could be rejected.
+        guard !isRefreshing else { return }
         let requestGeneration = beginReceiptListRequest()
         do {
             let payload: ReceiptTasksPayload = try await client.getAuthed("/v1/tasks?limit=200")

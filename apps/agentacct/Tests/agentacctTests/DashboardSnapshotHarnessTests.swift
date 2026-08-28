@@ -256,6 +256,9 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         defer { SnapshotMode.setFixtureDate(nil) }
 
         XCTAssertEqual(Theme.resetsIn(1_000_000 + 6 * 86_400 + 13 * 3_600), "6d 13h")
+        XCTAssertNil(Theme.resetsIn(.greatestFiniteMagnitude))
+        XCTAssertNil(Theme.resetsIn(.infinity))
+        XCTAssertNil(Theme.resetsIn(.nan))
         XCTAssertEqual(agoText(1_000_000 - 3_600), "1h ago")
     }
 
