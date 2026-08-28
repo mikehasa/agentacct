@@ -78,6 +78,39 @@ func assertedByLabel(_ raw: String?) -> String? {
     }
 }
 
+/// Renders only check tallies that the receipt actually carries. A missing
+/// total is named explicitly so an older or partial payload never reads as a
+/// measured zero.
+func receiptCheckSummary(total: Int?, passed: Int?, failed: Int?) -> String {
+    var parts = [total.map { "\($0) checks" } ?? "check total not reported"]
+    if let passed { parts.append("\(passed) passed") }
+    if let failed { parts.append("\(failed) failed") }
+    return parts.joined(separator: " · ")
+}
+
+/// Absence of the external tier says nothing about independently checked or
+/// self-checked evidence. Legacy receipts can omit zero-valued tier keys, so
+/// an absent external key carries the same presentation as an explicit zero.
+func receiptExternalEvidenceNotice(byTier: ReceiptByTier?) -> String? {
+    guard (byTier?.externallyVerified ?? 0) == 0 else { return nil }
+    return "No externally verified evidence on this receipt"
+}
+
+struct ReceiptCIEvidenceNotice: Equatable {
+    let headline: String
+    let detail: String
+}
+
+/// CI provenance can strengthen supporting evidence, but is not itself a
+/// decision transition. Keep the provenance and decision axes orthogonal.
+func receiptCIEvidenceNotice(sources: [String]) -> ReceiptCIEvidenceNotice? {
+    guard !sources.contains("ci") else { return nil }
+    return ReceiptCIEvidenceNotice(
+        headline: "No CI evidence on this receipt",
+        detail: "CI can strengthen supporting evidence, but it does not change the separately recorded decision status."
+    )
+}
+
 enum ReceiptActionIntegrity: Equatable {
     case unavailable
     case captureUnknown
@@ -957,7 +990,11 @@ struct RecordDimensionsCard: View {
 
     private var evidenceSummary: String {
         let dim = receipt.dimensions.evidence
-        return "\(dim.checksTotal ?? 0) checks · \(dim.checksPassed ?? 0) passed · \(dim.checksFailed ?? 0) failed"
+        return receiptCheckSummary(
+            total: dim.checksTotal,
+            passed: dim.checksPassed,
+            failed: dim.checksFailed
+        )
     }
 
     private var outcomeSummary: String {
@@ -1208,8 +1245,8 @@ struct RecordCoverageCard: View {
                         }
                     }
                     .padding(.top, Space.m)
-                    if tiers.first(where: { $0.grade == "externally_verified" })?.count == 0 {
-                        Text("No independent verifier evidence on this receipt")
+                    if let notice = receiptExternalEvidenceNotice(byTier: evidence.byTier) {
+                        Text(notice)
                             .font(Type.caption).foregroundStyle(Theme.muted)
                             .padding(.top, Space.s)
                     }
@@ -1482,12 +1519,12 @@ struct RecordSourcesCard: View {
                         }
                         .padding(.vertical, Space.m)
                     }
-                    if !presentSources.contains("ci") {
+                    if let notice = receiptCIEvidenceNotice(sources: presentSources) {
                         Rectangle().fill(Theme.hairline).frame(height: 1)
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("No CI evidence on this receipt")
+                            Text(notice.headline)
                                 .font(Type.rowLabel).foregroundStyle(Theme.muted)
-                            Text("Independent evidence upgrades self-checked claims to verified.")
+                            Text(notice.detail)
                                 .font(Type.caption).foregroundStyle(Theme.muted)
                         }
                         .padding(.top, Space.m)
