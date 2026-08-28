@@ -81,30 +81,30 @@ final class ReceiptActionSummaryTests: XCTestCase {
     }
 
     func testSynopsisDoesNotInventMeasuredZeroFromUnknownCaptureCoverage() {
-        let absent = receiptActionSynopsis(counts: nil, reportedTotal: nil)
+        let absent = receiptActionSynopsis(counts: nil, storedTotal: nil)
         XCTAssertEqual(absent.integrity, .unavailable)
         XCTAssertEqual(absent.headline, "not instrumented")
         XCTAssertNil(absent.captureBoundary)
 
-        let zero = receiptActionSynopsis(counts: [:], reportedTotal: 0)
+        let zero = receiptActionSynopsis(counts: [:], storedTotal: 0)
         XCTAssertEqual(zero.integrity, .captureUnknown)
-        XCTAssertEqual(zero.headline, "No action records")
+        XCTAssertEqual(zero.headline, "No captured tool calls")
         XCTAssertEqual(zero.integrityDetail, "Capture coverage unknown")
         XCTAssertTrue(zero.metrics.isEmpty)
         XCTAssertNil(zero.shareDenominator)
         XCTAssertNil(zero.captureBoundary)
 
-        let missingTotal = receiptActionSynopsis(counts: [:], reportedTotal: nil)
+        let missingTotal = receiptActionSynopsis(counts: [:], storedTotal: nil)
         XCTAssertEqual(missingTotal.integrity, .totalUnavailable)
-        XCTAssertEqual(missingTotal.headline, "action total unavailable")
-        XCTAssertEqual(missingTotal.integrityDetail, "No categorized action counts")
+        XCTAssertEqual(missingTotal.headline, "stored total unavailable")
+        XCTAssertEqual(missingTotal.integrityDetail, "No categorized tool-call counts")
     }
 
     func testSynopsisRepresentsTotalOnlyWithoutInventingTypeRows() {
-        let synopsis = receiptActionSynopsis(counts: nil, reportedTotal: 80)
+        let synopsis = receiptActionSynopsis(counts: nil, storedTotal: 80)
         XCTAssertEqual(synopsis.integrity, .totalOnly)
-        XCTAssertEqual(synopsis.headline, "80 actions recorded")
-        XCTAssertEqual(synopsis.integrityDetail, "Type breakdown unavailable")
+        XCTAssertEqual(synopsis.headline, "80 tool calls in stored total")
+        XCTAssertEqual(synopsis.integrityDetail, "Tool-call type breakdown unavailable")
         XCTAssertTrue(synopsis.metrics.isEmpty)
         XCTAssertNil(synopsis.shareDenominator)
     }
@@ -112,48 +112,48 @@ final class ReceiptActionSummaryTests: XCTestCase {
     func testSynopsisReconcilesExactTotalsAndRejectsArithmeticDiscrepancies() {
         let exact = receiptActionSynopsis(
             counts: ["edit": 7, "execute": 24, "read": 38, "search": 11],
-            reportedTotal: 80
+            storedTotal: 80
         )
         XCTAssertEqual(exact.integrity, .exact)
-        XCTAssertEqual(exact.headline, "80 actions recorded")
+        XCTAssertEqual(exact.headline, "80 tool calls captured")
         XCTAssertNil(exact.integrityDetail)
         XCTAssertEqual(exact.shareDenominator, 80)
         XCTAssertEqual(exact.metrics.map(\.key), ["read", "edit", "execute", "search"])
         XCTAssertEqual(
             exact.captureBoundary,
-            "No ordered action ledger; captured signals cannot be linked to results or timing."
+            "No ordered action ledger; captured tool-call counts cannot be linked to results or timing."
         )
 
-        let partial = receiptActionSynopsis(counts: ["read": 7], reportedTotal: 10)
+        let partial = receiptActionSynopsis(counts: ["read": 7], storedTotal: 10)
         XCTAssertEqual(partial.integrity, .mismatch)
-        XCTAssertEqual(partial.headline, "Action totals conflict")
-        XCTAssertEqual(partial.integrityDetail, "7 categorized · 10 reported")
+        XCTAssertEqual(partial.headline, "Tool-call totals conflict")
+        XCTAssertEqual(partial.integrityDetail, "category counts sum to 7 · stored total is 10")
         XCTAssertNil(partial.shareDenominator)
         XCTAssertEqual(partial.metrics.map(\.key), ["read"])
     }
 
     func testDistributionAppearsOnlyForAReconciledPositivePartition() {
-        let exact = receiptActionSynopsis(counts: ["read": 8], reportedTotal: 8)
-        let partial = receiptActionSynopsis(counts: ["read": 7], reportedTotal: 10)
+        let exact = receiptActionSynopsis(counts: ["read": 8], storedTotal: 8)
+        let partial = receiptActionSynopsis(counts: ["read": 7], storedTotal: 10)
         XCTAssertTrue(exact.canShowDistribution)
         XCTAssertFalse(partial.canShowDistribution)
 
         let suppressed = [
-            receiptActionSynopsis(counts: nil, reportedTotal: nil),
-            receiptActionSynopsis(counts: [:], reportedTotal: 0),
-            receiptActionSynopsis(counts: nil, reportedTotal: 8),
-            receiptActionSynopsis(counts: ["read": 8], reportedTotal: nil),
-            receiptActionSynopsis(counts: ["read": 8, "edit": 4], reportedTotal: 10),
-            receiptActionSynopsis(counts: ["read": -1], reportedTotal: 1),
+            receiptActionSynopsis(counts: nil, storedTotal: nil),
+            receiptActionSynopsis(counts: [:], storedTotal: 0),
+            receiptActionSynopsis(counts: nil, storedTotal: 8),
+            receiptActionSynopsis(counts: ["read": 8], storedTotal: nil),
+            receiptActionSynopsis(counts: ["read": 8, "edit": 4], storedTotal: 10),
+            receiptActionSynopsis(counts: ["read": -1], storedTotal: 1),
         ]
         XCTAssertTrue(suppressed.allSatisfy { !$0.canShowDistribution })
     }
 
-    func testSynopsisKeepsCountsWhenRecordedTotalIsUnavailable() {
-        let missingTotal = receiptActionSynopsis(counts: ["read": 1], reportedTotal: nil)
+    func testSynopsisKeepsCountsWhenStoredTotalIsUnavailable() {
+        let missingTotal = receiptActionSynopsis(counts: ["read": 1], storedTotal: nil)
         XCTAssertEqual(missingTotal.integrity, .totalUnavailable)
-        XCTAssertEqual(missingTotal.headline, "1 categorized action")
-        XCTAssertEqual(missingTotal.integrityDetail, "Recorded total unavailable")
+        XCTAssertEqual(missingTotal.headline, "1 categorized tool call")
+        XCTAssertEqual(missingTotal.integrityDetail, "Stored tool-call total unavailable")
         XCTAssertNil(missingTotal.shareDenominator)
         XCTAssertNotNil(missingTotal.captureBoundary)
     }
@@ -161,11 +161,11 @@ final class ReceiptActionSummaryTests: XCTestCase {
     func testSynopsisNamesMismatchedTotalsAndSuppressesShares() {
         let mismatch = receiptActionSynopsis(
             counts: ["read": 8, "edit": 4],
-            reportedTotal: 10
+            storedTotal: 10
         )
         XCTAssertEqual(mismatch.integrity, .mismatch)
-        XCTAssertEqual(mismatch.headline, "Action totals conflict")
-        XCTAssertEqual(mismatch.integrityDetail, "12 categorized · 10 reported")
+        XCTAssertEqual(mismatch.headline, "Tool-call totals conflict")
+        XCTAssertEqual(mismatch.integrityDetail, "category counts sum to 12 · stored total is 10")
         XCTAssertNil(mismatch.shareDenominator)
         XCTAssertEqual(mismatch.metrics.map(\.count), [8, 4])
     }
@@ -173,51 +173,51 @@ final class ReceiptActionSummaryTests: XCTestCase {
     func testSynopsisNamesInvalidCategoriesAndTotalsWithoutNormalizingThem() {
         let invalidCategory = receiptActionSynopsis(
             counts: ["read": 8, "edit": -2],
-            reportedTotal: 8
+            storedTotal: 8
         )
         XCTAssertEqual(invalidCategory.integrity, .invalid)
-        XCTAssertEqual(invalidCategory.headline, "Action data incomplete")
+        XCTAssertEqual(invalidCategory.headline, "Tool-call data incomplete")
         XCTAssertEqual(
             invalidCategory.integrityDetail,
-            "1 invalid category was omitted · 8 valid actions remain categorized · 8 actions were reported"
+            "1 invalid category was omitted · 8 valid tool calls remain categorized · stored total is 8"
         )
         XCTAssertNil(invalidCategory.shareDenominator)
         XCTAssertEqual(invalidCategory.metrics.map(\.key), ["read"])
 
-        let invalidTotal = receiptActionSynopsis(counts: ["read": 2], reportedTotal: -1)
+        let invalidTotal = receiptActionSynopsis(counts: ["read": 2], storedTotal: -1)
         XCTAssertEqual(invalidTotal.integrity, .invalid)
         XCTAssertEqual(
             invalidTotal.integrityDetail,
-            "the reported total is invalid · 2 valid actions remain categorized"
+            "the stored total is invalid · 2 valid tool calls remain categorized"
         )
 
-        let blankKey = receiptActionSynopsis(counts: ["   ": 4], reportedTotal: 4)
+        let blankKey = receiptActionSynopsis(counts: ["   ": 4], storedTotal: 4)
         XCTAssertEqual(blankKey.integrity, .invalid)
         XCTAssertEqual(
             blankKey.integrityDetail,
-            "1 invalid category was omitted · 4 actions were reported"
+            "1 invalid category was omitted · stored total is 4"
         )
         XCTAssertTrue(blankKey.metrics.isEmpty)
 
         let overflow = receiptActionSynopsis(
             counts: ["read": Int.max, "edit": 1],
-            reportedTotal: Int.max
+            storedTotal: Int.max
         )
         XCTAssertEqual(overflow.integrity, .invalid)
         XCTAssertEqual(
             overflow.integrityDetail,
-            "the categorized action sum overflowed · \(Int.max) actions were reported"
+            "the categorized tool-call sum overflowed · stored total is \(Int.max)"
         )
         XCTAssertNil(overflow.categorizedTotal)
 
         let unknownOverflow = receiptActionSynopsis(
             counts: ["future_a": Int.max, "future_b": 1, "": -1],
-            reportedTotal: Int.max
+            storedTotal: Int.max
         )
         XCTAssertEqual(unknownOverflow.integrity, .invalid)
         XCTAssertEqual(
             unknownOverflow.integrityDetail,
-            "1 invalid category was omitted · the categorized action sum overflowed · \(Int.max) actions were reported"
+            "1 invalid category was omitted · the categorized tool-call sum overflowed · stored total is \(Int.max)"
         )
         XCTAssertNil(unknownOverflow.categorizedTotal)
         XCTAssertTrue(unknownOverflow.metrics.isEmpty)
@@ -226,32 +226,44 @@ final class ReceiptActionSummaryTests: XCTestCase {
     func testKPIUsesTheSameIntegrityClassificationAsTheDigest() {
         let cases: [(ReceiptActionSynopsis, ReceiptActionKPI)] = [
             (
-                receiptActionSynopsis(counts: nil, reportedTotal: nil),
+                receiptActionSynopsis(counts: nil, storedTotal: nil),
                 ReceiptActionKPI(value: nil, qualifier: nil, absent: "not instrumented")
             ),
             (
-                receiptActionSynopsis(counts: [:], reportedTotal: 0),
+                receiptActionSynopsis(counts: [:], storedTotal: 0),
                 ReceiptActionKPI(value: nil, qualifier: nil, absent: "capture unknown")
             ),
             (
-                receiptActionSynopsis(counts: nil, reportedTotal: 8),
-                ReceiptActionKPI(value: "8", qualifier: "recorded", absent: nil)
+                receiptActionSynopsis(counts: nil, storedTotal: 8),
+                ReceiptActionKPI(value: "8", qualifier: "tool calls", absent: nil)
             ),
             (
-                receiptActionSynopsis(counts: ["read": 8], reportedTotal: 8),
-                ReceiptActionKPI(value: "8", qualifier: "recorded", absent: nil)
+                receiptActionSynopsis(counts: ["read": 8], storedTotal: 8),
+                ReceiptActionKPI(value: "8", qualifier: "tool calls", absent: nil)
             ),
             (
-                receiptActionSynopsis(counts: ["read": 3], reportedTotal: nil),
-                ReceiptActionKPI(value: "3", qualifier: "categorized", absent: nil)
+                receiptActionSynopsis(counts: ["read": 3], storedTotal: nil),
+                ReceiptActionKPI(value: "3", qualifier: "categorized calls", absent: nil)
             ),
             (
-                receiptActionSynopsis(counts: ["read": 4], reportedTotal: 3),
-                ReceiptActionKPI(value: nil, qualifier: nil, absent: "totals conflict")
+                receiptActionSynopsis(counts: [:], storedTotal: nil),
+                ReceiptActionKPI(value: nil, qualifier: nil, absent: "stored total unavailable")
             ),
             (
-                receiptActionSynopsis(counts: ["read": -1], reportedTotal: -1),
-                ReceiptActionKPI(value: nil, qualifier: nil, absent: "data incomplete")
+                receiptActionSynopsis(counts: ["future_type": 2], storedTotal: 2),
+                ReceiptActionKPI(value: "2", qualifier: "tool calls · types changed", absent: nil)
+            ),
+            (
+                receiptActionSynopsis(counts: ["future_type": 2], storedTotal: nil),
+                ReceiptActionKPI(value: "2", qualifier: "categorized calls · types changed", absent: nil)
+            ),
+            (
+                receiptActionSynopsis(counts: ["read": 4], storedTotal: 3),
+                ReceiptActionKPI(value: nil, qualifier: nil, absent: "tool-call totals conflict")
+            ),
+            (
+                receiptActionSynopsis(counts: ["read": -1], storedTotal: -1),
+                ReceiptActionKPI(value: nil, qualifier: nil, absent: "tool-call data incomplete")
             ),
         ]
 
@@ -262,19 +274,19 @@ final class ReceiptActionSummaryTests: XCTestCase {
 
     func testScopeDoesNotMisrepresentRelatedPathsAsActionTargets() {
         XCTAssertEqual(
-            receiptActionScope(recordedPathCount: 18),
-            "18 paths referenced by captured work and machine checks"
+            receiptActionScope(relatedPathCount: 18),
+            "18 unique paths from recorded work, machine checks, or captured edit tool calls"
         )
         XCTAssertEqual(
-            receiptActionScope(recordedPathCount: 1),
-            "1 path referenced by captured work and machine checks"
+            receiptActionScope(relatedPathCount: 1),
+            "1 unique path from recorded work, machine checks, or captured edit tool calls"
         )
         XCTAssertEqual(
-            receiptActionScope(recordedPathCount: 0),
-            "0 paths referenced by captured work and machine checks"
+            receiptActionScope(relatedPathCount: 0),
+            "0 unique paths from recorded work, machine checks, or captured edit tool calls"
         )
-        XCTAssertEqual(receiptActionScope(recordedPathCount: nil), "")
-        XCTAssertEqual(receiptActionScope(recordedPathCount: -1), "")
+        XCTAssertEqual(receiptActionScope(relatedPathCount: nil), "")
+        XCTAssertEqual(receiptActionScope(relatedPathCount: -1), "")
     }
 
     func testSourceTextUsesPlainHumanLabels() {
@@ -291,13 +303,18 @@ final class ReceiptActionSummaryTests: XCTestCase {
         var counts: [String: Int] = ["read": 2]
         for index in 0..<5_000 { counts["future_\(index)"] = 1 }
 
-        let synopsis = receiptActionSynopsis(counts: counts, reportedTotal: 5_002)
+        let synopsis = receiptActionSynopsis(counts: counts, storedTotal: 5_002)
 
         XCTAssertEqual(synopsis.integrity, .unrecognizedCategories)
         XCTAssertEqual(synopsis.metrics.count, 2)
         XCTAssertEqual(synopsis.metrics.last?.label, "Unrecognized types")
         XCTAssertEqual(synopsis.metrics.last?.count, 5_000)
+        XCTAssertEqual(synopsis.headline, "5002 tool calls captured")
+        XCTAssertEqual(
+            synopsis.integrityDetail,
+            "5000 unrecognized tool-call types were aggregated · update the app to interpret them"
+        )
         XCTAssertFalse(synopsis.canShowDistribution)
-        XCTAssertEqual(receiptActionKPI(synopsis).qualifier, "types changed")
+        XCTAssertEqual(receiptActionKPI(synopsis).qualifier, "tool calls · types changed")
     }
 }

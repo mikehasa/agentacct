@@ -106,13 +106,13 @@ struct ReceiptActionSynopsis: Equatable {
     let metrics: [ReceiptActionMetric]
     let headline: String
     let integrityDetail: String?
-    let reportedTotal: Int?
+    let storedTotal: Int?
     let categorizedTotal: Int?
     let shareDenominator: Int?
     let captureBoundary: String?
 
     /// A quantitative distribution is honest only when the displayed types
-    /// reconcile to a positive recorded total. Other integrity states keep the
+    /// reconcile to a positive stored total. Other integrity states keep the
     /// exact counts but omit proportions rather than drawing a misleading
     /// chart against a missing or conflicting denominator.
     var canShowDistribution: Bool {
@@ -207,7 +207,7 @@ func receiptActionMetrics(_ counts: [String: Int]?) -> [ReceiptActionMetric] {
 
 func receiptActionSynopsis(
     counts: [String: Int]?,
-    reportedTotal: Int?
+    storedTotal: Int?
 ) -> ReceiptActionSynopsis {
     let derivation = deriveReceiptActionMetrics(counts)
     let metrics = derivation.metrics
@@ -224,47 +224,47 @@ func receiptActionSynopsis(
         }
     }
     let invalidCategoryCount = derivation.invalidCategoryCount
-    let invalidReportedTotal = (reportedTotal ?? 0) < 0
-    let captureBoundary = "No ordered action ledger; captured signals cannot be linked to results or timing."
+    let invalidStoredTotal = (storedTotal ?? 0) < 0
+    let captureBoundary = "No ordered action ledger; captured tool-call counts cannot be linked to results or timing."
 
-    if invalidCategoryCount > 0 || invalidReportedTotal || categorizedOverflow {
+    if invalidCategoryCount > 0 || invalidStoredTotal || categorizedOverflow {
         var details: [String] = []
         if invalidCategoryCount > 0 {
             details.append(
                 "\(invalidCategoryCount) invalid \(invalidCategoryCount == 1 ? "category was" : "categories were") omitted"
             )
         }
-        if invalidReportedTotal { details.append("the reported total is invalid") }
+        if invalidStoredTotal { details.append("the stored total is invalid") }
         if categorizedOverflow {
-            details.append("the categorized action sum overflowed")
+            details.append("the categorized tool-call sum overflowed")
         } else if categorizedTotal > 0 {
-            details.append("\(categorizedTotal) valid actions remain categorized")
+            details.append("\(categorizedTotal) valid \(categorizedTotal == 1 ? "tool call remains" : "tool calls remain") categorized")
         }
-        if let reportedTotal, reportedTotal >= 0 { details.append("\(reportedTotal) actions were reported") }
+        if let storedTotal, storedTotal >= 0 { details.append("stored total is \(storedTotal)") }
         return ReceiptActionSynopsis(
             integrity: .invalid,
             metrics: metrics,
-            headline: "Action data incomplete",
+            headline: "Tool-call data incomplete",
             integrityDetail: details.joined(separator: " · "),
-            reportedTotal: reportedTotal,
+            storedTotal: storedTotal,
             categorizedTotal: categorizedOverflow ? nil : categorizedTotal,
             shareDenominator: nil,
-            captureBoundary: categorizedTotal > 0 || (reportedTotal ?? 0) > 0 || categorizedOverflow
+            captureBoundary: categorizedTotal > 0 || (storedTotal ?? 0) > 0 || categorizedOverflow
                 ? captureBoundary : nil
         )
     }
 
-    guard let reportedTotal else {
+    guard let storedTotal else {
         if categorizedTotal > 0 {
             let hasUnrecognizedCategories = derivation.unrecognizedCategoryCount > 0
             return ReceiptActionSynopsis(
                 integrity: hasUnrecognizedCategories ? .unrecognizedCategories : .totalUnavailable,
                 metrics: metrics,
-                headline: "\(categorizedTotal) categorized \(categorizedTotal == 1 ? "action" : "actions")",
+                headline: "\(categorizedTotal) categorized \(categorizedTotal == 1 ? "tool call" : "tool calls")",
                 integrityDetail: hasUnrecognizedCategories
-                    ? "\(derivation.unrecognizedCategoryCount) unrecognized action \(derivation.unrecognizedCategoryCount == 1 ? "type" : "types") · recorded total unavailable"
-                    : "Recorded total unavailable",
-                reportedTotal: nil,
+                    ? "\(derivation.unrecognizedCategoryCount) unrecognized tool-call \(derivation.unrecognizedCategoryCount == 1 ? "type" : "types") · stored total unavailable"
+                    : "Stored tool-call total unavailable",
+                storedTotal: nil,
                 categorizedTotal: categorizedTotal,
                 shareDenominator: nil,
                 captureBoundary: captureBoundary
@@ -273,52 +273,52 @@ func receiptActionSynopsis(
         return ReceiptActionSynopsis(
             integrity: counts == nil ? .unavailable : .totalUnavailable,
             metrics: [],
-            headline: counts == nil ? "not instrumented" : "action total unavailable",
-            integrityDetail: counts == nil ? nil : "No categorized action counts",
-            reportedTotal: nil,
+            headline: counts == nil ? "not instrumented" : "stored total unavailable",
+            integrityDetail: counts == nil ? nil : "No categorized tool-call counts",
+            storedTotal: nil,
             categorizedTotal: 0,
             shareDenominator: nil,
             captureBoundary: nil
         )
     }
 
-    if reportedTotal == 0, categorizedTotal == 0 {
+    if storedTotal == 0, categorizedTotal == 0 {
         return ReceiptActionSynopsis(
             integrity: .captureUnknown,
             metrics: [],
-            headline: "No action records",
+            headline: "No captured tool calls",
             integrityDetail: "Capture coverage unknown",
-            reportedTotal: 0,
+            storedTotal: 0,
             categorizedTotal: 0,
             shareDenominator: nil,
             captureBoundary: nil
         )
     }
 
-    if reportedTotal > 0, counts == nil {
+    if storedTotal > 0, counts == nil {
         return ReceiptActionSynopsis(
             integrity: .totalOnly,
             metrics: [],
-            headline: "\(reportedTotal) \(reportedTotal == 1 ? "action" : "actions") recorded",
-            integrityDetail: "Type breakdown unavailable",
-            reportedTotal: reportedTotal,
+            headline: "\(storedTotal) \(storedTotal == 1 ? "tool call" : "tool calls") in stored total",
+            integrityDetail: "Tool-call type breakdown unavailable",
+            storedTotal: storedTotal,
             categorizedTotal: 0,
             shareDenominator: nil,
             captureBoundary: captureBoundary
         )
     }
 
-    if reportedTotal != categorizedTotal {
-        var detail = "\(categorizedTotal) categorized · \(reportedTotal) reported"
+    if storedTotal != categorizedTotal {
+        var detail = "category counts sum to \(categorizedTotal) · stored total is \(storedTotal)"
         if derivation.unrecognizedCategoryCount > 0 {
-            detail += " · \(derivation.unrecognizedCategoryCount) unrecognized \(derivation.unrecognizedCategoryCount == 1 ? "type" : "types")"
+            detail += " · \(derivation.unrecognizedCategoryCount) unrecognized tool-call \(derivation.unrecognizedCategoryCount == 1 ? "type" : "types")"
         }
         return ReceiptActionSynopsis(
             integrity: .mismatch,
             metrics: metrics,
-            headline: "Action totals conflict",
+            headline: "Tool-call totals conflict",
             integrityDetail: detail,
-            reportedTotal: reportedTotal,
+            storedTotal: storedTotal,
             categorizedTotal: categorizedTotal,
             shareDenominator: nil,
             captureBoundary: captureBoundary
@@ -328,9 +328,9 @@ func receiptActionSynopsis(
         return ReceiptActionSynopsis(
             integrity: .unrecognizedCategories,
             metrics: metrics,
-            headline: "\(reportedTotal) \(reportedTotal == 1 ? "action" : "actions") recorded",
-            integrityDetail: "\(derivation.unrecognizedCategoryCount) unrecognized action \(derivation.unrecognizedCategoryCount == 1 ? "type was" : "types were") aggregated · update the app to interpret them",
-            reportedTotal: reportedTotal,
+            headline: "\(storedTotal) \(storedTotal == 1 ? "tool call" : "tool calls") captured",
+            integrityDetail: "\(derivation.unrecognizedCategoryCount) unrecognized tool-call \(derivation.unrecognizedCategoryCount == 1 ? "type was" : "types were") aggregated · update the app to interpret \(derivation.unrecognizedCategoryCount == 1 ? "it" : "them")",
+            storedTotal: storedTotal,
             categorizedTotal: categorizedTotal,
             shareDenominator: nil,
             captureBoundary: captureBoundary
@@ -339,11 +339,11 @@ func receiptActionSynopsis(
     return ReceiptActionSynopsis(
         integrity: .exact,
         metrics: metrics,
-        headline: "\(reportedTotal) \(reportedTotal == 1 ? "action" : "actions") recorded",
+        headline: "\(storedTotal) \(storedTotal == 1 ? "tool call" : "tool calls") captured",
         integrityDetail: nil,
-        reportedTotal: reportedTotal,
+        storedTotal: storedTotal,
         categorizedTotal: categorizedTotal,
-        shareDenominator: reportedTotal,
+        shareDenominator: storedTotal,
         captureBoundary: captureBoundary
     )
 }
@@ -354,35 +354,35 @@ func receiptActionKPI(_ synopsis: ReceiptActionSynopsis) -> ReceiptActionKPI {
         return ReceiptActionKPI(value: nil, qualifier: nil, absent: "capture unknown")
     case .totalOnly, .exact:
         return ReceiptActionKPI(
-            value: synopsis.reportedTotal.map(String.init),
-            qualifier: "recorded",
+            value: synopsis.storedTotal.map(String.init),
+            qualifier: "tool calls",
             absent: nil
         )
     case .totalUnavailable:
         if let categorized = synopsis.categorizedTotal, categorized > 0 {
-            return ReceiptActionKPI(value: "\(categorized)", qualifier: "categorized", absent: nil)
+            return ReceiptActionKPI(value: "\(categorized)", qualifier: "categorized calls", absent: nil)
         }
-        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "total unavailable")
+        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "stored total unavailable")
     case .unrecognizedCategories:
-        if let reported = synopsis.reportedTotal {
-            return ReceiptActionKPI(value: "\(reported)", qualifier: "types changed", absent: nil)
+        if let stored = synopsis.storedTotal {
+            return ReceiptActionKPI(value: "\(stored)", qualifier: "tool calls · types changed", absent: nil)
         }
         if let categorized = synopsis.categorizedTotal, categorized > 0 {
-            return ReceiptActionKPI(value: "\(categorized)", qualifier: "types changed", absent: nil)
+            return ReceiptActionKPI(value: "\(categorized)", qualifier: "categorized calls · types changed", absent: nil)
         }
-        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "types changed")
+        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "tool-call types changed")
     case .mismatch:
-        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "totals conflict")
+        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "tool-call totals conflict")
     case .invalid:
-        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "data incomplete")
+        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "tool-call data incomplete")
     case .unavailable:
         return ReceiptActionKPI(value: nil, qualifier: nil, absent: "not instrumented")
     }
 }
 
-func receiptActionScope(recordedPathCount: Int?) -> String {
-    guard let pathCount = recordedPathCount, pathCount >= 0 else { return "" }
-    return "\(pathCount) \(pathCount == 1 ? "path" : "paths") referenced by captured work and machine checks"
+func receiptActionScope(relatedPathCount: Int?) -> String {
+    guard let pathCount = relatedPathCount, pathCount >= 0 else { return "" }
+    return "\(pathCount) unique \(pathCount == 1 ? "path" : "paths") from recorded work, machine checks, or captured edit tool calls"
 }
 
 func receiptActionSourceText(_ sources: [String]?) -> String {
@@ -433,7 +433,7 @@ struct RecordSummaryStrip: View {
         let actionKPI = receiptActionKPI(
             receiptActionSynopsis(
                 counts: actions.toolCategoryCounts,
-                reportedTotal: actions.toolCategoryTotal
+                storedTotal: actions.toolCategoryTotal
             )
         )
         let actionCell = Cell(
@@ -542,7 +542,7 @@ struct RecordSummaryStrip: View {
 /// one deterministic two-column-to-one-column transition.
 struct ReceiptActionsDigest: View {
     let synopsis: ReceiptActionSynopsis
-    let recordedPathCount: Int?
+    let relatedPathCount: Int?
     let provenance: [String]?
     let gaps: [String]?
 
@@ -554,7 +554,7 @@ struct ReceiptActionsDigest: View {
     @ScaledMetric(relativeTo: .caption) private var captionTypeSize: CGFloat = 12
     @ScaledMetric(relativeTo: .caption) private var captionIconSize: CGFloat = 10
 
-    private var scope: String { receiptActionScope(recordedPathCount: recordedPathCount) }
+    private var scope: String { receiptActionScope(relatedPathCount: relatedPathCount) }
     private var sourceText: String { receiptActionSourceText(provenance) }
     private var bodyFont: Font { Face.sansFont(bodyTypeSize, .regular) }
     private var rowLabelFont: Font { Face.sansFont(bodyTypeSize, .semibold) }
@@ -612,7 +612,7 @@ struct ReceiptActionsDigest: View {
                 if synopsis.canShowDistribution {
                     actionDistribution
                 } else {
-                    Text("Recorded action types")
+                    Text("Captured tool-call types")
                         .font(captionSemiboldFont)
                         .foregroundStyle(Theme.ink)
                         .padding(.top, Space.xs)
@@ -627,7 +627,7 @@ struct ReceiptActionsDigest: View {
                 metadataLine(label: "Related paths", value: scope)
             }
             if !sourceText.isEmpty {
-                metadataLine(label: "Sources present", value: sourceText)
+                metadataLine(label: "Action sources", value: sourceText)
             }
             if let boundary = synopsis.captureBoundary {
                 metadataLine(label: "Detail", value: boundary)
@@ -666,7 +666,7 @@ struct ReceiptActionsDigest: View {
                 HStack(alignment: .firstTextBaseline) {
                     Text("0")
                     Spacer(minLength: Space.s)
-                    Text("\(denominator) actions")
+                    Text("\(denominator) tool calls")
                 }
                 .font(dataSmallFont)
                 .foregroundStyle(Theme.muted)
@@ -887,9 +887,9 @@ struct RecordDimensionsCard: View {
         return ReceiptActionsDigest(
             synopsis: receiptActionSynopsis(
                 counts: dim.toolCategoryCounts,
-                reportedTotal: dim.toolCategoryTotal
+                storedTotal: dim.toolCategoryTotal
             ),
-            recordedPathCount: dim.touchedFileCount,
+            relatedPathCount: dim.touchedFileCount,
             provenance: dim.provenance,
             gaps: dim.gaps
         )

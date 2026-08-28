@@ -145,7 +145,7 @@ enum WorkSnapshotRenderer {
     }
 }
 
-enum ReceiptActionSnapshotKind: String, CaseIterable {
+enum ReceiptActionSnapshotKind: String {
     case exactRegular = "exact-regular"
     case exactCompact = "exact-compact"
     case semanticGallery = "semantic-gallery"
@@ -181,8 +181,6 @@ struct ReceiptActionSnapshotConfiguration {
 }
 
 enum ReceiptActionSnapshotRenderer {
-    private static let snapshotLocale = Locale(identifier: "en_US_POSIX")
-
     @MainActor
     static func render(
         outputDirectory: URL,
@@ -280,7 +278,7 @@ private struct ReceiptActionSnapshotScene: View {
     private var exactSynopsis: ReceiptActionSynopsis {
         receiptActionSynopsis(
             counts: ["edit": 7, "execute": 24, "read": 38, "search": 11],
-            reportedTotal: 80
+            storedTotal: 80
         )
     }
 
@@ -288,7 +286,7 @@ private struct ReceiptActionSnapshotScene: View {
         Card(padding: Space.xl) {
             ReceiptActionsDigest(
                 synopsis: exactSynopsis,
-                recordedPathCount: 18,
+                relatedPathCount: 18,
                 provenance: ["client_log"],
                 gaps: []
             )
@@ -320,7 +318,7 @@ private struct ReceiptActionSnapshotScene: View {
                 stressCard(title: "320 pt · long translated content") {
                     ReceiptActionsDigest(
                         synopsis: germanSynopsis,
-                        recordedPathCount: 1_234,
+                        relatedPathCount: 1_234,
                         provenance: ["lokales_client_protokoll_mit_langer_bezeichnung"],
                         gaps: ["Die Abdeckung einzelner Aktionen ist unvollständig und kann nicht rekonstruiert werden."]
                     )
@@ -329,7 +327,7 @@ private struct ReceiptActionSnapshotScene: View {
                 stressCard(title: "560 pt · RTL") {
                     ReceiptActionsDigest(
                         synopsis: exactSynopsis,
-                        recordedPathCount: 18,
+                        relatedPathCount: 18,
                         provenance: ["سجل_العميل"],
                         gaps: ["تفاصيل كل إجراء غير مسجلة"]
                     )
@@ -346,7 +344,7 @@ private struct ReceiptActionSnapshotScene: View {
             stressCard(title: "360 pt · accessibility 3 · RTL · exact totals") {
                 ReceiptActionsDigest(
                     synopsis: exactSynopsis,
-                    recordedPathCount: 18,
+                    relatedPathCount: 18,
                     provenance: ["transcript_scan", "mcp"],
                     gaps: []
                 )
@@ -369,9 +367,9 @@ private struct ReceiptActionSnapshotScene: View {
                             "other": 1,
                             "future_category": 6,
                         ],
-                        reportedTotal: 101
+                        storedTotal: 101
                     ),
-                    recordedPathCount: 18,
+                    relatedPathCount: 18,
                     provenance: ["client_log"],
                     gaps: []
                 )
@@ -387,18 +385,18 @@ private struct ReceiptActionSnapshotScene: View {
         return [
             .init(
                 id: "absent", title: "Absent instrumentation",
-                synopsis: receiptActionSynopsis(counts: nil, reportedTotal: nil),
+                synopsis: receiptActionSynopsis(counts: nil, storedTotal: nil),
                 pathCount: nil, provenance: nil, gaps: []
             ),
             .init(
                 id: "zero", title: "Zero records · capture unknown",
-                synopsis: receiptActionSynopsis(counts: [:], reportedTotal: 0),
+                synopsis: receiptActionSynopsis(counts: [:], storedTotal: 0),
                 pathCount: nil, provenance: nil,
                 gaps: ["Tool categories were not instrumented for this session."]
             ),
             .init(
                 id: "total-only", title: "Total only",
-                synopsis: receiptActionSynopsis(counts: nil, reportedTotal: 80),
+                synopsis: receiptActionSynopsis(counts: nil, storedTotal: 80),
                 pathCount: 18, provenance: ["client_log"], gaps: []
             ),
             .init(
@@ -407,28 +405,28 @@ private struct ReceiptActionSnapshotScene: View {
                 pathCount: 18, provenance: ["client_log"], gaps: []
             ),
             .init(
-                id: "partial", title: "Conflicting total · reported higher",
-                synopsis: receiptActionSynopsis(counts: ["read": 7], reportedTotal: 10),
+                id: "partial", title: "Conflicting total · stored total higher",
+                synopsis: receiptActionSynopsis(counts: ["read": 7], storedTotal: 10),
                 pathCount: 2, provenance: ["client_log"], gaps: []
             ),
             .init(
                 id: "mismatch", title: "Conflicting total · categorized higher",
-                synopsis: receiptActionSynopsis(counts: ["read": 8, "edit": 4], reportedTotal: 10),
+                synopsis: receiptActionSynopsis(counts: ["read": 8, "edit": 4], storedTotal: 10),
                 pathCount: 4, provenance: ["client_log"], gaps: []
             ),
             .init(
                 id: "invalid", title: "Invalid category",
-                synopsis: receiptActionSynopsis(counts: ["read": 8, "edit": -2], reportedTotal: 8),
+                synopsis: receiptActionSynopsis(counts: ["read": 8, "edit": -2], storedTotal: 8),
                 pathCount: 1, provenance: ["client_log"], gaps: []
             ),
             .init(
-                id: "legacy", title: "Recorded total unavailable",
-                synopsis: receiptActionSynopsis(counts: ["read": 3, "execute": 2], reportedTotal: nil),
+                id: "legacy", title: "Stored total unavailable",
+                synopsis: receiptActionSynopsis(counts: ["read": 3, "execute": 2], storedTotal: nil),
                 pathCount: 2, provenance: ["client_log"], gaps: []
             ),
             .init(
                 id: "high-cardinality", title: "High-cardinality future taxonomy",
-                synopsis: receiptActionSynopsis(counts: highCardinality, reportedTotal: 65),
+                synopsis: receiptActionSynopsis(counts: highCardinality, storedTotal: 65),
                 pathCount: 7, provenance: ["client_log"], gaps: []
             ),
             .init(
@@ -460,12 +458,12 @@ private struct ReceiptActionSnapshotScene: View {
                     count: 4
                 ),
             ],
-            headline: "66 aufgezeichnete Aktionen",
+            headline: "66 erfasste Werkzeugaufrufe",
             integrityDetail: nil,
-            reportedTotal: 66,
+            storedTotal: 66,
             categorizedTotal: 66,
             shareDenominator: 66,
-            captureBoundary: "Kein geordnetes Aktionsprotokoll; erfasste Signale lassen sich nicht mit Ergebnissen oder Zeitangaben verknüpfen."
+            captureBoundary: "Kein geordnetes Aktionsprotokoll; die erfassten Werkzeugaufrufzahlen lassen sich nicht mit Ergebnissen oder Zeitangaben verknüpfen."
         )
     }
 
@@ -476,7 +474,7 @@ private struct ReceiptActionSnapshotScene: View {
                 Rectangle().fill(Theme.hairline).frame(height: 1)
                 ReceiptActionsDigest(
                     synopsis: example.synopsis,
-                    recordedPathCount: example.pathCount,
+                    relatedPathCount: example.pathCount,
                     provenance: example.provenance,
                     gaps: example.gaps
                 )
