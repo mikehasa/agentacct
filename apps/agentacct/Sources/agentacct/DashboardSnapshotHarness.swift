@@ -14,10 +14,12 @@ struct DashboardSnapshotFixture: Decodable {
     let plan: V1PlanPayload
     let tasks: ReceiptTasksPayload
     let usage: UsageSummary
+    let usage90Days: UsageSummary
     let work: WorkSnapshotFixture?
 
     enum CodingKeys: String, CodingKey {
         case glance, plan, tasks, usage, work
+        case usage90Days = "usage_90_days"
         case menuSparseGlance = "menu_sparse_glance"
         case daemonVersion = "daemon_version"
     }

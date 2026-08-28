@@ -1189,6 +1189,11 @@
         }
       }
     ],
+    "filters_echo": {
+      "days": "7",
+      "granularity": "daily",
+      "granularity_requested": "auto"
+    },
     "totals": {
       "client": null,
       "sessions": 54,
@@ -1197,6 +1202,140 @@
       "estimated_cost_usd": 1087.42,
       "cost_complete": true,
       "known_additive_cost_usd": 1087.42,
+      "cost_confidence_label": "complete"
+    }
+  },
+  "usage_90_days": {
+    "by_client": [
+      {
+        "client": "codex",
+        "sessions": 160,
+        "fresh_tokens": 85000000,
+        "cache_read_tokens": 240000000,
+        "estimated_cost_usd": 920.5,
+        "cost_complete": true,
+        "known_additive_cost_usd": 920.5,
+        "cost_confidence_label": "complete"
+      },
+      {
+        "client": "claude-code",
+        "sessions": 43,
+        "fresh_tokens": 50000000,
+        "cache_read_tokens": 135000000,
+        "estimated_cost_usd": 1174.25,
+        "cost_complete": true,
+        "known_additive_cost_usd": 1174.25,
+        "cost_confidence_label": "complete"
+      },
+      {
+        "client": "hermes",
+        "sessions": 6,
+        "fresh_tokens": 1500000,
+        "cache_read_tokens": 5000000,
+        "estimated_cost_usd": 18.0,
+        "cost_complete": true,
+        "known_additive_cost_usd": 18.0,
+        "cost_confidence_label": "complete"
+      }
+    ],
+    "by_model": [],
+    "by_period": [
+      {
+        "period": "2026-05-25",
+        "fresh_tokens": 6200000,
+        "estimated_cost_usd": 100.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-06-01",
+        "fresh_tokens": 8100000,
+        "estimated_cost_usd": 130.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-06-08",
+        "fresh_tokens": 0
+      },
+      {
+        "period": "2026-06-15",
+        "fresh_tokens": 9400000,
+        "estimated_cost_usd": 145.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-06-22",
+        "fresh_tokens": 7800000,
+        "estimated_cost_usd": 121.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-06-29",
+        "fresh_tokens": 10200000,
+        "estimated_cost_usd": 158.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-07-06",
+        "fresh_tokens": 8700000,
+        "estimated_cost_usd": 135.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-07-13",
+        "fresh_tokens": 11300000,
+        "estimated_cost_usd": 175.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-07-20",
+        "fresh_tokens": 9900000,
+        "estimated_cost_usd": 154.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-07-27",
+        "fresh_tokens": 12400000,
+        "estimated_cost_usd": 192.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-08-03",
+        "fresh_tokens": 10800000,
+        "estimated_cost_usd": 167.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-08-10",
+        "fresh_tokens": 13100000,
+        "estimated_cost_usd": 204.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-08-17",
+        "fresh_tokens": 14600000,
+        "estimated_cost_usd": 226.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-08-24",
+        "fresh_tokens": 14000000,
+        "estimated_cost_usd": 205.75,
+        "cost_complete": true
+      }
+    ],
+    "filters_echo": {
+      "days": "90",
+      "granularity": "weekly",
+      "granularity_requested": "auto"
+    },
+    "totals": {
+      "client": null,
+      "sessions": 209,
+      "fresh_tokens": 136500000,
+      "cache_read_tokens": 380000000,
+      "estimated_cost_usd": 2112.75,
+      "cost_complete": true,
+      "known_additive_cost_usd": 2112.75,
       "cost_confidence_label": "complete"
     }
   }

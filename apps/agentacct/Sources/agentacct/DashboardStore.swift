@@ -17,6 +17,13 @@ enum SnapshotWorkStoreState {
     case attentionReceipt
 }
 
+struct SnapshotUsageStoreState {
+    /// Keep the selected range and its matching response inseparable in
+    /// deterministic renders; a stale summary must never wear a new range.
+    let days: Int
+    let summary: UsageSummary
+}
+
 // Data for the full window: /v1/tasks and /v1/receipt supply task-level work
 // evidence, /v1/session supplies each Receipt's expandable session detail, and
 // /v1/plan supplies attributed aggregates. The legacy /usage/summary cube
@@ -74,10 +81,12 @@ final class DashboardStore {
     /// would, without network access or a developer's local account data.
     init(
         preloaded fixture: DashboardSnapshotFixture,
-        workState: SnapshotWorkStoreState = .populated
+        workState: SnapshotWorkStoreState = .populated,
+        usageState: SnapshotUsageStoreState? = nil
     ) {
         planClients = fixture.plan.clients
-        usage = fixture.usage
+        usage = usageState?.summary ?? fixture.usage
+        usageDays = usageState?.days ?? 7
         switch workState {
         case .populated:
             receiptTasks = fixture.tasks.tasks
