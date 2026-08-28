@@ -235,7 +235,13 @@ struct WorkReceiptRowPresentation {
     let evidence: ReceiptEvidence
     let handedOff: Bool
     let coverageText: String
+    let coverageQualifier: String
+    let coverageIsInconsistent: Bool
     let checkRunsText: String
+    let checkRunsValue: String
+    let checkRunsQualifier: String
+    let checkRunsAreInconsistent: Bool
+    let compactCheckRunsText: String
     let clientText: String
     let costText: String
     let updatedText: String
@@ -257,12 +263,20 @@ struct WorkReceiptRowPresentation {
         decisionHelp = decision.blocker?.text ?? decision.statement ?? ""
         evidence = resolvedEvidence
         handedOff = selectedDetail?.axes.handoff?.handedOff ?? (task.handedOff == true)
-        coverageText = ReceiptCoveragePresentation(evidence: resolvedEvidence).rowText
-        checkRunsText = ReceiptCheckRunsPresentation(
+        let coveragePresentation = ReceiptCoveragePresentation(evidence: resolvedEvidence)
+        coverageText = coveragePresentation.rowText
+        coverageQualifier = coveragePresentation.qualifier
+        coverageIsInconsistent = coveragePresentation.isInconsistent
+        let checkRunsPresentation = ReceiptCheckRunsPresentation(
             total: checksTotal,
             passed: checksPassed,
             failed: checksFailed
-        ).rowText
+        )
+        checkRunsText = checkRunsPresentation.rowText
+        checkRunsValue = checkRunsPresentation.value
+        checkRunsQualifier = checkRunsPresentation.qualifier
+        checkRunsAreInconsistent = checkRunsPresentation.isInconsistent
+        compactCheckRunsText = checkRunsPresentation.headerText
         clientText = task.primaryRoot?.client ?? "unattributed"
         if let cost = selectedDetail?.dimensions.cost.estimatedCostUsd {
             costText = receiptCostDisplay(
@@ -300,10 +314,6 @@ struct WorkReceiptRowPresentation {
 
     var compactCoverageText: String {
         coverageText.replacingOccurrences(of: " claims", with: "")
-    }
-
-    var compactCheckRunsText: String {
-        checkRunsText.replacingOccurrences(of: " check runs", with: "")
     }
 
     var compactCostText: String {
@@ -1279,8 +1289,10 @@ private struct WorkTableRow: View {
                 let style = EvidenceTierStyle.forGrade(presentation.evidence.strongestTier ?? "unchecked")
                 EvidencePip(shape: style.pip, tint: style.tint)
                 Text(coverage.rowText)
-                    .workFont(.dataSmall).foregroundStyle(Theme.ink)
+                    .workFont(.dataSmall)
+                    .foregroundStyle(coverage.isInconsistent ? Theme.amber : Theme.ink)
                     .lineLimit(2)
+                    .help(coverage.qualifier)
             }
         } else {
             HStack(spacing: 7) {
@@ -1314,30 +1326,34 @@ private struct WorkTableRow: View {
         }
     }
 
-    /// Checks fractions share one right-aligned rail; failure annotations ride
-    /// to the left of the rail so every fraction's right edge lines up.
+    /// The standard table uses the same honest compact presentation as the
+    /// master list, including missing and contradictory tally states.
     @ViewBuilder
     private var checksCell: some View {
-        let evidence = presentation.evidence
-        let failed = evidence.checksFailed ?? 0
-        HStack(spacing: 6) {
-            Spacer(minLength: 0)
-            if failed > 0 {
-                Text("\(failed) failed").workFont(.dataSmall).foregroundStyle(Theme.coral)
+        if presentation.checkRunsAreInconsistent {
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(presentation.checkRunsValue)
+                    .workFont(.dataSmall).foregroundStyle(Theme.amber)
+                Text(presentation.checkRunsQualifier)
+                    .workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
-            if let total = evidence.checksTotal {
-                if total > 0 {
-                    Text(evidence.checksPassed.map { "\($0)/\(total)" } ?? "passes unknown")
-                        .workFont(.dataSmall).foregroundStyle(Theme.ink)
-                        .frame(width: evidence.checksPassed == nil ? 86 : 44, alignment: .trailing)
-                } else {
-                    Text("none").workFont(.dataSmall).foregroundStyle(Theme.muted)
-                        .frame(width: 44, alignment: .trailing)
-                }
-            } else {
-                // An older daemon's list rows carry no tallies — absent, not zero.
-                Text("not reported").workFont(.dataSmall).foregroundStyle(Theme.muted)
-            }
+            .lineLimit(1)
+            .help(presentation.checkRunsText)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        } else {
+            let text = presentation.compactCheckRunsText
+            Text(text)
+                .workFont(.dataSmall)
+                .foregroundStyle(
+                    text.contains("failed")
+                        ? Theme.coral
+                        : (text.contains("not reported")
+                            ? Theme.amber
+                            : text == "no check runs" ? Theme.muted : Theme.ink)
+                )
+                .lineLimit(2)
+                .multilineTextAlignment(.trailing)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 }
@@ -1659,16 +1675,23 @@ private struct WorkMasterRow: View {
                     VStack(alignment: .leading, spacing: 3) {
                         CapsLabel(text: "Claims supported")
                         Text(presentation.compactCoverageText)
-                            .workFont(.dataSmall).foregroundStyle(Theme.ink)
+                            .workFont(.dataSmall)
+                            .foregroundStyle(presentation.coverageIsInconsistent ? Theme.amber : Theme.ink)
                             .lineLimit(1)
+                            .help(presentation.coverageQualifier)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     VStack(alignment: .leading, spacing: 3) {
                         CapsLabel(text: "Check runs")
                         Text(presentation.compactCheckRunsText)
                             .workFont(.dataSmall)
-                            .foregroundStyle(presentation.checkRunsText.contains("failed") ? Theme.coral : Theme.ink)
+                            .foregroundStyle(
+                                presentation.checkRunsAreInconsistent
+                                    ? Theme.amber
+                                    : presentation.checkRunsText.contains("failed") ? Theme.coral : Theme.ink
+                            )
                             .lineLimit(1)
+                            .help(presentation.checkRunsQualifier)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }

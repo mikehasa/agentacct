@@ -528,6 +528,130 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertFalse(presentation.accessibilityLabel.contains("0/"))
     }
 
+    func testCompactCheckRunCopyDoesNotCollapseNoRunsToNo() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "no-checks",
+              "decision_status": { "key": "blocked", "label": "Blocked" },
+              "evidence_strength": {
+                "key": "undefined",
+                "gradeable": false,
+                "checkable_total": 0,
+                "checked_total": 0,
+                "checks_total": 0,
+                "checks_passed": 0,
+                "checks_failed": 0
+              },
+              "cost": {}
+            }
+            """
+        )
+
+        XCTAssertEqual(
+            WorkReceiptRowPresentation(task: task).compactCheckRunsText,
+            "no check runs"
+        )
+    }
+
+    func testReceiptPresentationsNameInconsistentCounts() throws {
+        let evidence = try decode(
+            ReceiptEvidence.self,
+            from: """
+            {
+              "key": "self_checked",
+              "gradeable": true,
+              "checkable_total": 0,
+              "checked_total": 2,
+              "by_tier": { "self_checked": 2 }
+            }
+            """
+        )
+
+        let coverage = ReceiptCoveragePresentation(evidence: evidence)
+        let checks = ReceiptCheckRunsPresentation(total: 1, passed: 2, failed: 1)
+
+        XCTAssertEqual(coverage.value, "Inconsistent counts")
+        XCTAssertTrue(coverage.isInconsistent)
+        XCTAssertEqual(coverage.qualifier, "2 supported · 0 checkable reported")
+        XCTAssertEqual(coverage.rowText, "inconsistent coverage · 2 supported of 0 reported")
+        XCTAssertEqual(evidence.compactHeadline, coverage.rowText)
+        XCTAssertEqual(evidence.headline, "Inconsistent counts (2 supported · 0 checkable reported)")
+        XCTAssertEqual(checks.value, "Inconsistent counts")
+        XCTAssertTrue(checks.isInconsistent)
+        XCTAssertEqual(checks.qualifier, "2 passed · 1 failed · 1 total reported")
+        XCTAssertEqual(checks.rowText, "inconsistent check runs · 2 passed · 1 failed · 1 total")
+        XCTAssertEqual(checks.headerText, "inconsistent · 2 passed · 1 failed · 1 total")
+    }
+
+    func testReceiptCheckPresentationMarksZeroTotalTalliesInconsistent() {
+        let checks = ReceiptCheckRunsPresentation(total: 0, passed: 1, failed: 0)
+
+        XCTAssertTrue(checks.isInconsistent)
+        XCTAssertEqual(checks.value, "0 total reported")
+        XCTAssertEqual(checks.qualifier, "1 passed · 0 failed · tallies conflict with total")
+    }
+
+    func testEmptyCheckDetailsDistinguishMissingItemsFromNoRuns() {
+        XCTAssertEqual(
+            receiptEmptyCheckDetailsCopy(total: 3, passed: 2, failed: 1),
+            ReceiptEmptyCheckDetailsCopy(
+                title: "No itemized check details recorded",
+                detail: "Summary counts are available above; this payload did not include per-run details."
+            )
+        )
+        XCTAssertEqual(
+            receiptEmptyCheckDetailsCopy(total: nil, passed: nil, failed: nil),
+            ReceiptEmptyCheckDetailsCopy(
+                title: "No check runs recorded",
+                detail: "Machine checks land here when a hook or CI reports one."
+            )
+        )
+    }
+
+    func testCoveragePresentationNamesUnavailableAndConflictingTierBreakdowns() throws {
+        let missing = try decode(
+            ReceiptEvidence.self,
+            from: """
+            {
+              "key": "self_checked",
+              "gradeable": true,
+              "checkable_total": 2,
+              "checked_total": 1
+            }
+            """
+        )
+        let conflicting = try decode(
+            ReceiptEvidence.self,
+            from: """
+            {
+              "key": "self_checked",
+              "gradeable": true,
+              "checkable_total": 2,
+              "checked_total": 1,
+              "by_tier": { "self_checked": 2 }
+            }
+            """
+        )
+
+        let missingPresentation = ReceiptCoveragePresentation(evidence: missing)
+        let conflictingPresentation = ReceiptCoveragePresentation(evidence: conflicting)
+
+        XCTAssertFalse(missingPresentation.isInconsistent)
+        XCTAssertFalse(missingPresentation.tierBreakdownAvailable)
+        XCTAssertEqual(
+            missingPresentation.tierBreakdownNotice,
+            "Evidence-tier breakdown not reported."
+        )
+        XCTAssertTrue(conflictingPresentation.isInconsistent)
+        XCTAssertFalse(conflictingPresentation.tierBreakdownAvailable)
+        XCTAssertEqual(
+            conflictingPresentation.tierBreakdownNotice,
+            "Evidence tiers report 2 supported claims; the summary reports 1."
+        )
+    }
+
     func testAttentionDecisionSummarySeparatesBlockerAndFailedChecks() throws {
         let receipt = try decode(
             Receipt.self,

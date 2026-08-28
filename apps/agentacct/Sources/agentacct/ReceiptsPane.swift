@@ -111,6 +111,25 @@ func receiptCIEvidenceNotice(sources: [String]) -> ReceiptCIEvidenceNotice? {
     )
 }
 
+struct ReceiptEmptyCheckDetailsCopy: Equatable {
+    let title: String
+    let detail: String
+}
+
+func receiptEmptyCheckDetailsCopy(
+    total: Int?,
+    passed: Int?,
+    failed: Int?
+) -> ReceiptEmptyCheckDetailsCopy {
+    let hasSummaryTallies = total != nil || passed != nil || failed != nil
+    return ReceiptEmptyCheckDetailsCopy(
+        title: hasSummaryTallies ? "No itemized check details recorded" : "No check runs recorded",
+        detail: hasSummaryTallies
+            ? "Summary counts are available above; this payload did not include per-run details."
+            : "Machine checks land here when a hook or CI reports one."
+    )
+}
+
 enum ReceiptActionIntegrity: Equatable {
     case unavailable
     case captureUnknown
@@ -1226,7 +1245,11 @@ struct RecordCoverageCard: View {
 
                 Text(presentation.value)
                     .workFont(size: 16, weight: .semibold, relativeTo: .headline)
-                    .foregroundStyle(evidence.gradeable == false ? Theme.muted : Theme.ink)
+                    .foregroundStyle(
+                        presentation.isInconsistent
+                            ? Theme.amber
+                            : evidence.gradeable == false ? Theme.muted : Theme.ink
+                    )
                 Text(presentation.qualifier)
                     .workFont(.caption).foregroundStyle(Theme.muted)
                     .padding(.top, 4)
@@ -1234,20 +1257,26 @@ struct RecordCoverageCard: View {
                 if evidence.gradeable != false,
                    let checkable = evidence.checkableTotal,
                    checkable > 0 {
-                    CoverageBar(segments: tiers.map { CoverageSegment(count: $0.count, grade: $0.grade) })
-                        .padding(.top, Space.m)
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(tiers.filter { $0.count > 0 }, id: \.grade) { tier in
-                            let style = EvidenceTierStyle.forGrade(tier.grade)
-                            HStack(spacing: 7) {
-                                EvidencePip(shape: style.pip, tint: style.tint)
-                                Text(style.label).workFont(.caption).foregroundStyle(Theme.ink)
-                                Text("\(tier.count)").workFont(.dataSmall).foregroundStyle(Theme.muted)
+                    if presentation.tierBreakdownAvailable {
+                        CoverageBar(segments: tiers.map { CoverageSegment(count: $0.count, grade: $0.grade) })
+                            .padding(.top, Space.m)
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(tiers.filter { $0.count > 0 }, id: \.grade) { tier in
+                                let style = EvidenceTierStyle.forGrade(tier.grade)
+                                HStack(spacing: 7) {
+                                    EvidencePip(shape: style.pip, tint: style.tint)
+                                    Text(style.label).workFont(.caption).foregroundStyle(Theme.ink)
+                                    Text("\(tier.count)").workFont(.dataSmall).foregroundStyle(Theme.muted)
+                                }
                             }
                         }
-                    }
-                    .padding(.top, Space.m)
-                    if let notice = receiptExternalEvidenceNotice(byTier: evidence.byTier) {
+                        .padding(.top, Space.m)
+                        if let notice = receiptExternalEvidenceNotice(byTier: evidence.byTier) {
+                            Text(notice)
+                                .workFont(.caption).foregroundStyle(Theme.muted)
+                                .padding(.top, Space.s)
+                        }
+                    } else if let notice = presentation.tierBreakdownNotice {
                         Text(notice)
                             .workFont(.caption).foregroundStyle(Theme.muted)
                             .padding(.top, Space.s)
@@ -1298,9 +1327,15 @@ struct RecordChecksCard: View {
                 Rectangle().fill(Theme.hairline).frame(height: 1).padding(.top, Space.m)
                 let checks = evidence.checks ?? []
                 if checks.isEmpty {
-                    Text("No checks recorded").workFont(.body).foregroundStyle(Theme.muted)
+                    let copy = receiptEmptyCheckDetailsCopy(
+                        total: evidence.checksTotal,
+                        passed: evidence.checksPassed,
+                        failed: evidence.checksFailed
+                    )
+                    Text(copy.title)
+                        .workFont(.body).foregroundStyle(Theme.muted)
                         .padding(.top, Space.m)
-                    Text("Machine checks land here when a hook or CI reports one.")
+                    Text(copy.detail)
                         .workFont(.caption).foregroundStyle(Theme.muted)
                         .padding(.top, 2)
                 } else {

@@ -14,6 +14,8 @@ struct DashboardWorkItem: Identifiable {
     let outcomeKey: String
     let outcomeSource: String?
     let evidence: String
+    let evidenceQualifier: String
+    let evidenceIsInconsistent: Bool
     let failedChecks: Int
     let cost: String
     let gradeable: Bool
@@ -35,7 +37,10 @@ struct DashboardWorkItem: Identifiable {
         } else {
             outcome = Self.outcomeLabel(for: task.decisionStatus.key)
         }
+        let evidencePresentation = ReceiptCoveragePresentation(evidence: task.evidenceStrength)
         evidence = task.evidenceStrength.compactHeadline
+        evidenceQualifier = evidencePresentation.qualifier
+        evidenceIsInconsistent = evidencePresentation.isInconsistent
         failedChecks = task.evidenceStrength.checksFailed ?? 0
         cost = Self.compactCost(task.cost)
         gradeable = task.evidenceStrength.gradeable == true
@@ -470,7 +475,12 @@ private struct RecentWorkRow: View {
 
                 // Evidence axis: the strongest tier's pip shape + the ratio.
                 HStack(spacing: 6) {
-                    if let tier = item.strongestTier {
+                    if item.evidenceIsInconsistent {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Theme.amber)
+                            .accessibilityHidden(true)
+                    } else if let tier = item.strongestTier {
                         let style = EvidenceTierStyle.forGrade(tier)
                         EvidencePip(shape: style.pip, tint: style.tint)
                     } else {
@@ -478,10 +488,11 @@ private struct RecentWorkRow: View {
                     }
                     Text(item.evidence)
                         .font(Type.dataSmall)
-                        .foregroundStyle(Theme.muted)
+                        .foregroundStyle(item.evidenceIsInconsistent ? Theme.amber : Theme.muted)
                         .lineLimit(1)
                 }
                 .frame(width: 118, alignment: .leading)
+                .help(item.evidenceQualifier)
 
                 Text(item.cost == "—" ? "unpriced" : item.cost)
                     .font(Type.dataSmall)
