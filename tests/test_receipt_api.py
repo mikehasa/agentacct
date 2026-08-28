@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import agentacct.api as api_module
 from fastapi.testclient import TestClient
 
 from agentacct.api import (
@@ -11,6 +12,7 @@ from agentacct.api import (
     _LEDGER_RUN_REPORT_LIMIT,
     _collect_service_run_reports,
     _dashboard_task_projection,
+    _receipt_attention_priority,
     _mechanical_projection_envelopes_for,
     _store_scope_and_label,
     build_mechanical_check_events,
@@ -18,7 +20,7 @@ from agentacct.api import (
     create_local_api_app,
 )
 from agentacct.cost import CostLedger
-from agentacct.receipt import RECEIPT_SCHEMA_VERSION
+from agentacct.receipt import RECEIPT_SCHEMA_VERSION, V1_ATTENTION_SCHEMA_VERSION
 from agentacct.service import SentinelService
 from agentacct.session_observations import build_session_observations
 from agentacct.work_ledger import build_proxy_usage_events, build_work_ledger
@@ -122,9 +124,64 @@ def _record_passing_check(service: SentinelService, *, session_id: str, section_
     )
 
 
+def _record_failed_check(service: SentinelService, *, session_id: str, section_id: str, at: float) -> None:
+    service.record_event(
+        {
+            "event_id": f"evt_check_fail_{session_id}_{section_id}",
+            "created_at": at,
+            "source": "claude-code",
+            "event_type": "machine_check",
+            "run_id": None,
+            "metadata": {
+                "sentinel_semantic_kind": "evidence",
+                "result": "failed",
+                "evidence_type": "test",
+                "summary": "pytest found a regression",
+                "name": "pytest",
+                "exit_code": 1,
+                "section_id": section_id,
+                "client": "claude-code",
+                "client_session_id": session_id,
+                "session_namespace_fingerprint": NS,
+                "identity_scope_state": "explicit",
+                "project_dir": "/tmp/project",
+            },
+        }
+    )
+
+
+def _record_blocked_section(
+    service: SentinelService, *, session_id: str, section_id: str, at: float
+) -> None:
+    service.record_event(
+        {
+            "event_id": f"evt_section_{session_id}_{section_id}_blocked",
+            "created_at": at,
+            "source": "claude-code",
+            "event_type": "section_blocked",
+            "run_id": None,
+            "metadata": {
+                "sentinel_semantic_kind": "section",
+                "client": "claude-code",
+                "client_session_id": session_id,
+                "session_namespace_fingerprint": NS,
+                "identity_scope_state": "explicit",
+                "project_dir": "/tmp/project",
+                "section_id": section_id,
+                "section_status": "blocked",
+                "section_title": "Publish the site",
+                "blocker": "waiting for approval",
+                "next_step": "ask the user",
+                "kind": "implementation",
+            },
+        }
+    )
+
+
 def test_receipt_routes_require_a_bearer_token(tmp_path: Path) -> None:
     client = _app(tmp_path)
     assert client.get("/v1/tasks").status_code == 401
+    assert client.get("/v1/attention").status_code == 401
     assert client.get("/v1/receipt?task=task_x").status_code == 401
 
 
@@ -218,6 +275,142 @@ def test_receipt_gaps_are_genuinely_missing_not_structural_noise(tmp_path: Path)
 def test_version_advertises_the_receipt_schema(tmp_path: Path) -> None:
     version = _app(tmp_path).get("/v1/version", headers=_auth()).json()
     assert version["receipt_schema"] == RECEIPT_SCHEMA_VERSION
+    assert version["attention_schema"] == V1_ATTENTION_SCHEMA_VERSION
+
+
+def test_attention_empty_state_and_query_bounds(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+
+    payload = client.get("/v1/attention", headers=_auth()).json()
+    assert payload == {
+        "schema": V1_ATTENTION_SCHEMA_VERSION,
+        "items": [],
+        "total": 0,
+        "counts": {"failed_check": 0, "failed_step": 0, "blocker": 0},
+        "limit": 5,
+        "truncated": False,
+    }
+    assert client.get(
+        "/v1/attention", headers=_auth(), params={"limit": 0}
+    ).status_code == 422
+    assert client.get(
+        "/v1/attention", headers=_auth(), params={"limit": 51}
+    ).status_code == 422
+
+
+def test_attention_is_complete_bounded_and_operationally_ordered(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Attention is a complete server projection, not a client filter over a
+    recent-tasks page. A finding outside ``/v1/tasks?limit=1`` must still count
+    and must lead a newer blocker under the documented operational ordering."""
+
+    service = SentinelService(tmp_path)
+
+    _record_usage(service, session_id="finding", at=100.0)
+    _record_section(service, session_id="finding", section_id="sec-f", status="completed", at=101.0)
+    _record_failed_check(service, session_id="finding", section_id="sec-f", at=102.0)
+
+    _record_usage(service, session_id="blocked", at=200.0)
+    _record_section(service, session_id="blocked", section_id="sec-b", status="started", at=201.0)
+    _record_blocked_section(service, session_id="blocked", section_id="sec-b", at=202.0)
+
+    _record_usage(service, session_id="clean", at=300.0)
+    _record_section(service, session_id="clean", section_id="sec-c", status="completed", at=301.0)
+    _record_passing_check(service, session_id="clean", section_id="sec-c", at=302.0)
+
+    classification_calls: list[str] = []
+    original_build_attention_reason = api_module.build_attention_reason
+
+    def counted_build_attention_reason(task, **kwargs):
+        classification_calls.append(str(task.get("public_task_id")))
+        return original_build_attention_reason(task, **kwargs)
+
+    monkeypatch.setattr(api_module, "build_attention_reason", counted_build_attention_reason)
+    clock = [api_module.time.time()]
+    monkeypatch.setattr(api_module.time, "time", lambda: clock[0])
+    client = _app(tmp_path)
+    recent_page = client.get("/v1/tasks", headers=_auth(), params={"limit": 1}).json()
+    assert recent_page["total"] == 3
+    assert recent_page["tasks"][0]["primary_root"]["client_session_id"] == "clean"
+
+    attention = client.get("/v1/attention", headers=_auth(), params={"limit": 1}).json()
+    assert set(attention) == {"schema", "items", "total", "counts", "limit", "truncated"}
+    assert attention["schema"] == V1_ATTENTION_SCHEMA_VERSION
+    assert attention["total"] == 2
+    assert attention["counts"] == {"failed_check": 1, "failed_step": 0, "blocker": 1}
+    assert attention["limit"] == 1
+    assert attention["truncated"] is True
+    assert len(attention["items"]) == 1
+    leading = attention["items"][0]
+    assert leading["primary_root"]["client_session_id"] == "finding"
+    assert leading["project"] == "project"
+    assert leading["decision_status"]["key"] == "finding"
+    assert leading["evidence_strength"]["checks_failed"] == 1
+    assert leading["attention"] == {
+        "kind": "failed_check",
+        "summary": "pytest found a regression",
+        "next_step": None,
+        "observed_at": leading["attention"]["observed_at"],
+        "source": "mcp",
+    }
+    assert leading["attention"]["observed_at"] is not None
+
+    all_attention = client.get("/v1/attention", headers=_auth(), params={"limit": 5}).json()
+    assert [row["primary_root"]["client_session_id"] for row in all_attention["items"]] == [
+        "finding",
+        "blocked",
+    ]
+    blocker = all_attention["items"][1]["attention"]
+    assert blocker == {
+        "kind": "blocker",
+        "summary": "waiting for approval",
+        "next_step": "ask the user",
+        "observed_at": blocker["observed_at"],
+        "source": "mcp",
+    }
+    assert blocker["observed_at"] is not None
+    # The second poll changes only the response limit. Classification, complete
+    # counts, and ordering are reused for the lifetime of the cached parent
+    # projection instead of re-reducing every Task on every dashboard refresh.
+    assert len(classification_calls) == 3
+
+    # The parent Receipt projection expires after 30 seconds, while the app's
+    # normal poll is every 60 seconds. An unchanged rebuilt projection must
+    # still reuse its content-keyed attention index across that real cadence.
+    clock[0] += 61.0
+    after_parent_ttl = client.get(
+        "/v1/attention",
+        headers=_auth(),
+        params={"limit": 5},
+    ).json()
+    assert after_parent_ttl["total"] == 2
+    assert len(classification_calls) == 3
+
+    _record_usage(service, session_id="new-finding", at=400.0)
+    _record_section(
+        service,
+        session_id="new-finding",
+        section_id="sec-new",
+        status="completed",
+        at=401.0,
+    )
+    _record_failed_check(
+        service,
+        session_id="new-finding",
+        section_id="sec-new",
+        at=402.0,
+    )
+    changed_attention = client.get(
+        "/v1/attention",
+        headers=_auth(),
+        params={"limit": 5},
+    ).json()
+    assert changed_attention["total"] == 3
+    # Changed content invalidates the index and classifies all four current
+    # Tasks; the clean Task still does not enter the three-item queue.
+    assert len(classification_calls) == 7
 
 
 def test_tasks_list_and_receipt_detail_for_an_observed_task(tmp_path: Path) -> None:
@@ -248,6 +441,72 @@ def test_tasks_list_and_receipt_detail_for_an_observed_task(tmp_path: Path) -> N
     assert receipt["axes"]["decision_status"]["asserted_by"] in {"agent_report", "human", "machine", "none"}
     # cost_basis threads all the way to the wire.
     assert receipt["dimensions"]["cost"]["cost_basis"] == "pricing_table"
+
+
+def test_tasks_attention_summary_includes_actionable_work_beyond_recent_window(
+    tmp_path: Path,
+) -> None:
+    service = SentinelService(tmp_path)
+    for index in range(3):
+        session_id = f"older-blocked-{index}"
+        _record_usage(service, session_id=session_id, at=1.0 + index * 2)
+        _record_section(
+            service,
+            session_id=session_id,
+            section_id=f"blocked-section-{index}",
+            status="blocked",
+            at=2.0 + index * 2,
+        )
+    for index in range(200):
+        _record_usage(
+            service,
+            session_id=f"recent-{index}",
+            at=2_000_000_000.0 + index,
+        )
+
+    listing = _app(tmp_path).get(
+        "/v1/tasks",
+        headers=_auth(),
+        params={"limit": 200},
+    ).json()
+
+    assert listing["total"] == 203
+    assert len(listing["tasks"]) == 200
+    assert listing["truncated"] is True
+    recent_ids = {row["task_id"] for row in listing["tasks"]}
+    assert listing["attention"]["total"] == 3
+    assert listing["attention"]["limit"] == 2
+    assert listing["attention"]["truncated"] is True
+    assert len(listing["attention"]["tasks"]) == 2
+    attention_activity = [
+        row["last_activity_at"] for row in listing["attention"]["tasks"]
+    ]
+    assert attention_activity == sorted(attention_activity, reverse=True)
+    assert all(
+        row["decision_status"]["key"] == "blocked"
+        and row["task_id"] not in recent_ids
+        for row in listing["attention"]["tasks"]
+    )
+
+
+def test_receipt_attention_priority_matches_dashboard_review_contract() -> None:
+    cases = [
+        ("reported", 1, 0),
+        ("finding", 0, 0),
+        ("failed", 0, 0),
+        ("blocked", 0, 1),
+        ("finding_superseded", 1, None),
+        ("finding_resolved_by_user", 1, None),
+        ("verified", 0, None),
+    ]
+
+    for decision, failed_checks, expected in cases:
+        assert _receipt_attention_priority(
+            {
+                "decision_status": {"key": decision},
+                "evidence_strength": {"checks_failed": failed_checks},
+            }
+        ) == expected
 
 
 def test_unknown_task_is_a_404_not_an_empty_fabrication(tmp_path: Path) -> None:

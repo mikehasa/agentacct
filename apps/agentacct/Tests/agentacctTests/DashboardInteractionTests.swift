@@ -916,6 +916,89 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertFalse(items[4].hasFinding)
     }
 
+    func testAttentionPresentationUsesCompleteAggregateAndFailsClosedForLegacyTruncation()
+        throws
+    {
+        let payload = try decode(
+            ReceiptTasksPayload.self,
+            from: """
+            {
+              "schema": "agentacct.receipt.v1",
+              "total": 203,
+              "truncated": true,
+              "tasks": [
+                {
+                  "task_id": "recent-complete",
+                  "decision_status": { "key": "verified" },
+                  "evidence_strength": { "key": "self_checked" },
+                  "cost": {}
+                }
+              ],
+              "attention": {
+                "total": 3,
+                "limit": 2,
+                "truncated": true,
+                "tasks": [
+                  {
+                    "task_id": "older-finding",
+                    "decision_status": { "key": "finding" },
+                    "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                    "cost": {}
+                  },
+                  {
+                    "task_id": "older-blocked",
+                    "decision_status": { "key": "blocked" },
+                    "evidence_strength": { "key": "not_gradeable" },
+                    "cost": {}
+                  }
+                ]
+              }
+            }
+            """
+        )
+        let complete = DashboardAttentionPresentation(
+            recentTasks: payload.tasks,
+            recentTasksTruncated: payload.truncated,
+            attention: payload.attention
+        )
+
+        XCTAssertEqual(complete.items.map(\.id), ["older-finding", "older-blocked"])
+        XCTAssertEqual(complete.totalCount, 3)
+        XCTAssertTrue(complete.isComplete)
+        XCTAssertTrue(complete.isTruncated)
+
+        let failedRefresh = DashboardAttentionPresentation(
+            recentTasks: payload.tasks,
+            recentTasksTruncated: payload.truncated,
+            attention: payload.attention,
+            fetchError: "receipts fetch failed: connection lost"
+        )
+        XCTAssertTrue(failedRefresh.items.isEmpty)
+        XCTAssertNil(failedRefresh.totalCount)
+        XCTAssertFalse(failedRefresh.isComplete)
+        XCTAssertFalse(failedRefresh.isTruncated)
+        XCTAssertTrue(failedRefresh.isUnavailable)
+
+        let legacy = DashboardAttentionPresentation(
+            recentTasks: [],
+            recentTasksTruncated: true,
+            attention: nil
+        )
+        XCTAssertTrue(legacy.items.isEmpty)
+        XCTAssertNil(legacy.totalCount)
+        XCTAssertFalse(legacy.isComplete)
+        XCTAssertTrue(legacy.isTruncated)
+
+        let exhaustiveLegacy = DashboardAttentionPresentation(
+            recentTasks: [],
+            recentTasksTruncated: false,
+            attention: nil
+        )
+        XCTAssertEqual(exhaustiveLegacy.totalCount, 0)
+        XCTAssertTrue(exhaustiveLegacy.isComplete)
+        XCTAssertFalse(exhaustiveLegacy.isTruncated)
+    }
+
     @MainActor
     func testLocalDataFreshnessUsesTheSnapshotClock() {
         SnapshotMode.setFixtureDate(Date(timeIntervalSince1970: 1_000))

@@ -408,6 +408,16 @@ struct ReceiptTasksPayload: Decodable {
     let tasks: [ReceiptSummary]
     let total: Int?
     let truncated: Bool?
+    /// Exact all-store attention count plus a bounded Dashboard preview.
+    /// Optional so the app can fail closed against an older daemon.
+    let attention: ReceiptAttentionPayload?
+}
+
+struct ReceiptAttentionPayload: Decodable {
+    let tasks: [ReceiptSummary]
+    let total: Int
+    let limit: Int?
+    let truncated: Bool
 }
 
 struct ReceiptSummary: Decodable, Identifiable {

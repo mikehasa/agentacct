@@ -392,7 +392,46 @@
         },
         "last_activity_at": 1787589280
       }
-    ]
+    ],
+    "attention": {
+      "total": 2,
+      "limit": 100,
+      "truncated": false,
+      "tasks": [
+        {
+          "task_id": "task-visual-regression",
+          "title": "Review dashboard visual regression",
+          "decision_status": {
+            "key": "finding",
+            "label": "Open finding",
+            "asserted_by": "machine"
+          },
+          "evidence_strength": {
+            "key": "unchecked",
+            "gradeable": true,
+            "checks_failed": 1
+          },
+          "cost": {},
+          "last_activity_at": 1787589280
+        },
+        {
+          "task_id": "task-provider-calibration",
+          "title": "Resolve provider calibration",
+          "decision_status": {
+            "key": "blocked",
+            "label": "Blocked",
+            "asserted_by": "agent_report"
+          },
+          "evidence_strength": {
+            "key": "not_gradeable",
+            "gradeable": false,
+            "checks_failed": 0
+          },
+          "cost": {},
+          "last_activity_at": 1787589100
+        }
+      ]
+    }
   },
   "work": {
     "receipt": {

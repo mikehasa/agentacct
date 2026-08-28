@@ -9,6 +9,7 @@ enum SnapshotWorkStoreState {
     case listLoading
     case empty
     case listError
+    case listErrorWithRetainedData
     case receiptLoading
     case receiptError
     case receiptStale
@@ -28,6 +29,7 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var receiptTasks: [ReceiptSummary] = []
     @Published private(set) var totalReceiptTasks: Int?
     @Published private(set) var receiptTasksTruncated: Bool?
+    @Published private(set) var receiptAttention: ReceiptAttentionPayload?
     @Published private(set) var receipt: Receipt?
     @Published private(set) var receiptListError: String?
     @Published private(set) var receiptError: String?
@@ -79,6 +81,7 @@ final class DashboardStore: ObservableObject {
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
             receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
             receipt = fixture.work?.receipt
             for session in fixture.work?.sessions ?? [] {
                 let key = "\(session.session.client)::\(session.session.clientSessionId)"
@@ -94,20 +97,29 @@ final class DashboardStore: ObservableObject {
         case .listError:
             receiptTasks = []
             receiptListError = "receipts fetch failed: synthetic review error"
+        case .listErrorWithRetainedData:
+            receiptTasks = fixture.tasks.tasks
+            totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
+            receiptListError = "receipts fetch failed: synthetic review error"
         case .receiptLoading:
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
             receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
         case .receiptError:
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
             receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
             receiptError = "receipt fetch failed: synthetic review error"
             receiptErrorTaskId = fixture.work?.receipt.taskId
         case .receiptStale:
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
             receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
             receipt = fixture.work?.receipt
             receiptError = "receipt refresh failed: synthetic review error"
             receiptErrorTaskId = fixture.work?.receipt.taskId
@@ -115,6 +127,7 @@ final class DashboardStore: ObservableObject {
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
             receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
             receipt = fixture.work?.attentionReceipt
         }
         let updated = fixture.glance.generatedAt.map(Date.init(timeIntervalSince1970:))
@@ -250,6 +263,7 @@ final class DashboardStore: ObservableObject {
         receiptTasks = payload.tasks
         totalReceiptTasks = payload.total
         receiptTasksTruncated = payload.truncated
+        receiptAttention = payload.attention
         receiptListError = nil
         receiptListLastUpdated = Date()
     }

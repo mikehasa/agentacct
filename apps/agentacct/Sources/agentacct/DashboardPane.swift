@@ -111,6 +111,51 @@ struct DashboardWorkItem: Identifiable {
     }
 }
 
+/// Complete when the daemon supplies its all-store attention aggregate, or
+/// when an older daemon explicitly says the fallback task list is untruncated.
+/// A truncated legacy list can show known review items but can never prove the
+/// absence of older ones.
+struct DashboardAttentionPresentation {
+    let items: [DashboardWorkItem]
+    let totalCount: Int?
+    let isComplete: Bool
+    let isTruncated: Bool
+    let isUnavailable: Bool
+
+    init(
+        recentTasks: [ReceiptSummary],
+        recentTasksTruncated: Bool?,
+        attention: ReceiptAttentionPayload?,
+        fetchError: String? = nil
+    ) {
+        if fetchError != nil {
+            items = []
+            totalCount = nil
+            isComplete = false
+            isTruncated = false
+            isUnavailable = true
+            return
+        }
+
+        if let attention {
+            items = attention.tasks.map(DashboardWorkItem.init)
+            totalCount = attention.total
+            isComplete = true
+            isTruncated = attention.truncated || attention.total > attention.tasks.count
+            isUnavailable = false
+            return
+        }
+
+        let recentItems = recentTasks.map(DashboardWorkItem.init)
+        items = recentItems.filter { $0.needsReview && $0.hasFinding }
+            + recentItems.filter { $0.needsReview && !$0.hasFinding }
+        isComplete = recentTasksTruncated == false
+        totalCount = isComplete ? items.count : nil
+        isTruncated = !isComplete
+        isUnavailable = false
+    }
+}
+
 enum DashboardUsageSeries: String, CaseIterable, Identifiable {
     case tokens = "Tokens"
     case cost = "Cost"
@@ -219,12 +264,13 @@ struct DashboardPane: View {
         }
     }
 
-    private var attentionItems: [DashboardWorkItem] {
-        let items = dashboard.receiptTasks.map(DashboardWorkItem.init)
-        // Failed evidence is the more urgent review target. Preserve API order
-        // inside each group so equal-priority tasks remain stable.
-        return items.filter { $0.needsReview && $0.hasFinding }
-            + items.filter { $0.needsReview && !$0.hasFinding }
+    private var attention: DashboardAttentionPresentation {
+        DashboardAttentionPresentation(
+            recentTasks: dashboard.receiptTasks,
+            recentTasksTruncated: dashboard.receiptTasksTruncated,
+            attention: dashboard.receiptAttention,
+            fetchError: dashboard.receiptListError
+        )
     }
 
     var body: some View {
@@ -238,7 +284,7 @@ struct DashboardPane: View {
                         selection.open(destination)
                     }
                 } right: {
-                    NeedsReviewCard(items: attentionItems) { destination in
+                    NeedsReviewCard(attention: attention) { destination in
                         selection.open(destination)
                     }
                 }
@@ -515,33 +561,49 @@ private struct RecentWorkRow: View {
 }
 
 private struct NeedsReviewCard: View {
-    let items: [DashboardWorkItem]
+    let attention: DashboardAttentionPresentation
     let open: (DashboardDestination) -> Void
 
-    private var visibleItems: [DashboardWorkItem] { Array(items.prefix(2)) }
+    private var visibleItems: [DashboardWorkItem] { Array(attention.items.prefix(2)) }
 
     var body: some View {
         Card(padding: 0, fillsHeight: true) {
             VStack(spacing: 0) {
-                DashboardCardHeader("Needs review", count: items.count) {
-                    if items.count > visibleItems.count {
+                DashboardCardHeader("Needs review", count: attention.totalCount) {
+                    if attention.isTruncated {
                         Button { open(.work) } label: {
-                            Text("View all").font(Type.captionSemibold)
+                            Text("Open Work").font(Type.captionSemibold)
                         }
                         .foregroundStyle(Theme.accent)
                         .buttonStyle(QuietButtonStyle())
-                        .accessibilityIdentifier("dashboard.review.view-all")
+                        .accessibilityIdentifier("dashboard.review.open-work")
                     }
                 }
                 Divider().overlay(Theme.hairline)
 
                 if visibleItems.isEmpty {
-                    DashboardEmptyState(
-                        icon: "checkmark.circle.fill",
-                        title: "All clear",
-                        message: "No blocked work or failed checks."
-                    )
-                    .frame(minHeight: 222)
+                    if attention.isUnavailable {
+                        DashboardEmptyState(
+                            icon: "wifi.exclamationmark",
+                            title: "Review status unavailable",
+                            message: "The latest receipt refresh failed. Cached results aren't shown as current."
+                        )
+                        .frame(minHeight: 222)
+                    } else if attention.isComplete {
+                        DashboardEmptyState(
+                            icon: "checkmark.circle.fill",
+                            title: "All clear",
+                            message: "No blocked work or failed checks."
+                        )
+                        .frame(minHeight: 222)
+                    } else {
+                        DashboardEmptyState(
+                            icon: "exclamationmark.triangle.fill",
+                            title: "Review status incomplete",
+                            message: "Older work may be missing from this summary."
+                        )
+                        .frame(minHeight: 222)
+                    }
                 } else {
                     ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
                         DashboardAttentionRow(item: item) { open(.task(item.id)) }

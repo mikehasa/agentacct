@@ -2,20 +2,14 @@ import Foundation
 import XCTest
 @testable import agentacct
 
-final class DashboardVisualRegressionTests: XCTestCase {
-    // This list deliberately does not depend on the renderer configuration.
-    // Removing a viewport or appearance must be an explicit contract change.
+final class SetupVisualRegressionTests: XCTestCase {
     private let expectedFilenames = [
-        "dashboard-minimum-light.png",
-        "dashboard-minimum-dark.png",
-        "dashboard-reference-light.png",
-        "dashboard-reference-dark.png",
-        "dashboard-attention-unavailable-light.png",
-        "dashboard-attention-unavailable-dark.png",
+        "setup-failure-light.png",
+        "setup-failure-dark.png",
     ]
 
     @MainActor
-    func testDashboardReviewMatrix() throws {
+    func testSetupFailureAppearances() throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["AGENTACCT_VERIFY_VISUAL_BASELINES"] == "1" else {
             throw XCTSkip("Run visual baselines through ./Scripts/visual-snapshots verify")
@@ -30,18 +24,11 @@ final class DashboardVisualRegressionTests: XCTestCase {
             return
         }
 
-        let fixtureURL = try XCTUnwrap(
-            Bundle.module.url(forResource: "dashboard", withExtension: "json")
-        )
-        let fixture = try DashboardSnapshotFixture.load(from: fixtureURL)
         let outputDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("agentacct-dashboard-visuals-\(UUID().uuidString)")
+            .appendingPathComponent("agentacct-setup-visuals-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: outputDirectory) }
 
-        let rendered = try DashboardSnapshotRenderer.render(
-            fixture: fixture,
-            outputDirectory: outputDirectory
-        )
+        let rendered = try SetupSnapshotRenderer.render(outputDirectory: outputDirectory)
         XCTAssertEqual(rendered.map(\.lastPathComponent), expectedFilenames)
 
         let mode = try VisualSnapshotMode.resolve(environment: environment)
@@ -60,11 +47,10 @@ final class DashboardVisualRegressionTests: XCTestCase {
                     referenceURL: referenceDirectory.appendingPathComponent(filename),
                     actualURL: actualURL,
                     artifactDirectory: artifactDirectory,
-                    mode: mode
+                    mode: mode,
+                    tolerance: .setupRenderingNoise
                 )
             } catch {
-                // Continue through the matrix so one run reports every changed
-                // appearance and viewport instead of stopping at the first.
                 XCTFail(error.localizedDescription)
             }
         }
