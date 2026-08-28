@@ -127,6 +127,40 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         XCTAssertNil(SnapshotScheme.override)
     }
 
+    @MainActor
+    func testMinimumViewportKeepsRecentWorkInTheInitialReadingPath() throws {
+        let fixture = try DashboardSnapshotFixture.load(from: dashboardFixtureURL())
+        let configuration = try XCTUnwrap(
+            DashboardSnapshotConfiguration.reviewConfigurations.first {
+                $0.filename == "dashboard-minimum-light.png"
+            }
+        )
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentacct-dashboard-layout-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outputDirectory) }
+
+        let rendered = try DashboardSnapshotRenderer.render(
+            fixture: fixture,
+            outputDirectory: outputDirectory,
+            configurations: [configuration]
+        )
+        let image = try VisualSnapshotImage(contentsOf: try XCTUnwrap(rendered.first))
+        let windowBackground = rgba(in: image, x: 10, topY: 200)
+
+        // At 2x, the 16pt section spacing should leave a visible background
+        // separator before y=500pt. Sampling both columns prevents a shorter
+        // attention-card background from hiding an over-tall signal rail.
+        let separatorRows = (850..<1_000).filter { topY in
+            pixelsMatch(rgba(in: image, x: 100, topY: topY), windowBackground)
+                && pixelsMatch(rgba(in: image, x: 1_280, topY: topY), windowBackground)
+        }
+        XCTAssertGreaterThanOrEqual(
+            longestConsecutiveRun(separatorRows),
+            24,
+            "The minimum viewport must expose Recent work after the decision row; supporting signals must not consume the entire first viewport"
+        )
+    }
+
     func testRejectsUnsupportedVersionedFixtureSchemas() throws {
         let fixtureURL = try dashboardFixtureURL()
         let validFixture = try String(contentsOf: fixtureURL, encoding: .utf8)
@@ -197,5 +231,49 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         try XCTUnwrap(
             Bundle.module.url(forResource: "dashboard", withExtension: "json")
         )
+    }
+
+    private func rgba(
+        in image: VisualSnapshotImage,
+        x: Int,
+        topY: Int
+    ) -> (UInt8, UInt8, UInt8, UInt8) {
+        precondition((0..<image.width).contains(x))
+        precondition((0..<image.height).contains(topY))
+        return image.rgba.withUnsafeBytes { storage in
+            let pixels = storage.bindMemory(to: UInt8.self)
+            let offset = (topY * image.width + x) * 4
+            return (
+                pixels[offset],
+                pixels[offset + 1],
+                pixels[offset + 2],
+                pixels[offset + 3]
+            )
+        }
+    }
+
+    private func pixelsMatch(
+        _ left: (UInt8, UInt8, UInt8, UInt8),
+        _ right: (UInt8, UInt8, UInt8, UInt8),
+        tolerance: Int = 1
+    ) -> Bool {
+        zip([left.0, left.1, left.2, left.3], [right.0, right.1, right.2, right.3])
+            .allSatisfy { abs(Int($0.0) - Int($0.1)) <= tolerance }
+    }
+
+    private func longestConsecutiveRun(_ values: [Int]) -> Int {
+        guard var previous = values.first else { return 0 }
+        var longest = 1
+        var current = 1
+        for value in values.dropFirst() {
+            if value == previous + 1 {
+                current += 1
+                longest = max(longest, current)
+            } else {
+                current = 1
+            }
+            previous = value
+        }
+        return longest
     }
 }

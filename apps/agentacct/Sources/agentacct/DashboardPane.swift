@@ -729,7 +729,7 @@ struct DashboardPane: View {
         @ViewBuilder right: () -> Right
     ) -> some View {
         ViewThatFits(in: .horizontal) {
-            DashboardSplitLayout(leftFraction: 8 / 12, spacing: Space.l) {
+            DashboardSplitLayout(leftFraction: 7 / 12, spacing: Space.l) {
                 left()
                 right()
             }
@@ -1064,8 +1064,8 @@ private struct DashboardBriefEmptyState: View {
                 .font(Type.body)
                 .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 }
 
@@ -1086,8 +1086,8 @@ private struct DashboardBriefUnavailableState: View {
                 .font(Type.body)
                 .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 }
 
@@ -1305,7 +1305,7 @@ private struct DashboardSignalRow: View {
                 DashboardDisclosureIndicator().padding(.top, 18)
             }
             .padding(.horizontal, Space.l)
-            .padding(.vertical, Space.m)
+            .padding(.vertical, Space.s)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
