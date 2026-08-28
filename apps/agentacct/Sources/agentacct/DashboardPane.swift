@@ -1,3 +1,5 @@
+import AppKit
+import Foundation
 import SwiftUI
 
 // The dashboard is a shift brief: what deserves attention now, what recorded
@@ -86,6 +88,7 @@ struct DashboardAttentionItem: Identifiable, Equatable {
     let nextStep: String?
     let observedAt: Double?
     let sourceLabel: String?
+    let handedOff: Bool?
 
     init?(task: ReceiptSummary) {
         guard let reason = task.attention else { return nil }
@@ -101,10 +104,18 @@ struct DashboardAttentionItem: Identifiable, Equatable {
         summary = reason.summary
         nextStep = reason.nextStep
         observedAt = reason.observedAt
+        handedOff = task.handedOff
         switch reason.source {
         case "mcp": sourceLabel = "MCP record"
-        case "client_log": sourceLabel = "Client log"
+        case "client_log": sourceLabel = "Local client log"
         case "machine": sourceLabel = "Machine check"
+        case "hook": sourceLabel = "Client hook"
+        case "transcript_scan": sourceLabel = "Transcript import"
+        case "ci": sourceLabel = "External CI or provider"
+        case "git": sourceLabel = "Git repository"
+        case "human": sourceLabel = "Human record"
+        case "inferred": sourceLabel = "agentacct inference"
+        case "none": sourceLabel = "No source recorded"
         case .some(let source): sourceLabel = source.replacingOccurrences(of: "_", with: " ").capitalized
         case nil: sourceLabel = nil
         }
@@ -120,6 +131,93 @@ struct DashboardAttentionItem: Identifiable, Equatable {
     }
 
     var recency: String? { agoText(observedAt) }
+}
+
+/// A paste-ready brief assembled only from fields the daemon recorded. It
+/// never guesses a recovery step and never implies that copying changes agent
+/// state. A handoff marker changes the framing, not the underlying facts.
+struct DashboardActionBrief: Equatable {
+    enum Kind: Equatable {
+        case review
+        case continuation
+    }
+
+    let kind: Kind
+    let text: String
+
+    init(focus: DashboardAttentionItem) {
+        kind = focus.handedOff == true ? .continuation : .review
+
+        var lines = [
+            focus.handedOff == true ? "Continuation brief" : "Review brief",
+            "Task: \(focus.title)",
+            "Task ID: \(focus.id)",
+        ]
+        if let project = focus.project, !project.isEmpty {
+            lines.append("Project: \(project)")
+        }
+        if let client = focus.client, !client.isEmpty {
+            lines.append("Agent: \(client)")
+        }
+        lines.append("Recorded attention: \(focus.reasonLabel) — \(focus.summary)")
+        lines.append("Recorded next step: \(focus.nextStep ?? "None recorded")")
+        lines.append("Observed: \(Self.timestamp(focus.observedAt) ?? "Not recorded")")
+        lines.append("Provenance: \(focus.sourceLabel ?? "Not recorded")")
+        text = lines.joined(separator: "\n")
+    }
+
+    var buttonTitle: String {
+        switch kind {
+        case .review: return "Copy review brief"
+        case .continuation: return "Copy continuation brief"
+        }
+    }
+
+    var copiedAccessibilityLabel: String {
+        switch kind {
+        case .review: return "Review brief copied"
+        case .continuation: return "Continuation brief copied"
+        }
+    }
+
+    var failedAccessibilityLabel: String {
+        switch kind {
+        case .review: return "Review brief copy failed"
+        case .continuation: return "Continuation brief copy failed"
+        }
+    }
+
+    private static func timestamp(_ epoch: Double?) -> String? {
+        guard let epoch else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: Date(timeIntervalSince1970: epoch))
+    }
+}
+
+@MainActor
+enum DashboardClipboard {
+    static func copy(
+        _ text: String,
+        to pasteboard: NSPasteboard = .general
+    ) -> Bool {
+        pasteboard.clearContents()
+        return pasteboard.setString(text, forType: .string)
+    }
+}
+
+enum DashboardCopyFeedback: Equatable {
+    case idle
+    case copied(String)
+    case failed(String)
+
+    mutating func record(succeeded: Bool, text: String) {
+        self = succeeded ? .copied(text) : .failed(text)
+    }
+
+    mutating func clear() {
+        self = .idle
+    }
 }
 
 enum DashboardAttentionPresentation: Equatable {
@@ -483,6 +581,8 @@ private struct DashboardAttentionBriefCard: View {
     let payload: V1AttentionPayload?
     let error: String?
     let open: (DashboardDestination) -> Void
+    @State private var copyFeedback = DashboardCopyFeedback.idle
+    @State private var copyFeedbackToken: UUID?
 
     private var presentation: DashboardAttentionPresentation {
         DashboardAttentionPresentation(payload: payload, error: error)
@@ -546,7 +646,10 @@ private struct DashboardAttentionBriefCard: View {
     }
 
     private func focusContent(total: Int, focus: DashboardAttentionItem) -> some View {
-        VStack(alignment: .leading, spacing: Space.l) {
+        let brief = DashboardActionBrief(focus: focus)
+        let copySucceeded = copyFeedback == .copied(brief.text)
+        let copyFailed = copyFeedback == .failed(brief.text)
+        return VStack(alignment: .leading, spacing: Space.l) {
             HStack(spacing: Space.s) {
                 Text("PRIMARY ATTENTION")
                     .font(Type.labelCaps)
@@ -597,16 +700,55 @@ private struct DashboardAttentionBriefCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
 
-            Button {
-                open(.attentionTask(focus.id))
-            } label: {
-                Label("Review evidence", systemImage: "doc.text.magnifyingglass")
+            HStack(spacing: Space.s) {
+                Button {
+                    open(.attentionTask(focus.id))
+                } label: {
+                    Label("Review evidence", systemImage: "doc.text.magnifyingglass")
+                        .font(Type.captionSemibold)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
+                .accessibilityHint("Opens this task in Work")
+                .accessibilityIdentifier("dashboard.shift-brief.review-evidence")
+
+                Button {
+                    let feedbackToken = UUID()
+                    copyFeedbackToken = feedbackToken
+                    copyFeedback.record(
+                        succeeded: DashboardClipboard.copy(brief.text),
+                        text: brief.text
+                    )
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(2))
+                        guard copyFeedbackToken == feedbackToken else { return }
+                        copyFeedback.clear()
+                        copyFeedbackToken = nil
+                    }
+                } label: {
+                    ZStack {
+                        // Reserve the idle label's full width so copy feedback
+                        // cannot shove the primary action sideways.
+                        Label(brief.buttonTitle, systemImage: "doc.on.doc")
+                            .hidden()
+                            .accessibilityHidden(true)
+                        Label(
+                            copySucceeded ? "Copied" : (copyFailed ? "Copy failed" : brief.buttonTitle),
+                            systemImage: copySucceeded ? "checkmark" : "doc.on.doc"
+                        )
+                    }
                     .font(Type.captionSemibold)
+                }
+                .buttonStyle(.bordered)
+                .tint(copyFailed ? Theme.coral : Theme.accent)
+                .accessibilityLabel(
+                    copySucceeded
+                        ? brief.copiedAccessibilityLabel
+                        : (copyFailed ? brief.failedAccessibilityLabel : brief.buttonTitle)
+                )
+                .accessibilityHint("Copies recorded facts only; it does not resume or rerun an agent")
+                .accessibilityIdentifier("dashboard.shift-brief.copy-action-brief")
             }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.accent)
-            .accessibilityHint("Opens this task in Work")
-            .accessibilityIdentifier("dashboard.shift-brief.review-evidence")
         }
         .accessibilityElement(children: .contain)
     }
