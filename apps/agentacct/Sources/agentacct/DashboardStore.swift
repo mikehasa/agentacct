@@ -127,6 +127,16 @@ final class DashboardStore: ObservableObject {
         case .empty:
             receiptTasks = []
             totalReceiptTasks = 0
+            attention = V1AttentionPayload(
+                schema: fixture.attention.schema,
+                items: [],
+                total: 0,
+                counts: V1AttentionCounts(failedCheck: 0, failedStep: 0, blocker: 0),
+                snapshot: nil,
+                offset: 0,
+                limit: fixture.attention.limit,
+                truncated: false
+            )
         case .listError:
             receiptTasks = []
             receiptListError = "receipts fetch failed: synthetic review error"
