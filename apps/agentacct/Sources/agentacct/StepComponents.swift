@@ -80,7 +80,7 @@ struct StepCard: View {
                         Chip(text: step.latestStatus ?? "", tint: Theme.coral)
                     }
                     Text(step.title ?? step.sectionId ?? "untitled")
-                        .font(Type.body)
+                        .workFont(.body)
                         .foregroundStyle(Theme.ink)
                         .lineLimit(expanded ? nil : 1)
                         .fixedSize(horizontal: false, vertical: expanded)
@@ -90,7 +90,7 @@ struct StepCard: View {
                     }
                     if let checks = step.checks, !checks.isEmpty {
                         Text("\(checks.count) check\(checks.count == 1 ? "" : "s")")
-                            .font(Type.dataSmall)
+                            .workFont(.dataSmall)
                             .foregroundStyle(Theme.muted)
                     }
                     // The M2 per-step grade (self-checked / independent / …) is the
@@ -119,17 +119,17 @@ struct StepCard: View {
                         }
                         if let ago = agoText(step.updatedAt) {
                             Text("updated \(ago)")
-                                .font(Type.dataSmall)
+                                .workFont(.dataSmall)
                                 .foregroundStyle(Theme.muted)
                         }
                         if let usage = step.usage, let tokens = usage.totalTokens, tokens > 0 {
                             Text("\(UsageTotals.compact(Int(tokens))) tok · \(usage.costText)")
-                                .font(Type.dataSmall)
+                                .workFont(.dataSmall)
                                 .foregroundStyle(Theme.muted)
                         }
                         if let models = step.models, !models.isEmpty {
                             Text(models.compactMap { $0.model ?? "unknown model" }.joined(separator: " · "))
-                                .font(Type.dataSmall)
+                                .workFont(.dataSmall)
                                 .foregroundStyle(Theme.muted)
                         }
                     }
@@ -139,18 +139,18 @@ struct StepCard: View {
                         // Muted prose: the TierBadge already carries the tier
                         // color; accent-tinted prose here read as a link.
                         Text(why)
-                            .font(Type.caption)
+                            .workFont(.caption)
                             .foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                     } else if let why = evidenceExplanation {
                         Text(why)
-                            .font(Type.caption)
+                            .workFont(.caption)
                             .foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if let summary = step.summary, !summary.isEmpty {
                         Text(summary)
-                            .font(Type.caption)
+                            .workFont(.caption)
                             .foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
@@ -164,14 +164,14 @@ struct StepCard: View {
                     }
                     if let blocker = step.blocker, !blocker.isEmpty {
                         Label(blocker, systemImage: "hand.raised.fill")
-                            .font(Type.caption)
+                            .workFont(.caption)
                             .foregroundStyle(Theme.amber)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                     }
                     if let next = step.nextStep, !next.isEmpty {
                         Label(next, systemImage: "arrow.turn.down.right")
-                            .font(Type.caption)
+                            .workFont(.caption)
                             .foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
@@ -179,11 +179,11 @@ struct StepCard: View {
                     if let files = step.files, !files.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("\(files.count) file\(files.count == 1 ? "" : "s")")
-                                .font(Type.dataSmallSemibold)
+                                .workFont(.dataSmallSemibold)
                                 .foregroundStyle(Theme.muted)
                             ForEach(files, id: \.self) { file in
                                 Text(file)
-                                    .font(Type.dataSmall)
+                                    .workFont(.dataSmall)
                                     .foregroundStyle(Theme.muted)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .textSelection(.enabled)
@@ -233,15 +233,15 @@ struct CheckRow: View {
                 .foregroundStyle(mark.1)
                 .frame(width: 12)
             Text(check.evidenceType ?? "check")
-                .font(Type.captionSemibold)
+                .workFont(.captionSemibold)
                 .foregroundStyle(Theme.muted)
             Text(check.summary ?? "")
-                .font(Type.caption)
+                .workFont(.caption)
                 .foregroundStyle(Theme.muted)
                 .lineLimit(2)
             if let exit = check.exitCode {
                 Text("(exit \(exit))")
-                    .font(Type.dataSmall)
+                    .workFont(.dataSmall)
                     .foregroundStyle(Theme.muted)
             }
             // Who attested this check — an agent-reported check is the agent's

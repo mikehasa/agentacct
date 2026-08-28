@@ -56,7 +56,7 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(item.title, "Build reusable snapshot harness")
         XCTAssertEqual(item.client, "codex")
         XCTAssertEqual(item.outcome, "Verified")
-        XCTAssertEqual(item.evidence, "4/4 checked")
+        XCTAssertEqual(item.evidence, "4/4 supported")
         XCTAssertEqual(item.cost, "≈$4.82")
     }
 
@@ -258,6 +258,605 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(workRecordColumnMode(for: 823), .stacked)
         XCTAssertEqual(workRecordColumnMode(for: 824), .sideBySide)
         XCTAssertEqual(workRecordColumnMode(for: 860), .sideBySide)
+    }
+
+    @MainActor
+    func testWorkBrowseStateSurvivesReceiptRoundTrip() {
+        let selection = AppSelection()
+        selection.workBrowse.query = "pytest"
+        selection.workBrowse.group = .attention
+        selection.workBrowse.sort = .cost
+        selection.workBrowse.pendingFocusRestorationTaskId = "task-1"
+
+        selection.open(.task("task-1"))
+        selection.open(.work)
+
+        XCTAssertEqual(selection.workBrowse.query, "pytest")
+        XCTAssertEqual(selection.workBrowse.group, .attention)
+        XCTAssertEqual(selection.workBrowse.sort, .cost)
+        XCTAssertEqual(selection.workBrowse.pendingFocusRestorationTaskId, "task-1")
+    }
+
+    func testWorkSelectionUsesAdaptiveMasterDetailPolicy() {
+        XCTAssertEqual(
+            workLayoutMode(for: 960, dynamicTypeSize: .medium, hasSelection: true),
+            .pushDetail
+        )
+        XCTAssertEqual(
+            workLayoutMode(for: 1120, dynamicTypeSize: .medium, hasSelection: true),
+            .split
+        )
+        XCTAssertEqual(
+            workLayoutMode(for: 1600, dynamicTypeSize: .accessibility1, hasSelection: true),
+            .pushDetail
+        )
+        XCTAssertEqual(
+            workLayoutMode(for: 960, dynamicTypeSize: .medium, hasSelection: false),
+            .table
+        )
+    }
+
+    func testRequestCancellationIsNeverPublishedAsAFetchFailure() {
+        XCTAssertTrue(
+            requestWasCancelled(CancellationError(), taskIsCancelled: false)
+        )
+        XCTAssertTrue(
+            requestWasCancelled(URLError(.cancelled), taskIsCancelled: false)
+        )
+        XCTAssertTrue(
+            requestWasCancelled(
+                GlanceClientError.transport("cancelled"),
+                taskIsCancelled: true
+            )
+        )
+        XCTAssertTrue(
+            requestWasCancelled(
+                GlanceClientError.noDiscovery("/tmp/missing-local-api.json"),
+                taskIsCancelled: true
+            )
+        )
+        XCTAssertFalse(
+            requestWasCancelled(
+                GlanceClientError.transport("connection refused"),
+                taskIsCancelled: false
+            )
+        )
+    }
+
+    func testWorkSelectionOutsideCurrentFiltersIsExplicit() throws {
+        let tasks = try decode(
+            [ReceiptSummary].self,
+            from: """
+            [
+              {
+                "task_id": "finding",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked" },
+                "cost": {}
+              },
+              {
+                "task_id": "verified",
+                "decision_status": { "key": "verified" },
+                "evidence_strength": { "key": "independently_checked" },
+                "cost": {}
+              }
+            ]
+            """
+        )
+        let attention = visibleWorkReceipts(tasks, query: "", group: .attention, sort: .latest)
+
+        XCTAssertTrue(
+            workSelectionIsOutsideBrowse(
+                taskId: "verified",
+                allTasks: tasks,
+                visibleTasks: attention
+            )
+        )
+        XCTAssertFalse(
+            workSelectionIsOutsideBrowse(
+                taskId: "finding",
+                allTasks: tasks,
+                visibleTasks: attention
+            )
+        )
+    }
+
+    func testWorkBrowseCountsNameTheLoadedSlice() {
+        XCTAssertEqual(
+            workBrowseCountText(visible: 4, loaded: 4, total: 4, truncated: false),
+            "4 of 4 receipts"
+        )
+        XCTAssertEqual(
+            workBrowseCountText(visible: 12, loaded: 200, total: 529, truncated: true),
+            "12 of 200 loaded · 529 in store"
+        )
+    }
+
+    func testWorkBrowseNamesUnknownAndExplicitlyTruncatedTotals() {
+        XCTAssertEqual(
+            workBrowseCountText(visible: 12, loaded: 200, total: nil, truncated: true),
+            "12 of 200 loaded · more may exist"
+        )
+        XCTAssertEqual(
+            workBrowseCountText(visible: 12, loaded: 200, total: nil, truncated: nil),
+            "12 of 200 loaded · total not reported"
+        )
+        XCTAssertTrue(workReceiptCollectionIsPartial(loaded: 200, total: nil, truncated: true))
+        XCTAssertFalse(workReceiptCollectionIsPartial(loaded: 200, total: nil, truncated: nil))
+    }
+
+    @MainActor
+    func testWorkReturnFocusFallsBackWhenReceiptIsOutsideFilters() throws {
+        let visible = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "visible",
+              "title": "Visible task",
+              "decision_status": { "key": "reported" },
+              "evidence_strength": { "key": "unchecked" },
+              "cost": {}
+            }
+            """
+        )
+        let hidden = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "hidden",
+              "title": "Hidden task",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked" },
+              "cost": {}
+            }
+            """
+        )
+        let browse = WorkBrowseState()
+        browse.group = .reported
+
+        browse.prepareReturnFocus(from: hidden.taskId, in: [visible, hidden])
+
+        XCTAssertNil(browse.pendingFocusRestorationTaskId)
+        XCTAssertTrue(browse.shouldFocusSearchOnReturn)
+
+        browse.prepareReturnFocus(from: visible.taskId, in: [visible, hidden])
+
+        XCTAssertEqual(browse.pendingFocusRestorationTaskId, visible.taskId)
+        XCTAssertFalse(browse.shouldFocusSearchOnReturn)
+    }
+
+    func testFailedChecksPutReportedReceiptInAttentionGroupAndSort() throws {
+        let reportedFailure = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "reported-failure",
+              "decision_status": { "key": "reported" },
+              "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+              "cost": {}
+            }
+            """
+        )
+        let findingResolved = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "resolved",
+              "decision_status": { "key": "finding_resolved_by_user" },
+              "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+              "cost": {}
+            }
+            """
+        )
+
+        XCTAssertEqual(WorkGroup.forTask(reportedFailure), .attention)
+        XCTAssertEqual(WorkGroup.forTask(findingResolved), .reported)
+        XCTAssertEqual(
+            sortedReceipts([findingResolved, reportedFailure], by: .attention).map(\.taskId),
+            ["reported-failure", "resolved"]
+        )
+    }
+
+    @MainActor
+    func testDashboardRefreshReadsSelectionAfterCollectionRefresh() async {
+        var selection = "task-a"
+        var refreshedTaskIds: [String] = []
+
+        await refreshDashboardAndSelectedWork(
+            dashboardRefresh: { selection = "task-b" },
+            selectedTaskId: { selection },
+            receiptRefresh: { refreshedTaskIds.append($0) }
+        )
+
+        XCTAssertEqual(refreshedTaskIds, ["task-b"])
+    }
+
+    @MainActor
+    func testCancelledDashboardRefreshDoesNotStartDetailRefresh() async {
+        var didRefreshReceipt = false
+
+        await refreshDashboardAndSelectedWork(
+            dashboardRefresh: {
+                withUnsafeCurrentTask { $0?.cancel() }
+            },
+            selectedTaskId: { "task-a" },
+            receiptRefresh: { _ in didRefreshReceipt = true }
+        )
+
+        XCTAssertFalse(didRefreshReceipt)
+    }
+
+    func testReceiptRefreshErrorsStayScopedToTheirTask() {
+        XCTAssertEqual(
+            workReceiptRefreshError(
+                selectedTaskId: "task-a",
+                errorTaskId: "task-a",
+                error: "offline"
+            ),
+            "offline"
+        )
+        XCTAssertNil(
+            workReceiptRefreshError(
+                selectedTaskId: "task-b",
+                errorTaskId: "task-a",
+                error: "offline"
+            )
+        )
+    }
+
+    func testMissingEvidenceCountsRemainUnreported() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "partial",
+              "decision_status": { "key": "reported", "label": "Reported" },
+              "evidence_strength": {
+                "key": "self_checked",
+                "gradeable": true,
+                "checkable_total": 3,
+                "checks_total": 2
+              },
+              "cost": {}
+            }
+            """
+        )
+
+        let presentation = WorkReceiptRowPresentation(task: task)
+        XCTAssertEqual(presentation.coverageText, "support count not reported · 3 checkable claims")
+        XCTAssertEqual(presentation.checkRunsText, "passes not reported · 2 check runs")
+        XCTAssertFalse(presentation.accessibilityLabel.contains("0/"))
+    }
+
+    func testCompactCheckRunCopyDoesNotCollapseNoRunsToNo() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "no-checks",
+              "decision_status": { "key": "blocked", "label": "Blocked" },
+              "evidence_strength": {
+                "key": "undefined",
+                "gradeable": false,
+                "checkable_total": 0,
+                "checked_total": 0,
+                "checks_total": 0,
+                "checks_passed": 0,
+                "checks_failed": 0
+              },
+              "cost": {}
+            }
+            """
+        )
+
+        XCTAssertEqual(
+            WorkReceiptRowPresentation(task: task).compactCheckRunsText,
+            "no check runs"
+        )
+    }
+
+    func testReceiptPresentationsNameInconsistentCounts() throws {
+        let evidence = try decode(
+            ReceiptEvidence.self,
+            from: """
+            {
+              "key": "self_checked",
+              "gradeable": true,
+              "checkable_total": 0,
+              "checked_total": 2,
+              "by_tier": { "self_checked": 2 }
+            }
+            """
+        )
+
+        let coverage = ReceiptCoveragePresentation(evidence: evidence)
+        let checks = ReceiptCheckRunsPresentation(total: 1, passed: 2, failed: 1)
+
+        XCTAssertEqual(coverage.value, "Inconsistent counts")
+        XCTAssertTrue(coverage.isInconsistent)
+        XCTAssertEqual(coverage.qualifier, "2 supported · 0 checkable reported")
+        XCTAssertEqual(coverage.rowText, "inconsistent coverage · 2 supported of 0 reported")
+        XCTAssertEqual(evidence.compactHeadline, coverage.rowText)
+        XCTAssertEqual(evidence.headline, "Inconsistent counts (2 supported · 0 checkable reported)")
+        XCTAssertEqual(checks.value, "Inconsistent counts")
+        XCTAssertTrue(checks.isInconsistent)
+        XCTAssertEqual(checks.qualifier, "2 passed · 1 failed · 1 total reported")
+        XCTAssertEqual(checks.rowText, "inconsistent check runs · 2 passed · 1 failed · 1 total")
+        XCTAssertEqual(checks.headerText, "inconsistent · 2 passed · 1 failed · 1 total")
+    }
+
+    func testReceiptCheckPresentationMarksZeroTotalTalliesInconsistent() {
+        let checks = ReceiptCheckRunsPresentation(total: 0, passed: 1, failed: 0)
+
+        XCTAssertTrue(checks.isInconsistent)
+        XCTAssertEqual(checks.value, "0 total reported")
+        XCTAssertEqual(checks.qualifier, "1 passed · 0 failed · tallies conflict with total")
+    }
+
+    func testEmptyCheckDetailsDistinguishMissingItemsFromNoRuns() {
+        XCTAssertEqual(
+            receiptEmptyCheckDetailsCopy(total: 3, passed: 2, failed: 1),
+            ReceiptEmptyCheckDetailsCopy(
+                title: "No itemized check details recorded",
+                detail: "Summary counts are available above; this payload did not include per-run details."
+            )
+        )
+        XCTAssertEqual(
+            receiptEmptyCheckDetailsCopy(total: nil, passed: nil, failed: nil),
+            ReceiptEmptyCheckDetailsCopy(
+                title: "No check runs recorded",
+                detail: "Machine checks land here when a hook or CI reports one."
+            )
+        )
+    }
+
+    func testCoveragePresentationNamesUnavailableAndConflictingTierBreakdowns() throws {
+        let missing = try decode(
+            ReceiptEvidence.self,
+            from: """
+            {
+              "key": "self_checked",
+              "gradeable": true,
+              "checkable_total": 2,
+              "checked_total": 1
+            }
+            """
+        )
+        let conflicting = try decode(
+            ReceiptEvidence.self,
+            from: """
+            {
+              "key": "self_checked",
+              "gradeable": true,
+              "checkable_total": 2,
+              "checked_total": 1,
+              "by_tier": { "self_checked": 2 }
+            }
+            """
+        )
+
+        let missingPresentation = ReceiptCoveragePresentation(evidence: missing)
+        let conflictingPresentation = ReceiptCoveragePresentation(evidence: conflicting)
+
+        XCTAssertFalse(missingPresentation.isInconsistent)
+        XCTAssertFalse(missingPresentation.tierBreakdownAvailable)
+        XCTAssertEqual(
+            missingPresentation.tierBreakdownNotice,
+            "Evidence-tier breakdown not reported."
+        )
+        XCTAssertTrue(conflictingPresentation.isInconsistent)
+        XCTAssertFalse(conflictingPresentation.tierBreakdownAvailable)
+        XCTAssertEqual(
+            conflictingPresentation.tierBreakdownNotice,
+            "Evidence tiers report 2 supported claims; the summary reports 1."
+        )
+    }
+
+    func testAttentionDecisionSummarySeparatesBlockerAndFailedChecks() throws {
+        let receipt = try decode(
+            Receipt.self,
+            from: """
+            {
+              "schema_version": "agentacct.receipt.v1",
+              "task_id": "blocked",
+              "axes": {
+                "decision_status": {
+                  "key": "blocked",
+                  "label": "Blocked",
+                  "statement": "A representative window is required.",
+                  "asserted_by": "agent_report",
+                  "blocker": { "text": "The sample is too short." }
+                },
+                "evidence_strength": {
+                  "key": "unchecked",
+                  "gradeable": true,
+                  "checkable_total": 2,
+                  "checked_total": 1
+                }
+              },
+              "dimensions": {
+                "task": {}, "actors": {}, "actions": {}, "cost": {},
+                "evidence": { "checks_total": 2, "checks_passed": 1, "checks_failed": 1 },
+                "outcome": {}, "gaps": {}, "provenance": {}
+              }
+            }
+            """
+        )
+
+        let presentation = WorkReceiptDecisionPresentation(receipt: receipt)
+        XCTAssertTrue(presentation.isAttention)
+        XCTAssertEqual(presentation.explanation, "A representative window is required. — agent reported")
+        XCTAssertEqual(presentation.coverageValue, "1 of 2")
+        XCTAssertEqual(presentation.checksValue, "1 of 2")
+        XCTAssertTrue(presentation.checksQualifier.contains("1 failed"))
+        XCTAssertFalse(presentation.explanation.contains("The sample is too short"))
+    }
+
+    func testWorkReceiptRowPresentationIncludesDecisionRelevantFields() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-1",
+              "title": "Investigate pytest errors",
+              "decision_status": {
+                "key": "finding",
+                "label": "Finding",
+                "statement": "A recorded check found an issue."
+              },
+              "evidence_strength": {
+                "key": "unchecked",
+                "gradeable": true,
+                "checkable_total": 1,
+                "checked_total": 0,
+                "checks_total": 3,
+                "checks_passed": 2,
+                "checks_failed": 1
+              },
+              "cost": {
+                "estimated_cost_usd": 7.66,
+                "cost_confidence": "estimated_from_tokens",
+                "cost_complete": false
+              },
+              "primary_root": { "client": "codex", "client_session_id": "session-1" },
+              "last_activity_at": 1000,
+              "handed_off": true
+            }
+            """
+        )
+
+        let row = WorkReceiptRowPresentation(task: task)
+
+        XCTAssertEqual(row.coverageText, "0/1 claims supported")
+        XCTAssertEqual(row.checkRunsText, "2/3 check runs passed · 1 failed")
+        XCTAssertEqual(row.costText, "~$7.66")
+        XCTAssertTrue(row.accessibilityLabel.contains("Finding"))
+        XCTAssertTrue(row.accessibilityLabel.contains("handed off"))
+        XCTAssertTrue(row.accessibilityLabel.contains("0/1 claims supported"))
+        XCTAssertTrue(row.accessibilityLabel.contains("2/3 check runs passed, 1 failed"))
+        XCTAssertTrue(row.accessibilityLabel.contains("codex"))
+        XCTAssertTrue(row.accessibilityLabel.contains("~$7.66"))
+    }
+
+    func testWorkReceiptRowPresentationPrefersFreshDetailHandoffState() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-1",
+              "title": "Investigate pytest errors",
+              "decision_status": { "key": "finding", "label": "Finding" },
+              "evidence_strength": { "key": "unchecked" },
+              "cost": {},
+              "handed_off": true
+            }
+            """
+        )
+        let detail = try decode(
+            Receipt.self,
+            from: """
+            {
+              "schema_version": "agentacct.receipt.v1",
+              "task_id": "task-1",
+              "title": "Investigate pytest errors",
+              "axes": {
+                "decision_status": { "key": "finding", "label": "Finding" },
+                "evidence_strength": { "key": "unchecked" },
+                "handoff": { "handed_off": false }
+              },
+              "dimensions": {
+                "task": {}, "actors": {}, "actions": {}, "cost": {},
+                "evidence": {}, "outcome": {}, "gaps": {}, "provenance": {}
+              }
+            }
+            """
+        )
+
+        let row = WorkReceiptRowPresentation(task: task, detail: detail)
+
+        XCTAssertFalse(row.handedOff)
+        XCTAssertFalse(row.accessibilityLabel.contains("handed off"))
+    }
+
+    func testWorkDecisionSummaryKeepsClaimCoverageSeparateFromCheckRuns() throws {
+        let fixtureURL = try XCTUnwrap(
+            Bundle.module.url(forResource: "dashboard", withExtension: "json")
+        )
+        let receipt = try XCTUnwrap(DashboardSnapshotFixture.load(from: fixtureURL).work?.receipt)
+
+        let presentation = WorkReceiptDecisionPresentation(receipt: receipt)
+
+        XCTAssertEqual(presentation.headline, "Current outcome")
+        XCTAssertEqual(presentation.coverageValue, "4 of 4")
+        XCTAssertEqual(presentation.coverageQualifier, "claims supported")
+        XCTAssertEqual(presentation.checksValue, "6 of 6")
+        XCTAssertEqual(presentation.checksQualifier, "check runs passed")
+        XCTAssertFalse(presentation.isAttention)
+        XCTAssertTrue(presentation.accessibilityLabel.contains("Coverage: 4 of 4"))
+        XCTAssertTrue(presentation.accessibilityLabel.contains("Checks: 6 of 6"))
+    }
+
+    func testReceiptPresentationsPreservePartialCountsWithoutInventingZeroes() throws {
+        let receipt = try decode(
+            Receipt.self,
+            from: """
+            {
+              "schema_version": "agentacct.receipt.v1",
+              "task_id": "partial",
+              "axes": {
+                "decision_status": { "key": "reported" },
+                "evidence_strength": {
+                  "key": "unchecked",
+                  "gradeable": true,
+                  "checkable_total": 4
+                }
+              },
+              "dimensions": {
+                "task": {}, "actors": {}, "actions": {}, "cost": {},
+                "evidence": { "checks_passed": 2, "checks_failed": 1 },
+                "outcome": {}, "gaps": {}, "provenance": {}
+              }
+            }
+            """
+        )
+
+        let decision = WorkReceiptDecisionPresentation(receipt: receipt)
+        let coverage = ReceiptCoveragePresentation(evidence: receipt.axes.evidenceStrength)
+        let checks = ReceiptCheckRunsPresentation(total: nil, passed: 2, failed: 1)
+
+        XCTAssertEqual(decision.coverageValue, "Not reported")
+        XCTAssertEqual(decision.coverageQualifier, "support count unavailable · 4 checkable claims")
+        XCTAssertEqual(coverage.rowText, "support count not reported · 4 checkable claims")
+        XCTAssertEqual(decision.checksValue, "Total not reported")
+        XCTAssertEqual(decision.checksQualifier, "2 passed · 1 failed")
+        XCTAssertEqual(checks.rowText, "total not reported · 2 passed · 1 failed")
+        XCTAssertFalse(decision.accessibilityLabel.contains("0 of"))
+    }
+
+    func testGradeableReceiptWithMissingCoverageTotalIsNotCalledNotGradeable() throws {
+        let evidence = try decode(
+            ReceiptEvidence.self,
+            from: """
+            {
+              "key": "self_checked",
+              "gradeable": true,
+              "checked_total": 2
+            }
+            """
+        )
+
+        let presentation = ReceiptCoveragePresentation(evidence: evidence)
+
+        XCTAssertEqual(presentation.value, "Total not reported")
+        XCTAssertEqual(presentation.rowText, "2 supported · checkable total not reported")
+        XCTAssertFalse(presentation.rowText.contains("not gradeable"))
+    }
+
+    func testInconsistentZeroCheckTotalNamesSuppliedTallies() {
+        let presentation = ReceiptCheckRunsPresentation(total: 0, passed: 1, failed: 1)
+
+        XCTAssertEqual(presentation.value, "0 total reported")
+        XCTAssertEqual(presentation.qualifier, "1 passed · 1 failed · tallies conflict with total")
     }
 
     func testNeedsReviewProjectionUsesActionableTasks() throws {
