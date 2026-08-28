@@ -167,6 +167,13 @@ enum ProcessRunner {
         return AsyncThrowingStream<String, Error> { continuation in
             let handle = pipe.fileHandleForReading
             let state = ProcessStreamState(continuation: continuation)
+            continuation.onTermination = { @Sendable termination in
+                guard case .cancelled = termination else { return }
+                handle.readabilityHandler = nil
+                if process.isRunning {
+                    process.terminate()
+                }
+            }
             handle.readabilityHandler = { fh in
                 let chunk = fh.availableData
                 state.receive(chunk)

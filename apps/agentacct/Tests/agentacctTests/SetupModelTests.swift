@@ -56,6 +56,53 @@ final class SetupModelTests: XCTestCase {
         XCTAssertEqual(lines, ["configured"])
     }
 
+    func testProcessRunnerTerminatesChildWhenConsumerIsCancelled() async throws {
+        let fm = FileManager.default
+        let directory = fm.temporaryDirectory
+            .appendingPathComponent("agentacct-process-runner-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: directory) }
+        let terminationMarker = directory.appendingPathComponent("terminated")
+        let ready = expectation(description: "child process started")
+        let script = """
+        marker="$1"
+        (sleep 4; kill -TERM $$) &
+        watchdog=$!
+        trap 'kill "$watchdog" 2>/dev/null; printf terminated > "$marker"; exit 0' TERM
+        printf 'ready\\n'
+        while :; do sleep 0.05; done
+        """
+        let stream = ProcessRunner.run(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", script, "agentacct-process-runner", terminationMarker.path]
+        )
+        let consumer = Task {
+            do {
+                for try await line in stream where line == "ready" {
+                    ready.fulfill()
+                }
+            } catch {
+                // Cancellation is the behavior under test; process cleanup is
+                // asserted through the child-owned termination marker below.
+            }
+        }
+
+        await fulfillment(of: [ready], timeout: 2)
+        consumer.cancel()
+        await consumer.value
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while !fm.fileExists(atPath: terminationMarker.path), clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(
+            try? String(contentsOf: terminationMarker, encoding: .utf8),
+            "terminated",
+            "cancelling stream consumption must terminate the launched setup process"
+        )
+    }
+
     @MainActor
     func testSetupModelFailsAfterStreamingNonzeroExit() async {
         let model = makeModel(lines: ["provider configured"], failure: ProcessRunnerError.nonzeroExit(9))

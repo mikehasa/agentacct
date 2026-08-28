@@ -8,6 +8,7 @@ import SwiftUI
 struct SetupSheet: View {
     @ObservedObject var setup: SetupModel
     var onClose: () -> Void
+    @State private var setupTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.l) {
@@ -55,6 +56,10 @@ struct SetupSheet: View {
         .padding(Space.l)
         .frame(width: 460)
         .background(Theme.canvas)
+        .onDisappear {
+            setupTask?.cancel()
+            setupTask = nil
+        }
     }
 
     private var setupLog: some View {
@@ -78,9 +83,7 @@ struct SetupSheet: View {
             HStack {
                 Button("Not now", action: onClose).buttonStyle(.plain).foregroundStyle(Theme.muted)
                 Spacer()
-                Button {
-                    Task { await setup.setUp() }
-                } label: {
+                Button(action: startSetup) {
                     Text("Set up recording").font(Face.sansFont(13, .semibold))
                 }
                 .buttonStyle(.borderedProminent)
@@ -119,11 +122,19 @@ struct SetupSheet: View {
                 HStack {
                     Button("Close", action: onClose).buttonStyle(.plain).foregroundStyle(Theme.muted)
                     Spacer()
-                    Button("Try again") { setup.reset(); Task { await setup.setUp() } }
-                        .buttonStyle(.borderedProminent).tint(Theme.accent)
+                    Button("Try again") {
+                        setup.reset()
+                        startSetup()
+                    }
+                    .buttonStyle(.borderedProminent).tint(Theme.accent)
                 }
             }
         }
+    }
+
+    private func startSetup() {
+        setupTask?.cancel()
+        setupTask = Task { await setup.setUp() }
     }
 }
 
