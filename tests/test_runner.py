@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -7,10 +8,10 @@ import time
 from pathlib import Path
 
 import psutil
-
-from agentacct.runner import RunOptions, RunStatus, start_guarded_run
 import pytest
 
+import agentacct.runner as runner_module
+from agentacct.runner import RunOptions, RunStatus, start_guarded_run
 from agentacct.storage import RunStore
 
 
@@ -104,6 +105,43 @@ def test_timeout_pauses_only_owned_dummy_process(tmp_path):
         assert verified["process_executable"] == str(Path(proc.exe()).resolve())
         assert verified["process_cwd"] == str(Path(proc.cwd()).resolve())
         assert verified["ownership_nonce"]
+    finally:
+        os.killpg(metadata["process_group_id"], signal.SIGKILL)
+
+
+def test_runner_waits_for_the_live_shim_before_recording_its_executable(tmp_path, monkeypatch):
+    real_python = sys.executable
+    launcher = tmp_path / "python-launcher"
+    launcher.write_text(
+        f"#!/bin/sh\nsleep 0.5\nexec {shlex.quote(real_python)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    launcher.chmod(0o700)
+    dummy = write_dummy(
+        tmp_path / "loop.py",
+        "import time\nprint('started', flush=True)\nwhile True:\n    time.sleep(0.2)\n",
+    )
+    store = RunStore(tmp_path / "state")
+    monkeypatch.setattr(runner_module.sys, "executable", str(launcher))
+
+    result = start_guarded_run(
+        [real_python, str(dummy)],
+        RunOptions(
+            store_dir=store.root,
+            max_runtime_seconds=0.25,
+            on_timeout="pause",
+            poll_interval=0.05,
+        ),
+    )
+
+    metadata = store.read_metadata(result.run_id)
+    try:
+        live_executable = psutil.Process(metadata["pid"]).exe()
+        assert metadata["process_executable"] == str(Path(live_executable).resolve())
+        assert (
+            store.verify_owned_process(result.run_id)["process_executable"]
+            == metadata["process_executable"]
+        )
     finally:
         os.killpg(metadata["process_group_id"], signal.SIGKILL)
 
