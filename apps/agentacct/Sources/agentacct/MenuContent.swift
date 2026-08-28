@@ -73,6 +73,9 @@ struct MenuContent: View {
             }
             .scrollBounceBehavior(.basedOnSize)
             .frame(maxHeight: 420)
+            // MenuBarExtra can propose only the footer's height. Preserve the
+            // capped scroll body's ideal height instead of accepting zero.
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
 

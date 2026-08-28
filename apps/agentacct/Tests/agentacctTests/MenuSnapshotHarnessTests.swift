@@ -1,8 +1,32 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import agentacct
 
 final class MenuSnapshotHarnessTests: XCTestCase {
+    private struct CompressedMenuHost: Layout {
+        func sizeThatFits(
+            proposal: ProposedViewSize,
+            subviews: Subviews,
+            cache: inout ()
+        ) -> CGSize {
+            subviews[0].sizeThatFits(ProposedViewSize(width: 360, height: 44))
+        }
+
+        func placeSubviews(
+            in bounds: CGRect,
+            proposal: ProposedViewSize,
+            subviews: Subviews,
+            cache: inout ()
+        ) {
+            subviews[0].place(
+                at: bounds.origin,
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: 360, height: 44)
+            )
+        }
+    }
+
     private struct ExpectedArtifact {
         let filename: String
         let pixelsWide: Int
@@ -69,6 +93,42 @@ final class MenuSnapshotHarnessTests: XCTestCase {
         XCTAssertGreaterThan(appearanceDifference.changedPixelFraction, 0.05)
         XCTAssertFalse(SnapshotMode.enabled)
         XCTAssertNil(SnapshotScheme.override)
+    }
+
+    @MainActor
+    func testLiveConnectedMenuProvidesAUsableIntrinsicHeight() throws {
+        let fixture = try DashboardSnapshotFixture.load(from: fixtureURL())
+        let glance = GlanceState(preloaded: GlanceSnapshot(
+            glance: fixture.glance,
+            daemonVersion: fixture.daemonVersion
+        ))
+        let dashboard = DashboardStore(preloaded: fixture)
+        let selection = AppSelection()
+
+        SnapshotMode.enabled = false
+        let view = MenuContent(
+            buildIdentity: MenuSnapshotRenderer.reviewBuildIdentity,
+            lastUpdatedTextOverride: "just now",
+            launchAtLoginInitialState: false
+        )
+        .environmentObject(glance)
+        .environmentObject(dashboard)
+        .environmentObject(selection)
+
+        let hostingView = NSHostingView(rootView: CompressedMenuHost { view })
+        let fittingSize = hostingView.fittingSize
+
+        XCTAssertEqual(fittingSize.width, 360, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(
+            fittingSize.height,
+            440,
+            "the live MenuBarExtra must reserve room for its content above the persistent footer"
+        )
+        XCTAssertLessThanOrEqual(
+            fittingSize.height,
+            465,
+            "the connected menu must remain capped to a glanceable popover height"
+        )
     }
 
     func testFixtureExercisesPopulatedUsageWindows() throws {
