@@ -85,6 +85,129 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(focus.sourceLabel, "MCP record")
     }
 
+    func testReviewBriefContainsOnlyRecordedFactsAndNamesMissingNextStep() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-finding",
+              "title": "Verify dashboard hierarchy",
+              "project": "agentacct-gui",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked" },
+              "cost": {},
+              "primary_root": { "client": "codex", "client_session_id": "session-1" },
+              "attention": {
+                "kind": "failed_check",
+                "summary": "The reference image changed unexpectedly",
+                "next_step": null,
+                "observed_at": 1787889600,
+                "source": "ci"
+              }
+            }
+            """
+        )
+
+        let focus = try XCTUnwrap(DashboardAttentionItem(task: task))
+        let brief = DashboardActionBrief(focus: focus)
+
+        XCTAssertEqual(brief.kind, .review)
+        XCTAssertEqual(brief.buttonTitle, "Copy review brief")
+        XCTAssertEqual(brief.copiedAccessibilityLabel, "Review brief copied")
+        XCTAssertEqual(
+            brief.text,
+            """
+            Review brief
+            Task: Verify dashboard hierarchy
+            Task ID: task-finding
+            Project: agentacct-gui
+            Agent: codex
+            Recorded attention: Failed check — The reference image changed unexpectedly
+            Recorded next step: None recorded
+            Observed: 2026-08-28T04:00:00Z
+            Provenance: External CI or provider
+            """
+        )
+        XCTAssertFalse(brief.text.localizedCaseInsensitiveContains("rerun"))
+        XCTAssertFalse(brief.text.localizedCaseInsensitiveContains("resume"))
+    }
+
+    func testExpandedProvenanceLabelsPreserveMachineCheckSource() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-machine-check",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked" },
+              "cost": {},
+              "attention": {
+                "kind": "failed_check",
+                "summary": "Snapshot verification failed",
+                "source": "machine"
+              }
+            }
+            """
+        )
+
+        let focus = try XCTUnwrap(DashboardAttentionItem(task: task))
+        XCTAssertEqual(focus.sourceLabel, "Machine check")
+        XCTAssertTrue(DashboardActionBrief(focus: focus).text.contains("Provenance: Machine check"))
+    }
+
+    func testUnknownHandoffStateDoesNotImplyRecoveryOrContinuation() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-legacy",
+              "decision_status": { "key": "blocked" },
+              "evidence_strength": { "key": "none" },
+              "cost": {},
+              "attention": { "kind": "blocker", "summary": "Approval is missing" }
+            }
+            """
+        )
+
+        let focus = try XCTUnwrap(DashboardAttentionItem(task: task))
+        XCTAssertNil(focus.handedOff)
+        XCTAssertEqual(DashboardActionBrief(focus: focus).kind, .review)
+        XCTAssertEqual(DashboardActionBrief(focus: focus).buttonTitle, "Copy review brief")
+    }
+
+    func testHandedOffAttentionProducesContinuationBriefWithoutRewritingAgentGuidance() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-handoff",
+              "title": "Handoff dashboard polish",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked" },
+              "cost": {},
+              "handed_off": true,
+              "attention": {
+                "kind": "blocker",
+                "summary": "Canonical renderer is offline",
+                "next_step": "Retry when the renderer is available",
+                "source": "mcp"
+              }
+            }
+            """
+        )
+
+        let focus = try XCTUnwrap(DashboardAttentionItem(task: task))
+        let brief = DashboardActionBrief(focus: focus)
+
+        XCTAssertEqual(brief.kind, .continuation)
+        XCTAssertEqual(brief.buttonTitle, "Copy continuation brief")
+        XCTAssertEqual(brief.copiedAccessibilityLabel, "Continuation brief copied")
+        XCTAssertTrue(brief.text.hasPrefix("Continuation brief\n"))
+        XCTAssertTrue(brief.text.contains("Recorded attention: Recorded blocker — Canonical renderer is offline"))
+        XCTAssertTrue(brief.text.contains("Recorded next step: Retry when the renderer is available"))
+        XCTAssertTrue(brief.text.contains("Observed: Not recorded"))
+    }
+
     func testShiftBriefNeverTurnsLoadingUnavailableOrMalformedDataIntoAllClear() throws {
         XCTAssertEqual(
             DashboardAttentionPresentation(payload: nil, error: nil),
