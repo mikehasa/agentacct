@@ -156,50 +156,93 @@ enum ProcessRunner {
 
         return AsyncThrowingStream<String, Error> { continuation in
             let handle = pipe.fileHandleForReading
-            var buffer = Data()
-            let drainTail: () -> Void = {
-                if !buffer.isEmpty, let tail = String(data: buffer, encoding: .utf8) {
-                    continuation.yield(tail)
-                }
-                buffer.removeAll()
-            }
+            let state = ProcessStreamState(continuation: continuation)
             handle.readabilityHandler = { fh in
                 let chunk = fh.availableData
+                state.receive(chunk)
                 if chunk.isEmpty {
-                    // EOF: yield any unterminated tail once and STOP — leaving the
-                    // handler installed would busy-spin on repeated empty reads and
-                    // re-yield the same tail every tick.
-                    drainTail()
+                    // Stop after EOF; leaving the handler installed would busy-spin
+                    // on repeated empty reads.
                     fh.readabilityHandler = nil
-                    return
-                }
-                buffer.append(chunk)
-                while let nl = buffer.firstIndex(of: 0x0A) {
-                    let lineData = buffer.subdata(in: buffer.startIndex..<nl)
-                    buffer.removeSubrange(buffer.startIndex...nl)
-                    if let line = String(data: lineData, encoding: .utf8) {
-                        continuation.yield(line)
-                    }
                 }
             }
             process.terminationHandler = { process in
-                // Finish the stream. `buffer` is deliberately NOT touched here —
-                // it is owned by the readability queue, and the EOF read above
-                // drains the final tail; racing it from this queue would be a
-                // data race for a log-only line. Post-finish yields are ignored.
-                handle.readabilityHandler = nil
-                if process.terminationStatus == 0 {
-                    continuation.finish()
-                } else {
-                    continuation.finish(throwing: ProcessRunnerError.nonzeroExit(process.terminationStatus))
-                }
+                state.didTerminate(status: process.terminationStatus)
             }
             do {
                 try process.run()
+                // The child has its own descriptor after launch. Close the
+                // parent's writer so the reader observes EOF after child exit.
+                pipe.fileHandleForWriting.closeFile()
             } catch {
                 handle.readabilityHandler = nil
-                continuation.finish(throwing: error)
+                pipe.fileHandleForWriting.closeFile()
+                state.didFailToLaunch(error)
             }
+        }
+    }
+}
+
+private final class ProcessStreamState: @unchecked Sendable {
+    private let continuation: AsyncThrowingStream<String, Error>.Continuation
+    private let lock = NSLock()
+    private var buffer = Data()
+    private var reachedEOF = false
+    private var terminationStatus: Int32?
+    private var finished = false
+
+    init(continuation: AsyncThrowingStream<String, Error>.Continuation) {
+        self.continuation = continuation
+    }
+
+    func receive(_ chunk: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return }
+
+        if chunk.isEmpty {
+            if !buffer.isEmpty, let tail = String(data: buffer, encoding: .utf8) {
+                continuation.yield(tail)
+            }
+            buffer.removeAll()
+            reachedEOF = true
+            finishIfReady()
+            return
+        }
+
+        buffer.append(chunk)
+        while let newline = buffer.firstIndex(of: 0x0A) {
+            let lineData = buffer.subdata(in: buffer.startIndex..<newline)
+            buffer.removeSubrange(buffer.startIndex...newline)
+            if let line = String(data: lineData, encoding: .utf8) {
+                continuation.yield(line)
+            }
+        }
+    }
+
+    func didTerminate(status: Int32) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return }
+        terminationStatus = status
+        finishIfReady()
+    }
+
+    func didFailToLaunch(_ error: Error) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return }
+        finished = true
+        continuation.finish(throwing: error)
+    }
+
+    private func finishIfReady() {
+        guard reachedEOF, let terminationStatus else { return }
+        finished = true
+        if terminationStatus == 0 {
+            continuation.finish()
+        } else {
+            continuation.finish(throwing: ProcessRunnerError.nonzeroExit(terminationStatus))
         }
     }
 }

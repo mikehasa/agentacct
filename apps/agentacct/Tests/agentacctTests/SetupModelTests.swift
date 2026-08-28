@@ -45,7 +45,7 @@ final class SetupModelTests: XCTestCase {
     func testProcessRunnerStreamsOutputAndCompletesForZeroExit() async throws {
         let stream = ProcessRunner.run(
             executable: URL(fileURLWithPath: "/bin/sh"),
-            arguments: ["-c", "printf 'configured\\n'"]
+            arguments: ["-c", "printf 'configured'"]
         )
         var lines: [String] = []
 
