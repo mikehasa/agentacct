@@ -14,6 +14,8 @@ final class DashboardVisualRegressionTests: XCTestCase {
         "dashboard-trust-unavailable-dark.png",
         "dashboard-old-daemon-statusless-light.png",
         "dashboard-old-daemon-statusless-dark.png",
+        "dashboard-accessibility5-minimum-light.png",
+        "dashboard-accessibility5-minimum-dark.png",
     ]
 
     @MainActor

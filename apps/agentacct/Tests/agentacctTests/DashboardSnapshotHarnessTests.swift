@@ -20,6 +20,8 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "dashboard-trust-unavailable-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "dashboard-old-daemon-statusless-light.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "dashboard-old-daemon-statusless-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "dashboard-accessibility5-minimum-light.png", pixelsWide: 1920, pixelsHigh: 4000),
+        ExpectedArtifact(filename: "dashboard-accessibility5-minimum-dark.png", pixelsWide: 1920, pixelsHigh: 4000),
     ]
 
     @MainActor

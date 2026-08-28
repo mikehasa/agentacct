@@ -4,6 +4,15 @@ import XCTest
 @testable import agentacct
 
 final class DashboardInteractionTests: XCTestCase {
+    func testDashboardAccessibleLayoutStartsBeforeFixedGeometryBecomesUnsafe() {
+        XCTAssertFalse(dashboardUsesAccessibilityLayout(.medium))
+        XCTAssertFalse(dashboardUsesAccessibilityLayout(.xxLarge))
+        XCTAssertTrue(dashboardUsesAccessibilityLayout(.xxxLarge))
+        XCTAssertTrue(dashboardUsesAccessibilityLayout(.accessibility1))
+        XCTAssertTrue(dashboardUsesAccessibilityLayout(.accessibility3))
+        XCTAssertTrue(dashboardUsesAccessibilityLayout(.accessibility5))
+    }
+
     func testAttentionPayloadPreservesCompleteCountsAndRecordedReason() throws {
         let payload = try decode(
             V1AttentionPayload.self,

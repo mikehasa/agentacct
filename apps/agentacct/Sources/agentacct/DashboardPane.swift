@@ -2,6 +2,105 @@ import AppKit
 import Foundation
 import SwiftUI
 
+enum DashboardFontRole {
+    case titlePage
+    case titleSection
+    case titleCard
+    case kpi
+    case rowLabel
+    case body
+    case data
+    case caption
+    case captionSemibold
+    case dataSmall
+    case dataSmallSemibold
+    case labelCaps
+    case columnHeader
+
+    var baseSize: CGFloat {
+        switch self {
+        case .titlePage: return 26
+        case .titleSection: return 20
+        case .kpi: return 18
+        case .titleCard: return 15
+        case .rowLabel, .body: return 14
+        case .data: return 13
+        case .caption, .captionSemibold, .dataSmall, .dataSmallSemibold,
+             .labelCaps, .columnHeader: return 12
+        }
+    }
+
+    var relativeTextStyle: Font.TextStyle {
+        switch self {
+        case .titlePage: return .title
+        case .titleSection: return .title2
+        case .titleCard, .kpi: return .headline
+        case .rowLabel, .body, .data: return .body
+        case .caption, .captionSemibold, .dataSmall, .dataSmallSemibold,
+             .labelCaps, .columnHeader: return .caption
+        }
+    }
+
+    fileprivate func font(size: CGFloat) -> Font {
+        let weight: Font.Weight
+        switch self {
+        case .titlePage, .titleSection, .titleCard, .rowLabel, .captionSemibold,
+             .dataSmallSemibold:
+            weight = .semibold
+        case .kpi, .labelCaps:
+            weight = .bold
+        case .columnHeader:
+            weight = .medium
+        case .body, .data, .caption, .dataSmall:
+            weight = .regular
+        }
+
+        switch self {
+        case .kpi, .data, .dataSmall, .dataSmallSemibold, .labelCaps:
+            if let mono = Face.mono {
+                return Font.custom(mono, size: size)
+                .weight(weight)
+                .monospacedDigit()
+            }
+            return Font.system(size: size, weight: weight, design: .monospaced)
+                .monospacedDigit()
+        default:
+            if let sans = Face.sans {
+                return Font.custom(sans, size: size)
+                .weight(weight)
+            }
+            return Font.system(size: size, weight: weight)
+        }
+    }
+}
+
+private struct DashboardFontModifier: ViewModifier {
+    let role: DashboardFontRole
+    @ScaledMetric private var size: CGFloat
+
+    init(role: DashboardFontRole) {
+        self.role = role
+        _size = ScaledMetric(
+            wrappedValue: role.baseSize,
+            relativeTo: role.relativeTextStyle
+        )
+    }
+
+    func body(content: Content) -> some View {
+        content.font(role.font(size: size))
+    }
+}
+
+private extension View {
+    func dashboardFont(_ role: DashboardFontRole) -> some View {
+        modifier(DashboardFontModifier(role: role))
+    }
+}
+
+func dashboardUsesAccessibilityLayout(_ size: DynamicTypeSize) -> Bool {
+    size >= .xxxLarge
+}
+
 // The dashboard is a shift brief: what deserves attention now, what recorded
 // evidence supports that claim, and where the operator can inspect it. Recent
 // work, active sessions, plan headroom, and source health remain supporting
@@ -636,6 +735,7 @@ struct DashboardPane: View {
     @EnvironmentObject var dashboard: DashboardStore
     @EnvironmentObject var glance: GlanceState
     @EnvironmentObject var selection: AppSelection
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var recentWork: [DashboardWorkItem] {
         dashboard.receiptTasks.prefix(3).map(DashboardWorkItem.init)
@@ -734,11 +834,15 @@ struct DashboardPane: View {
                 }
             }
             .padding(Space.gutter)
+            .fixedSize(
+                horizontal: false,
+                vertical: dashboardUsesAccessibilityLayout(dynamicTypeSize)
+            )
         }
         .overlay(alignment: .bottom) {
             if let error = dashboard.errorText {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(Type.caption)
+                    .dashboardFont(.caption)
                     .foregroundStyle(Theme.coral)
                     .padding(Space.s)
                     .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
@@ -751,16 +855,25 @@ struct DashboardPane: View {
         @ViewBuilder left: () -> Left,
         @ViewBuilder right: () -> Right
     ) -> some View {
-        ViewThatFits(in: .horizontal) {
-            DashboardSplitLayout(leftFraction: 8 / 12, spacing: Space.l) {
-                left()
-                right()
-            }
-            .frame(minWidth: 820)
+        Group {
+            if dashboardUsesAccessibilityLayout(dynamicTypeSize) {
+                VStack(spacing: Space.l) {
+                    left()
+                    right()
+                }
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    DashboardSplitLayout(leftFraction: 8 / 12, spacing: Space.l) {
+                        left()
+                        right()
+                    }
+                    .frame(minWidth: 820)
 
-            VStack(spacing: Space.l) {
-                left()
-                right()
+                    VStack(spacing: Space.l) {
+                        left()
+                        right()
+                    }
+                }
             }
         }
     }
@@ -815,32 +928,52 @@ private struct DashboardSplitLayout: Layout {
 private struct DashboardShiftBriefHeader: View {
     let payload: V1AttentionPayload?
     let error: String?
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var presentation: DashboardAttentionPresentation {
         DashboardAttentionPresentation(payload: payload, error: error)
     }
 
     var body: some View {
-        HStack(alignment: .lastTextBaseline, spacing: Space.xl) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("SHIFT BRIEF")
-                    .font(Type.labelCaps)
-                    .tracking(Type.labelCapsTracking)
-                    .foregroundStyle(Theme.accent)
-                Text(presentation.dashboardHeadline)
-                    .font(Type.titlePage)
-                    .tracking(Type.titlePageTracking)
-                    .foregroundStyle(Theme.ink)
-                    .lineLimit(2)
+        Group {
+            if dashboardUsesAccessibilityLayout(dynamicTypeSize) {
+                VStack(alignment: .leading, spacing: Space.s) {
+                    headline
+                    status
+                }
+            } else {
+                HStack(alignment: .lastTextBaseline, spacing: Space.xl) {
+                    headline
+                    Spacer(minLength: Space.m)
+                    status
+                }
             }
-            Spacer(minLength: Space.m)
-            Text(presentation.dashboardStatus)
-                .font(Type.dataSmall)
-                .foregroundStyle(presentation.dashboardStatusIsWarning ? Theme.amber : Theme.muted)
-                .multilineTextAlignment(.trailing)
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("dashboard.shift-brief.header")
+    }
+
+    private var headline: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("SHIFT BRIEF")
+                .dashboardFont(.labelCaps)
+                .tracking(Type.labelCapsTracking)
+                .foregroundStyle(Theme.accent)
+            Text(presentation.dashboardHeadline)
+                .dashboardFont(.titlePage)
+                .tracking(Type.titlePageTracking)
+                .foregroundStyle(Theme.ink)
+                .lineLimit(dashboardUsesAccessibilityLayout(dynamicTypeSize) ? nil : 2)
+        }
+    }
+
+    private var status: some View {
+        Text(presentation.dashboardStatus)
+            .dashboardFont(.dataSmall)
+            .foregroundStyle(presentation.dashboardStatusIsWarning ? Theme.amber : Theme.muted)
+            .multilineTextAlignment(
+                dashboardUsesAccessibilityLayout(dynamicTypeSize) ? .leading : .trailing
+            )
     }
 }
 
@@ -850,6 +983,7 @@ private struct DashboardAttentionBriefCard: View {
     let open: (DashboardDestination) -> Void
     @State private var copyFeedback = DashboardCopyFeedback.idle
     @State private var copyFeedbackToken: UUID?
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var presentation: DashboardAttentionPresentation {
         DashboardAttentionPresentation(payload: payload, error: error)
@@ -865,7 +999,10 @@ private struct DashboardAttentionBriefCard: View {
     }
 
     var body: some View {
-        Card(padding: 0, fillsHeight: true) {
+        Card(
+            padding: 0,
+            fillsHeight: !dashboardUsesAccessibilityLayout(dynamicTypeSize)
+        ) {
             HStack(spacing: 0) {
                 Rectangle()
                     .fill(tint)
@@ -873,7 +1010,13 @@ private struct DashboardAttentionBriefCard: View {
                     .accessibilityHidden(true)
                 content
                     .padding(Space.xl)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .frame(
+                        maxWidth: .infinity,
+                        maxHeight: dashboardUsesAccessibilityLayout(dynamicTypeSize)
+                            ? nil
+                            : .infinity,
+                        alignment: .topLeading
+                    )
             }
         }
         .accessibilityIdentifier("dashboard.shift-brief.attention")
@@ -901,14 +1044,19 @@ private struct DashboardAttentionBriefCard: View {
                 ProgressView().controlSize(.small).tint(Theme.muted)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Checking recorded work…")
-                        .font(Type.titleSection)
+                        .dashboardFont(.titleSection)
                         .foregroundStyle(Theme.ink)
                     Text("Loading the complete review projection; no clear-state claim is shown yet.")
-                        .font(Type.body)
+                        .dashboardFont(.body)
                         .foregroundStyle(Theme.muted)
                 }
             }
-            .frame(maxHeight: .infinity, alignment: .center)
+            .frame(
+                maxHeight: dashboardUsesAccessibilityLayout(dynamicTypeSize)
+                    ? nil
+                    : .infinity,
+                alignment: .center
+            )
         }
     }
 
@@ -919,11 +1067,11 @@ private struct DashboardAttentionBriefCard: View {
         return VStack(alignment: .leading, spacing: Space.l) {
             HStack(spacing: Space.s) {
                 Text("PRIMARY ATTENTION")
-                    .font(Type.labelCaps)
+                    .dashboardFont(.labelCaps)
                     .tracking(Type.labelCapsTracking)
                     .foregroundStyle(tint)
                 Text("1 OF \(total)")
-                    .font(Type.dataSmallSemibold)
+                    .dashboardFont(.dataSmallSemibold)
                     .foregroundStyle(Theme.muted)
                     .padding(.horizontal, 7)
                     .frame(minHeight: 21)
@@ -931,7 +1079,7 @@ private struct DashboardAttentionBriefCard: View {
                 Spacer(minLength: Space.s)
                 if total > 1 {
                     Button("View queue") { open(.reviewQueue) }
-                        .font(Type.captionSemibold)
+                        .dashboardFont(.captionSemibold)
                         .foregroundStyle(Theme.accent)
                         .buttonStyle(QuietButtonStyle())
                         .accessibilityIdentifier("dashboard.shift-brief.view-queue")
@@ -942,11 +1090,11 @@ private struct DashboardAttentionBriefCard: View {
                 let context = [focus.project, focus.client].compactMap { $0 }
                 if !context.isEmpty {
                     Text(context.joined(separator: " · "))
-                        .font(Type.dataSmall)
+                        .dashboardFont(.dataSmall)
                         .foregroundStyle(Theme.muted)
                 }
                 Text(focus.summary)
-                    .font(Type.body)
+                    .dashboardFont(.body)
                     .foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -955,11 +1103,11 @@ private struct DashboardAttentionBriefCard: View {
 
             VStack(alignment: .leading, spacing: 5) {
                 Text("RECORDED NEXT STEP")
-                    .font(Type.labelCaps)
+                    .dashboardFont(.labelCaps)
                     .tracking(Type.labelCapsTracking)
                     .foregroundStyle(Theme.muted)
                 Text(focus.nextStep ?? "No next step recorded.")
-                    .font(Type.body)
+                    .dashboardFont(.body)
                     .foregroundStyle(focus.nextStep == nil ? Theme.muted : Theme.ink)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -972,7 +1120,7 @@ private struct DashboardAttentionBriefCard: View {
                     open(.task(focus.id))
                 } label: {
                     Label("Review evidence", systemImage: "doc.text.magnifyingglass")
-                        .font(Type.captionSemibold)
+                        .dashboardFont(.captionSemibold)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
@@ -997,7 +1145,7 @@ private struct DashboardAttentionBriefCard: View {
                         copySucceeded ? "Copied" : (copyFailed ? "Copy failed" : brief.buttonTitle),
                         systemImage: copySucceeded ? "checkmark" : "doc.on.doc"
                     )
-                    .font(Type.captionSemibold)
+                    .dashboardFont(.captionSemibold)
                 }
                 .buttonStyle(.bordered)
                 .tint(copyFailed ? Theme.coral : Theme.accent)
@@ -1016,20 +1164,23 @@ private struct DashboardAttentionBriefCard: View {
 
 private struct DashboardProofline: View {
     let focus: DashboardAttentionItem
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 0) {
-                fact(label: "RECORDED REASON", value: focus.reasonLabel)
-                proofRule
-                fact(label: "OBSERVED", value: focus.recency ?? "Time unavailable")
-                proofRule
-                fact(label: "PROVENANCE", value: focus.sourceLabel ?? "Source unavailable")
-            }
-            VStack(alignment: .leading, spacing: Space.s) {
-                fact(label: "RECORDED REASON", value: focus.reasonLabel)
-                fact(label: "OBSERVED", value: focus.recency ?? "Time unavailable")
-                fact(label: "PROVENANCE", value: focus.sourceLabel ?? "Source unavailable")
+        Group {
+            if dashboardUsesAccessibilityLayout(dynamicTypeSize) {
+                stackedFacts
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 0) {
+                        fact(label: "RECORDED REASON", value: focus.reasonLabel)
+                        proofRule
+                        fact(label: "OBSERVED", value: focus.recency ?? "Time unavailable")
+                        proofRule
+                        fact(label: "PROVENANCE", value: focus.sourceLabel ?? "Source unavailable")
+                    }
+                    stackedFacts
+                }
             }
         }
         .padding(.vertical, Space.s)
@@ -1041,16 +1192,24 @@ private struct DashboardProofline: View {
         )
     }
 
+    private var stackedFacts: some View {
+        VStack(alignment: .leading, spacing: Space.s) {
+            fact(label: "RECORDED REASON", value: focus.reasonLabel)
+            fact(label: "OBSERVED", value: focus.recency ?? "Time unavailable")
+            fact(label: "PROVENANCE", value: focus.sourceLabel ?? "Source unavailable")
+        }
+    }
+
     private func fact(label: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label)
-                .font(Type.labelCaps)
+                .dashboardFont(.labelCaps)
                 .tracking(Type.labelCapsTracking)
                 .foregroundStyle(Theme.muted)
             Text(value)
-                .font(Type.dataSmallSemibold)
+                .dashboardFont(.dataSmallSemibold)
                 .foregroundStyle(Theme.ink)
-                .lineLimit(1)
+                .lineLimit(dashboardUsesAccessibilityLayout(dynamicTypeSize) ? nil : 1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -1068,16 +1227,16 @@ private struct DashboardBriefEmptyState: View {
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(Theme.green)
                 Text("COMPLETE REVIEW PROJECTION")
-                    .font(Type.labelCaps)
+                    .dashboardFont(.labelCaps)
                     .tracking(Type.labelCapsTracking)
                     .foregroundStyle(Theme.green)
             }
             Text("No recorded work needs review.")
-                .font(Type.titleSection)
+                .dashboardFont(.titleSection)
                 .tracking(Type.titleSectionTracking)
                 .foregroundStyle(Theme.ink)
             Text("No current failed check, failed step, or unresolved blocker was found across the complete attention projection.")
-                .font(Type.body)
+                .dashboardFont(.body)
                 .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
@@ -1095,11 +1254,11 @@ private struct DashboardBriefUnavailableState: View {
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(Theme.amber)
             Text(title)
-                .font(Type.titleSection)
+                .dashboardFont(.titleSection)
                 .tracking(Type.titleSectionTracking)
                 .foregroundStyle(Theme.ink)
             Text(message)
-                .font(Type.body)
+                .dashboardFont(.body)
                 .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
@@ -1174,6 +1333,7 @@ private struct DashboardSignalRail: View {
     let ingestion: V1IngestionSnapshot?
     let ingestionError: String?
     let open: (DashboardDestination) -> Void
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var capacity: DashboardAgentPlanRow? {
         planRows.filter { $0.usedPercent != nil }
@@ -1193,7 +1353,10 @@ private struct DashboardSignalRail: View {
     }
 
     var body: some View {
-        Card(padding: 0, fillsHeight: true) {
+        Card(
+            padding: 0,
+            fillsHeight: !dashboardUsesAccessibilityLayout(dynamicTypeSize)
+        ) {
             VStack(spacing: 0) {
                 DashboardCardHeader("Signal rail")
                 Divider().overlay(Theme.hairline)
@@ -1296,6 +1459,7 @@ private struct DashboardSignalRow: View {
     let detail: String
     let tint: Color
     let action: () -> Void
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         Button(action: action) {
@@ -1306,17 +1470,17 @@ private struct DashboardSignalRow: View {
                     .padding(.top, 2)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(eyebrow)
-                        .font(Type.labelCaps)
+                        .dashboardFont(.labelCaps)
                         .tracking(Type.labelCapsTracking)
                         .foregroundStyle(Theme.muted)
                     Text(title)
-                        .font(Type.rowLabel)
+                        .dashboardFont(.rowLabel)
                         .foregroundStyle(Theme.ink)
-                        .lineLimit(1)
+                        .lineLimit(dashboardUsesAccessibilityLayout(dynamicTypeSize) ? nil : 1)
                     Text(detail)
-                        .font(Type.caption)
+                        .dashboardFont(.caption)
                         .foregroundStyle(Theme.muted)
-                        .lineLimit(2)
+                        .lineLimit(dashboardUsesAccessibilityLayout(dynamicTypeSize) ? nil : 2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: Space.s)
@@ -1339,6 +1503,7 @@ private struct DashboardCardHeader<Action: View>: View {
     let title: String
     var count: Int?
     @ViewBuilder let action: () -> Action
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init(
         _ title: String,
@@ -1351,24 +1516,42 @@ private struct DashboardCardHeader<Action: View>: View {
     }
 
     var body: some View {
+        Group {
+            if dashboardUsesAccessibilityLayout(dynamicTypeSize) {
+                VStack(alignment: .leading, spacing: Space.s) {
+                    titleAndCount
+                    action()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.vertical, Space.m)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                HStack(spacing: Space.s) {
+                    titleAndCount
+                    Spacer(minLength: Space.s)
+                    action()
+                }
+                .frame(height: 44)
+            }
+        }
+        .padding(.leading, Space.l)
+        .padding(.trailing, 8)
+    }
+
+    private var titleAndCount: some View {
         HStack(spacing: Space.s) {
             Text(title)
-                .font(Type.titleCard)
+                .dashboardFont(.titleCard)
                 .foregroundStyle(Theme.muted)
             if let count {
                 Text(String(count))
-                    .font(Type.dataSmallSemibold)
+                    .dashboardFont(.dataSmallSemibold)
                     .foregroundStyle(Theme.muted)
                     .padding(.horizontal, 6)
                     .frame(minWidth: 20, minHeight: 20)
                     .background(Theme.tintNeutral, in: Capsule())
             }
-            Spacer(minLength: Space.s)
-            action()
         }
-        .padding(.leading, Space.l)
-        .padding(.trailing, 8)
-        .frame(height: 44)
     }
 }
 
@@ -1405,6 +1588,7 @@ private struct RecentWorkCard: View {
     let hasLoaded: Bool
     let error: String?
     let open: (DashboardDestination) -> Void
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var presentation: DashboardRecentWorkPresentation {
         DashboardRecentWorkPresentation(
@@ -1416,11 +1600,14 @@ private struct RecentWorkCard: View {
     }
 
     var body: some View {
-        Card(padding: 0, fillsHeight: true) {
+        Card(
+            padding: 0,
+            fillsHeight: !dashboardUsesAccessibilityLayout(dynamicTypeSize)
+        ) {
             VStack(spacing: 0) {
                 DashboardCardHeader("Recent work", count: totalCount) {
                     Button { open(.work) } label: {
-                        Text("View all").font(Type.captionSemibold)
+                        Text("View all").dashboardFont(.captionSemibold)
                     }
                     .foregroundStyle(Theme.accent)
                     .buttonStyle(QuietButtonStyle())
@@ -1433,7 +1620,7 @@ private struct RecentWorkCard: View {
                     HStack(spacing: Space.m) {
                         ProgressView().controlSize(.small).tint(Theme.muted)
                         Text("Loading recent work…")
-                            .font(Type.body)
+                            .dashboardFont(.body)
                             .foregroundStyle(Theme.muted)
                     }
                     .padding(Space.xl)
@@ -1458,15 +1645,17 @@ private struct RecentWorkCard: View {
                             "Showing last loaded work · \(error)",
                             systemImage: "exclamationmark.triangle.fill"
                         )
-                        .font(Type.dataSmall)
+                        .dashboardFont(.dataSmall)
                         .foregroundStyle(Theme.amber)
                         .padding(.horizontal, Space.l)
                         .padding(.vertical, Space.s)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         Divider().overlay(Theme.hairline)
                     }
-                    workColumnLabels
-                    Divider().overlay(Theme.hairline)
+                    if !dashboardUsesAccessibilityLayout(dynamicTypeSize) {
+                        workColumnLabels
+                        Divider().overlay(Theme.hairline)
+                    }
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         RecentWorkRow(item: item) { open(.task(item.id)) }
                         if index < items.count - 1 {
@@ -1486,7 +1675,7 @@ private struct RecentWorkCard: View {
             Text("Cost").frame(width: 68, alignment: .trailing)
             Color.clear.frame(width: 10, height: 1)
         }
-        .font(Face.sansFont(12, .medium))
+        .dashboardFont(.columnHeader)
         .foregroundStyle(Theme.muted)
         .padding(.horizontal, Space.l)
         .frame(height: 30)
@@ -1496,52 +1685,15 @@ private struct RecentWorkCard: View {
 private struct RecentWorkRow: View {
     let item: DashboardWorkItem
     let action: () -> Void
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.title)
-                        .font(Type.rowLabel)
-                        .foregroundStyle(Theme.ink)
-                        .lineLimit(2)
-                    Text(item.contextComponents.joined(separator: " · "))
-                        .font(Type.caption)
-                        .foregroundStyle(Theme.muted)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                // Decision axis: a pip-less tinted badge (a filled dot here
-                // read as the independently-checked evidence pip).
-                DecisionBadge(key: item.outcomeKey, label: item.outcome, compact: true)
-                    .frame(width: 116, alignment: .leading)
-
-                // Evidence axis: the strongest tier's pip shape + the ratio.
-                HStack(spacing: 6) {
-                    if let tier = item.strongestTier {
-                        let style = EvidenceTierStyle.forGrade(tier)
-                        EvidencePip(shape: style.pip, tint: style.tint)
-                    } else {
-                        EvidencePip(shape: .hollow, tint: Theme.muted)
-                    }
-                    Text(item.evidence)
-                        .font(Type.dataSmall)
-                        .foregroundStyle(Theme.muted)
-                        .lineLimit(1)
-                }
-                .frame(width: 118, alignment: .leading)
-
-                Text(item.visibleCost)
-                    .font(Type.dataSmall)
-                    .foregroundStyle(Theme.muted)
-                    .frame(width: 68, alignment: .trailing)
-
-                DashboardDisclosureIndicator()
+            if dashboardUsesAccessibilityLayout(dynamicTypeSize) {
+                accessibleContent
+            } else {
+                tableContent
             }
-            .padding(.horizontal, Space.l)
-            .frame(minHeight: 64)
-            .contentShape(Rectangle())
         }
         .buttonStyle(DashboardRowButtonStyle())
         .accessibilityLabel(
@@ -1555,6 +1707,107 @@ private struct RecentWorkRow: View {
         )
         .accessibilityHint("Opens this task in Work")
         .accessibilityIdentifier("dashboard.recent-work.task.\(item.id)")
+    }
+
+    private var tableContent: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.title)
+                    .dashboardFont(.rowLabel)
+                    .foregroundStyle(Theme.ink)
+                    .lineLimit(2)
+                Text(item.contextComponents.joined(separator: " · "))
+                    .dashboardFont(.caption)
+                    .foregroundStyle(Theme.muted)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            DecisionBadge(key: item.outcomeKey, label: item.outcome, compact: true)
+                .frame(width: 116, alignment: .leading)
+
+            evidence
+                .frame(width: 118, alignment: .leading)
+
+            Text(item.visibleCost)
+                .dashboardFont(.dataSmall)
+                .foregroundStyle(Theme.muted)
+                .frame(width: 68, alignment: .trailing)
+
+            DashboardDisclosureIndicator()
+        }
+        .padding(.horizontal, Space.l)
+        .frame(minHeight: 64)
+        .contentShape(Rectangle())
+    }
+
+    private var accessibleContent: some View {
+        VStack(alignment: .leading, spacing: Space.m) {
+            HStack(alignment: .top, spacing: Space.m) {
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    Text(item.title)
+                        .dashboardFont(.rowLabel)
+                        .foregroundStyle(Theme.ink)
+                    Text(item.contextComponents.joined(separator: " · "))
+                        .dashboardFont(.caption)
+                        .foregroundStyle(Theme.muted)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                DashboardDisclosureIndicator()
+            }
+
+            DashboardAccessibleDecisionBadge(
+                key: item.outcomeKey,
+                label: item.outcome
+            )
+
+            HStack(alignment: .firstTextBaseline, spacing: Space.m) {
+                evidence
+                Spacer(minLength: Space.m)
+                Text("Cost \(item.visibleCost)")
+                    .dashboardFont(.dataSmall)
+                    .foregroundStyle(Theme.muted)
+            }
+        }
+        .padding(Space.l)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    private var evidence: some View {
+        HStack(spacing: 6) {
+            if let tier = item.strongestTier {
+                let style = EvidenceTierStyle.forGrade(tier)
+                EvidencePip(shape: style.pip, tint: style.tint)
+            } else {
+                EvidencePip(shape: .hollow, tint: Theme.muted)
+            }
+            Text(item.evidence)
+                .dashboardFont(.dataSmall)
+                .foregroundStyle(Theme.muted)
+        }
+    }
+}
+
+private struct DashboardAccessibleDecisionBadge: View {
+    let key: String?
+    let label: String
+
+    var body: some View {
+        let tint = DecisionTintClass.forKey(key)
+        Text(label)
+            .dashboardFont(.captionSemibold)
+            .foregroundStyle(tint.text)
+            .padding(.horizontal, Space.m)
+            .padding(.vertical, Space.s)
+            .background(tint.wash, in: RoundedRectangle(cornerRadius: Metrics.radius))
+            .overlay {
+                if tint.outlined {
+                    RoundedRectangle(cornerRadius: Metrics.radius)
+                        .strokeBorder(tint.text.opacity(0.55), lineWidth: Metrics.borderW)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -1707,6 +1960,7 @@ private struct DashboardUsageChart: View {
     @State private var pinnedIndex: Int?
     @FocusState private var focusedIndex: Int?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var activeIndex: Int? { hoveredIndex ?? focusedIndex ?? pinnedIndex }
     private var maximum: Double { max(periods.map(series.value).max() ?? 0, 1) }
@@ -1714,48 +1968,17 @@ private struct DashboardUsageChart: View {
     var body: some View {
         Card(padding: 0) {
             VStack(spacing: 0) {
-                HStack(spacing: Space.m) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Usage history")
-                            .font(Type.titleCard)
-                            .foregroundStyle(Theme.muted)
-                        Text(series.subtitle(dayCount: periods.count))
-                            .font(Type.caption)
-                            .foregroundStyle(Theme.muted)
-                    }
-                    Spacer(minLength: Space.s)
-                    Text(series.totalText(for: periods))
-                        .font(Type.dataSmall)
-                        .foregroundStyle(Theme.muted)
-                    HStack(spacing: 2) {
-                        ForEach(DashboardUsageSeries.allCases) { choice in
-                            Button {
-                                withAnimation(reduceMotion ? nil : Motion.contentUpdate) {
-                                    series = choice
-                                    hoveredIndex = nil
-                                    pinnedIndex = nil
-                                }
-                            } label: {
-                                Text(choice.rawValue).font(Type.captionSemibold)
-                                    .padding(.horizontal, 9)
-                                    .frame(height: 24)
-                            }
-                            .buttonStyle(DashboardSeriesButtonStyle(selected: series == choice))
-                            .accessibilityAddTraits(series == choice ? .isSelected : [])
-                            .accessibilityIdentifier("dashboard.usage.\(choice.rawValue.lowercased())")
-                        }
-                    }
-                    .padding(2)
-                    .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
-                }
-                .padding(.horizontal, Space.l)
-                .frame(minHeight: 47)
+                header
 
                 Divider().overlay(Theme.hairline)
 
-                chart
-                    .padding(.horizontal, Space.l)
-                    .padding(.vertical, 11)
+                if dashboardUsesAccessibilityLayout(dynamicTypeSize) {
+                    accessiblePeriodList
+                } else {
+                    chart
+                        .padding(.horizontal, Space.l)
+                        .padding(.vertical, 11)
+                }
             }
         }
         .onChange(of: periods.map(\.period)) {
@@ -1763,6 +1986,103 @@ private struct DashboardUsageChart: View {
             pinnedIndex = nil
             focusedIndex = nil
         }
+    }
+
+    @ViewBuilder
+    private var header: some View {
+        if dashboardUsesAccessibilityLayout(dynamicTypeSize) {
+            VStack(alignment: .leading, spacing: Space.m) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Usage history")
+                        .dashboardFont(.titleCard)
+                        .foregroundStyle(Theme.muted)
+                    Text(series.subtitle(dayCount: periods.count))
+                        .dashboardFont(.caption)
+                        .foregroundStyle(Theme.muted)
+                }
+                Text(series.totalText(for: periods))
+                    .dashboardFont(.dataSmall)
+                    .foregroundStyle(Theme.muted)
+                seriesControls
+            }
+            .padding(Space.l)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            HStack(spacing: Space.m) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Usage history")
+                        .dashboardFont(.titleCard)
+                        .foregroundStyle(Theme.muted)
+                    Text(series.subtitle(dayCount: periods.count))
+                        .dashboardFont(.caption)
+                        .foregroundStyle(Theme.muted)
+                }
+                Spacer(minLength: Space.s)
+                Text(series.totalText(for: periods))
+                    .dashboardFont(.dataSmall)
+                    .foregroundStyle(Theme.muted)
+                seriesControls
+            }
+            .padding(.horizontal, Space.l)
+            .frame(minHeight: 47)
+        }
+    }
+
+    private var seriesControls: some View {
+        HStack(spacing: 2) {
+            ForEach(DashboardUsageSeries.allCases) { choice in
+                Button {
+                    withAnimation(reduceMotion ? nil : Motion.contentUpdate) {
+                        series = choice
+                        hoveredIndex = nil
+                        pinnedIndex = nil
+                    }
+                } label: {
+                    Text(choice.rawValue)
+                        .dashboardFont(.captionSemibold)
+                        .padding(.horizontal, 9)
+                        .frame(minHeight: 24)
+                }
+                .buttonStyle(DashboardSeriesButtonStyle(selected: series == choice))
+                .accessibilityAddTraits(series == choice ? .isSelected : [])
+                .accessibilityIdentifier("dashboard.usage.\(choice.rawValue.lowercased())")
+            }
+        }
+        .padding(2)
+        .background(
+            Theme.tintNeutral,
+            in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
+        )
+    }
+
+    private var accessiblePeriodList: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(periods.enumerated()), id: \.offset) { index, period in
+                HStack(alignment: .firstTextBaseline, spacing: Space.m) {
+                    Text(period.period ?? period.shortLabel)
+                        .dashboardFont(.body)
+                        .foregroundStyle(Theme.ink)
+                    Spacer(minLength: Space.m)
+                    Text(series.valueText(for: period))
+                        .dashboardFont(.dataSmallSemibold)
+                        .foregroundStyle(Theme.ink)
+                        .multilineTextAlignment(.trailing)
+                }
+                .padding(.horizontal, Space.l)
+                .padding(.vertical, Space.m)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(
+                    "\(period.period ?? period.shortLabel), \(series.valueText(for: period))"
+                )
+                .accessibilityIdentifier("dashboard.usage.day.\(index)")
+
+                if index < periods.count - 1 {
+                    Divider().overlay(Theme.hairline).padding(.leading, Space.l)
+                }
+            }
+        }
+        .accessibilityIdentifier("dashboard.usage.accessible-list")
     }
 
     private var chart: some View {
@@ -1774,7 +2094,7 @@ private struct DashboardUsageChart: View {
                 Spacer()
                 Text("0")
             }
-            .font(Type.dataSmall)
+            .dashboardFont(.dataSmall)
             .foregroundStyle(Theme.muted)
             .frame(width: 38, height: 130)
 
@@ -1830,7 +2150,7 @@ private struct DashboardUsageChart: View {
                                 .accessibilityIdentifier("dashboard.usage.day.\(index)")
 
                                 Text(period.shortLabel)
-                                    .font(Type.dataSmall)
+                                    .dashboardFont(.dataSmall)
                                     .foregroundStyle(Theme.muted)
                                     .lineLimit(1)
                             }
@@ -1886,8 +2206,8 @@ private struct DashboardChartTooltip: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(date).font(Type.dataSmall).foregroundStyle(Theme.muted)
-            Text(value).font(Type.dataSmallSemibold).foregroundStyle(Theme.ink)
+            Text(date).dashboardFont(.dataSmall).foregroundStyle(Theme.muted)
+            Text(value).dashboardFont(.dataSmallSemibold).foregroundStyle(Theme.ink)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
@@ -1999,8 +2319,8 @@ private struct DashboardEmptyState: View {
                 .foregroundStyle(Theme.muted)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(Type.rowLabel).foregroundStyle(Theme.ink)
-                Text(message).font(Type.caption).foregroundStyle(Theme.muted)
+                Text(title).dashboardFont(.rowLabel).foregroundStyle(Theme.ink)
+                Text(message).dashboardFont(.caption).foregroundStyle(Theme.muted)
             }
         }
         .padding(Space.l)

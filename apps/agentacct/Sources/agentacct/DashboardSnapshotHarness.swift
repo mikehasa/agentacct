@@ -136,6 +136,7 @@ struct DashboardSnapshotConfiguration {
     let colorScheme: ColorScheme
     let workState: SnapshotWorkStoreState
     let glanceState: DashboardSnapshotGlanceState
+    let dynamicTypeSize: DynamicTypeSize
 
     init(
         viewport: String,
@@ -143,7 +144,8 @@ struct DashboardSnapshotConfiguration {
         height: CGFloat,
         colorScheme: ColorScheme,
         workState: SnapshotWorkStoreState,
-        glanceState: DashboardSnapshotGlanceState = .fixture
+        glanceState: DashboardSnapshotGlanceState = .fixture,
+        dynamicTypeSize: DynamicTypeSize = .medium
     ) {
         self.viewport = viewport
         self.width = width
@@ -151,6 +153,7 @@ struct DashboardSnapshotConfiguration {
         self.colorScheme = colorScheme
         self.workState = workState
         self.glanceState = glanceState
+        self.dynamicTypeSize = dynamicTypeSize
     }
 
     var filename: String {
@@ -170,6 +173,24 @@ struct DashboardSnapshotConfiguration {
         Self(viewport: "trust-unavailable", width: 1120, height: 800, colorScheme: .dark, workState: .shiftBriefUnavailable),
         Self(viewport: "old-daemon-statusless", width: 1120, height: 800, colorScheme: .light, workState: .oldDaemonUnavailable, glanceState: .statuslessUsage),
         Self(viewport: "old-daemon-statusless", width: 1120, height: 800, colorScheme: .dark, workState: .oldDaemonUnavailable, glanceState: .statuslessUsage),
+        // Pair the largest accessibility category with the app's minimum
+        // supported width so reflow is proven under the tightest real window.
+        Self(
+            viewport: "accessibility5-minimum",
+            width: 960,
+            height: 2000,
+            colorScheme: .light,
+            workState: .populated,
+            dynamicTypeSize: .accessibility5
+        ),
+        Self(
+            viewport: "accessibility5-minimum",
+            width: 960,
+            height: 2000,
+            colorScheme: .dark,
+            workState: .populated,
+            dynamicTypeSize: .accessibility5
+        ),
     ]
 }
 
@@ -276,7 +297,7 @@ enum DashboardSnapshotRenderer {
                 .environment(\.timeZone, snapshotTimeZone)
                 .environment(\.displayScale, 2)
                 .environment(\.layoutDirection, .leftToRight)
-                .environment(\.dynamicTypeSize, .medium)
+                .environment(\.dynamicTypeSize, configuration.dynamicTypeSize)
                 .environment(\.controlSize, .regular)
                 .environment(\.legibilityWeight, nil)
                 .environment(\.appearsActive, true)
