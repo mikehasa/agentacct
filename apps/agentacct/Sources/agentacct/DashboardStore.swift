@@ -6,10 +6,13 @@ import SwiftUI
 /// the live initializer and network lifecycle remain unchanged.
 enum SnapshotWorkStoreState {
     case populated
+    case listLoading
     case empty
     case listError
     case receiptLoading
     case receiptError
+    case receiptStale
+    case attentionReceipt
 }
 
 // Data for the full window: /v1/tasks and /v1/receipt supply task-level work
@@ -24,9 +27,12 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var usage: UsageSummary?
     @Published private(set) var receiptTasks: [ReceiptSummary] = []
     @Published private(set) var totalReceiptTasks: Int?
+    @Published private(set) var receiptTasksTruncated: Bool?
     @Published private(set) var receipt: Receipt?
     @Published private(set) var receiptListError: String?
     @Published private(set) var receiptError: String?
+    @Published private(set) var receiptErrorTaskId: String?
+    @Published private(set) var receiptLoadingTaskId: String?
     /// Session deep views preloaded by key ("client::session"). Only the offscreen
     /// snapshot path fills this (the live app loads each drill row lazily via a
     /// SwiftUI `.task`, while deterministic rendering cannot wait on network
@@ -37,7 +43,11 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var ingestion: V1IngestionSnapshot?
     @Published private(set) var ingestionError: String?
     @Published private(set) var isRefreshing = false
+    @Published private(set) var isLoadingReceipts = false
     @Published private(set) var lastUpdated: Date?
+    /// Freshness of the independently published receipt collection.
+    /// A Work-only retry must not relabel the other dashboard panes as fresh.
+    @Published private(set) var receiptListLastUpdated: Date?
     /// Freshness of the independently published plan + recorded-usage pair.
     /// Receipt-list failures must not make a successful usage refresh look old.
     @Published private(set) var usageLastUpdated: Date?
@@ -68,34 +78,63 @@ final class DashboardStore: ObservableObject {
         case .populated:
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
             receipt = fixture.work?.receipt
             for session in fixture.work?.sessions ?? [] {
                 let key = "\(session.session.client)::\(session.session.clientSessionId)"
                 preloadedSessions[key] = session
             }
+        case .listLoading:
+            receiptTasks = []
+            isLoadingReceipts = true
         case .empty:
             receiptTasks = []
             totalReceiptTasks = 0
+            receiptTasksTruncated = false
         case .listError:
             receiptTasks = []
             receiptListError = "receipts fetch failed: synthetic review error"
         case .receiptLoading:
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
         case .receiptError:
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
             receiptError = "receipt fetch failed: synthetic review error"
+            receiptErrorTaskId = fixture.work?.receipt.taskId
+        case .receiptStale:
+            receiptTasks = fixture.tasks.tasks
+            totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
+            receipt = fixture.work?.receipt
+            receiptError = "receipt refresh failed: synthetic review error"
+            receiptErrorTaskId = fixture.work?.receipt.taskId
+        case .attentionReceipt:
+            receiptTasks = fixture.tasks.tasks
+            totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
+            receipt = fixture.work?.attentionReceipt
         }
         let updated = fixture.glance.generatedAt.map(Date.init(timeIntervalSince1970:))
         lastUpdated = updated
+        switch workState {
+        case .listLoading, .listError:
+            receiptListLastUpdated = nil
+        default:
+            receiptListLastUpdated = updated
+        }
         usageLastUpdated = updated
     }
 
     func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
-        defer { isRefreshing = false }
+        let receiptListGeneration = beginReceiptListLoad()
+        defer {
+            isRefreshing = false
+        }
         let days = usageDays
         let rangeGeneration = usageDaysGeneration
         // Launch independent lanes together, but publish each error through
@@ -109,15 +148,22 @@ final class DashboardStore: ObservableObject {
         var tasksSucceeded = false
         do {
             let tasks = try await tasksRequest
-            receiptTasks = tasks.tasks
-            totalReceiptTasks = tasks.total
-            receiptListError = nil
-            tasksSucceeded = true
+            if receiptListGeneration == self.receiptListGeneration {
+                publishReceiptTasks(tasks)
+                tasksSucceeded = true
+            }
         } catch GlanceClientError.noDiscovery(_) {
-            receiptListError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            if !Task.isCancelled,
+               receiptListGeneration == self.receiptListGeneration {
+                receiptListError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            }
         } catch {
-            receiptListError = "receipts fetch failed: \(error.localizedDescription)"
+            if receiptListGeneration == self.receiptListGeneration,
+               !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
+                receiptListError = "receipts fetch failed: \(error.localizedDescription)"
+            }
         }
+        endReceiptListLoad(generation: receiptListGeneration)
 
         do {
             let payload = try await ingestionRequest
@@ -125,11 +171,17 @@ final class DashboardStore: ObservableObject {
             ingestionError = nil
         } catch GlanceClientError.http(404) {
             // An older daemon without the route: a named state, not an error toast.
-            ingestionError = "this daemon predates /v1/ingestion"
+            if !Task.isCancelled {
+                ingestionError = "this daemon predates /v1/ingestion"
+            }
         } catch GlanceClientError.noDiscovery(_) {
-            ingestionError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            if !Task.isCancelled {
+                ingestionError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            }
         } catch {
-            ingestionError = "source health fetch failed: \(error.localizedDescription)"
+            if !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
+                ingestionError = "source health fetch failed: \(error.localizedDescription)"
+            }
         }
 
         do {
@@ -142,24 +194,31 @@ final class DashboardStore: ObservableObject {
             usageLastUpdated = updated
             if tasksSucceeded { lastUpdated = updated }
         } catch GlanceClientError.noDiscovery(_) {
-            guard rangeGeneration == usageDaysGeneration else { return }
+            guard !Task.isCancelled,
+                  rangeGeneration == usageDaysGeneration else { return }
             errorText = "daemon not running (no discovery file) — start it with `agentacct start`"
         } catch {
-            guard rangeGeneration == usageDaysGeneration else { return }
+            guard rangeGeneration == usageDaysGeneration,
+                  !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) else { return }
             errorText = "daemon fetch failed: \(error.localizedDescription)"
         }
     }
 
     /// The Task list for the Receipts pane (one compact Receipt summary each).
     func fetchReceipts() async {
+        let generation = beginReceiptListLoad()
+        defer { endReceiptListLoad(generation: generation) }
         do {
             let payload: ReceiptTasksPayload = try await client.getAuthed("/v1/tasks?limit=200")
-            receiptTasks = payload.tasks
-            totalReceiptTasks = payload.total
-            receiptListError = nil
+            guard generation == receiptListGeneration else { return }
+            publishReceiptTasks(payload)
         } catch GlanceClientError.noDiscovery(_) {
+            guard !Task.isCancelled,
+                  generation == receiptListGeneration else { return }
             receiptListError = "daemon not running (no discovery file) — start it with `agentacct start`"
         } catch {
+            guard generation == receiptListGeneration,
+                  !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) else { return }
             receiptListError = "receipts fetch failed: \(error.localizedDescription)"
         }
     }
@@ -173,28 +232,64 @@ final class DashboardStore: ObservableObject {
     /// page. A same-task refresh keeps the current receipt on screen instead
     /// of unmounting the record page for the rebuild.
     private var receiptGeneration = 0
+    private var receiptListGeneration = 0
+
+    @discardableResult
+    private func beginReceiptListLoad() -> Int {
+        receiptListGeneration += 1
+        isLoadingReceipts = true
+        return receiptListGeneration
+    }
+
+    private func endReceiptListLoad(generation: Int) {
+        guard generation == receiptListGeneration else { return }
+        isLoadingReceipts = false
+    }
+
+    private func publishReceiptTasks(_ payload: ReceiptTasksPayload) {
+        receiptTasks = payload.tasks
+        totalReceiptTasks = payload.total
+        receiptTasksTruncated = payload.truncated
+        receiptListError = nil
+        receiptListLastUpdated = Date()
+    }
 
     func fetchReceipt(taskId: String) async {
         receiptGeneration += 1
         let generation = receiptGeneration
-        if receipt?.taskId != taskId { receipt = nil }
-        receiptError = nil
+        if receipt?.taskId != taskId {
+            receipt = nil
+            receiptError = nil
+            receiptErrorTaskId = nil
+        }
+        receiptLoadingTaskId = taskId
+        defer {
+            if generation == receiptGeneration { receiptLoadingTaskId = nil }
+        }
         do {
             let encoded = taskId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? taskId
             let payload: Receipt = try await client.getAuthed("/v1/receipt?task=\(encoded)")
             guard !Task.isCancelled, generation == receiptGeneration else { return }
             receipt = payload
             receiptError = nil
+            receiptErrorTaskId = nil
+            receiptLoadingTaskId = nil
         } catch is CancellationError {
+            if generation == receiptGeneration { receiptLoadingTaskId = nil }
             return
         } catch let error as URLError where error.code == .cancelled {
+            if generation == receiptGeneration { receiptLoadingTaskId = nil }
             return
         } catch GlanceClientError.http(404) {
             guard !Task.isCancelled, generation == receiptGeneration else { return }
             receiptError = "this Task is not in the store (it may have been recorded elsewhere)"
+            receiptErrorTaskId = taskId
+            receiptLoadingTaskId = nil
         } catch {
             guard !Task.isCancelled, generation == receiptGeneration else { return }
             receiptError = "receipt fetch failed: \(error.localizedDescription)"
+            receiptErrorTaskId = taskId
+            receiptLoadingTaskId = nil
         }
     }
 
@@ -299,10 +394,7 @@ final class AppSelection: ObservableObject {
     @Published var sessionId: String?
     @Published var taskId: String?
     @Published var pane: MainPane = .dashboard
-    /// The Work surface's shared sort. Lives here (not in the table's @State)
-    /// so opening a record — which unmounts the table — never resets it, and
-    /// the record-mode rail stays on the same order as the table.
-    @Published var workSort: WorkSort = .latest
+    let workBrowse = WorkBrowseState()
 
     /// Dashboard actions replace stale deep links before changing panes. This
     /// keeps a previous Task or session from overriding the control the user

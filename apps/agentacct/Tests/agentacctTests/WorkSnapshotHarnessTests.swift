@@ -20,6 +20,8 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "work-receipt-minimum-dark.png", pixelsWide: 1920, pixelsHigh: 1120),
         ExpectedArtifact(filename: "work-receipt-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-receipt-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "work-list-loading-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "work-list-loading-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-empty-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-empty-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-list-error-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
@@ -28,6 +30,18 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "work-receipt-loading-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-receipt-error-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-receipt-error-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "work-receipt-stale-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "work-receipt-stale-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "work-attention-receipt-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "work-attention-receipt-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "work-table-accessibility-light.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "work-table-accessibility-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "work-receipt-accessibility-light.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "work-receipt-accessibility-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "work-table-accessibility-maximum-light.png", pixelsWide: 2240, pixelsHigh: 2000),
+        ExpectedArtifact(filename: "work-table-accessibility-maximum-dark.png", pixelsWide: 2240, pixelsHigh: 2000),
+        ExpectedArtifact(filename: "work-receipt-accessibility-maximum-light.png", pixelsWide: 2240, pixelsHigh: 2000),
+        ExpectedArtifact(filename: "work-receipt-accessibility-maximum-dark.png", pixelsWide: 2240, pixelsHigh: 2000),
         ExpectedArtifact(filename: "work-actions-exact-regular-light.png", pixelsWide: 1520, pixelsHigh: 1080),
         ExpectedArtifact(filename: "work-actions-exact-regular-dark.png", pixelsWide: 1520, pixelsHigh: 1080),
         ExpectedArtifact(filename: "work-actions-exact-compact-light.png", pixelsWide: 720, pixelsHigh: 1280),
@@ -49,6 +63,8 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         let store = DashboardStore(preloaded: fixture)
 
         XCTAssertEqual(store.receipt?.taskId, work.receipt.taskId)
+        XCTAssertEqual(work.attentionReceipt?.axes.decisionStatus.key, "blocked")
+        XCTAssertNotNil(work.attentionReceipt?.axes.decisionStatus.blocker?.text)
         XCTAssertEqual(store.preloadedSessions.count, work.sessions.count)
         XCTAssertTrue(store.receiptTasks.contains { $0.decisionStatus.key == "blocked" })
         XCTAssertTrue(store.receiptTasks.contains { $0.decisionStatus.key == "finding" })
@@ -60,6 +76,24 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(work.receipt.dimensions.evidence.checks?.count ?? 0, 6)
         XCTAssertFalse(work.receipt.dimensions.provenance.sourcesPresent?.contains("ci") ?? false)
         XCTAssertGreaterThanOrEqual(work.receipt.sessions?.count ?? 0, 2)
+    }
+
+    @MainActor
+    func testInitialWorkStatesDoNotInventReceiptFreshness() throws {
+        let fixture = try DashboardSnapshotFixture.load(from: fixtureURL())
+
+        XCTAssertNil(
+            DashboardStore(preloaded: fixture, workState: .listLoading).receiptListLastUpdated
+        )
+        XCTAssertNil(
+            DashboardStore(preloaded: fixture, workState: .listError).receiptListLastUpdated
+        )
+        XCTAssertNotNil(
+            DashboardStore(preloaded: fixture, workState: .populated).receiptListLastUpdated
+        )
+        XCTAssertNotNil(
+            DashboardStore(preloaded: fixture, workState: .empty).receiptListLastUpdated
+        )
     }
 
     @MainActor
@@ -162,6 +196,17 @@ final class WorkSnapshotHarnessTests: XCTestCase {
             0.001,
             "Loading and error states must remain visually distinguishable"
         )
+        let initialStateDifference = try VisualSnapshotHarness.compare(
+            expectedURL: firstDirectory.appendingPathComponent("work-list-loading-reference-light.png"),
+            actualURL: firstDirectory.appendingPathComponent("work-empty-reference-light.png")
+        )
+        XCTAssertGreaterThan(initialStateDifference.changedPixelFraction, 0.0005)
+
+        let decisionDifference = try VisualSnapshotHarness.compare(
+            expectedURL: firstDirectory.appendingPathComponent("work-receipt-reference-light.png"),
+            actualURL: firstDirectory.appendingPathComponent("work-attention-receipt-reference-light.png")
+        )
+        XCTAssertGreaterThan(decisionDifference.changedPixelFraction, 0.01)
         XCTAssertFalse(SnapshotMode.enabled)
         XCTAssertFalse(SnapshotMode.boundsScrollContentToViewport)
         XCTAssertNil(SnapshotScheme.override)
