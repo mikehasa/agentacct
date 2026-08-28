@@ -19,6 +19,7 @@ func checkIndependenceTint(_ sourceType: String?) -> Color {
 struct StepCard: View {
     let step: V1Step
     @State private var expanded: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(step: V1Step, initiallyExpanded: Bool = false) {
         self.step = step
@@ -63,13 +64,14 @@ struct StepCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(Motion.contentUpdate) { expanded.toggle() }
+                expanded.toggle()
             } label: {
                 HStack(spacing: 9) {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    Image(systemName: "chevron.right")
                         .font(.system(size: 8, weight: .semibold))
                         .foregroundStyle(Theme.muted)
                         .frame(width: 10)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
                     // The leading glyph is the step's evidence-tier PIP (shape
                     // carries the tier); a filled lifecycle dot here read as the
                     // independently-checked pip on claimed steps.
@@ -104,7 +106,7 @@ struct StepCard: View {
                 .padding(.vertical, 8)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(SurfaceButtonStyle(focusInset: 2))
 
             if expanded {
                 // The expanded step is the DETAILED view: nothing here is
@@ -192,8 +194,10 @@ struct StepCard: View {
                 .padding(.horizontal, 12)
                 .padding(.bottom, 10)
                 .padding(.leading, 18)
+                .transition(.opacity)
             }
         }
+        .animation(reduceMotion ? nil : Motion.contentUpdate, value: expanded)
         .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
         .overlay(
             RoundedRectangle(cornerRadius: Metrics.radius)

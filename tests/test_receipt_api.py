@@ -422,6 +422,7 @@ def test_attention_is_complete_bounded_and_operationally_ordered(
         params={"limit": 5},
     ).json()
     assert after_parent_ttl["total"] == 2
+    assert after_parent_ttl["revision"] == attention["revision"]
     assert len(classification_calls) == 3
 
     _record_usage(service, session_id="new-finding", at=400.0)
@@ -444,6 +445,7 @@ def test_attention_is_complete_bounded_and_operationally_ordered(
         params={"limit": 5},
     ).json()
     assert changed_attention["total"] == 3
+    assert changed_attention["revision"] != attention["revision"]
     # Changed content invalidates the index and classifies all four current
     # Tasks; the clean Task still does not enter the three-item queue.
     assert len(classification_calls) == 7

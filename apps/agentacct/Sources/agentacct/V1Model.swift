@@ -410,8 +410,8 @@ struct ReceiptTasksPayload: Decodable {
     let truncated: Bool?
 }
 
-/// Complete, bounded review queue from `/v1/attention`. Unlike `/v1/tasks`,
-/// `total` and `counts` classify every visible Task before `items` is limited,
+/// Complete review classification plus one page from `/v1/attention`. Unlike
+/// `/v1/tasks`, `total` and `counts` classify every visible Task before paging,
 /// so a client can make an honest empty or aggregate claim without scanning a
 /// recent-work page locally.
 struct V1AttentionPayload: Decodable {

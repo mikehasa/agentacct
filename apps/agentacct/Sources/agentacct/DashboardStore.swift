@@ -14,7 +14,6 @@ enum DashboardDaemonFeature {
         }
     }
 }
-
 /// Named state variants used only by deterministic offscreen review tooling.
 /// Keeping the mutation inside DashboardStore preserves its private setters;
 /// the live initializer and network lifecycle remain unchanged.
@@ -108,6 +107,16 @@ final class DashboardStore: ObservableObject {
             hasLoadedReceiptTasks = true
             receiptTasks = []
             totalReceiptTasks = 0
+            attention = V1AttentionPayload(
+                schema: fixture.attention.schema,
+                items: [],
+                total: 0,
+                counts: V1AttentionCounts(failedCheck: 0, failedStep: 0, blocker: 0),
+                revision: fixture.attention.revision,
+                offset: fixture.attention.revision == nil ? nil : 0,
+                limit: fixture.attention.limit,
+                truncated: false
+            )
         case .listError:
             receiptTasks = []
             receiptListError = "receipts fetch failed: synthetic review error"
@@ -170,6 +179,7 @@ final class DashboardStore: ObservableObject {
         let rangeGeneration = usageDaysGeneration
         let receiptRequestGeneration = beginReceiptListRequest()
         let attentionRequestGeneration = beginAttentionRequest()
+        isLoadingMoreAttention = false
         // Launch independent lanes together, but publish each error through
         // its own state so a successful range request cannot hide a stale Task
         // list (or vice versa).
@@ -293,9 +303,15 @@ final class DashboardStore: ObservableObject {
     /// a finding or blocker still demands review.
     func fetchAttention() async {
         let requestGeneration = beginAttentionRequest()
+        isLoadingMoreAttention = false
         do {
             let payload: V1AttentionPayload = try await client.getAuthed("/v1/attention?limit=5")
+            guard !Task.isCancelled else { return }
             publishAttentionHead(payload, requestGeneration: requestGeneration)
+        } catch is CancellationError {
+            return
+        } catch let error as URLError where error.code == .cancelled {
+            return
         } catch GlanceClientError.http(404) {
             publishAttentionFailure(
                 DashboardDaemonFeature.attention.upgradeMessage,
@@ -374,14 +390,18 @@ final class DashboardStore: ObservableObject {
         }
 
         isLoadingMoreAttention = true
-        defer { isLoadingMoreAttention = false }
         let generation = attentionGeneration
+        defer {
+            if generation == attentionGeneration {
+                isLoadingMoreAttention = false
+            }
+        }
         let offset = attentionQueueItems.count
         do {
             let page: V1AttentionPayload = try await client.getAuthed(
                 "/v1/attention?limit=50&offset=\(offset)"
             )
-            guard generation == attentionGeneration else { return }
+            guard !Task.isCancelled, generation == attentionGeneration else { return }
             guard let merged = mergedAttentionItems(
                 existing: attentionQueueItems,
                 summary: summary,
@@ -394,6 +414,10 @@ final class DashboardStore: ObservableObject {
             }
             attentionQueueItems = merged
             attentionPageError = nil
+        } catch is CancellationError {
+            return
+        } catch let error as URLError where error.code == .cancelled {
+            return
         } catch GlanceClientError.http(404) {
             guard generation == attentionGeneration else { return }
             attentionPageError = DashboardDaemonFeature.attention.upgradeMessage
@@ -570,10 +594,18 @@ final class AppSelection: ObservableObject {
         case .task(let id):
             taskId = id
             sessionId = nil
+            workGroup = nil
+            pane = .work
+        case .attentionTask(let id):
+            taskId = id
+            sessionId = nil
+            workGroup = .attention
+            workSort = .attention
             pane = .work
         case .session(let id):
             taskId = nil
             sessionId = id
+            workGroup = nil
             pane = .work
         case .limits:
             taskId = nil
@@ -591,6 +623,7 @@ enum DashboardDestination: Equatable {
     case work
     case reviewQueue
     case task(String)
+    case attentionTask(String)
     case session(String)
     case limits
     case sources

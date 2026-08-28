@@ -67,6 +67,21 @@ final class WorkSnapshotHarnessTests: XCTestCase {
     }
 
     @MainActor
+    func testTransientTableStatesKeepAttentionEvidenceConsistent() throws {
+        let fixture = try DashboardSnapshotFixture.load(from: fixtureURL())
+        let empty = DashboardStore(preloaded: fixture, workState: .empty)
+        let listError = DashboardStore(preloaded: fixture, workState: .listError)
+
+        XCTAssertEqual(empty.totalReceiptTasks, 0)
+        XCTAssertEqual(empty.attention?.total, 0)
+        XCTAssertEqual(empty.attention?.items.count, 0)
+
+        XCTAssertNotNil(listError.receiptListError)
+        XCTAssertEqual(listError.attention?.total, fixture.attention.total)
+        XCTAssertEqual(listError.attention?.items.map(\.taskId), fixture.attention.items.map(\.taskId))
+    }
+
+    @MainActor
     func testRendersEveryWorkReviewConfigurationDeterministically() throws {
         let fixture = try DashboardSnapshotFixture.load(from: fixtureURL())
         let firstDirectory = FileManager.default.temporaryDirectory
