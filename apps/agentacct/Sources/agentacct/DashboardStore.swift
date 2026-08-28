@@ -38,6 +38,9 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var ingestionError: String?
     @Published private(set) var isRefreshing = false
     @Published private(set) var lastUpdated: Date?
+    /// Freshness of the independently published plan + recorded-usage pair.
+    /// Receipt-list failures must not make a successful usage refresh look old.
+    @Published private(set) var usageLastUpdated: Date?
 
     /// The usage-pane range (7/30/90 trailing days). Defaults to 7 so the
     /// per-model plan breakdown lines up with the 7d headline out of the box
@@ -84,7 +87,9 @@ final class DashboardStore: ObservableObject {
             totalReceiptTasks = fixture.tasks.total
             receiptError = "receipt fetch failed: synthetic review error"
         }
-        lastUpdated = fixture.glance.generatedAt.map(Date.init(timeIntervalSince1970:))
+        let updated = fixture.glance.generatedAt.map(Date.init(timeIntervalSince1970:))
+        lastUpdated = updated
+        usageLastUpdated = updated
     }
 
     func refresh() async {
@@ -133,7 +138,9 @@ final class DashboardStore: ObservableObject {
             planClients = plan.clients
             usage = summary
             errorText = nil
-            if tasksSucceeded { lastUpdated = Date() }
+            let updated = Date()
+            usageLastUpdated = updated
+            if tasksSucceeded { lastUpdated = updated }
         } catch GlanceClientError.noDiscovery(_) {
             guard rangeGeneration == usageDaysGeneration else { return }
             errorText = "daemon not running (no discovery file) — start it with `agentacct start`"
@@ -269,7 +276,9 @@ final class DashboardStore: ObservableObject {
             planClients = plan.clients
             usage = summary
             errorText = nil
-            if receiptListError == nil { lastUpdated = Date() }
+            let updated = Date()
+            usageLastUpdated = updated
+            if receiptListError == nil { lastUpdated = updated }
         } catch {
             guard generation == usageDaysGeneration else { return }
             errorText = "usage range fetch failed: \(error.localizedDescription)"
@@ -315,7 +324,7 @@ final class AppSelection: ObservableObject {
         case .limits:
             taskId = nil
             sessionId = nil
-            pane = .limits
+            pane = .usage
         }
     }
 }
@@ -331,7 +340,6 @@ enum MainPane: String, CaseIterable, Identifiable {
     case dashboard = "Dashboard"
     case work = "Work"
     case usage = "Usage"
-    case limits = "Limits"
     case sources = "Sources"
     var id: String { rawValue }
 }

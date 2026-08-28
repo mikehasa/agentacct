@@ -622,7 +622,7 @@ private struct ActiveWorkCard: View {
 /// client reports no limit, a calibrating chip only while a plan fit is
 /// genuinely pending, and the 7-day volume/cost from the glance cube. The old
 /// card elected a single "least headroom" account, which read as favoritism —
-/// Limits remains the full per-window surface.
+/// The merged Usage surface remains the full per-window destination.
 struct DashboardAgentPlanRow: Equatable, Identifiable {
     let client: String
     let planType: String?
@@ -667,7 +667,7 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
             resetText = nil
         } else if staleLimit {
             // A stale reading is hidden, not never-reported — say so.
-            meterCaption = "limit reading stale — see Limits"
+            meterCaption = "limit reading stale — see Usage"
             resetText = nil
         } else {
             meterCaption = "no limits reported"
@@ -691,7 +691,7 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
     /// 7-day usage. Limit clients first (most-used first, so the least
     /// headroom still leads), then usage-only clients in the cube's own
     /// volume order. One row per client — a second org's entry for the same
-    /// client is Limits-pane detail.
+    /// client is merged Usage-pane detail.
     static func rows(
         limits: [LimitEntry],
         staleClients: Set<String> = [],
@@ -749,7 +749,7 @@ private struct PlanAndUsageCard: View {
             VStack(spacing: 0) {
                 DashboardCardHeader("Plan and usage", count: rows.count > 1 ? rows.count : nil) {
                     Button(action: onViewLimits) {
-                        Text("View limits").font(Type.captionSemibold)
+                        Text("View usage & limits").font(Type.captionSemibold)
                     }
                     .foregroundStyle(Theme.accent)
                     .buttonStyle(QuietButtonStyle())
@@ -813,7 +813,7 @@ private struct AgentPlanRowView: View {
                         Chip(text: "calibrating", tint: Theme.amber)
                             .fixedSize()
                             .help(row.calibratingDetail
-                                  ?? "Weekly plan % is still calibrating for this client — see Limits")
+                                  ?? "Weekly plan % is still calibrating for this client — see Usage")
                     }
                 }
                 Text(row.meterCaption)
