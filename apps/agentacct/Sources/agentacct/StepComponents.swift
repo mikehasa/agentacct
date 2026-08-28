@@ -118,7 +118,7 @@ struct StepCard: View {
                                  tint: Theme.statusColor(step.latestStatus))
                         }
                         if let ago = agoText(step.updatedAt) {
-                            Text("updated \(ago)")
+                            Text("Activity \(ago)")
                                 .workFont(.dataSmall)
                                 .foregroundStyle(Theme.muted)
                         }

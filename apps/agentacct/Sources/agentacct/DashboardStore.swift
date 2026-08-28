@@ -17,11 +17,27 @@ enum SnapshotWorkStoreState {
     case attentionReceipt
 }
 
+enum SnapshotSourcesStoreState {
+    case loading
+    case healthy
+    case degraded
+    case unsupported
+    case serviceUnavailable
+    case requestFailed
+    case retainedFailure
+}
+
 struct SnapshotUsageStoreState {
     /// Keep the selected range and its matching response inseparable in
     /// deterministic renders; a stale summary must never wear a new range.
     let days: Int
     let summary: UsageSummary
+}
+
+enum IngestionFailure: Equatable {
+    case unsupported
+    case serviceUnavailable
+    case requestFailed(String)
 }
 
 // Data for the full window: /v1/tasks and /v1/receipt supply task-level work
@@ -52,7 +68,7 @@ final class DashboardStore {
     private(set) var errorText: String?
     /// Source/watcher health from /v1/ingestion (the Sources pane).
     private(set) var ingestion: V1IngestionSnapshot?
-    private(set) var ingestionError: String?
+    private(set) var ingestionFailure: IngestionFailure?
     private(set) var isRefreshing = false
     private(set) var isLoadingReceipts = false
     private(set) var lastUpdated: Date?
@@ -82,7 +98,8 @@ final class DashboardStore {
     init(
         preloaded fixture: DashboardSnapshotFixture,
         workState: SnapshotWorkStoreState = .populated,
-        usageState: SnapshotUsageStoreState? = nil
+        usageState: SnapshotUsageStoreState? = nil,
+        sourcesState: SnapshotSourcesStoreState = .loading
     ) {
         planClients = fixture.plan.clients
         usage = usageState?.summary ?? fixture.usage
@@ -150,6 +167,70 @@ final class DashboardStore {
             receiptListLastUpdated = updated
         }
         usageLastUpdated = updated
+        let generatedAt = fixture.glance.generatedAt ?? 0
+        switch sourcesState {
+        case .loading:
+            break
+        case .healthy:
+            ingestion = Self.snapshotIngestion(generatedAt: generatedAt, degraded: false)
+        case .degraded:
+            ingestion = Self.snapshotIngestion(generatedAt: generatedAt, degraded: true)
+        case .unsupported:
+            ingestionFailure = .unsupported
+        case .serviceUnavailable:
+            ingestionFailure = .serviceUnavailable
+        case .requestFailed:
+            ingestionFailure = .requestFailed("The connection ended before a response arrived.")
+        case .retainedFailure:
+            ingestion = Self.snapshotIngestion(generatedAt: generatedAt, degraded: false)
+            ingestionFailure = .requestFailed("The connection ended before a response arrived.")
+        }
+    }
+
+    private static func snapshotIngestion(
+        generatedAt: Double,
+        degraded: Bool
+    ) -> V1IngestionSnapshot {
+        V1IngestionSnapshot(
+            state: degraded ? "degraded" : "healthy",
+            lastSuccessAt: generatedAt - 35,
+            sources: [
+                V1IngestionSource(
+                    source: "claude-code",
+                    state: "healthy",
+                    scope: "watched",
+                    lastSuccessAt: generatedAt - 35,
+                    lastFailureAt: nil,
+                    discovered: 42,
+                    parsed: 42,
+                    skipped: 0,
+                    errorCount: 0
+                ),
+                V1IngestionSource(
+                    source: "codex",
+                    state: degraded ? "degraded" : "healthy",
+                    scope: "watched",
+                    lastSuccessAt: generatedAt - 95,
+                    lastFailureAt: degraded ? generatedAt - 20 : nil,
+                    discovered: 31,
+                    parsed: degraded ? 29 : 31,
+                    skipped: degraded ? 2 : 0,
+                    errorCount: degraded ? 1 : 0
+                ),
+            ],
+            watcher: V1IngestionWatcher(
+                state: degraded ? "stale" : "running",
+                intervalSeconds: 30,
+                heartbeatAt: generatedAt - (degraded ? 330 : 5)
+            ),
+            issues: degraded
+                ? [V1IngestionIssue(
+                    code: "codex_import_delayed",
+                    source: "codex",
+                    action: "Check Codex access, then refresh the source."
+                )]
+                : []
+        )
     }
 
     func refresh() async {
@@ -192,19 +273,19 @@ final class DashboardStore {
         do {
             let payload = try await ingestionRequest
             ingestion = payload.ingestion
-            ingestionError = nil
+            ingestionFailure = nil
         } catch GlanceClientError.http(404) {
             // An older daemon without the route: a named state, not an error toast.
             if !Task.isCancelled {
-                ingestionError = "this daemon predates /v1/ingestion"
+                ingestionFailure = .unsupported
             }
         } catch GlanceClientError.noDiscovery(_) {
             if !Task.isCancelled {
-                ingestionError = "daemon not running (no discovery file) — start it with `agentacct start`"
+                ingestionFailure = .serviceUnavailable
             }
         } catch {
             if !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
-                ingestionError = "source health fetch failed: \(error.localizedDescription)"
+                ingestionFailure = .requestFailed(error.localizedDescription)
             }
         }
 

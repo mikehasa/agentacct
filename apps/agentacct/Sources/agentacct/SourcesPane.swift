@@ -1,10 +1,93 @@
 import SwiftUI
 
-// Sources — what feeds the evidence store, exactly as the ingestion-health
-// snapshot reports it: per-source import state and recency, the continuous-
-// sync watcher, actionable issues, the verifier shelf (named not-connected
-// states), and the scope-transparency card. Everything on this page is a
-// live-connection fact from /v1/ingestion — nothing is a capability claim.
+struct SourcesUnavailablePresentation: Equatable {
+    let title: String
+    let detail: String
+    let recovery: String
+    let diagnostic: String?
+
+    init(title: String, detail: String, recovery: String, diagnostic: String? = nil) {
+        self.title = title
+        self.detail = detail
+        self.recovery = recovery
+        self.diagnostic = diagnostic
+    }
+
+    init(failure: IngestionFailure) {
+        switch failure {
+        case .unsupported:
+            self.init(
+                title: "Source health unavailable",
+                detail: "This version of agentacct cannot report source health.",
+                recovery: "Update agentacct, restart it, then refresh."
+            )
+        case .serviceUnavailable:
+            self.init(
+                title: "agentacct is not running",
+                detail: "Source health and background updates are unavailable.",
+                recovery: "In Terminal, run agentacct start, then refresh."
+            )
+        case .requestFailed(let detail):
+            self.init(
+                title: "Source health unavailable",
+                detail: "The latest source health request did not complete.",
+                recovery: "Refresh after agentacct is reachable.",
+                diagnostic: detail
+            )
+        }
+    }
+}
+
+struct EvidenceRolePresentation: Equatable {
+    let name: String
+    let detail: String
+    let outcome: String
+
+    static let ci = Self(
+        name: "CI checks",
+        detail: "Not connected",
+        outcome: "Independent check evidence"
+    )
+    static let human = Self(
+        name: "Human review",
+        detail: "Records review and resolution decisions",
+        outcome: "Review assertion"
+    )
+}
+
+struct LocalStorePrivacyPresentation: Equatable {
+    let stored: String
+    let defaultExclusions: String
+    let restrictedOptIn: String
+    let derivedLabels: String
+
+    static let current = Self(
+        stored: "Stored locally: tool categories, reported file paths, exit codes, timestamps, and imported token counts.",
+        defaultExclusions: "Default capture excludes raw prompts, file contents, non-command tool arguments, and tool output. Execute command lines may be stored locally after length limits and best-effort secret masking.",
+        restrictedOptIn: "Restricted evidence can include raw content only with explicit opt-in; recognized secret fields are rejected.",
+        derivedLabels: "Some sources may derive short labels from local client data."
+    )
+}
+
+enum SourcesContentMode: Equatable {
+    case loading
+    case current
+    case unavailable
+    case retainedFailure
+}
+
+func sourcesContentMode(
+    hasSnapshot: Bool,
+    failure: IngestionFailure?
+) -> SourcesContentMode {
+    if failure != nil { return hasSnapshot ? .retainedFailure : .unavailable }
+    return hasSnapshot ? .current : .loading
+}
+
+// Sources combines live /v1/ingestion state with clearly separated product
+// policy: evidence roles and the local-store privacy contract. A failed
+// refresh always outranks retained ingestion data so older status cannot read
+// as current.
 
 // MARK: - /v1/ingestion wire model (additive; every field optional)
 
@@ -86,48 +169,79 @@ struct SourcesPane: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Evidence sources")
+            Text("Data sources")
                 .font(Type.titlePage).tracking(Type.titlePageTracking)
                 .foregroundStyle(Theme.ink)
-            Text("what feeds the store · capture is local only")
+            Text("Local activity data used by this dashboard")
                 .font(Type.dataSmall).foregroundStyle(Theme.muted)
         }
     }
 
     @ViewBuilder
     private var content: some View {
-        if let snapshot = dashboard.ingestion {
-            connectedCard(snapshot)
-            watcherCard(snapshot.watcher).padding(.top, Space.xl)
-            issuesCard(snapshot.issues ?? []).padding(.top, Space.xl)
-            verifierShelf.padding(.top, Space.xl)
-            scopeCard.padding(.top, Space.xl)
-        } else if let error = dashboard.ingestionError {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Source health unavailable").font(Type.rowLabel).foregroundStyle(Theme.ink)
-                Text(error).font(Type.caption).foregroundStyle(Theme.muted)
-                Text("An older daemon serves no /v1/ingestion — update and restart it.")
-                    .font(Type.caption).foregroundStyle(Theme.muted)
+        switch sourcesContentMode(
+            hasSnapshot: dashboard.ingestion != nil,
+            failure: dashboard.ingestionFailure
+        ) {
+        case .retainedFailure:
+            if let failure = dashboard.ingestionFailure,
+               let snapshot = dashboard.ingestion {
+                failureCard(failure)
+                CapsLabel(text: "Last loaded source status")
+                    .padding(.top, Space.xl)
+                connectedCard(snapshot, isRetained: true).padding(.top, Space.m)
             }
             verifierShelf.padding(.top, Space.xl)
             scopeCard.padding(.top, Space.xl)
-        } else {
+        case .unavailable:
+            if let failure = dashboard.ingestionFailure {
+                failureCard(failure)
+            }
+            verifierShelf.padding(.top, Space.xl)
+            scopeCard.padding(.top, Space.xl)
+        case .current:
+            if let snapshot = dashboard.ingestion {
+                connectedCard(snapshot)
+                watcherCard(snapshot.watcher).padding(.top, Space.xl)
+                issuesCard(snapshot.issues ?? []).padding(.top, Space.xl)
+            }
+            verifierShelf.padding(.top, Space.xl)
+            scopeCard.padding(.top, Space.xl)
+        case .loading:
             Text("Loading source health…").font(Type.body).foregroundStyle(Theme.muted)
+        }
+    }
+
+    private func failureCard(_ failure: IngestionFailure) -> some View {
+        let presentation = SourcesUnavailablePresentation(failure: failure)
+        return Card(padding: Space.xl) {
+            VStack(alignment: .leading, spacing: 4) {
+                Label(presentation.title, systemImage: "exclamationmark.triangle.fill")
+                    .font(Type.rowLabel).foregroundStyle(Theme.amber)
+                Text(presentation.detail).font(Type.caption).foregroundStyle(Theme.muted)
+                    .help(presentation.diagnostic ?? presentation.detail)
+                Text(presentation.recovery).font(Type.caption).foregroundStyle(Theme.muted)
+            }
         }
     }
 
     // MARK: connected sources
 
-    private func connectedCard(_ snapshot: V1IngestionSnapshot) -> some View {
+    private func connectedCard(
+        _ snapshot: V1IngestionSnapshot,
+        isRetained: Bool = false
+    ) -> some View {
         let sources = (snapshot.sources ?? []).sorted { $0.source < $1.source }
-        let watcherRunning = snapshot.watcher?.state == "running"
+        let watcherRunning = !isRetained && snapshot.watcher?.state == "running"
         return Card(padding: 0) {
             VStack(spacing: 0) {
                 HStack(spacing: Space.s) {
-                    Text("Connected sources").font(Type.titleCard).foregroundStyle(Theme.ink)
+                    Text("Imported sources").font(Type.titleCard).foregroundStyle(Theme.ink)
                     Text("\(sources.count)").font(Type.dataSmall).foregroundStyle(Theme.muted)
                     Spacer()
-                    if let overall = snapshot.state {
+                    if isRetained {
+                        StateLozenge(text: "Older data", tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+                    } else if let overall = snapshot.state {
                         overallLozenge(overall, watcherRunning: watcherRunning)
                     }
                 }
@@ -136,9 +250,9 @@ struct SourcesPane: View {
                 Rectangle().fill(Theme.hairline).frame(height: 1).padding(.horizontal, Space.xl)
                 if sources.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("No import sources configured")
+                        Text("No coding apps connected")
                             .font(Type.rowLabel).foregroundStyle(Theme.ink)
-                        Text("Run `agentacct onboard` to wire your coding agents into the store.")
+                        Text("In Terminal, run agentacct onboard to connect supported coding apps.")
                             .font(Type.caption).foregroundStyle(Theme.muted)
                     }
                     .padding(Space.xl)
@@ -149,14 +263,22 @@ struct SourcesPane: View {
                             Rectangle().fill(Theme.hairline).frame(height: 1)
                                 .padding(.horizontal, Space.xl)
                         }
-                        sourceRow(source, watcherRunning: watcherRunning)
+                        sourceRow(
+                            source,
+                            watcherRunning: watcherRunning,
+                            isRetained: isRetained
+                        )
                     }
                 }
             }
         }
     }
 
-    private func sourceRow(_ source: V1IngestionSource, watcherRunning: Bool) -> some View {
+    private func sourceRow(
+        _ source: V1IngestionSource,
+        watcherRunning: Bool,
+        isRetained: Bool
+    ) -> some View {
         HStack(alignment: .center, spacing: Space.l) {
             RoundedRectangle(cornerRadius: Metrics.radius)
                 .fill(Theme.tintNeutral)
@@ -166,23 +288,25 @@ struct SourcesPane: View {
                         .font(Type.dataSmallSemibold).foregroundStyle(Theme.muted)
                 )
             VStack(alignment: .leading, spacing: 4) {
-                Text(source.source).font(Type.rowLabel).foregroundStyle(Theme.ink)
+                Text(clientDisplayName(source.source)).font(Type.rowLabel).foregroundStyle(Theme.ink)
                 Text(sourceDetail(source, watcherRunning: watcherRunning))
                     .font(Type.dataSmall).foregroundStyle(Theme.muted)
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 4) {
                 if let ago = agoText(source.lastSuccessAt) {
-                    Text("last import \(ago)").font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    Text("Imported \(ago)").font(Type.dataSmall).foregroundStyle(Theme.muted)
                 } else {
-                    Text("no successful import yet").font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    Text("No successful import yet").font(Type.dataSmall).foregroundStyle(Theme.muted)
                 }
                 if let errors = source.errorCount, errors > 0 {
                     Text("\(errors) error\(errors == 1 ? "" : "s")")
                         .font(Type.dataSmall).foregroundStyle(Theme.coral)
                 }
             }
-            sourceLozenge(source, watcherRunning: watcherRunning)
+            if !isRetained {
+                sourceLozenge(source, watcherRunning: watcherRunning)
+            }
         }
         .padding(.horizontal, Space.xl)
         .frame(minHeight: Metrics.rowSource)
@@ -207,10 +331,17 @@ struct SourcesPane: View {
     private func sourceDetail(_ source: V1IngestionSource, watcherRunning: Bool) -> String {
         var parts: [String] = []
         if let scope = source.scope {
-            parts.append(scope == "watched" && !watcherRunning ? "configured" : scope)
+            switch scope {
+            case "watched" where watcherRunning:
+                parts.append("background monitoring")
+            case "watched":
+                parts.append("configured for background monitoring")
+            default:
+                parts.append(scope.replacingOccurrences(of: "_", with: " "))
+            }
         }
-        if let discovered = source.discovered { parts.append("\(discovered) files discovered") }
-        if let parsed = source.parsed { parts.append("\(parsed) parsed") }
+        if let discovered = source.discovered { parts.append("\(discovered) files found") }
+        if let parsed = source.parsed { parts.append("\(parsed) imported") }
         if let skipped = source.skipped, skipped > 0 { parts.append("\(skipped) skipped") }
         return parts.isEmpty ? "no scan recorded" : parts.joined(separator: " · ")
     }
@@ -259,7 +390,7 @@ struct SourcesPane: View {
         Card(padding: Space.xl) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: Space.s) {
-                    Text("Continuous sync").font(Type.titleCard).foregroundStyle(Theme.ink)
+                    Text("Background updates").font(Type.titleCard).foregroundStyle(Theme.ink)
                     Spacer()
                     switch watcher?.state {
                     case "running":
@@ -285,21 +416,21 @@ struct SourcesPane: View {
     /// State-dependent copy: present-tense "keeps the store current" is only
     /// true while the watcher is actually running.
     private func watcherDetail(_ watcher: V1IngestionWatcher?) -> String {
-        guard let watcher else { return "The daemon reported no watcher block." }
-        let heartbeat = agoText(watcher.heartbeatAt).map { "last heartbeat \($0)" } ?? "no heartbeat recorded"
-        let cadenceSeconds = watcher.intervalSeconds.map { Int($0.rounded()) }
+        guard let watcher else { return "Background update status was not reported." }
+        let heartbeat = agoText(watcher.heartbeatAt).map { "last check \($0)" } ?? "no check time recorded"
+        let cadence = TemporalText.interval(seconds: watcher.intervalSeconds)
         switch watcher.state {
         case "running":
-            let cadence = cadenceSeconds.map { " · scans every \($0)s" } ?? ""
-            return "The importer keeps the store current in the background — \(heartbeat)\(cadence)"
+            return cadence.map { "Checks for new activity every \($0)." }
+                ?? "Checks for new activity in the background."
         case "stale":
-            let cadence = cadenceSeconds.map { " (expected every \($0)s)" } ?? ""
-            return "The importer's heartbeat is overdue — \(heartbeat)\(cadence)"
+            let expected = cadence.map { "; expected every \($0)" } ?? ""
+            return "Updates are delayed — \(heartbeat)\(expected)."
         case "stopped":
-            let cadence = cadenceSeconds.map { " (expected every \($0)s)" } ?? ""
-            return "Importer stopped — \(heartbeat)\(cadence). Start it with `agentacct start`."
+            let expected = cadence.map { "; expected every \($0)" } ?? ""
+            return "Background updates stopped — \(heartbeat)\(expected). In Terminal, run agentacct start."
         case "not_configured":
-            return "No continuous sync is configured — imports happen only on manual scans."
+            return "Background updates are not configured. Data changes only after a manual import."
         default:
             return heartbeat
         }
@@ -325,7 +456,7 @@ struct SourcesPane: View {
                                         Text(issue.code ?? "")
                                             .font(Type.dataSmall).foregroundStyle(Theme.muted)
                                     }
-                                    Text(issue.action ?? "see `agentacct doctor`")
+                                    Text(issue.action ?? "In Terminal, run agentacct doctor.")
                                         .font(Type.caption).foregroundStyle(Theme.muted)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
@@ -343,7 +474,7 @@ struct SourcesPane: View {
             .replacingOccurrences(of: "_", with: " ")
         let sentence = phrase.prefix(1).uppercased() + phrase.dropFirst()
         if let source = issue.source {
-            return "\(sentence) — \(source)"
+            return "\(sentence) — \(clientDisplayName(source))"
         }
         return sentence
     }
@@ -352,39 +483,33 @@ struct SourcesPane: View {
 
     private var verifierShelf: some View {
         VStack(alignment: .leading, spacing: Space.m) {
-            CapsLabel(text: "Verifiers · not connected · upgrade self-checked claims to verified")
+            CapsLabel(text: "Evidence and review roles")
             HStack(alignment: .top, spacing: Space.xl) {
-                verifierCard(
-                    name: "CI check runs",
-                    provides: "independent check results recorded against receipts"
-                )
-                verifierCard(
-                    name: "Human reviewer",
-                    provides: "finding review and approval dispositions"
-                )
+                verifierCard(.ci)
+                verifierCard(.human)
             }
         }
     }
 
-    private func verifierCard(name: String, provides: String) -> some View {
+    private func verifierCard(_ role: EvidenceRolePresentation) -> some View {
         Card(padding: Space.xl) {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: Space.m) {
+            VStack(alignment: .leading, spacing: Space.m) {
+                HStack(alignment: .top, spacing: Space.m) {
                     RoundedRectangle(cornerRadius: Metrics.radius)
                         .fill(Theme.tintNeutral)
                         .frame(width: 36, height: 36)
                         .overlay(EvidencePip(shape: .hollow, tint: Theme.muted, radius: 6))
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(name).font(Type.rowLabel).foregroundStyle(Theme.ink)
-                        Text(provides).font(Type.dataSmall).foregroundStyle(Theme.muted)
+                        Text(role.name).font(Type.rowLabel).foregroundStyle(Theme.ink)
+                        Text(role.detail).font(Type.dataSmall).foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    Spacer()
-                    HStack(spacing: 6) {
-                        EvidencePip(shape: .verified, tint: Theme.muted)
-                        Text("→ verified").font(Type.captionSemibold).foregroundStyle(Theme.muted)
-                    }
+                    Spacer(minLength: 0)
                 }
-
+                HStack(spacing: 6) {
+                    EvidencePip(shape: .hollow, tint: Theme.muted)
+                    Text(role.outcome).font(Type.captionSemibold).foregroundStyle(Theme.muted)
+                }
             }
         }
     }
@@ -392,22 +517,28 @@ struct SourcesPane: View {
     // MARK: scope transparency
 
     private var scopeCard: some View {
-        Card(padding: Space.xl) {
+        let privacy = LocalStorePrivacyPresentation.current
+        return Card(padding: Space.xl) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: Space.s) {
                     StatusDot(color: Theme.green, size: 8)
-                    Text("Local only — nothing leaves this machine")
+                    Text("Local agentacct store")
                         .font(Type.rowLabel).foregroundStyle(Theme.ink)
                     Spacer()
-                    Text("store: \(GlanceClient.storeDir().path)")
+                    Text(GlanceClient.storeDir().path)
                         .font(Type.dataSmall).foregroundStyle(Theme.muted)
                         .lineLimit(1).truncationMode(.middle)
                         .frame(maxWidth: 420, alignment: .trailing)
                 }
-                Text("Reads tool names, commands, file paths, exit codes, timestamps, and token counts from your agents' own local logs — never file contents or prompts.")
-                    .font(Type.dataSmall).foregroundStyle(Theme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, Space.s)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(privacy.stored)
+                    Text(privacy.defaultExclusions)
+                    Text(privacy.restrictedOptIn)
+                    Text(privacy.derivedLabels)
+                }
+                .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, Space.s)
             }
         }
     }

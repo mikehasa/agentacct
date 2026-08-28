@@ -222,17 +222,8 @@ enum Theme {
         return accent
     }
 
-    static func resetsIn(_ resetsAt: Double?, now: Date = SnapshotMode.currentDate) -> String? {
-        guard let resetsAt else { return nil }
-        let delta = resetsAt - now.timeIntervalSince1970
-        guard delta > 0 else { return nil }
-        let total = Int(delta)
-        let days = total / 86400
-        let hours = (total % 86400) / 3600
-        let minutes = (total % 3600) / 60
-        if days > 0 { return "\(days)d \(hours)h" }
-        if hours > 0 { return "\(hours)h \(minutes)m" }
-        return "\(minutes)m"
+    static func resetText(_ resetsAt: Double?) -> String {
+        TemporalText.providerReset(epoch: resetsAt).text
     }
 }
 
@@ -1155,9 +1146,9 @@ enum SnapshotMode {
 
     /// The date relative UI copy should use.
     ///
-    /// Formatting helpers such as `Theme.resetsIn` and `agoText` read this
+    /// Temporal formatting helpers read this
     /// instead of calling `Date()` directly. This freezes text like
-    /// “resets in 6d 13h” in snapshots without changing the system clock or
+    /// “Resets in 6 days 13 hr” in snapshots without changing the system clock or
     /// affecting normal application behavior.
     static var currentDate: Date { fixtureDate ?? Date() }
 

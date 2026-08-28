@@ -277,7 +277,7 @@ struct WorkReceiptRowPresentation {
         checkRunsQualifier = checkRunsPresentation.qualifier
         checkRunsAreInconsistent = checkRunsPresentation.isInconsistent
         compactCheckRunsText = checkRunsPresentation.headerText
-        clientText = task.primaryRoot?.client ?? "unattributed"
+        clientText = task.primaryRoot.map { clientDisplayName($0.client) } ?? "unattributed"
         if let cost = selectedDetail?.dimensions.cost.estimatedCostUsd {
             costText = receiptCostDisplay(
                 cost,
@@ -308,7 +308,7 @@ struct WorkReceiptRowPresentation {
         parts.append(checkRunsText.replacingOccurrences(of: " · ", with: ", "))
         parts.append(clientText)
         parts.append(costText)
-        parts.append("updated \(updatedText)")
+        parts.append("Activity \(updatedText)")
         return parts.joined(separator: ". ")
     }
 
@@ -472,7 +472,7 @@ struct DecisionLegendButton: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
-                    Text("Words come from the daemon's receipt — the legend explains, it never re-grades.")
+                    Text("Status labels come from recorded work. agentacct explains them without changing them.")
                         .workFont(.dataSmall).foregroundStyle(Theme.muted)
                         .padding(.top, Space.xs)
                 }
@@ -637,9 +637,10 @@ struct WorkPane: View {
                               error: dashboard.receiptError
                           ) {
                     WorkRecordPlaceholder(
-                        title: "Receipt unavailable",
-                        message: error,
+                        title: "Unable to load receipt",
+                        message: "The latest receipt could not be loaded. Check that agentacct is running, then retry.",
                         symbol: "exclamationmark.triangle",
+                        diagnostic: error,
                         retryTitle: dashboard.receiptLoadingTaskId == taskId ? nil : "Retry",
                         showsProgress: dashboard.receiptLoadingTaskId == taskId,
                         autoFocusEntry: autoFocusEntry
@@ -684,6 +685,7 @@ private struct WorkRecordPlaceholder: View {
     let title: String
     let message: String
     let symbol: String
+    var diagnostic: String?
     var retryTitle: String?
     var showsProgress = false
     var autoFocusEntry = false
@@ -711,6 +713,7 @@ private struct WorkRecordPlaceholder: View {
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: 420)
+                        .help(diagnostic ?? message)
                     if let retryTitle, let retry {
                         Button(retryTitle, action: retry)
                             .buttonStyle(QuietButtonStyle(tint: Theme.accent))
@@ -893,8 +896,11 @@ private struct WorkTablePage: View {
             HStack(spacing: 0) {
                 Text(receiptCollectionHeaderText)
                     .workFont(.dataSmall).foregroundStyle(Theme.muted)
-                if let updated = dashboard.receiptListLastUpdated {
-                    Text(" · refreshed \(dashboardFreshnessText(updated))")
+                if TemporalText.shouldShowSecondaryRefresh(
+                    dashboard.receiptListLastUpdated,
+                    primary: dashboard.lastUpdated
+                ), let updated = dashboard.receiptListLastUpdated {
+                    Text(" · last refresh \(dashboardFreshnessText(updated))")
                         .workFont(.dataSmall).foregroundStyle(Theme.muted)
                 }
             }
@@ -1209,12 +1215,12 @@ private struct WorkTablePage: View {
             HStack(spacing: Space.l) {
                 legendItems
                 Spacer()
-                Text("Evidence counts checkable steps · claim ≠ proof")
+                Text("Evidence shows linked checks; a reported result is not proof")
                     .workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
             VStack(alignment: .leading, spacing: Space.s) {
                 HStack(spacing: Space.l) { legendItems }
-                Text("Evidence counts checkable steps · claim ≠ proof")
+                Text("Evidence shows linked checks; a reported result is not proof")
                     .workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
         }
@@ -1494,7 +1500,7 @@ private struct WorkMasterList: View {
                     Text("Selected receipt is outside these filters")
                         .workFont(.dataSmall).foregroundStyle(Theme.muted)
                     Spacer(minLength: 0)
-                    Button("Show") {
+                    Button("Show selected receipt") {
                         browse.query = ""
                         browse.group = nil
                     }
@@ -1514,7 +1520,7 @@ private struct WorkMasterList: View {
                             .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.amber)
                             .accessibilityHidden(true)
                     }
-                    Text(dashboard.isLoadingReceipts ? "Retrying · showing saved list" : "Showing saved list · refresh failed")
+                    Text(dashboard.isLoadingReceipts ? "Retrying · showing the last loaded receipts" : "Showing the last loaded receipts · refresh failed")
                         .workFont(.dataSmall).foregroundStyle(Theme.muted)
                         .help(error)
                     Spacer(minLength: 0)
@@ -1536,7 +1542,11 @@ private struct WorkMasterList: View {
                         .accessibilityLabel("Loading receipts from the local store")
                     } else if let error = dashboard.receiptListError, dashboard.receiptTasks.isEmpty {
                         VStack(alignment: .leading, spacing: Space.s) {
-                            masterEmpty(title: "Receipts unavailable", message: error)
+                            masterEmpty(
+                                title: "Receipts unavailable",
+                                message: "The latest receipt list could not be loaded. Check that agentacct is running, then retry."
+                            )
+                            .help(error)
                             if !SnapshotMode.enabled, !dashboard.isLoadingReceipts {
                                 Button("Retry") { Task { await dashboard.fetchReceipts() } }
                                     .buttonStyle(QuietButtonStyle(tint: Theme.accent))
@@ -1893,10 +1903,12 @@ struct WorkRecordPage: View {
                 .foregroundStyle(Theme.amber)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                Text("Showing saved receipt · refresh failed")
+                Text("Showing the last loaded receipt · refresh failed")
                     .workFont(.rowLabel).foregroundStyle(Theme.ink)
-                Text(error).workFont(.caption).foregroundStyle(Theme.muted)
+                Text("The latest receipt could not be refreshed. Retry when agentacct is reachable.")
+                    .workFont(.caption).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
+                    .help(error)
             }
             Spacer(minLength: Space.m)
             if isRefreshing {
@@ -1918,7 +1930,8 @@ struct WorkRecordPage: View {
                 .strokeBorder(Theme.amber.opacity(0.32), lineWidth: Metrics.borderW)
         )
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Showing a saved receipt because refresh failed. \(error)")
+        .accessibilityLabel("Showing the last loaded receipt because refresh failed")
+        .accessibilityHint(error)
         .accessibilityIdentifier("work.receipt.stale")
     }
 
@@ -1931,12 +1944,12 @@ struct WorkRecordPage: View {
     }
 
     private var metaLine: String {
-        var parts: [String] = [receipt.taskId]
-        if let client = summary?.primaryRoot?.client { parts.append(client) }
+        var parts: [String] = []
+        if let client = summary?.primaryRoot?.client { parts.append(clientDisplayName(client)) }
         if let models = receipt.dimensions.actors.models, !models.isEmpty {
             parts.append(models.joined(separator: ", "))
         }
-        if let ago = agoText(summary?.lastActivityAt) { parts.append("updated \(ago)") }
+        if let ago = agoText(summary?.lastActivityAt) { parts.append("Activity \(ago)") }
         return parts.joined(separator: " · ")
     }
 
@@ -2177,7 +2190,7 @@ private struct SessionDrillRow: View {
     private var label: String {
         if let title = member.title, !title.isEmpty { return title }
         if let loaded = effectiveDetail?.session.displayTitle, !loaded.isEmpty { return loaded }
-        return "\(member.client) · \(distinguishingId)"
+        return "\(clientDisplayName(member.client)) · \(distinguishingId)"
     }
 
     /// Subagent ids share the root's uuid prefix ("<root>:agent-<id>"), so the
@@ -2209,7 +2222,7 @@ private struct SessionDrillRow: View {
                         Text(project).workFont(.caption).foregroundStyle(Theme.muted)
                     }
                     if let ago = agoText(member.lastActivityAt) {
-                        Text(ago).workFont(.dataSmall).foregroundStyle(Theme.muted)
+                        Text("Activity \(ago)").workFont(.dataSmall).foregroundStyle(Theme.muted)
                     }
                 }
                 .padding(.horizontal, 10).padding(.vertical, 7).contentShape(Rectangle())
@@ -2267,7 +2280,7 @@ private struct SessionDrillRow: View {
                 Text("loading steps…").workFont(.caption).foregroundStyle(Theme.muted)
             }
         } else if failed {
-            Text("couldn't load this session").workFont(.caption).foregroundStyle(Theme.amber)
+            Text("Unable to load this session").workFont(.caption).foregroundStyle(Theme.amber)
         }
     }
 

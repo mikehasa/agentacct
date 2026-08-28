@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Presentation-only join for the merged Usage surface. Provider capacity and
+/// Presentation-only join for the merged Usage surface. Provider limits and
 /// ranged receipt usage remain separate facts; this type only gives them one
 /// stable row identity and deterministic reading order.
 struct UsageCapacitySnapshot {
@@ -140,20 +140,20 @@ struct UsageCapacityRow: Identifiable {
     }
 
     func accessibilitySummary(days: Int, usageLoaded: Bool = true) -> String {
-        var parts = [client]
+        var parts = [clientDisplayName(client)]
         if let plan {
             parts.append(UsagePlanPresentation(client: plan, days: days).detailText)
         }
         if readings.isEmpty {
             parts.append(hasHiddenStaleReading
-                ? "no live provider limit; stale reading hidden"
+                ? "no current provider limit; older reading hidden"
                 : "provider limit not reported")
         } else {
             for reading in readings {
                 let windows = reading.entry.windows ?? []
                 if windows.isEmpty {
                     parts.append("provider reading contained no quota windows")
-                    if reading.isStale { parts.append("stale reading") }
+                    if reading.isStale { parts.append("older reading") }
                 }
                 for window in windows {
                     parts.append(
@@ -165,7 +165,7 @@ struct UsageCapacityRow: Identifiable {
         }
         if let usage {
             parts.append("last \(days) days")
-            parts.append(usage.freshTokens.map { "\($0) fresh tokens" } ?? "tokens not reported")
+            parts.append(usage.freshTokens.map { "\($0) non-cached tokens" } ?? "tokens not reported")
             parts.append(usage.sessions.map { "\($0) sessions" } ?? "sessions not reported")
             parts.append(usage.costText == "—" ? "cost unpriced" : usage.costText)
             if let confidence = Fmt.costConfidenceLabel(usage.costConfidence) {
@@ -200,43 +200,28 @@ struct LimitWindowPresentation {
 
     var spanText: String? {
         guard let minutes = window.windowMinutes, minutes.isFinite, minutes >= 0 else { return nil }
-        guard let whole = Int(exactly: minutes.rounded()) else { return "Invalid span" }
-        if whole == 0 { return "0m span" }
+        guard let whole = Int(exactly: minutes.rounded()) else { return "Span unavailable" }
+        if whole == 0 { return "0 min span" }
         if whole % 1_440 == 0 { return "\(whole / 1_440)d span" }
         if whole % 60 == 0 { return "\(whole / 60)h span" }
         return "\(whole)m span"
     }
 
     var statusText: String {
-        guard let reported = window.usedPercent else { return "Used percent not reported" }
+        guard let reported = window.usedPercent else { return "Usage percent not reported" }
         guard reported.isFinite, reported >= 0 else {
             return "Invalid provider percentage (\(Self.percent(reported)))"
         }
         if reported > 100 { return "\(Self.percent(reported)) used · limit exceeded" }
         if reported == 100 { return "100% used · limit reached" }
-        if reported >= 90 { return "\(Self.percent(reported)) used · high attention" }
+        if reported >= 90 { return "\(Self.percent(reported)) used · near limit" }
         if reported == 75 { return "75% used · at attention threshold" }
         if reported > 75 { return "\(Self.percent(reported)) used · above attention threshold" }
         return "\(Self.percent(reported)) used"
     }
 
     var resetText: String {
-        guard let resetsAt = window.resetsAt else { return "Reset time not reported" }
-        let date = Date(timeIntervalSince1970: resetsAt)
-        let now = SnapshotMode.currentDate
-        let time = date.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute())
-        guard resetsAt > now.timeIntervalSince1970 else {
-            return "Reported reset passed \(date.formatted(.dateTime.month(.abbreviated).day())) \(time)"
-        }
-        let calendar = Calendar.current
-        if calendar.isDate(date, inSameDayAs: now) { return "Resets today \(time)" }
-        if let days = calendar.dateComponents([.day], from: now, to: date).day, days < 7 {
-            return "Resets \(date.formatted(.dateTime.weekday(.abbreviated))) \(time)"
-        }
-        let dateText = calendar.component(.year, from: date) == calendar.component(.year, from: now)
-            ? date.formatted(.dateTime.month(.abbreviated).day())
-            : date.formatted(.dateTime.year().month(.abbreviated).day())
-        return "Resets \(dateText) \(time)"
+        TemporalText.providerReset(epoch: window.resetsAt).text
     }
 
     var accessibilityText: String {
@@ -244,7 +229,7 @@ struct LimitWindowPresentation {
         if let spanText { parts.append(spanText) }
         parts.append(statusText)
         parts.append(resetText)
-        if stale { parts.append("stale reading") }
+        if stale { parts.append("older reading") }
         return parts.joined(separator: ", ")
     }
 
@@ -263,14 +248,13 @@ struct UsagePlanPresentation {
     var detailText: String {
         var parts: [String] = []
         switch client.calibrationState {
-        case "calibrated": parts.append("calibrated weekly plan-share estimate")
-        case "calibrating": parts.append("calibrating from provider limit history")
-        case "never": parts.append("weekly plan share unavailable for this meter")
-        case .some(let state): parts.append("calibration status: \(state)")
-        case nil: parts.append("calibration status not reported by this daemon")
+        case "calibrated": parts.append("weekly plan estimate ready")
+        case "calibrating": parts.append("building a weekly estimate from provider limit history")
+        case "never": parts.append("weekly estimate unavailable for this provider limit")
+        case .some, nil: parts.append("weekly estimate status unavailable")
         }
         if let used = client.intervalsUsed, let needed = client.intervalsNeeded {
-            parts.append("\(used) of \(needed) clean intervals observed")
+            parts.append("\(used) of \(needed) usable time periods recorded")
         }
         if client.calibrationState == "calibrated" {
             if let today = Self.percentText(client.windowPcts?["today"] ?? nil) {
@@ -418,12 +402,12 @@ private struct UsageCapacityLedgerRow: View {
 
     private var clientLane: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(row.client)
+            Text(clientDisplayName(row.client))
                 .font(Type.rowLabel)
                 .foregroundStyle(Theme.ink)
                 .lineLimit(2)
                 .truncationMode(.middle)
-                .help(row.client)
+                .help(clientDisplayName(row.client))
             if !row.planTypes.isEmpty {
                 Text(row.planTypes.joined(separator: " · "))
                     .font(Type.dataSmall)
@@ -443,7 +427,7 @@ private struct UsageCapacityLedgerRow: View {
                     .font(Type.captionSemibold)
                     .foregroundStyle(Theme.muted)
                 if row.hasHiddenStaleReading {
-                    Text("A stale reading is hidden")
+                    Text("An older reading is hidden")
                         .font(Type.caption)
                         .foregroundStyle(Theme.muted)
                 }
@@ -455,7 +439,7 @@ private struct UsageCapacityLedgerRow: View {
                         HStack(spacing: Space.s) {
                             Text("Reading contained no quota windows")
                                 .font(Type.captionSemibold).foregroundStyle(Theme.muted)
-                            if reading.isStale { Chip(text: "stale", tint: Theme.amber) }
+                            if reading.isStale { Chip(text: "older", tint: Theme.amber) }
                         }
                     } else {
                         ForEach(Array((reading.entry.windows ?? []).enumerated()), id: \.offset) { _, window in
@@ -477,7 +461,7 @@ private struct UsageCapacityLedgerRow: View {
                     Text(usage.freshTokens.map(UsageTotals.compact) ?? "Tokens not reported")
                         .font(Type.dataSmallSemibold)
                         .foregroundStyle(usage.freshTokens == nil ? Theme.muted : Theme.ink)
-                    Text("fresh tokens").font(Type.caption).foregroundStyle(Theme.muted)
+                    Text("non-cached tokens").font(Type.caption).foregroundStyle(Theme.muted)
                 }
                 Text(usage.sessions.map { "\($0) sessions" } ?? "Sessions not reported")
                     .font(Type.dataSmall).foregroundStyle(Theme.muted)
@@ -491,7 +475,7 @@ private struct UsageCapacityLedgerRow: View {
                 }
             }
         } else {
-            Text(usageLoaded ? "No recorded usage in this range" : "Recorded usage not loaded")
+            Text(usageLoaded ? "No local usage in this range" : "Local usage history not loaded")
                 .font(Type.captionSemibold)
                 .foregroundStyle(Theme.muted)
         }
@@ -499,10 +483,10 @@ private struct UsageCapacityLedgerRow: View {
 
     private func calibrationLabel(_ state: String) -> String {
         switch state {
-        case "calibrated": return "plan share ready"
-        case "calibrating": return "calibrating"
-        case "never": return "no weekly share"
-        default: return "calibration \(state)"
+        case "calibrated": return "weekly estimate ready"
+        case "calibrating": return "building weekly estimate"
+        case "never": return "weekly estimate unavailable"
+        default: return "weekly estimate status unavailable"
         }
     }
 
@@ -525,7 +509,7 @@ private struct UsageCapacityWindowRow: View {
                 if let span = presentation.spanText {
                     Text(span).font(Type.dataSmall).foregroundStyle(Theme.muted)
                 }
-                if presentation.stale { Chip(text: "stale", tint: Theme.amber) }
+                if presentation.stale { Chip(text: "older", tint: Theme.amber) }
             }
             if let used = presentation.validUsedPercent {
                 LimitMeter(usedPercent: used).accessibilityHidden(true)

@@ -770,7 +770,7 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertTrue(row.accessibilityLabel.contains("handed off"))
         XCTAssertTrue(row.accessibilityLabel.contains("0/1 claims supported"))
         XCTAssertTrue(row.accessibilityLabel.contains("2/3 check runs passed, 1 failed"))
-        XCTAssertTrue(row.accessibilityLabel.contains("codex"))
+        XCTAssertTrue(row.accessibilityLabel.contains("Codex"))
         XCTAssertTrue(row.accessibilityLabel.contains("~$7.66"))
     }
 
@@ -1046,11 +1046,11 @@ final class DashboardInteractionTests: XCTestCase {
         )
         XCTAssertEqual(
             dashboardFreshnessText(Date(timeIntervalSince1970: 880)),
-            "2m ago"
+            "2 min ago"
         )
         XCTAssertEqual(
             dashboardFreshnessText(Date(timeIntervalSince1970: 1_001)),
-            "time unavailable"
+            "just now"
         )
     }
 

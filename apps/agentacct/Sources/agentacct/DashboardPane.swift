@@ -51,6 +51,8 @@ struct DashboardWorkItem: Identifiable {
         agoText(lastActivityAt)
     }
 
+    var costLabel: String { cost == "—" ? "unpriced" : cost }
+
     /// Strongest evidence tier present (drives the row's tier pip).
     var strongestTier: String? {
         gradeable ? (strongestTierKey ?? "unchecked") : nil
@@ -222,6 +224,12 @@ struct DashboardPane: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var presentedError: String? {
+        if dashboard.errorText != nil { return "Usage and provider limits could not be refreshed." }
+        if dashboard.receiptListError != nil { return "Work receipts could not be refreshed." }
+        return nil
+    }
+
+    private var presentedErrorDiagnostic: String? {
         dashboard.errorText ?? dashboard.receiptListError
     }
 
@@ -325,6 +333,7 @@ struct DashboardPane: View {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(Type.caption)
                     .foregroundStyle(Theme.coral)
+                    .help(presentedErrorDiagnostic ?? error)
                     .padding(Space.s)
                     .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
                     .padding(.bottom, 10)
@@ -459,7 +468,7 @@ private struct RecentWorkCard: View {
             VStack(spacing: 0) {
                 DashboardCardHeader("Recent work", count: totalCount) {
                     Button { open(.work) } label: {
-                        Text("View all").font(Type.captionSemibold)
+                        Text("View all work").font(Type.captionSemibold)
                     }
                     .foregroundStyle(Theme.accent)
                     .buttonStyle(QuietButtonStyle())
@@ -515,7 +524,7 @@ private struct RecentWorkRow: View {
                         .font(Type.rowLabel)
                         .foregroundStyle(Theme.ink)
                         .lineLimit(2)
-                    Text([item.client, item.recency].compactMap { $0 }.joined(separator: " · "))
+                    Text([Optional(clientDisplayName(item.client)), item.recency].compactMap { $0 }.joined(separator: " · "))
                         .font(Type.caption)
                         .foregroundStyle(Theme.muted)
                         .lineLimit(1)
@@ -548,7 +557,7 @@ private struct RecentWorkRow: View {
                 .frame(width: 118, alignment: .leading)
                 .help(item.evidenceQualifier)
 
-                Text(item.cost == "—" ? "unpriced" : item.cost)
+                Text(item.costLabel)
                     .font(Type.dataSmall)
                     .foregroundStyle(Theme.muted)
                     .frame(width: 68, alignment: .trailing)
@@ -561,7 +570,10 @@ private struct RecentWorkRow: View {
         }
         .buttonStyle(DashboardRowButtonStyle())
         .accessibilityLabel(
-            "\(item.title), \(item.outcome), \(item.evidence), \(item.cost)"
+            [item.title, clientDisplayName(item.client), item.outcome, item.evidence, item.costLabel,
+             item.recency.map { "Activity \($0)" }]
+                .compactMap { $0 }
+                .joined(separator: ", ")
         )
         .accessibilityHint("Opens this task in Work")
         .accessibilityIdentifier("dashboard.recent-work.task.\(item.id)")
@@ -600,8 +612,8 @@ private struct NeedsReviewCard: View {
                     } else if attention.isComplete {
                         DashboardEmptyState(
                             icon: "checkmark.circle.fill",
-                            title: "All clear",
-                            message: "No blocked work or failed checks."
+                            title: "Nothing needs review",
+                            message: "No open findings or blocked work."
                         )
                         .frame(minHeight: 222)
                     } else {
@@ -679,7 +691,7 @@ private struct ActiveWorkCard: View {
             VStack(spacing: 0) {
                 DashboardCardHeader("Active work", count: sessions.count) {
                     Button { open(.work) } label: {
-                        Text("View all").font(Type.captionSemibold)
+                        Text("View all active sessions").font(Type.captionSemibold)
                     }
                     .foregroundStyle(Theme.accent)
                     .buttonStyle(QuietButtonStyle())
@@ -753,7 +765,7 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
             // hover/accessibility and the card footer (a truncated caption
             // would silently drop words).
             meterCaption = String(format: "%.0f%% of 7-day limit", used)
-            resetText = Theme.resetsIn(window?.resetsAt).map { "resets in \($0)" }
+            resetText = window?.resetsAt.map { Theme.resetText($0).lowercased() }
         } else if limit != nil {
             meterCaption = "no 7-day window reported"
             resetText = nil
@@ -850,9 +862,9 @@ private struct PlanAndUsageCard: View {
                 Divider().overlay(Theme.hairline)
                 if rows.isEmpty {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("No live provider data")
+                        Text("No plan or usage data yet")
                             .font(Type.rowLabel).foregroundStyle(Theme.muted)
-                        Text("Agent rows appear once usage or a provider limit is recorded.")
+                        Text("Agent rows appear after usage is recorded or a provider limit is connected.")
                             .font(Type.caption).foregroundStyle(Theme.muted)
                     }
                     .padding(Space.l)
@@ -875,7 +887,7 @@ private struct PlanAndUsageCard: View {
                     Text("\(today?.costText ?? "—") · \(today?.tokensText ?? "—")")
                         .font(Face.monoFont(14, .semibold))
                         .foregroundStyle(Theme.ink)
-                    Text("Pricing estimate · fresh tokens client-reported · meters provider-reported")
+                    Text("Cost is estimated. Tokens come from connected clients; limits come from providers.")
                         .font(Type.caption)
                         .foregroundStyle(Theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
@@ -895,17 +907,17 @@ private struct AgentPlanRowView: View {
         HStack(alignment: .center, spacing: Space.l) {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(row.client)
+                    Text(clientDisplayName(row.client))
                         .font(Type.rowLabel).foregroundStyle(Theme.ink)
                         .lineLimit(1)
                     if let plan = row.planType {
                         Chip(text: plan, tint: Theme.muted)
                     }
                     if row.calibrating {
-                        Chip(text: "calibrating", tint: Theme.amber)
+                        Chip(text: "building weekly estimate", tint: Theme.amber)
                             .fixedSize()
                             .help(row.calibratingDetail
-                                  ?? "Weekly plan % is still calibrating for this client — see Usage")
+                                  ?? "More provider history is needed before a weekly estimate can be shown.")
                     }
                 }
                 Text(row.meterCaption)
@@ -1225,11 +1237,11 @@ private struct DashboardSessionRow: View {
                 .fill(Theme.statusColor(session.status))
                 .frame(width: 3, height: 14)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(session.title ?? "\(session.client) · \(session.shortSessionId)")
+                    Text(session.title ?? "\(clientDisplayName(session.client)) · \(session.shortSessionId)")
                         .font(Type.rowLabel)
                         .foregroundStyle(Theme.ink)
                         .lineLimit(1)
-                    Text([Optional(session.client), session.status.map(statusLabel), agoText(session.lastActivityAt)]
+                    Text([Optional(clientDisplayName(session.client)), session.status.map(statusLabel), agoText(session.lastActivityAt)]
                         .compactMap { $0 }
                         .joined(separator: " · "))
                         .font(Type.caption)
@@ -1245,7 +1257,11 @@ private struct DashboardSessionRow: View {
         }
         .buttonStyle(DashboardRowButtonStyle())
         .accessibilityLabel(
-            "\(session.title ?? session.shortSessionId), \(session.client), \(session.status ?? "status unavailable")"
+            [session.title ?? session.shortSessionId, clientDisplayName(session.client),
+             session.status ?? "status unavailable",
+             agoText(session.lastActivityAt).map { "Activity \($0)" }]
+                .compactMap { $0 }
+                .joined(separator: ", ")
         )
         .accessibilityHint("Opens this work session")
         .accessibilityIdentifier("dashboard.active-work.session.\(session.sessionId)")

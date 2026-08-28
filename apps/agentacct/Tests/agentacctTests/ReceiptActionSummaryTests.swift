@@ -83,7 +83,7 @@ final class ReceiptActionSummaryTests: XCTestCase {
     func testSynopsisDoesNotInventMeasuredZeroFromUnknownCaptureCoverage() {
         let absent = receiptActionSynopsis(counts: nil, storedTotal: nil)
         XCTAssertEqual(absent.integrity, .unavailable)
-        XCTAssertEqual(absent.headline, "not instrumented")
+        XCTAssertEqual(absent.headline, "Tool details not captured")
         XCTAssertNil(absent.captureBoundary)
 
         let zero = receiptActionSynopsis(counts: [:], storedTotal: 0)
@@ -227,7 +227,7 @@ final class ReceiptActionSummaryTests: XCTestCase {
         let cases: [(ReceiptActionSynopsis, ReceiptActionKPI)] = [
             (
                 receiptActionSynopsis(counts: nil, storedTotal: nil),
-                ReceiptActionKPI(value: nil, qualifier: nil, absent: "not instrumented")
+                ReceiptActionKPI(value: nil, qualifier: nil, absent: "Tool details not captured")
             ),
             (
                 receiptActionSynopsis(counts: [:], storedTotal: 0),
@@ -292,7 +292,7 @@ final class ReceiptActionSummaryTests: XCTestCase {
     func testSourceTextUsesPlainHumanLabels() {
         XCTAssertEqual(
             receiptActionSourceText(["mcp", "hook", "transcript_scan", "none", "mcp"]),
-            "MCP, Client hook, Transcript scan"
+            "Agent recording, Client hook, Local session import"
         )
         XCTAssertEqual(receiptActionSourceText(["client_log", "agent_report", "ci"]), "Client log, Agent report, CI")
         XCTAssertEqual(receiptActionSourceText(["none"]), "")

@@ -181,8 +181,8 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         SnapshotMode.setFixtureDate(Date(timeIntervalSince1970: 1_000_000))
         defer { SnapshotMode.setFixtureDate(nil) }
 
-        XCTAssertEqual(Theme.resetsIn(1_000_000 + 6 * 86_400 + 13 * 3_600), "6d 13h")
-        XCTAssertEqual(agoText(1_000_000 - 3_600), "1h ago")
+        XCTAssertEqual(Theme.resetText(1_000_000 + 6 * 86_400 + 13 * 3_600), "Resets in 6 days 13 hr")
+        XCTAssertEqual(agoText(1_000_000 - 3_600), "1 hr ago")
     }
 
     private func dashboardFixtureURL() throws -> URL {

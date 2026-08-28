@@ -1,5 +1,21 @@
 import Foundation
 
+func clientDisplayName(_ client: String) -> String {
+    switch client.lowercased() {
+    case "claude", "claude-code": return "Claude Code"
+    case "codex": return "Codex"
+    case "opencode": return "OpenCode"
+    case "openclaw": return "OpenClaw"
+    default:
+        return client
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .split(separator: " ")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+    }
+}
+
 struct MenuLimitItem: Identifiable, Equatable {
     let id: String
     let client: String
@@ -39,7 +55,7 @@ struct MenuLimitPresentation {
                     clientLabel: Self.clientLabel(client),
                     windowLabel: Self.windowLabel(kind),
                     usedPercent: window.usedPercent,
-                    resetText: Theme.resetsIn(window.resetsAt)
+                    resetText: window.resetsAt.map { Theme.resetText($0) }
                 ))
             }
         }
@@ -57,16 +73,7 @@ struct MenuLimitPresentation {
     }
 
     static func clientLabel(_ client: String) -> String {
-        switch client {
-        case "codex": return "Codex"
-        case "claude-code": return "Claude Code"
-        default:
-            return client
-                .replacingOccurrences(of: "-", with: " ")
-                .split(separator: " ")
-                .map { $0.prefix(1).uppercased() + $0.dropFirst() }
-                .joined(separator: " ")
-        }
+        clientDisplayName(client)
     }
 
     static func windowLabel(_ kind: String) -> String {
@@ -138,9 +145,9 @@ struct MenuCalibrationPresentation: Equatable {
         }
         let client = MenuLimitPresentation.clientLabel(entry.client)
         if let used = entry.intervalsUsed, let needed = entry.intervalsNeeded {
-            summary = "\(client) session share calibrating · \(used)/\(needed) intervals"
+            summary = "\(client) weekly estimate is being prepared · \(used) of \(needed) time periods"
         } else {
-            summary = "\(client) session share calibrating"
+            summary = "\(client) weekly estimate is being prepared"
         }
         detail = entry.stateDetail
     }

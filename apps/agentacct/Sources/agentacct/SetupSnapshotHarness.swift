@@ -1,15 +1,26 @@
 import SwiftUI
 
+enum SetupSnapshotState: String {
+    case idle
+    case done
+    case failure
+}
+
 struct SetupSnapshotConfiguration {
+    let state: SetupSnapshotState
     let colorScheme: ColorScheme
 
     var filename: String {
-        "setup-failure-\(colorScheme == .dark ? "dark" : "light").png"
+        "setup-\(state.rawValue)-\(colorScheme == .dark ? "dark" : "light").png"
     }
 
     static let reviewConfigurations: [Self] = [
-        Self(colorScheme: .light),
-        Self(colorScheme: .dark),
+        Self(state: .idle, colorScheme: .light),
+        Self(state: .idle, colorScheme: .dark),
+        Self(state: .done, colorScheme: .light),
+        Self(state: .done, colorScheme: .dark),
+        Self(state: .failure, colorScheme: .light),
+        Self(state: .failure, colorScheme: .dark),
     ]
 }
 
@@ -20,6 +31,12 @@ enum SetupSnapshotRenderer {
         "Configured Claude Code MCP server",
         "Could not update ~/.codex/config.toml: permission denied",
         "error: Recorder setup exited with status 9.",
+    ]
+    static let successLog = [
+        "Running: agentacct onboard --agent auto --yes",
+        "Configured Claude Code",
+        "Configured Codex",
+        "Setup complete",
     ]
 
     @MainActor
@@ -39,10 +56,15 @@ enum SetupSnapshotRenderer {
 
         return try configurations.map { configuration in
             SnapshotScheme.override = configuration.colorScheme
-            let setup = SetupModel(
-                preloaded: .failed(failureMessage),
-                log: failureLog
-            )
+            let setup: SetupModel
+            switch configuration.state {
+            case .idle:
+                setup = SetupModel(preloaded: .idle, log: [])
+            case .done:
+                setup = SetupModel(preloaded: .done, log: successLog)
+            case .failure:
+                setup = SetupModel(preloaded: .failed(failureMessage), log: failureLog)
+            }
             let view = SetupSheet(setup: setup, onClose: {})
                 .fixedSize(horizontal: true, vertical: true)
                 .environment(\.colorScheme, configuration.colorScheme)

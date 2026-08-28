@@ -28,7 +28,7 @@ struct UsagePane: View {
             Text("Usage & limits")
                 .font(Type.titlePage).tracking(Type.titlePageTracking)
                 .foregroundStyle(Theme.ink)
-            Text("Provider-reported capacity and locally recorded usage")
+            Text("Provider limits and local usage history")
                 .font(Type.dataSmall).foregroundStyle(Theme.muted)
         }
     }
@@ -45,23 +45,20 @@ struct UsagePane: View {
             )
             VStack(alignment: .leading, spacing: Space.m) {
                 HStack(alignment: .firstTextBaseline, spacing: Space.m) {
-                    Text("Current capacity")
+                    Text("Provider limits")
                         .font(Type.titleSection).tracking(Type.titleSectionTracking)
                         .foregroundStyle(Theme.ink)
-                    if let updated = glance.lastUpdated {
-                        Text("capacity refreshed \(dashboardFreshnessText(updated))")
-                            .font(Type.dataSmall).foregroundStyle(Theme.muted)
-                    }
-                    if dashboard.usage != nil {
-                        Text(dashboard.usageLastUpdated.map {
-                            "recorded use refreshed \(dashboardFreshnessText($0))"
-                        } ?? "recorded use update time unavailable")
+                    if TemporalText.shouldShowSecondaryRefresh(
+                        glance.lastUpdated,
+                        primary: dashboard.lastUpdated
+                    ), let updated = glance.lastUpdated {
+                        Text("Limits refreshed \(dashboardFreshnessText(updated))")
                             .font(Type.dataSmall).foregroundStyle(Theme.muted)
                     }
                     Spacer()
                     staleControl(count: snapshot.glance.limits.filter { $0.stale == true }.count)
                 }
-                Text("Provider-reported usage allowance. agentacct does not enforce a spending budget or stop work.")
+                Text("Limits reported by providers. agentacct does not enforce a budget or stop work.")
                     .font(Type.caption).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -72,8 +69,8 @@ struct UsagePane: View {
                 if presentation.rows.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(dashboard.usage == nil
-                             ? "No live capacity reported yet"
-                             : "No live capacity or recorded usage in this range")
+                             ? "No provider limits reported yet"
+                             : "No provider limits or recorded usage in this range")
                             .font(Type.rowLabel).foregroundStyle(Theme.ink)
                         Text(capacityEmptyDetail(presentation: presentation))
                             .font(Type.caption).foregroundStyle(Theme.muted)
@@ -88,19 +85,24 @@ struct UsagePane: View {
                 }
             }
             .accessibilityElement(children: .contain)
-            .accessibilityLabel("Current capacity. Provider reported usage allowance; agentacct does not enforce a spending budget or stop work.")
+            .accessibilityLabel("Provider limits. agentacct does not enforce a budget or stop work.")
         case .connecting:
             scopedCapacityState(
                 title: "Connecting to local data…",
-                detail: "Provider capacity is loading. Recorded usage remains a separate section."
+                detail: "Provider limits are loading. Local usage history remains available below."
             )
         case .disconnected(let message):
             scopedCapacityState(
-                title: "Live limits unavailable — daemon disconnected",
-                detail: message
+                title: "Provider limits unavailable",
+                detail: "agentacct is not running. In Terminal, run agentacct start, then refresh.",
+                diagnostic: message
             )
         case .incompatible(let message):
-            scopedCapacityState(title: "Live limits unavailable — incompatible daemon", detail: message)
+            scopedCapacityState(
+                title: "Provider limits unavailable",
+                detail: "The app and local service use different data versions. Update agentacct, then reopen the app.",
+                diagnostic: message
+            )
         }
     }
 
@@ -108,9 +110,9 @@ struct UsagePane: View {
         Group {
             if count > 0 {
                 if SnapshotMode.enabled {
-                    Chip(text: "\(count) stale hidden", tint: Theme.amber)
+                    Chip(text: "\(count) older hidden", tint: Theme.amber)
                 } else {
-                    Toggle("Show \(count) stale capacity reading\(count == 1 ? "" : "s")", isOn: $showStale)
+                    Toggle("Show \(count) older limit reading\(count == 1 ? "" : "s")", isOn: $showStale)
                         .toggleStyle(.checkbox)
                         .font(Type.caption)
                         .foregroundStyle(Theme.muted)
@@ -122,25 +124,30 @@ struct UsagePane: View {
 
     private func capacityEmptyDetail(presentation: UsageCapacitySnapshot) -> String {
         if presentation.hiddenStaleCount > 0 {
-            return "Every provider reading is stale. Show stale capacity readings to inspect them."
+            return "Current limits are unavailable. Show older readings to inspect previous data."
         }
         if dashboard.usage == nil {
-            return "Recorded usage is still loading or unavailable; no client has reported a live quota window."
+            return "Local usage history is still loading or unavailable, and no current provider limit was reported."
         }
-        return "No client has reported a live quota window or usage in the selected range."
+        return "No provider limits or local usage were reported for the selected range."
     }
 
-    private func scopedCapacityState(title: String, detail: String) -> some View {
+    private func scopedCapacityState(
+        title: String,
+        detail: String,
+        diagnostic: String? = nil
+    ) -> some View {
         VStack(alignment: .leading, spacing: Space.m) {
-            Text("Current capacity")
+            Text("Provider limits")
                 .font(Type.titleSection).tracking(Type.titleSectionTracking)
                 .foregroundStyle(Theme.ink)
-            Text("Provider-reported usage allowance. agentacct does not enforce a spending budget or stop work.")
+            Text("Limits reported by providers. agentacct does not enforce a budget or stop work.")
                 .font(Type.caption).foregroundStyle(Theme.muted)
             Card {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title).font(Type.rowLabel).foregroundStyle(Theme.ink)
                     Text(detail).font(Type.caption).foregroundStyle(Theme.muted)
+                        .help(diagnostic ?? detail)
                 }
             }
         }
@@ -153,7 +160,7 @@ struct UsagePane: View {
                 .font(Type.dataSmallSemibold)
                 .foregroundStyle(totals.freshTokens == nil ? Theme.muted : Theme.ink)
             if totals.freshTokens != nil {
-                Text("fresh tokens").font(Type.caption).foregroundStyle(Theme.muted)
+                Text("non-cached tokens").font(Type.caption).foregroundStyle(Theme.muted)
             }
             Rectangle().fill(Theme.hairline).frame(width: 1, height: 20)
             Text(totals.costText == "—" ? "Cost unpriced" : totals.costText)
@@ -173,14 +180,17 @@ struct UsagePane: View {
         VStack(alignment: .leading, spacing: Space.m) {
             HStack(alignment: .center, spacing: Space.m) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Recorded usage")
+                    Text("Local usage history")
                         .font(Type.titleSection).tracking(Type.titleSectionTracking)
                         .foregroundStyle(Theme.ink)
                     HStack(spacing: 0) {
-                        Text("Range applies only to totals, history, and attribution")
+                        Text("Totals, history, and breakdowns use the selected range. Provider limits do not.")
                             .font(Type.dataSmall).foregroundStyle(Theme.muted)
-                        if let updated = dashboard.usageLastUpdated {
-                            Text(" · usage refreshed \(dashboardFreshnessText(updated))")
+                        if TemporalText.shouldShowSecondaryRefresh(
+                            dashboard.usageLastUpdated,
+                            primary: dashboard.lastUpdated
+                        ), let updated = dashboard.usageLastUpdated {
+                            Text(" · Usage refreshed \(dashboardFreshnessText(updated))")
                                 .font(Type.dataSmall).foregroundStyle(Theme.muted)
                         }
                     }
@@ -189,12 +199,13 @@ struct UsagePane: View {
                 usageRangeControl
             }
 
-            Text("Cost is usage reporting, not a provider invoice or balance due. Verify charges with your provider.")
+            Text("Estimated cost is not your provider bill. Verify charges with your provider.")
                 .font(Type.caption).foregroundStyle(Theme.muted)
 
             if let error = dashboard.errorText {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
+                Label("Usage and provider limits could not be refreshed.", systemImage: "exclamationmark.triangle.fill")
                     .font(Type.caption).foregroundStyle(Theme.coral)
+                    .help(error)
             }
 
             if let usage = dashboard.usage {
@@ -222,8 +233,8 @@ struct UsagePane: View {
                 basisFooter(usage)
             } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Recorded usage not loaded").font(Type.rowLabel).foregroundStyle(Theme.ink)
-                    Text("Capacity may still be available above while the usage summary loads.")
+                    Text("Local usage history not loaded").font(Type.rowLabel).foregroundStyle(Theme.ink)
+                    Text("Provider limits may still be available above while usage history loads.")
                         .font(Type.caption).foregroundStyle(Theme.muted)
                 }
                 .padding(.vertical, Space.s)
@@ -248,9 +259,9 @@ struct UsagePane: View {
                 get: { dashboard.usageDays },
                 set: { days in Task { await dashboard.setUsageDays(days) } }
             )) {
-                Text("7d").tag(7)
-                Text("30d").tag(30)
-                Text("90d").tag(90)
+                Text("7 days").tag(7)
+                Text("30 days").tag(30)
+                Text("90 days").tag(90)
             }
             .pickerStyle(.segmented)
             .frame(width: 190)
@@ -300,7 +311,7 @@ struct UsagePane: View {
             Fmt.costConfidenceLabel(usage.totals?.costConfidence).map { "cost: \($0)" },
             "token counts come from client usage records",
             usage.totals?.cacheReadTokens.map {
-                "fresh tokens exclude \(UsageTotals.compact($0)) cache-read tokens"
+                "non-cached token totals exclude \(UsageTotals.compact($0)) cache-read tokens"
             },
         ].compactMap { $0 }
         Text(parts.joined(separator: " · "))
@@ -316,7 +327,7 @@ struct UsagePane: View {
                     Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
                     Text("About these numbers").font(Type.rowLabel).foregroundStyle(Theme.ink)
                     Spacer()
-                    Text("cost, windows, and plan calibration")
+                    Text("cost labels, provider windows, and weekly estimates")
                         .font(Type.dataSmall).foregroundStyle(Theme.muted)
                 }
             }
@@ -328,7 +339,7 @@ struct UsagePane: View {
                     HStack {
                         Text("About these numbers").font(Type.rowLabel).foregroundStyle(Theme.ink)
                         Spacer()
-                        Text("cost, windows, and plan calibration")
+                        Text("cost labels, provider windows, and weekly estimates")
                             .font(Type.dataSmall).foregroundStyle(Theme.muted)
                     }
                 }
@@ -340,8 +351,8 @@ struct UsagePane: View {
     private var aboutDetails: some View {
         VStack(alignment: .leading, spacing: Space.l) {
             VStack(alignment: .leading, spacing: 6) {
-                CapsLabel(text: "Cost grammar")
-                Text("$ complete reported or billed · ≈$ estimate · ~$ known partial subtotal · unpriced when no amount is available")
+                CapsLabel(text: "Cost labels")
+                Text("$ is a reported or billed amount. ≈$ is an estimate. ~$ is a known partial amount. Unpriced means no amount is available.")
                     .font(Type.caption).foregroundStyle(Theme.muted)
             }
             Rectangle().fill(Theme.hairline).frame(height: 1)
@@ -429,7 +440,7 @@ private struct UsagePlanClientDetail: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             HStack(alignment: .firstTextBaseline, spacing: Space.m) {
-                Text(client.client).font(Type.rowLabel).foregroundStyle(Theme.ink)
+                Text(clientDisplayName(client.client)).font(Type.rowLabel).foregroundStyle(Theme.ink)
                     .frame(width: 140, alignment: .leading)
                 Text(presentation.detailText)
                     .font(Type.caption).foregroundStyle(Theme.muted)
@@ -513,7 +524,7 @@ struct StripRow: View {
 
 // MARK: - Period chart (one series per chart)
 
-/// The usage chart: estimated cost or fresh tokens per API-reported period, with
+/// The usage chart: estimated cost or non-cached tokens per API-reported period, with
 /// an optional single-client group filter. Always ONE series — a stack never
 /// appears (v7 chart discipline). Periods without a priced value render as flat
 /// neutral stubs and their tooltip says so; heights are strictly proportional.
@@ -827,7 +838,7 @@ struct UsagePeriodChart: View {
 // MARK: - Breakdown tables
 
 /// A v7 breakdown table: NAME · SESSIONS · TOKENS · SHARE · COST, ranked
-/// by fresh tokens, share bars strictly proportional to the table's own total.
+/// by non-cached tokens, share bars strictly proportional to the table's own total.
 struct UsageBreakdownTable: View {
     let title: String
     let nameHeader: String
@@ -940,8 +951,8 @@ struct UsageBreakdownTable: View {
             [
                 name,
                 bucket.sessions.map { "\($0) sessions" } ?? "sessions not reported",
-                bucket.freshTokens.map { "\($0) fresh tokens" } ?? "tokens not reported",
-                share.map { "\(Int(($0 * 100).rounded())) percent of known fresh tokens" }
+                bucket.freshTokens.map { "\($0) non-cached tokens" } ?? "tokens not reported",
+                share.map { "\(Int(($0 * 100).rounded())) percent of known non-cached tokens" }
                     ?? "token share not reported",
                 bucket.costText == "—" ? "cost unpriced" : bucket.costText,
                 Fmt.costConfidenceLabel(bucket.costConfidence),
