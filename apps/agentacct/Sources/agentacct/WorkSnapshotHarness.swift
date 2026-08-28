@@ -3,6 +3,7 @@ import SwiftUI
 enum WorkSnapshotState: String {
     case table
     case receipt
+    case loading
     case empty
     case listError = "list-error"
     case retainedListError = "retained-list-error"
@@ -13,6 +14,7 @@ enum WorkSnapshotState: String {
     var storeState: SnapshotWorkStoreState {
         switch self {
         case .table, .receipt: return .populated
+        case .loading: return .loading
         case .attentionOverflow: return .attentionOverflow
         case .empty: return .empty
         case .listError: return .listError
@@ -25,7 +27,8 @@ enum WorkSnapshotState: String {
     var selectsReceipt: Bool {
         switch self {
         case .receipt, .receiptLoading, .receiptError: return true
-        case .table, .empty, .listError, .retainedListError, .attentionOverflow: return false
+        case .table, .loading, .empty, .listError, .retainedListError, .attentionOverflow:
+            return false
         }
     }
 
@@ -54,6 +57,7 @@ struct WorkSnapshotConfiguration {
             ]
         }
         let transient = [
+            WorkSnapshotState.loading,
             WorkSnapshotState.empty,
             .listError,
             .retainedListError,

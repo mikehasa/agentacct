@@ -595,7 +595,7 @@ private struct WorkRecordPlaceholder: View {
     var body: some View {
         WorkRecordStatusPage(
             reference: taskId,
-            title: summary?.title ?? taskId,
+            title: recordedTaskDisplayTitle(summary?.title, taskId: taskId),
             summary: summary,
             showList: showList
         ) {
@@ -613,7 +613,9 @@ private struct WorkRecordPlaceholder: View {
                         .foregroundStyle(Theme.muted)
                 }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Loading receipt for \(summary?.title ?? taskId)")
+                .accessibilityLabel(
+                    "Loading receipt for \(recordedTaskDisplayTitle(summary?.title, taskId: taskId))"
+                )
                 placeholder(height: 84)
                 HStack(alignment: .top, spacing: Space.xl) {
                     placeholder(height: 220)
@@ -648,7 +650,7 @@ private struct WorkRecordErrorPage: View {
     var body: some View {
         WorkRecordStatusPage(
             reference: taskId,
-            title: summary?.title ?? taskId,
+            title: recordedTaskDisplayTitle(summary?.title, taskId: taskId),
             summary: summary,
             showList: showList
         ) {
@@ -762,15 +764,18 @@ private struct WorkTablePage: View {
                 .font(Type.titlePage).tracking(Type.titlePageTracking)
                 .foregroundStyle(Theme.ink)
             HStack(spacing: 0) {
-                Text("local store · \(dashboard.totalReceiptTasks ?? dashboard.receiptTasks.count) receipts")
+                Text(workReceiptHeaderText)
                     .font(Type.dataSmall).foregroundStyle(Theme.muted)
                 // The list endpoint caps at 200 rows; when the store holds
                 // more, the tab counts cover the loaded slice — say so.
-                if let total = dashboard.totalReceiptTasks, total > dashboard.receiptTasks.count {
+                if dashboard.hasLoadedReceiptTasks,
+                   let total = dashboard.totalReceiptTasks,
+                   total > dashboard.receiptTasks.count
+                {
                     Text(" · latest \(dashboard.receiptTasks.count) loaded")
                         .font(Type.dataSmall).foregroundStyle(Theme.muted)
                 }
-                if let updated = dashboard.lastUpdated {
+                if dashboard.hasLoadedReceiptTasks, let updated = dashboard.lastUpdated {
                     Text(" · refreshed \(dashboardFreshnessText(updated))")
                         .font(Type.dataSmall).foregroundStyle(Theme.muted)
                 }
@@ -782,11 +787,15 @@ private struct WorkTablePage: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Space.xl) {
                 let truncated = (dashboard.totalReceiptTasks ?? 0) > dashboard.receiptTasks.count
-                tabButton(nil, label: truncated ? "Loaded" : "All", count: dashboard.receiptTasks.count)
+                tabButton(
+                    nil,
+                    label: truncated ? "Loaded" : "All",
+                    count: dashboard.hasLoadedReceiptTasks ? dashboard.receiptTasks.count : nil
+                )
                 ForEach(WorkGroup.allCases) { candidate in
                     let count = candidate == .attention
                         ? dashboard.attention?.total
-                        : (groupCounts[candidate] ?? 0)
+                        : (dashboard.hasLoadedReceiptTasks ? groupCounts[candidate] ?? 0 : nil)
                     // Attention is complete across the store and can exceed
                     // Loaded; the other lifecycle counts describe that page.
                     if candidate != .other || (count ?? 0) > 0 {
@@ -875,8 +884,28 @@ private struct WorkTablePage: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else if group == .attention, dashboard.attention == nil {
                     HStack(spacing: Space.m) {
-                        ProgressView().controlSize(.small).tint(Theme.muted)
+                        if SnapshotMode.enabled {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(Theme.muted)
+                        } else {
+                            ProgressView().controlSize(.small).tint(Theme.muted)
+                        }
                         Text("Checking the complete review projection…")
+                            .font(Type.body).foregroundStyle(Theme.muted)
+                    }
+                    .padding(Space.xl)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else if group != .attention, !dashboard.hasLoadedReceiptTasks {
+                    HStack(spacing: Space.m) {
+                        if SnapshotMode.enabled {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(Theme.muted)
+                        } else {
+                            ProgressView().controlSize(.small).tint(Theme.muted)
+                        }
+                        Text("Loading recorded work…")
                             .font(Type.body).foregroundStyle(Theme.muted)
                     }
                     .padding(Space.xl)
@@ -998,6 +1027,15 @@ private struct WorkTablePage: View {
         group == .attention ? dashboard.attentionError : dashboard.receiptListError
     }
 
+    private var workReceiptHeaderText: String {
+        guard dashboard.hasLoadedReceiptTasks else {
+            return dashboard.receiptListError == nil
+                ? "local store · loading receipts"
+                : "local store · receipts unavailable"
+        }
+        return "local store · \(dashboard.totalReceiptTasks ?? dashboard.receiptTasks.count) receipts"
+    }
+
     private var footerText: String {
         if group == .attention, let attention = dashboard.attention {
             let loaded = dashboard.attentionQueueItems.count
@@ -1013,6 +1051,11 @@ private struct WorkTablePage: View {
                 return "\(loaded) of \(attention.total) review items loaded · \(scope)"
             }
             return "\(visibleTasks.count) match filter · \(loaded) of \(attention.total) loaded · \(scope)"
+        }
+        guard dashboard.hasLoadedReceiptTasks else {
+            return dashboard.receiptListError == nil
+                ? "Loading recorded work…"
+                : "Receipt list unavailable · refresh to retry"
         }
         return workReceiptFooterText(
             visibleCount: visibleTasks.count,
@@ -1062,7 +1105,7 @@ private struct WorkTableRow: View {
             HStack(spacing: Space.l) {
                 HStack(spacing: Space.m) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(task.title ?? task.taskId)
+                        Text(recordedTaskDisplayTitle(task.title, taskId: task.taskId))
                             .font(Type.rowLabel).foregroundStyle(Theme.ink)
                             .lineLimit(1).truncationMode(.tail)
                         if let project = receiptProjectContext(task) {
@@ -1110,7 +1153,7 @@ private struct WorkTableRow: View {
         .accessibilityIdentifier("work.table.task.\(task.taskId)")
         .accessibilityLabel(
             [
-                task.title ?? task.taskId,
+                recordedTaskDisplayTitle(task.title, taskId: task.taskId),
                 receiptProjectContext(task).map { "project \($0)" },
                 task.decisionStatus.label ?? task.decisionStatus.key,
                 "evidence \(evidence.compactHeadline)",
@@ -1295,7 +1338,7 @@ private struct WorkRailRow: View {
         Button(action: action) {
             HStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(task.title ?? task.taskId)
+                    Text(recordedTaskDisplayTitle(task.title, taskId: task.taskId))
                         .font(Face.sansFont(13, selected ? .semibold : .regular))
                         .foregroundStyle(selected ? Theme.ink : Theme.muted)
                         .lineLimit(2)
@@ -1442,7 +1485,7 @@ struct WorkRecordPage: View {
     private var titleBlock: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             HStack(alignment: .center, spacing: Space.m) {
-                Text(receipt.title ?? receipt.taskId)
+                Text(recordedTaskDisplayTitle(receipt.title, taskId: receipt.taskId))
                     .font(Type.titlePage).tracking(Type.titlePageTracking)
                     .foregroundStyle(Theme.ink)
                     .lineLimit(2)

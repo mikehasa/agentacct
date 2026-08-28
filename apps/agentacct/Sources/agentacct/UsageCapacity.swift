@@ -1,4 +1,17 @@
+import Foundation
 import SwiftUI
+
+func usageResetClockText(
+    _ date: Date,
+    timeZone: TimeZone = .current
+) -> String {
+    let formatter = DateFormatter()
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = timeZone
+    formatter.dateFormat = "HH:mm"
+    return formatter.string(from: date)
+}
 
 /// Presentation-only join for the merged Usage surface. Provider capacity and
 /// ranged receipt usage remain separate facts; this type only gives them one
@@ -222,9 +235,15 @@ struct LimitWindowPresentation {
 
     var resetText: String {
         guard let resetsAt = window.resetsAt else { return "Reset time not reported" }
+        guard resetsAt.isFinite,
+              (Date.distantPast.timeIntervalSince1970 ... Date.distantFuture.timeIntervalSince1970)
+              .contains(resetsAt)
+        else {
+            return "Invalid reset time"
+        }
         let date = Date(timeIntervalSince1970: resetsAt)
         let now = SnapshotMode.currentDate
-        let time = date.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute())
+        let time = usageResetClockText(date)
         guard resetsAt > now.timeIntervalSince1970 else {
             return "Reported reset passed \(date.formatted(.dateTime.month(.abbreviated).day())) \(time)"
         }

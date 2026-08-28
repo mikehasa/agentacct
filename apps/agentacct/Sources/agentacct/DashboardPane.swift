@@ -22,11 +22,7 @@ struct DashboardWorkItem: Identifiable {
 
     init(task: ReceiptSummary) {
         id = task.taskId
-        if let taskTitle = task.title, !taskTitle.isEmpty {
-            title = taskTitle
-        } else {
-            title = task.taskId
-        }
+        title = recordedTaskDisplayTitle(task.title, taskId: task.taskId)
         project = Self.nonempty(task.project)
         client = Self.nonempty(task.primaryRoot?.client) ?? "Unknown agent"
         lastActivityAt = task.lastActivityAt
@@ -110,16 +106,12 @@ struct DashboardAttentionItem: Identifiable, Equatable {
     init?(task: ReceiptSummary) {
         guard let reason = task.attention else { return nil }
         id = task.taskId
-        if let taskTitle = task.title, !taskTitle.isEmpty {
-            title = taskTitle
-        } else {
-            title = task.taskId
-        }
+        title = recordedTaskDisplayTitle(task.title, taskId: task.taskId)
         project = task.project
         client = task.primaryRoot?.client
         reasonKind = reason.kind
-        summary = reason.summary
-        nextStep = reason.nextStep
+        summary = reason.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        nextStep = Self.nonempty(reason.nextStep)
         observedAt = reason.observedAt
         handedOff = task.handedOff
         switch reason.source {
@@ -145,6 +137,15 @@ struct DashboardAttentionItem: Identifiable, Equatable {
         case "blocker": return "Recorded blocker"
         default: return reasonKind.replacingOccurrences(of: "_", with: " ").capitalized
         }
+    }
+
+    private static func nonempty(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty
+        else {
+            return nil
+        }
+        return value
     }
 
     var recency: String? { agoText(observedAt) }
@@ -304,17 +305,22 @@ enum DashboardUsageSeries: String, CaseIterable, Identifiable {
 
     func value(for period: PeriodBucket) -> Double {
         switch self {
-        case .tokens: return Double(period.freshTokens ?? 0)
-        case .cost: return period.estimatedCostUsd ?? 0
+        case .tokens:
+            guard let tokens = period.freshTokens, tokens >= 0 else { return 0 }
+            return Double(tokens)
+        case .cost:
+            guard let cost = period.estimatedCostUsd, cost.isFinite, cost >= 0 else { return 0 }
+            return cost
         }
     }
 
     func valueText(for period: PeriodBucket) -> String {
         switch self {
         case .tokens:
-            guard let value = period.freshTokens else { return "—" }
+            guard let value = period.freshTokens, value >= 0 else { return "—" }
             return UsageTotals.compact(value)
         case .cost:
+            guard let cost = period.estimatedCostUsd, cost.isFinite, cost >= 0 else { return "—" }
             return period.costText
         }
     }
@@ -322,12 +328,19 @@ enum DashboardUsageSeries: String, CaseIterable, Identifiable {
     func totalText(for periods: [PeriodBucket]) -> String {
         switch self {
         case .tokens:
-            let available = periods.compactMap(\.freshTokens)
+            let available: [Int] = periods.compactMap { period -> Int? in
+                guard let tokens = period.freshTokens, tokens >= 0 else { return nil }
+                return tokens
+            }
             guard !available.isEmpty else { return "—" }
             let prefix = available.count == periods.count ? "" : "~"
-            return "\(prefix)\(UsageTotals.compact(available.reduce(0, +))) total"
+            let total = available.reduce(0.0) { $0 + Double($1) }
+            return "\(prefix)\(UsageTotals.compact(total)) total"
         case .cost:
-            let available = periods.compactMap(\.estimatedCostUsd)
+            let available = periods.compactMap { period -> Double? in
+                guard let cost = period.estimatedCostUsd, cost.isFinite, cost >= 0 else { return nil }
+                return cost
+            }
             guard !available.isEmpty else { return "—" }
             let complete = available.count == periods.count
                 && periods.allSatisfy { $0.costComplete == true }
@@ -335,7 +348,9 @@ enum DashboardUsageSeries: String, CaseIterable, Identifiable {
                 ["client_reported", "provider_billed"].contains($0.costConfidence ?? "")
             }
             let prefix = reported ? "$" : (complete ? "≈$" : "~$")
-            return "\(Fmt.dollars(available.reduce(0, +), prefix: prefix)) total"
+            let total = available.reduce(0, +)
+            guard total.isFinite else { return "—" }
+            return "\(Fmt.dollars(total, prefix: prefix)) total"
         }
     }
 
@@ -343,6 +358,50 @@ enum DashboardUsageSeries: String, CaseIterable, Identifiable {
         switch self {
         case .tokens: return "Fresh tokens · last \(dayCount) days · client reported"
         case .cost: return "Estimated cost · last \(dayCount) days · pricing-table basis"
+        }
+    }
+
+    func axisText(for value: Double) -> String {
+        switch self {
+        case .tokens:
+            let compact = UsageTotals.compact(value)
+            guard compact.count > 5 else { return compact }
+            let whole = value.rounded(.towardZero)
+            let magnitude = abs(whole)
+            switch magnitude {
+            case 1_000_000_000_000_000...:
+                return String(format: "%.0e", whole)
+                    .replacingOccurrences(of: "e+", with: "e")
+            case 1_000_000_000_000...: return String(format: "%.0fT", whole / 1_000_000_000_000)
+            case 1_000_000_000...: return String(format: "%.0fB", whole / 1_000_000_000)
+            case 1_000_000...: return String(format: "%.0fM", whole / 1_000_000)
+            case 1_000...: return String(format: "%.0fk", whole / 1_000)
+            default: return compact
+            }
+        case .cost: return Self.costAxisText(value)
+        }
+    }
+
+    private static func costAxisText(_ value: Double) -> String {
+        guard value.isFinite, value >= 0 else { return "—" }
+        let whole = value.rounded(.towardZero)
+        let magnitude = abs(whole)
+        switch magnitude {
+        case 1_000_000_000_000_000...:
+            return "$" + String(format: "%.0e", whole)
+                .replacingOccurrences(of: "e+", with: "e")
+        case 1_000_000_000_000...:
+            return String(format: "$%.0fT", (whole / 1_000_000_000_000).rounded(.towardZero))
+        case 1_000_000_000...:
+            return String(format: "$%.0fB", (whole / 1_000_000_000).rounded(.towardZero))
+        case 1_000_000...:
+            return String(format: "$%.0fM", (whole / 1_000_000).rounded(.towardZero))
+        case 1_000...:
+            return String(format: "$%.0fk", (whole / 1_000).rounded(.towardZero))
+        case 10...: return String(format: "$%.0f", whole)
+        default:
+            let cents = (value * 100).rounded(.towardZero) / 100
+            return String(format: "$%.2f", cents)
         }
     }
 }
@@ -523,6 +582,13 @@ struct DashboardUsagePulse: Equatable {
             return
         }
 
+        guard !periods.contains(where: { ($0.freshTokens ?? 0) < 0 }) else {
+            state = .insufficient
+            title = "Usage comparison incomplete"
+            detail = "A fresh-token bucket reported an invalid negative value."
+            return
+        }
+
         let dated = periods.compactMap { period -> (String, Int?)? in
             guard let label = period.period, Self.isDateLabel(label) else { return nil }
             return (label, period.freshTokens)
@@ -651,23 +717,18 @@ struct DashboardPane: View {
         return snapshot.glance.limits.filter { $0.stale != true }
     }
 
-    /// The glance 7-day per-client usage slice — what lets EVERY recording
-    /// agent appear on the plan card, not only the ones reporting limits.
+    /// The glance 7-day per-client usage slice keeps recording clients in the
+    /// capacity input even when they do not report provider limits.
     private var glanceUsageByClient: [GlanceClientUsage] {
         guard case .connected(let snapshot) = glance.phase else { return [] }
         return snapshot.glance.usage.byClient ?? []
     }
 
-    /// Clients whose only limit readings are STALE — hidden from the live
-    /// meters, but "no limits reported" would be affirmatively false for them.
+    /// Clients whose 7-day reading is available only as stale data. A live
+    /// short-window stream must not erase that useful absence distinction.
     private var staleLimitClients: Set<String> {
         guard case .connected(let snapshot) = glance.phase else { return [] }
-        let live = Set(liveLimits.compactMap(\.client))
-        return Set(
-            snapshot.glance.limits
-                .filter { $0.stale == true }
-                .compactMap(\.client)
-        ).subtracting(live)
+        return staleSevenDayLimitClients(in: snapshot.glance.limits)
     }
 
     private var recentSessions: [RecentSession] {
@@ -763,7 +824,7 @@ struct DashboardPane: View {
         @ViewBuilder right: () -> Right
     ) -> some View {
         ViewThatFits(in: .horizontal) {
-            DashboardSplitLayout(leftFraction: 8 / 12, spacing: Space.l) {
+            DashboardSplitLayout(leftFraction: 7 / 12, spacing: Space.l) {
                 left()
                 right()
             }
@@ -1098,8 +1159,8 @@ private struct DashboardBriefEmptyState: View {
                 .font(Type.body)
                 .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 }
 
@@ -1120,8 +1181,8 @@ private struct DashboardBriefUnavailableState: View {
                 .font(Type.body)
                 .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 }
 
@@ -1341,7 +1402,7 @@ private struct DashboardSignalRow: View {
                 DashboardDisclosureIndicator().padding(.top, 18)
             }
             .padding(.horizontal, Space.l)
-            .padding(.vertical, Space.m)
+            .padding(.vertical, Space.s)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
@@ -1636,12 +1697,12 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
         } else if window != nil {
             meterCaption = "7-day usage not reported"
             resetText = nil
-        } else if limit != nil {
-            meterCaption = "no 7-day window reported"
-            resetText = nil
         } else if staleLimit {
             // A stale reading is hidden, not never-reported — say so.
             meterCaption = "limit reading stale — see Usage"
+            resetText = nil
+        } else if limit != nil {
+            meterCaption = "no 7-day window reported"
             resetText = nil
         } else {
             meterCaption = "no limits reported"
@@ -1715,6 +1776,25 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
             )
         }
     }
+}
+
+func staleSevenDayLimitClients(in limits: [LimitEntry]) -> Set<String> {
+    var live = Set<String>()
+    var stale = Set<String>()
+    for limit in limits {
+        guard let client = limit.client?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !client.isEmpty,
+              limit.windows?.contains(where: { $0.kind == "7d" }) == true
+        else {
+            continue
+        }
+        if limit.stale == true {
+            stale.insert(client)
+        } else {
+            live.insert(client)
+        }
+    }
+    return stale.subtracting(live)
 }
 
 private struct DashboardUsageChart: View {
@@ -1896,10 +1976,7 @@ private struct DashboardUsageChart: View {
     }
 
     private func axisText(_ value: Double) -> String {
-        switch series {
-        case .tokens: return UsageTotals.compact(Int(value))
-        case .cost: return Fmt.dollars(value)
-        }
+        series.axisText(for: value)
     }
 }
 

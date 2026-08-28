@@ -162,6 +162,35 @@ final class UsageCapacityTests: XCTestCase {
         XCTAssertFalse(text.contains("Resets today"))
     }
 
+    func testResetClockUsesAnUnambiguousTwentyFourHourTime() {
+        let date = Date(timeIntervalSince1970: 1_788_184_000)
+
+        XCTAssertEqual(
+            usageResetClockText(date, timeZone: TimeZone(secondsFromGMT: 0)!),
+            "13:46"
+        )
+    }
+
+    func testResetCopyRejectsNonfiniteAndOutOfRangeTimes() {
+        for resetsAt in [
+            Double.nan,
+            Double.infinity,
+            -Double.infinity,
+            Double.greatestFiniteMagnitude,
+        ] {
+            let window = LimitWindow(
+                kind: "7d",
+                usedPercent: 50,
+                windowMinutes: nil,
+                resetsAt: resetsAt
+            )
+            XCTAssertEqual(
+                LimitWindowPresentation(window: window, stale: false).resetText,
+                "Invalid reset time"
+            )
+        }
+    }
+
     func testAccessibilitySummaryDistinguishesMissingValuesFromObservedZero() throws {
         let usage = try decode([UsageBucket].self, from: """
         [

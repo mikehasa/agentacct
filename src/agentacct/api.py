@@ -3171,6 +3171,9 @@ def create_local_api_app(
             "total": total,
             "counts": counts,
             "revision": revision,
+            # Immediate predecessor builds called this identity `snapshot`.
+            # Keep the additive alias while desktop clients roll forward.
+            "snapshot": revision,
             "offset": offset,
             "limit": limit,
             "truncated": offset + len(items) < total,

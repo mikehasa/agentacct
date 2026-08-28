@@ -85,8 +85,9 @@ failure and a blocker—and recency orders Tasks within each class. This is revi
 ordering, not a claim about business priority. Each row includes its recorded
 reason and next step when available; agentacct does not invent a recovery action
 for a failed check. Every page carries the same opaque ranking `revision` and
-complete counts while that classification is stable; clients restart paging if
-the revision changes. The complete classification and ordering are cached with
+complete counts while that classification is stable; the additive `snapshot`
+field carries the same value for immediate-predecessor desktop clients. Clients
+restart paging if the revision changes. The complete classification and ordering are cached with
 the parent Task projection, so repeated dashboard polls rebuild them only when
 that projection changes. Clients load later ranked rows with `offset` and reject
 pages from a changed projection instead of skipping or repeating work.
