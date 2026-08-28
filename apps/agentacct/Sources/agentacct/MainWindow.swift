@@ -6,7 +6,7 @@ import SwiftUI
 // window is where work evidence and usage details live.
 //
 // Panes live in their own files: DashboardPane (the home), WorkPane (Tasks +
-// their session drill-down), UsagePane, LimitsPane.
+// their session drill-down), the merged UsagePane, and SourcesPane.
 
 struct MainWindow: View {
     @EnvironmentObject var dashboard: DashboardStore
@@ -32,7 +32,6 @@ struct MainWindow: View {
                 case .dashboard: DashboardPane()
                 case .work: WorkPane()
                 case .usage: UsagePane()
-                case .limits: LimitsPane()
                 case .sources: SourcesPane()
                 }
             }
@@ -123,12 +122,12 @@ struct TopBar: View {
     var body: some View {
         HStack(spacing: 14) {
             BrandLockup()
-                // Anchor the brand to the window gutter while preserving a
-                // distinct navigation column, as in the product lockup.
-                .padding(.trailing, 76)
+                // Four destinations fit with full labels at the minimum
+                // window once the old Limits tab is removed.
+                .padding(.trailing, 8)
 
-            // Five panes no longer fit a 960pt window with full labels; the
-            // tab strip degrades to icon-only before any label truncates.
+            // Preserve full labels when four panes fit; icon-only remains the
+            // safety fallback for accessibility text or unusually narrow chrome.
             ViewThatFits(in: .horizontal) {
                 paneTabs(iconOnly: false)
                 paneTabs(iconOnly: true)
@@ -323,7 +322,6 @@ extension MainPane {
         case .dashboard: return selected ? "square.grid.2x2.fill" : "square.grid.2x2"
         case .work: return "checklist"
         case .usage: return "chart.bar.xaxis"
-        case .limits: return "gauge.with.needle"
         case .sources: return "point.3.connected.trianglepath.dotted"
         }
     }

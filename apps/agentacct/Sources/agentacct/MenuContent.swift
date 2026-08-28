@@ -184,7 +184,7 @@ struct MenuContent: View {
         .buttonStyle(QuietButtonStyle(horizontalPadding: 0, verticalPadding: 0))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(heroAccessibilityLabel(limits.primary))
-        .accessibilityHint("Opens limits")
+        .accessibilityHint("Opens Usage and limits")
         .accessibilityIdentifier("menu.weekly-limit")
     }
 
@@ -265,14 +265,14 @@ struct MenuContent: View {
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
                 if limits.hiddenSecondaryCount > 0 {
-                    Button("+\(limits.hiddenSecondaryCount) in Limits") {
+                    Button("+\(limits.hiddenSecondaryCount) in Usage") {
                         openMain(selecting: .limits)
                     }
                     .buttonStyle(QuietButtonStyle(horizontalPadding: 3, verticalPadding: 0))
                     .font(Type.caption)
                     .foregroundStyle(Theme.accent)
                     .frame(minHeight: 28)
-                    .accessibilityHint("Opens all limits")
+                    .accessibilityHint("Opens Usage and limits")
                     .accessibilityIdentifier("menu.limits-more")
                 }
             }
@@ -305,7 +305,7 @@ struct MenuContent: View {
                 .buttonStyle(QuietButtonStyle(horizontalPadding: 6, verticalPadding: 6))
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(limitAccessibilityLabel(item))
-                .accessibilityHint("Opens limits")
+                .accessibilityHint("Opens Usage and limits")
                 .accessibilityIdentifier("menu.limit.\(item.id)")
             }
         }

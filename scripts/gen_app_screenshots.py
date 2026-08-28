@@ -234,7 +234,7 @@ def build_store():
     pct += FRESH_W * 9.5  # the flagship's 9.5M fresh tokens close the chain
 
     # The current 5h + 7d reading (the flagship interval's endpoint), so the
-    # Limits pane shows both windows and the weekly meter reads calibrated.
+    # The merged Usage pane shows both windows and calibrated plan details.
     _rl(svc, client="claude-code", captured=NOW - 120, index=99, windows=[
         {"kind": "5h", "window_minutes": 300, "used_percent": 34.0, "resets_at": int(NOW + 9000)},
         {"kind": "7d", "window_minutes": 10080, "used_percent": round(pct, 1),

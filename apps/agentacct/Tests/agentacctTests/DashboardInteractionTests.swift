@@ -9,7 +9,7 @@ final class DashboardInteractionTests: XCTestCase {
             (.work, .work, nil, nil),
             (.task("task-1"), .work, "task-1", nil),
             (.session("codex::session-1"), .work, nil, "codex::session-1"),
-            (.limits, .limits, nil, nil),
+            (.limits, .usage, nil, nil),
         ]
 
         for (destination, pane, taskID, sessionID) in cases {
@@ -176,7 +176,7 @@ final class DashboardInteractionTests: XCTestCase {
             client: "claude-code", limit: nil, staleLimit: true, plan: nil, usage: nil
         )
         XCTAssertNil(stale.usedPercent)
-        XCTAssertEqual(stale.meterCaption, "limit reading stale — see Limits")
+        XCTAssertEqual(stale.meterCaption, "limit reading stale — see Usage")
 
         let unavailable = DashboardAgentPlanRow(client: "codex", limit: fiveHourOnly, plan: nil, usage: nil)
         XCTAssertNil(unavailable.usedPercent)

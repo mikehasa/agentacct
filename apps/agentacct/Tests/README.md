@@ -33,9 +33,9 @@ host or running Swift tests:
 ```
 
 This project currently discovers `AboutVisualRegressionTests`,
-`DashboardVisualRegressionTests`, `MenuVisualRegressionTests`, and
-`WorkVisualRegressionTests`. An empty list remains valid for another project or
-branch before its first visual suite.
+`DashboardVisualRegressionTests`, `MenuVisualRegressionTests`,
+`UsageVisualRegressionTests`, and `WorkVisualRegressionTests`. An empty list
+remains valid for another project or branch before its first visual suite.
 
 Verify one suite before changing its UI:
 
@@ -279,6 +279,35 @@ open /tmp/agentacct-dashboard-review
 
 Keep ad-hoc PNGs outside the repository.
 
+## Usage & limits review matrix
+
+The Usage renderer drives the merged destination with provider windows,
+calibration states, a usage-only client, today's totals, and ranged history
+from the same versioned fixture as Dashboard.
+
+| Artifact | Viewport | Pixel size |
+| --- | --- | --- |
+| `usage-minimum-light.png` | 960 × 560 pt minimum window, light; full navigation and first complete capacity row | 1920 × 1120 px |
+| `usage-minimum-dark.png` | 960 × 560 pt minimum window, dark; same hierarchy | 1920 × 1120 px |
+| `usage-reference-light.png` | 1120 × 900 pt standard window, light; complete capacity ledger plus history entry | 2240 × 1800 px |
+| `usage-reference-dark.png` | 1120 × 900 pt standard window, dark; same hierarchy | 2240 × 1800 px |
+| `usage-disconnected-reference-light.png` | 1120 × 900 pt, light; capacity unavailable while retained usage includes By client | 2240 × 1800 px |
+| `usage-disconnected-reference-dark.png` | 1120 × 900 pt, dark; same independent-lane fallback | 2240 × 1800 px |
+
+`UsageCapacityTests` separately covers row union/order, duplicate windows,
+stale visibility, unnamed identity isolation, threshold copy, elapsed reset
+timestamps, nil-versus-zero accessibility, safe malformed window spans, exact
+daily plan detail, large client sets, and the four-tab contract.
+
+For an ad-hoc Usage render that does not compare or update references:
+
+```bash
+swift run agentacct --snapshot-usage-fixture \
+  Tests/agentacctTests/Fixtures/dashboard.json \
+  /tmp/agentacct-usage-review
+open /tmp/agentacct-usage-review
+```
+
 ## Work review matrix
 
 The Work renderer drives the real `MainWindow` through the browse and selected-
@@ -493,7 +522,7 @@ machines. Always use the CLI when the intent is to verify visual references.
 
 | Interaction contract | Automated evidence | Installed-app check |
 | --- | --- | --- |
-| Navigation tabs; recent-work, review, active-work, and Limits destinations | destination matrix, task-first review projection, and stable accessibility identifiers | activate each control and confirm its pane/detail |
+| Navigation tabs; recent-work, review, active-work, and semantic limit destinations | destination matrix, task-first review projection, and stable accessibility identifiers | activate each control and confirm its pane/detail |
 | Outcome, evidence, cost, recency, long labels, and responsive layout | projection tests plus the four-image review matrix | resize through the 960 pt minimum and scroll once |
 | Tokens/Cost selection, totals, missing values, and mark labels | series tests plus default chart snapshots | hover, click, and keyboard-focus a mark in each series |
 | Light/dark appearance, reduced motion, and reduced transparency | explicit scheme matrix; material policy test; animations disabled in snapshots | switch system appearance; enable Reduce Motion and Reduce Transparency, then repeat navigation |

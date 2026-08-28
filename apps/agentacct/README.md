@@ -5,9 +5,10 @@ cost at a glance; its dropdown carries usage windows, provider limit bars,
 plan-calibration status, and recent sessions (with per-session weekly-plan
 share where calibrated). Click through to the full window: a **Dashboard**
 home, a Task-primary **Work** pane whose centerpiece is the **Work Receipt**
-for each task, a **Usage** pane (by agent and by model), and a **Limits** pane.
-All aggregation and honesty logic stays in the Python daemon — the app only
-renders what `/v1` vouches for.
+for each task, and one **Usage & limits** pane that puts provider capacity,
+reset timing, ranged usage, daily history, and model attribution in one
+decision-first view. All aggregation and honesty logic stays in the Python
+daemon — the app only renders what `/v1` vouches for.
 
 ## How it connects
 
@@ -41,7 +42,7 @@ commit and dirty state remain embedded in the bundle from Git (including
 untracked source), so the installed app can identify the source that produced
 it without adding identity noise to the everyday menu.
 
-## Test the dashboard UI
+## Test the macOS UI
 
 The deterministic snapshot harness renders the real dashboard from synthetic
 API payloads in light and dark mode, without a running daemon or personal
@@ -59,8 +60,9 @@ checklist.
       full window
 - [x] the full window: a Dashboard home · a Task-primary Work pane (root task
       list → Work Receipt detail: what ran, files touched, tools, usage, work
-      items with check evidence, attribution, subagent rollup) · Usage by agent
-      and by model (30d cube) · Limits with a show-stale toggle
+      items with check evidence, attribution, subagent rollup) · one Usage &
+      limits pane with provider windows, 7d/30d/90d recorded usage, daily and
+      model attribution, plus explicit stale and calibration states
 - [ ] adaptive poll cadence (menu-open recency / Low Power Mode — CodexBar's
       2–30 min policy)
 - [x] usage window picker (7d/30d/90d)
