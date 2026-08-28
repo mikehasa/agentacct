@@ -1,9 +1,9 @@
 import SwiftUI
 
-// The dashboard answers three questions in order: what happened, what needs
-// review, and what resources it used. Work Receipt summaries lead because they
-// keep claimed outcome and supporting evidence visibly separate. Plan and
-// usage remain available as decision context, not as the product's headline.
+// The dashboard is a shift brief: what deserves attention now, what recorded
+// evidence supports that claim, and where the operator can inspect it. Recent
+// work, active sessions, plan headroom, and source health remain supporting
+// context rather than four equally weighted destinations.
 
 struct DashboardWorkItem: Identifiable {
     let id: String
@@ -12,9 +12,7 @@ struct DashboardWorkItem: Identifiable {
     let lastActivityAt: Double?
     let outcome: String
     let outcomeKey: String
-    let outcomeSource: String?
     let evidence: String
-    let failedChecks: Int
     let cost: String
     let gradeable: Bool
     let strongestTierKey: String?
@@ -29,14 +27,12 @@ struct DashboardWorkItem: Identifiable {
         client = task.primaryRoot?.client ?? "Unknown agent"
         lastActivityAt = task.lastActivityAt
         outcomeKey = task.decisionStatus.key
-        outcomeSource = Self.outcomeSourceLabel(task.decisionStatus.assertedBy)
         if let label = task.decisionStatus.label, !label.isEmpty {
             outcome = label
         } else {
             outcome = Self.outcomeLabel(for: task.decisionStatus.key)
         }
         evidence = task.evidenceStrength.compactHeadline
-        failedChecks = task.evidenceStrength.checksFailed ?? 0
         cost = Self.compactCost(task.cost)
         gradeable = task.evidenceStrength.gradeable == true
         strongestTierKey = task.evidenceStrength.strongestTier
@@ -51,25 +47,6 @@ struct DashboardWorkItem: Identifiable {
         gradeable ? (strongestTierKey ?? "unchecked") : nil
     }
 
-    /// A superseded finding's failed check belongs to the finding that
-    /// superseded it — it never resurfaces as needing review (keeps this
-    /// predicate agreeing with the Work tab's Attention bucket).
-    /// Keys whose failed checks no longer demand review: a later same-scope
-    /// pass superseded them, or a human explicitly resolved the finding.
-    private static let settledFindingKeys: Set<String> = [
-        "finding_superseded", "finding_resolved_by_user",
-    ]
-
-    var needsReview: Bool {
-        (failedChecks > 0 && !Self.settledFindingKeys.contains(outcomeKey))
-            || ["finding", "failed", "blocked"].contains(outcomeKey)
-    }
-
-    var hasFinding: Bool {
-        (failedChecks > 0 && !Self.settledFindingKeys.contains(outcomeKey))
-            || ["finding", "failed"].contains(outcomeKey)
-    }
-
     private static func outcomeLabel(for key: String) -> String {
         switch key {
         case "verified": return "Verified"
@@ -79,16 +56,6 @@ struct DashboardWorkItem: Identifiable {
         case "in_progress": return "In progress"
         case "handed_off": return "Handed off"
         default: return key.replacingOccurrences(of: "_", with: " ").capitalized
-        }
-    }
-
-    private static func outcomeSourceLabel(_ source: String?) -> String? {
-        switch source {
-        case "agent_report": return "agent reported"
-        case "machine": return "machine checked"
-        case "human": return "human reviewed"
-        case "inferred": return "state inferred"
-        default: return nil
         }
     }
 
@@ -103,6 +70,79 @@ struct DashboardWorkItem: Identifiable {
             prefix = "≈$"
         }
         return Fmt.dollars(value, prefix: prefix)
+    }
+}
+
+/// UI projection of one server-ranked attention row. It deliberately exposes
+/// the recorded reason and recorded next step separately: nil stays nil, so a
+/// generic UI hint can never masquerade as agent-authored recovery guidance.
+struct DashboardAttentionItem: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let project: String?
+    let client: String?
+    let reasonKind: String
+    let summary: String
+    let nextStep: String?
+    let observedAt: Double?
+    let sourceLabel: String?
+
+    init?(task: ReceiptSummary) {
+        guard let reason = task.attention else { return nil }
+        id = task.taskId
+        if let taskTitle = task.title, !taskTitle.isEmpty {
+            title = taskTitle
+        } else {
+            title = task.taskId
+        }
+        project = task.project
+        client = task.primaryRoot?.client
+        reasonKind = reason.kind
+        summary = reason.summary
+        nextStep = reason.nextStep
+        observedAt = reason.observedAt
+        switch reason.source {
+        case "mcp": sourceLabel = "MCP record"
+        case "client_log": sourceLabel = "Client log"
+        case "machine": sourceLabel = "Machine check"
+        case .some(let source): sourceLabel = source.replacingOccurrences(of: "_", with: " ").capitalized
+        case nil: sourceLabel = nil
+        }
+    }
+
+    var reasonLabel: String {
+        switch reasonKind {
+        case "failed_check": return "Failed check"
+        case "failed_step": return "Failed step"
+        case "blocker": return "Recorded blocker"
+        default: return reasonKind.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    var recency: String? { agoText(observedAt) }
+}
+
+enum DashboardAttentionPresentation: Equatable {
+    case loading
+    case unavailable(String)
+    case clear
+    case focus(item: DashboardAttentionItem, total: Int)
+    case inconsistent(total: Int)
+
+    init(payload: V1AttentionPayload?, error: String?) {
+        guard let payload else {
+            self = error.map(Self.unavailable) ?? .loading
+            return
+        }
+        guard payload.total > 0 else {
+            self = .clear
+            return
+        }
+        if let item = payload.items.lazy.compactMap(DashboardAttentionItem.init).first {
+            self = .focus(item: item, total: payload.total)
+        } else {
+            self = .inconsistent(total: payload.total)
+        }
     }
 }
 
@@ -197,11 +237,6 @@ struct DashboardPane: View {
         ).subtracting(live)
     }
 
-    private var todayUsage: UsageTotals? {
-        guard case .connected(let snapshot) = glance.phase else { return nil }
-        return snapshot.glance.usage.windows.first { $0.label == "today" }?.totals
-    }
-
     private var recentSessions: [RecentSession] {
         guard case .connected(let snapshot) = glance.phase else { return [] }
         return snapshot.glance.recentSessions.filter {
@@ -209,45 +244,55 @@ struct DashboardPane: View {
         }
     }
 
-    private var attentionItems: [DashboardWorkItem] {
-        let items = dashboard.receiptTasks.map(DashboardWorkItem.init)
-        // Failed evidence is the more urgent review target. Preserve API order
-        // inside each group so equal-priority tasks remain stable.
-        return items.filter { $0.needsReview && $0.hasFinding }
-            + items.filter { $0.needsReview && !$0.hasFinding }
+    private var glanceAvailability: DashboardSignalAvailability {
+        switch glance.phase {
+        case .connected: return .connected
+        case .connecting: return .loading
+        case .disconnected(let message), .incompatible(let message): return .unavailable(message)
+        }
+    }
+
+    private var planRows: [DashboardAgentPlanRow] {
+        DashboardAgentPlanRow.rows(
+            limits: liveLimits,
+            staleClients: staleLimitClients,
+            planClients: dashboard.planClients,
+            usage: glanceUsageByClient
+        )
     }
 
     var body: some View {
         ScrollBox {
-            VStack(alignment: .leading, spacing: Space.m) {
+            VStack(alignment: .leading, spacing: Space.l) {
+                DashboardShiftBriefHeader(
+                    attentionCount: dashboard.attention?.total,
+                    attentionUnavailable: dashboard.attentionError != nil
+                )
+
                 splitRow {
-                    RecentWorkCard(
-                        items: recentWork,
-                        totalCount: dashboard.totalReceiptTasks ?? dashboard.receiptTasks.count
+                    DashboardAttentionBriefCard(
+                        payload: dashboard.attention,
+                        error: dashboard.attentionError
                     ) { destination in
                         selection.open(destination)
                     }
                 } right: {
-                    NeedsReviewCard(items: attentionItems) { destination in
+                    DashboardSignalRail(
+                        sessions: recentSessions,
+                        planRows: planRows,
+                        availability: glanceAvailability,
+                        ingestion: dashboard.ingestion,
+                        ingestionError: dashboard.ingestionError
+                    ) { destination in
                         selection.open(destination)
                     }
                 }
 
-                splitRow {
-                    ActiveWorkCard(sessions: recentSessions) { destination in
-                        selection.open(destination)
-                    }
-                } right: {
-                    PlanAndUsageCard(
-                        rows: DashboardAgentPlanRow.rows(
-                            limits: liveLimits,
-                            staleClients: staleLimitClients,
-                            planClients: dashboard.planClients,
-                            usage: glanceUsageByClient
-                        ),
-                        today: todayUsage,
-                        onViewLimits: { selection.open(.limits) }
-                    )
+                RecentWorkCard(
+                    items: recentWork,
+                    totalCount: dashboard.totalReceiptTasks ?? dashboard.receiptTasks.count
+                ) { destination in
+                    selection.open(destination)
                 }
 
                 if let periods = dashboard.usage?.byPeriod, periods.count > 1 {
@@ -273,16 +318,13 @@ struct DashboardPane: View {
         @ViewBuilder right: () -> Right
     ) -> some View {
         ViewThatFits(in: .horizontal) {
-            DashboardSplitLayout(leftFraction: 7 / 12, spacing: Space.m) {
+            DashboardSplitLayout(leftFraction: 8 / 12, spacing: Space.l) {
                 left()
                 right()
             }
-            // The 960 pt minimum window leaves roughly 920 pt after canvas
-            // padding; stack there rather than squeezing the evidence columns.
-            // The standard 1120 pt review window still uses the split grid.
-            .frame(minWidth: 1_000)
+            .frame(minWidth: 820)
 
-            VStack(spacing: Space.m) {
+            VStack(spacing: Space.l) {
                 left()
                 right()
             }
@@ -333,6 +375,435 @@ private struct DashboardSplitLayout: Layout {
             at: CGPoint(x: bounds.minX + leftWidth + spacing, y: bounds.minY),
             proposal: .init(width: rightWidth, height: bounds.height)
         )
+    }
+}
+
+private struct DashboardShiftBriefHeader: View {
+    let attentionCount: Int?
+    let attentionUnavailable: Bool
+
+    private var stateText: String {
+        if attentionUnavailable { return "Review status unavailable" }
+        guard let attentionCount else { return "Checking recorded work" }
+        if attentionCount == 0 { return "No recorded review items" }
+        return "\(attentionCount) review item\(attentionCount == 1 ? "" : "s")"
+    }
+
+    var body: some View {
+        HStack(alignment: .lastTextBaseline, spacing: Space.xl) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("SHIFT BRIEF")
+                    .font(Type.labelCaps)
+                    .tracking(Type.labelCapsTracking)
+                    .foregroundStyle(Theme.accent)
+                Text("Your next decision, grounded in receipts.")
+                    .font(Type.titlePage)
+                    .tracking(Type.titlePageTracking)
+                    .foregroundStyle(Theme.ink)
+            }
+            Spacer(minLength: Space.m)
+            Text(stateText)
+                .font(Type.dataSmall)
+                .foregroundStyle(attentionUnavailable ? Theme.amber : Theme.muted)
+                .multilineTextAlignment(.trailing)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("dashboard.shift-brief.header")
+    }
+}
+
+private struct DashboardAttentionBriefCard: View {
+    let payload: V1AttentionPayload?
+    let error: String?
+    let open: (DashboardDestination) -> Void
+
+    private var presentation: DashboardAttentionPresentation {
+        DashboardAttentionPresentation(payload: payload, error: error)
+    }
+
+    private var tint: Color {
+        switch presentation {
+        case .focus(let focus, _): return focus.reasonKind == "blocker" ? Theme.amber : Theme.coral
+        case .clear: return Theme.green
+        case .loading: return Theme.muted
+        case .unavailable, .inconsistent: return Theme.amber
+        }
+    }
+
+    var body: some View {
+        Card(padding: 0, fillsHeight: true) {
+            HStack(spacing: 0) {
+                Rectangle()
+                    .fill(tint)
+                    .frame(width: 5)
+                    .accessibilityHidden(true)
+                content
+                    .padding(Space.xl)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+        }
+        .accessibilityIdentifier("dashboard.shift-brief.attention")
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch presentation {
+        case .clear:
+            DashboardBriefEmptyState()
+        case .focus(let focus, let total):
+            focusContent(total: total, focus: focus)
+        case .inconsistent:
+            DashboardBriefUnavailableState(
+                title: "Attention details unavailable",
+                message: "The review count loaded, but its leading recorded reason did not. Refresh before acting."
+            )
+        case .unavailable(let error):
+            DashboardBriefUnavailableState(
+                title: "Review status unavailable",
+                message: error
+            )
+        case .loading:
+            HStack(spacing: Space.m) {
+                ProgressView().controlSize(.small).tint(Theme.muted)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Checking recorded work…")
+                        .font(Type.titleSection)
+                        .foregroundStyle(Theme.ink)
+                    Text("Loading the complete review projection; no clear-state claim is shown yet.")
+                        .font(Type.body)
+                        .foregroundStyle(Theme.muted)
+                }
+            }
+            .frame(maxHeight: .infinity, alignment: .center)
+        }
+    }
+
+    private func focusContent(total: Int, focus: DashboardAttentionItem) -> some View {
+        VStack(alignment: .leading, spacing: Space.l) {
+            HStack(spacing: Space.s) {
+                Text("PRIMARY ATTENTION")
+                    .font(Type.labelCaps)
+                    .tracking(Type.labelCapsTracking)
+                    .foregroundStyle(tint)
+                Text("1 OF \(total)")
+                    .font(Type.dataSmallSemibold)
+                    .foregroundStyle(Theme.muted)
+                    .padding(.horizontal, 7)
+                    .frame(minHeight: 21)
+                    .background(Theme.tintNeutral, in: Capsule())
+                Spacer(minLength: Space.s)
+                if total > 1 {
+                    Button("View queue") { open(.reviewQueue) }
+                        .font(Type.captionSemibold)
+                        .foregroundStyle(Theme.accent)
+                        .buttonStyle(QuietButtonStyle())
+                        .accessibilityIdentifier("dashboard.shift-brief.view-queue")
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text(focus.title)
+                    .font(Type.titleSection)
+                    .tracking(Type.titleSectionTracking)
+                    .foregroundStyle(Theme.ink)
+                    .lineLimit(2)
+                let context = [focus.project, focus.client].compactMap { $0 }
+                if !context.isEmpty {
+                    Text(context.joined(separator: " · "))
+                        .font(Type.dataSmall)
+                        .foregroundStyle(Theme.muted)
+                }
+                Text(focus.summary)
+                    .font(Type.body)
+                    .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            DashboardProofline(focus: focus)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("RECORDED NEXT STEP")
+                    .font(Type.labelCaps)
+                    .tracking(Type.labelCapsTracking)
+                    .foregroundStyle(Theme.muted)
+                Text(focus.nextStep ?? "No next step recorded.")
+                    .font(Type.body)
+                    .foregroundStyle(focus.nextStep == nil ? Theme.muted : Theme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(Space.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
+
+            Button {
+                open(.task(focus.id))
+            } label: {
+                Label("Review evidence", systemImage: "doc.text.magnifyingglass")
+                    .font(Type.captionSemibold)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.accent)
+            .accessibilityHint("Opens this task in Work")
+            .accessibilityIdentifier("dashboard.shift-brief.review-evidence")
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+private struct DashboardProofline: View {
+    let focus: DashboardAttentionItem
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 0) {
+                fact(label: "RECORDED REASON", value: focus.reasonLabel)
+                proofRule
+                fact(label: "OBSERVED", value: focus.recency ?? "Time unavailable")
+                proofRule
+                fact(label: "PROVENANCE", value: focus.sourceLabel ?? "Source unavailable")
+            }
+            VStack(alignment: .leading, spacing: Space.s) {
+                fact(label: "RECORDED REASON", value: focus.reasonLabel)
+                fact(label: "OBSERVED", value: focus.recency ?? "Time unavailable")
+                fact(label: "PROVENANCE", value: focus.sourceLabel ?? "Source unavailable")
+            }
+        }
+        .padding(.vertical, Space.s)
+        .overlay(alignment: .top) { Divider().overlay(Theme.hairline) }
+        .overlay(alignment: .bottom) { Divider().overlay(Theme.hairline) }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "Recorded reason: \(focus.reasonLabel). Observed: \(focus.recency ?? "time unavailable"). Provenance: \(focus.sourceLabel ?? "unavailable")."
+        )
+    }
+
+    private func fact(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(Type.labelCaps)
+                .tracking(Type.labelCapsTracking)
+                .foregroundStyle(Theme.muted)
+            Text(value)
+                .font(Type.dataSmallSemibold)
+                .foregroundStyle(Theme.ink)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var proofRule: some View {
+        Rectangle().fill(Theme.hairline).frame(width: 1, height: 35).padding(.horizontal, Space.m)
+    }
+}
+
+private struct DashboardBriefEmptyState: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.l) {
+            HStack(spacing: Space.s) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(Theme.green)
+                Text("COMPLETE REVIEW PROJECTION")
+                    .font(Type.labelCaps)
+                    .tracking(Type.labelCapsTracking)
+                    .foregroundStyle(Theme.green)
+            }
+            Text("No recorded work needs review.")
+                .font(Type.titleSection)
+                .tracking(Type.titleSectionTracking)
+                .foregroundStyle(Theme.ink)
+            Text("No current failed check, failed step, or unresolved blocker was found across the complete attention projection.")
+                .font(Type.body)
+                .foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+private struct DashboardBriefUnavailableState: View {
+    let title: String
+    let message: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.l) {
+            Image(systemName: "questionmark.diamond.fill")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(Theme.amber)
+            Text(title)
+                .font(Type.titleSection)
+                .tracking(Type.titleSectionTracking)
+                .foregroundStyle(Theme.ink)
+            Text(message)
+                .font(Type.body)
+                .foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+private struct DashboardSignalRail: View {
+    let sessions: [RecentSession]
+    let planRows: [DashboardAgentPlanRow]
+    let availability: DashboardSignalAvailability
+    let ingestion: V1IngestionSnapshot?
+    let ingestionError: String?
+    let open: (DashboardDestination) -> Void
+
+    private var capacity: DashboardAgentPlanRow? {
+        planRows.max { ($0.usedPercent ?? -1) < ($1.usedPercent ?? -1) }
+    }
+
+    var body: some View {
+        Card(padding: 0, fillsHeight: true) {
+            VStack(spacing: 0) {
+                DashboardCardHeader("Signal rail")
+                Divider().overlay(Theme.hairline)
+                DashboardSignalRow(
+                    eyebrow: "WORKING NOW",
+                    title: activeTitle,
+                    detail: activeDetail,
+                    tint: sessions.isEmpty ? Theme.muted : Theme.accent,
+                    action: { open(.work) }
+                )
+                Divider().overlay(Theme.hairline).padding(.leading, Space.l)
+                DashboardSignalRow(
+                    eyebrow: "CAPACITY",
+                    title: capacityTitle,
+                    detail: capacityDetail,
+                    tint: capacityTint,
+                    action: { open(.limits) }
+                )
+                Divider().overlay(Theme.hairline).padding(.leading, Space.l)
+                DashboardSignalRow(
+                    eyebrow: "EVIDENCE TRUST",
+                    title: ingestionTitle,
+                    detail: ingestionDetail,
+                    tint: ingestionTint,
+                    action: { open(.sources) }
+                )
+            }
+        }
+        .accessibilityIdentifier("dashboard.shift-brief.signal-rail")
+    }
+
+    private var activeTitle: String {
+        switch availability {
+        case .loading: return "Checking active work"
+        case .unavailable: return "Active work unavailable"
+        case .connected: break
+        }
+        guard !sessions.isEmpty else { return "No active work" }
+        return "\(sessions.count) active session\(sessions.count == 1 ? "" : "s")"
+    }
+
+    private var activeDetail: String {
+        switch availability {
+        case .loading: return "Waiting for the local glance projection."
+        case .unavailable(let message): return message
+        case .connected: break
+        }
+        guard let session = sessions.first else { return "Recorded agent activity will appear here." }
+        return session.title ?? "\(session.client) · \(session.shortSessionId)"
+    }
+
+    private var capacityTitle: String {
+        switch availability {
+        case .loading: return "Checking provider limits"
+        case .unavailable: return "Live allowance unavailable"
+        case .connected: break
+        }
+        guard let capacity else { return "No live allowance" }
+        guard let used = capacity.usedPercent else { return capacity.client }
+        return "\(capacity.client) · \(Int(used.rounded()))% used"
+    }
+
+    private var capacityDetail: String {
+        switch availability {
+        case .loading: return "Waiting for the local glance projection."
+        case .unavailable(let message): return message
+        case .connected: break
+        }
+        return capacity?.detailText ?? "Open Usage for recorded volume and provider limits."
+    }
+
+    private var capacityTint: Color {
+        guard case .connected = availability else { return Theme.muted }
+        guard let used = capacity?.usedPercent else { return Theme.muted }
+        return Theme.limitColor(usedPercent: used)
+    }
+
+    private var ingestionTitle: String {
+        if ingestion?.state == "healthy" { return "Sources healthy" }
+        if let state = ingestion?.state, !state.isEmpty {
+            return state.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+        return "Source status unavailable"
+    }
+
+    private var ingestionDetail: String {
+        if let issueCount = ingestion?.issues?.count, issueCount > 0 {
+            return "\(issueCount) recorded issue\(issueCount == 1 ? "" : "s") · inspect Sources"
+        }
+        if let last = agoText(ingestion?.lastSuccessAt) { return "Last successful ingest \(last)" }
+        return ingestionError ?? "Open Sources for the current ingestion record."
+    }
+
+    private var ingestionTint: Color {
+        if ingestion?.state == "healthy" { return Theme.green }
+        return ingestion == nil ? Theme.muted : Theme.amber
+    }
+}
+
+enum DashboardSignalAvailability: Equatable {
+    case connected
+    case loading
+    case unavailable(String)
+}
+
+private struct DashboardSignalRow: View {
+    let eyebrow: String
+    let title: String
+    let detail: String
+    let tint: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: Space.m) {
+                RoundedRectangle(cornerRadius: 1, style: .continuous)
+                    .fill(tint)
+                    .frame(width: 3, height: 30)
+                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(eyebrow)
+                        .font(Type.labelCaps)
+                        .tracking(Type.labelCapsTracking)
+                        .foregroundStyle(Theme.muted)
+                    Text(title)
+                        .font(Type.rowLabel)
+                        .foregroundStyle(Theme.ink)
+                        .lineLimit(1)
+                    Text(detail)
+                        .font(Type.caption)
+                        .foregroundStyle(Theme.muted)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: Space.s)
+                DashboardDisclosureIndicator().padding(.top, 18)
+            }
+            .padding(.horizontal, Space.l)
+            .padding(.vertical, Space.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(DashboardRowButtonStyle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(eyebrow), \(title), \(detail)")
+        .accessibilityHint("Opens the related detail")
+        .accessibilityIdentifier("dashboard.signal.\(eyebrow.lowercased().replacingOccurrences(of: " ", with: "-"))")
     }
 }
 
@@ -492,137 +963,9 @@ private struct RecentWorkRow: View {
     }
 }
 
-private struct NeedsReviewCard: View {
-    let items: [DashboardWorkItem]
-    let open: (DashboardDestination) -> Void
-
-    private var visibleItems: [DashboardWorkItem] { Array(items.prefix(2)) }
-
-    var body: some View {
-        Card(padding: 0, fillsHeight: true) {
-            VStack(spacing: 0) {
-                DashboardCardHeader("Needs review", count: items.count) {
-                    if items.count > visibleItems.count {
-                        Button { open(.work) } label: {
-                            Text("View all").font(Type.captionSemibold)
-                        }
-                        .foregroundStyle(Theme.accent)
-                        .buttonStyle(QuietButtonStyle())
-                        .accessibilityIdentifier("dashboard.review.view-all")
-                    }
-                }
-                Divider().overlay(Theme.hairline)
-
-                if visibleItems.isEmpty {
-                    DashboardEmptyState(
-                        icon: "checkmark.circle.fill",
-                        title: "All clear",
-                        message: "No blocked work or failed checks."
-                    )
-                    .frame(minHeight: 222)
-                } else {
-                    ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
-                        DashboardAttentionRow(item: item) { open(.task(item.id)) }
-                        if index < visibleItems.count - 1 {
-                            Divider().overlay(Theme.hairline.opacity(0.72))
-                        }
-                    }
-                    Spacer(minLength: 0)
-                }
-            }
-        }
-    }
-}
-
-private struct DashboardAttentionRow: View {
-    let item: DashboardWorkItem
-    let action: () -> Void
-
-    private var tint: Color { item.hasFinding ? Theme.coral : Theme.amber }
-    private var icon: String { item.hasFinding ? "xmark.circle.fill" : "hand.raised.circle.fill" }
-    private var status: String {
-        if item.failedChecks > 0 {
-            return "Open finding · \(item.failedChecks) failed check\(item.failedChecks == 1 ? "" : "s")"
-        }
-        return [item.outcome, item.outcomeSource].compactMap { $0 }.joined(separator: " · ")
-    }
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: Space.m) {
-                Image(systemName: icon)
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(tint)
-                    .frame(width: 24, height: 24)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(item.title)
-                        .font(Type.rowLabel)
-                        .foregroundStyle(Theme.ink)
-                        .lineLimit(2)
-                    Text(status)
-                        .font(Type.caption)
-                        .foregroundStyle(tint)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: Space.s)
-                DashboardDisclosureIndicator()
-            }
-            .padding(.horizontal, Space.l)
-            .frame(minHeight: 95)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(DashboardRowButtonStyle())
-        .accessibilityLabel("\(item.title), \(status)")
-        .accessibilityHint("Opens this task in Work")
-        .accessibilityIdentifier("dashboard.review.task.\(item.id)")
-    }
-}
-
-private struct ActiveWorkCard: View {
-    let sessions: [RecentSession]
-    let open: (DashboardDestination) -> Void
-
-    var body: some View {
-        Card(padding: 0, fillsHeight: true) {
-            VStack(spacing: 0) {
-                DashboardCardHeader("Active work", count: sessions.count) {
-                    Button { open(.work) } label: {
-                        Text("View all").font(Type.captionSemibold)
-                    }
-                    .foregroundStyle(Theme.accent)
-                    .buttonStyle(QuietButtonStyle())
-                    .accessibilityIdentifier("dashboard.active-work.view-all")
-                }
-                Divider().overlay(Theme.hairline)
-                if sessions.isEmpty {
-                    DashboardEmptyState(
-                        icon: "pause.circle",
-                        title: "No active work",
-                        message: "Current agent activity will appear here."
-                    )
-                    .frame(minHeight: 104)
-                } else {
-                    ForEach(Array(sessions.prefix(2).enumerated()), id: \.offset) { index, session in
-                        DashboardSessionRow(session: session) {
-                            open(.session("\(session.client)::\(session.sessionId)"))
-                        }
-                        if index < min(sessions.count, 2) - 1 {
-                            Divider().overlay(Theme.hairline.opacity(0.72)).padding(.leading, 36)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Per-agent presentation for the Plan and usage card. Every recording agent
-/// gets a row stating only what IT can prove: a meter only from a
-/// provider-reported 7-day percent, the hatched track (and words) when a
-/// client reports no limit, a calibrating chip only while a plan fit is
-/// genuinely pending, and the 7-day volume/cost from the glance cube. The old
-/// card elected a single "least headroom" account, which read as favoritism —
-/// The merged Usage surface remains the full per-window destination.
+/// Per-agent capacity context for the signal rail. The union retains every
+/// recording client so missing or stale limits remain named; the rail may then
+/// select the least-headroom live provider reading without inventing one.
 struct DashboardAgentPlanRow: Equatable, Identifiable {
     let client: String
     let planType: String?
@@ -635,9 +978,7 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
 
     var id: String { client }
 
-    /// The row's full sentence for hover/accessibility: the caption, the
-    /// provenance (the caption itself stays short — the card footer states
-    /// provenance once for every meter), and the reset time when reported.
+    /// Full capacity sentence: window, provenance, and reset when reported.
     var detailText: String {
         var parts = [meterCaption]
         if usedPercent != nil { parts.append("provider reported") }
@@ -657,9 +998,8 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
         let window = (limit?.windows ?? []).first { $0.kind == "7d" }
         self.usedPercent = window?.usedPercent
         if let used = window?.usedPercent {
-            // Short and window-anchored; provenance + reset time ride
-            // hover/accessibility and the card footer (a truncated caption
-            // would silently drop words).
+            // Short and window-anchored; provenance + reset time remain in the
+            // signal detail sentence.
             meterCaption = String(format: "%.0f%% of 7-day limit", used)
             resetText = Theme.resetsIn(window?.resetsAt).map { "resets in \($0)" }
         } else if limit != nil {
@@ -676,9 +1016,8 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
         self.calibrating = plan?.calibrationState == "calibrating"
         self.calibratingDetail = plan?.stateDetail
         if let usage {
-            // "7d ·" anchors the figures to the card's window (the Usage
-            // pane's picker never moves these rows); the footer names the
-            // fresh-token basis.
+            // "7d ·" anchors figures to the fixed signal-rail window; Usage
+            // remains the full range-aware destination.
             let cost = usage.costText ?? "unpriced"
             let tokens = usage.freshTokens.map { UsageTotals.compact($0) }
             usageText = "7d · " + ([cost] + (tokens.map { [$0] } ?? [])).joined(separator: " · ")
@@ -687,7 +1026,7 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
         }
     }
 
-    /// Row set for the card: every non-stale limit client ∪ every client with
+    /// Signal input set: every non-stale limit client ∪ every client with
     /// 7-day usage. Limit clients first (most-used first, so the least
     /// headroom still leads), then usage-only clients in the cube's own
     /// volume order. One row per client — a second org's entry for the same
@@ -736,112 +1075,6 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
                 usage: usageMap[client]
             )
         }
-    }
-}
-
-private struct PlanAndUsageCard: View {
-    let rows: [DashboardAgentPlanRow]
-    let today: UsageTotals?
-    let onViewLimits: () -> Void
-
-    var body: some View {
-        Card(padding: 0, fillsHeight: true) {
-            VStack(spacing: 0) {
-                DashboardCardHeader("Plan and usage", count: rows.count > 1 ? rows.count : nil) {
-                    Button(action: onViewLimits) {
-                        Text("View usage & limits").font(Type.captionSemibold)
-                    }
-                    .foregroundStyle(Theme.accent)
-                    .buttonStyle(QuietButtonStyle())
-                    .accessibilityIdentifier("dashboard.plan.view-limits")
-                }
-                Divider().overlay(Theme.hairline)
-                if rows.isEmpty {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("No live provider data")
-                            .font(Type.rowLabel).foregroundStyle(Theme.muted)
-                        Text("Agent rows appear once usage or a provider limit is recorded.")
-                            .font(Type.caption).foregroundStyle(Theme.muted)
-                    }
-                    .padding(Space.l)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                        if index > 0 {
-                            Rectangle().fill(Theme.hairline).frame(height: 1)
-                                .padding(.horizontal, Space.l)
-                        }
-                        AgentPlanRowView(row: row)
-                    }
-                }
-                Spacer(minLength: 0)
-                Divider().overlay(Theme.hairline)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Today · all agents")
-                        .font(Type.caption)
-                        .foregroundStyle(Theme.muted)
-                    Text("\(today?.costText ?? "—") · \(today?.tokensText ?? "—")")
-                        .font(Face.monoFont(14, .semibold))
-                        .foregroundStyle(Theme.ink)
-                    Text("Pricing estimate · fresh tokens client-reported · meters provider-reported")
-                        .font(Type.caption)
-                        .foregroundStyle(Theme.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.horizontal, Space.l)
-                .padding(.vertical, Space.m)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-    }
-}
-
-private struct AgentPlanRowView: View {
-    let row: DashboardAgentPlanRow
-
-    var body: some View {
-        HStack(alignment: .center, spacing: Space.l) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(row.client)
-                        .font(Type.rowLabel).foregroundStyle(Theme.ink)
-                        .lineLimit(1)
-                    if let plan = row.planType {
-                        Chip(text: plan, tint: Theme.muted)
-                    }
-                    if row.calibrating {
-                        Chip(text: "calibrating", tint: Theme.amber)
-                            .fixedSize()
-                            .help(row.calibratingDetail
-                                  ?? "Weekly plan % is still calibrating for this client — see Usage")
-                    }
-                }
-                Text(row.meterCaption)
-                    .font(Type.caption).foregroundStyle(Theme.muted)
-                    .lineLimit(1).truncationMode(.tail)
-                    .help(row.detailText)
-            }
-            Spacer(minLength: Space.m)
-            VStack(alignment: .trailing, spacing: 4) {
-                Group {
-                    if let used = row.usedPercent {
-                        LimitMeter(usedPercent: used)
-                    } else {
-                        HatchedTrack()
-                    }
-                }
-                .frame(width: 108)
-                // 7-day volume with the cost grammar; absence stays named.
-                Text(row.usageText ?? "no usage this week")
-                    .font(Type.dataSmall)
-                    .foregroundStyle(row.usageText == nil ? Theme.muted : Theme.ink)
-                    .lineLimit(1)
-            }
-        }
-        .padding(.horizontal, Space.l)
-        .padding(.vertical, 10)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("dashboard.plan.agent.\(row.client)")
     }
 }
 
@@ -1087,48 +1320,6 @@ private struct DashboardChartBarStyle: ButtonStyle {
                         .strokeBorder(Theme.accent.opacity(0.55), lineWidth: Metrics.borderW)
                 }
             }
-    }
-}
-
-private struct DashboardSessionRow: View {
-    let session: RecentSession
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                RoundedRectangle(cornerRadius: 1)
-                .fill(Theme.statusColor(session.status))
-                .frame(width: 3, height: 14)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(session.title ?? "\(session.client) · \(session.shortSessionId)")
-                        .font(Type.rowLabel)
-                        .foregroundStyle(Theme.ink)
-                        .lineLimit(1)
-                    Text([Optional(session.client), session.status.map(statusLabel), agoText(session.lastActivityAt)]
-                        .compactMap { $0 }
-                        .joined(separator: " · "))
-                        .font(Type.caption)
-                        .foregroundStyle(Theme.muted)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                DashboardDisclosureIndicator()
-            }
-            .padding(.horizontal, Space.l)
-            .frame(minHeight: 66)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(DashboardRowButtonStyle())
-        .accessibilityLabel(
-            "\(session.title ?? session.shortSessionId), \(session.client), \(session.status ?? "status unavailable")"
-        )
-        .accessibilityHint("Opens this work session")
-        .accessibilityIdentifier("dashboard.active-work.session.\(session.sessionId)")
-    }
-
-    private func statusLabel(_ status: String) -> String {
-        status.replacingOccurrences(of: "_", with: " ")
     }
 }
 

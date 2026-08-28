@@ -410,9 +410,56 @@ struct ReceiptTasksPayload: Decodable {
     let truncated: Bool?
 }
 
+/// Complete, bounded review queue from `/v1/attention`. Unlike `/v1/tasks`,
+/// `total` and `counts` classify every visible Task before `items` is limited,
+/// so a client can make an honest empty or aggregate claim without scanning a
+/// recent-work page locally.
+struct V1AttentionPayload: Decodable {
+    let schema: String
+    let items: [ReceiptSummary]
+    let total: Int
+    let counts: V1AttentionCounts
+    let limit: Int
+    let truncated: Bool
+}
+
+struct V1AttentionCounts: Decodable {
+    let failedCheck: Int
+    let failedStep: Int
+    let blocker: Int
+
+    enum CodingKeys: String, CodingKey {
+        case failedCheck = "failed_check"
+        case failedStep = "failed_step"
+        case blocker
+    }
+}
+
+/// The server-selected leading reason for one attention Task. The summary and
+/// next step are recorded evidence; a missing `next_step` deliberately remains
+/// nil so the UI cannot turn a generic suggestion into an agent claim.
+struct ReceiptAttention: Decodable {
+    let kind: String
+    let summary: String
+    let nextStep: String?
+    let observedAt: Double?
+    let source: String?
+
+    enum CodingKeys: String, CodingKey {
+        case kind, summary, source
+        case nextStep = "next_step"
+        case observedAt = "observed_at"
+    }
+}
+
 struct ReceiptSummary: Decodable, Identifiable {
     let taskId: String
     let title: String?
+    /// Present on the attention projection; optional for older `/v1/tasks`
+    /// payloads and older daemons.
+    let project: String?
+    /// Present only on `/v1/attention` rows.
+    let attention: ReceiptAttention?
     let decisionStatus: ReceiptDecision
     let evidenceStrength: ReceiptEvidence
     let cost: ReceiptCost
@@ -427,7 +474,7 @@ struct ReceiptSummary: Decodable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case taskId = "task_id"
-        case title
+        case title, project, attention
         case decisionStatus = "decision_status"
         case evidenceStrength = "evidence_strength"
         case cost

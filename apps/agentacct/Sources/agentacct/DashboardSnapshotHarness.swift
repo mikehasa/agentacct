@@ -7,17 +7,20 @@ import SwiftUI
 struct DashboardSnapshotFixture: Decodable {
     static let supportedPlanSchema = "agentacct.plan.v1"
     static let supportedTasksSchema = "agentacct.receipt.v1"
+    static let supportedAttentionSchema = "agentacct.v1-attention.v1"
 
     let daemonVersion: String
     let glance: Glance
     let menuSparseGlance: Glance?
     let plan: V1PlanPayload
+    let attention: V1AttentionPayload
+    let ingestion: V1IngestionPayload?
     let tasks: ReceiptTasksPayload
     let usage: UsageSummary
     let work: WorkSnapshotFixture?
 
     enum CodingKeys: String, CodingKey {
-        case glance, plan, tasks, usage, work
+        case glance, plan, attention, ingestion, tasks, usage, work
         case menuSparseGlance = "menu_sparse_glance"
         case daemonVersion = "daemon_version"
     }
@@ -56,6 +59,13 @@ struct DashboardSnapshotFixture: Decodable {
                 payload: "tasks",
                 actual: fixture.tasks.schema,
                 expected: supportedTasksSchema
+            )
+        }
+        guard fixture.attention.schema == supportedAttentionSchema else {
+            throw SnapshotError.unsupportedSchema(
+                payload: "attention",
+                actual: fixture.attention.schema,
+                expected: supportedAttentionSchema
             )
         }
         if let work = fixture.work {
@@ -133,9 +143,9 @@ struct DashboardSnapshotConfiguration {
     static let reviewConfigurations: [Self] = [
         Self(viewport: "minimum", width: 960, height: 560, colorScheme: .light),
         Self(viewport: "minimum", width: 960, height: 560, colorScheme: .dark),
-        // The reference viewport must show the complete dashboard, including
-        // chart labels. The shorter minimum pair intentionally verifies the
-        // real top-of-scroll experience instead.
+        // The reference viewport verifies the full decision brief and work
+        // ledger at the standard window size; usage history remains the next
+        // scroll region (its chart has a dedicated interactive test surface).
         Self(viewport: "reference", width: 1120, height: 800, colorScheme: .light),
         Self(viewport: "reference", width: 1120, height: 800, colorScheme: .dark),
     ]

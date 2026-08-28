@@ -27,6 +27,10 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
 
         XCTAssertEqual(store.receiptTasks.count, 4)
         XCTAssertEqual(store.totalReceiptTasks, 4)
+        XCTAssertEqual(store.attention?.total, 2)
+        XCTAssertEqual(store.attention?.counts.failedCheck, 1)
+        XCTAssertEqual(store.attention?.counts.blocker, 1)
+        XCTAssertEqual(store.ingestion?.state, "healthy")
         // Two plan lanes + two limit clients: the fixture demos the
         // multi-agent Plan and usage card (codex metered + claude-code
         // metered/calibrating), plus a usage-only hermes row.
@@ -113,6 +117,7 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         let schemas = [
             (payload: "glance", supported: GlanceClient.supportedGlanceSchema),
             (payload: "plan", supported: DashboardSnapshotFixture.supportedPlanSchema),
+            (payload: "attention", supported: DashboardSnapshotFixture.supportedAttentionSchema),
             (payload: "tasks", supported: DashboardSnapshotFixture.supportedTasksSchema),
         ]
 

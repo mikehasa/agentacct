@@ -24,6 +24,9 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var usage: UsageSummary?
     @Published private(set) var receiptTasks: [ReceiptSummary] = []
     @Published private(set) var totalReceiptTasks: Int?
+    /// Complete review classification plus a bounded operational queue.
+    @Published private(set) var attention: V1AttentionPayload?
+    @Published private(set) var attentionError: String?
     @Published private(set) var receipt: Receipt?
     @Published private(set) var receiptListError: String?
     @Published private(set) var receiptError: String?
@@ -64,6 +67,8 @@ final class DashboardStore: ObservableObject {
     ) {
         planClients = fixture.plan.clients
         usage = fixture.usage
+        attention = fixture.attention
+        ingestion = fixture.ingestion?.ingestion
         switch workState {
         case .populated:
             receiptTasks = fixture.tasks.tasks
@@ -102,6 +107,7 @@ final class DashboardStore: ObservableObject {
         // its own state so a successful range request cannot hide a stale Task
         // list (or vice versa).
         async let tasksRequest: ReceiptTasksPayload = client.getAuthed("/v1/tasks?limit=200")
+        async let attentionRequest: V1AttentionPayload = client.getAuthed("/v1/attention?limit=5")
         async let planRequest: V1PlanPayload = client.getAuthed("/v1/plan?days=\(days)")
         async let usageRequest: UsageSummary = client.getLocal("/usage/summary?days=\(days)")
         async let ingestionRequest: V1IngestionPayload = client.getAuthed("/v1/ingestion")
@@ -117,6 +123,21 @@ final class DashboardStore: ObservableObject {
             receiptListError = "daemon not running (no discovery file) — start it with `agentacct start`"
         } catch {
             receiptListError = "receipts fetch failed: \(error.localizedDescription)"
+        }
+
+        do {
+            attention = try await attentionRequest
+            attentionError = nil
+        } catch GlanceClientError.http(404) {
+            // A pre-attention daemon cannot support a complete review claim.
+            attention = nil
+            attentionError = "this daemon predates /v1/attention"
+        } catch GlanceClientError.noDiscovery(_) {
+            attention = nil
+            attentionError = "daemon not running (no discovery file) — start it with `agentacct start`"
+        } catch {
+            attention = nil
+            attentionError = "attention fetch failed: \(error.localizedDescription)"
         }
 
         do {
@@ -161,6 +182,25 @@ final class DashboardStore: ObservableObject {
             receiptListError = "daemon not running (no discovery file) — start it with `agentacct start`"
         } catch {
             receiptListError = "receipts fetch failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Refresh the complete attention classification independently of the
+    /// paginated Receipt list. Used after a human disposition changes whether
+    /// a finding or blocker still demands review.
+    func fetchAttention() async {
+        do {
+            attention = try await client.getAuthed("/v1/attention?limit=5")
+            attentionError = nil
+        } catch GlanceClientError.http(404) {
+            attention = nil
+            attentionError = "this daemon predates /v1/attention"
+        } catch GlanceClientError.noDiscovery(_) {
+            attention = nil
+            attentionError = "daemon not running (no discovery file) — start it with `agentacct start`"
+        } catch {
+            attention = nil
+            attentionError = "attention fetch failed: \(error.localizedDescription)"
         }
     }
 
@@ -244,12 +284,14 @@ final class DashboardStore: ObservableObject {
             // re-offering the stale one forever, then surface the error.
             if let refreshTaskId { await fetchReceipt(taskId: refreshTaskId) }
             await fetchReceipts()
+            await fetchAttention()
             throw error
         }
         if let refreshTaskId {
             await fetchReceipt(taskId: refreshTaskId)
         }
         await fetchReceipts()
+        await fetchAttention()
     }
 
     /// Preload one session's deep view into `preloadedSessions` (snapshot support).
@@ -303,6 +345,9 @@ final class AppSelection: ObservableObject {
     /// so opening a record — which unmounts the table — never resets it, and
     /// the record-mode rail stays on the same order as the table.
     @Published var workSort: WorkSort = .latest
+    /// Shared lifecycle filter so a dashboard review-queue deep link survives
+    /// the Work table being mounted and later round-tripped through a Receipt.
+    @Published var workGroup: WorkGroup?
 
     /// Dashboard actions replace stale deep links before changing panes. This
     /// keeps a previous Task or session from overriding the control the user
@@ -312,6 +357,13 @@ final class AppSelection: ObservableObject {
         case .work:
             taskId = nil
             sessionId = nil
+            workGroup = nil
+            pane = .work
+        case .reviewQueue:
+            taskId = nil
+            sessionId = nil
+            workGroup = .attention
+            workSort = .attention
             pane = .work
         case .task(let id):
             taskId = id
@@ -325,15 +377,21 @@ final class AppSelection: ObservableObject {
             taskId = nil
             sessionId = nil
             pane = .usage
+        case .sources:
+            taskId = nil
+            sessionId = nil
+            pane = .sources
         }
     }
 }
 
 enum DashboardDestination: Equatable {
     case work
+    case reviewQueue
     case task(String)
     case session(String)
     case limits
+    case sources
 }
 
 enum MainPane: String, CaseIterable, Identifiable {
