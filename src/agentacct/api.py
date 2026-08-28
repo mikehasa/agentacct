@@ -126,6 +126,7 @@ DASHBOARD_USAGE_LIMIT_SESSIONS = 500
 # history lives on /sessions.
 # The pinned Needs-attention strip shows the newest open findings/blockers; the
 # rest stay one click away so the strip can never bury the recent-activity feed.
+DASHBOARD_RECEIPT_ATTENTION_LIMIT = 2
 MECHANICAL_PROJECTION_LIMIT = 10_000
 # Conflict repair is a safety path for timestamp-only retry variants. Keep its
 # work globally bounded so a conflict-heavy store cannot turn one Work page
@@ -1176,6 +1177,74 @@ def _task_title(task: Mapping[str, Any]) -> str:
     project = str(primary_session.get("project") or "").strip() if isinstance(primary_session, Mapping) else ""
     client_label = _human_client(primary.get("client"))
     return f"{client_label} in {project}" if project else f"Untitled {client_label} chat"
+
+
+def _receipt_attention_priority(summary: Mapping[str, Any]) -> int | None:
+    """Dashboard review priority for one compact Receipt summary.
+
+    Open machine findings and recorded failures come before agent-reported
+    blockers. Human-resolved or superseded findings retain their failed-check
+    history without returning to the attention queue.
+    """
+
+    decision = summary.get("decision_status")
+    evidence = summary.get("evidence_strength")
+    decision_key = str(
+        decision.get("key") if isinstance(decision, Mapping) else ""
+    ).strip()
+    failed_checks = (
+        int(evidence.get("checks_failed") or 0)
+        if isinstance(evidence, Mapping)
+        else 0
+    )
+    settled_finding_keys = {"finding_superseded", "finding_resolved_by_user"}
+    has_finding = (
+        failed_checks > 0 and decision_key not in settled_finding_keys
+    ) or decision_key in {"finding", "failed"}
+    if has_finding:
+        return 0
+    if decision_key == "blocked":
+        return 1
+    return None
+
+
+def _dashboard_receipt_attention(
+    tasks: Sequence[Mapping[str, Any]],
+    *,
+    latest_store_activity_at: float | None,
+) -> dict[str, Any]:
+    """Exact all-store attention count plus a bounded Dashboard preview.
+
+    ``tasks`` is newest-first. Retaining at most two rows per priority class
+    keeps memory bounded while the full scan proves whether the queue is empty.
+    """
+
+    preview_by_priority: tuple[list[dict[str, Any]], list[dict[str, Any]]] = ([], [])
+    total = 0
+    for task in tasks:
+        row = build_receipt_summary(
+            task,
+            public_task_id=str(task.get("public_task_id")),
+            title=_task_title(task),
+            latest_store_activity_at=latest_store_activity_at,
+        )
+        priority = _receipt_attention_priority(row)
+        if priority is None:
+            continue
+        total += 1
+        bucket = preview_by_priority[priority]
+        if len(bucket) < DASHBOARD_RECEIPT_ATTENTION_LIMIT:
+            bucket.append(row)
+
+    preview = (preview_by_priority[0] + preview_by_priority[1])[
+        :DASHBOARD_RECEIPT_ATTENTION_LIMIT
+    ]
+    return {
+        "tasks": preview,
+        "total": total,
+        "limit": DASHBOARD_RECEIPT_ATTENTION_LIMIT,
+        "truncated": len(preview) < total,
+    }
 
 
 def _finding_form_token(secret: str, event: Mapping[str, Any]) -> str | None:
@@ -2981,6 +3050,15 @@ def create_local_api_app(
             # Weekly-plan shares ride the same cached projection: deterministic
             # from the same event log, so the cache key already covers them.
             _stamp_task_plan_shares(projection, events)
+            attention_tasks = _visible_tasks(projection)
+            attention_tasks.sort(
+                key=lambda task: float(task.get("last_activity_at") or 0.0),
+                reverse=True,
+            )
+            projection["_dashboard_receipt_attention"] = _dashboard_receipt_attention(
+                attention_tasks,
+                latest_store_activity_at=latest_store_activity(attention_tasks),
+            )
             v1_receipt_projection_cache["projection"] = (fingerprint, time.time(), projection)
             return projection
 
@@ -3001,7 +3079,8 @@ def create_local_api_app(
         (the two axes + cost + activity), newest first. A Task is the
         convergence of a root session with its continuations and subagents —
         the unit a Receipt is written for. Cheap under polling (cached
-        projection); the per-request work is a summary map + slice."""
+        projection); the complete attention count and bounded preview are built
+        once per cache refresh, while each request maps only its recent slice."""
 
         _require_v1_token(request)
         projection = _v1_task_projection()
@@ -3026,6 +3105,9 @@ def create_local_api_app(
             "offset": offset,
             "limit": limit,
             "truncated": offset + limit < total,
+            # Additive, exact across every visible Task, and preview-bounded.
+            # Unlike ``tasks``, this is never scoped to the recent page.
+            "attention": projection["_dashboard_receipt_attention"],
         }
 
     @app.get("/v1/receipt")

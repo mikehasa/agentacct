@@ -11,6 +11,7 @@ from agentacct.api import (
     _LEDGER_RUN_REPORT_LIMIT,
     _collect_service_run_reports,
     _dashboard_task_projection,
+    _receipt_attention_priority,
     _mechanical_projection_envelopes_for,
     _store_scope_and_label,
     build_mechanical_check_events,
@@ -248,6 +249,72 @@ def test_tasks_list_and_receipt_detail_for_an_observed_task(tmp_path: Path) -> N
     assert receipt["axes"]["decision_status"]["asserted_by"] in {"agent_report", "human", "machine", "none"}
     # cost_basis threads all the way to the wire.
     assert receipt["dimensions"]["cost"]["cost_basis"] == "pricing_table"
+
+
+def test_tasks_attention_summary_includes_actionable_work_beyond_recent_window(
+    tmp_path: Path,
+) -> None:
+    service = SentinelService(tmp_path)
+    for index in range(3):
+        session_id = f"older-blocked-{index}"
+        _record_usage(service, session_id=session_id, at=1.0 + index * 2)
+        _record_section(
+            service,
+            session_id=session_id,
+            section_id=f"blocked-section-{index}",
+            status="blocked",
+            at=2.0 + index * 2,
+        )
+    for index in range(200):
+        _record_usage(
+            service,
+            session_id=f"recent-{index}",
+            at=2_000_000_000.0 + index,
+        )
+
+    listing = _app(tmp_path).get(
+        "/v1/tasks",
+        headers=_auth(),
+        params={"limit": 200},
+    ).json()
+
+    assert listing["total"] == 203
+    assert len(listing["tasks"]) == 200
+    assert listing["truncated"] is True
+    recent_ids = {row["task_id"] for row in listing["tasks"]}
+    assert listing["attention"]["total"] == 3
+    assert listing["attention"]["limit"] == 2
+    assert listing["attention"]["truncated"] is True
+    assert len(listing["attention"]["tasks"]) == 2
+    attention_activity = [
+        row["last_activity_at"] for row in listing["attention"]["tasks"]
+    ]
+    assert attention_activity == sorted(attention_activity, reverse=True)
+    assert all(
+        row["decision_status"]["key"] == "blocked"
+        and row["task_id"] not in recent_ids
+        for row in listing["attention"]["tasks"]
+    )
+
+
+def test_receipt_attention_priority_matches_dashboard_review_contract() -> None:
+    cases = [
+        ("reported", 1, 0),
+        ("finding", 0, 0),
+        ("failed", 0, 0),
+        ("blocked", 0, 1),
+        ("finding_superseded", 1, None),
+        ("finding_resolved_by_user", 1, None),
+        ("verified", 0, None),
+    ]
+
+    for decision, failed_checks, expected in cases:
+        assert _receipt_attention_priority(
+            {
+                "decision_status": {"key": decision},
+                "evidence_strength": {"checks_failed": failed_checks},
+            }
+        ) == expected
 
 
 def test_unknown_task_is_a_404_not_an_empty_fabrication(tmp_path: Path) -> None:

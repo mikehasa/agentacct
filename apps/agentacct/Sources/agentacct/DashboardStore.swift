@@ -24,6 +24,8 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var usage: UsageSummary?
     @Published private(set) var receiptTasks: [ReceiptSummary] = []
     @Published private(set) var totalReceiptTasks: Int?
+    @Published private(set) var receiptTasksTruncated: Bool?
+    @Published private(set) var receiptAttention: ReceiptAttentionPayload?
     @Published private(set) var receipt: Receipt?
     @Published private(set) var receiptListError: String?
     @Published private(set) var receiptError: String?
@@ -68,6 +70,8 @@ final class DashboardStore: ObservableObject {
         case .populated:
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
             receipt = fixture.work?.receipt
             for session in fixture.work?.sessions ?? [] {
                 let key = "\(session.session.client)::\(session.session.clientSessionId)"
@@ -76,15 +80,20 @@ final class DashboardStore: ObservableObject {
         case .empty:
             receiptTasks = []
             totalReceiptTasks = 0
+            receiptTasksTruncated = false
         case .listError:
             receiptTasks = []
             receiptListError = "receipts fetch failed: synthetic review error"
         case .receiptLoading:
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
         case .receiptError:
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
             receiptError = "receipt fetch failed: synthetic review error"
         }
         let updated = fixture.glance.generatedAt.map(Date.init(timeIntervalSince1970:))
@@ -111,6 +120,8 @@ final class DashboardStore: ObservableObject {
             let tasks = try await tasksRequest
             receiptTasks = tasks.tasks
             totalReceiptTasks = tasks.total
+            receiptTasksTruncated = tasks.truncated
+            receiptAttention = tasks.attention
             receiptListError = nil
             tasksSucceeded = true
         } catch GlanceClientError.noDiscovery(_) {
@@ -156,6 +167,8 @@ final class DashboardStore: ObservableObject {
             let payload: ReceiptTasksPayload = try await client.getAuthed("/v1/tasks?limit=200")
             receiptTasks = payload.tasks
             totalReceiptTasks = payload.total
+            receiptTasksTruncated = payload.truncated
+            receiptAttention = payload.attention
             receiptListError = nil
         } catch GlanceClientError.noDiscovery(_) {
             receiptListError = "daemon not running (no discovery file) — start it with `agentacct start`"
