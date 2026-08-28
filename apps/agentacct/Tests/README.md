@@ -332,6 +332,7 @@ text sizes, and both appearances; transient states render at the standard viewpo
 | receipt error | 1120 × 800 pt, light/dark | `work-receipt-error-reference-*.png` |
 | saved stale receipt | 1120 × 800 pt, light/dark | `work-receipt-stale-reference-*.png` |
 | blocked attention receipt | 1120 × 800 pt, light/dark | `work-attention-receipt-reference-*.png` |
+| focused Checks ledger | exception-first overview, all-pass, expanded evidence, 360 pt compact, compact accessibility5, and accessibility5 RTL, light/dark | `work-checks-*.png` |
 
 For an ad-hoc render that does not compare or update references:
 
@@ -343,7 +344,7 @@ open /tmp/agentacct-work-review
 ```
 
 Ad-hoc and CI artifact images are review aids only. The visual test reads the
-42 canonical PNGs from `Tests/agentacctTests/ReferenceImages/<platform-id>`, so
+54 canonical PNGs from `Tests/agentacctTests/ReferenceImages/<platform-id>`, so
 a Work UI change is not visually verified until those source-tree files are
 reviewed and committed.
 

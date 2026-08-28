@@ -1305,6 +1305,13 @@ struct RecordCoverageCard: View {
 struct RecordChecksCard: View {
     let evidence: ReceiptEvidenceDim
     let taskId: String
+    private let initiallyExpandedCheckIDs: Set<String>
+    private let initiallyShowsRoutineGroups: Bool?
+    private let collection: ReceiptCheckCollectionPresentation
+
+    @State private var passedExpansionOverride: Bool?
+    @State private var historyExpansionOverride: Bool?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var presentation: ReceiptCheckRunsPresentation {
         .init(
@@ -1314,19 +1321,74 @@ struct RecordChecksCard: View {
         )
     }
 
+    init(
+        evidence: ReceiptEvidenceDim,
+        taskId: String,
+        initiallyShowsRoutineGroups: Bool? = nil,
+        initiallyExpandedCheckIDs: Set<String> = []
+    ) {
+        self.evidence = evidence
+        self.taskId = taskId
+        self.initiallyExpandedCheckIDs = initiallyExpandedCheckIDs
+        self.initiallyShowsRoutineGroups = initiallyShowsRoutineGroups
+        self.collection = ReceiptCheckCollectionPresentation(evidence: evidence)
+        _passedExpansionOverride = State(initialValue: nil)
+        _historyExpansionOverride = State(initialValue: nil)
+    }
+
     var body: some View {
         Card(padding: Space.xl) {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 8) {
-                    Text("Checks").workFont(.titleCard).foregroundStyle(Theme.ink)
-                        .accessibilityAddTraits(.isHeader)
-                    Text(presentation.headerText)
-                        .workFont(.dataSmall).foregroundStyle(Theme.muted)
-                    Spacer()
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                        checksHeading
+                        Spacer(minLength: Space.m)
+                        checksTally
+                    }
+                    VStack(alignment: .leading, spacing: Space.xs) {
+                        checksHeading
+                        checksTally
+                    }
                 }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Checks, \(presentation.headerText)")
+                .accessibilityAddTraits(.isHeader)
+
+                if let scope = collection.sharedScope {
+                    HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                        CapsLabel(text: "Scope")
+                        Text(verbatim: scope)
+                            .workFont(.dataSmall)
+                            .foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                    .padding(.top, Space.s)
+                }
+
+                if let notice = collection.aggregateNotice {
+                    HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundStyle(Theme.amber)
+                            .accessibilityHidden(true)
+                        Text(notice)
+                            .workFont(.caption)
+                            .foregroundStyle(Theme.amber)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.top, Space.s)
+                }
+
+                if let notice = collection.itemizedNotice {
+                    Text(notice)
+                        .workFont(.dataSmall)
+                        .foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, Space.s)
+                }
+
                 Rectangle().fill(Theme.hairline).frame(height: 1).padding(.top, Space.m)
-                let checks = evidence.checks ?? []
-                if checks.isEmpty {
+                if collection.rows.isEmpty {
                     let copy = receiptEmptyCheckDetailsCopy(
                         total: evidence.checksTotal,
                         passed: evidence.checksPassed,
@@ -1337,31 +1399,180 @@ struct RecordChecksCard: View {
                         .padding(.top, Space.m)
                     Text(copy.detail)
                         .workFont(.caption).foregroundStyle(Theme.muted)
-                        .padding(.top, 2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, Space.xs)
+                } else if collection.rows.count == 1, let row = collection.rows.first {
+                    checkRow(row)
                 } else {
-                    ScrollContentStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(checks.enumerated()), id: \.offset) { index, check in
-                            if index > 0 {
-                                Rectangle().fill(Theme.hairline).frame(height: 1)
-                            }
-                            RecordCheckRow(check: check, taskId: taskId)
-                        }
+                    let attention = collection.rows(in: .attention)
+                    let other = collection.rows(in: .other)
+                    let passed = collection.rows(in: .passed)
+                    let history = collection.rows(in: .history)
+
+                    if !attention.isEmpty {
+                        fixedGroup(title: "Needs attention", rows: attention, tone: Theme.coral)
+                    }
+                    if !other.isEmpty {
+                        if !attention.isEmpty { sectionDivider }
+                        fixedGroup(title: "Other results", rows: other, tone: Theme.amber)
+                    }
+                    if !passed.isEmpty {
+                        if !attention.isEmpty || !other.isEmpty { sectionDivider }
+                        disclosureGroup(
+                            title: "Passed checks",
+                            rows: passed,
+                            expanded: routineGroupExpansion($passedExpansionOverride)
+                        )
+                    }
+                    if !history.isEmpty {
+                        if !attention.isEmpty || !other.isEmpty || !passed.isEmpty { sectionDivider }
+                        disclosureGroup(
+                            title: "History",
+                            rows: history,
+                            expanded: routineGroupExpansion($historyExpansionOverride)
+                        )
                     }
                 }
             }
         }
     }
+
+    private var checksHeading: some View {
+        Text("Checks")
+            .workFont(.titleCard)
+            .foregroundStyle(Theme.ink)
+    }
+
+    private var checksTally: some View {
+        Text(presentation.headerText)
+            .workFont(.dataSmall)
+            .foregroundStyle(Theme.muted)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var sectionDivider: some View {
+        Rectangle().fill(Theme.hairline).frame(height: 1)
+    }
+
+    private func routineGroupExpansion(_ override: Binding<Bool?>) -> Binding<Bool> {
+        Binding(
+            get: {
+                collection.routineGroupExpanded(
+                    userOverride: override.wrappedValue,
+                    forcedDefault: initiallyShowsRoutineGroups
+                )
+            },
+            set: { override.wrappedValue = $0 }
+        )
+    }
+
+    private func fixedGroup(
+        title: String,
+        rows: [ReceiptCheckRowPresentation],
+        tone: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                Text(title)
+                    .workFont(.captionSemibold)
+                    .foregroundStyle(tone)
+                Text("\(rows.count)")
+                    .workFont(.dataSmall)
+                    .foregroundStyle(Theme.muted)
+            }
+            .padding(.top, Space.m)
+            rowsView(rows)
+        }
+    }
+
+    private func disclosureGroup(
+        title: String,
+        rows: [ReceiptCheckRowPresentation],
+        expanded: Binding<Bool>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                expanded.wrappedValue.toggle()
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Theme.muted)
+                        .rotationEffect(.degrees(expanded.wrappedValue ? 90 : 0))
+                        .accessibilityHidden(true)
+                    Text(title)
+                        .workFont(.captionSemibold)
+                        .foregroundStyle(Theme.ink)
+                    Text("\(rows.count)")
+                        .workFont(.dataSmall)
+                        .foregroundStyle(Theme.muted)
+                    Spacer(minLength: Space.s)
+                    Text(expanded.wrappedValue ? "Hide" : "Show")
+                        .workFont(.dataSmallSemibold)
+                        .foregroundStyle(Theme.accent)
+                }
+                .padding(.vertical, Space.m)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(SurfaceButtonStyle(focusInset: 2))
+            .accessibilityLabel("\(title), \(rows.count)")
+            .accessibilityValue(expanded.wrappedValue ? "Expanded" : "Collapsed")
+            .accessibilityHint(expanded.wrappedValue ? "Hides these check runs" : "Shows these check runs")
+            .accessibilityIdentifier("receipt.check-group.\(title.lowercased().replacingOccurrences(of: " ", with: "-"))")
+
+            if expanded.wrappedValue {
+                rowsView(rows)
+                    .transition(.opacity)
+            }
+        }
+        .animation(reduceMotion ? nil : Motion.contentUpdate, value: expanded.wrappedValue)
+    }
+
+    private func rowsView(_ rows: [ReceiptCheckRowPresentation]) -> some View {
+        ScrollContentStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                if index > 0 {
+                    Rectangle().fill(Theme.hairline).frame(height: 1)
+                }
+                checkRow(row)
+            }
+        }
+    }
+
+    private func checkRow(_ row: ReceiptCheckRowPresentation) -> some View {
+        RecordCheckRow(
+            row: row,
+            taskId: taskId,
+            showsScope: collection.sharedScope == nil,
+            initiallyExpanded: initiallyExpandedCheckIDs.contains(row.id)
+        )
+    }
 }
 
-/// One check: the scannable one-liner, now expandable in place for the detail
-/// behind it (summary, files, timestamp, superseded state, artifact refs — and
-/// an honest note that command text is never captured). Snapshot mode keeps
-/// the plain one-liner: the offscreen renderer can't drive the toggle.
+/// One check: a scannable summary that expands in place to the full recorded
+/// detail (result, source, scope, files, timestamp, disposition, artifact refs,
+/// and an honest note when command text was intentionally not captured).
 private struct RecordCheckRow: View {
-    let check: ReceiptCheck
+    let row: ReceiptCheckRowPresentation
     let taskId: String
-    @State private var expanded = false
+    let showsScope: Bool
+
+    @State private var expanded: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var check: ReceiptCheck { row.check }
+
+    init(
+        row: ReceiptCheckRowPresentation,
+        taskId: String,
+        showsScope: Bool,
+        initiallyExpanded: Bool = false
+    ) {
+        self.row = row
+        self.taskId = taskId
+        self.showsScope = showsScope
+        _expanded = State(initialValue: initiallyExpanded)
+    }
 
     private var mark: (symbol: String, tint: Color) {
         let machineObserved = ["hook", "ci"].contains(check.source ?? "")
@@ -1374,63 +1585,113 @@ private struct RecordCheckRow: View {
     }
 
     private var headerLine: some View {
-        HStack(alignment: .firstTextBaseline, spacing: Space.s) {
-            if !SnapshotMode.enabled {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(Theme.muted)
-                    .frame(width: 10)
-                    .rotationEffect(.degrees(expanded ? 90 : 0))
-                    .accessibilityHidden(true)
-            }
+        HStack(alignment: .top, spacing: Space.s) {
+            Image(systemName: "chevron.right")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(Theme.muted)
+                .frame(minWidth: 12, minHeight: 20)
+                .rotationEffect(.degrees(expanded ? 90 : 0))
+                .accessibilityHidden(true)
             Image(systemName: mark.symbol)
-                .font(.system(size: 10, weight: .bold))
+                .font(.caption.weight(.bold))
                 .foregroundStyle(mark.tint)
-                .frame(width: 14)
+                .frame(minWidth: 16, minHeight: 20)
                 .accessibilityHidden(true)  // the row label names the result
-            Text(check.name ?? check.kind ?? "check")
-                .workFont(.body).foregroundStyle(Theme.ink)
-                .lineLimit(1).truncationMode(.middle)
-            if check.superseded == true {
-                Chip(text: "superseded", tint: Theme.muted)
-                    .help("A later run of the same-scope check passed; kept in history.")
-            }
-            if let scope = check.scope {
-                Text(scope).workFont(.dataSmall).foregroundStyle(Theme.muted)
-            }
-            Spacer(minLength: Space.s)
-            if let exit = check.exitCode {
-                Text("exit \(exit)").workFont(.dataSmall).foregroundStyle(Theme.muted)
-            }
-            if let source = check.source {
-                ProvenanceChip(text: source)
+
+            VStack(alignment: .leading, spacing: Space.s) {
+                HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                    Text(row.resultLabel)
+                        .workFont(.dataSmallSemibold)
+                        .foregroundStyle(mark.tint)
+                        .fixedSize(horizontal: true, vertical: false)
+                    Text(verbatim: row.title)
+                        .workFont(.body)
+                        .foregroundStyle(Theme.ink)
+                        .lineLimit(expanded ? nil : 2)
+                        .truncationMode(.tail)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .layoutPriority(1)
+                }
+
+                if hasCollapsedMetadata {
+                    VStack(alignment: .leading, spacing: Space.xs) {
+                        if showsScope, let scope = row.scope {
+                            HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                                Text("Scope")
+                                    .workFont(.dataSmallSemibold)
+                                    .foregroundStyle(Theme.muted)
+                                Text(verbatim: scope)
+                                    .workFont(.dataSmall)
+                                    .foregroundStyle(Theme.muted)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .help(scope)
+                            }
+                        }
+                        ViewThatFits(in: .horizontal) {
+                            HStack(alignment: .center, spacing: Space.s) {
+                                collapsedMetadataItems
+                            }
+                            VStack(alignment: .leading, spacing: Space.xs) {
+                                collapsedMetadataItems
+                            }
+                        }
+                    }
+                }
             }
         }
-        .padding(.vertical, 10)
+        .padding(.vertical, Space.m)
         .contentShape(Rectangle())
+        .help(row.title)
+    }
+
+    private var hasCollapsedMetadata: Bool {
+        (showsScope && row.scope != nil)
+            || row.collapsedExitText != nil
+            || row.sourceLabel != nil
+            || check.superseded == true
+            || (check.finding?.state != nil && check.finding?.state != "open")
+    }
+
+    @ViewBuilder
+    private var collapsedMetadataItems: some View {
+        if let exitText = row.collapsedExitText {
+            Text(exitText)
+                .workFont(.dataSmallSemibold)
+                .foregroundStyle(mark.tint)
+        }
+        if let sourceLabel = row.sourceLabel {
+            ProvenanceChip(text: sourceLabel)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(sourceLabel)
+        }
+        if check.superseded == true {
+            Chip(text: "Superseded", tint: Theme.muted)
+                .help("A later run of the same-scope check passed; kept in history.")
+        }
+        if let state = check.finding?.state, state != "open" {
+            Chip(text: state.capitalized, tint: Theme.muted)
+        }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if SnapshotMode.enabled {
+            Button {
+                expanded.toggle()
+            } label: {
                 headerLine
-            } else {
-                Button {
-                    expanded.toggle()
-                } label: {
-                    headerLine
-                }
-                .buttonStyle(SurfaceButtonStyle(focusInset: 2))
-                .accessibilityLabel(
-                    "\(check.name ?? check.kind ?? "check"), \(check.result ?? "unknown")"
-                    + ", \(expanded ? "expanded" : "collapsed")"
-                )
-                .accessibilityIdentifier("receipt.check.\(check.name ?? "check")")
             }
+            .buttonStyle(SurfaceButtonStyle(focusInset: 2))
+            .accessibilityLabel(row.title)
+            .accessibilityValue(row.accessibilityValue(isExpanded: expanded))
+            .accessibilityHint(expanded ? "Hides full check details" : "Shows full check details")
+            .accessibilityIdentifier(row.accessibilityIdentifier)
+
             if expanded {
                 expandedBody
-                    .padding(.leading, 10 + Space.s + 14 + Space.s)
-                    .padding(.bottom, 10)
+                    .padding(.leading, 12 + Space.s + 16 + Space.s)
+                    .padding(.bottom, Space.m)
                     .transition(.opacity)
             }
         }
@@ -1439,43 +1700,92 @@ private struct RecordCheckRow: View {
 
     @ViewBuilder
     private var expandedBody: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let summary = check.summary {
-                // verbatim: agent/hook-authored text, never markdown.
-                Text(verbatim: summary)
-                    .workFont(.caption).foregroundStyle(Theme.ink)
+        VStack(alignment: .leading, spacing: Space.m) {
+            CheckDetailField(label: "Check") {
+                Text(verbatim: row.title)
+                    .workFont(.caption)
+                    .foregroundStyle(Theme.ink)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
+            }
+            CheckDetailField(label: "Run") {
+                Text(row.runDetailText)
+                    .workFont(.dataSmall)
+                    .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            if let reportedResult = check.result,
+               !["passed", "failed", "error", "skipped"].contains(reportedResult) {
+                CheckDetailField(label: "Reported result") {
+                    Text(verbatim: reportedResult)
+                        .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            }
+            if let source = check.source {
+                CheckDetailField(label: "Source") {
+                    Text(verbatim: source)
+                        .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            }
+            if let summary = check.summary {
+                CheckDetailField(label: "Summary") {
+                    // verbatim: agent/hook-authored text, never markdown.
+                    Text(verbatim: summary)
+                        .workFont(.caption).foregroundStyle(Theme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            }
+            if let scope = row.scope {
+                CheckDetailField(label: "Scope") {
+                    Text(verbatim: scope)
+                        .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
             }
             if let at = check.at, let ago = agoText(at) {
-                Text("recorded \(ago)").workFont(.dataSmall).foregroundStyle(Theme.muted)
+                CheckDetailField(label: "Recorded") {
+                    Text(ago).workFont(.dataSmall).foregroundStyle(Theme.muted)
+                }
             }
             if let files = check.files, !files.isEmpty {
-                ScrollContentStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(files.enumerated()), id: \.offset) { _, path in
-                        Text(verbatim: path)
-                            .workFont(.dataSmall).foregroundStyle(Theme.muted)
-                            .lineLimit(1).truncationMode(.middle)
+                CheckDetailField(label: "Files") {
+                    ScrollContentStack(alignment: .leading, spacing: Space.xs) {
+                        ForEach(Array(files.enumerated()), id: \.offset) { _, path in
+                            Text(verbatim: path)
+                                .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
+                    .textSelection(.enabled)
                 }
-                .textSelection(.enabled)
             }
             if check.commandRedacted == true {
-                // Absence is a named state: a command ran, and agentacct
-                // deliberately never records command text for checks.
-                Text("command text not captured for checks — agentacct records the check's name, result, and files, not the command itself")
-                    .workFont(.dataSmall).foregroundStyle(Theme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
+                CheckDetailField(label: "Privacy") {
+                    // Absence is a named state: a command ran, and agentacct
+                    // deliberately never records command text for checks.
+                    Text("Command text was intentionally not captured; agentacct records the check name, result, and files.")
+                        .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             if let artifact = check.artifactUrl ?? check.artifactRef {
-                Text(verbatim: "artifact: \(artifact)")
-                    .workFont(.dataSmall).foregroundStyle(Theme.muted)
-                    .lineLimit(1).truncationMode(.middle)
-                    .textSelection(.enabled)
+                CheckDetailField(label: "Artifact") {
+                    Text(verbatim: artifact)
+                        .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
             }
             if check.summary == nil, check.at == nil, (check.files ?? []).isEmpty,
                check.commandRedacted != true, check.artifactUrl == nil, check.artifactRef == nil {
-                Text("no further detail recorded for this check")
+                Text("No additional detail was recorded for this check.")
                     .workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
             // A surfaced failing check carries its human attention handle:
@@ -1487,7 +1797,7 @@ private struct RecordCheckRow: View {
                         .workFont(.dataSmall).foregroundStyle(Theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if !SnapshotMode.enabled, let digest = finding.targetDigest {
+                if let digest = finding.targetDigest {
                     DispositionControls(
                         kind: "finding",
                         state: finding.state ?? "open",
@@ -1497,6 +1807,18 @@ private struct RecordCheckRow: View {
                     )
                 }
             }
+        }
+    }
+}
+
+private struct CheckDetailField<Content: View>: View {
+    let label: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            CapsLabel(text: label)
+            content
         }
     }
 }
