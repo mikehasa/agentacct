@@ -87,7 +87,7 @@ struct WorkAttentionEmptyCopy: Equatable {
         if payload.total == 0 {
             title = "No current review items"
             detail = "The complete attention projection reports no failed checks, failed steps, or unresolved blockers."
-        } else if !query.isEmpty {
+        } else if !query.isEmpty, !payload.items.isEmpty {
             title = "No review items match this filter"
             detail = "The bounded queue has \(payload.items.count) of \(payload.total) review items; adjust the filter to inspect them."
         } else {

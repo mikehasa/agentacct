@@ -144,7 +144,7 @@ final class DashboardInteractionTests: XCTestCase {
             }
             """
         )
-        let nonempty = try decode(
+        let inconsistent = try decode(
             V1AttentionPayload.self,
             from: """
             {
@@ -155,14 +155,32 @@ final class DashboardInteractionTests: XCTestCase {
             }
             """
         )
+        let filtered = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "task-finding",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "limit": 1, "truncated": true
+            }
+            """
+        )
 
         XCTAssertEqual(WorkAttentionEmptyCopy(payload: clear, query: "").title, "No current review items")
         XCTAssertEqual(
-            WorkAttentionEmptyCopy(payload: nonempty, query: "visual").title,
+            WorkAttentionEmptyCopy(payload: filtered, query: "visual").title,
             "No review items match this filter"
         )
         XCTAssertEqual(
-            WorkAttentionEmptyCopy(payload: nonempty, query: "").title,
+            WorkAttentionEmptyCopy(payload: inconsistent, query: "visual").title,
             "Review queue details unavailable"
         )
     }
