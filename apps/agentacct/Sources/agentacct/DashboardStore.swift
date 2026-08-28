@@ -8,6 +8,7 @@ enum SnapshotWorkStoreState {
     case populated
     case empty
     case listError
+    case shiftBriefUnavailable
     case receiptLoading
     case receiptError
 }
@@ -84,6 +85,11 @@ final class DashboardStore: ObservableObject {
         case .listError:
             receiptTasks = []
             receiptListError = "receipts fetch failed: synthetic review error"
+        case .shiftBriefUnavailable:
+            receiptTasks = fixture.tasks.tasks
+            totalReceiptTasks = fixture.tasks.total
+            attentionError = "attention fetch failed: synthetic review error"
+            ingestionError = "source health fetch failed: synthetic review error"
         case .receiptLoading:
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total

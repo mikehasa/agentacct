@@ -263,6 +263,8 @@ The dashboard renderer owns this complete fixed matrix at 2x scale:
 | `dashboard-minimum-dark.png` | 960 × 560 pt minimum window, dark; compact shift brief + signal rail | 1920 × 1120 px |
 | `dashboard-reference-light.png` | 1120 × 800 pt standard window, light; complete shift brief + work ledger | 2240 × 1600 px |
 | `dashboard-reference-dark.png` | 1120 × 800 pt standard window, dark; complete shift brief + work ledger | 2240 × 1600 px |
+| `dashboard-trust-unavailable-light.png` | 1120 × 800 pt failed attention and source refresh with retained success data, light | 2240 × 1600 px |
+| `dashboard-trust-unavailable-dark.png` | 1120 × 800 pt failed attention and source refresh with retained success data, dark | 2240 × 1600 px |
 
 References live under `Tests/agentacctTests/ReferenceImages/<platform-id>`.
 They are read directly from the source checkout and excluded from SwiftPM's

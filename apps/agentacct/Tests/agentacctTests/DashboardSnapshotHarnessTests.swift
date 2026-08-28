@@ -16,6 +16,8 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "dashboard-minimum-dark.png", pixelsWide: 1920, pixelsHigh: 1120),
         ExpectedArtifact(filename: "dashboard-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "dashboard-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "dashboard-trust-unavailable-light.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "dashboard-trust-unavailable-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
     ]
 
     @MainActor
@@ -40,6 +42,20 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         XCTAssertEqual(fixture.glance.usage.byClient?.count, 3)
         XCTAssertEqual(fixture.glance.recentSessions.count, 2)
         XCTAssertNotNil(fixture.glance.usage.windows.first { $0.label == "today" })
+    }
+
+    @MainActor
+    func testUnavailableTrustStateRetainsSuccessOnlyToProveErrorPrecedence() throws {
+        let fixture = try DashboardSnapshotFixture.load(from: dashboardFixtureURL())
+        let store = DashboardStore(
+            preloaded: fixture,
+            workState: .shiftBriefUnavailable
+        )
+
+        XCTAssertNotNil(store.attention)
+        XCTAssertEqual(store.ingestion?.state, "healthy")
+        XCTAssertNotNil(store.attentionError)
+        XCTAssertNotNil(store.ingestionError)
     }
 
     @MainActor

@@ -277,6 +277,26 @@ def test_version_advertises_the_receipt_schema(tmp_path: Path) -> None:
     assert version["attention_schema"] == V1_ATTENTION_SCHEMA_VERSION
 
 
+def test_attention_empty_state_and_query_bounds(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+
+    payload = client.get("/v1/attention", headers=_auth()).json()
+    assert payload == {
+        "schema": V1_ATTENTION_SCHEMA_VERSION,
+        "items": [],
+        "total": 0,
+        "counts": {"failed_check": 0, "failed_step": 0, "blocker": 0},
+        "limit": 5,
+        "truncated": False,
+    }
+    assert client.get(
+        "/v1/attention", headers=_auth(), params={"limit": 0}
+    ).status_code == 422
+    assert client.get(
+        "/v1/attention", headers=_auth(), params={"limit": 51}
+    ).status_code == 422
+
+
 def test_attention_is_complete_bounded_and_operationally_ordered(
     tmp_path: Path,
     monkeypatch,
