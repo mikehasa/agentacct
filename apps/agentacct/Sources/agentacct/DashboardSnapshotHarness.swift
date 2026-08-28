@@ -10,6 +10,7 @@ struct DashboardSnapshotFixture: Decodable {
 
     let daemonVersion: String
     let glance: Glance
+    let menuSparseGlance: Glance?
     let plan: V1PlanPayload
     let tasks: ReceiptTasksPayload
     let usage: UsageSummary
@@ -17,6 +18,7 @@ struct DashboardSnapshotFixture: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case glance, plan, tasks, usage, work
+        case menuSparseGlance = "menu_sparse_glance"
         case daemonVersion = "daemon_version"
     }
 
@@ -30,6 +32,15 @@ struct DashboardSnapshotFixture: Decodable {
             throw SnapshotError.unsupportedSchema(
                 payload: "glance",
                 actual: fixture.glance.schema,
+                expected: GlanceClient.supportedGlanceSchema
+            )
+        }
+        if let menuSparseGlance = fixture.menuSparseGlance,
+           menuSparseGlance.schema != GlanceClient.supportedGlanceSchema
+        {
+            throw SnapshotError.unsupportedSchema(
+                payload: "sparse menu glance",
+                actual: menuSparseGlance.schema,
                 expected: GlanceClient.supportedGlanceSchema
             )
         }

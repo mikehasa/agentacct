@@ -12,6 +12,13 @@ struct VisualSnapshotTolerance: Equatable {
         maximumChannelDelta: 1,
         maximumChangedChannelFraction: 0.001
     )
+
+    /// The compact 360 pt menu packs more antialiased glyph edges into each
+    /// pixel row. It still permits only one-channel-step raster noise.
+    static let menuRenderingNoise = Self(
+        maximumChannelDelta: 1,
+        maximumChangedChannelFraction: 0.0015
+    )
 }
 
 enum VisualSnapshotMode: String, Equatable {
