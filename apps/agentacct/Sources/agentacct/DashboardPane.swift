@@ -144,6 +144,33 @@ enum DashboardAttentionPresentation: Equatable {
             self = .inconsistent(total: payload.total)
         }
     }
+
+    var dashboardHeadline: String {
+        switch self {
+        case .loading: return "Checking recorded work"
+        case .unavailable: return "Review status unavailable"
+        case .clear: return "No recorded work needs review"
+        case .focus(let item, _): return item.title
+        case .inconsistent: return "Review details unavailable"
+        }
+    }
+
+    var dashboardStatus: String {
+        switch self {
+        case .loading: return "Loading review projection"
+        case .unavailable: return "Refresh to retry"
+        case .clear: return "0 review items"
+        case .focus(_, let total), .inconsistent(let total):
+            return "\(total) review item\(total == 1 ? "" : "s")"
+        }
+    }
+
+    var dashboardStatusIsWarning: Bool {
+        switch self {
+        case .unavailable, .inconsistent: return true
+        case .loading, .clear, .focus: return false
+        }
+    }
 }
 
 enum DashboardUsageSeries: String, CaseIterable, Identifiable {
@@ -265,8 +292,8 @@ struct DashboardPane: View {
         ScrollBox {
             VStack(alignment: .leading, spacing: Space.l) {
                 DashboardShiftBriefHeader(
-                    attentionCount: dashboard.attention?.total,
-                    attentionUnavailable: dashboard.attentionError != nil
+                    payload: dashboard.attention,
+                    error: dashboard.attentionError
                 )
 
                 splitRow {
@@ -379,14 +406,11 @@ private struct DashboardSplitLayout: Layout {
 }
 
 private struct DashboardShiftBriefHeader: View {
-    let attentionCount: Int?
-    let attentionUnavailable: Bool
+    let payload: V1AttentionPayload?
+    let error: String?
 
-    private var stateText: String {
-        if attentionUnavailable { return "Review status unavailable" }
-        guard let attentionCount else { return "Checking recorded work" }
-        if attentionCount == 0 { return "No recorded review items" }
-        return "\(attentionCount) review item\(attentionCount == 1 ? "" : "s")"
+    private var presentation: DashboardAttentionPresentation {
+        DashboardAttentionPresentation(payload: payload, error: error)
     }
 
     var body: some View {
@@ -396,15 +420,16 @@ private struct DashboardShiftBriefHeader: View {
                     .font(Type.labelCaps)
                     .tracking(Type.labelCapsTracking)
                     .foregroundStyle(Theme.accent)
-                Text("Your next decision, grounded in receipts.")
+                Text(presentation.dashboardHeadline)
                     .font(Type.titlePage)
                     .tracking(Type.titlePageTracking)
                     .foregroundStyle(Theme.ink)
+                    .lineLimit(2)
             }
             Spacer(minLength: Space.m)
-            Text(stateText)
+            Text(presentation.dashboardStatus)
                 .font(Type.dataSmall)
-                .foregroundStyle(attentionUnavailable ? Theme.amber : Theme.muted)
+                .foregroundStyle(presentation.dashboardStatusIsWarning ? Theme.amber : Theme.muted)
                 .multilineTextAlignment(.trailing)
         }
         .accessibilityElement(children: .combine)
@@ -502,11 +527,6 @@ private struct DashboardAttentionBriefCard: View {
             }
 
             VStack(alignment: .leading, spacing: 7) {
-                Text(focus.title)
-                    .font(Type.titleSection)
-                    .tracking(Type.titleSectionTracking)
-                    .foregroundStyle(Theme.ink)
-                    .lineLimit(2)
                 let context = [focus.project, focus.client].compactMap { $0 }
                 if !context.isEmpty {
                     Text(context.joined(separator: " · "))

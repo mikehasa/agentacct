@@ -91,8 +91,16 @@ final class DashboardInteractionTests: XCTestCase {
             .loading
         )
         XCTAssertEqual(
+            DashboardAttentionPresentation(payload: nil, error: nil).dashboardHeadline,
+            "Checking recorded work"
+        )
+        XCTAssertEqual(
             DashboardAttentionPresentation(payload: nil, error: "daemon unavailable"),
             .unavailable("daemon unavailable")
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: nil, error: "daemon unavailable").dashboardHeadline,
+            "Review status unavailable"
         )
 
         let clear = try decode(
@@ -112,6 +120,10 @@ final class DashboardInteractionTests: XCTestCase {
             DashboardAttentionPresentation(payload: clear, error: nil),
             .clear
         )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: clear, error: nil).dashboardHeadline,
+            "No recorded work needs review"
+        )
 
         let inconsistent = try decode(
             V1AttentionPayload.self,
@@ -130,6 +142,38 @@ final class DashboardInteractionTests: XCTestCase {
             DashboardAttentionPresentation(payload: inconsistent, error: nil),
             .inconsistent(total: 1)
         )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: inconsistent, error: nil).dashboardHeadline,
+            "Review details unavailable"
+        )
+    }
+
+    func testShiftBriefHeadlineUsesTheLeadingRecordedTaskInsteadOfStaticCopy() throws {
+        let payload = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "task-finding",
+                "title": "Verify dashboard hierarchy",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "limit": 1,
+              "truncated": true
+            }
+            """
+        )
+
+        let presentation = DashboardAttentionPresentation(payload: payload, error: nil)
+        XCTAssertEqual(presentation.dashboardHeadline, "Verify dashboard hierarchy")
+        XCTAssertEqual(presentation.dashboardStatus, "2 review items")
+        XCTAssertFalse(presentation.dashboardStatusIsWarning)
     }
 
     func testWorkAttentionEmptyCopyRequiresAnAuthoritativeZero() throws {
