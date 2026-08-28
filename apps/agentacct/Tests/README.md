@@ -401,8 +401,8 @@ diagnostics, recovery guidance, and retry controls.
 
 | Artifact | Appearance | Pixel size |
 | --- | --- | --- |
-| `setup-failure-light.png` | light | 920 × 1020 px |
-| `setup-failure-dark.png` | dark | 920 × 1020 px |
+| `setup-failure-light.png` | light | 920 × 1028 px |
+| `setup-failure-dark.png` | dark | 920 × 1028 px |
 
 Run the canonical pair with:
 

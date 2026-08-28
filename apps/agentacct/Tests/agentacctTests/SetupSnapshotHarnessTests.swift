@@ -28,7 +28,7 @@ final class SetupSnapshotHarnessTests: XCTestCase {
             let image = try XCTUnwrap(NSImage(contentsOf: firstURL), filename)
             let representation = try XCTUnwrap(image.representations.first, filename)
             XCTAssertEqual(representation.pixelsWide, 920)
-            XCTAssertEqual(representation.pixelsHigh, 1_020)
+            XCTAssertEqual(representation.pixelsHigh, 1_028)
 
             let difference = try VisualSnapshotHarness.compare(
                 expectedURL: firstURL,
