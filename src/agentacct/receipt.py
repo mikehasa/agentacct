@@ -532,6 +532,33 @@ def evidence_coverage_ledger(evidence: Mapping[str, Any]) -> str:
     return " · ".join(bits)
 
 
+def plan_share_headline(plan_share: Mapping[str, Any] | None) -> str:
+    """One honest line for a Task's share of its client's weekly plan.
+
+    Calibrated-or-nothing, the same rule every plan surface honors: a real
+    percentage only once the fit is calibrated; otherwise a named calibration
+    state, never a fabricated number. Mirrors the macOS ``ReceiptPlanShare``
+    wording so the receipt reads identically on every surface.
+    """
+
+    share = plan_share or {}
+    pct = share.get("pct")
+    state = share.get("calibration_state")
+    if state == "calibrated" and isinstance(pct, (int, float)) and not isinstance(pct, bool):
+        if pct >= 0.1:
+            shown = f"≈{pct:.1f}%"
+        elif pct > 0:
+            shown = "≈<0.1%"
+        else:
+            shown = "≈0%"
+        return f"{shown} of weekly plan"
+    if state == "calibrating":
+        return "calibrating — not enough 7-day history yet"
+    if state == "never":
+        return "undefined for this client"
+    return "—"
+
+
 # --- Decision axis ------------------------------------------------------------
 
 def _decision_status(

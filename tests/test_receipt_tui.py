@@ -103,7 +103,7 @@ def test_render_receipt_markup_contains_axes_and_dimensions() -> None:
         "actions": {"tool_category_counts": {}, "tool_category_total": 0, "touched_files": [], "touched_file_count": 0},
     }
     markup = _render_receipt_markup(build_receipt(task, public_task_id="task_x", title="Add rate limit"))
-    for marker in ("Decision status", "Evidence coverage", "[b]Task[/]", "[b]Cost[/]", "Provenance"):
+    for marker in ("Decision status", "Evidence coverage", "[b]Task[/]", "[b]Cost[/]", "[b]Weekly plan[/]", "Provenance"):
         assert marker in markup
     # The evidence line is a coverage RATIO, not a bare axis phrase. Assert the
     # actual content (one completed no-check step reads "1 unchecked") so a

@@ -2049,8 +2049,18 @@ def _validate_claude_workflow_journal(
                 )
             keys = set(obj)
             row_type = obj.get("type")
+            # The Workflow tool writes one metadata row per agent lifecycle
+            # transition: "started" and "failed" carry {agentId, key, type};
+            # "result" adds the agent's return value. None of them carry token
+            # usage, so every one is safe to ignore. Any other shape still
+            # fails closed below (e.g. a real assistant/usage row that must not
+            # be silently dropped) -- this is the fail-closed guard, not a
+            # blanket "ignore unknown journals".
             if not (
-                (row_type == "started" and keys == {"agentId", "key", "type"})
+                (
+                    row_type in ("started", "failed")
+                    and keys == {"agentId", "key", "type"}
+                )
                 or (
                     row_type == "result"
                     and keys == {"agentId", "key", "result", "type"}

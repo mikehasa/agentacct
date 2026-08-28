@@ -3091,6 +3091,54 @@ def test_claude_workflow_journals_do_not_enter_transcript_selection(
     assert result.events[0].source_parse_complete is True
 
 
+def test_claude_workflow_journal_failed_row_is_ignored(tmp_path):
+    # The Workflow tool records a "failed" lifecycle row when a workflow agent
+    # dies; it carries {agentId, key, type} and no token usage, so it must be
+    # ignored exactly like "started"/"result". Regression: a legitimate
+    # "failed" row tripped claude_workflow_journal_schema_drift, which
+    # fail-closed-aborts the whole home and froze all claude-code usage import.
+    claude_home = _make_claude_home(tmp_path)
+    project = claude_home / "projects" / "-tmp-project"
+    journal = (
+        project
+        / "claude-session"
+        / "subagents"
+        / "workflows"
+        / "wf_failed"
+        / "journal.jsonl"
+    )
+    journal.parent.mkdir(parents=True)
+    journal.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {"agentId": "agent-a", "key": "state", "type": "started"},
+                {
+                    "agentId": "agent-a",
+                    "key": "state",
+                    "result": "ok",
+                    "type": "result",
+                },
+                {"agentId": "agent-b", "key": "state", "type": "failed"},
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = discover_client_usage_with_diagnostics(
+        client="claude-code",
+        claude_home=claude_home,
+        limit_sessions=10,
+    )
+
+    assert [event.client_session_id for event in result.events] == ["claude-session"]
+    diagnostic = result.diagnostics["claude-code"]
+    assert diagnostic["ignored_non_transcript_files"] == 1
+    assert diagnostic["error_count"] == 0
+    assert diagnostic["error_codes"] == []
+
+
 def test_claude_workflow_journal_schema_drift_fails_closed(tmp_path):
     claude_home = _make_claude_home(tmp_path)
     project = claude_home / "projects" / "-tmp-project"
