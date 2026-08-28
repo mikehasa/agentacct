@@ -31,9 +31,9 @@ The same Task-primary view of your agents' work in the macOS app, in **`agentacc
 
   ![The Sources pane — per-source import health with green Reporting lozenges, the continuous-sync watcher, the not-yet-connected verifier shelf, and the local-only scope card](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-sources.png)
 
-- **Honest usage and cost — per agent, model, and day.** Tokens read from the clients' own local session files and labeled `client_reported`; costs are clearly marked pricing-table estimates, never invoices.
+- **Usage and capacity in one decision view.** Provider-reported quota windows and reset times sit beside each agent's independently ranged recorded usage; daily history and model attribution follow below. Tokens come from the clients' local session files and costs keep their reported/estimated/partial basis—never an invoice or a fabricated zero.
 
-  ![The Usage page — a summary strip (tokens, sessions, estimated cost, active days), the estimated-cost-per-day chart, and By-client / By-model tables with share bars](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-usage.png)
+  ![The Usage and limits page — current provider capacity by client beside seven-day recorded usage, followed by usage totals and daily history](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-usage.png)
 
 - **The work, not just the tokens.** Every session rolls up its recorded work steps and machine checks. Open a task to see each step, its lifecycle (`in progress` / `handed off` / `done` / `blocked`), its evidence-tier pip, and its check results with exit codes.
 - **Attribution you can trust.** Every join between usage and recorded work carries a confidence label (`exact`/`high`/`medium`/`low`). Missing attribution beats wrong attribution: when agentacct cannot prove a link, it shows the gap instead of a guess — absence is always a named state, never a dash or a fabricated zero.

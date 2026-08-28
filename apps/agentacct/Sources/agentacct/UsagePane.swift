@@ -1,132 +1,257 @@
 import SwiftUI
 
-// Usage — the v7 record layout: a summary strip (tokens · sessions · est.
-// cost · active days), one single-series daily chart (cost or tokens, with an
-// optional per-client group filter for tokens — one series per chart, never a
-// stack), ranked By-client and By-model tables with proportional share bars,
-// and a basis footer. The plan-share view stays a separate mode (the
-// subscription user's real question) and only exists when the daemon says a
-// client is calibrated — calibrated-or-nothing.
-
+// One decision surface: provider-reported capacity first, independently ranged
+// recorded usage second. The two lanes share client rows but never a denominator,
+// freshness claim, error state, or range control.
 struct UsagePane: View {
     @EnvironmentObject var dashboard: DashboardStore
-    // nil = no explicit user choice: the default follows the DATA (plan view
-    // when a calibrated client exists) and re-evaluates as /v1/plan loads —
-    // pinning a default in onAppear froze the pane on $ when it rendered
-    // before the first plan response (review finding).
-    @State private var chosenMode: UsageMode?
-
-    enum UsageMode: String, CaseIterable, Identifiable {
-        case plan = "plan %"
-        case dollars = "$"
-        var id: String { rawValue }
-    }
-
-    private var calibratedClients: [V1PlanClient] {
-        dashboard.planClients.filter { $0.calibrationState == "calibrated" }
-    }
-
-    private var mode: UsageMode {
-        // The live pane opens on the plan view when a client is calibrated (the
-        // subscription user's real question). The README snapshot instead shows
-        // the dollars view — the by-agent / by-model breakdown the docs
-        // describe; the plan view is single-client by design (only a
-        // clean-meter client calibrates), so it can't fill a marketing shot.
-        if SnapshotMode.enabled { return chosenMode ?? .dollars }
-        return chosenMode ?? (calibratedClients.isEmpty ? .dollars : .plan)
-    }
+    @EnvironmentObject var glance: GlanceState
+    @State private var showStale = false
+    @State private var showAbout = false
 
     var body: some View {
         ScrollBox {
             VStack(alignment: .leading, spacing: 0) {
                 header
-                if mode == .plan {
-                    planView.padding(.top, Space.xl)
-                } else {
-                    dollarsView
-                }
+                capacitySection.padding(.top, Space.xl)
+                recordedUsageSection.padding(.top, Space.xl)
+                aboutSection.padding(.top, Space.xl)
             }
             .padding(Space.gutter)
             .frame(maxWidth: 1172 + Space.gutter * 2, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 
     private var header: some View {
-        HStack(alignment: .top, spacing: Space.m) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Usage")
-                    .font(Type.titlePage).tracking(Type.titlePageTracking)
-                    .foregroundStyle(Theme.ink)
-                HStack(spacing: 0) {
-                    Text("client-reported tokens")
-                        .font(Type.dataSmall).foregroundStyle(Theme.muted)
-                    if let updated = dashboard.lastUpdated {
-                        Text(" · refreshed \(dashboardFreshnessText(updated))")
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Usage & limits")
+                .font(Type.titlePage).tracking(Type.titlePageTracking)
+                .foregroundStyle(Theme.ink)
+            Text("Provider-reported capacity and locally recorded usage")
+                .font(Type.dataSmall).foregroundStyle(Theme.muted)
+        }
+    }
+
+    @ViewBuilder
+    private var capacitySection: some View {
+        switch glance.phase {
+        case .connected(let snapshot):
+            let presentation = UsageCapacitySnapshot.build(
+                usage: dashboard.usage?.byClient ?? [],
+                limits: snapshot.glance.limits,
+                plans: dashboard.planClients,
+                showStale: showStale
+            )
+            VStack(alignment: .leading, spacing: Space.m) {
+                HStack(alignment: .firstTextBaseline, spacing: Space.m) {
+                    Text("Current capacity")
+                        .font(Type.titleSection).tracking(Type.titleSectionTracking)
+                        .foregroundStyle(Theme.ink)
+                    if let updated = glance.lastUpdated {
+                        Text("capacity refreshed \(dashboardFreshnessText(updated))")
                             .font(Type.dataSmall).foregroundStyle(Theme.muted)
                     }
+                    if dashboard.usage != nil {
+                        Text(dashboard.usageLastUpdated.map {
+                            "recorded use refreshed \(dashboardFreshnessText($0))"
+                        } ?? "recorded use update time unavailable")
+                            .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    }
+                    Spacer()
+                    staleControl(count: snapshot.glance.limits.filter { $0.stale == true }.count)
+                }
+                Text("Provider-reported usage allowance. agentacct does not enforce a spending budget or stop work.")
+                    .font(Type.caption).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let today = snapshot.glance.usage.windows.first(where: { $0.label == "today" })?.totals {
+                    todayStrip(today)
+                }
+
+                if presentation.rows.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(dashboard.usage == nil
+                             ? "No live capacity reported yet"
+                             : "No live capacity or recorded usage in this range")
+                            .font(Type.rowLabel).foregroundStyle(Theme.ink)
+                        Text(capacityEmptyDetail(presentation: presentation))
+                            .font(Type.caption).foregroundStyle(Theme.muted)
+                    }
+                    .padding(.vertical, Space.s)
+                } else {
+                    UsageCapacityLedger(
+                        rows: presentation.rows,
+                        days: dashboard.usageDays,
+                        usageLoaded: dashboard.usage != nil
+                    )
                 }
             }
-            Spacer()
-            // One range control for the whole pane: it drives the daily bars
-            // AND the breakdown depth.
-            if SnapshotMode.enabled {
-                // ImageRenderer can't draw a segmented Picker (it comes out a
-                // yellow placeholder), so a snapshot shows the current
-                // selection as plain chips instead.
-                Chip(text: "\(dashboard.usageDays)d", tint: Theme.accent)
-                Chip(text: mode.rawValue, tint: Theme.accent)
-            } else {
-                Picker("", selection: Binding(get: { dashboard.usageDays },
-                                              set: { days in Task { await dashboard.setUsageDays(days) } })) {
-                    Text("7d").tag(7)
-                    Text("30d").tag(30)
-                    Text("90d").tag(90)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Current capacity. Provider reported usage allowance; agentacct does not enforce a spending budget or stop work.")
+        case .connecting:
+            scopedCapacityState(
+                title: "Connecting to local data…",
+                detail: "Provider capacity is loading. Recorded usage remains a separate section."
+            )
+        case .disconnected(let message):
+            scopedCapacityState(
+                title: "Live limits unavailable — daemon disconnected",
+                detail: message
+            )
+        case .incompatible(let message):
+            scopedCapacityState(title: "Live limits unavailable — incompatible daemon", detail: message)
+        }
+    }
+
+    private func staleControl(count: Int) -> some View {
+        Group {
+            if count > 0 {
+                if SnapshotMode.enabled {
+                    Chip(text: "\(count) stale hidden", tint: Theme.amber)
+                } else {
+                    Toggle("Show \(count) stale capacity reading\(count == 1 ? "" : "s")", isOn: $showStale)
+                        .toggleStyle(.checkbox)
+                        .font(Type.caption)
+                        .foregroundStyle(Theme.muted)
+                        .accessibilityIdentifier("usage.capacity.show-stale")
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 130)
-                Picker("", selection: Binding(get: { mode }, set: { chosenMode = $0 })) {
-                    ForEach(UsageMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 110)
             }
         }
     }
 
-    // MARK: dollars view (the v7 layout)
+    private func capacityEmptyDetail(presentation: UsageCapacitySnapshot) -> String {
+        if presentation.hiddenStaleCount > 0 {
+            return "Every provider reading is stale. Show stale capacity readings to inspect them."
+        }
+        if dashboard.usage == nil {
+            return "Recorded usage is still loading or unavailable; no client has reported a live quota window."
+        }
+        return "No client has reported a live quota window or usage in the selected range."
+    }
+
+    private func scopedCapacityState(title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: Space.m) {
+            Text("Current capacity")
+                .font(Type.titleSection).tracking(Type.titleSectionTracking)
+                .foregroundStyle(Theme.ink)
+            Text("Provider-reported usage allowance. agentacct does not enforce a spending budget or stop work.")
+                .font(Type.caption).foregroundStyle(Theme.muted)
+            Card {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).font(Type.rowLabel).foregroundStyle(Theme.ink)
+                    Text(detail).font(Type.caption).foregroundStyle(Theme.muted)
+                }
+            }
+        }
+    }
+
+    private func todayStrip(_ totals: UsageTotals) -> some View {
+        HStack(spacing: Space.l) {
+            CapsLabel(text: "Today · all agents")
+            Text(totals.freshTokens.map(UsageTotals.compact) ?? "Tokens not reported")
+                .font(Type.dataSmallSemibold)
+                .foregroundStyle(totals.freshTokens == nil ? Theme.muted : Theme.ink)
+            if totals.freshTokens != nil {
+                Text("fresh tokens").font(Type.caption).foregroundStyle(Theme.muted)
+            }
+            Rectangle().fill(Theme.hairline).frame(width: 1, height: 20)
+            Text(totals.costText == "—" ? "Cost unpriced" : totals.costText)
+                .font(Type.dataSmallSemibold)
+                .foregroundStyle(totals.costText == "—" ? Theme.muted : Theme.ink)
+            Text(Fmt.costConfidenceLabel(totals.costConfidence) ?? "cost basis not reported")
+                .font(Type.caption).foregroundStyle(Theme.muted)
+            Spacer()
+        }
+        .padding(.horizontal, Space.l)
+        .frame(minHeight: 44)
+        .background(Theme.tintNeutral.opacity(0.45), in: RoundedRectangle(cornerRadius: Metrics.radius))
+    }
 
     @ViewBuilder
-    private var dollarsView: some View {
-        if let usage = dashboard.usage {
-            summaryStrip(usage).padding(.top, Space.xl)
-            if let periods = usage.byPeriod, periods.count > 1 {
-                UsageDailyChart(periods: periods).padding(.top, Space.xl)
+    private var recordedUsageSection: some View {
+        VStack(alignment: .leading, spacing: Space.m) {
+            HStack(alignment: .center, spacing: Space.m) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Recorded usage")
+                        .font(Type.titleSection).tracking(Type.titleSectionTracking)
+                        .foregroundStyle(Theme.ink)
+                    HStack(spacing: 0) {
+                        Text("Range applies only to totals, history, and attribution")
+                            .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                        if let updated = dashboard.usageLastUpdated {
+                            Text(" · usage refreshed \(dashboardFreshnessText(updated))")
+                                .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                        }
+                    }
+                }
+                Spacer()
+                usageRangeControl
             }
-            UsageBreakdownTable(
-                title: "By client",
-                nameHeader: "Client",
-                days: dashboard.usageDays,
-                rows: usage.byClient.map { ($0.client ?? "unknown", $0) }
-            )
-            .padding(.top, Space.xl)
-            UsageBreakdownTable(
-                title: "By model",
-                nameHeader: "Model",
-                days: dashboard.usageDays,
-                rows: usage.byModel.map { ($0.model ?? "unknown", $0) }
-            )
-            .padding(.top, Space.xl)
-            basisFooter(usage).padding(.top, Space.l)
+
+            Text("Cost is usage reporting, not a provider invoice or balance due. Verify charges with your provider.")
+                .font(Type.caption).foregroundStyle(Theme.muted)
+
+            if let error = dashboard.errorText {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(Type.caption).foregroundStyle(Theme.coral)
+            }
+
+            if let usage = dashboard.usage {
+                summaryStrip(usage)
+                if let periods = usage.byPeriod, periods.count > 1 {
+                    UsageDailyChart(periods: periods)
+                }
+                if !capacityIsConnected {
+                    UsageBreakdownTable(
+                        title: "By client",
+                        nameHeader: "Client",
+                        days: dashboard.usageDays,
+                        rows: usage.byClient.map { ($0.client ?? "Unattributed client", $0) }
+                    )
+                }
+                UsageBreakdownTable(
+                    title: "By model",
+                    nameHeader: "Model",
+                    days: dashboard.usageDays,
+                    rows: usage.byModel.map { ($0.model ?? "Unattributed model", $0) }
+                )
+                basisFooter(usage)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Recorded usage not loaded").font(Type.rowLabel).foregroundStyle(Theme.ink)
+                    Text("Capacity may still be available above while the usage summary loads.")
+                        .font(Type.caption).foregroundStyle(Theme.muted)
+                }
+                .padding(.vertical, Space.s)
+            }
+        }
+    }
+
+    private var capacityIsConnected: Bool {
+        if case .connected = glance.phase { return true }
+        return false
+    }
+
+    @ViewBuilder
+    private var usageRangeControl: some View {
+        if SnapshotMode.enabled {
+            HStack(spacing: Space.s) {
+                CapsLabel(text: "Usage range")
+                Chip(text: "\(dashboard.usageDays)d", tint: Theme.accent)
+            }
         } else {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("No usage loaded").font(Type.rowLabel).foregroundStyle(Theme.ink)
-                Text("The daemon has not returned a usage summary yet.")
-                    .font(Type.caption).foregroundStyle(Theme.muted)
+            Picker("Usage range", selection: Binding(
+                get: { dashboard.usageDays },
+                set: { days in Task { await dashboard.setUsageDays(days) } }
+            )) {
+                Text("7d").tag(7)
+                Text("30d").tag(30)
+                Text("90d").tag(90)
             }
-            .padding(.top, Space.xl)
+            .pickerStyle(.segmented)
+            .frame(width: 190)
+            .accessibilityIdentifier("usage.history.range")
         }
     }
 
@@ -152,7 +277,7 @@ struct UsagePane: View {
             ),
             StripRow.Cell(
                 id: "cost",
-                label: "Est. cost",
+                label: "Cost",
                 value: totals.flatMap { $0.costText == "—" ? nil : $0.costText },
                 qualifier: Fmt.costConfidenceLabel(totals?.costConfidence),
                 absent: "no priced usage"
@@ -181,105 +306,103 @@ struct UsagePane: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    // MARK: plan view
-
     @ViewBuilder
-    private var planView: some View {
-        if calibratedClients.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("No calibrated plan estimate yet.")
-                    .font(Type.body)
-                    .foregroundStyle(Theme.muted)
-                ForEach(dashboard.planClients) { client in
-                    if client.calibrationState == "calibrating" {
-                        Text("\(client.client): calibrating from your own limit history")
-                            .font(Type.caption)
-                            .foregroundStyle(Theme.muted)
-                    } else if client.calibrationState == "never" {
-                        Text("\(client.client): a weekly plan % is undefined for this client's rolling meter")
-                            .font(Type.caption)
-                            .foregroundStyle(Theme.muted)
-                    }
+    private var aboutSection: some View {
+        if SnapshotMode.enabled {
+            Card {
+                HStack {
+                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
+                    Text("About these numbers").font(Type.rowLabel).foregroundStyle(Theme.ink)
+                    Spacer()
+                    Text("cost, windows, and plan calibration")
+                        .font(Type.dataSmall).foregroundStyle(Theme.muted)
                 }
             }
         } else {
-            ForEach(calibratedClients) { client in
-                VStack(alignment: .leading, spacing: Space.s) {
-                    HStack(spacing: 8) {
-                        SectionCaption(tone: Theme.muted, text: "\(client.client) · % of the weekly plan")
+            Card {
+                DisclosureGroup(isExpanded: $showAbout) {
+                    aboutDetails.padding(.top, Space.l)
+                } label: {
+                    HStack {
+                        Text("About these numbers").font(Type.rowLabel).foregroundStyle(Theme.ink)
                         Spacer()
-                        if let today = Fmt.planPct(client.windowPcts?["today"] ?? nil) {
-                            Text("today \(today)")
-                                .font(Type.dataSmallSemibold)
-                                .foregroundStyle(Theme.accent)
-                        }
-                        if let week = Fmt.planPct(client.windowPcts?["7d"] ?? nil) {
-                            Text("7d \(week)")
-                                .font(Type.dataSmallSemibold)
-                                .foregroundStyle(Theme.muted)
-                        }
-                    }
-                    if let daily = client.daily, daily.count > 1 {
-                        PlanDailyChart(days: daily, tint: Theme.chartBar)
-                    }
-                    if let byModel = client.byModel, !byModel.isEmpty {
-                        modelShares(byModel)
-                    }
-                    if let unknown = Fmt.planPct(client.unknownTimePct) {
-                        Text("+ \(unknown) from rows with unusable timestamps (outside the daily bars)")
-                            .font(Type.caption)
-                            .foregroundStyle(Theme.muted)
-                    }
-                    if let basis = client.basis {
-                        Text("estimate basis: \(basis)")
-                            .font(Type.caption)
-                            .foregroundStyle(Theme.muted)
+                        Text("cost, windows, and plan calibration")
+                            .font(Type.dataSmall).foregroundStyle(Theme.muted)
                     }
                 }
-                .padding(.bottom, Space.l)
+                .accessibilityIdentifier("usage.about")
             }
         }
     }
 
-    private func modelShares(_ shares: [V1PlanModelShare]) -> some View {
-        let maxPct = shares.compactMap(\.pct).max() ?? 1
-        return VStack(alignment: .leading, spacing: Space.s) {
-            HStack(spacing: 6) {
-                SectionCaption(tone: Theme.muted, text: "Which model eats the plan")
-                Spacer()
-                // Disclose that these are estimates AND the window they sum over,
-                // so a 30/90-day breakdown reading >100% of a weekly plan is
-                // clearly a multi-week accumulation, not a broken number.
-                Text("estimated · last \(dashboard.usageDays)d")
-                    .font(Type.caption)
-                    .foregroundStyle(Theme.muted)
+    private var aboutDetails: some View {
+        VStack(alignment: .leading, spacing: Space.l) {
+            VStack(alignment: .leading, spacing: 6) {
+                CapsLabel(text: "Cost grammar")
+                Text("$ complete reported or billed · ≈$ estimate · ~$ known partial subtotal · unpriced when no amount is available")
+                    .font(Type.caption).foregroundStyle(Theme.muted)
             }
-            Card(padding: 6) {
-                VStack(spacing: 0) {
-                    ForEach(Array(shares.enumerated()), id: \.element.id) { index, share in
-                        HStack(spacing: 10) {
-                            Text(share.model ?? "unknown")
-                                .font(Type.captionSemibold)
-                                .foregroundStyle(Theme.ink)
-                                .lineLimit(1)
-                                .frame(width: 168, alignment: .leading)
-                            MeterBar(fraction: (share.pct ?? 0) / max(maxPct, 0.0001),
-                                     tint: Theme.chartBar, height: 7)
-                            Text(Fmt.planPct(share.pct) ?? "—")
-                                .font(Type.dataSmallSemibold)
-                                .foregroundStyle(Theme.ink)
-                                .frame(width: 64, alignment: .trailing)
-                            Text(share.totalTokens.map { UsageTotals.compact(Int($0)) } ?? "—")
-                                .font(Type.dataSmall)
-                                .foregroundStyle(Theme.muted)
-                                .frame(width: 58, alignment: .trailing)
-                        }
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 7)
-                        if index < shares.count - 1 {
-                            Rectangle().fill(Theme.hairline).frame(height: 1)
-                        }
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+            VStack(alignment: .leading, spacing: 6) {
+                CapsLabel(text: "Provider windows")
+                Text("Rolling windows follow each client's activity; fixed windows reset at the provider's stated time. Attention markers sit at 75% and 90% used.")
+                    .font(Type.caption).foregroundStyle(Theme.muted)
+            }
+            if !dashboard.planClients.isEmpty {
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+                VStack(alignment: .leading, spacing: Space.m) {
+                    CapsLabel(text: "Weekly plan-share estimates")
+                    Text("Today and 7d estimates stay fixed; the selected usage range applies only to each model accumulation below.")
+                        .font(Type.caption).foregroundStyle(Theme.muted)
+                    ForEach(Array(dashboard.planClients.enumerated()), id: \.element.id) { index, client in
+                        if index > 0 { Rectangle().fill(Theme.hairline).frame(height: 1) }
+                        UsagePlanClientDetail(client: client, days: dashboard.usageDays)
                     }
+                }
+            }
+        }
+    }
+}
+
+private struct UsagePlanClientDetail: View {
+    let client: V1PlanClient
+    let days: Int
+    @State private var showDaily = false
+
+    private var presentation: UsagePlanPresentation {
+        UsagePlanPresentation(client: client, days: days)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.s) {
+            HStack(alignment: .firstTextBaseline, spacing: Space.m) {
+                Text(client.client).font(Type.rowLabel).foregroundStyle(Theme.ink)
+                    .frame(width: 140, alignment: .leading)
+                Text(presentation.detailText)
+                    .font(Type.caption).foregroundStyle(Theme.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if let daily = presentation.dailyText {
+                if presentation.dailyRows.isEmpty {
+                    Text(daily).font(Type.caption).foregroundStyle(Theme.muted)
+                } else {
+                    DisclosureGroup(isExpanded: $showDaily) {
+                        LazyVStack(alignment: .leading, spacing: 5) {
+                            ForEach(Array(presentation.dailyRows.enumerated()), id: \.offset) { _, row in
+                                Text(row).font(Type.caption).foregroundStyle(Theme.muted)
+                            }
+                        }
+                        .padding(.top, Space.s)
+                    } label: {
+                        Text(daily).font(Type.captionSemibold).foregroundStyle(Theme.ink)
+                    }
+                    .accessibilityIdentifier("usage.plan.daily.\(client.client)")
+                }
+            }
+            if !presentation.modelRows.isEmpty {
+                CapsLabel(text: presentation.modelHeading)
+                ForEach(Array(presentation.modelRows.enumerated()), id: \.offset) { _, row in
+                    Text(row).font(Type.caption).foregroundStyle(Theme.muted)
                 }
             }
         }
@@ -343,16 +466,24 @@ struct UsageDailyChart: View {
     let periods: [PeriodBucket]
 
     enum Series: String, CaseIterable, Identifiable {
-        case cost = "Est. cost"
+        case cost = "Cost"
         case tokens = "Fresh tokens"
         var id: String { rawValue }
     }
 
-    @State private var series: Series = .cost
+    @State private var series: Series
     /// nil = all clients; set = one client's token series (tokens mode only).
     @State private var group: String?
     @State private var hoveredIndex: Int?
+    @State private var selectedIndex: Int?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(periods: [PeriodBucket]) {
+        self.periods = periods
+        let initialSeries: Series = periods.contains { $0.estimatedCostUsd != nil } ? .cost : .tokens
+        _series = State(initialValue: initialSeries)
+        _selectedIndex = State(initialValue: periods.indices.last)
+    }
 
     private var clients: [String] {
         var seen: Set<String> = []
@@ -430,7 +561,7 @@ struct UsageDailyChart: View {
 
     private var chartTitle: String {
         switch series {
-        case .cost: return "Estimated cost per day"
+        case .cost: return "Cost per day"
         case .tokens: return group.map { "Fresh tokens per day · \($0)" } ?? "Fresh tokens per day"
         }
     }
@@ -441,14 +572,41 @@ struct UsageDailyChart: View {
                 HStack(spacing: Space.m) {
                     Text(chartTitle).font(Type.titleCard).foregroundStyle(Theme.ink)
                     Spacer()
+                    if let selectedIndex, periods.indices.contains(selectedIndex), !SnapshotMode.enabled {
+                        Button {
+                            self.selectedIndex = max(0, selectedIndex - 1)
+                        } label: {
+                            Image(systemName: "chevron.left").frame(width: 18, height: 18)
+                        }
+                        .buttonStyle(QuietButtonStyle(horizontalPadding: 2, verticalPadding: 2))
+                        .disabled(selectedIndex == periods.startIndex)
+                        .accessibilityLabel("Previous usage day")
+
+                        Text("\(periods[selectedIndex].shortLabel) · \(valueText(periods[selectedIndex]))")
+                            .font(Type.dataSmallSemibold)
+                            .foregroundStyle(Theme.ink)
+                            .frame(minWidth: 112)
+
+                        Button {
+                            self.selectedIndex = min(periods.index(before: periods.endIndex), selectedIndex + 1)
+                        } label: {
+                            Image(systemName: "chevron.right").frame(width: 18, height: 18)
+                        }
+                        .buttonStyle(QuietButtonStyle(horizontalPadding: 2, verticalPadding: 2))
+                        .disabled(selectedIndex == periods.index(before: periods.endIndex))
+                        .accessibilityLabel("Next usage day")
+                    }
                     if SnapshotMode.enabled {
                         Chip(text: series.rawValue, tint: Theme.accent)
                     } else {
-                        Picker("", selection: $series) {
+                        CapsLabel(text: "Measure")
+                        Picker("Chart measure", selection: $series) {
                             ForEach(Series.allCases) { Text($0.rawValue).tag($0) }
                         }
                         .pickerStyle(.segmented)
                         .fixedSize()
+                        .labelsHidden()
+                        .accessibilityIdentifier("usage.history.measure")
                         if series == .tokens, clients.count > 1 {
                             Picker("Group", selection: $group) {
                                 Text("All clients").tag(String?.none)
@@ -495,7 +653,8 @@ struct UsageDailyChart: View {
                                                 // Strictly linear: the peak bar
                                                 // touches the line its label names.
                                                 RoundedRectangle(cornerRadius: 2)
-                                                    .fill(hoveredIndex == nil || hoveredIndex == index
+                                                    .fill((hoveredIndex ?? selectedIndex) == nil
+                                                          || (hoveredIndex ?? selectedIndex) == index
                                                           ? Theme.chartBar : Theme.chartBarDim)
                                                     .frame(height: max(1, Self.plotHeight * dayValue / maxValue))
                                             } else {
@@ -515,6 +674,7 @@ struct UsageDailyChart: View {
                                                 hoveredIndex = nil
                                             }
                                         }
+                                        .onTapGesture { selectedIndex = index }
                                         .accessibilityElement()
                                         .accessibilityLabel(
                                             "\(period.period ?? period.shortLabel), \(valueText(period))"
@@ -525,8 +685,9 @@ struct UsageDailyChart: View {
                             .frame(height: Self.plotHeight)
                         }
                         .overlay(alignment: .topLeading) {
-                            if let hoveredIndex, periods.indices.contains(hoveredIndex) {
-                                let hovered = periods[hoveredIndex]
+                            if let activeIndex = hoveredIndex ?? selectedIndex,
+                               periods.indices.contains(activeIndex) {
+                                let hovered = periods[activeIndex]
                                 HStack(spacing: 6) {
                                     Text(hovered.shortLabel)
                                         .font(Type.dataSmallSemibold).foregroundStyle(Theme.ink)
@@ -563,13 +724,17 @@ struct UsageDailyChart: View {
         }
         .onChange(of: periods.map(\.period)) {
             hoveredIndex = nil
+            selectedIndex = periods.indices.last
+            if series == .cost && !periods.contains(where: { $0.estimatedCostUsd != nil }) {
+                series = .tokens
+            }
         }
     }
 }
 
 // MARK: - Breakdown tables
 
-/// A v7 breakdown table: NAME · SESSIONS · TOKENS · SHARE · EST. COST, ranked
+/// A v7 breakdown table: NAME · SESSIONS · TOKENS · SHARE · COST, ranked
 /// by fresh tokens, share bars strictly proportional to the table's own total.
 struct UsageBreakdownTable: View {
     let title: String
@@ -578,7 +743,14 @@ struct UsageBreakdownTable: View {
     let rows: [(name: String, bucket: UsageBucket)]
 
     private var sorted: [(name: String, bucket: UsageBucket)] {
-        rows.sorted { ($0.bucket.freshTokens ?? 0) > ($1.bucket.freshTokens ?? 0) }
+        rows.sorted { left, right in
+            switch (left.bucket.freshTokens, right.bucket.freshTokens) {
+            case let (lhs?, rhs?) where lhs != rhs: return lhs > rhs
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default: return left.name.localizedStandardCompare(right.name) == .orderedAscending
+            }
+        }
     }
 
     private var totalFresh: Int {
@@ -603,7 +775,7 @@ struct UsageBreakdownTable: View {
                     CapsLabel(text: "Sessions").frame(width: 76, alignment: .trailing)
                     CapsLabel(text: "Tokens").frame(width: 76, alignment: .trailing)
                     CapsLabel(text: "Share").frame(width: 140, alignment: .leading)
-                    CapsLabel(text: "Est. cost").frame(width: 90, alignment: .trailing)
+                    CapsLabel(text: "Cost").frame(width: 90, alignment: .trailing)
                 }
                 .padding(.horizontal, Space.xl)
                 .frame(height: Metrics.rowHeader)
@@ -616,37 +788,56 @@ struct UsageBreakdownTable: View {
                         .padding(Space.xl)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    ForEach(Array(sorted.enumerated()), id: \.element.bucket.id) { index, row in
-                        if index > 0 {
-                            Rectangle().fill(Theme.hairline).frame(height: 1)
-                                .padding(.horizontal, Space.xl)
-                        }
-                        tableRow(row.name, row.bucket)
+                    if SnapshotMode.enabled {
+                        VStack(spacing: 0) { populatedRows }
+                    } else {
+                        LazyVStack(spacing: 0) { populatedRows }
                     }
                 }
             }
         }
     }
 
+    @ViewBuilder
+    private var populatedRows: some View {
+        ForEach(Array(sorted.enumerated()), id: \.offset) { index, row in
+            if index > 0 {
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+                    .padding(.horizontal, Space.xl)
+            }
+            tableRow(row.name, row.bucket)
+        }
+    }
+
     private func tableRow(_ name: String, _ bucket: UsageBucket) -> some View {
-        let share = totalFresh > 0 ? Double(bucket.freshTokens ?? 0) / Double(totalFresh) : 0
+        let share = bucket.freshTokens.flatMap { tokens in
+            totalFresh > 0 ? Double(tokens) / Double(totalFresh) : 0
+        }
         return HStack(spacing: Space.l) {
             Text(name)
                 .font(Type.rowLabel).foregroundStyle(Theme.ink)
                 .lineLimit(1).truncationMode(.middle)
+                .help(name)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Text(bucket.sessions.map(String.init) ?? "not reported")
                 .font(Type.dataSmall).foregroundStyle(bucket.sessions == nil ? Theme.muted : Theme.ink)
                 .frame(width: 76, alignment: .trailing)
-            Text(bucket.freshTokens.map(UsageTotals.compact) ?? "none")
-                .font(Type.dataSmall).foregroundStyle(Theme.ink)
+            Text(bucket.freshTokens.map(UsageTotals.compact) ?? "not reported")
+                .font(Type.dataSmall).foregroundStyle(bucket.freshTokens == nil ? Theme.muted : Theme.ink)
                 .frame(width: 76, alignment: .trailing)
-            HStack(spacing: Space.s) {
-                MeterBar(fraction: share, tint: Theme.chartBar, height: 6)
-                    .frame(width: 80)
-                Text(totalFresh > 0 ? "\(Int((share * 100).rounded()))%" : "–%")
-                    .font(Type.dataSmall).foregroundStyle(Theme.ink)
-                    .frame(width: 40, alignment: .leading)
+            Group {
+                if let share {
+                    HStack(spacing: Space.s) {
+                        MeterBar(fraction: share, tint: Theme.chartBar, height: 6)
+                            .frame(width: 80)
+                        Text("\(Int((share * 100).rounded()))%")
+                            .font(Type.dataSmall).foregroundStyle(Theme.ink)
+                            .frame(width: 40, alignment: .leading)
+                    }
+                } else {
+                    Text("not reported")
+                        .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                }
             }
             .frame(width: 140, alignment: .leading)
             Text(bucket.costText == "—" ? "unpriced" : bucket.costText)
@@ -656,83 +847,17 @@ struct UsageBreakdownTable: View {
         }
         .padding(.horizontal, Space.xl)
         .frame(minHeight: Metrics.rowTable)
-    }
-}
-
-// MARK: - Plan charts (plan mode)
-
-/// The daily plan-share bars for one calibrated client (aligned to the same
-/// local calendar days as the cost chart).
-struct PlanDailyChart: View {
-    let days: [V1PlanDay]
-    var tint: Color
-
-    @State private var hovered: V1PlanDay?
-
-    private var maxPct: Double {
-        max(days.map(\.pct).max() ?? 0.0001, 0.0001)
-    }
-
-    var body: some View {
-        Card(padding: 12) {
-            VStack(spacing: 6) {
-                HStack(alignment: .bottom, spacing: 3) {
-                    ForEach(days) { day in
-                        RoundedRectangle(cornerRadius: 1)
-                            .fill(day.pct > 0 ? tint : Theme.tintNeutral)
-                            .frame(height: day.pct > 0 ? max(2, 110 * day.pct / maxPct) : 1.5)
-                            .frame(maxWidth: .infinity, alignment: .bottom)
-                            .contentShape(Rectangle())
-                            .opacity(hovered == nil || hovered?.id == day.id ? 1 : 0.55)
-                            .onHover { inside in
-                                if inside { hovered = day } else if hovered?.id == day.id { hovered = nil }
-                            }
-                    }
-                }
-                .frame(height: 112, alignment: .bottom)
-                .overlay(alignment: .topLeading) {
-                    if let hovered {
-                        PlanDayTooltip(day: hovered)
-                    }
-                }
-                HStack {
-                    Text(shortDate(days.first?.date))
-                    Spacer()
-                    Text(shortDate(days[days.count / 2].date))
-                    Spacer()
-                    Text(shortDate(days.last?.date))
-                }
-                .font(Type.dataSmall)
-                .foregroundStyle(Theme.muted)
-            }
-        }
-    }
-
-    private func shortDate(_ iso: String?) -> String {
-        guard let iso, iso.count >= 10 else { return "" }
-        return String(iso.dropFirst(5))  // YYYY-MM-DD -> MM-DD
-    }
-}
-
-/// Hover card for the plan-share chart: one day's date + estimated plan %.
-struct PlanDayTooltip: View {
-    let day: V1PlanDay
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(day.date.count >= 10 ? String(day.date.dropFirst(5)) : day.date)
-                .font(Type.dataSmallSemibold)
-                .foregroundStyle(Theme.ink)
-            Text(Fmt.planPct(day.pct) ?? "≈0%")
-                .font(Type.dataSmall)
-                .foregroundStyle(Theme.accent)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
-        .overlay(RoundedRectangle(cornerRadius: Metrics.radius)
-            .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW))
-        .padding(4)
-        .fixedSize()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            [
+                name,
+                bucket.sessions.map { "\($0) sessions" } ?? "sessions not reported",
+                bucket.freshTokens.map { "\($0) fresh tokens" } ?? "tokens not reported",
+                share.map { "\(Int(($0 * 100).rounded())) percent of known fresh tokens" }
+                    ?? "token share not reported",
+                bucket.costText == "—" ? "cost unpriced" : bucket.costText,
+                Fmt.costConfidenceLabel(bucket.costConfidence),
+            ].compactMap { $0 }.joined(separator: ", ")
+        )
     }
 }

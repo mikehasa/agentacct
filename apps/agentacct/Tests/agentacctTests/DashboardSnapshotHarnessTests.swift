@@ -23,6 +23,8 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         let fixture = try DashboardSnapshotFixture.load(from: dashboardFixtureURL())
         let store = DashboardStore(preloaded: fixture)
 
+        XCTAssertEqual(store.usageLastUpdated?.timeIntervalSince1970, fixture.glance.generatedAt)
+
         XCTAssertEqual(store.receiptTasks.count, 4)
         XCTAssertEqual(store.totalReceiptTasks, 4)
         // Two plan lanes + two limit clients: the fixture demos the

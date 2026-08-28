@@ -33,6 +33,12 @@ final class GlanceState: ObservableObject {
         lastUpdated = SnapshotMode.currentDate
     }
 
+    /// Snapshot/tooling: an explicit non-connected state with no polling.
+    init(preloadedPhase: Phase, lastUpdated: Date? = nil) {
+        phase = preloadedPhase
+        self.lastUpdated = lastUpdated
+    }
+
     func start() {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
