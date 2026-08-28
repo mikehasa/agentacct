@@ -34,7 +34,8 @@ host or running Swift tests:
 
 This project currently discovers `AboutVisualRegressionTests`,
 `DashboardVisualRegressionTests`, `MenuVisualRegressionTests`,
-`UsageVisualRegressionTests`, and `WorkVisualRegressionTests`. An empty list
+`SetupVisualRegressionTests`, `UsageVisualRegressionTests`, and
+`WorkVisualRegressionTests`. An empty list
 remains valid for another project or branch before its first visual suite.
 
 Verify one suite before changing its UI:
@@ -391,6 +392,26 @@ open /tmp/agentacct-about-review
 The canonical references keep the standard window controls in their inactive
 state because the deterministic renderer is headless. AppKit still owns the
 panel chrome, spacing, icon treatment, typography, and light/dark appearance.
+
+## Setup failure review matrix
+
+The Setup renderer exercises the false-success regression's user-visible
+endpoint: a nonzero recorder exit with retained log output, selectable
+diagnostics, recovery guidance, and retry controls.
+
+| Artifact | Appearance | Pixel size |
+| --- | --- | --- |
+| `setup-failure-light.png` | light | 920 × 1028 px |
+| `setup-failure-dark.png` | dark | 920 × 1028 px |
+
+Run the canonical pair with:
+
+```bash
+./Scripts/visual-snapshots verify SetupVisualRegressionTests
+```
+
+The pixel references verify layout and copy. Text selection and retry remain
+interaction checks because an offscreen renderer cannot activate controls.
 
 ## Color contrast guardrail
 
