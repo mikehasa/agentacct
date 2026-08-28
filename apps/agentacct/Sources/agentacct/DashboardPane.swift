@@ -115,17 +115,29 @@ struct DashboardAttentionPresentation {
     let totalCount: Int?
     let isComplete: Bool
     let isTruncated: Bool
+    let isUnavailable: Bool
 
     init(
         recentTasks: [ReceiptSummary],
         recentTasksTruncated: Bool?,
-        attention: ReceiptAttentionPayload?
+        attention: ReceiptAttentionPayload?,
+        fetchError: String? = nil
     ) {
+        if fetchError != nil {
+            items = []
+            totalCount = nil
+            isComplete = false
+            isTruncated = false
+            isUnavailable = true
+            return
+        }
+
         if let attention {
             items = attention.tasks.map(DashboardWorkItem.init)
             totalCount = attention.total
             isComplete = true
             isTruncated = attention.truncated || attention.total > attention.tasks.count
+            isUnavailable = false
             return
         }
 
@@ -135,6 +147,7 @@ struct DashboardAttentionPresentation {
         isComplete = recentTasksTruncated == false
         totalCount = isComplete ? items.count : nil
         isTruncated = !isComplete
+        isUnavailable = false
     }
 }
 
@@ -245,7 +258,8 @@ struct DashboardPane: View {
         DashboardAttentionPresentation(
             recentTasks: dashboard.receiptTasks,
             recentTasksTruncated: dashboard.receiptTasksTruncated,
-            attention: dashboard.receiptAttention
+            attention: dashboard.receiptAttention,
+            fetchError: dashboard.receiptListError
         )
     }
 
@@ -546,7 +560,14 @@ private struct NeedsReviewCard: View {
                 Divider().overlay(Theme.hairline)
 
                 if visibleItems.isEmpty {
-                    if attention.isComplete {
+                    if attention.isUnavailable {
+                        DashboardEmptyState(
+                            icon: "wifi.exclamationmark",
+                            title: "Review status unavailable",
+                            message: "The latest receipt refresh failed. Cached results aren't shown as current."
+                        )
+                        .frame(minHeight: 222)
+                    } else if attention.isComplete {
                         DashboardEmptyState(
                             icon: "checkmark.circle.fill",
                             title: "All clear",

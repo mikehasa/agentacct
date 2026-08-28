@@ -368,6 +368,18 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertTrue(complete.isComplete)
         XCTAssertTrue(complete.isTruncated)
 
+        let failedRefresh = DashboardAttentionPresentation(
+            recentTasks: payload.tasks,
+            recentTasksTruncated: payload.truncated,
+            attention: payload.attention,
+            fetchError: "receipts fetch failed: connection lost"
+        )
+        XCTAssertTrue(failedRefresh.items.isEmpty)
+        XCTAssertNil(failedRefresh.totalCount)
+        XCTAssertFalse(failedRefresh.isComplete)
+        XCTAssertFalse(failedRefresh.isTruncated)
+        XCTAssertTrue(failedRefresh.isUnavailable)
+
         let legacy = DashboardAttentionPresentation(
             recentTasks: [],
             recentTasksTruncated: true,

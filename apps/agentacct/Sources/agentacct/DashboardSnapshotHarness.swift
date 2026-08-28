@@ -124,6 +124,7 @@ struct DashboardSnapshotConfiguration {
     let width: CGFloat
     let height: CGFloat
     let colorScheme: ColorScheme
+    let workState: SnapshotWorkStoreState
 
     var filename: String {
         let appearance = colorScheme == .dark ? "dark" : "light"
@@ -131,13 +132,15 @@ struct DashboardSnapshotConfiguration {
     }
 
     static let reviewConfigurations: [Self] = [
-        Self(viewport: "minimum", width: 960, height: 560, colorScheme: .light),
-        Self(viewport: "minimum", width: 960, height: 560, colorScheme: .dark),
+        Self(viewport: "minimum", width: 960, height: 560, colorScheme: .light, workState: .populated),
+        Self(viewport: "minimum", width: 960, height: 560, colorScheme: .dark, workState: .populated),
         // The reference viewport must show the complete dashboard, including
         // chart labels. The shorter minimum pair intentionally verifies the
         // real top-of-scroll experience instead.
-        Self(viewport: "reference", width: 1120, height: 800, colorScheme: .light),
-        Self(viewport: "reference", width: 1120, height: 800, colorScheme: .dark),
+        Self(viewport: "reference", width: 1120, height: 800, colorScheme: .light, workState: .populated),
+        Self(viewport: "reference", width: 1120, height: 800, colorScheme: .dark, workState: .populated),
+        Self(viewport: "attention-unavailable", width: 1120, height: 800, colorScheme: .light, workState: .listErrorWithRetainedData),
+        Self(viewport: "attention-unavailable", width: 1120, height: 800, colorScheme: .dark, workState: .listErrorWithRetainedData),
     ]
 }
 
@@ -178,13 +181,15 @@ enum DashboardSnapshotRenderer {
             SnapshotScheme.override = nil
         }
 
-        let glance = GlanceState(preloaded: fixture.glanceSnapshot)
-        let dashboard = DashboardStore(preloaded: fixture)
-        let selection = AppSelection()
-        selection.pane = .dashboard
-
         return try configurations.map { configuration in
             SnapshotScheme.override = configuration.colorScheme
+            let glance = GlanceState(preloaded: fixture.glanceSnapshot)
+            let dashboard = DashboardStore(
+                preloaded: fixture,
+                workState: configuration.workState
+            )
+            let selection = AppSelection()
+            selection.pane = .dashboard
             // A packaged app consistently offers setup here. Injecting that
             // state keeps SwiftPM and packaged-build snapshots identical.
             let view = MainWindow(canSetUpOverride: true)

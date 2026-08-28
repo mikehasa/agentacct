@@ -8,6 +8,7 @@ enum SnapshotWorkStoreState {
     case populated
     case empty
     case listError
+    case listErrorWithRetainedData
     case receiptLoading
     case receiptError
 }
@@ -83,6 +84,12 @@ final class DashboardStore: ObservableObject {
             receiptTasksTruncated = false
         case .listError:
             receiptTasks = []
+            receiptListError = "receipts fetch failed: synthetic review error"
+        case .listErrorWithRetainedData:
+            receiptTasks = fixture.tasks.tasks
+            totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
             receiptListError = "receipts fetch failed: synthetic review error"
         case .receiptLoading:
             receiptTasks = fixture.tasks.tasks
