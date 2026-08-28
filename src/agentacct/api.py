@@ -3002,6 +3002,7 @@ def create_local_api_app(
         list[tuple[int, float, str, Mapping[str, Any], dict[str, Any]]],
         float | None,
         dict[str, int],
+        str,
     ]:
         cached = v1_attention_projection_cache.get("value")
         if cached is not None and cached[0] is projection:
@@ -3033,7 +3034,7 @@ def create_local_api_app(
                 return cached[2]
 
             if cached is not None and cached[1] == attention_fingerprint:
-                cached_candidates, _, cached_counts = cached[2]
+                cached_candidates, _, cached_counts, _ = cached[2]
                 tasks_by_id = {
                     str(task.get("public_task_id")): task
                     for task in tasks
@@ -3043,7 +3044,12 @@ def create_local_api_app(
                     for order_class, recency, task_id, _, reason in cached_candidates
                     if task_id in tasks_by_id
                 ]
-                result = (candidates, latest_store_activity(tasks), cached_counts)
+                result = (
+                    candidates,
+                    latest_store_activity(tasks),
+                    cached_counts,
+                    attention_fingerprint,
+                )
                 v1_attention_projection_cache["value"] = (
                     projection,
                     attention_fingerprint,
@@ -3076,7 +3082,7 @@ def create_local_api_app(
                     )
                 )
             candidates.sort(key=lambda candidate: candidate[:3])
-            result = (candidates, latest, counts)
+            result = (candidates, latest, counts, attention_fingerprint)
             # The parent projection is rebuilt on a short TTL even when its
             # attention inputs are unchanged. Preserve the reduced/sorted index
             # across those rebuilds by hashing exactly the task state that can
@@ -3131,8 +3137,9 @@ def create_local_api_app(
     def v1_attention(
         request: Request,
         limit: int = Query(5, ge=1, le=50),
+        offset: int = Query(0, ge=0),
     ) -> dict[str, Any]:
-        """A complete but bounded review queue over every visible Task.
+        """A complete, paged review queue over every visible Task.
 
         This is deliberately separate from ``/v1/tasks``: deriving attention
         after paginating recent work makes both the count and queue incomplete.
@@ -3144,8 +3151,8 @@ def create_local_api_app(
 
         _require_v1_token(request)
         projection = _v1_task_projection()
-        candidates, latest, counts = _v1_attention_candidates(projection)
-        selected = candidates[:limit]
+        candidates, latest, counts, snapshot = _v1_attention_candidates(projection)
+        selected = candidates[offset : offset + limit]
         items = []
         for _, _, task_id, task, reason in selected:
             row = build_receipt_summary(
@@ -3163,8 +3170,10 @@ def create_local_api_app(
             "items": items,
             "total": total,
             "counts": counts,
+            "snapshot": snapshot,
+            "offset": offset,
             "limit": limit,
-            "truncated": total > limit,
+            "truncated": offset + len(items) < total,
         }
 
     @app.get("/v1/receipt")

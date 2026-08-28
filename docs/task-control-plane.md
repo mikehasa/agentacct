@@ -74,17 +74,19 @@ The default Task detail endpoints on the local JSON API are:
 ```text
 GET http://127.0.0.1:8765/v1/receipt?task=task_<opaque-id>
 GET http://127.0.0.1:8765/v1/tasks
-GET http://127.0.0.1:8765/v1/attention?limit=5
+GET http://127.0.0.1:8765/v1/attention?limit=5&offset=0
 ```
 
 `/v1/attention` computes complete, exclusive counts by each Task's leading
 review reason (failed check, failed step, or blocker) over all visible Tasks,
-then returns only the bounded operational queue. Current failed checks and
+then applies `offset` and `limit` to return one operational queue page. Current failed checks and
 recorded failed steps lead unresolved blockers—even when a Task has both a
 failure and a blocker—and recency orders Tasks within each class. This is review
 ordering, not a claim about business priority. Each row includes its recorded
 reason and next step when available; agentacct does not invent a recovery action
-for a failed check. The complete classification and ordering are cached with the
+for a failed check. Every page carries the same opaque `snapshot` digest while
+that classification is stable; clients restart paging if the digest changes.
+The complete classification and ordering are cached with the
 parent Task projection, so repeated dashboard polls rebuild them only when that
 projection changes.
 

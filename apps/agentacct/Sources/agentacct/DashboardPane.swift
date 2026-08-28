@@ -364,6 +364,11 @@ struct DashboardPane: View {
     @EnvironmentObject var dashboard: DashboardStore
     @EnvironmentObject var glance: GlanceState
     @EnvironmentObject var selection: AppSelection
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var presentedError: String? {
+        dashboard.errorText ?? dashboard.receiptListError
+    }
 
     private var recentWork: [DashboardWorkItem] {
         dashboard.receiptTasks.prefix(3).map(DashboardWorkItem.init)
@@ -458,15 +463,21 @@ struct DashboardPane: View {
             .padding(Space.gutter)
         }
         .overlay(alignment: .bottom) {
-            if let error = dashboard.errorText ?? dashboard.receiptListError {
+            if let error = presentedError {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(Type.caption)
                     .foregroundStyle(Theme.coral)
                     .padding(Space.s)
                     .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
                     .padding(.bottom, 10)
+                    .id(error)
+                    .transition(.opacity)
             }
         }
+        .animation(
+            reduceMotion ? Motion.reducedCrossfade : Motion.phaseCrossfade,
+            value: presentedError
+        )
     }
 
     private func splitRow<Left: View, Right: View>(
@@ -691,13 +702,12 @@ private struct DashboardAttentionBriefCard: View {
 
             HStack(spacing: Space.s) {
                 Button {
-                    open(.task(focus.id))
+                    open(.attentionTask(focus.id))
                 } label: {
                     Label("Review evidence", systemImage: "doc.text.magnifyingglass")
                         .font(Type.captionSemibold)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
+                .buttonStyle(QuietButtonStyle(prominent: true))
                 .accessibilityHint("Opens this task in Work")
                 .accessibilityIdentifier("dashboard.shift-brief.review-evidence")
 
@@ -721,8 +731,7 @@ private struct DashboardAttentionBriefCard: View {
                     )
                     .font(Type.captionSemibold)
                 }
-                .buttonStyle(.bordered)
-                .tint(copyFailed ? Theme.coral : Theme.accent)
+                .buttonStyle(QuietButtonStyle(tint: copyFailed ? Theme.coral : Theme.accent))
                 .accessibilityLabel(
                     copySucceeded
                         ? brief.copiedAccessibilityLabel
@@ -1353,11 +1362,9 @@ private struct DashboardUsageChart: View {
                     HStack(spacing: 2) {
                         ForEach(DashboardUsageSeries.allCases) { choice in
                             Button {
-                                withAnimation(reduceMotion ? nil : Motion.contentUpdate) {
-                                    series = choice
-                                    hoveredIndex = nil
-                                    pinnedIndex = nil
-                                }
+                                series = choice
+                                hoveredIndex = nil
+                                pinnedIndex = nil
                             } label: {
                                 Text(choice.rawValue).font(Type.captionSemibold)
                                     .padding(.horizontal, 9)
@@ -1437,7 +1444,7 @@ private struct DashboardUsageChart: View {
                                 .buttonStyle(DashboardChartBarStyle(active: activeIndex == index))
                                 .focused($focusedIndex, equals: index)
                                 .onHover { inside in
-                                    withAnimation(reduceMotion ? nil : Motion.hover) {
+                                    withAnimation(Motion.hover) {
                                         if inside {
                                             hoveredIndex = index
                                         } else if hoveredIndex == index {
@@ -1461,6 +1468,13 @@ private struct DashboardUsageChart: View {
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .animation(
+                        Motion.animatesChartGeometry(
+                            bucketCount: periods.count,
+                            reduceMotion: reduceMotion
+                        ) ? Motion.contentUpdate : nil,
+                        value: series
+                    )
 
                     if let index = activeIndex, periods.indices.contains(index) {
                         DashboardChartTooltip(
@@ -1534,21 +1548,40 @@ private struct DashboardSeriesButtonStyle: ButtonStyle {
 private struct DashboardSeriesButtonBody: View {
     let configuration: ButtonStyleConfiguration
     let selected: Bool
+    @State private var hovering = false
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.isEnabled) private var isEnabled
+
+    private var phase: ButtonInteractionPhase {
+        buttonInteractionPhase(
+            isEnabled: isEnabled,
+            isPressed: configuration.isPressed,
+            isHovering: hovering
+        )
+    }
 
     var body: some View {
         configuration.label
             .foregroundStyle(selected ? Theme.ink : Theme.muted)
-            .background(
-                selected ? Theme.card : (configuration.isPressed ? Theme.hairline.opacity(0.6) : Color.clear),
-                in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
-            )
+            .background {
+                RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
+                    .fill(selected ? Theme.card : Color.clear)
+                RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
+                    .fill(Theme.accent.opacity(ButtonFeedback.surfaceFillOpacity(for: phase)))
+            }
+            .opacity(ButtonFeedback.labelOpacity(for: phase, pressed: 0.82))
             .overlay {
-                if isFocused {
+                if isFocused && isEnabled {
                     RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
                         .strokeBorder(Theme.accent, lineWidth: Metrics.focusW)
                 }
             }
+            .onHover { inside in
+                withAnimation(Motion.hover) {
+                    hovering = inside
+                }
+            }
+            .animation(Motion.feedback, value: phase)
     }
 }
 
@@ -1564,6 +1597,7 @@ private struct DashboardChartBarStyle: ButtonStyle {
                         .strokeBorder(Theme.accent.opacity(0.55), lineWidth: Metrics.borderW)
                 }
             }
+            .animation(Motion.feedback, value: configuration.isPressed)
     }
 }
 
@@ -1577,7 +1611,6 @@ private struct DashboardRowButtonBody: View {
     let configuration: ButtonStyleConfiguration
     @State private var hovering = false
     @Environment(\.isFocused) private var isFocused
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         configuration.label
@@ -1592,11 +1625,11 @@ private struct DashboardRowButtonBody: View {
                 }
             }
             .onHover { inside in
-                withAnimation(reduceMotion ? nil : Motion.hover) {
+                withAnimation(Motion.hover) {
                     hovering = inside
                 }
             }
-            .animation(reduceMotion ? nil : Motion.feedback, value: configuration.isPressed)
+            .animation(Motion.feedback, value: configuration.isPressed)
     }
 }
 

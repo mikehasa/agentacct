@@ -476,6 +476,7 @@ struct UsageDailyChart: View {
     @State private var group: String?
     @State private var hoveredIndex: Int?
     @State private var selectedIndex: Int?
+    @FocusState private var focusedIndex: Int?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(periods: [PeriodBucket]) {
@@ -509,6 +510,13 @@ struct UsageDailyChart: View {
 
     private var maxValue: Double {
         max(periods.compactMap(value).max() ?? 1, 0.0001)
+    }
+
+    private var chartGeometryAnimation: Animation? {
+        Motion.animatesChartGeometry(
+            bucketCount: periods.count,
+            reduceMotion: reduceMotion
+        ) ? Motion.contentUpdate : nil
     }
 
     private var peakIndex: Int? {
@@ -576,9 +584,16 @@ struct UsageDailyChart: View {
                         Button {
                             self.selectedIndex = max(0, selectedIndex - 1)
                         } label: {
-                            Image(systemName: "chevron.left").frame(width: 18, height: 18)
+                            Image(systemName: "chevron.left")
+                                .frame(
+                                    width: ButtonFeedback.minimumHitDimension,
+                                    height: ButtonFeedback.minimumHitDimension
+                                )
                         }
-                        .buttonStyle(QuietButtonStyle(horizontalPadding: 2, verticalPadding: 2))
+                        .buttonStyle(QuietButtonStyle(
+                            horizontalPadding: 2,
+                            verticalPadding: 2
+                        ))
                         .disabled(selectedIndex == periods.startIndex)
                         .accessibilityLabel("Previous usage day")
 
@@ -590,9 +605,16 @@ struct UsageDailyChart: View {
                         Button {
                             self.selectedIndex = min(periods.index(before: periods.endIndex), selectedIndex + 1)
                         } label: {
-                            Image(systemName: "chevron.right").frame(width: 18, height: 18)
+                            Image(systemName: "chevron.right")
+                                .frame(
+                                    width: ButtonFeedback.minimumHitDimension,
+                                    height: ButtonFeedback.minimumHitDimension
+                                )
                         }
-                        .buttonStyle(QuietButtonStyle(horizontalPadding: 2, verticalPadding: 2))
+                        .buttonStyle(QuietButtonStyle(
+                            horizontalPadding: 2,
+                            verticalPadding: 2
+                        ))
                         .disabled(selectedIndex == periods.index(before: periods.endIndex))
                         .accessibilityLabel("Next usage day")
                     }
@@ -648,25 +670,34 @@ struct UsageDailyChart: View {
 
                                 HStack(alignment: .bottom, spacing: 3) {
                                     ForEach(Array(periods.enumerated()), id: \.offset) { index, period in
-                                        Group {
-                                            if let dayValue = value(period) {
-                                                // Strictly linear: the peak bar
-                                                // touches the line its label names.
-                                                RoundedRectangle(cornerRadius: 2)
-                                                    .fill((hoveredIndex ?? selectedIndex) == nil
-                                                          || (hoveredIndex ?? selectedIndex) == index
-                                                          ? Theme.chartBar : Theme.chartBarDim)
-                                                    .frame(height: max(1, Self.plotHeight * dayValue / maxValue))
-                                            } else {
-                                                // A day with no plottable value: a flat
-                                                // neutral stub, never a zero-height lie.
-                                                RoundedRectangle(cornerRadius: 1)
-                                                    .fill(Theme.tintNeutral)
-                                                    .frame(height: 3)
+                                        Button {
+                                            selectedIndex = index
+                                        } label: {
+                                            Group {
+                                                if let dayValue = value(period) {
+                                                    // Strictly linear: the peak bar
+                                                    // touches the line its label names.
+                                                    RoundedRectangle(cornerRadius: 2)
+                                                        .fill((hoveredIndex ?? focusedIndex ?? selectedIndex) == nil
+                                                              || (hoveredIndex ?? focusedIndex ?? selectedIndex) == index
+                                                              ? Theme.chartBar : Theme.chartBarDim)
+                                                        .frame(height: max(1, Self.plotHeight * dayValue / maxValue))
+                                                } else {
+                                                    // A day with no plottable value: a flat
+                                                    // neutral stub, never a zero-height lie.
+                                                    RoundedRectangle(cornerRadius: 1)
+                                                        .fill(Theme.tintNeutral)
+                                                        .frame(height: 3)
+                                                }
                                             }
+                                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                                            .contentShape(Rectangle())
                                         }
-                                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                                        .contentShape(Rectangle())
+                                        // Preserve proportional 7/30/90-day geometry. The
+                                        // 28pt Previous/Next controls above are equivalent
+                                        // controls for reaching every day at a large target.
+                                        .buttonStyle(TransparentButtonStyle(cornerRadius: 2))
+                                        .focused($focusedIndex, equals: index)
                                         .onHover { inside in
                                             if inside {
                                                 hoveredIndex = index
@@ -674,18 +705,21 @@ struct UsageDailyChart: View {
                                                 hoveredIndex = nil
                                             }
                                         }
-                                        .onTapGesture { selectedIndex = index }
-                                        .accessibilityElement()
                                         .accessibilityLabel(
                                             "\(period.period ?? period.shortLabel), \(valueText(period))"
                                         )
+                                        .accessibilityHint("Selects this day's value")
+                                        .accessibilityAddTraits(selectedIndex == index ? .isSelected : [])
+                                        .accessibilityIdentifier("usage.history.day.\(index)")
                                     }
                                 }
                             }
                             .frame(height: Self.plotHeight)
                         }
+                        .animation(chartGeometryAnimation, value: series)
+                        .animation(chartGeometryAnimation, value: group)
                         .overlay(alignment: .topLeading) {
-                            if let activeIndex = hoveredIndex ?? selectedIndex,
+                            if let activeIndex = hoveredIndex ?? focusedIndex ?? selectedIndex,
                                periods.indices.contains(activeIndex) {
                                 let hovered = periods[activeIndex]
                                 HStack(spacing: 6) {
@@ -719,11 +753,12 @@ struct UsageDailyChart: View {
                     .foregroundStyle(Theme.muted)
                 }
                 .padding(Space.xl)
-                .animation(reduceMotion ? nil : Motion.hover, value: hoveredIndex)
+                .animation(Motion.hover, value: hoveredIndex)
             }
         }
         .onChange(of: periods.map(\.period)) {
             hoveredIndex = nil
+            focusedIndex = nil
             selectedIndex = periods.indices.last
             if series == .cost && !periods.contains(where: { $0.estimatedCostUsd != nil }) {
                 series = .tokens
