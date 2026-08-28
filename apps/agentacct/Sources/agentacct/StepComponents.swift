@@ -123,7 +123,7 @@ struct StepCard: View {
                                 .foregroundStyle(Theme.muted)
                         }
                         if let usage = step.usage, let tokens = usage.totalTokens, tokens > 0 {
-                            Text("\(UsageTotals.compact(Int(tokens))) tok · \(usage.costText)")
+                            Text("\(UsageTotals.compact(tokens)) tok · \(usage.costText)")
                                 .font(Type.dataSmall)
                                 .foregroundStyle(Theme.muted)
                         }

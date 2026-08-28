@@ -270,6 +270,26 @@ final class DashboardInteractionTests: XCTestCase {
             .unavailable("refresh failed")
         )
 
+        let nonHeadClear = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [],
+              "total": 0,
+              "counts": { "failed_check": 0, "failed_step": 0, "blocker": 0 },
+              "offset": 5,
+              "limit": 5,
+              "truncated": false
+            }
+            """
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: nonHeadClear, error: nil),
+            .inconsistent(total: 0),
+            "Only the head page can support a complete all-clear claim"
+        )
+
         let falseClear = try decode(
             V1AttentionPayload.self,
             from: """
@@ -341,6 +361,36 @@ final class DashboardInteractionTests: XCTestCase {
         )
     }
 
+    func testShiftBriefRejectsInvalidAttentionTaskIdentity() throws {
+        let item = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "duplicate",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+              "cost": {},
+              "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+            }
+            """
+        )
+        let duplicateIDs = V1AttentionPayload(
+            schema: "agentacct.v1-attention.v1",
+            items: [item, item],
+            total: 2,
+            counts: V1AttentionCounts(failedCheck: 2, failedStep: 0, blocker: 0),
+            snapshot: nil,
+            offset: 0,
+            limit: 5,
+            truncated: false
+        )
+
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: duplicateIDs, error: nil),
+            .inconsistent(total: 2)
+        )
+    }
+
     func testShiftBriefHeadlineUsesTheLeadingRecordedTaskInsteadOfStaticCopy() throws {
         let payload = try decode(
             V1AttentionPayload.self,
@@ -357,6 +407,7 @@ final class DashboardInteractionTests: XCTestCase {
               }],
               "total": 2,
               "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "snapshot": "queue-headline",
               "limit": 1,
               "truncated": true
             }
@@ -526,7 +577,8 @@ final class DashboardInteractionTests: XCTestCase {
                 "task_id": "task-1",
                 "decision_status": { "key": "finding" },
                 "evidence_strength": { "key": "unchecked" },
-                "cost": {}
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
               }],
               "total": 2,
               "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
@@ -544,7 +596,8 @@ final class DashboardInteractionTests: XCTestCase {
                 "task_id": "task-2",
                 "decision_status": { "key": "blocked" },
                 "evidence_strength": { "key": "unchecked" },
-                "cost": {}
+                "cost": {},
+                "attention": { "kind": "blocker", "summary": "work blocked" }
               }],
               "total": 2,
               "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
@@ -573,6 +626,7 @@ final class DashboardInteractionTests: XCTestCase {
             truncated: true
         )
         XCTAssertFalse(attentionPageCanAppend(first, changedQueue))
+
     }
 
     func testRecentWorkProjectionKeepsDecisionEvidenceAndCostSeparate() throws {
@@ -671,6 +725,68 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: [periods[2]]), "—")
     }
 
+    func testUsageSeriesFormatsExtremeTokenValuesWithoutOverflow() throws {
+        let periods = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "fresh_tokens": 9223372036854775807 },
+              { "period": "2026-08-25", "fresh_tokens": 9223372036854775807 }
+            ]
+            """
+        )
+
+        XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: periods), "2e19 total")
+        let axisText = DashboardUsageSeries.tokens.axisText(for: Double(Int.max))
+        XCTAssertEqual(axisText, "9e18")
+        XCTAssertLessThanOrEqual(axisText.count, 5)
+        XCTAssertEqual(
+            DashboardUsageSeries.tokens.axisText(for: 999_900_000_000_000),
+            "1000T"
+        )
+        XCTAssertEqual(UsageTotals.compact(Int.min), "-9e18")
+        XCTAssertEqual(UsageTotals.compact(999.9), "999")
+    }
+
+    func testUsageSeriesAndPulseRejectNegativeHistoricalTokens() throws {
+        let periods = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-23", "fresh_tokens": -5 },
+              { "period": "2026-08-24", "fresh_tokens": 1200000 },
+              { "period": "2026-08-25", "fresh_tokens": 300000 }
+            ]
+            """
+        )
+
+        XCTAssertEqual(DashboardUsageSeries.tokens.value(for: periods[0]), 0)
+        XCTAssertEqual(DashboardUsageSeries.tokens.valueText(for: periods[0]), "—")
+        XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: periods), "~1.5M total")
+        XCTAssertEqual(usagePulse(periods: periods).state, .insufficient)
+        XCTAssertEqual(usagePulse(periods: periods).title, "Usage comparison incomplete")
+    }
+
+    func testUsageSeriesRejectsNegativeCostsAndKeepsAxisLabelsCompact() throws {
+        let periods = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "estimated_cost_usd": -5 },
+              { "period": "2026-08-25", "estimated_cost_usd": 12.34 }
+            ]
+            """
+        )
+
+        XCTAssertEqual(DashboardUsageSeries.cost.value(for: periods[0]), 0)
+        XCTAssertEqual(DashboardUsageSeries.cost.valueText(for: periods[0]), "—")
+        XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: periods), "~$12.34 total")
+        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 9.999), "$9.99")
+        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 12.34), "$12")
+        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 999_999), "$999k")
+        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 9e18), "$9e18")
+    }
+
     func testActiveWorkIncludesOnlyRunningStates() {
         let cases: [(status: String?, isActive: Bool)] = [
             ("started", true),
@@ -721,8 +837,9 @@ final class DashboardInteractionTests: XCTestCase {
         )
 
         XCTAssertEqual(signal.title, "One session last active 15m ago")
-        XCTAssertEqual(signal.detail, "Snapshot harness · 3 active sessions recorded")
+        XCTAssertEqual(signal.detail, "Snapshot harness · 3 recent active sessions shown")
         XCTAssertTrue(signal.promotesInactivity)
+        XCTAssertTrue(signal.hasConfirmedActiveWork)
         XCTAssertFalse(signal.title.localizedCaseInsensitiveContains("stalled"))
     }
 
@@ -739,7 +856,7 @@ final class DashboardInteractionTests: XCTestCase {
                 sessions: [], availability: .connected,
                 now: Date(timeIntervalSince1970: 1_000)
             ).title,
-            "No active work"
+            "No recent agent activity"
         )
 
         let missingTime = try decode(
@@ -753,9 +870,10 @@ final class DashboardInteractionTests: XCTestCase {
             availability: .connected,
             now: Date(timeIntervalSince1970: 1_000)
         )
-        XCTAssertEqual(signal.title, "1 active session")
+        XCTAssertEqual(signal.title, "1 active session shown")
         XCTAssertEqual(signal.detail, "Activity time unavailable for the recorded session.")
         XCTAssertFalse(signal.promotesInactivity)
+        XCTAssertTrue(signal.hasConfirmedActiveWork)
 
         let emptyTitle = try decode(
             [RecentSession].self,
@@ -774,6 +892,89 @@ final class DashboardInteractionTests: XCTestCase {
             ).detail,
             "codex · unknown · activity 10s ago"
         )
+    }
+
+    func testStatuslessUsageActivityNeverBecomesANoActiveWorkClaim() throws {
+        let sessions = try decode(
+            [RecentSession].self,
+            from: """
+            [
+              {
+                "client": "codex", "session_id": "usage-only",
+                "last_activity_at": 990
+              },
+              {
+                "client": "claude-code", "session_id": "usage-only-2",
+                "last_activity_at": 980
+              }
+            ]
+            """
+        )
+
+        let signal = DashboardActiveWorkSignal(
+            sessions: sessions,
+            availability: .connected,
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+
+        XCTAssertEqual(signal.title, "Work status unavailable")
+        XCTAssertEqual(
+            signal.detail,
+            "codex · usage-on · activity 10s ago · 2/2 shown with no work status"
+        )
+        XCTAssertFalse(signal.promotesInactivity)
+        XCTAssertFalse(signal.hasConfirmedActiveWork)
+    }
+
+    func testActiveWorkCountsRemainQualifiedAtTheEightRowGlanceBound() {
+        let sessions = (0 ..< 8).map { index in
+            RecentSession(
+                client: "codex",
+                sessionId: "session-\(index)",
+                title: nil,
+                status: "in_progress",
+                lastActivityAt: 990 - Double(index),
+                planPct: nil
+            )
+        }
+
+        let signal = DashboardActiveWorkSignal(
+            sessions: sessions,
+            availability: .connected,
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+
+        XCTAssertEqual(signal.title, "8 active sessions shown")
+        XCTAssertTrue(signal.hasConfirmedActiveWork)
+    }
+
+    func testActiveWorkSignalNamesMixedUnknownStatusCoverage() {
+        let active = RecentSession(
+            client: "codex",
+            sessionId: "active",
+            title: nil,
+            status: "in_progress",
+            lastActivityAt: 990,
+            planPct: nil
+        )
+        let unknown = RecentSession(
+            client: "claude-code",
+            sessionId: "unknown",
+            title: nil,
+            status: nil,
+            lastActivityAt: 985,
+            planPct: nil
+        )
+
+        let signal = DashboardActiveWorkSignal(
+            sessions: [active, unknown],
+            availability: .connected,
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+
+        XCTAssertEqual(signal.title, "1 active session shown")
+        XCTAssertTrue(signal.detail.hasSuffix("1 more shown without work status"))
+        XCTAssertTrue(signal.hasConfirmedActiveWork)
     }
 
     func testAgentPlanRowCopyRequiresARealSevenDayWindow() throws {
@@ -1103,6 +1304,33 @@ final class DashboardInteractionTests: XCTestCase {
         )
         XCTAssertEqual(staleOnly.map(\.client), ["claude-code"])
         XCTAssertEqual(staleOnly[0].meterCaption, "limit reading stale — see Usage")
+
+        let liveShortWindow = try decode(
+            LimitEntry.self,
+            from: """
+            { "client": "codex", "windows": [{ "kind": "5h", "used_percent": 12 }] }
+            """
+        )
+        let staleSevenDay = try decode(
+            LimitEntry.self,
+            from: """
+            {
+              "client": "codex", "stale": true,
+              "windows": [{ "kind": "7d", "used_percent": 34 }]
+            }
+            """
+        )
+        let mixedStaleClients = staleSevenDayLimitClients(
+            in: [liveShortWindow, staleSevenDay]
+        )
+        XCTAssertEqual(mixedStaleClients, Set(["codex"]))
+        let mixedWindowRows = DashboardAgentPlanRow.rows(
+            limits: [liveShortWindow],
+            staleClients: mixedStaleClients,
+            planClients: [],
+            usage: []
+        )
+        XCTAssertEqual(mixedWindowRows[0].meterCaption, "limit reading stale — see Usage")
     }
 
     func testActiveSessionResolutionNeverDropsAnUnmatchedSession() throws {

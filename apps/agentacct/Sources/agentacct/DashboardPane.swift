@@ -252,15 +252,22 @@ enum DashboardAttentionPresentation: Equatable {
     }
 
     private static func hasConsistentEnvelope(_ payload: V1AttentionPayload) -> Bool {
+        let taskIDs = payload.items.map {
+            $0.taskId.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         guard payload.schema == "agentacct.v1-attention.v1",
               payload.total >= 0,
+              payload.offset == 0,
               (1 ... 50).contains(payload.limit),
               payload.counts.failedCheck >= 0,
               payload.counts.failedStep >= 0,
               payload.counts.blocker >= 0,
               payload.items.count <= payload.limit,
               payload.items.count <= payload.total,
+              taskIDs.allSatisfy({ !$0.isEmpty }),
+              Set(taskIDs).count == payload.items.count,
               payload.items.allSatisfy({ $0.attention != nil }),
+              payload.total == 0 || !payload.items.isEmpty,
               payload.truncated == (payload.total > payload.items.count)
         else {
             return false
@@ -310,17 +317,22 @@ enum DashboardUsageSeries: String, CaseIterable, Identifiable {
 
     func value(for period: PeriodBucket) -> Double {
         switch self {
-        case .tokens: return Double(period.freshTokens ?? 0)
-        case .cost: return period.estimatedCostUsd ?? 0
+        case .tokens:
+            guard let tokens = period.freshTokens, tokens >= 0 else { return 0 }
+            return Double(tokens)
+        case .cost:
+            guard let cost = period.estimatedCostUsd, cost.isFinite, cost >= 0 else { return 0 }
+            return cost
         }
     }
 
     func valueText(for period: PeriodBucket) -> String {
         switch self {
         case .tokens:
-            guard let value = period.freshTokens else { return "—" }
+            guard let value = period.freshTokens, value >= 0 else { return "—" }
             return UsageTotals.compact(value)
         case .cost:
+            guard let cost = period.estimatedCostUsd, cost.isFinite, cost >= 0 else { return "—" }
             return period.costText
         }
     }
@@ -328,12 +340,19 @@ enum DashboardUsageSeries: String, CaseIterable, Identifiable {
     func totalText(for periods: [PeriodBucket]) -> String {
         switch self {
         case .tokens:
-            let available = periods.compactMap(\.freshTokens)
+            let available: [Int] = periods.compactMap { period -> Int? in
+                guard let tokens = period.freshTokens, tokens >= 0 else { return nil }
+                return tokens
+            }
             guard !available.isEmpty else { return "—" }
             let prefix = available.count == periods.count ? "" : "~"
-            return "\(prefix)\(UsageTotals.compact(available.reduce(0, +))) total"
+            let total = available.reduce(0.0) { $0 + Double($1) }
+            return "\(prefix)\(UsageTotals.compact(total)) total"
         case .cost:
-            let available = periods.compactMap(\.estimatedCostUsd)
+            let available = periods.compactMap { period -> Double? in
+                guard let cost = period.estimatedCostUsd, cost.isFinite, cost >= 0 else { return nil }
+                return cost
+            }
             guard !available.isEmpty else { return "—" }
             let complete = available.count == periods.count
                 && periods.allSatisfy { $0.costComplete == true }
@@ -349,6 +368,50 @@ enum DashboardUsageSeries: String, CaseIterable, Identifiable {
         switch self {
         case .tokens: return "Fresh tokens · last \(dayCount) days · client reported"
         case .cost: return "Estimated cost · last \(dayCount) days · pricing-table basis"
+        }
+    }
+
+    func axisText(for value: Double) -> String {
+        switch self {
+        case .tokens:
+            let compact = UsageTotals.compact(value)
+            guard compact.count > 5 else { return compact }
+            let whole = value.rounded(.towardZero)
+            let magnitude = abs(whole)
+            switch magnitude {
+            case 1_000_000_000_000_000...:
+                return String(format: "%.0e", whole)
+                    .replacingOccurrences(of: "e+", with: "e")
+            case 1_000_000_000_000...: return String(format: "%.0fT", whole / 1_000_000_000_000)
+            case 1_000_000_000...: return String(format: "%.0fB", whole / 1_000_000_000)
+            case 1_000_000...: return String(format: "%.0fM", whole / 1_000_000)
+            case 1_000...: return String(format: "%.0fk", whole / 1_000)
+            default: return compact
+            }
+        case .cost: return Self.costAxisText(value)
+        }
+    }
+
+    private static func costAxisText(_ value: Double) -> String {
+        guard value.isFinite, value >= 0 else { return "—" }
+        let whole = value.rounded(.towardZero)
+        let magnitude = abs(whole)
+        switch magnitude {
+        case 1_000_000_000_000_000...:
+            return "$" + String(format: "%.0e", whole)
+                .replacingOccurrences(of: "e+", with: "e")
+        case 1_000_000_000_000...:
+            return String(format: "$%.0fT", (whole / 1_000_000_000_000).rounded(.towardZero))
+        case 1_000_000_000...:
+            return String(format: "$%.0fB", (whole / 1_000_000_000).rounded(.towardZero))
+        case 1_000_000...:
+            return String(format: "$%.0fM", (whole / 1_000_000).rounded(.towardZero))
+        case 1_000...:
+            return String(format: "$%.0fk", (whole / 1_000).rounded(.towardZero))
+        case 10...: return String(format: "$%.0f", whole)
+        default:
+            let cents = (value * 100).rounded(.towardZero) / 100
+            return String(format: "$%.2f", cents)
         }
     }
 }
@@ -368,6 +431,7 @@ struct DashboardActiveWorkSignal: Equatable {
     let title: String
     let detail: String
     let promotesInactivity: Bool
+    let hasConfirmedActiveWork: Bool
 
     init(
         sessions: [RecentSession],
@@ -379,45 +443,84 @@ struct DashboardActiveWorkSignal: Equatable {
             title = "Checking active work"
             detail = "Waiting for the local glance projection."
             promotesInactivity = false
+            hasConfirmedActiveWork = false
             return
         case .unavailable(let message):
             title = "Active work unavailable"
             detail = message
             promotesInactivity = false
+            hasConfirmedActiveWork = false
             return
         case .connected:
             break
         }
 
         guard !sessions.isEmpty else {
-            title = "No active work"
-            detail = "Recorded agent activity will appear here."
+            title = "No recent agent activity"
+            detail = "Recorded activity will appear here when an agent session is observed."
             promotesInactivity = false
+            hasConfirmedActiveWork = false
             return
         }
 
-        let activeCount = sessions.count
-        let validActivity = sessions.compactMap { session -> (RecentSession, TimeInterval)? in
+        let activeSessions = sessions.filter { isActiveWorkStatus($0.status) }
+        let statuslessSessions = sessions.filter { $0.status == nil }
+
+        if activeSessions.isEmpty, !statuslessSessions.isEmpty {
+            title = "Work status unavailable"
+            let validActivity = Self.validActivity(statuslessSessions, now: now)
+            if let mostRecent = validActivity.min(by: { $0.1 < $1.1 }) {
+                detail = "\(Self.sessionLabel(mostRecent.0)) · activity \(Self.elapsedText(mostRecent.1)) ago · \(statuslessSessions.count)/\(sessions.count) shown with no work status"
+            } else {
+                detail = "\(statuslessSessions.count)/\(sessions.count) shown with no work status · activity time unavailable"
+            }
+            promotesInactivity = false
+            hasConfirmedActiveWork = false
+            return
+        }
+
+        guard !activeSessions.isEmpty else {
+            title = "No status-confirmed active work"
+            detail = "\(sessions.count) recent session\(sessions.count == 1 ? "" : "s") shown."
+            promotesInactivity = false
+            hasConfirmedActiveWork = false
+            return
+        }
+
+        let activeCount = activeSessions.count
+        let validActivity = Self.validActivity(activeSessions, now: now)
+        let unknownStatusSuffix = statuslessSessions.isEmpty
+            ? ""
+            : " · \(statuslessSessions.count) more shown without work status"
+
+        if let oldestVisible = validActivity.max(by: { $0.1 < $1.1 }), oldestVisible.1 >= 15 * 60 {
+            title = "One session last active \(Self.elapsedText(oldestVisible.1)) ago"
+            detail = "\(Self.sessionLabel(oldestVisible.0)) · \(activeCount) recent active session\(activeCount == 1 ? "" : "s") shown\(unknownStatusSuffix)"
+            promotesInactivity = true
+            hasConfirmedActiveWork = true
+            return
+        }
+
+        title = "\(activeCount) active session\(activeCount == 1 ? "" : "s") shown"
+        if let mostRecent = validActivity.min(by: { $0.1 < $1.1 }) {
+            detail = "\(Self.sessionLabel(mostRecent.0)) · activity \(Self.elapsedText(mostRecent.1)) ago\(unknownStatusSuffix)"
+        } else {
+            detail = "Activity time unavailable for the recorded session\(activeCount == 1 ? "" : "s")\(unknownStatusSuffix)."
+        }
+        promotesInactivity = false
+        hasConfirmedActiveWork = true
+    }
+
+    private static func validActivity(
+        _ sessions: [RecentSession],
+        now: Date
+    ) -> [(RecentSession, TimeInterval)] {
+        sessions.compactMap { session -> (RecentSession, TimeInterval)? in
             guard let lastActivityAt = session.lastActivityAt, lastActivityAt > 0 else { return nil }
             let elapsed = now.timeIntervalSince1970 - lastActivityAt
             guard elapsed >= 0, elapsed.isFinite else { return nil }
             return (session, elapsed)
         }
-
-        if let oldestVisible = validActivity.max(by: { $0.1 < $1.1 }), oldestVisible.1 >= 15 * 60 {
-            title = "One session last active \(Self.elapsedText(oldestVisible.1)) ago"
-            detail = "\(Self.sessionLabel(oldestVisible.0)) · \(activeCount) active session\(activeCount == 1 ? "" : "s") recorded"
-            promotesInactivity = true
-            return
-        }
-
-        title = "\(activeCount) active session\(activeCount == 1 ? "" : "s")"
-        if let mostRecent = validActivity.min(by: { $0.1 < $1.1 }) {
-            detail = "\(Self.sessionLabel(mostRecent.0)) · activity \(Self.elapsedText(mostRecent.1)) ago"
-        } else {
-            detail = "Activity time unavailable for the recorded session\(activeCount == 1 ? "." : "s.")"
-        }
-        promotesInactivity = false
     }
 
     private static func sessionLabel(_ session: RecentSession) -> String {
@@ -486,6 +589,13 @@ struct DashboardUsagePulse: Equatable {
             state = .insufficient
             title = "Usage comparison ambiguous"
             detail = "A usage bucket has an unsupported period label."
+            return
+        }
+
+        guard !periods.contains(where: { ($0.freshTokens ?? 0) < 0 }) else {
+            state = .insufficient
+            title = "Usage comparison incomplete"
+            detail = "A fresh-token bucket reported an invalid negative value."
             return
         }
 
@@ -617,30 +727,23 @@ struct DashboardPane: View {
         return snapshot.glance.limits.filter { $0.stale != true }
     }
 
-    /// The glance 7-day per-client usage slice — what lets EVERY recording
-    /// agent appear on the plan card, not only the ones reporting limits.
+    /// The glance 7-day per-client usage slice keeps recording clients in the
+    /// capacity input even when they do not report provider limits.
     private var glanceUsageByClient: [GlanceClientUsage] {
         guard case .connected(let snapshot) = glance.phase else { return [] }
         return snapshot.glance.usage.byClient ?? []
     }
 
-    /// Clients whose only limit readings are STALE — hidden from the live
-    /// meters, but "no limits reported" would be affirmatively false for them.
+    /// Clients whose 7-day reading is available only as stale data. A live
+    /// short-window stream must not erase that useful absence distinction.
     private var staleLimitClients: Set<String> {
         guard case .connected(let snapshot) = glance.phase else { return [] }
-        let live = Set(liveLimits.compactMap(\.client))
-        return Set(
-            snapshot.glance.limits
-                .filter { $0.stale == true }
-                .compactMap(\.client)
-        ).subtracting(live)
+        return staleSevenDayLimitClients(in: snapshot.glance.limits)
     }
 
     private var recentSessions: [RecentSession] {
         guard case .connected(let snapshot) = glance.phase else { return [] }
-        return snapshot.glance.recentSessions.filter {
-            isActiveWorkStatus($0.status)
-        }
+        return snapshot.glance.recentSessions
     }
 
     private var glanceAvailability: DashboardSignalAvailability {
@@ -1185,7 +1288,9 @@ private struct DashboardSignalRail: View {
                     eyebrow: "WORKING NOW",
                     title: active.title,
                     detail: active.detail,
-                    tint: active.promotesInactivity ? Theme.amber : (sessions.isEmpty ? Theme.muted : Theme.accent),
+                    tint: active.promotesInactivity
+                        ? Theme.amber
+                        : (active.hasConfirmedActiveWork ? Theme.accent : Theme.muted),
                     action: { open(.work) }
                 )
                 Divider().overlay(Theme.hairline).padding(.leading, Space.l)
@@ -1533,12 +1638,12 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
         } else if window != nil {
             meterCaption = "7-day usage not reported"
             resetText = nil
-        } else if limit != nil {
-            meterCaption = "no 7-day window reported"
-            resetText = nil
         } else if staleLimit {
             // A stale reading is hidden, not never-reported — say so.
             meterCaption = "limit reading stale — see Usage"
+            resetText = nil
+        } else if limit != nil {
+            meterCaption = "no 7-day window reported"
             resetText = nil
         } else {
             meterCaption = "no limits reported"
@@ -1612,6 +1717,25 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
             )
         }
     }
+}
+
+func staleSevenDayLimitClients(in limits: [LimitEntry]) -> Set<String> {
+    var live = Set<String>()
+    var stale = Set<String>()
+    for limit in limits {
+        guard let client = limit.client?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !client.isEmpty,
+              limit.windows?.contains(where: { $0.kind == "7d" }) == true
+        else {
+            continue
+        }
+        if limit.stale == true {
+            stale.insert(client)
+        } else {
+            live.insert(client)
+        }
+    }
+    return stale.subtracting(live)
 }
 
 private struct DashboardUsageChart: View {
@@ -1793,10 +1917,7 @@ private struct DashboardUsageChart: View {
     }
 
     private func axisText(_ value: Double) -> String {
-        switch series {
-        case .tokens: return UsageTotals.compact(Int(value))
-        case .cost: return Fmt.dollars(value)
-        }
+        series.axisText(for: value)
     }
 }
 

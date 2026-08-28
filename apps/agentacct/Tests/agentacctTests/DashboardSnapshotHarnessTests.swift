@@ -130,11 +130,10 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
     @MainActor
     func testMinimumViewportKeepsRecentWorkInTheInitialReadingPath() throws {
         let fixture = try DashboardSnapshotFixture.load(from: dashboardFixtureURL())
-        let configuration = try XCTUnwrap(
-            DashboardSnapshotConfiguration.reviewConfigurations.first {
-                $0.filename == "dashboard-minimum-light.png"
-            }
-        )
+        let configurations = DashboardSnapshotConfiguration.reviewConfigurations.filter {
+            $0.viewport == "minimum"
+        }
+        XCTAssertEqual(configurations.count, 2, "Both minimum-window appearances must be covered")
         let outputDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("agentacct-dashboard-layout-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: outputDirectory) }
@@ -142,23 +141,54 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         let rendered = try DashboardSnapshotRenderer.render(
             fixture: fixture,
             outputDirectory: outputDirectory,
+            configurations: configurations
+        )
+        for imageURL in rendered {
+            let image = try VisualSnapshotImage(contentsOf: imageURL)
+            let windowBackground = rgba(in: image, x: 10, topY: 200)
+
+            // At 2x, the 16pt section spacing should leave a visible background
+            // separator before y=500pt. Sampling both columns prevents a shorter
+            // attention-card background from hiding an over-tall signal rail.
+            let separatorRows = (850..<1_000).filter { topY in
+                pixelsMatch(rgba(in: image, x: 100, topY: topY), windowBackground)
+                    && pixelsMatch(rgba(in: image, x: 1_280, topY: topY), windowBackground)
+            }
+            XCTAssertGreaterThanOrEqual(
+                longestConsecutiveRun(separatorRows),
+                24,
+                "\(imageURL.lastPathComponent) must expose Recent work after the decision row; supporting signals must not consume the entire first viewport"
+            )
+        }
+    }
+
+    @MainActor
+    func testExtremeTokenBucketsRenderWithoutTrapping() throws {
+        let fixtureURL = try dashboardFixtureURL()
+        let original = try String(contentsOf: fixtureURL, encoding: .utf8)
+        let extreme = original.replacingOccurrences(
+            of: #""fresh_tokens": 22500000"#,
+            with: #""fresh_tokens": 9223372036854775807"#
+        )
+        XCTAssertNotEqual(extreme, original, "The test must replace a real token bucket")
+
+        let fixture = try DashboardSnapshotFixture.decode(Data(extreme.utf8))
+        let configuration = try XCTUnwrap(
+            DashboardSnapshotConfiguration.reviewConfigurations.first {
+                $0.filename == "dashboard-minimum-light.png"
+            }
+        )
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentacct-dashboard-extreme-tokens-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outputDirectory) }
+
+        let rendered = try DashboardSnapshotRenderer.render(
+            fixture: fixture,
+            outputDirectory: outputDirectory,
             configurations: [configuration]
         )
-        let image = try VisualSnapshotImage(contentsOf: try XCTUnwrap(rendered.first))
-        let windowBackground = rgba(in: image, x: 10, topY: 200)
-
-        // At 2x, the 16pt section spacing should leave a visible background
-        // separator before y=500pt. Sampling both columns prevents a shorter
-        // attention-card background from hiding an over-tall signal rail.
-        let separatorRows = (850..<1_000).filter { topY in
-            pixelsMatch(rgba(in: image, x: 100, topY: topY), windowBackground)
-                && pixelsMatch(rgba(in: image, x: 1_280, topY: topY), windowBackground)
-        }
-        XCTAssertGreaterThanOrEqual(
-            longestConsecutiveRun(separatorRows),
-            24,
-            "The minimum viewport must expose Recent work after the decision row; supporting signals must not consume the entire first viewport"
-        )
+        XCTAssertEqual(rendered.count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(rendered.first).path))
     }
 
     func testRejectsUnsupportedVersionedFixtureSchemas() throws {
