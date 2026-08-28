@@ -1032,6 +1032,191 @@ struct ReceiptCheck: Decodable, Identifiable {
     }
 }
 
+enum ReceiptCheckGroup: String, CaseIterable {
+    case attention
+    case other
+    case passed
+    case history
+}
+
+/// Stable, readable semantics for one itemized check run. The daemon may emit
+/// exact duplicate rows, so the collection adds an occurrence ordinal to the
+/// content identity instead of attaching disclosure state to an array index.
+struct ReceiptCheckRowPresentation: Identifiable {
+    let id: String
+    let accessibilityIdentifier: String
+    let check: ReceiptCheck
+    let title: String
+    let resultLabel: String
+    let sourceLabel: String?
+    let group: ReceiptCheckGroup
+
+    var scope: String? { Self.nonEmpty(check.scope) }
+
+    var collapsedExitText: String? {
+        guard let exitCode = check.exitCode, exitCode != 0 else { return nil }
+        return "exit \(exitCode)"
+    }
+
+    var runDetailText: String {
+        var parts = [resultLabel]
+        if let exitCode = check.exitCode { parts.append("exit \(exitCode)") }
+        if let sourceLabel { parts.append(sourceLabel) }
+        return parts.joined(separator: " · ")
+    }
+
+    init(check: ReceiptCheck, occurrence: Int) {
+        self.check = check
+        title = Self.nonEmpty(check.name) ?? Self.nonEmpty(check.kind) ?? "Unnamed check"
+        resultLabel = Self.resultLabel(check.result)
+        sourceLabel = Self.sourceLabel(check.source)
+        group = Self.group(check)
+
+        let fingerprint = Self.fingerprint(check)
+        id = "\(fingerprint)#\(occurrence)"
+        accessibilityIdentifier = "receipt.check.\(Self.stableDigest(fingerprint)).\(occurrence)"
+    }
+
+    func accessibilityValue(isExpanded: Bool) -> String {
+        var parts = [resultLabel]
+        if let sourceLabel { parts.append("source \(sourceLabel)") }
+        if let exitCode = check.exitCode { parts.append("exit \(exitCode)") }
+        if let scope { parts.append("scope \(scope)") }
+        if check.superseded == true { parts.append("superseded by a later passing run") }
+        if let findingState = Self.nonEmpty(check.finding?.state), findingState != "open" {
+            parts.append("marked \(findingState) by you")
+        }
+        parts.append(isExpanded ? "expanded" : "collapsed")
+        return parts.joined(separator: ", ")
+    }
+
+    private static func resultLabel(_ result: String?) -> String {
+        switch result {
+        case "passed": return "Passed"
+        case "failed": return "Failed"
+        case "error": return "Error"
+        case "skipped": return "Skipped"
+        default: return "Unknown"
+        }
+    }
+
+    private static func sourceLabel(_ source: String?) -> String? {
+        guard let source = nonEmpty(source) else { return nil }
+        switch source {
+        case "ci": return "CI"
+        case "hook": return "Hook"
+        case "client_hook": return "Client hook"
+        case "mcp": return "Connected tool"
+        case "agent_report": return "Agent report"
+        case "external": return "External"
+        case "provider": return "Provider"
+        default:
+            return source.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    private static func group(_ check: ReceiptCheck) -> ReceiptCheckGroup {
+        if check.superseded == true { return .history }
+        if check.finding?.attentionOpen == false { return .history }
+        if let state = nonEmpty(check.finding?.state), state != "open" { return .history }
+        switch check.result {
+        case "failed", "error": return .attention
+        case "passed": return .passed
+        default: return .other
+        }
+    }
+
+    private static func fingerprint(_ check: ReceiptCheck) -> String {
+        // A run's disclosure identity must survive later enrichment and human
+        // disposition changes. Keep mutable detail (summary, files, artifact,
+        // supersession, finding state) out of this key.
+        let fields = [
+            check.kind, check.name, check.result, check.exitCode.map { String($0) },
+            check.scope, check.source, check.at.map { String($0) },
+        ]
+        return fields.map { value in
+            let value = value ?? ""
+            return "\(value.utf8.count):\(value)"
+        }.joined(separator: "|")
+    }
+
+    private static func stableDigest(_ value: String) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211
+        }
+        return String(hash, radix: 16)
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        return value
+    }
+}
+
+struct ReceiptCheckCollectionPresentation {
+    static let routineExpansionLimit = 10
+
+    let rows: [ReceiptCheckRowPresentation]
+    let sharedScope: String?
+    let aggregateNotice: String?
+    let itemizedNotice: String?
+
+    init(evidence: ReceiptEvidenceDim) {
+        var occurrences: [String: Int] = [:]
+        rows = (evidence.checks ?? []).map { check in
+            let probe = ReceiptCheckRowPresentation(check: check, occurrence: 0)
+            let occurrence = occurrences[probe.id, default: 0]
+            occurrences[probe.id] = occurrence + 1
+            return ReceiptCheckRowPresentation(check: check, occurrence: occurrence)
+        }
+
+        let scopes = rows.compactMap(\.scope)
+        sharedScope = rows.count > 1 && scopes.count == rows.count && Set(scopes).count == 1
+            ? scopes[0]
+            : nil
+
+        aggregateNotice = Self.aggregateNotice(evidence)
+        if let total = evidence.checksTotal, total > 0, !rows.isEmpty, total != rows.count {
+            let noun = rows.count == 1 ? "entry is" : "entries are"
+            itemizedNotice = "\(rows.count) itemized \(noun) available for \(total) reported check runs."
+        } else {
+            itemizedNotice = nil
+        }
+
+    }
+
+    var initiallyExpandsRoutineGroups: Bool {
+        rows.count <= Self.routineExpansionLimit
+    }
+
+    func routineGroupExpanded(
+        userOverride: Bool?,
+        forcedDefault: Bool? = nil
+    ) -> Bool {
+        userOverride ?? forcedDefault ?? initiallyExpandsRoutineGroups
+    }
+
+    func rows(in group: ReceiptCheckGroup) -> [ReceiptCheckRowPresentation] {
+        rows.filter { $0.group == group }
+    }
+
+    private static func aggregateNotice(_ evidence: ReceiptEvidenceDim) -> String? {
+        let supplied = [evidence.checksTotal, evidence.checksPassed, evidence.checksFailed]
+            .compactMap { $0 }
+        if supplied.contains(where: { $0 < 0 }) {
+            return "Reported check tallies contain a negative value."
+        }
+        guard let total = evidence.checksTotal, total >= 0 else { return nil }
+        let passed = evidence.checksPassed ?? 0
+        let failed = evidence.checksFailed ?? 0
+        if passed > total || failed > total || passed + failed > total {
+            return "Reported passed and failed tallies conflict with the total."
+        }
+        return nil
+    }
+}
+
 struct ReceiptEvidenceDim: Decodable {
     let checks: [ReceiptCheck]?
     let checksTotal: Int?
