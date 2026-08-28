@@ -1051,6 +1051,8 @@ struct DispositionControls: View {
                 } label: {
                     Text("Record resolve").font(Type.captionSemibold)
                 }
+                .foregroundStyle(Theme.accent)
+                .buttonStyle(QuietButtonStyle(prominent: true))
                 .disabled(note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .accessibilityIdentifier("disposition.record-resolve.\(kind)")
             }
@@ -1284,6 +1286,7 @@ private struct RecordCheckRow: View {
     let check: ReceiptCheck
     let taskId: String
     @State private var expanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var mark: (symbol: String, tint: Color) {
         let machineObserved = ["hook", "ci"].contains(check.source ?? "")
@@ -1298,10 +1301,11 @@ private struct RecordCheckRow: View {
     private var headerLine: some View {
         HStack(alignment: .firstTextBaseline, spacing: Space.s) {
             if !SnapshotMode.enabled {
-                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                Image(systemName: "chevron.right")
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(Theme.muted)
                     .frame(width: 10)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
                     .accessibilityHidden(true)
             }
             Image(systemName: mark.symbol)
@@ -1337,11 +1341,11 @@ private struct RecordCheckRow: View {
                 headerLine
             } else {
                 Button {
-                    withAnimation(Motion.contentUpdate) { expanded.toggle() }
+                    expanded.toggle()
                 } label: {
                     headerLine
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(SurfaceButtonStyle(focusInset: 2))
                 .accessibilityLabel(
                     "\(check.name ?? check.kind ?? "check"), \(check.result ?? "unknown")"
                     + ", \(expanded ? "expanded" : "collapsed")"
@@ -1352,8 +1356,10 @@ private struct RecordCheckRow: View {
                 expandedBody
                     .padding(.leading, 10 + Space.s + 14 + Space.s)
                     .padding(.bottom, 10)
+                    .transition(.opacity)
             }
         }
+        .animation(reduceMotion ? nil : Motion.contentUpdate, value: expanded)
     }
 
     @ViewBuilder
