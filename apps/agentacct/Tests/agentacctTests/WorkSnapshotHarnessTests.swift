@@ -28,6 +28,18 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "work-receipt-loading-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-receipt-error-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-receipt-error-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "work-actions-exact-regular-light.png", pixelsWide: 1520, pixelsHigh: 1080),
+        ExpectedArtifact(filename: "work-actions-exact-regular-dark.png", pixelsWide: 1520, pixelsHigh: 1080),
+        ExpectedArtifact(filename: "work-actions-exact-compact-light.png", pixelsWide: 720, pixelsHigh: 1280),
+        ExpectedArtifact(filename: "work-actions-exact-compact-dark.png", pixelsWide: 720, pixelsHigh: 1280),
+        ExpectedArtifact(filename: "work-actions-semantic-gallery-light.png", pixelsWide: 1520, pixelsHigh: 3200),
+        ExpectedArtifact(filename: "work-actions-semantic-gallery-dark.png", pixelsWide: 1520, pixelsHigh: 3200),
+        ExpectedArtifact(filename: "work-actions-semantic-edge-cases-light.png", pixelsWide: 1520, pixelsHigh: 4120),
+        ExpectedArtifact(filename: "work-actions-semantic-edge-cases-dark.png", pixelsWide: 1520, pixelsHigh: 4120),
+        ExpectedArtifact(filename: "work-actions-layout-stress-light.png", pixelsWide: 1840, pixelsHigh: 1520),
+        ExpectedArtifact(filename: "work-actions-layout-stress-dark.png", pixelsWide: 1840, pixelsHigh: 1520),
+        ExpectedArtifact(filename: "work-actions-dynamic-type-stress-light.png", pixelsWide: 1840, pixelsHigh: 2700),
+        ExpectedArtifact(filename: "work-actions-dynamic-type-stress-dark.png", pixelsWide: 1840, pixelsHigh: 2700),
     ]
 
     @MainActor
@@ -41,7 +53,10 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         XCTAssertTrue(store.receiptTasks.contains { $0.decisionStatus.key == "blocked" })
         XCTAssertTrue(store.receiptTasks.contains { $0.decisionStatus.key == "finding" })
         XCTAssertGreaterThanOrEqual(work.receipt.dimensions.actions.touchedFileCount ?? 0, 12)
-        XCTAssertGreaterThanOrEqual(work.receipt.dimensions.actions.commandCount ?? 0, 20)
+        XCTAssertEqual(work.receipt.dimensions.actions.toolCategoryTotal, 80)
+        XCTAssertEqual(work.receipt.dimensions.actions.toolCategoryCounts?.values.reduce(0, +), 80)
+        XCTAssertTrue(work.receipt.dimensions.actions.gaps?.isEmpty ?? true)
+        XCTAssertEqual(work.receipt.dimensions.gaps.count, 2)
         XCTAssertGreaterThanOrEqual(work.receipt.dimensions.evidence.checks?.count ?? 0, 6)
         XCTAssertFalse(work.receipt.dimensions.provenance.sourcesPresent?.contains("ci") ?? false)
         XCTAssertGreaterThanOrEqual(work.receipt.sessions?.count ?? 0, 2)
@@ -59,14 +74,43 @@ final class WorkSnapshotHarnessTests: XCTestCase {
             try? FileManager.default.removeItem(at: secondDirectory)
         }
 
-        let rendered = try WorkSnapshotRenderer.render(
-            fixture: fixture,
-            outputDirectory: firstDirectory
-        )
-        _ = try WorkSnapshotRenderer.render(
-            fixture: fixture,
-            outputDirectory: secondDirectory
-        )
+        let workRendered: [URL]
+        let actionRendered: [URL]
+        do {
+            workRendered = try WorkSnapshotRenderer.render(
+                fixture: fixture,
+                outputDirectory: firstDirectory
+            )
+        } catch {
+            XCTFail("First full-page Work render failed: \(error)")
+            throw error
+        }
+        do {
+            actionRendered = try ReceiptActionSnapshotRenderer.render(
+                outputDirectory: firstDirectory
+            )
+        } catch {
+            XCTFail("First focused Action render failed: \(error)")
+            throw error
+        }
+        do {
+            _ = try WorkSnapshotRenderer.render(
+                fixture: fixture,
+                outputDirectory: secondDirectory
+            )
+        } catch {
+            XCTFail("Second full-page Work render failed: \(error)")
+            throw error
+        }
+        do {
+            _ = try ReceiptActionSnapshotRenderer.render(
+                outputDirectory: secondDirectory
+            )
+        } catch {
+            XCTFail("Second focused Action render failed: \(error)")
+            throw error
+        }
+        let rendered = workRendered + actionRendered
 
         XCTAssertEqual(rendered.map(\.lastPathComponent), expectedArtifacts.map(\.filename))
         for artifact in expectedArtifacts {
@@ -120,6 +164,61 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         )
         XCTAssertFalse(SnapshotMode.enabled)
         XCTAssertFalse(SnapshotMode.boundsScrollContentToViewport)
+        XCTAssertNil(SnapshotScheme.override)
+    }
+
+    @MainActor
+    func testFocusedActionRendererRejectsAClippedCanvas() throws {
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentacct-clipped-action-snapshot-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outputDirectory) }
+        let configuration = ReceiptActionSnapshotConfiguration(
+            kind: .exactCompact,
+            width: 360,
+            height: 100,
+            colorScheme: .light
+        )
+
+        XCTAssertThrowsError(
+            try ReceiptActionSnapshotRenderer.render(
+                outputDirectory: outputDirectory,
+                configurations: [configuration]
+            )
+        ) { error in
+            guard case SnapshotError.snapshotContentExceedsCanvas(
+                let filename,
+                let requiredHeight,
+                let availableHeight
+            ) = error else {
+                return XCTFail("Expected clipped-canvas failure; got \(error)")
+            }
+            XCTAssertEqual(filename, configuration.filename)
+            XCTAssertGreaterThan(requiredHeight, availableHeight)
+            XCTAssertEqual(availableHeight, 100)
+        }
+        XCTAssertFalse(SnapshotMode.enabled)
+        XCTAssertNil(SnapshotScheme.override)
+    }
+
+    @MainActor
+    func testFocusedActionReviewConfigurationsFitTheirCanvases() throws {
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentacct-action-snapshot-matrix-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outputDirectory) }
+
+        let rendered = try ReceiptActionSnapshotRenderer.render(outputDirectory: outputDirectory)
+        let expected = Array(expectedArtifacts.suffix(12))
+        XCTAssertEqual(rendered.map(\.lastPathComponent), expected.map(\.filename))
+        for artifact in expected {
+            let image = try XCTUnwrap(
+                NSImage(contentsOf: outputDirectory.appendingPathComponent(artifact.filename)),
+                artifact.filename
+            )
+            let representation = try XCTUnwrap(image.representations.first, artifact.filename)
+            XCTAssertEqual(representation.pixelsWide, artifact.pixelsWide)
+            XCTAssertEqual(representation.pixelsHigh, artifact.pixelsHigh)
+        }
+        XCTAssertFalse(SnapshotMode.enabled)
         XCTAssertNil(SnapshotScheme.override)
     }
 

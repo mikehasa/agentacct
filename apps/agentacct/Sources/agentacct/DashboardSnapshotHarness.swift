@@ -99,6 +99,7 @@ enum SnapshotError: LocalizedError {
     case missingWorkFixture
     case renderProducedNoImage
     case pngEncodingFailed
+    case snapshotContentExceedsCanvas(filename: String, requiredHeight: Int, availableHeight: Int)
 
     var errorDescription: String? {
         switch self {
@@ -112,6 +113,8 @@ enum SnapshotError: LocalizedError {
             return "render produced no image"
         case .pngEncodingFailed:
             return "PNG encoding failed"
+        case .snapshotContentExceedsCanvas(let filename, let requiredHeight, let availableHeight):
+            return "snapshot \(filename) needs \(requiredHeight) pt of content height; canvas provides \(availableHeight) pt"
         }
     }
 }
@@ -219,6 +222,24 @@ enum DashboardSnapshotRenderer {
 }
 
 enum SnapshotImageWriter {
+    @MainActor
+    static func renderedSize(
+        _ view: some View,
+        proposedSize: ProposedViewSize = .unspecified
+    ) throws -> CGSize {
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 2
+        renderer.colorMode = .nonLinear
+        renderer.proposedSize = proposedSize
+        guard let cgImage = renderer.cgImage else {
+            throw SnapshotError.renderProducedNoImage
+        }
+        return CGSize(
+            width: CGFloat(cgImage.width) / renderer.scale,
+            height: CGFloat(cgImage.height) / renderer.scale
+        )
+    }
+
     @MainActor
     static func render(_ view: some View, to url: URL, size: CGSize? = nil) throws {
         let renderer = ImageRenderer(content: view)

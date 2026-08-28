@@ -78,6 +78,336 @@ func assertedByLabel(_ raw: String?) -> String? {
     }
 }
 
+enum ReceiptActionIntegrity: Equatable {
+    case unavailable
+    case captureUnknown
+    case totalOnly
+    case exact
+    case totalUnavailable
+    case unrecognizedCategories
+    case mismatch
+    case invalid
+}
+
+/// One same-unit tool-call category in the Actions dimension. Labels describe
+/// only the observed category; they never imply success, effect, importance,
+/// or risk. Unknown future categories stay visible as one bounded aggregate.
+struct ReceiptActionMetric: Equatable, Identifiable {
+    let key: String
+    let label: String
+    let detail: String
+    let count: Int
+
+    var id: String { key }
+}
+
+struct ReceiptActionSynopsis: Equatable {
+    let integrity: ReceiptActionIntegrity
+    let metrics: [ReceiptActionMetric]
+    let headline: String
+    let integrityDetail: String?
+    let storedTotal: Int?
+    let categorizedTotal: Int?
+    let shareDenominator: Int?
+    let captureBoundary: String?
+
+    /// A quantitative distribution is honest only when the displayed types
+    /// reconcile to a positive stored total. Other integrity states keep the
+    /// exact counts but omit proportions rather than drawing a misleading
+    /// chart against a missing or conflicting denominator.
+    var canShowDistribution: Bool {
+        guard let shareDenominator, shareDenominator > 0, !metrics.isEmpty else {
+            return false
+        }
+        return integrity == .exact
+    }
+}
+
+struct ReceiptActionKPI: Equatable {
+    let value: String?
+    let qualifier: String?
+    let absent: String?
+}
+
+private struct ReceiptActionMetricDerivation {
+    let metrics: [ReceiptActionMetric]
+    let overflowed: Bool
+    let invalidCategoryCount: Int
+    let unrecognizedCategoryCount: Int
+}
+
+private func deriveReceiptActionMetrics(_ counts: [String: Int]?) -> ReceiptActionMetricDerivation {
+    let known: [(key: String, label: String, detail: String)] = [
+        ("read", "Read", "File or context read tool calls"),
+        ("edit", "Edit", "Edit or write tool calls"),
+        ("execute", "Execute", "Command or process tool calls"),
+        ("search", "Search", "File or text search tool calls"),
+        ("network", "Network", "Network access tool calls"),
+        ("agent", "Agent", "Agent coordination tool calls"),
+        ("plan", "Plan", "Planning tool calls"),
+        ("mcp", "Connected tools", "Connected-tool calls"),
+        ("other", "Other", "Tool calls outside named categories"),
+    ]
+    let knownKeys = Set(known.map(\.key))
+    let familiar = known.compactMap { item -> ReceiptActionMetric? in
+        guard let count = counts?[item.key], count > 0 else { return nil }
+        return ReceiptActionMetric(
+            key: item.key,
+            label: item.label,
+            detail: item.detail,
+            count: count
+        )
+    }
+    var invalidCategoryCount = 0
+    var unrecognizedCategoryCount = 0
+    var unknownTotal = 0
+    var overflowed = false
+    for (key, count) in counts ?? [:] {
+        if count < 0 || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            invalidCategoryCount += 1
+            continue
+        }
+        guard count > 0, !knownKeys.contains(key) else { continue }
+        unrecognizedCategoryCount += 1
+        guard !overflowed else { continue }
+        let result = unknownTotal.addingReportingOverflow(count)
+        if result.overflow {
+            overflowed = true
+        } else {
+            unknownTotal = result.partialValue
+        }
+    }
+    guard unrecognizedCategoryCount > 0, !overflowed else {
+        return ReceiptActionMetricDerivation(
+            metrics: familiar,
+            overflowed: overflowed,
+            invalidCategoryCount: invalidCategoryCount,
+            unrecognizedCategoryCount: unrecognizedCategoryCount
+        )
+    }
+    let categoryWord = unrecognizedCategoryCount == 1 ? "category" : "categories"
+    return ReceiptActionMetricDerivation(
+        metrics: familiar + [
+            ReceiptActionMetric(
+                key: "__unknown_types__",
+                label: "Unrecognized types",
+                detail: "\(unrecognizedCategoryCount) unrecognized \(categoryWord)",
+                count: unknownTotal
+            )
+        ],
+        overflowed: false,
+        invalidCategoryCount: invalidCategoryCount,
+        unrecognizedCategoryCount: unrecognizedCategoryCount
+    )
+}
+
+func receiptActionMetrics(_ counts: [String: Int]?) -> [ReceiptActionMetric] {
+    deriveReceiptActionMetrics(counts).metrics
+}
+
+func receiptActionSynopsis(
+    counts: [String: Int]?,
+    storedTotal: Int?
+) -> ReceiptActionSynopsis {
+    let derivation = deriveReceiptActionMetrics(counts)
+    let metrics = derivation.metrics
+    var categorizedTotal = 0
+    var categorizedOverflow = derivation.overflowed
+    if !categorizedOverflow {
+        for metric in metrics {
+            let result = categorizedTotal.addingReportingOverflow(metric.count)
+            if result.overflow {
+                categorizedOverflow = true
+                break
+            }
+            categorizedTotal = result.partialValue
+        }
+    }
+    let invalidCategoryCount = derivation.invalidCategoryCount
+    let invalidStoredTotal = (storedTotal ?? 0) < 0
+    let captureBoundary = "No ordered action ledger; captured tool-call counts cannot be linked to results or timing."
+
+    if invalidCategoryCount > 0 || invalidStoredTotal || categorizedOverflow {
+        var details: [String] = []
+        if invalidCategoryCount > 0 {
+            details.append(
+                "\(invalidCategoryCount) invalid \(invalidCategoryCount == 1 ? "category was" : "categories were") omitted"
+            )
+        }
+        if invalidStoredTotal { details.append("the stored total is invalid") }
+        if categorizedOverflow {
+            details.append("the categorized tool-call sum overflowed")
+        } else if categorizedTotal > 0 {
+            details.append("\(categorizedTotal) valid \(categorizedTotal == 1 ? "tool call remains" : "tool calls remain") categorized")
+        }
+        if let storedTotal, storedTotal >= 0 { details.append("stored total is \(storedTotal)") }
+        return ReceiptActionSynopsis(
+            integrity: .invalid,
+            metrics: metrics,
+            headline: "Tool-call data incomplete",
+            integrityDetail: details.joined(separator: " · "),
+            storedTotal: storedTotal,
+            categorizedTotal: categorizedOverflow ? nil : categorizedTotal,
+            shareDenominator: nil,
+            captureBoundary: categorizedTotal > 0 || (storedTotal ?? 0) > 0 || categorizedOverflow
+                ? captureBoundary : nil
+        )
+    }
+
+    guard let storedTotal else {
+        if categorizedTotal > 0 {
+            let hasUnrecognizedCategories = derivation.unrecognizedCategoryCount > 0
+            return ReceiptActionSynopsis(
+                integrity: hasUnrecognizedCategories ? .unrecognizedCategories : .totalUnavailable,
+                metrics: metrics,
+                headline: "\(categorizedTotal) categorized \(categorizedTotal == 1 ? "tool call" : "tool calls")",
+                integrityDetail: hasUnrecognizedCategories
+                    ? "\(derivation.unrecognizedCategoryCount) unrecognized tool-call \(derivation.unrecognizedCategoryCount == 1 ? "type" : "types") · stored total unavailable"
+                    : "Stored tool-call total unavailable",
+                storedTotal: nil,
+                categorizedTotal: categorizedTotal,
+                shareDenominator: nil,
+                captureBoundary: captureBoundary
+            )
+        }
+        return ReceiptActionSynopsis(
+            integrity: counts == nil ? .unavailable : .totalUnavailable,
+            metrics: [],
+            headline: counts == nil ? "not instrumented" : "stored total unavailable",
+            integrityDetail: counts == nil ? nil : "No categorized tool-call counts",
+            storedTotal: nil,
+            categorizedTotal: 0,
+            shareDenominator: nil,
+            captureBoundary: nil
+        )
+    }
+
+    if storedTotal == 0, categorizedTotal == 0 {
+        return ReceiptActionSynopsis(
+            integrity: .captureUnknown,
+            metrics: [],
+            headline: "No captured tool calls",
+            integrityDetail: "Capture coverage unknown",
+            storedTotal: 0,
+            categorizedTotal: 0,
+            shareDenominator: nil,
+            captureBoundary: nil
+        )
+    }
+
+    if storedTotal > 0, counts == nil {
+        return ReceiptActionSynopsis(
+            integrity: .totalOnly,
+            metrics: [],
+            headline: "\(storedTotal) \(storedTotal == 1 ? "tool call" : "tool calls") in stored total",
+            integrityDetail: "Tool-call type breakdown unavailable",
+            storedTotal: storedTotal,
+            categorizedTotal: 0,
+            shareDenominator: nil,
+            captureBoundary: captureBoundary
+        )
+    }
+
+    if storedTotal != categorizedTotal {
+        var detail = "category counts sum to \(categorizedTotal) · stored total is \(storedTotal)"
+        if derivation.unrecognizedCategoryCount > 0 {
+            detail += " · \(derivation.unrecognizedCategoryCount) unrecognized tool-call \(derivation.unrecognizedCategoryCount == 1 ? "type" : "types")"
+        }
+        return ReceiptActionSynopsis(
+            integrity: .mismatch,
+            metrics: metrics,
+            headline: "Tool-call totals conflict",
+            integrityDetail: detail,
+            storedTotal: storedTotal,
+            categorizedTotal: categorizedTotal,
+            shareDenominator: nil,
+            captureBoundary: captureBoundary
+        )
+    }
+    if derivation.unrecognizedCategoryCount > 0 {
+        return ReceiptActionSynopsis(
+            integrity: .unrecognizedCategories,
+            metrics: metrics,
+            headline: "\(storedTotal) \(storedTotal == 1 ? "tool call" : "tool calls") captured",
+            integrityDetail: "\(derivation.unrecognizedCategoryCount) unrecognized tool-call \(derivation.unrecognizedCategoryCount == 1 ? "type was" : "types were") aggregated · update the app to interpret \(derivation.unrecognizedCategoryCount == 1 ? "it" : "them")",
+            storedTotal: storedTotal,
+            categorizedTotal: categorizedTotal,
+            shareDenominator: nil,
+            captureBoundary: captureBoundary
+        )
+    }
+    return ReceiptActionSynopsis(
+        integrity: .exact,
+        metrics: metrics,
+        headline: "\(storedTotal) \(storedTotal == 1 ? "tool call" : "tool calls") captured",
+        integrityDetail: nil,
+        storedTotal: storedTotal,
+        categorizedTotal: categorizedTotal,
+        shareDenominator: storedTotal,
+        captureBoundary: captureBoundary
+    )
+}
+
+func receiptActionKPI(_ synopsis: ReceiptActionSynopsis) -> ReceiptActionKPI {
+    switch synopsis.integrity {
+    case .captureUnknown:
+        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "capture unknown")
+    case .totalOnly, .exact:
+        return ReceiptActionKPI(
+            value: synopsis.storedTotal.map(String.init),
+            qualifier: "tool calls",
+            absent: nil
+        )
+    case .totalUnavailable:
+        if let categorized = synopsis.categorizedTotal, categorized > 0 {
+            return ReceiptActionKPI(value: "\(categorized)", qualifier: "categorized calls", absent: nil)
+        }
+        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "stored total unavailable")
+    case .unrecognizedCategories:
+        if let stored = synopsis.storedTotal {
+            return ReceiptActionKPI(value: "\(stored)", qualifier: "tool calls · types changed", absent: nil)
+        }
+        if let categorized = synopsis.categorizedTotal, categorized > 0 {
+            return ReceiptActionKPI(value: "\(categorized)", qualifier: "categorized calls · types changed", absent: nil)
+        }
+        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "tool-call types changed")
+    case .mismatch:
+        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "tool-call totals conflict")
+    case .invalid:
+        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "tool-call data incomplete")
+    case .unavailable:
+        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "not instrumented")
+    }
+}
+
+func receiptActionScope(relatedPathCount: Int?) -> String {
+    guard let pathCount = relatedPathCount, pathCount >= 0 else { return "" }
+    return "\(pathCount) unique \(pathCount == 1 ? "path" : "paths") from recorded work, machine checks, or captured edit tool calls"
+}
+
+func receiptActionSourceText(_ sources: [String]?) -> String {
+    var labels: [String] = []
+    var seen = Set<String>()
+    for source in sources ?? [] {
+        let label: String
+        switch source {
+        case "", "none": continue
+        case "mcp": label = "MCP"
+        case "transcript_scan": label = "Transcript scan"
+        case "client_log": label = "Client log"
+        case "agent_report": label = "Agent report"
+        case "pricing_table": label = "Pricing table"
+        case "ci": label = "CI"
+        case "hook": label = "Client hook"
+        default:
+            let words = source.replacingOccurrences(of: "_", with: " ")
+            label = words.prefix(1).uppercased() + words.dropFirst()
+        }
+        if seen.insert(label).inserted { labels.append(label) }
+    }
+    return labels.joined(separator: ", ")
+}
+
 // MARK: - Record summary strip
 
 /// The record page's summary strip: Actions · Est. cost · Elapsed · Checks ·
@@ -100,12 +430,19 @@ struct RecordSummaryStrip: View {
         let cost = receipt.dimensions.cost
         let evidence = receipt.dimensions.evidence
 
-        let actionCell: Cell
-        if let total = actions.toolCategoryTotal {
-            actionCell = Cell(id: "actions", label: "Actions", value: "\(total)", qualifier: "events", absent: nil)
-        } else {
-            actionCell = Cell(id: "actions", label: "Actions", value: nil, qualifier: nil, absent: "not instrumented")
-        }
+        let actionKPI = receiptActionKPI(
+            receiptActionSynopsis(
+                counts: actions.toolCategoryCounts,
+                storedTotal: actions.toolCategoryTotal
+            )
+        )
+        let actionCell = Cell(
+            id: "actions",
+            label: "Actions",
+            value: actionKPI.value,
+            qualifier: actionKPI.qualifier,
+            absent: actionKPI.absent
+        )
 
         let costCell: Cell
         if let usd = cost.estimatedCostUsd {
@@ -199,6 +536,270 @@ struct RecordSummaryStrip: View {
 
 // MARK: - Receipt dimensions
 
+/// The aggregate-only Actions view. It is intentionally static: current
+/// receipts do not contain canonical per-action rows, so no metric, source, or
+/// disclosure may look clickable. Exact text remains primary and the layout has
+/// one deterministic two-column-to-one-column transition.
+struct ReceiptActionsDigest: View {
+    let synopsis: ReceiptActionSynopsis
+    let relatedPathCount: Int?
+    let provenance: [String]?
+    let gaps: [String]?
+
+    // The app's fixed type ramp keeps dense dashboard geometry stable. This
+    // focused digest still has to honor accessibility text sizes, so its four
+    // existing roles scale relative to their semantic text styles without
+    // changing the surrounding receipt ledger.
+    @ScaledMetric(relativeTo: .body) private var bodyTypeSize: CGFloat = 14
+    @ScaledMetric(relativeTo: .caption) private var captionTypeSize: CGFloat = 12
+    @ScaledMetric(relativeTo: .caption) private var captionIconSize: CGFloat = 10
+
+    private var scope: String { receiptActionScope(relatedPathCount: relatedPathCount) }
+    private var sourceText: String { receiptActionSourceText(provenance) }
+    private var bodyFont: Font { Face.sansFont(bodyTypeSize, .regular) }
+    private var rowLabelFont: Font { Face.sansFont(bodyTypeSize, .semibold) }
+    private var captionFont: Font { Face.sansFont(captionTypeSize, .regular) }
+    private var captionSemiboldFont: Font { Face.sansFont(captionTypeSize, .semibold) }
+    private var dataSmallFont: Font { Face.monoFont(captionTypeSize, .regular) }
+    private var dataSmallSemiboldFont: Font { Face.monoFont(captionTypeSize, .semibold) }
+
+    private var integrityTone: Color {
+        switch synopsis.integrity {
+        case .invalid, .mismatch: return Theme.amber
+        default: return Theme.muted
+        }
+    }
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: Space.l) {
+                actionsLabel.frame(width: 128, alignment: .leading)
+                digestContent
+            }
+            .frame(width: 620, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: Space.m) {
+                actionsLabel
+                digestContent
+            }
+        }
+        .padding(.vertical, Space.m)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Actions")
+        .accessibilityIdentifier("receipt.actions.summary")
+    }
+
+    private var actionsLabel: some View {
+        Text("Actions")
+            .font(rowLabelFont)
+            .foregroundStyle(Theme.ink)
+            .accessibilityHidden(true)
+    }
+
+    private var digestContent: some View {
+        VStack(alignment: .leading, spacing: Space.s) {
+            Text(synopsis.headline)
+                .font(bodyFont)
+                .foregroundStyle(synopsis.integrity == .unavailable ? Theme.muted : Theme.ink)
+                .fixedSize(horizontal: false, vertical: true)
+            if let detail = synopsis.integrityDetail {
+                Text(detail)
+                    .font(captionFont)
+                    .foregroundStyle(integrityTone)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !synopsis.metrics.isEmpty {
+                if synopsis.canShowDistribution {
+                    actionDistribution
+                } else {
+                    Text("Captured tool-call types")
+                        .font(captionSemiboldFont)
+                        .foregroundStyle(Theme.ink)
+                        .padding(.top, Space.xs)
+                    ViewThatFits(in: .horizontal) {
+                        metricGrid(columns: 2)
+                            .frame(minWidth: 340)
+                        metricGrid(columns: 1)
+                    }
+                }
+            }
+            if !scope.isEmpty {
+                metadataLine(label: "Related paths", value: scope)
+            }
+            if !sourceText.isEmpty {
+                metadataLine(label: "Action sources", value: sourceText)
+            }
+            if let boundary = synopsis.captureBoundary {
+                metadataLine(label: "Detail", value: boundary)
+            }
+            ForEach(Array((gaps ?? []).enumerated()), id: \.offset) { _, gap in
+                noticeLine(prefix: "Evidence gap", text: gap, tone: Theme.amber)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var actionDistribution: some View {
+        VStack(alignment: .leading, spacing: Space.s) {
+            HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                Text("Tool calls by type")
+                    .font(captionSemiboldFont)
+                    .foregroundStyle(Theme.ink)
+                Spacer(minLength: Space.s)
+                Text("Shared scale")
+                    .font(dataSmallFont)
+                    .foregroundStyle(Theme.muted)
+            }
+            .padding(.top, Space.xs)
+            .accessibilityHidden(true)
+
+            Text("Counts describe captured tool calls, not progress or success.")
+                .font(captionFont)
+                .foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ForEach(synopsis.metrics) { metric in
+                actionDistributionRow(metric)
+            }
+
+            if let denominator = synopsis.shareDenominator {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("0")
+                    Spacer(minLength: Space.s)
+                    Text("\(denominator) tool calls")
+                }
+                .font(dataSmallFont)
+                .foregroundStyle(Theme.muted)
+                .monospacedDigit()
+                .accessibilityHidden(true)
+            }
+        }
+    }
+
+    private func actionDistributionRow(_ metric: ReceiptActionMetric) -> some View {
+        let denominator = synopsis.shareDenominator ?? 1
+        let fraction = min(max(CGFloat(metric.count) / CGFloat(denominator), 0), 1)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                Text(metric.label)
+                    .font(captionSemiboldFont)
+                    .foregroundStyle(Theme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: Space.s)
+                Text(distributionValue(metric))
+                    .font(dataSmallSemiboldFont)
+                    .foregroundStyle(Theme.ink)
+                    .monospacedDigit()
+            }
+            Text(metric.detail)
+                .font(captionFont)
+                .foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            GeometryReader { proxy in
+                Rectangle()
+                    .fill(Theme.accent)
+                    .frame(width: proxy.size.width * fraction, height: 4)
+                    .frame(maxHeight: .infinity, alignment: .center)
+            }
+            .frame(height: 6)
+            .accessibilityHidden(true)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(metric.label)
+        .accessibilityValue(
+            synopsis.shareDenominator.map {
+                "\(metric.count) of \($0). \(metric.detail)"
+            } ?? "\(metric.count). \(metric.detail)"
+        )
+    }
+
+    private func metricGrid(columns: Int) -> some View {
+        LazyVGrid(
+            columns: Array(
+                repeating: GridItem(.flexible(minimum: 0), spacing: Space.l, alignment: .leading),
+                count: columns
+            ),
+            alignment: .leading,
+            spacing: Space.s
+        ) {
+            ForEach(synopsis.metrics) { metric in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                        Text(metric.label)
+                            .font(captionSemiboldFont)
+                            .foregroundStyle(Theme.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: Space.xs)
+                        Text(metricValue(metric))
+                            .font(dataSmallSemiboldFont)
+                            .foregroundStyle(Theme.ink)
+                            .monospacedDigit()
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    Text(metric.detail)
+                        .font(captionFont)
+                        .foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(metric.label)
+                .accessibilityValue(
+                    synopsis.shareDenominator.map {
+                        "\(metric.count) of \($0). \(metric.detail)"
+                    } ?? "\(metric.count). \(metric.detail)"
+                )
+            }
+        }
+    }
+
+    private func metricValue(_ metric: ReceiptActionMetric) -> String {
+        guard let denominator = synopsis.shareDenominator else { return "\(metric.count)" }
+        return "\(metric.count) of \(denominator)"
+    }
+
+    private func distributionValue(_ metric: ReceiptActionMetric) -> String {
+        guard let denominator = synopsis.shareDenominator, denominator > 0 else {
+            return "\(metric.count)"
+        }
+        let percent = Double(metric.count) / Double(denominator)
+        return "\(metric.count) · \(percent.formatted(.percent.precision(.fractionLength(0...1))))"
+    }
+
+    private func metadataLine(label: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+            Text("\(label):")
+                .font(captionSemiboldFont)
+                .foregroundStyle(Theme.ink)
+            Text(value)
+                .font(dataSmallFont)
+                .foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(value)
+    }
+
+    private func noticeLine(prefix: String, text: String, tone: Color) -> some View {
+        HStack(alignment: .top, spacing: Space.s) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: captionIconSize, weight: .semibold))
+                .foregroundStyle(tone)
+                .frame(width: captionIconSize + 2, alignment: .center)
+                .padding(.top, 2)
+                .accessibilityHidden(true)
+            Text("\(prefix): \(text)")
+                .font(captionFont)
+                .foregroundStyle(tone)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(prefix)
+        .accessibilityValue(text)
+    }
+}
+
 /// The receipt-dimensions ledger: one row per dimension — name, value,
 /// provenance chips, and the dimension's own gaps inline as named amber facts.
 struct RecordDimensionsCard: View {
@@ -278,85 +879,20 @@ struct RecordDimensionsCard: View {
         .padding(.vertical, Space.m)
     }
 
-    // Actions renders touched paths + commands beneath the category summary.
-    // Each list is an in-place disclosure: collapsed shows the daemon's honest
-    // preview exactly as before; "Show all N" grows a height-capped scroll
-    // region in place (no second-level page, no unbounded page growth).
+    // V1 carries aggregates, independently collected path scope, and row-wide
+    // provenance—not canonical action rows. Keep the daily receipt bounded to
+    // facts that can be related honestly.
     private var actionsRow: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            dimensionRow("Actions", actionsSummary,
-                         provenance: receipt.dimensions.actions.provenance,
-                         gaps: receipt.dimensions.actions.gaps)
-            let dim = receipt.dimensions.actions
-            let files = actionsTouchedPreview
-            let commands = actionsCommandsPreview
-            let toolRows = fullToolRows
-            // The tools disclosure must stay reachable for read/search-only
-            // receipts (tool names without any touched file or command).
-            let hasElidedTools = (dim.toolNamesElided ?? 0) > 0 && !toolRows.isEmpty
-            if !files.shown.isEmpty || !commands.shown.isEmpty || hasElidedTools {
-                VStack(alignment: .leading, spacing: 2) {
-                    ActionListDisclosure(
-                        preview: files.shown,
-                        elided: files.elided,
-                        full: dim.touchedFiles ?? files.shown,
-                        noun: "files",
-                        rowPrefix: ""
-                    )
-                    ActionListDisclosure(
-                        preview: commands.shown,
-                        elided: commands.elided,
-                        full: dim.commands ?? commands.shown,
-                        noun: "commands",
-                        rowPrefix: "$ "
-                    )
-                    if hasElidedTools {
-                        ActionListDisclosure(
-                            preview: [],
-                            elided: dim.toolNamesElided ?? 0,
-                            full: toolRows,
-                            noun: "tools",
-                            rowPrefix: ""
-                        )
-                    }
-                }
-                .padding(.leading, 128 + Space.l)
-                .padding(.bottom, Space.m)
-                .padding(.top, -Space.s)
-            }
-        }
-    }
-
-    /// The full tool tally as display rows, daemon order (count desc, name asc)
-    /// — the same ordering rule the daemon's preview uses.
-    private var fullToolRows: [String] {
-        let counts = receipt.dimensions.actions.toolNameCounts ?? [:]
-        return counts
-            .filter { $0.value > 0 }
-            .sorted { lhs, rhs in
-                if lhs.value != rhs.value { return lhs.value > rhs.value }
-                return lhs.key < rhs.key
-            }
-            .map { "\($0.key)×\($0.value)" }
-    }
-
-    // The daemon computes the preview slice + overflow (the single source of
-    // truth for the cap); the app renders those directly so it can never drift
-    // from the CLI/TUI. Fallback (older payload): the full list.
-    private var actionsTouchedPreview: (shown: [String], elided: Int) {
         let dim = receipt.dimensions.actions
-        if let preview = dim.touchedFilesPreview {
-            return (preview, dim.touchedFilesElided ?? 0)
-        }
-        return (dim.touchedFiles ?? [], 0)
-    }
-
-    private var actionsCommandsPreview: (shown: [String], elided: Int) {
-        let dim = receipt.dimensions.actions
-        if let preview = dim.commandsPreview {
-            return (preview, dim.commandsElided ?? 0)
-        }
-        return (dim.commands ?? [], 0)
+        return ReceiptActionsDigest(
+            synopsis: receiptActionSynopsis(
+                counts: dim.toolCategoryCounts,
+                storedTotal: dim.toolCategoryTotal
+            ),
+            relatedPathCount: dim.touchedFileCount,
+            provenance: dim.provenance,
+            gaps: dim.gaps
+        )
     }
 
     // MARK: dimension summaries
@@ -376,25 +912,6 @@ struct RecordDimensionsCard: View {
         if let models = dim.models, !models.isEmpty { parts.append(models.joined(separator: ", ")) }
         if let subagents = dim.subagentSessionCount, subagents > 0 { parts.append("\(subagents) subagents") }
         return parts.isEmpty ? "no actor recorded" : parts.joined(separator: " · ")
-    }
-
-    private var actionsSummary: String {
-        let dim = receipt.dimensions.actions
-        let counts = dim.toolCategoryCounts ?? [:]
-        let categories = counts.isEmpty
-            ? "not instrumented"
-            : counts.sorted { $0.key < $1.key }.map { "\($0.key)×\($0.value)" }.joined(separator: " ")
-        var summary = "\(categories) · touched \(dim.touchedFileCount ?? 0) file(s)"
-        if let commandCount = dim.commandCount, commandCount > 0 {
-            summary += " · ran \(commandCount) command(s)"
-        }
-        if let preview = dim.toolNamesPreview, !preview.isEmpty {
-            var tools = preview.map { "\($0.name)×\($0.count)" }.joined(separator: "  ")
-            let elided = dim.toolNamesElided ?? 0
-            if elided > 0 { tools += "  … +\(elided) more" }
-            summary += "\ntools: \(tools)"
-        }
-        return summary
     }
 
     private var costSummary: String {
@@ -450,102 +967,6 @@ struct RecordDimensionsCard: View {
             line += "\n“\(statement)”"
         }
         return line
-    }
-}
-
-// MARK: - Action list disclosure
-
-/// One Actions sub-list (files / commands / tools) as an in-place disclosure.
-///
-/// Collapsed = the daemon's capped preview verbatim (the cap stays the daemon's
-/// single source of truth) with the overflow line turned into a control.
-/// Expanded = the FULL list — already riding the payload, no extra fetch — in a
-/// height-capped internal scroll region, so 1,000 commands never stretch the
-/// record page and never need a second-level page. Rows wrap and are selectable
-/// when expanded: the point of expanding is to actually read and copy them.
-/// Snapshot mode renders the collapsed static text exactly as before (the
-/// offscreen renderer can't drive buttons or ScrollViews).
-private struct ActionListDisclosure: View {
-    let preview: [String]
-    let elided: Int
-    let full: [String]
-    let noun: String
-    let rowPrefix: String
-    @State private var expanded = false
-
-    var body: some View {
-        if expanded {
-            expandedList
-        } else {
-            collapsedList
-        }
-    }
-
-    @ViewBuilder
-    private var collapsedList: some View {
-        ForEach(Array(preview.enumerated()), id: \.offset) { _, row in
-            // verbatim: commands/paths are untrusted text — never interpret as
-            // markdown (Text's LocalizedStringKey init would).
-            Text(verbatim: rowPrefix + row).font(Type.dataSmall).foregroundStyle(Theme.muted)
-                .lineLimit(1).truncationMode(.middle)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        if elided > 0 {
-            if SnapshotMode.enabled {
-                // Static overflow only under a rendered preview; a preview-less
-                // list (tools) would otherwise print a dangling duplicate of
-                // the summary's own "+N more".
-                if !preview.isEmpty {
-                    Text("… +\(elided) more \(noun)").font(Type.dataSmall).foregroundStyle(Theme.muted)
-                }
-            } else {
-                Button {
-                    withAnimation(Motion.contentUpdate) { expanded = true }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 8, weight: .semibold))
-                        Text("Show all \(full.count) \(noun)").font(Type.dataSmall)
-                    }
-                    .foregroundStyle(Theme.accent)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("receipt.actions.expand.\(noun)")
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var expandedList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Rectangle().fill(Theme.hairline).frame(height: 1)
-            ScrollView(showsIndicators: true) {
-                LazyVStack(alignment: .leading, spacing: 3) {
-                    ForEach(Array(full.enumerated()), id: \.offset) { _, row in
-                        Text(verbatim: rowPrefix + row).font(Type.dataSmall).foregroundStyle(Theme.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .padding(.vertical, Space.s)
-                .textSelection(.enabled)
-            }
-            .frame(maxHeight: 340)
-            Rectangle().fill(Theme.hairline).frame(height: 1)
-        }
-        Button {
-            withAnimation(Motion.contentUpdate) { expanded = false }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "chevron.up").font(.system(size: 8, weight: .semibold))
-                Text("Collapse \(noun)").font(Type.dataSmall)
-            }
-            .foregroundStyle(Theme.accent)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("receipt.actions.collapse.\(noun)")
     }
 }
 

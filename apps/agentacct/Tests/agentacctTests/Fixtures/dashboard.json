@@ -457,6 +457,26 @@
           },
           "tool_category_total": 80,
           "touched_file_count": 18,
+          "touched_files": [
+            ".github/workflows/tests.yml",
+            "apps/agentacct/Scripts/visual-snapshots",
+            "apps/agentacct/Sources/agentacct/DashboardSnapshotHarness.swift",
+            "apps/agentacct/Sources/agentacct/DashboardStore.swift",
+            "apps/agentacct/Sources/agentacct/MainWindow.swift",
+            "apps/agentacct/Sources/agentacct/ReceiptsPane.swift",
+            "apps/agentacct/Sources/agentacct/SnapshotRunner.swift",
+            "apps/agentacct/Sources/agentacct/Theme.swift",
+            "apps/agentacct/Sources/agentacct/V1Model.swift",
+            "apps/agentacct/Sources/agentacct/WorkPane.swift",
+            "apps/agentacct/Sources/agentacct/WorkSnapshotHarness.swift",
+            "apps/agentacct/Sources/agentacct/main.swift",
+            "apps/agentacct/Tests/README.md",
+            "apps/agentacct/Tests/agentacctTests/DashboardInteractionTests.swift",
+            "apps/agentacct/Tests/agentacctTests/DashboardSnapshotHarnessTests.swift",
+            "apps/agentacct/Tests/agentacctTests/Support/VisualSnapshotHarness.swift",
+            "apps/agentacct/Tests/agentacctTests/WorkSnapshotHarnessTests.swift",
+            "apps/agentacct/Tests/agentacctTests/WorkVisualRegressionTests.swift"
+          ],
           "touched_files_preview": [
             "apps/agentacct/Sources/agentacct/DashboardSnapshotHarness.swift",
             "apps/agentacct/Sources/agentacct/DashboardStore.swift",
@@ -465,6 +485,32 @@
           ],
           "touched_files_elided": 14,
           "command_count": 24,
+          "commands": [
+            "git status --short --branch",
+            "git diff --check",
+            "git diff --stat",
+            "swift test --filter DashboardInteractionTests",
+            "swift test --filter WorkSnapshotHarnessTests",
+            "swift test --filter WorkVisualRegressionTests",
+            "swift test",
+            "./Scripts/visual-snapshots list",
+            "./Scripts/visual-snapshots check-environment",
+            "./Scripts/visual-snapshots verify WorkVisualRegressionTests",
+            "./Scripts/visual-snapshots record WorkVisualRegressionTests",
+            "./Scripts/visual-snapshots verify",
+            "./Tests/visual-snapshots-cli-tests.sh",
+            "./Tests/build-app-identity-tests.sh",
+            "swift build -c release",
+            ".build/release/agentacct --snapshot-work-fixture dashboard.json review",
+            "jq empty Tests/agentacctTests/Fixtures/dashboard.json",
+            "sips -g pixelWidth -g pixelHeight work-receipt-reference-light.png",
+            "rg --files Tests/agentacctTests/ReferenceImages",
+            "git merge-tree --write-tree HEAD origin/main",
+            "git log --oneline --decorate -5",
+            "gh pr checks --watch",
+            "gh run view --json jobs",
+            "gh run download --name ui-review"
+          ],
           "commands_preview": [
             "swift test --filter WorkSnapshotHarnessTests",
             "./Scripts/visual-snapshots verify",
@@ -486,8 +532,7 @@
             "update_plan": 2,
             "open": 1
           },
-          "provenance": ["client_log"],
-          "gaps": ["14 additional touched paths are available through disclosure"]
+          "provenance": ["client_log"]
         },
         "cost": {
           "estimated_cost_usd": 4.82,
@@ -584,9 +629,8 @@
           "provenance": ["agent_report", "client_hook"]
         },
         "gaps": {
-          "count": 3,
+          "count": 2,
           "items": [
-            {"dimension": "actions", "reason": "14 touched paths are collapsed behind the disclosure."},
             {"dimension": "evidence", "reason": "No hosted CI evidence is attached to this receipt."},
             {"dimension": "cost", "reason": "Dollar cost is estimated from the pricing table."}
           ]

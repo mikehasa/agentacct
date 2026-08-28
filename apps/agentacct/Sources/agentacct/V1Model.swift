@@ -798,51 +798,16 @@ struct ReceiptActorsDim: Decodable {
 struct ReceiptActionsDim: Decodable {
     let toolCategoryCounts: [String: Int]?
     let toolCategoryTotal: Int?
-    let touchedFiles: [String]?
     let touchedFileCount: Int?
-    // The daemon-capped touched-file preview + disclosed overflow — the app
-    // renders these directly so the cap has a single source of truth (the daemon)
-    // and can never drift from the CLI/TUI. Optional so an older payload without
-    // them still decodes (the app then falls back to slicing touchedFiles).
-    let touchedFilesPreview: [String]?
-    let touchedFilesElided: Int?
-    // The commands an execute tool ran (daemon-capped preview + disclosed overflow;
-    // single-line, credential-scrubbed). Optional so an older payload still decodes.
-    let commands: [String]?
-    let commandCount: Int?
-    let commandsPreview: [String]?
-    let commandsElided: Int?
-    // The specific tools the agent used (daemon-ranked, most-used first) + the
-    // disclosed overflow. Optional so an older payload without them still decodes.
-    let toolNamesPreview: [ReceiptToolName]?
-    let toolNamesElided: Int?
-    // The FULL name→count map behind the preview, for the expand-in-place view.
-    let toolNameCounts: [String: Int]?
     let provenance: [String]?
     let gaps: [String]?
 
     enum CodingKeys: String, CodingKey {
         case toolCategoryCounts = "tool_category_counts"
         case toolCategoryTotal = "tool_category_total"
-        case touchedFiles = "touched_files"
         case touchedFileCount = "touched_file_count"
-        case touchedFilesPreview = "touched_files_preview"
-        case touchedFilesElided = "touched_files_elided"
-        case commands
-        case commandCount = "command_count"
-        case commandsPreview = "commands_preview"
-        case commandsElided = "commands_elided"
-        case toolNamesPreview = "tool_names_preview"
-        case toolNamesElided = "tool_names_elided"
-        case toolNameCounts = "tool_name_counts"
         case provenance, gaps
     }
-}
-
-struct ReceiptToolName: Decodable, Identifiable {
-    let name: String
-    let count: Int
-    var id: String { name }
 }
 
 /// The receipt cost dimension's token tally (daemon-computed; the app never
