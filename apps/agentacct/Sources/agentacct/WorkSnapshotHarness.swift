@@ -5,14 +5,18 @@ enum WorkSnapshotState: String {
     case receipt
     case empty
     case listError = "list-error"
+    case retainedListError = "retained-list-error"
+    case attentionOverflow = "attention-overflow"
     case receiptLoading = "receipt-loading"
     case receiptError = "receipt-error"
 
     var storeState: SnapshotWorkStoreState {
         switch self {
         case .table, .receipt: return .populated
+        case .attentionOverflow: return .attentionOverflow
         case .empty: return .empty
         case .listError: return .listError
+        case .retainedListError: return .retainedListError
         case .receiptLoading: return .receiptLoading
         case .receiptError: return .receiptError
         }
@@ -21,9 +25,11 @@ enum WorkSnapshotState: String {
     var selectsReceipt: Bool {
         switch self {
         case .receipt, .receiptLoading, .receiptError: return true
-        case .table, .empty, .listError: return false
+        case .table, .empty, .listError, .retainedListError, .attentionOverflow: return false
         }
     }
+
+    var selectsAttention: Bool { self == .attentionOverflow }
 }
 
 struct WorkSnapshotConfiguration {
@@ -50,6 +56,8 @@ struct WorkSnapshotConfiguration {
         let transient = [
             WorkSnapshotState.empty,
             .listError,
+            .retainedListError,
+            .attentionOverflow,
             .receiptLoading,
             .receiptError,
         ].flatMap { state in
@@ -110,6 +118,7 @@ enum WorkSnapshotRenderer {
             let selection = AppSelection()
             selection.pane = .work
             selection.taskId = configuration.state.selectsReceipt ? work.receipt.taskId : nil
+            selection.workGroup = configuration.state.selectsAttention ? .attention : nil
 
             let view = MainWindow(canSetUpOverride: true)
                 .environmentObject(glance)

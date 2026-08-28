@@ -74,7 +74,7 @@ The default Task detail endpoints on the local JSON API are:
 ```text
 GET http://127.0.0.1:8765/v1/receipt?task=task_<opaque-id>
 GET http://127.0.0.1:8765/v1/tasks
-GET http://127.0.0.1:8765/v1/attention?limit=5
+GET http://127.0.0.1:8765/v1/attention?limit=5&offset=0
 ```
 
 `/v1/attention` computes complete, exclusive counts by each Task's leading
@@ -86,7 +86,9 @@ ordering, not a claim about business priority. Each row includes its recorded
 reason and next step when available; agentacct does not invent a recovery action
 for a failed check. The complete classification and ordering are cached with the
 parent Task projection, so repeated dashboard polls rebuild them only when that
-projection changes.
+projection changes. Clients can load later ranked rows with `offset`; every
+page carries the same complete counts and a ranking revision so a client can
+reject pages from a changed projection instead of skipping or repeating work.
 
 ## Owned execution boundary
 

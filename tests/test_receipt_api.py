@@ -150,11 +150,16 @@ def _record_failed_check(service: SentinelService, *, session_id: str, section_i
 
 
 def _record_blocked_section(
-    service: SentinelService, *, session_id: str, section_id: str, at: float
+    service: SentinelService,
+    *,
+    session_id: str,
+    section_id: str,
+    at: float,
+    event_suffix: str = "",
 ) -> None:
     service.record_event(
         {
-            "event_id": f"evt_section_{session_id}_{section_id}_blocked",
+            "event_id": f"evt_section_{session_id}_{section_id}_blocked{event_suffix}",
             "created_at": at,
             "source": "claude-code",
             "event_type": "section_blocked",
@@ -281,11 +286,14 @@ def test_attention_empty_state_and_query_bounds(tmp_path: Path) -> None:
     client = _app(tmp_path)
 
     payload = client.get("/v1/attention", headers=_auth()).json()
+    revision = payload.pop("revision")
+    assert isinstance(revision, str) and revision
     assert payload == {
         "schema": V1_ATTENTION_SCHEMA_VERSION,
         "items": [],
         "total": 0,
         "counts": {"failed_check": 0, "failed_step": 0, "blocker": 0},
+        "offset": 0,
         "limit": 5,
         "truncated": False,
     }
@@ -294,6 +302,9 @@ def test_attention_empty_state_and_query_bounds(tmp_path: Path) -> None:
     ).status_code == 422
     assert client.get(
         "/v1/attention", headers=_auth(), params={"limit": 51}
+    ).status_code == 422
+    assert client.get(
+        "/v1/attention", headers=_auth(), params={"offset": -1}
     ).status_code == 422
 
 
@@ -335,10 +346,21 @@ def test_attention_is_complete_bounded_and_operationally_ordered(
     assert recent_page["tasks"][0]["primary_root"]["client_session_id"] == "clean"
 
     attention = client.get("/v1/attention", headers=_auth(), params={"limit": 1}).json()
-    assert set(attention) == {"schema", "items", "total", "counts", "limit", "truncated"}
+    assert set(attention) == {
+        "schema",
+        "items",
+        "total",
+        "counts",
+        "revision",
+        "offset",
+        "limit",
+        "truncated",
+    }
     assert attention["schema"] == V1_ATTENTION_SCHEMA_VERSION
     assert attention["total"] == 2
     assert attention["counts"] == {"failed_check": 1, "failed_step": 0, "blocker": 1}
+    assert isinstance(attention["revision"], str) and attention["revision"]
+    assert attention["offset"] == 0
     assert attention["limit"] == 1
     assert attention["truncated"] is True
     assert len(attention["items"]) == 1
@@ -355,6 +377,21 @@ def test_attention_is_complete_bounded_and_operationally_ordered(
         "source": "mcp",
     }
     assert leading["attention"]["observed_at"] is not None
+
+    next_attention = client.get(
+        "/v1/attention",
+        headers=_auth(),
+        params={"limit": 1, "offset": 1},
+    ).json()
+    assert next_attention["total"] == attention["total"]
+    assert next_attention["counts"] == attention["counts"]
+    assert next_attention["revision"] == attention["revision"]
+    assert next_attention["offset"] == 1
+    assert next_attention["limit"] == 1
+    assert next_attention["truncated"] is False
+    assert [row["primary_root"]["client_session_id"] for row in next_attention["items"]] == [
+        "blocked"
+    ]
 
     all_attention = client.get("/v1/attention", headers=_auth(), params={"limit": 5}).json()
     assert [row["primary_root"]["client_session_id"] for row in all_attention["items"]] == [
@@ -410,6 +447,95 @@ def test_attention_is_complete_bounded_and_operationally_ordered(
     # Changed content invalidates the index and classifies all four current
     # Tasks; the clean Task still does not enter the three-item queue.
     assert len(classification_calls) == 7
+
+
+def test_attention_pages_reach_every_ranked_item_without_overlap(tmp_path: Path) -> None:
+    service = SentinelService(tmp_path)
+    for index in range(7):
+        session_id = f"blocked-{index}"
+        at = 100.0 + index * 10
+        _record_usage(service, session_id=session_id, at=at)
+        _record_section(
+            service,
+            session_id=session_id,
+            section_id=f"sec-{index}",
+            status="started",
+            at=at + 1,
+        )
+        _record_blocked_section(
+            service,
+            session_id=session_id,
+            section_id=f"sec-{index}",
+            at=at + 2,
+        )
+
+    client = _app(tmp_path)
+    complete = client.get(
+        "/v1/attention", headers=_auth(), params={"limit": 50}
+    ).json()
+    first = client.get(
+        "/v1/attention", headers=_auth(), params={"limit": 5, "offset": 0}
+    ).json()
+    second = client.get(
+        "/v1/attention", headers=_auth(), params={"limit": 5, "offset": 5}
+    ).json()
+
+    complete_ids = [row["task_id"] for row in complete["items"]]
+    paged_ids = [row["task_id"] for row in first["items"] + second["items"]]
+    assert complete["total"] == 7
+    assert first["offset"] == 0 and first["truncated"] is True
+    assert second["offset"] == 5 and second["truncated"] is False
+    assert first["revision"] == second["revision"] == complete["revision"]
+    assert len(set(paged_ids)) == 7
+    assert paged_ids == complete_ids
+
+    for offset in (7, 8):
+        beyond = client.get(
+            "/v1/attention", headers=_auth(), params={"limit": 5, "offset": offset}
+        ).json()
+        assert beyond["items"] == []
+        assert beyond["offset"] == offset
+        assert beyond["truncated"] is False
+
+
+def test_attention_revision_changes_when_same_count_queue_reorders(tmp_path: Path) -> None:
+    service = SentinelService(tmp_path)
+    for index in range(2):
+        session_id = f"blocked-{index}"
+        at = 100.0 + index * 10
+        _record_usage(service, session_id=session_id, at=at)
+        _record_section(
+            service,
+            session_id=session_id,
+            section_id=f"sec-{index}",
+            status="started",
+            at=at + 1,
+        )
+        _record_blocked_section(
+            service,
+            session_id=session_id,
+            section_id=f"sec-{index}",
+            at=at + 2,
+        )
+
+    client = _app(tmp_path)
+    before = client.get("/v1/attention", headers=_auth()).json()
+    _record_blocked_section(
+        service,
+        session_id="blocked-0",
+        section_id="sec-0",
+        at=500.0,
+        event_suffix="_newer",
+    )
+    after = client.get("/v1/attention", headers=_auth()).json()
+
+    assert before["total"] == after["total"] == 2
+    assert before["counts"] == after["counts"]
+    assert {row["task_id"] for row in before["items"]} == {
+        row["task_id"] for row in after["items"]
+    }
+    assert before["items"][0]["task_id"] != after["items"][0]["task_id"]
+    assert before["revision"] != after["revision"]
 
 
 def test_tasks_list_and_receipt_detail_for_an_observed_task(tmp_path: Path) -> None:

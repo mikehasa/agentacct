@@ -135,6 +135,23 @@ struct DashboardSnapshotConfiguration {
     let height: CGFloat
     let colorScheme: ColorScheme
     let workState: SnapshotWorkStoreState
+    let glanceState: DashboardSnapshotGlanceState
+
+    init(
+        viewport: String,
+        width: CGFloat,
+        height: CGFloat,
+        colorScheme: ColorScheme,
+        workState: SnapshotWorkStoreState,
+        glanceState: DashboardSnapshotGlanceState = .fixture
+    ) {
+        self.viewport = viewport
+        self.width = width
+        self.height = height
+        self.colorScheme = colorScheme
+        self.workState = workState
+        self.glanceState = glanceState
+    }
 
     var filename: String {
         let appearance = colorScheme == .dark ? "dark" : "light"
@@ -151,7 +168,46 @@ struct DashboardSnapshotConfiguration {
         Self(viewport: "reference", width: 1120, height: 800, colorScheme: .dark, workState: .populated),
         Self(viewport: "trust-unavailable", width: 1120, height: 800, colorScheme: .light, workState: .shiftBriefUnavailable),
         Self(viewport: "trust-unavailable", width: 1120, height: 800, colorScheme: .dark, workState: .shiftBriefUnavailable),
+        Self(viewport: "old-daemon-statusless", width: 1120, height: 800, colorScheme: .light, workState: .oldDaemonUnavailable, glanceState: .statuslessUsage),
+        Self(viewport: "old-daemon-statusless", width: 1120, height: 800, colorScheme: .dark, workState: .oldDaemonUnavailable, glanceState: .statuslessUsage),
     ]
+}
+
+enum DashboardSnapshotGlanceState {
+    case fixture
+    case statuslessUsage
+
+    func snapshot(from fixture: DashboardSnapshotFixture) -> GlanceSnapshot {
+        guard self == .statuslessUsage else { return fixture.glanceSnapshot }
+        let glance = fixture.glance
+        let generatedAt = glance.generatedAt ?? 0
+        let ids = [
+            "01a046ac", "01a046bd", "01a046ce", "01a046df",
+            "01a046e0", "01a046f1", "01a04702", "01a04713",
+        ]
+        let sessions = ids.enumerated().map { index, id in
+            RecentSession(
+                client: "codex",
+                sessionId: "\(id)-statusless",
+                title: nil,
+                status: nil,
+                lastActivityAt: generatedAt - Double(51 + index * 22),
+                planPct: nil
+            )
+        }
+        return GlanceSnapshot(
+            glance: Glance(
+                schema: glance.schema,
+                generatedAt: glance.generatedAt,
+                daemon: glance.daemon,
+                usage: glance.usage,
+                limits: glance.limits,
+                plan: glance.plan,
+                recentSessions: sessions
+            ),
+            daemonVersion: fixture.daemonVersion
+        )
+    }
 }
 
 enum DashboardSnapshotRenderer {
@@ -193,7 +249,9 @@ enum DashboardSnapshotRenderer {
 
         return try configurations.map { configuration in
             SnapshotScheme.override = configuration.colorScheme
-            let glance = GlanceState(preloaded: fixture.glanceSnapshot)
+            let glance = GlanceState(
+                preloaded: configuration.glanceState.snapshot(from: fixture)
+            )
             let dashboard = DashboardStore(
                 preloaded: fixture,
                 workState: configuration.workState

@@ -10,6 +10,7 @@ import SwiftUI
 struct DashboardWorkItem: Identifiable {
     let id: String
     let title: String
+    let project: String?
     let client: String
     let lastActivityAt: Double?
     let outcome: String
@@ -26,7 +27,8 @@ struct DashboardWorkItem: Identifiable {
         } else {
             title = task.taskId
         }
-        client = task.primaryRoot?.client ?? "Unknown agent"
+        project = Self.nonempty(task.project)
+        client = Self.nonempty(task.primaryRoot?.client) ?? "Unknown agent"
         lastActivityAt = task.lastActivityAt
         outcomeKey = task.decisionStatus.key
         if let label = task.decisionStatus.label, !label.isEmpty {
@@ -44,6 +46,12 @@ struct DashboardWorkItem: Identifiable {
         agoText(lastActivityAt)
     }
 
+    var contextComponents: [String] {
+        [project, client, recency].compactMap { $0 }
+    }
+
+    var visibleCost: String { cost == "—" ? "unpriced" : cost }
+
     /// Strongest evidence tier present (drives the row's tier pip).
     var strongestTier: String? {
         gradeable ? (strongestTierKey ?? "unchecked") : nil
@@ -59,6 +67,15 @@ struct DashboardWorkItem: Identifiable {
         case "handed_off": return "Handed off"
         default: return key.replacingOccurrences(of: "_", with: " ").capitalized
         }
+    }
+
+    private static func nonempty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else {
+            return nil
+        }
+        return trimmed
     }
 
     private static func compactCost(_ cost: ReceiptCost) -> String {
@@ -236,7 +253,7 @@ enum DashboardAttentionPresentation: Equatable {
             self = .loading
             return
         }
-        guard Self.hasConsistentEnvelope(payload) else {
+        guard hasConsistentAttentionHeadEnvelope(payload) else {
             self = .inconsistent(total: max(0, payload.total))
             return
         }
@@ -249,29 +266,6 @@ enum DashboardAttentionPresentation: Equatable {
         } else {
             self = .inconsistent(total: payload.total)
         }
-    }
-
-    private static func hasConsistentEnvelope(_ payload: V1AttentionPayload) -> Bool {
-        guard payload.schema == "agentacct.v1-attention.v1",
-              payload.total >= 0,
-              (1 ... 50).contains(payload.limit),
-              payload.counts.failedCheck >= 0,
-              payload.counts.failedStep >= 0,
-              payload.counts.blocker >= 0,
-              payload.items.count <= payload.limit,
-              payload.items.count <= payload.total,
-              payload.items.allSatisfy({ $0.attention != nil }),
-              payload.truncated == (payload.total > payload.items.count)
-        else {
-            return false
-        }
-
-        let first = payload.counts.failedCheck.addingReportingOverflow(
-            payload.counts.failedStep
-        )
-        guard !first.overflow else { return false }
-        let total = first.partialValue.addingReportingOverflow(payload.counts.blocker)
-        return !total.overflow && total.partialValue == payload.total
     }
 
     var dashboardHeadline: String {
@@ -287,7 +281,7 @@ enum DashboardAttentionPresentation: Equatable {
     var dashboardStatus: String {
         switch self {
         case .loading: return "Loading review projection"
-        case .unavailable: return "Refresh to retry"
+        case .unavailable: return "Unavailable"
         case .clear: return "0 review items"
         case .focus(_, let total), .inconsistent(let total):
             return "\(total) review item\(total == 1 ? "" : "s")"
@@ -368,6 +362,7 @@ struct DashboardActiveWorkSignal: Equatable {
     let title: String
     let detail: String
     let promotesInactivity: Bool
+    let hasConfirmedActiveWork: Bool
 
     init(
         sessions: [RecentSession],
@@ -379,45 +374,84 @@ struct DashboardActiveWorkSignal: Equatable {
             title = "Checking active work"
             detail = "Waiting for the local glance projection."
             promotesInactivity = false
+            hasConfirmedActiveWork = false
             return
         case .unavailable(let message):
             title = "Active work unavailable"
             detail = message
             promotesInactivity = false
+            hasConfirmedActiveWork = false
             return
         case .connected:
             break
         }
 
         guard !sessions.isEmpty else {
-            title = "No active work"
-            detail = "Recorded agent activity will appear here."
+            title = "No recent agent activity"
+            detail = "Recorded activity will appear here when an agent session is observed."
             promotesInactivity = false
+            hasConfirmedActiveWork = false
             return
         }
 
-        let activeCount = sessions.count
-        let validActivity = sessions.compactMap { session -> (RecentSession, TimeInterval)? in
+        let activeSessions = sessions.filter { isActiveWorkStatus($0.status) }
+        let statuslessSessions = sessions.filter { $0.status == nil }
+
+        if activeSessions.isEmpty, !statuslessSessions.isEmpty {
+            title = "Recent activity · work status unavailable"
+            let validActivity = Self.validActivity(statuslessSessions, now: now)
+            if let mostRecent = validActivity.min(by: { $0.1 < $1.1 }) {
+                detail = "\(Self.sessionLabel(mostRecent.0)) · activity \(Self.elapsedText(mostRecent.1)) ago · \(statuslessSessions.count)/\(sessions.count) shown with no work status"
+            } else {
+                detail = "\(statuslessSessions.count)/\(sessions.count) shown with no work status · activity time unavailable"
+            }
+            promotesInactivity = false
+            hasConfirmedActiveWork = false
+            return
+        }
+
+        guard !activeSessions.isEmpty else {
+            title = "No status-confirmed active work"
+            detail = "\(sessions.count) recent session\(sessions.count == 1 ? "" : "s") shown."
+            promotesInactivity = false
+            hasConfirmedActiveWork = false
+            return
+        }
+
+        let activeCount = activeSessions.count
+        let validActivity = Self.validActivity(activeSessions, now: now)
+        let unknownStatusSuffix = statuslessSessions.isEmpty
+            ? ""
+            : " · \(statuslessSessions.count) more shown without work status"
+
+        if let oldestVisible = validActivity.max(by: { $0.1 < $1.1 }), oldestVisible.1 >= 15 * 60 {
+            title = "Session activity last seen \(Self.elapsedText(oldestVisible.1)) ago"
+            detail = "\(Self.sessionLabel(oldestVisible.0)) · \(activeCount) recent active session\(activeCount == 1 ? "" : "s") shown\(unknownStatusSuffix)"
+            promotesInactivity = true
+            hasConfirmedActiveWork = true
+            return
+        }
+
+        title = "\(activeCount) active session\(activeCount == 1 ? "" : "s") shown"
+        if let mostRecent = validActivity.min(by: { $0.1 < $1.1 }) {
+            detail = "\(Self.sessionLabel(mostRecent.0)) · activity \(Self.elapsedText(mostRecent.1)) ago\(unknownStatusSuffix)"
+        } else {
+            detail = "Activity time unavailable for the recorded session\(activeCount == 1 ? "" : "s")\(unknownStatusSuffix)."
+        }
+        promotesInactivity = false
+        hasConfirmedActiveWork = true
+    }
+
+    private static func validActivity(
+        _ sessions: [RecentSession],
+        now: Date
+    ) -> [(RecentSession, TimeInterval)] {
+        sessions.compactMap { session -> (RecentSession, TimeInterval)? in
             guard let lastActivityAt = session.lastActivityAt, lastActivityAt > 0 else { return nil }
             let elapsed = now.timeIntervalSince1970 - lastActivityAt
             guard elapsed >= 0, elapsed.isFinite else { return nil }
             return (session, elapsed)
         }
-
-        if let oldestVisible = validActivity.max(by: { $0.1 < $1.1 }), oldestVisible.1 >= 15 * 60 {
-            title = "Session activity last seen \(Self.elapsedText(oldestVisible.1)) ago"
-            detail = "\(Self.sessionLabel(oldestVisible.0)) · \(activeCount) active session\(activeCount == 1 ? "" : "s") recorded"
-            promotesInactivity = true
-            return
-        }
-
-        title = "\(activeCount) active session\(activeCount == 1 ? "" : "s")"
-        if let mostRecent = validActivity.min(by: { $0.1 < $1.1 }) {
-            detail = "\(Self.sessionLabel(mostRecent.0)) · activity \(Self.elapsedText(mostRecent.1)) ago"
-        } else {
-            detail = "Activity time unavailable for the recorded session\(activeCount == 1 ? "." : "s.")"
-        }
-        promotesInactivity = false
     }
 
     private static func sessionLabel(_ session: RecentSession) -> String {
@@ -633,9 +667,7 @@ struct DashboardPane: View {
 
     private var recentSessions: [RecentSession] {
         guard case .connected(let snapshot) = glance.phase else { return [] }
-        return snapshot.glance.recentSessions.filter {
-            isActiveWorkStatus($0.status)
-        }
+        return snapshot.glance.recentSessions
     }
 
     private var glanceAvailability: DashboardSignalAvailability {
@@ -690,7 +722,9 @@ struct DashboardPane: View {
 
                 RecentWorkCard(
                     items: recentWork,
-                    totalCount: dashboard.totalReceiptTasks ?? dashboard.receiptTasks.count
+                    totalCount: dashboard.totalReceiptTasks,
+                    hasLoaded: dashboard.hasLoadedReceiptTasks,
+                    error: dashboard.receiptListError
                 ) { destination in
                     selection.open(destination)
                 }
@@ -702,7 +736,7 @@ struct DashboardPane: View {
             .padding(Space.gutter)
         }
         .overlay(alignment: .bottom) {
-            if let error = dashboard.errorText ?? dashboard.receiptListError {
+            if let error = dashboard.errorText {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(Type.caption)
                     .foregroundStyle(Theme.coral)
@@ -1167,7 +1201,9 @@ private struct DashboardSignalRail: View {
                     eyebrow: "WORKING NOW",
                     title: active.title,
                     detail: active.detail,
-                    tint: active.promotesInactivity ? Theme.amber : (sessions.isEmpty ? Theme.muted : Theme.accent),
+                    tint: active.promotesInactivity
+                        ? Theme.amber
+                        : (active.hasConfirmedActiveWork ? Theme.accent : Theme.muted),
                     action: { open(.work) }
                 )
                 Divider().overlay(Theme.hairline).padding(.leading, Space.l)
@@ -1342,10 +1378,42 @@ private extension DashboardCardHeader where Action == EmptyView {
     }
 }
 
+enum DashboardRecentWorkPresentation: Equatable {
+    case loading
+    case unavailable(String)
+    case empty
+    case populated
+
+    init(items: [DashboardWorkItem], total: Int?, hasLoaded: Bool, error: String?) {
+        if !items.isEmpty {
+            self = .populated
+        } else if let error {
+            self = .unavailable(error)
+        } else if !hasLoaded {
+            self = .loading
+        } else if let total, total > 0 {
+            self = .unavailable("The receipt count loaded, but no recent rows were returned.")
+        } else {
+            self = .empty
+        }
+    }
+}
+
 private struct RecentWorkCard: View {
     let items: [DashboardWorkItem]
-    let totalCount: Int
+    let totalCount: Int?
+    let hasLoaded: Bool
+    let error: String?
     let open: (DashboardDestination) -> Void
+
+    private var presentation: DashboardRecentWorkPresentation {
+        DashboardRecentWorkPresentation(
+            items: items,
+            total: totalCount,
+            hasLoaded: hasLoaded,
+            error: error
+        )
+    }
 
     var body: some View {
         Card(padding: 0, fillsHeight: true) {
@@ -1360,14 +1428,43 @@ private struct RecentWorkCard: View {
                 }
                 Divider().overlay(Theme.hairline)
 
-                if items.isEmpty {
+                switch presentation {
+                case .loading:
+                    HStack(spacing: Space.m) {
+                        ProgressView().controlSize(.small).tint(Theme.muted)
+                        Text("Loading recent work…")
+                            .font(Type.body)
+                            .foregroundStyle(Theme.muted)
+                    }
+                    .padding(Space.xl)
+                    .frame(maxWidth: .infinity, minHeight: 222, alignment: .leading)
+                case .unavailable(let message):
+                    DashboardEmptyState(
+                        icon: "exclamationmark.triangle",
+                        title: "Recent work unavailable",
+                        message: message
+                    )
+                    .frame(minHeight: 222)
+                case .empty:
                     DashboardEmptyState(
                         icon: "checklist",
                         title: "No recorded work yet",
                         message: "Set up recording to see task outcomes and evidence here."
                     )
                     .frame(minHeight: 222)
-                } else {
+                case .populated:
+                    if let error {
+                        Label(
+                            "Showing last loaded work · \(error)",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(Type.dataSmall)
+                        .foregroundStyle(Theme.amber)
+                        .padding(.horizontal, Space.l)
+                        .padding(.vertical, Space.s)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        Divider().overlay(Theme.hairline)
+                    }
                     workColumnLabels
                     Divider().overlay(Theme.hairline)
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
@@ -1408,7 +1505,7 @@ private struct RecentWorkRow: View {
                         .font(Type.rowLabel)
                         .foregroundStyle(Theme.ink)
                         .lineLimit(2)
-                    Text([item.client, item.recency].compactMap { $0 }.joined(separator: " · "))
+                    Text(item.contextComponents.joined(separator: " · "))
                         .font(Type.caption)
                         .foregroundStyle(Theme.muted)
                         .lineLimit(1)
@@ -1435,7 +1532,7 @@ private struct RecentWorkRow: View {
                 }
                 .frame(width: 118, alignment: .leading)
 
-                Text(item.cost == "—" ? "unpriced" : item.cost)
+                Text(item.visibleCost)
                     .font(Type.dataSmall)
                     .foregroundStyle(Theme.muted)
                     .frame(width: 68, alignment: .trailing)
@@ -1448,7 +1545,13 @@ private struct RecentWorkRow: View {
         }
         .buttonStyle(DashboardRowButtonStyle())
         .accessibilityLabel(
-            "\(item.title), \(item.outcome), \(item.evidence), \(item.cost)"
+            [
+                item.title,
+                item.contextComponents.joined(separator: ", "),
+                item.outcome,
+                item.evidence,
+                item.visibleCost,
+            ].joined(separator: ", ")
         )
         .accessibilityHint("Opens this task in Work")
         .accessibilityIdentifier("dashboard.recent-work.task.\(item.id)")
