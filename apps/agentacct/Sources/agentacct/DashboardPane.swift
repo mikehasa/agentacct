@@ -227,14 +227,14 @@ struct DashboardAttentionItem: Identifiable, Equatable {
         guard let reason = task.attention else { return nil }
         id = task.taskId
         title = recordedTaskDisplayTitle(task.title, taskId: task.taskId)
-        project = task.project
-        client = task.primaryRoot?.client
+        project = Self.nonempty(task.project)
+        client = Self.nonempty(task.primaryRoot?.client)
         reasonKind = reason.kind
         summary = reason.summary.trimmingCharacters(in: .whitespacesAndNewlines)
         nextStep = Self.nonempty(reason.nextStep)
         observedAt = reason.observedAt
         handedOff = task.handedOff
-        switch reason.source {
+        switch Self.nonempty(reason.source) {
         case "mcp": sourceLabel = "MCP record"
         case "client_log": sourceLabel = "Local client log"
         case "machine": sourceLabel = "Machine check"

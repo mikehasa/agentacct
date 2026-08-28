@@ -184,6 +184,59 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertTrue(DashboardActionBrief(focus: focus).text.contains("Provenance: Machine check"))
     }
 
+    func testAttentionProjectionNormalizesOptionalContextAndOpenProvenance() throws {
+        let blankTask = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-blank-context",
+              "project": "   ",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked" },
+              "cost": {},
+              "primary_root": { "client": "  ", "client_session_id": "session-1" },
+              "attention": {
+                "kind": "failed_check",
+                "summary": "Snapshot verification failed",
+                "source": "   "
+              }
+            }
+            """
+        )
+        let blankFocus = try XCTUnwrap(DashboardAttentionItem(task: blankTask))
+
+        XCTAssertNil(blankFocus.project)
+        XCTAssertNil(blankFocus.client)
+        XCTAssertNil(blankFocus.sourceLabel)
+        XCTAssertFalse(DashboardActionBrief(focus: blankFocus).text.contains("Project:"))
+        XCTAssertFalse(DashboardActionBrief(focus: blankFocus).text.contains("Agent:"))
+        XCTAssertTrue(DashboardActionBrief(focus: blankFocus).text.contains("Provenance: Not recorded"))
+
+        let paddedTask = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-padded-context",
+              "project": " agentacct-gui ",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked" },
+              "cost": {},
+              "primary_root": { "client": " codex ", "client_session_id": "session-2" },
+              "attention": {
+                "kind": "failed_check",
+                "summary": "Snapshot verification failed",
+                "source": " custom_provider "
+              }
+            }
+            """
+        )
+        let paddedFocus = try XCTUnwrap(DashboardAttentionItem(task: paddedTask))
+
+        XCTAssertEqual(paddedFocus.project, "agentacct-gui")
+        XCTAssertEqual(paddedFocus.client, "codex")
+        XCTAssertEqual(paddedFocus.sourceLabel, "Custom Provider")
+    }
+
     func testUnknownHandoffStateDoesNotImplyRecoveryOrContinuation() throws {
         let task = try decode(
             ReceiptSummary.self,
