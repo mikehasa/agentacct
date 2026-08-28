@@ -598,7 +598,7 @@ private struct DashboardAttentionBriefCard: View {
             .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
 
             Button {
-                open(.task(focus.id))
+                open(.attentionTask(focus.id))
             } label: {
                 Label("Review evidence", systemImage: "doc.text.magnifyingglass")
                     .font(Type.captionSemibold)

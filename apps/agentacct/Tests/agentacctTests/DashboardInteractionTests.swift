@@ -353,6 +353,87 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(selection.workSort, .attention)
     }
 
+    @MainActor
+    func testTaskDestinationCarriesItsQueueOriginExplicitly() {
+        let selection = AppSelection()
+        selection.workGroup = .attention
+
+        selection.open(.task("recent-task"))
+        XCTAssertNil(selection.workGroup, "Recent work must not inherit a stale review filter")
+
+        selection.open(.attentionTask("review-task"))
+        XCTAssertEqual(selection.taskId, "review-task")
+        XCTAssertEqual(selection.workGroup, .attention, "Review-item back navigation should return to the queue")
+    }
+
+    func testAttentionRequestGenerationRejectsAStaleResponse() {
+        var generation = LatestRequestGeneration()
+        let slowRefresh = generation.begin()
+        let dispositionRefresh = generation.begin()
+
+        XCTAssertFalse(generation.accepts(slowRefresh))
+        XCTAssertTrue(generation.accepts(dispositionRefresh))
+    }
+
+    func testAttentionPagesMergeWithoutHidingLaterItems() throws {
+        let first = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "task-1",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked" },
+                "cost": {}
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "snapshot": "queue-v1",
+              "offset": 0, "limit": 1, "truncated": true
+            }
+            """
+        )
+        let second = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "task-2",
+                "decision_status": { "key": "blocked" },
+                "evidence_strength": { "key": "unchecked" },
+                "cost": {}
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "snapshot": "queue-v1",
+              "offset": 1, "limit": 1, "truncated": false
+            }
+            """
+        )
+
+        let merged = mergedAttentionPages(first, second)
+
+        XCTAssertEqual(merged.items.map(\.taskId), ["task-1", "task-2"])
+        XCTAssertEqual(merged.offset, 0)
+        XCTAssertEqual(merged.limit, 2)
+        XCTAssertFalse(merged.truncated)
+        XCTAssertTrue(attentionPageCanAppend(first, second))
+
+        let changedQueue = V1AttentionPayload(
+            schema: second.schema,
+            items: second.items,
+            total: 3,
+            counts: second.counts,
+            snapshot: "queue-v2",
+            offset: second.offset,
+            limit: second.limit,
+            truncated: true
+        )
+        XCTAssertFalse(attentionPageCanAppend(first, changedQueue))
+    }
+
     func testRecentWorkProjectionKeepsDecisionEvidenceAndCostSeparate() throws {
         let task = try decode(
             ReceiptSummary.self,

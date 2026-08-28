@@ -1,6 +1,49 @@
 import Foundation
 import SwiftUI
 
+struct LatestRequestGeneration {
+    private(set) var current = 0
+
+    mutating func begin() -> Int {
+        current += 1
+        return current
+    }
+
+    func accepts(_ generation: Int) -> Bool {
+        generation == current
+    }
+}
+
+func mergedAttentionPages(
+    _ current: V1AttentionPayload,
+    _ next: V1AttentionPayload
+) -> V1AttentionPayload {
+    var seen = Set<String>()
+    let items = (current.items + next.items).filter { seen.insert($0.taskId).inserted }
+    return V1AttentionPayload(
+        schema: next.schema,
+        items: items,
+        total: next.total,
+        counts: next.counts,
+        snapshot: next.snapshot,
+        offset: current.offset,
+        limit: items.count,
+        truncated: next.truncated
+    )
+}
+
+func attentionPageCanAppend(
+    _ current: V1AttentionPayload,
+    _ next: V1AttentionPayload
+) -> Bool {
+    current.snapshot != nil
+        && next.snapshot == current.snapshot
+        && next.schema == current.schema
+        && next.offset == current.offset + current.items.count
+        && next.total == current.total
+        && next.counts == current.counts
+}
+
 /// Named state variants used only by deterministic offscreen review tooling.
 /// Keeping the mutation inside DashboardStore preserves its private setters;
 /// the live initializer and network lifecycle remain unchanged.
@@ -28,6 +71,7 @@ final class DashboardStore: ObservableObject {
     /// Complete review classification plus a bounded operational queue.
     @Published private(set) var attention: V1AttentionPayload?
     @Published private(set) var attentionError: String?
+    @Published private(set) var isLoadingMoreAttention = false
     @Published private(set) var receipt: Receipt?
     @Published private(set) var receiptListError: String?
     @Published private(set) var receiptError: String?
@@ -55,6 +99,7 @@ final class DashboardStore: ObservableObject {
     /// Monotonic token so rapid range switches can't land out of order and a
     /// failed fetch can't leave the old data labeled with the new range.
     private var usageDaysGeneration = 0
+    private var attentionGeneration = LatestRequestGeneration()
 
     private let client = GlanceClient()
 
@@ -109,6 +154,8 @@ final class DashboardStore: ObservableObject {
         defer { isRefreshing = false }
         let days = usageDays
         let rangeGeneration = usageDaysGeneration
+        let attentionRequestGeneration = attentionGeneration.begin()
+        isLoadingMoreAttention = false
         // Launch independent lanes together, but publish each error through
         // its own state so a successful range request cannot hide a stale Task
         // list (or vice versa).
@@ -132,18 +179,27 @@ final class DashboardStore: ObservableObject {
         }
 
         do {
-            attention = try await attentionRequest
-            attentionError = nil
+            let payload = try await attentionRequest
+            if attentionGeneration.accepts(attentionRequestGeneration) {
+                attention = payload
+                attentionError = nil
+            }
         } catch GlanceClientError.http(404) {
-            // A pre-attention daemon cannot support a complete review claim.
-            attention = nil
-            attentionError = "this daemon predates /v1/attention"
+            if attentionGeneration.accepts(attentionRequestGeneration) {
+                // A pre-attention daemon cannot support a complete review claim.
+                attention = nil
+                attentionError = "this daemon predates /v1/attention"
+            }
         } catch GlanceClientError.noDiscovery(_) {
-            attention = nil
-            attentionError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            if attentionGeneration.accepts(attentionRequestGeneration) {
+                attention = nil
+                attentionError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            }
         } catch {
-            attention = nil
-            attentionError = "attention fetch failed: \(error.localizedDescription)"
+            if attentionGeneration.accepts(attentionRequestGeneration) {
+                attention = nil
+                attentionError = "attention fetch failed: \(error.localizedDescription)"
+            }
         }
 
         do {
@@ -195,18 +251,62 @@ final class DashboardStore: ObservableObject {
     /// paginated Receipt list. Used after a human disposition changes whether
     /// a finding or blocker still demands review.
     func fetchAttention() async {
+        let generation = attentionGeneration.begin()
+        isLoadingMoreAttention = false
         do {
-            attention = try await client.getAuthed("/v1/attention?limit=5")
+            let payload: V1AttentionPayload = try await client.getAuthed("/v1/attention?limit=50&offset=0")
+            guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
+            attention = payload
             attentionError = nil
         } catch GlanceClientError.http(404) {
+            guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
             attention = nil
             attentionError = "this daemon predates /v1/attention"
         } catch GlanceClientError.noDiscovery(_) {
+            guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
             attention = nil
             attentionError = "daemon not running (no discovery file) — start it with `agentacct start`"
         } catch {
+            guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
             attention = nil
             attentionError = "attention fetch failed: \(error.localizedDescription)"
+        }
+    }
+
+    func fetchMoreAttention() async {
+        guard let current = attention, current.truncated, !isLoadingMoreAttention else { return }
+        let generation = attentionGeneration.begin()
+        isLoadingMoreAttention = true
+        defer {
+            if attentionGeneration.accepts(generation) { isLoadingMoreAttention = false }
+        }
+        let offset = current.offset + current.items.count
+        do {
+            let page: V1AttentionPayload = try await client.getAuthed(
+                "/v1/attention?limit=50&offset=\(offset)"
+            )
+            guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
+            guard page.offset == offset else {
+                attentionError = "this daemon predates paged /v1/attention"
+                return
+            }
+            guard attentionPageCanAppend(current, page) else {
+                // The queue changed between page requests. Restart instead of
+                // stitching two incompatible classifications together.
+                await fetchAttention()
+                return
+            }
+            attention = mergedAttentionPages(current, page)
+            attentionError = nil
+        } catch GlanceClientError.http(404) {
+            guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
+            attentionError = "this daemon predates paged /v1/attention"
+        } catch GlanceClientError.noDiscovery(_) {
+            guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
+            attentionError = "daemon not running (no discovery file) — start it with `agentacct start`"
+        } catch {
+            guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
+            attentionError = "attention page fetch failed: \(error.localizedDescription)"
         }
     }
 
@@ -374,10 +474,18 @@ final class AppSelection: ObservableObject {
         case .task(let id):
             taskId = id
             sessionId = nil
+            workGroup = nil
+            pane = .work
+        case .attentionTask(let id):
+            taskId = id
+            sessionId = nil
+            workGroup = .attention
+            workSort = .attention
             pane = .work
         case .session(let id):
             taskId = nil
             sessionId = id
+            workGroup = nil
             pane = .work
         case .limits:
             taskId = nil
@@ -395,6 +503,7 @@ enum DashboardDestination: Equatable {
     case work
     case reviewQueue
     case task(String)
+    case attentionTask(String)
     case session(String)
     case limits
     case sources

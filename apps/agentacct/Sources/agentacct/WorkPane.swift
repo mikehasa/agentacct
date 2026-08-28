@@ -330,6 +330,10 @@ struct WorkPane: View {
             guard !SnapshotMode.enabled else { return }
             await resolveSelection()
         }
+        .task(id: selection.workGroup) {
+            guard !SnapshotMode.enabled, selection.workGroup == .attention else { return }
+            await dashboard.fetchAttention()
+        }
     }
 
     private var recordLayout: some View {
@@ -874,8 +878,25 @@ private struct WorkTablePage: View {
     }
 
     private var footer: some View {
-        Text(footerText)
-            .font(Type.dataSmall).foregroundStyle(Theme.muted)
+        HStack(spacing: Space.m) {
+            Text(footerText)
+                .font(Type.dataSmall).foregroundStyle(Theme.muted)
+            if group == .attention, let error = dashboard.attentionError {
+                Text(error)
+                    .font(Type.dataSmall)
+                    .foregroundStyle(Theme.coral)
+                    .lineLimit(1)
+            }
+            Spacer()
+            if group == .attention, dashboard.attention?.truncated == true {
+                Button(dashboard.isLoadingMoreAttention ? "Loading…" : "Load more") {
+                    Task { await dashboard.fetchMoreAttention() }
+                }
+                .buttonStyle(QuietButtonStyle())
+                .disabled(dashboard.isLoadingMoreAttention)
+                .accessibilityIdentifier("work.attention.load-more")
+            }
+        }
     }
 
     private var visibleError: String? {
