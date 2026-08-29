@@ -6,6 +6,41 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.3] — 2026-08-30
+
+Fixes seven UI and receipt-honesty bugs found in a post-push review: an
+oversized disposition popover, a misaligned Usage pane, an inconsistent cost
+prefix, a usage-ingestion freeze on unparseable workflow journals, a check
+tally that over-counted superseded failures, an unreachable blocker Reopen, and
+a surfaced blocker the user could not dispose.
+
+### Fixed
+
+- Usage ingestion: quarantine an unparseable or oversized Claude Code workflow
+  journal per file instead of failing closed for the whole home. A journal with
+  an unknown row shape, or one past the scan caps, raised inside the discovery
+  loop and zeroed all claude-code usage import; it is now recorded as a
+  diagnostic and skipped while every other transcript in the home still imports.
+  (#173)
+- macOS app: pin the resolve/finding disposition popover width so it no longer
+  balloons into a tall empty sheet during the popover's size negotiation. (#173)
+- macOS app: left-align the Usage pane content column so it no longer shifts
+  sideways on wide windows when switching tabs. (#173)
+- macOS app: render a complete provider-billed cost as exact (`$`) across the
+  receipt, dashboard, and per-session surfaces, matching the app-wide cost
+  grammar so the same figure never reads exact on one surface and estimated on
+  another. (#173)
+- Receipt: count check passes and failures over the frontier, excluding a
+  failure a later run superseded, so the header no longer overstates current
+  failures — the superseded run still counts in the total and shows in history.
+  (#173)
+- Receipt: keep a user-resolved blocker surfaced in a calm, neutral tone so its
+  Reopen control stays reachable; the decision word stays
+  `blocker_resolved_by_user` and the row does not read as needing attention.
+  (#173)
+- Receipt: prefer a surfaced blocker that carries both text and a blocked-event
+  id, so the blocker shown is one the user can actually dispose. (#173)
+
 ## [0.10.2] — 2026-08-29
 
 Restores claude-code usage ingestion (frozen by a new Workflow-tool journal
@@ -828,7 +863,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.3...HEAD
+[0.10.3]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.3
 [0.10.2]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.2
 [0.10.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.1
 [0.10.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.0
