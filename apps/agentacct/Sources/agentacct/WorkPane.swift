@@ -260,7 +260,10 @@ struct WorkReceiptRowPresentation {
         title = selectedDetail?.title ?? task.title ?? task.taskId
         decisionKey = decision.key
         decisionLabel = decision.label ?? decision.key
-        decisionHelp = decision.blocker?.text ?? decision.statement ?? ""
+        // A resolved blocker is surfaced (so it can be reopened) but must not
+        // colour the row or the badge tooltip as if the task still needs you.
+        let blockerIsStanding = (decision.blocker?.disposition?.state ?? "open") != "resolved"
+        decisionHelp = (blockerIsStanding ? decision.blocker?.text : nil) ?? decision.statement ?? ""
         evidence = resolvedEvidence
         handedOff = selectedDetail?.axes.handoff?.handedOff ?? (task.handedOff == true)
         let coveragePresentation = ReceiptCoveragePresentation(evidence: resolvedEvidence)
@@ -289,7 +292,9 @@ struct WorkReceiptRowPresentation {
             costText = compact == "—" ? "cost unknown" : compact
         }
         updatedText = agoText(task.lastActivityAt) ?? "no activity"
-        if let blocker = decision.blocker?.text, !blocker.isEmpty {
+        // Only a STANDING blocker states the (coral) attention reason; a resolved
+        // one is surfaced for reopen but must not read as needing attention.
+        if let blocker = decision.blocker?.text, !blocker.isEmpty, blockerIsStanding {
             attentionReason = blocker
         } else if let checksFailed, checksFailed > 0 {
             attentionReason = "\(checksFailed) failed check run\(checksFailed == 1 ? "" : "s")"

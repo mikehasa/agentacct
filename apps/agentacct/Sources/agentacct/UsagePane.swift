@@ -19,7 +19,10 @@ struct UsagePane: View {
             }
             .padding(Space.gutter)
             .frame(maxWidth: 1172 + Space.gutter * 2, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .center)
+            // Left-align the capped content column to match Work and Sources
+            // (WorkPane .leading, SourcesPane .leading). Centering here made the
+            // whole pane slide sideways on wide windows when switching tabs.
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
