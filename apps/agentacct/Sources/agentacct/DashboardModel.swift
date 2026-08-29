@@ -31,10 +31,13 @@ struct SessionUsage: Decodable {
     }
 
     /// Per-session cost honesty: an estimate renders as an estimate, an
-    /// unpriced session renders as an em-dash — never $0.00.
+    /// unpriced session renders as an em-dash — never $0.00. A reported OR billed
+    /// figure is exact; matches Fmt.costDisplay / receiptCostDisplay so the same
+    /// cost never reads exact at the task level and estimated at the step level.
     var costText: String {
         guard let cost = estimatedCostUsd else { return "—" }
-        return Fmt.dollars(cost, prefix: costConfidence == "client_reported" ? "$" : "≈$")
+        let reported = costConfidence == "client_reported" || costConfidence == "provider_billed"
+        return Fmt.dollars(cost, prefix: reported ? "$" : "≈$")
     }
 }
 
