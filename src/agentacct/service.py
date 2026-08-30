@@ -446,6 +446,9 @@ _PROVIDER_TOKEN_ALTERNATIVES = (
     r"(?-i:pypi-AgE)[A-Za-z0-9_-]{16,}",  # PyPI upload token (macaroon body)
     r"(?-i:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])",  # AWS access/session key id
     r"(?-i:AIza)[A-Za-z0-9_-]{16,}",  # Google API key
+    r"xai-[A-Za-z0-9]{16,}",  # xAI (Grok) API key
+    r"gsk_[A-Za-z0-9]{16,}",  # Groq API key
+    r"ya29\.[A-Za-z0-9_-]{20,}",  # Google OAuth 2.0 access token
 )
 _PROVIDER_TOKEN_PATTERN = re.compile(
     r"(?:\bBearer\s+)?\b(?:" + r"|".join(_PROVIDER_TOKEN_ALTERNATIVES) + r")",
@@ -533,8 +536,9 @@ SECRET_VALUE_PATTERNS = (
     ("bearer_token", _BARE_BEARER_PATTERN),
     # Family 1 members too -- self-identifying prefix, no context, no prose
     # refusal. They keep their own class names because the redaction marker
-    # vocabulary is read downstream, and `sk-or-v1-` must be reported ahead of
-    # its own prefix-subset `sk-`.
+    # vocabulary is read downstream, and the specific `sk-ant-` / `sk-or-v1-`
+    # prefixes must be reported ahead of their own prefix-subset `sk-`.
+    ("anthropic_api_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{12,}")),
     ("openrouter_api_key", re.compile(r"\bsk-or-v1-[A-Za-z0-9_-]{12,}")),
     ("api_key", re.compile(r"\bsk-[A-Za-z0-9_-]{12,}")),
 )
