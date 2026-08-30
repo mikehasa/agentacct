@@ -6,6 +6,35 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.4] — 2026-08-31
+
+Small correctness, privacy, and coverage fixes.
+
+### Fixed
+
+- Receipt: a step's cost reads as an estimate (`≈$`) when it was priced from
+  tokens rather than reported, instead of always showing a complete step cost
+  as exact (`$`). The daemon now carries one cost-confidence per step and the
+  app renders the prefix from it, matching the app-wide cost grammar. (#179)
+- Packaging: the frozen CLI no longer ships pip's `direct_url.json`, which
+  recorded the absolute local build path and leaked the builder's account name
+  and path inside the distributed DMG. (#176)
+
+### Added
+
+- Privacy: value redaction now covers xAI (`xai-`), Groq (`gsk_`), and Google
+  OAuth 2.0 access tokens (`ya29.`), and reports Anthropic keys (`sk-ant-`)
+  under their own class ahead of the generic `sk-` family. (#178)
+- Capture: the tool-category taxonomy recognizes more agent tool names —
+  opencode (`list`/`patch`/`todoread`), Anthropic's text-editor tool, and
+  common cross-agent snake_case names (`read_file`/`write_file`/`edit_file`/
+  `list_dir`/`codebase_search`/`run_terminal_cmd`/`web_search`) — so their
+  Actions category breakdown is no longer bucketed as `other`. (#177)
+
+### Changed
+
+- Repository: `.DS_Store` is ignored. (#175)
+
 ## [0.10.3] — 2026-08-30
 
 Fixes seven UI and receipt-honesty bugs found in a post-push review: an
@@ -863,7 +892,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.3...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.4...HEAD
+[0.10.4]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.4
 [0.10.3]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.3
 [0.10.2]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.2
 [0.10.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.1
