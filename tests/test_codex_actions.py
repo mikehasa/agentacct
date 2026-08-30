@@ -146,7 +146,7 @@ def test_tool_activity_from_calls_aggregates_all_signals():
         ("exec_command", json.dumps({"cmd": "pytest -q"})),
         ("apply_patch", "*** Begin Patch\n*** Add File: src/a.py\n+x\n*** End Patch\n"),
         ("spawn_agent", "{}"),
-        ("read_file", "{}"),  # unknown -> category "other", name kept
+        ("some_unknown_tool", "{}"),  # unknown -> category "other", name kept
     ]
     activity = _tool_activity_from_calls(calls, cwd="/work/project")
     assert activity["tool_category_counts"] == {
@@ -161,7 +161,7 @@ def test_tool_activity_from_calls_aggregates_all_signals():
         "exec_command": 1,
         "apply_patch": 1,
         "spawn_agent": 1,
-        "read_file": 1,
+        "some_unknown_tool": 1,
     }
     assert activity["commands"] == ["git status", "pytest -q"]
     assert activity["touched_files"] == ["src/a.py"]
