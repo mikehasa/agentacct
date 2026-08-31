@@ -100,9 +100,13 @@ struct DashboardWorkItem: Identifiable {
     private static func compactCost(_ cost: ReceiptCost) -> String {
         guard let value = cost.estimatedCostUsd else { return "—" }
         let prefix: String
+        // A complete reported OR billed figure is exact ("$"); everything else
+        // is an estimate. Matches Fmt.costDisplay and receiptCostDisplay so the
+        // same cost never reads exact on Usage and estimated on the Dashboard.
+        let reported = cost.costConfidence == "client_reported" || cost.costConfidence == "provider_billed"
         if cost.costComplete == false {
             prefix = "~$"
-        } else if cost.costComplete == true && cost.costConfidence == "client_reported" {
+        } else if cost.costComplete == true && reported {
             prefix = "$"
         } else {
             prefix = "≈$"

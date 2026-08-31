@@ -165,6 +165,7 @@ struct V1StepUsage: Decodable {
     let linkedUsageRecords: Int?
     let pricedUsageRecords: Int?
     let unpricedUsageRecords: Int?
+    let costConfidence: String?
 
     enum CodingKeys: String, CodingKey {
         case totalTokens = "total_tokens"
@@ -175,14 +176,18 @@ struct V1StepUsage: Decodable {
         case linkedUsageRecords = "linked_usage_records"
         case pricedUsageRecords = "priced_usage_records"
         case unpricedUsageRecords = "unpriced_usage_records"
+        case costConfidence = "cost_confidence"
     }
 
-    /// The shared cost honesty rule: None-never-$0; a value with unpriced
-    /// rows alongside is a partial subtotal (~$).
+    /// The shared cost honesty rule: None-never-$0; a value with unpriced rows
+    /// alongside is a partial subtotal (~$); a complete figure is exact ("$")
+    /// only when its priced records are all reported/billed — an estimated
+    /// (token-priced) step reads "≈$" rather than over-claiming exactness.
     var costText: String {
         guard let cost = estimatedCostUsd else { return "—" }
-        let partial = (unpricedUsageRecords ?? 0) > 0
-        return Fmt.dollars(cost, prefix: partial ? "~$" : "$")
+        if (unpricedUsageRecords ?? 0) > 0 { return Fmt.dollars(cost, prefix: "~$") }
+        let reported = costConfidence == "client_reported" || costConfidence == "provider_billed"
+        return Fmt.dollars(cost, prefix: reported ? "$" : "≈$")
     }
 }
 

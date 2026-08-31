@@ -83,6 +83,24 @@ def test_tool_category_maps_names_only_and_collapses_mcp() -> None:
     assert tool_category("WebFetch") == "network"
     assert tool_category("Task") == "agent"
     assert tool_category("TodoWrite") == "plan"
+    # Names are matched case-insensitively.
+    assert tool_category("READ_FILE") == "read"
+    # opencode names not shared with the Claude/Codex tools.
+    assert tool_category("list") == "search"
+    assert tool_category("patch") == "edit"
+    assert tool_category("todoread") == "plan"
+    # Anthropic's text-editor tool, whatever the API version names it.
+    assert tool_category("str_replace_based_edit_tool") == "edit"
+    assert tool_category("str_replace_editor") == "edit"
+    assert tool_category("text_editor") == "edit"
+    # Cross-agent snake_case names (Cursor/Windsurf/MCP) that used to be `other`.
+    assert tool_category("read_file") == "read"
+    assert tool_category("write_file") == "edit"
+    assert tool_category("edit_file") == "edit"
+    assert tool_category("list_dir") == "search"
+    assert tool_category("codebase_search") == "search"
+    assert tool_category("run_terminal_cmd") == "execute"
+    assert tool_category("web_search") == "network"
     # Any MCP tool collapses to a single bucket by PREFIX, so a specific MCP
     # tool name (which could reveal a connector) is never recorded.
     assert tool_category("mcp__github__create_issue") == "mcp"

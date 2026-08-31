@@ -94,6 +94,25 @@ _CATEGORY_BY_TOOL_NAME: dict[str, str] = {
     "update_plan": "plan",
     # Generic shell aliases other agents use (e.g. Hermes' ``terminal``).
     "terminal": "execute",
+    # opencode: the names it uses that are not already shared with the
+    # Claude/Codex tools above. Without these they collapsed to ``other``.
+    "list": "search",
+    "patch": "edit",
+    "todoread": "plan",
+    # Anthropic's official text-editor tool — one tool whose NAME varies by API
+    # version (str_replace_based_edit_tool / str_replace_editor / text_editor).
+    "str_replace_based_edit_tool": "edit",
+    "str_replace_editor": "edit",
+    "text_editor": "edit",
+    # Cross-agent snake_case names used by Cursor/Windsurf and various MCP
+    # servers; each of these otherwise fell through to ``other``.
+    "read_file": "read",
+    "write_file": "edit",
+    "edit_file": "edit",
+    "list_dir": "search",
+    "codebase_search": "search",
+    "run_terminal_cmd": "execute",
+    "web_search": "network",
 }
 
 

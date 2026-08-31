@@ -67,6 +67,14 @@ rm -rf "$DIST_DIR" "$WORK_DIR" "$HERE"/*.spec
     --hidden-import=uvicorn.lifespan.on \
     "$HERE/pyinstaller_entry.py"
 
+# Strip pip's install-source record from the frozen bundle. `pip install .` into
+# the build venv writes a PEP 610 direct_url.json into agentacct-*.dist-info that
+# records the ABSOLUTE local build path (file:///Users/<name>/.../worktrees/...);
+# --collect-all then copies that dist-info into _internal/. The file has no
+# runtime purpose here and would ship the builder's account name + build path
+# inside the public DMG, so delete every direct_url.json from the output.
+find "$DIST_DIR/agentacct" -name direct_url.json -delete 2>/dev/null || true
+
 BIN="$DIST_DIR/agentacct/agentacct"
 echo "==> smoke-testing the frozen binary"
 "$BIN" --version
