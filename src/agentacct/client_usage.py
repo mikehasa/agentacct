@@ -2049,8 +2049,18 @@ def _validate_claude_workflow_journal(
                 )
             keys = set(obj)
             row_type = obj.get("type")
+            # The Workflow tool writes one metadata row per agent lifecycle
+            # transition: "started" and "failed" carry {agentId, key, type};
+            # "result" adds the agent's return value. None of them carry token
+            # usage, so every one is safe to ignore. Any other shape still
+            # fails closed below (e.g. a real assistant/usage row that must not
+            # be silently dropped) -- this is the fail-closed guard, not a
+            # blanket "ignore unknown journals".
             if not (
-                (row_type == "started" and keys == {"agentId", "key", "type"})
+                (
+                    row_type in ("started", "failed")
+                    and keys == {"agentId", "key", "type"}
+                )
                 or (
                     row_type == "result"
                     and keys == {"agentId", "key", "result", "type"}
@@ -2116,15 +2126,33 @@ def _discover_claude_code_usage_from_home(
     workflow_journal_fingerprints: dict[Path, _ClaudeFileFingerprint] = {}
     transcript_paths: list[Path] = []
     traversal_fingerprints: dict[Path, _ClaudeFileFingerprint] = {}
+    skipped_journal_codes: list[str] = []
     for candidate in candidate_files:
         path = candidate.path
         traversal_fingerprints[path] = candidate.fingerprint
         if _is_claude_workflow_journal(path, projects_root):
-            observed_fingerprint = _validate_claude_workflow_journal(
-                path,
-                projects_root=projects_root,
-                projects_root_fd=projects_root_fd,
-            )
+            try:
+                observed_fingerprint = _validate_claude_workflow_journal(
+                    path,
+                    projects_root=projects_root,
+                    projects_root_fd=projects_root_fd,
+                )
+            except _ClientUsageDiscoveryReadError as exc:
+                # A workflow journal that fails validation — an unknown row shape
+                # (schema drift) or a file past the scan caps (truncated) — is
+                # non-transcript metadata that carries no token usage. Skip just
+                # this file and record the diagnostic; NEVER abort the whole
+                # home. This is the exact #53 invariant every transcript path
+                # below already upholds — and this journal path was the one place
+                # that still raised, so a single new row type the Workflow tool
+                # started writing (or one oversized journal) silently froze ALL
+                # claude-code usage import for the home. A changed-during-scan
+                # (fingerprint race) and an unsafe path are OSErrors, not
+                # _ClientUsageDiscoveryReadError, so they still propagate.
+                skipped_journal_codes.append(
+                    getattr(exc, "code", None) or "claude_workflow_journal_skipped"
+                )
+                continue
             if (
                 candidate.fingerprint is None
                 or observed_fingerprint != candidate.fingerprint
@@ -2144,6 +2172,11 @@ def _discover_claude_code_usage_from_home(
         error_count += 1
         if code not in error_codes:
             error_codes.append(code)
+
+    # A journal we could not validate is a recorded error, not a reason to zero
+    # the home (see the try/except above).
+    for _journal_code in skipped_journal_codes:
+        record_error(_journal_code)
 
     # A descendant directory symlink is never followed (no-follow policy), but
     # it no longer aborts the whole home. Surface each skipped link as an unsafe

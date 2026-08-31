@@ -166,7 +166,17 @@ def test_blocker_resolve_end_to_end_moves_the_task_off_blocked(tmp_path: Path) -
     assert decision["label"] == "Blocker resolved"
     assert decision["asserted_by"] == "human"
     assert "not a completion claim" in decision["statement"]
-    assert decision["blocker"] is None
+    # The resolved blocker stays SURFACED so the user can REOPEN it in-app — the
+    # callout is the only host of the blocker's disposition controls, and the
+    # backend supports resolved->open. It carries the reopen handle (blocked
+    # event id + current revision) and the resolved disposition; the decision
+    # word is still blocker_resolved_by_user, so the Task is not re-blocked.
+    resolved_blocker = decision["blocker"]
+    assert resolved_blocker is not None
+    assert resolved_blocker["blocked_event_id"] == blocked_id
+    assert resolved_blocker["disposition_revision"] == 1
+    assert resolved_blocker["disposition"]["state"] == "resolved"
+    assert resolved_blocker["disposition"]["note"] == "approved and shipped by hand"
 
     # Stale revision now conflicts (409), never silently overwrites.
     stale = client.post(

@@ -58,6 +58,7 @@ from .task_outcome import (
 
 # frozen: stored/emitted receipts carry this schema string; surfaces pin it.
 RECEIPT_SCHEMA_VERSION = "agentacct.receipt.v1"
+V1_ATTENTION_SCHEMA_VERSION = "agentacct.v1-attention.v1"
 
 # The user-facing provenance vocabulary — ONE list every surface shares. These
 # answer "where did this fact come from", not "how strong is it" (that is the
@@ -444,8 +445,25 @@ def _evidence_strength(
     }
     unattributed_checks = len(task_passing_ids - linked)
 
-    passed = sum(1 for check in checks if _text(check.get("result")).lower() == "passed")
-    failed = sum(1 for check in checks if _text(check.get("result")).lower() in {"failed", "error"})
+    # Count passes/failures over the FRONTIER only. A run that a later run of the
+    # same check superseded (a fail that a re-run then passed) stays in
+    # checks_total and stays visible in the history group, but it must not read
+    # as a current failure in the header tally — otherwise "N failed" overstates
+    # failures the frontier already cleared, contradicting the row that is marked
+    # "superseded by a later passing run". The decision_status lane already
+    # excludes superseded checks the same way.
+    passed = sum(
+        1
+        for check in checks
+        if not check.get("superseded")
+        and _text(check.get("result")).lower() == "passed"
+    )
+    failed = sum(
+        1
+        for check in checks
+        if not check.get("superseded")
+        and _text(check.get("result")).lower() in {"failed", "error"}
+    )
 
     # Coarse key kept ONLY for colour + list sort/filter. It is an ordinal, not a
     # headline: undefined < unchecked < self_checked < independently < externally.
@@ -531,6 +549,33 @@ def evidence_coverage_ledger(evidence: Mapping[str, Any]) -> str:
     return " · ".join(bits)
 
 
+def plan_share_headline(plan_share: Mapping[str, Any] | None) -> str:
+    """One honest line for a Task's share of its client's weekly plan.
+
+    Calibrated-or-nothing, the same rule every plan surface honors: a real
+    percentage only once the fit is calibrated; otherwise a named calibration
+    state, never a fabricated number. Mirrors the macOS ``ReceiptPlanShare``
+    wording so the receipt reads identically on every surface.
+    """
+
+    share = plan_share or {}
+    pct = share.get("pct")
+    state = share.get("calibration_state")
+    if state == "calibrated" and isinstance(pct, (int, float)) and not isinstance(pct, bool):
+        if pct >= 0.1:
+            shown = f"≈{pct:.1f}%"
+        elif pct > 0:
+            shown = "≈<0.1%"
+        else:
+            shown = "≈0%"
+        return f"{shown} of weekly plan"
+    if state == "calibrating":
+        return "calibrating — not enough 7-day history yet"
+    if state == "never":
+        return "undefined for this client"
+    return "—"
+
+
 # --- Decision axis ------------------------------------------------------------
 
 def _decision_status(
@@ -573,8 +618,10 @@ def _decision_status(
     # The newest blocker's own words (agent-recorded text, next step, when, and
     # how many successful steps were recorded AFTER it) — computed by the
     # outcome reducer, passed through verbatim so every surface can finally SAY
-    # why a Task is blocked instead of only that it is. None off the
-    # blocked/failed keys.
+    # why a Task is blocked instead of only that it is. Present on the
+    # blocked/failed keys and on ``blocker_resolved_by_user`` (which carries a
+    # resolved blocker so its callout stays reachable for reopen); None
+    # otherwise.
     blocker = canonical.get("blocker") if isinstance(canonical.get("blocker"), Mapping) else None
 
     return {
@@ -1161,8 +1208,127 @@ def build_receipt_summary(
         # The primary root's {client, client_session_id} — the one id a list row
         # carries, so the Work surface can deep-link a session to its Task.
         "primary_root": _mapping(task.get("primary_root")) or None,
+        # Friendly project label from the same boundary reducer as the full
+        # Receipt. This is additive for /v1/tasks and lets a bounded attention
+        # row retain enough context without fetching one full Receipt per row.
+        "project": _boundary(task)["project"],
         "last_activity_at": _number(task.get("last_activity_at")) or None,
     }
+
+
+def build_attention_reason(
+    task: Mapping[str, Any],
+    *,
+    latest_store_activity_at: float | None = None,
+) -> tuple[int, dict[str, Any]] | None:
+    """Return the operational attention class and its truthful leading reason.
+
+    The integer is an internal ordering class, not a business-priority score:
+    standing machine findings and recorded failed steps lead unresolved
+    blockers, matching the existing dashboard grouping. ``None`` means the
+    Task does not currently need review. Human-resolved and superseded findings
+    are excluded by the canonical decision reducer rather than by check totals,
+    so historical failures cannot leak back into the queue.
+    """
+
+    from .finding_disposition import finding_target_digest
+
+    canonical = reduce_task_outcome(task, latest_store_activity_at=latest_store_activity_at)
+    episodes = task.get("finding_episodes") if isinstance(task.get("finding_episodes"), list) else []
+    disposition_by_digest = {
+        str(episode.get("target_digest")): _text(episode.get("disposition_state")) or "open"
+        for episode in episodes
+        if isinstance(episode, Mapping) and episode.get("target_digest")
+    }
+    standing_failures = [
+        check
+        for check in canonical.get("latest_checks", [])
+        if isinstance(check, Mapping)
+        and _text(check.get("result")).lower() in {"failed", "error"}
+        and _text(check.get("supersession_state")).lower() != "superseded"
+    ]
+    failure_states = [
+        (
+            check,
+            disposition_by_digest.get(
+                str(finding_target_digest(check) or ""),
+                "open",
+            ),
+        )
+        for check in standing_failures
+    ]
+    # Preserve the dashboard's established mixed-state rule: a current failed
+    # check leads even when the same Task also carries a recorded blocker. Open
+    # findings lead reviewed-but-still-failing ones, and human-resolved findings
+    # never become the preview merely because they are newer.
+    attention_failures = [row for row in failure_states if row[1] != "resolved"]
+    if attention_failures:
+        preferred_state = (
+            "open"
+            if any(state == "open" for _, state in attention_failures)
+            else "reviewed"
+        )
+        preferred_failures = [
+            check
+            for check, state in attention_failures
+            if state == preferred_state
+        ]
+        finding = max(
+            preferred_failures or [check for check, _ in attention_failures],
+            key=lambda check: (
+                _number(
+                    check.get("created_at")
+                    or check.get("occurred_at")
+                    or check.get("time")
+                ),
+                _int_or_none(check.get("arrival_sequence")) or 0,
+            ),
+        )
+        observed_at = _number(
+            finding.get("created_at")
+            or finding.get("occurred_at")
+            or finding.get("time")
+        )
+        return (
+            0,
+            {
+                "kind": "failed_check",
+                "summary": _text(
+                    finding.get("summary")
+                    or finding.get("name")
+                    or finding.get("evidence_type")
+                )
+                or _DECISION_STATEMENTS["finding"],
+                # A failed check carries no safe inferred remedy. A later PR
+                # may surface an agent-recorded recovery step when one exists.
+                "next_step": None,
+                "observed_at": observed_at or None,
+                "source": _check_source(finding),
+            },
+        )
+
+    decision = _decision_status(
+        task,
+        latest_store_activity_at=latest_store_activity_at,
+        canonical=canonical,
+    )
+    key = _text(decision.get("key"))
+    if key not in {"failed", "blocked"}:
+        return None
+
+    blocker = _mapping(decision.get("blocker"))
+    return (
+        0 if key == "failed" else 1,
+        {
+            "kind": "failed_step" if key == "failed" else "blocker",
+            "summary": _text(
+                blocker.get("text") or blocker.get("step_title") or decision.get("statement")
+            ),
+            "next_step": _text(blocker.get("next_step")) or None,
+            "observed_at": _number(blocker.get("updated_at")) or None,
+            "source": _asserted_by_source(_text(decision.get("asserted_by")), []),
+        },
+    )
 
 
 def latest_store_activity(tasks: list[Mapping[str, Any]]) -> float | None:
@@ -1178,11 +1344,13 @@ def latest_store_activity(tasks: list[Mapping[str, Any]]) -> float | None:
 
 
 __all__ = [
+    "V1_ATTENTION_SCHEMA_VERSION",
     "RECEIPT_SCHEMA_VERSION",
     "PROVENANCE_LEGEND",
     "EVIDENCE_TIER_LABEL",
     "build_receipt",
     "build_receipt_summary",
+    "build_attention_reason",
     "evidence_coverage_headline",
     "evidence_coverage_ledger",
     "latest_store_activity",

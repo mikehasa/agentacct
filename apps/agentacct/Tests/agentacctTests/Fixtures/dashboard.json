@@ -392,7 +392,46 @@
         },
         "last_activity_at": 1787589280
       }
-    ]
+    ],
+    "attention": {
+      "total": 2,
+      "limit": 100,
+      "truncated": false,
+      "tasks": [
+        {
+          "task_id": "task-visual-regression",
+          "title": "Review dashboard visual regression",
+          "decision_status": {
+            "key": "finding",
+            "label": "Open finding",
+            "asserted_by": "machine"
+          },
+          "evidence_strength": {
+            "key": "unchecked",
+            "gradeable": true,
+            "checks_failed": 1
+          },
+          "cost": {},
+          "last_activity_at": 1787589280
+        },
+        {
+          "task_id": "task-provider-calibration",
+          "title": "Resolve provider calibration",
+          "decision_status": {
+            "key": "blocked",
+            "label": "Blocked",
+            "asserted_by": "agent_report"
+          },
+          "evidence_strength": {
+            "key": "not_gradeable",
+            "gradeable": false,
+            "checks_failed": 0
+          },
+          "cost": {},
+          "last_activity_at": 1787589100
+        }
+      ]
+    }
   },
   "work": {
     "receipt": {
@@ -699,6 +738,116 @@
         }
       ]
     },
+    "attention_receipt": {
+      "schema_version": "agentacct.receipt.v1",
+      "task_id": "task-provider-calibration",
+      "title": "Resolve provider calibration",
+      "duration_seconds": 1860,
+      "axes": {
+        "decision_status": {
+          "key": "blocked",
+          "label": "Blocked",
+          "statement": "Provider calibration cannot continue until a representative usage window is available.",
+          "asserted_by": "agent_report",
+          "blocker": {
+            "step_title": "Collect a representative usage window",
+            "section_id": "calibration-window",
+            "text": "The current sample is too short to support a stable calibration.",
+            "next_step": "Record normal usage across at least one week, then rerun calibration.",
+            "updated_at": 1787589100,
+            "blocked_step_count": 1,
+            "later_completed_steps": 0
+          }
+        },
+        "evidence_strength": {
+          "key": "unchecked",
+          "gradeable": true,
+          "strongest_tier": "unchecked",
+          "checkable_total": 2,
+          "checked_total": 1,
+          "by_tier": {"self_checked": 1, "unchecked": 1},
+          "checks_total": 2,
+          "checks_passed": 1,
+          "checks_failed": 1,
+          "open_or_incomplete": 1,
+          "total_steps": 3
+        },
+        "orthogonality_note": "The blocker is an agent-reported state; the failed check remains separate evidence."
+      },
+      "dimensions": {
+        "task": {
+          "objectives": ["Calibrate provider limits from representative local usage"],
+          "boundary": {"project": "agentacct-gui", "identity_scope": "repository", "session_count": 1},
+          "provenance": ["agent_report"]
+        },
+        "actors": {
+          "primary_agent": "codex",
+          "models": ["gpt-5.6-sol"],
+          "subagent_session_count": 0,
+          "child_session_count": 0,
+          "provenance": ["client_log"]
+        },
+        "actions": {
+          "tool_category_counts": {"execute": 7, "read": 12},
+          "tool_category_total": 19,
+          "touched_file_count": 2,
+          "provenance": ["client_log"]
+        },
+        "cost": {"provenance": ["client_log"]},
+        "evidence": {
+          "checks_total": 2,
+          "checks_passed": 1,
+          "checks_failed": 1,
+          "checks": [
+            {
+              "kind": "test",
+              "name": "Calibration stability",
+              "result": "failed",
+              "exit_code": 1,
+              "source": "hook",
+              "summary": "The sample does not yet span the minimum representative window.",
+              "command_redacted": true
+            },
+            {
+              "kind": "test",
+              "name": "Usage import integrity",
+              "result": "passed",
+              "exit_code": 0,
+              "source": "hook",
+              "summary": "Recorded usage rows are internally consistent.",
+              "command_redacted": true
+            }
+          ],
+          "provenance": ["client_hook"]
+        },
+        "outcome": {
+          "decision_status": "blocked",
+          "statement": "Representative usage is still required.",
+          "asserted_by": "agent_report",
+          "provenance": ["agent_report"]
+        },
+        "gaps": {
+          "count": 1,
+          "items": [{"dimension": "evidence", "reason": "The recorded window is not yet representative."}]
+        },
+        "provenance": {
+          "by_dimension": {
+            "task": ["agent_report"],
+            "actors": ["client_log"],
+            "actions": ["client_log"],
+            "cost": ["client_log"],
+            "evidence": ["client_hook"],
+            "outcome": ["agent_report"]
+          },
+          "sources_present": ["agent_report", "client_log", "client_hook"],
+          "legend": {
+            "agent_report": "Outcome and blocker reported by the agent.",
+            "client_log": "Actions and actors observed in the local client transcript.",
+            "client_hook": "Machine result observed by the local client integration."
+          }
+        }
+      }
+    },
     "sessions": [
       {
         "schema": "agentacct.v1-session-detail.v1",
@@ -747,7 +896,7 @@
                 "created_at": 1787586000,
                 "evidence_type": "test",
                 "result": "passed",
-                "summary": "Configuration contract covers all eight images.",
+                "summary": "Configuration contract covers the full review matrix.",
                 "exit_code": 0,
                 "source_type": "client_hook",
                 "check_identity": "work-matrix"
@@ -1040,6 +1189,11 @@
         }
       }
     ],
+    "filters_echo": {
+      "days": "7",
+      "granularity": "daily",
+      "granularity_requested": "auto"
+    },
     "totals": {
       "client": null,
       "sessions": 54,
@@ -1048,6 +1202,140 @@
       "estimated_cost_usd": 1087.42,
       "cost_complete": true,
       "known_additive_cost_usd": 1087.42,
+      "cost_confidence_label": "complete"
+    }
+  },
+  "usage_90_days": {
+    "by_client": [
+      {
+        "client": "codex",
+        "sessions": 160,
+        "fresh_tokens": 85000000,
+        "cache_read_tokens": 240000000,
+        "estimated_cost_usd": 920.5,
+        "cost_complete": true,
+        "known_additive_cost_usd": 920.5,
+        "cost_confidence_label": "complete"
+      },
+      {
+        "client": "claude-code",
+        "sessions": 43,
+        "fresh_tokens": 50000000,
+        "cache_read_tokens": 135000000,
+        "estimated_cost_usd": 1174.25,
+        "cost_complete": true,
+        "known_additive_cost_usd": 1174.25,
+        "cost_confidence_label": "complete"
+      },
+      {
+        "client": "hermes",
+        "sessions": 6,
+        "fresh_tokens": 1500000,
+        "cache_read_tokens": 5000000,
+        "estimated_cost_usd": 18.0,
+        "cost_complete": true,
+        "known_additive_cost_usd": 18.0,
+        "cost_confidence_label": "complete"
+      }
+    ],
+    "by_model": [],
+    "by_period": [
+      {
+        "period": "2026-05-25",
+        "fresh_tokens": 6200000,
+        "estimated_cost_usd": 100.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-06-01",
+        "fresh_tokens": 8100000,
+        "estimated_cost_usd": 130.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-06-08",
+        "fresh_tokens": 0
+      },
+      {
+        "period": "2026-06-15",
+        "fresh_tokens": 9400000,
+        "estimated_cost_usd": 145.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-06-22",
+        "fresh_tokens": 7800000,
+        "estimated_cost_usd": 121.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-06-29",
+        "fresh_tokens": 10200000,
+        "estimated_cost_usd": 158.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-07-06",
+        "fresh_tokens": 8700000,
+        "estimated_cost_usd": 135.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-07-13",
+        "fresh_tokens": 11300000,
+        "estimated_cost_usd": 175.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-07-20",
+        "fresh_tokens": 9900000,
+        "estimated_cost_usd": 154.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-07-27",
+        "fresh_tokens": 12400000,
+        "estimated_cost_usd": 192.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-08-03",
+        "fresh_tokens": 10800000,
+        "estimated_cost_usd": 167.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-08-10",
+        "fresh_tokens": 13100000,
+        "estimated_cost_usd": 204.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-08-17",
+        "fresh_tokens": 14600000,
+        "estimated_cost_usd": 226.0,
+        "cost_complete": true
+      },
+      {
+        "period": "2026-08-24",
+        "fresh_tokens": 14000000,
+        "estimated_cost_usd": 205.75,
+        "cost_complete": true
+      }
+    ],
+    "filters_echo": {
+      "days": "90",
+      "granularity": "weekly",
+      "granularity_requested": "auto"
+    },
+    "totals": {
+      "client": null,
+      "sessions": 209,
+      "fresh_tokens": 136500000,
+      "cache_read_tokens": 380000000,
+      "estimated_cost_usd": 2112.75,
+      "cost_complete": true,
+      "known_additive_cost_usd": 2112.75,
       "cost_confidence_label": "complete"
     }
   }

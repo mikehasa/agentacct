@@ -9,9 +9,9 @@ import SwiftUI
 // their session drill-down), the merged UsagePane, and SourcesPane.
 
 struct MainWindow: View {
-    @EnvironmentObject var dashboard: DashboardStore
-    @EnvironmentObject var glance: GlanceState
-    @EnvironmentObject var selection: AppSelection
+    @Environment(DashboardStore.self) var dashboard
+    @Environment(GlanceState.self) var glance
+    @Environment(AppSelection.self) var selection
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var setup = SetupModel()
     @State private var showSetup = false
@@ -26,6 +26,7 @@ struct MainWindow: View {
     var body: some View {
         VStack(spacing: 0) {
             TopBar(canSetUp: canSetUp) { showSetup = true }
+                .fixedSize(horizontal: false, vertical: true)
             Rectangle().fill(Theme.rule).frame(height: 1)
             // Keep the window's content slot stable while old and new panes
             // overlap for the fade. Replacing the VStack child itself lets
@@ -64,14 +65,22 @@ struct MainWindow: View {
             // offers setup once, automatically. A dev build (no embedded CLI)
             // never prompts.
             if setup.shouldOfferSetup { showSetup = true }
-            await dashboard.refresh()
+            await refreshDashboardAndSelectedWork(
+                dashboardRefresh: { await dashboard.refresh() },
+                selectedTaskId: { selection.taskId },
+                receiptRefresh: { await dashboard.fetchReceipt(taskId: $0) }
+            )
             // The window is a live instrument: refresh while it stays open
             // (the daemon caches by fingerprint, so a quiet minute is one
             // store read + a hash for it, not a rebuild).
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled else { break }
-                await dashboard.refresh()
+                await refreshDashboardAndSelectedWork(
+                    dashboardRefresh: { await dashboard.refresh() },
+                    selectedTaskId: { selection.taskId },
+                    receiptRefresh: { await dashboard.fetchReceipt(taskId: $0) }
+                )
             }
         }
         .onAppear {
@@ -108,9 +117,9 @@ func topBarRefreshActive(
 }
 
 struct TopBar: View {
-    @EnvironmentObject var dashboard: DashboardStore
-    @EnvironmentObject var glance: GlanceState
-    @EnvironmentObject var selection: AppSelection
+    @Environment(DashboardStore.self) var dashboard
+    @Environment(GlanceState.self) var glance
+    @Environment(AppSelection.self) var selection
     /// Packaged build → show the "Set up recording" entry point.
     var canSetUp: Bool = false
     var onSetUp: () -> Void = {}
@@ -160,7 +169,7 @@ struct TopBar: View {
                 Circle().fill(Theme.amber).frame(width: 5, height: 5)
                 Text("Source health unavailable")
             }
-            .font(Type.dataSmall)
+            .workFont(.dataSmall)
             .foregroundStyle(Theme.muted)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Source health unavailable")
@@ -172,7 +181,7 @@ struct TopBar: View {
                 Circle().fill(Theme.green).frame(width: 5, height: 5)
                 Text("Source health · \(freshness)")
             }
-            .font(Type.dataSmall)
+            .workFont(.dataSmall)
             .foregroundStyle(Theme.muted)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Source health updated \(freshness)")
@@ -184,7 +193,7 @@ struct TopBar: View {
                 Circle().fill(Theme.green).frame(width: 5, height: 5)
                 Text("Local data · \(freshness)")
             }
-            .font(Type.dataSmall)
+            .workFont(.dataSmall)
             .foregroundStyle(Theme.muted)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Local data updated \(freshness)")
@@ -212,7 +221,7 @@ struct TopBar: View {
                     HStack(spacing: 4) {
                         Image(systemName: "record.circle")
                             .font(.system(size: 12, weight: .medium))
-                        Text("Set up recording").font(Type.captionSemibold)
+                        Text("Set up recording").workFont(.captionSemibold)
                     }
                     .foregroundStyle(Theme.accent)
                 }
@@ -235,7 +244,13 @@ struct TopBar: View {
                 } else {
                     Button {
                         glance.refreshNow()
-                        Task { await dashboard.refresh() }
+                        Task {
+                            await refreshDashboardAndSelectedWork(
+                                dashboardRefresh: { await dashboard.refresh() },
+                                selectedTaskId: { selection.taskId },
+                                receiptRefresh: { await dashboard.fetchReceipt(taskId: $0) }
+                            )
+                        }
                     } label: {
                         Image(systemName: "arrow.clockwise")
                             .font(.system(size: 11.5, weight: .medium))
@@ -278,9 +293,23 @@ struct TopBar: View {
             }
         }
         .padding(.horizontal, 14)
-        .frame(height: 46)
+        .frame(minHeight: 46)
         .background(WindowSurfaceBackground(role: .chrome))
     }
+}
+
+/// Refresh the collection first, then read the selection that exists now.
+/// Reading it after the await prevents a slow refresh for A from starting a
+/// newer A detail request after the user has already navigated to B.
+@MainActor
+func refreshDashboardAndSelectedWork(
+    dashboardRefresh: () async -> Void,
+    selectedTaskId: () -> String?,
+    receiptRefresh: (String) async -> Void
+) async {
+    await dashboardRefresh()
+    guard !Task.isCancelled, let taskId = selectedTaskId() else { return }
+    await receiptRefresh(taskId)
 }
 
 enum WindowSurfacePolicy {
@@ -353,7 +382,11 @@ struct PaneTab: View {
                     .frame(width: 14, height: 14)
                 if !iconOnly {
                     Text(pane.rawValue)
-                        .font(Face.sansFont(12.5, selected ? .semibold : .medium))
+                        .workFont(
+                            size: 12.5,
+                            weight: selected ? .semibold : .medium,
+                            relativeTo: .caption
+                        )
                         .fixedSize()
                 }
             }
@@ -373,6 +406,7 @@ struct PaneTab: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(PaneTabPressStyle())
+        .accessibilityLabel(pane.rawValue)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("navigation.\(pane.rawValue.lowercased())")
         .onHover { inside in

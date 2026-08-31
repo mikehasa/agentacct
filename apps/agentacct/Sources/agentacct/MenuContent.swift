@@ -5,9 +5,9 @@ import SwiftUI
 // answers the account question first, keeps usage and quota evidence distinct,
 // and sends deeper work to the main window.
 struct MenuContent: View {
-    @EnvironmentObject var state: GlanceState
-    @EnvironmentObject var dashboard: DashboardStore
-    @EnvironmentObject var selection: AppSelection
+    @Environment(GlanceState.self) var state
+    @Environment(DashboardStore.self) var dashboard
+    @Environment(AppSelection.self) var selection
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showsRefreshProgress = false

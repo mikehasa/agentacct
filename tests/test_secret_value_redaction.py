@@ -29,6 +29,7 @@ from agentacct.usage_truth import (
 # keeping the exact shape the patterns must still recognize.
 FAKE_API_KEY = "sk-" + "fakeonly" + "0" * 32 + "AbCd"
 FAKE_OPENROUTER_KEY = "sk-or-v1-" + "fakeonly" + "0" * 40 + "EfGh"
+FAKE_ANTHROPIC_KEY = "sk-ant-" + "fakeonly" + "0" * 40 + "IjKl"
 FAKE_BEARER_HEADER = "Bearer " + "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.c2lnbmF0dXJl"
 # Credential alphabets that a fixed [A-Za-z0-9._~+/=-] charset cannot hold:
 # percent-encoding and a basic-auth style colon pair.
@@ -124,6 +125,8 @@ CREDENTIAL_CORPUS = (
     ("midsentence_token", f"rotated the {FAKE_BEARER_HEADER}"),
     ("api_key", f"OPENAI_API_KEY={FAKE_API_KEY}"),
     ("openrouter_key", f"OPENROUTER_API_KEY={FAKE_OPENROUTER_KEY}"),
+    ("anthropic_key", f"ANTHROPIC_API_KEY={FAKE_ANTHROPIC_KEY}"),
+    ("google_oauth", "ya29.FakeOnlyAbCdEfGhIjKlMnOp"),
 )
 
 
@@ -158,6 +161,8 @@ FAKE_PROVIDER_TOKENS = (
     ("huggingface", "hf_" + _FAKE_BODY_20),
     ("replicate", "r8_" + _FAKE_BODY_20),
     ("vendor_opaque", "tok_" + _FAKE_BODY_20),
+    ("xai", "xai-" + _FAKE_BODY_20),  # xAI (Grok)
+    ("groq", "gsk_" + _FAKE_BODY_20),  # Groq
 )
 
 # Prose whose compound carries a BARE NUMERIC piece. RFC 6750 is the Bearer
@@ -280,6 +285,7 @@ def test_real_shaped_secrets_are_still_removed_from_the_stored_event(tmp_path: P
             "metadata": {
                 "openai": FAKE_API_KEY,
                 "openrouter": FAKE_OPENROUTER_KEY,
+                "anthropic": FAKE_ANTHROPIC_KEY,
                 "header": FAKE_BEARER_HEADER,
             },
         }
@@ -287,14 +293,15 @@ def test_real_shaped_secrets_are_still_removed_from_the_stored_event(tmp_path: P
 
     assert recorded["metadata"]["openai"] == "[REDACTED_SECRET]"
     assert recorded["metadata"]["openrouter"] == "[REDACTED_SECRET]"
+    assert recorded["metadata"]["anthropic"] == "[REDACTED_SECRET]"
     assert recorded["metadata"]["header"] == "[REDACTED_SECRET]"
     stored = _stored_text(store)
-    for secret in (FAKE_API_KEY, FAKE_OPENROUTER_KEY, FAKE_BEARER_HEADER):
+    for secret in (FAKE_API_KEY, FAKE_OPENROUTER_KEY, FAKE_ANTHROPIC_KEY, FAKE_BEARER_HEADER):
         assert secret not in stored
-    # The openrouter shape is a prefix-superset of the plain key shape; it must
-    # report as the specific class, not the generic one.
+    # The openrouter and anthropic shapes are prefix-supersets of the plain key
+    # shape; each must report as its specific class, not the generic one.
     classes = {row["pattern_class"] for row in recorded["metadata"]["value_redaction_fields"]}
-    assert classes == {"api_key", "openrouter_api_key", "bearer_token"}
+    assert classes == {"api_key", "openrouter_api_key", "anthropic_api_key", "bearer_token"}
 
 
 def test_surrounding_prose_survives_a_redacted_secret(tmp_path: Path) -> None:

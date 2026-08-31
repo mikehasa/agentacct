@@ -10,6 +10,10 @@ final class DashboardVisualRegressionTests: XCTestCase {
         "dashboard-minimum-dark.png",
         "dashboard-reference-light.png",
         "dashboard-reference-dark.png",
+        "dashboard-weekly-reference-light.png",
+        "dashboard-weekly-reference-dark.png",
+        "dashboard-attention-unavailable-light.png",
+        "dashboard-attention-unavailable-dark.png",
     ]
 
     @MainActor

@@ -486,6 +486,29 @@ def _project_check(event: dict[str, Any]) -> dict[str, Any]:
     return {name: event.get(name) for name in _STEP_CHECK_FIELDS}
 
 
+_REPORTED_COST_CONFIDENCES = frozenset({"client_reported", "provider_billed"})
+
+
+def _step_cost_confidence(breakdown: Any) -> str | None:
+    """One cost-confidence for a step, from its per-record breakdown. A step's
+    cost is only as exact as its weakest priced record: if every priced record
+    is reported/billed the step is exact; if any is a token-based estimate (or an
+    unknown confidence) the whole step reads as an estimate. Returns None when
+    nothing was priced (the step renders "—", never a fabricated exact $0)."""
+    if not isinstance(breakdown, dict):
+        return None
+    present = {
+        str(key)
+        for key, count in breakdown.items()
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0
+    }
+    if not present:
+        return None
+    if present <= _REPORTED_COST_CONFIDENCES:
+        return "provider_billed" if "provider_billed" in present else "client_reported"
+    return "estimated_from_tokens"
+
+
 def _project_step(item: dict[str, Any], models: list[dict[str, Any]]) -> dict[str, Any]:
     evidence_events = item.get("evidence_events")
     checks = [
@@ -531,6 +554,11 @@ def _project_step(item: dict[str, Any], models: list[dict[str, Any]]) -> dict[st
             "linked_usage_records": item.get("linked_usage_records"),
             "priced_usage_records": item.get("priced_usage_records"),
             "unpriced_usage_records": item.get("unpriced_usage_records"),
+            # One confidence for the whole step: exact only when every priced
+            # record is reported/billed, else an estimate. The macOS app uses
+            # this to pick "$" vs "≈$" so a step cost never reads exact when it
+            # was estimated from tokens.
+            "cost_confidence": _step_cost_confidence(item.get("cost_confidence_breakdown")),
         },
         "join_confidence": item.get("join_confidence"),
         "join_explanation": item.get("join_explanation"),

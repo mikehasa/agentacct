@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import sqlite3
 from pathlib import Path
 
 from agentacct.event_log import RawEventLog, serialize_event
@@ -28,6 +28,35 @@ def test_append_and_read_preserve_order_and_content(tmp_path: Path) -> None:
     assert log.read_events(run_id="r1") == [events[1]]
     # Verbatim lines match the canonical serialization exactly.
     assert log.read_lines() == [serialize_event(event) for event in events]
+
+
+def test_revision_tracks_every_sql_mutation_including_external_writers(tmp_path: Path) -> None:
+    """The read cache key must change without scanning or parsing the ledger.
+
+    Triggers are deliberately tested through a separate raw SQLite connection:
+    another agentacct process (including an older one) must invalidate a live
+    daemon's snapshot just as reliably as writes through ``RawEventLog``.
+    """
+
+    database = tmp_path / "events.sqlite3"
+    log = RawEventLog(database)
+    initial = log.revision()
+
+    log.append_event(_event("e1"))
+    appended = log.revision()
+    assert appended > initial
+
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE event_lines SET line = ? WHERE event_id = ?",
+            (serialize_event(_event("e1", note="external rewrite")), "e1"),
+        )
+    rewritten = log.revision()
+    assert rewritten > appended
+
+    with sqlite3.connect(database) as connection:
+        connection.execute("DELETE FROM event_lines WHERE event_id = ?", ("e1",))
+    assert log.revision() > rewritten
 
 
 def test_reconcile_from_file_backfills_an_empty_log(tmp_path: Path) -> None:

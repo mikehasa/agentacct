@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import secrets
+import select
 import shutil
 import signal
 import subprocess
@@ -47,11 +48,7 @@ import signal
 import sys
 
 gate = int(sys.argv[1])
-token = os.read(gate, 1)
-os.close(gate)
-if token != b"1":
-    raise SystemExit(126)
-
+ready = int(sys.argv[2])
 cancel_requested = False
 
 def on_term(_signum, _frame):
@@ -59,10 +56,17 @@ def on_term(_signum, _frame):
     cancel_requested = True
 
 signal.signal(signal.SIGTERM, on_term)
+os.write(ready, b"1")
+os.close(ready)
+token = os.read(gate, 1)
+os.close(gate)
+if token != b"1":
+    raise SystemExit(126)
+
 child = os.fork()
 if child == 0:
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
-    os.execv(sys.argv[2], sys.argv[2:])
+    os.execv(sys.argv[3], sys.argv[3:])
 
 while True:
     try:
@@ -546,6 +550,7 @@ class OwnedSupervisor:
         *,
         birth_time: float | None,
         pgid: int | None,
+        executable: str | None,
         cwd: Path,
         nonce: str,
     ) -> None:
@@ -568,9 +573,10 @@ class OwnedSupervisor:
         try:
             live = psutil.Process(process.pid)
             exact_match = (
-                abs(float(live.create_time()) - birth_time) <= 0.05
+                executable is not None
+                and abs(float(live.create_time()) - birth_time) <= 0.05
                 and os.getpgid(process.pid) == pgid
-                and str(Path(live.exe()).resolve()) == str(Path(sys.executable).resolve())
+                and str(Path(live.exe()).resolve()) == str(Path(executable).resolve())
                 and str(Path(live.cwd()).resolve()) == str(cwd)
                 and read_env_alias("AGENTACCT_OWNERSHIP_NONCE", live.environ()) == nonce
             )
@@ -667,6 +673,8 @@ class OwnedSupervisor:
         stderr_handle: Any | None = None
         handshake_read = -1
         handshake_write = -1
+        ready_read = -1
+        ready_write = -1
         nonce = secrets.token_urlsafe(32)
         try:
             self.runs.create_run_dir(attempt_id)
@@ -697,8 +705,9 @@ class OwnedSupervisor:
                 }
             )
             handshake_read, handshake_write = os.pipe()
+            ready_read, ready_write = os.pipe()
         except Exception as exc:
-            for descriptor in (handshake_read, handshake_write):
+            for descriptor in (handshake_read, handshake_write, ready_read, ready_write):
                 if descriptor >= 0:
                     try:
                         os.close(descriptor)
@@ -718,41 +727,61 @@ class OwnedSupervisor:
         process: subprocess.Popen[bytes] | None = None
         birth_time: float | None = None
         pgid: int | None = None
+        executable: str | None = None
         try:
             self._assert_preflight_identities(manifest_payload)
             process = subprocess.Popen(
-                [sys.executable, "-c", _LAUNCH_SHIM, str(handshake_read), *command],
+                [
+                    sys.executable,
+                    "-c",
+                    _LAUNCH_SHIM,
+                    str(handshake_read),
+                    str(ready_write),
+                    *command,
+                ],
                 cwd=root,
                 env=child_env,
                 stdout=stdout_handle,
                 stderr=stderr_handle,
                 start_new_session=True,
-                pass_fds=(handshake_read,),
+                pass_fds=(handshake_read, ready_write),
             )
             os.close(handshake_read)
             handshake_read = -1
+            os.close(ready_write)
+            ready_write = -1
             live = psutil.Process(process.pid)
             birth_time = float(live.create_time())
             pgid = os.getpgid(process.pid)
+            executable = str(Path(live.exe()).resolve())
+            readable, _, _ = select.select([ready_read], [], [], 5.0)
+            if not readable or os.read(ready_read, 1) != b"1":
+                raise SupervisorError("process launch readiness handshake failed")
+            os.close(ready_read)
+            ready_read = -1
             # The shim remains the stable process-group leader.  This keeps the
             # ownership proof valid for direct shebang scripts and throughout
             # cancellation even when the target leader exits before children.
-            executable = str(Path(sys.executable).resolve())
+            # It acknowledges only after any interpreter-launcher re-exec.
+            live = psutil.Process(process.pid)
+            executable = str(Path(live.exe()).resolve())
             process_cwd = str(Path(live.cwd()).resolve())
             if read_env_alias("AGENTACCT_OWNERSHIP_NONCE", live.environ()) != nonce:
                 raise SupervisorError("process launch nonce handshake failed")
             self._assert_preflight_identities(manifest_payload)
         except Exception as exc:
-            if handshake_read >= 0:
-                try:
-                    os.close(handshake_read)
-                except OSError:
-                    pass
+            for descriptor in (handshake_read, ready_read, ready_write):
+                if descriptor >= 0:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
             self._abort_blocked_process(
                 process,
                 handshake_write,
                 birth_time=birth_time,
                 pgid=pgid,
+                executable=executable,
                 cwd=root,
                 nonce=nonce,
             )
@@ -762,7 +791,7 @@ class OwnedSupervisor:
             self._record_launch_failure(attempt_id, idempotency_key, f"launch failed: {type(exc).__name__}")
             raise SupervisorError("agentacct-owned process launch failed") from exc
 
-        assert process is not None and birth_time is not None and pgid is not None
+        assert process is not None and birth_time is not None and pgid is not None and executable is not None
         started_at = time.time()
         metadata = {
             "run_id": attempt_id,
@@ -835,6 +864,7 @@ class OwnedSupervisor:
                 handshake_write,
                 birth_time=birth_time,
                 pgid=pgid,
+                executable=executable,
                 cwd=root,
                 nonce=nonce,
             )

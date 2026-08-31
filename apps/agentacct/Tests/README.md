@@ -264,6 +264,8 @@ The dashboard renderer owns this complete fixed matrix at 2x scale:
 | `dashboard-minimum-dark.png` | 960 × 560 pt minimum window, dark; single-column viewport | 1920 × 1120 px |
 | `dashboard-reference-light.png` | 1120 × 800 pt standard window, light; complete two-column dashboard | 2240 × 1600 px |
 | `dashboard-reference-dark.png` | 1120 × 800 pt standard window, dark; complete two-column dashboard | 2240 × 1600 px |
+| `dashboard-attention-unavailable-light.png` | 1120 × 800 pt failed receipt refresh with retained cache, light; proves cached attention is not presented as current | 2240 × 1600 px |
+| `dashboard-attention-unavailable-dark.png` | 1120 × 800 pt failed receipt refresh with retained cache, dark; proves cached attention is not presented as current | 2240 × 1600 px |
 
 References live under `Tests/agentacctTests/ReferenceImages/<platform-id>`.
 They are read directly from the source checkout and excluded from SwiftPM's
@@ -314,17 +316,32 @@ open /tmp/agentacct-usage-review
 The Work renderer drives the real `MainWindow` through the browse and selected-
 receipt paths. Its versioned fixture includes representative action counts, six checks,
 missing CI evidence, two root-session groups, and a subagent. The two primary
-states render at both supported window sizes; transient states render at the
-standard viewport in both appearances.
+states render at both supported window sizes, the first and maximum accessibility
+text sizes, and both appearances; transient states render at the standard viewport.
 
 | State | Viewport coverage | Source-tree artifacts |
 | --- | --- | --- |
 | populated table | 960 × 560 pt and 1120 × 800 pt, light/dark | `work-table-*.png` |
 | populated receipt | 960 × 560 pt and 1120 × 800 pt, light/dark | `work-receipt-{minimum,reference}-*.png` |
+| accessibility table | 1120 × 800 pt at accessibility1 and 1120 × 1000 pt at accessibility5, light/dark | `work-table-accessibility*.png` |
+| accessibility receipt | 1120 × 800 pt at accessibility1 and 1120 × 1000 pt at accessibility5, light/dark | `work-receipt-accessibility*.png` |
+| initial list loading | 1120 × 800 pt, light/dark | `work-list-loading-reference-*.png` |
 | empty table | 1120 × 800 pt, light/dark | `work-empty-reference-*.png` |
 | list error | 1120 × 800 pt, light/dark | `work-list-error-reference-*.png` |
 | receipt loading | 1120 × 800 pt, light/dark | `work-receipt-loading-reference-*.png` |
 | receipt error | 1120 × 800 pt, light/dark | `work-receipt-error-reference-*.png` |
+| saved stale receipt | 1120 × 800 pt, light/dark | `work-receipt-stale-reference-*.png` |
+| blocked attention receipt | 1120 × 800 pt, light/dark | `work-attention-receipt-reference-*.png` |
+| focused Checks ledger | exception-first overview, all-pass, expanded evidence, 360 pt compact, compact accessibility5, and accessibility5 RTL, light/dark | `work-checks-*.png` |
+| Session/step hierarchy | 760 × 1050 pt, light/dark | `work-session-steps-hierarchy-*.png` |
+| dense check preview | 760 × 1200 pt, light/dark | `work-session-steps-dense-checks-*.png` |
+| expanded current checks | 760 × 2500 pt, light/dark | `work-session-steps-expanded-current-*.png` |
+| expanded check history | 760 × 1450 pt, light/dark | `work-session-steps-expanded-history-*.png` |
+| session load failure | 760 × 240 pt, light/dark | `work-session-steps-load-failure-*.png` |
+| in-place Retry progress | 760 × 240 pt, light/dark | `work-session-steps-retrying-*.png` |
+| compact check preview | 360 × 1600 pt, light/dark | `work-session-steps-compact-checks-*.png` |
+| Arabic RTL/mixed-text stress | 760 × 1250 pt, light/dark | `work-session-steps-rtl-stress-*.png` |
+| accessibility5 compact and Arabic RTL stress | 360 × 4000 pt, light/dark | `work-session-steps-{compact,rtl}-accessibility-*.png` |
 
 For an ad-hoc render that does not compare or update references:
 
@@ -335,8 +352,9 @@ swift run agentacct --snapshot-work-fixture \
 open /tmp/agentacct-work-review
 ```
 
-Ad-hoc and CI artifact images are review aids only. The visual test reads the
-28 canonical PNGs from `Tests/agentacctTests/ReferenceImages/<platform-id>`, so
+Ad-hoc and CI artifact images are review aids only. Including the focused
+Checks, Session/steps, and action matrices, the visual test reads 74 canonical PNGs from
+`Tests/agentacctTests/ReferenceImages/<platform-id>`, so
 a Work UI change is not visually verified until those source-tree files are
 reviewed and committed.
 

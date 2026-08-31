@@ -15,6 +15,8 @@ final class UsageSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "usage-minimum-dark.png", pixelsWide: 1920, pixelsHigh: 1120),
         ExpectedArtifact(filename: "usage-reference-light.png", pixelsWide: 2240, pixelsHigh: 1800),
         ExpectedArtifact(filename: "usage-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1800),
+        ExpectedArtifact(filename: "usage-weekly-reference-light.png", pixelsWide: 2240, pixelsHigh: 2240),
+        ExpectedArtifact(filename: "usage-weekly-reference-dark.png", pixelsWide: 2240, pixelsHigh: 2240),
         ExpectedArtifact(filename: "usage-disconnected-reference-light.png", pixelsWide: 2240, pixelsHigh: 1800),
         ExpectedArtifact(filename: "usage-disconnected-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1800),
     ]
@@ -32,6 +34,25 @@ final class UsageSnapshotHarnessTests: XCTestCase {
         XCTAssertEqual(result.rows.map(\.client), ["claude-code", "codex", "hermes"])
         XCTAssertEqual(result.rows.first?.readings.flatMap { $0.entry.windows ?? [] }.count, 2)
         XCTAssertTrue(try XCTUnwrap(result.rows.last).readings.isEmpty)
+    }
+
+    func testWeeklyReviewConfigurationsUseTheNinetyDayWeeklyPayload() throws {
+        let fixture = try DashboardSnapshotFixture.load(from: fixtureURL())
+        let configurations = UsageSnapshotConfiguration.reviewConfigurations.filter {
+            $0.viewport == "weekly-reference"
+        }
+
+        XCTAssertEqual(configurations.count, 2)
+        for configuration in configurations {
+            let state = configuration.recordedUsageState.storeState(for: fixture)
+            XCTAssertEqual(state.days, 90)
+            XCTAssertEqual(state.summary.filtersEcho?.granularity, "weekly")
+            XCTAssertEqual(state.summary.byPeriod?.count, 14)
+            let presentation = UsagePeriodPresentation(usage: state.summary)
+            XCTAssertEqual(presentation.label, "Active weeks")
+            XCTAssertEqual(presentation.value, "13/14")
+            XCTAssertEqual(presentation.costChartTitle, "Cost per week")
+        }
     }
 
     @MainActor

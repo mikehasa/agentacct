@@ -74,9 +74,9 @@ enum SourcesSnapshotRenderer {
         return try configurations.map { configuration in
             SnapshotScheme.override = configuration.colorScheme
             let view = MainWindow(canSetUpOverride: true)
-                .environmentObject(glance)
-                .environmentObject(dashboard)
-                .environmentObject(selection)
+                .environment(glance)
+                .environment(dashboard)
+                .environment(selection)
                 .frame(
                     width: configuration.width,
                     height: configuration.height,

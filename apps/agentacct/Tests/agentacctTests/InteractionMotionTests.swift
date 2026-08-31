@@ -86,24 +86,6 @@ final class InteractionMotionTests: XCTestCase {
         XCTAssertTrue(violations.isEmpty, violations.joined(separator: "\n"))
     }
 
-    func testWorkSurfaceDerivesListAndDetailEndpoints() {
-        XCTAssertEqual(workSurface(taskId: nil, unresolvedSessionId: nil), .list)
-        XCTAssertEqual(workSurface(taskId: "task_a", unresolvedSessionId: nil), .detail)
-        XCTAssertEqual(workSurface(taskId: nil, unresolvedSessionId: "session_a"), .detail)
-    }
-
-    func testWorkFocusReturnsToThePriorRowOrFallsBackToTheTable() {
-        XCTAssertEqual(
-            workFocusTarget(lastOpenedTaskId: "task_a", visibleTaskIds: ["task_a", "task_b"]),
-            .task("task_a")
-        )
-        XCTAssertEqual(
-            workFocusTarget(lastOpenedTaskId: "task_a", visibleTaskIds: ["task_b"]),
-            .table
-        )
-        XCTAssertEqual(workFocusTarget(lastOpenedTaskId: nil, visibleTaskIds: []), .table)
-    }
-
     func testWorkRecordPhaseNeverPresentsAStaleReceiptAsLoaded() {
         XCTAssertEqual(
             workRecordPhaseKey(
@@ -134,6 +116,26 @@ final class InteractionMotionTests: XCTestCase {
                 errorPresent: true
             ),
             .failed(taskId: "task_new")
+        )
+    }
+
+    func testWorkRecordPhaseOnlyPresentsFailureForTheSelectedTask() {
+        let error = workReceiptRefreshError(
+            selectedTaskId: "task_new",
+            errorTaskId: "task_old",
+            error: "receipt fetch failed: offline"
+        )
+
+        XCTAssertNil(error)
+        XCTAssertEqual(
+            workRecordPhaseKey(
+                selectedTaskId: "task_new",
+                sessionId: nil,
+                unresolvedSessionId: nil,
+                receiptTaskId: nil,
+                errorPresent: error != nil
+            ),
+            .loading(taskId: "task_new")
         )
     }
 
