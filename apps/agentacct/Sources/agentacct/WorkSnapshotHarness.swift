@@ -178,6 +178,342 @@ enum WorkSnapshotRenderer {
     }
 }
 
+enum SessionStepsSnapshotKind: String {
+    case hierarchy
+    case denseChecks = "dense-checks"
+    case expandedCurrent = "expanded-current"
+    case expandedHistory = "expanded-history"
+    case loadFailure = "load-failure"
+    case retrying = "retrying"
+    case compactChecks = "compact-checks"
+    case rtlStress = "rtl-stress"
+    case compactAccessibility = "compact-accessibility"
+    case rtlAccessibility = "rtl-accessibility"
+}
+
+struct SessionStepsSnapshotConfiguration {
+    let kind: SessionStepsSnapshotKind
+    let width: CGFloat
+    let height: CGFloat
+    let colorScheme: ColorScheme
+
+    var filename: String {
+        let appearance = colorScheme == .dark ? "dark" : "light"
+        return "work-session-steps-\(kind.rawValue)-\(appearance).png"
+    }
+
+    var layoutDirection: LayoutDirection {
+        switch kind {
+        case .rtlStress, .rtlAccessibility: return .rightToLeft
+        default: return .leftToRight
+        }
+    }
+
+    var dynamicTypeSize: DynamicTypeSize {
+        switch kind {
+        case .compactAccessibility, .rtlAccessibility: return .accessibility5
+        default: return .medium
+        }
+    }
+
+    static let reviewConfigurations: [Self] = [
+        (.hierarchy, 760, 1_050),
+        (.denseChecks, 760, 1_200),
+        (.expandedCurrent, 760, 2_500),
+        (.expandedHistory, 760, 1_450),
+        (.loadFailure, 760, 240),
+        (.retrying, 760, 240),
+        (.compactChecks, 360, 1_600),
+        (.rtlStress, 760, 1_250),
+        (.compactAccessibility, 360, 4_000),
+        (.rtlAccessibility, 360, 4_000),
+    ].flatMap { kind, width, height in
+        [
+            Self(kind: kind, width: width, height: height, colorScheme: .light),
+            Self(kind: kind, width: width, height: height, colorScheme: .dark),
+        ]
+    }
+}
+
+enum SessionStepsSnapshotRenderer {
+    @MainActor
+    static func render(
+        fixture: DashboardSnapshotFixture,
+        outputDirectory: URL,
+        configurations: [SessionStepsSnapshotConfiguration] = SessionStepsSnapshotConfiguration.reviewConfigurations
+    ) throws -> [URL] {
+        guard let generatedAt = fixture.glance.generatedAt else {
+            throw SnapshotError.missingFixtureDate
+        }
+        guard let work = fixture.work,
+              let member = work.receipt.sessions?.first?.members.first
+        else {
+            throw SnapshotError.missingWorkFixture
+        }
+        try FileManager.default.createDirectory(
+            at: outputDirectory,
+            withIntermediateDirectories: true
+        )
+
+        SnapshotMode.enabled = true
+        SnapshotMode.setFixtureDate(Date(timeIntervalSince1970: generatedAt))
+        defer {
+            SnapshotMode.enabled = false
+            SnapshotMode.setFixtureDate(nil)
+            SnapshotScheme.override = nil
+        }
+
+        return try configurations.map { configuration in
+            SnapshotScheme.override = configuration.colorScheme
+            let dashboard = DashboardStore(preloaded: fixture)
+            let unconstrainedScene = SessionStepsSnapshotScene(
+                kind: configuration.kind,
+                member: member
+            )
+            .environment(dashboard)
+            .frame(width: configuration.width, alignment: .topLeading)
+            .fixedSize(horizontal: false, vertical: true)
+            .modifier(SessionStepsSnapshotEnvironment(configuration: configuration))
+            let requiredSize = try SnapshotImageWriter.renderedSize(
+                unconstrainedScene,
+                proposedSize: ProposedViewSize(width: configuration.width, height: nil)
+            )
+            guard requiredSize.height <= configuration.height else {
+                throw SnapshotError.snapshotContentExceedsCanvas(
+                    filename: configuration.filename,
+                    requiredHeight: Int(ceil(requiredSize.height)),
+                    availableHeight: Int(configuration.height)
+                )
+            }
+
+            let scene = SessionStepsSnapshotScene(kind: configuration.kind, member: member)
+                .environment(dashboard)
+                .frame(
+                    width: configuration.width,
+                    height: configuration.height,
+                    alignment: .topLeading
+                )
+                .clipped()
+                .modifier(SessionStepsSnapshotEnvironment(configuration: configuration))
+            let outputURL = outputDirectory.appendingPathComponent(configuration.filename)
+            try SnapshotImageWriter.render(
+                scene,
+                to: outputURL,
+                size: CGSize(width: configuration.width, height: configuration.height)
+            )
+            return outputURL
+        }
+    }
+}
+
+private struct SessionStepsSnapshotEnvironment: ViewModifier {
+    let configuration: SessionStepsSnapshotConfiguration
+
+    func body(content: Content) -> some View {
+        content
+            .background(Theme.canvas)
+            .environment(\.colorScheme, configuration.colorScheme)
+            .environment(\.locale, Locale(identifier: "en_US_POSIX"))
+            .environment(\.displayScale, 2)
+            .environment(\.layoutDirection, configuration.layoutDirection)
+            .environment(\.dynamicTypeSize, configuration.dynamicTypeSize)
+            .environment(\.controlSize, .regular)
+            .environment(\.legibilityWeight, nil)
+            .environment(\.appearsActive, true)
+            .transaction { transaction in
+                transaction.disablesAnimations = true
+            }
+    }
+}
+
+struct SessionStepsSnapshotScene: View {
+    let kind: SessionStepsSnapshotKind
+    let member: ReceiptSessionMember
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.s) {
+            SectionCaption(text: "Sessions & steps")
+            switch kind {
+            case .hierarchy:
+                SessionDrillRow(member: member, initiallyExpanded: true)
+            case .denseChecks, .compactChecks, .rtlStress:
+                StepCard(step: denseStep, initiallyExpanded: true)
+            case .compactAccessibility, .rtlAccessibility:
+                StepCard(
+                    step: denseStep,
+                    initiallyExpanded: true,
+                    initiallyShowHistory: true
+                )
+            case .expandedCurrent:
+                StepCard(
+                    step: denseStep,
+                    initiallyExpanded: true,
+                    initiallyShowAllCurrentChecks: true
+                )
+            case .expandedHistory:
+                StepCard(
+                    step: denseStep,
+                    initiallyExpanded: true,
+                    initiallyShowHistory: true
+                )
+            case .loadFailure:
+                SessionDrillRow(
+                    member: unavailableMember,
+                    initiallyExpanded: true,
+                    initiallyFailed: true
+                )
+            case .retrying:
+                SessionDrillRow(
+                    member: unavailableMember,
+                    initiallyExpanded: true,
+                    initiallyLoading: true,
+                    initiallyFailed: true
+                )
+            }
+        }
+        .padding(Space.l)
+    }
+
+    private var denseStep: V1Step {
+        let indexes = switch kind {
+        case .compactAccessibility, .rtlAccessibility: [0, 5, 6, 9, 18, 19, 20]
+        default: Array(0..<25)
+        }
+        let checks = indexes.map { Self.denseCheck($0, kind: kind) }
+        return V1Step(
+            workId: "session-steps-dense",
+            sectionId: "scenario-review",
+            title: kind == .rtlStress
+                ? "مراجعة فجوات لوحة المتابعة عبر 100 سيناريو واقعي"
+                : "Close dashboard gaps across 100 realistic scenarios",
+            latestStatus: "completed",
+            kind: "review",
+            phase: "verification",
+            startedAt: 1_787_585_000,
+            updatedAt: 1_787_590_000,
+            summary: kind == .rtlStress
+                ? "اكتملت المراجعة، لكن فحص CI حالي ما زال يفشل. يجب أن يبقى هذا التعارض واضحًا من دون إخفاء مسارات الملفات أو نتائج exit."
+                : "The review is marked done, but one current check is still failing. The ledger must keep that contradiction visible without turning routine verification into a wall of repeated pills.",
+            files: [
+                "apps/agentacct/Sources/agentacct/StepComponents.swift",
+                "apps/agentacct/Sources/agentacct/WorkPane.swift",
+            ],
+            blocker: nil,
+            nextStep: kind == .rtlStress
+                ? "راجع الفشل الحالي قبل قبول حالة الاكتمال."
+                : "Review the live failure before accepting the completed lifecycle claim.",
+            usage: nil,
+            joinConfidence: "exact",
+            evidenceStatus: "failed",
+            evidenceGrade: "self_checked",
+            evidenceGradeReason: kind == .rtlStress
+                ? "الحالة مكتملة، لكن فحصًا مسجلًا ما زال يفشل."
+                : "Marked done, but a recorded check is currently failing.",
+            models: nil,
+            checks: checks
+        )
+    }
+
+    private var unavailableMember: ReceiptSessionMember {
+        ReceiptSessionMember(
+            client: "codex",
+            clientSessionId: "unavailable-session",
+            sessionKind: nil,
+            role: "root",
+            title: "Review a temporarily unavailable session",
+            project: "agentacct-gui",
+            lastActivityAt: 1_787_590_000
+        )
+    }
+
+    static func denseCheck(_ index: Int, kind: SessionStepsSnapshotKind) -> V1Check {
+        let result: String?
+        let supersession: String?
+        let exitCode: Int?
+        switch index {
+        case 9:
+            result = "failed"
+            supersession = nil
+            exitCode = 1
+        case 14:
+            result = "skipped"
+            supersession = nil
+            exitCode = nil
+        case 20:
+            result = "failed"
+            supersession = "superseded"
+            exitCode = 1
+        default:
+            result = "passed"
+            supersession = nil
+            exitCode = 0
+        }
+
+        let source: String? = switch index {
+        case 3: "ci"
+        case 6: "client_hook"
+        case 11: nil
+        default: "mcp_agent_reported"
+        }
+        let summaries = kind == .rtlStress
+            ? [
+                "تطابق مرجعا الوضع الفاتح والداكن على عارض macOS المثبت.",
+                "اكتمل بناء التطبيق من دون استبدال النسخة المثبتة.",
+                "نجحت اختبارات Swift المركزة من دون أي إخفاق.",
+                "يبقى ملخص التحقق الطويل قابلاً للتحديد ويلتف من دون اقتطاع معلومات CI المهمة.",
+                "لم تُكتشف أخطاء مسافات بيضاء في فرق الفرع الكامل.",
+                "احتفظ المخزن المحلي بالجلسات الحديثة ومسار apps/agentacct.",
+            ]
+            : [
+                "Canonical light and dark references match on the pinned macOS renderer.",
+                "The release app built successfully without replacing the installed application.",
+                "Focused Swift tests passed with zero failures across the full presentation matrix.",
+                "The long verification summary remains selectable and wraps without giving metadata the space it needs to stay readable.",
+                "No whitespace errors were found in the complete branch diff.",
+                "The live store preserved stateless recent sessions and update-and-restart guidance.",
+            ]
+        let summary: String
+        switch index {
+        case 19:
+            summary = kind == .rtlStress || kind == .rtlAccessibility
+                ? "نجح تحقق لاحق مطابق للقطعة الأثرية وحل محل الفشل السابق."
+                : "A later matching artifact verification passed and superseded the earlier failure."
+        case 20:
+            summary = kind == .rtlStress || kind == .rtlAccessibility
+                ? "فشل تحقق سابق للقطعة الأثرية قبل نجاح إعادة تشغيل مطابقة لاحقة."
+                : "An earlier artifact verification failed before a later matching rerun passed."
+        default:
+            summary = summaries[index % summaries.count]
+        }
+        return V1Check(
+            eventId: "session-check-\(index)",
+            createdAt: 1_787_590_000 - Double(index * 75),
+            evidenceType: (index == 19 || index == 20)
+                ? "artifact"
+                : (index % 5 == 0 ? "artifact" : (index % 4 == 0 ? "build" : "test")),
+            result: result,
+            summary: summary,
+            exitCode: exitCode,
+            sourceType: source,
+            checkIdentity: (index == 19 || index == 20)
+                ? "session-check-supersession"
+                : "session-check-\(index)",
+            supersessionState: supersession,
+            supersededByEventId: index == 20 ? "session-check-19" : nil,
+            resolutionScope: index == 18 ? "partial" : nil,
+            resolutionSummary: index == 18 ? "This passing rerun resolves only the focused blocker." : nil,
+            resolvesBlockedEventId: index == 18 ? "blocked-session-fixture" : nil,
+            files: index == 2 ? ["apps/agentacct/Tests/agentacctTests/SessionStepsPresentationTests.swift"] : nil,
+            artifactRef: index == 0 ? "canonical/session-steps-review" : nil,
+            artifactPath: nil,
+            artifactUrl: nil,
+            commandRedacted: index == 5,
+            artifactPathRedacted: index == 5,
+            artifactUrlRedacted: index == 6
+        )
+    }
+}
+
 enum ReceiptActionSnapshotKind: String {
     case exactRegular = "exact-regular"
     case exactCompact = "exact-compact"
