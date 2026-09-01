@@ -1166,6 +1166,20 @@ enum SnapshotMode {
         fixtureDate = date
     }
 
+    /// Optional display-only store path for deterministic Sources snapshots.
+    /// Live application code leaves this unset and reports the resolved local
+    /// store; fixture renders pin a synthetic path so references neither leak
+    /// a developer username nor vary with the runner's home directory.
+    nonisolated(unsafe) private static var fixtureStorePath: String?
+
+    static var currentStorePath: String {
+        fixtureStorePath ?? GlanceClient.storeDir().path
+    }
+
+    static func setFixtureStorePath(_ path: String?) {
+        fixtureStorePath = path
+    }
+
     /// Dashboard review matrices model a real viewport at the top scroll
     /// position. Legacy all-pane screenshots retain their existing full-content
     /// behavior until each pane has its own review viewport.

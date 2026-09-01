@@ -105,6 +105,17 @@ func refreshProgressVisible(isRefreshing: Bool, delayElapsed: Bool) -> Bool {
     isRefreshing && delayElapsed
 }
 
+func topBarRefreshActive(
+    dashboardRefreshing: Bool,
+    glanceRefreshing: Bool,
+    showingSources: Bool,
+    ingestionRefreshing: Bool
+) -> Bool {
+    dashboardRefreshing
+        || glanceRefreshing
+        || (showingSources && ingestionRefreshing)
+}
+
 struct TopBar: View {
     @Environment(DashboardStore.self) var dashboard
     @Environment(GlanceState.self) var glance
@@ -117,7 +128,12 @@ struct TopBar: View {
     @State private var showsRefreshProgress = false
 
     private var isRefreshing: Bool {
-        dashboard.isRefreshing || glance.isRefreshing
+        topBarRefreshActive(
+            dashboardRefreshing: dashboard.isRefreshing,
+            glanceRefreshing: glance.isRefreshing,
+            showingSources: selection.pane == .sources,
+            ingestionRefreshing: dashboard.isRefreshingIngestion
+        )
     }
 
     private func paneTabs(iconOnly: Bool) -> some View {
@@ -144,6 +160,44 @@ struct TopBar: View {
         .padding(3)
         .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
         .animation(reduceMotion ? nil : Motion.selection, value: selection.pane)
+    }
+
+    @ViewBuilder
+    private var freshnessStatus: some View {
+        if selection.pane == .sources, dashboard.ingestionError != nil {
+            HStack(spacing: 5) {
+                Circle().fill(Theme.amber).frame(width: 5, height: 5)
+                Text("Source health unavailable")
+            }
+            .workFont(.dataSmall)
+            .foregroundStyle(Theme.muted)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Source health unavailable")
+        } else if selection.pane == .sources,
+                  let updated = dashboard.ingestionLastUpdated
+        {
+            let freshness = dashboardFreshnessText(updated)
+            HStack(spacing: 5) {
+                Circle().fill(Theme.green).frame(width: 5, height: 5)
+                Text("Source health · \(freshness)")
+            }
+            .workFont(.dataSmall)
+            .foregroundStyle(Theme.muted)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Source health updated \(freshness)")
+        } else if selection.pane != .sources,
+                  let updated = dashboard.lastUpdated
+        {
+            let freshness = dashboardFreshnessText(updated)
+            HStack(spacing: 5) {
+                Circle().fill(Theme.green).frame(width: 5, height: 5)
+                Text("Local data · \(freshness)")
+            }
+            .workFont(.dataSmall)
+            .foregroundStyle(Theme.muted)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Local data updated \(freshness)")
+        }
     }
 
     var body: some View {
@@ -175,23 +229,17 @@ struct TopBar: View {
                 .help("Install the recorder and configure your coding agents")
                 .accessibilityIdentifier("dashboard.setup-recording")
             }
-            if let updated = dashboard.lastUpdated {
-                let freshness = dashboardFreshnessText(updated)
-                HStack(spacing: 5) {
-                    Circle().fill(Theme.green).frame(width: 5, height: 5)
-                    Text("Local data · \(freshness)")
-                }
-                .workFont(.dataSmall)
-                .foregroundStyle(Theme.muted)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Local data updated \(freshness)")
-            }
+            freshnessStatus
             ZStack {
                 if showsRefreshProgress {
                     ProgressView()
                         .controlSize(.small)
                         .tint(Theme.muted)
-                        .accessibilityLabel("Refreshing local data")
+                        .accessibilityLabel(
+                            selection.pane == .sources
+                                ? "Refreshing source health"
+                                : "Refreshing local data"
+                        )
                         .transition(.opacity)
                 } else {
                     Button {
@@ -217,7 +265,11 @@ struct TopBar: View {
                     ))
                     .disabled(isRefreshing)
                     .help("Refresh local data")
-                    .accessibilityLabel("Refresh local data")
+                    .accessibilityLabel(
+                        selection.pane == .sources
+                            ? "Refresh source health and local data"
+                            : "Refresh local data"
+                    )
                     .accessibilityIdentifier("dashboard.refresh")
                     .transition(.opacity)
                 }

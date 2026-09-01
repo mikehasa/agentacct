@@ -186,4 +186,39 @@ final class InteractionMotionTests: XCTestCase {
         XCTAssertFalse(refreshProgressVisible(isRefreshing: false, delayElapsed: true))
         XCTAssertTrue(refreshProgressVisible(isRefreshing: true, delayElapsed: true))
     }
+
+    func testTopBarIncludesSourceRefreshOnlyWhileSourcesIsVisible() {
+        XCTAssertTrue(
+            topBarRefreshActive(
+                dashboardRefreshing: true,
+                glanceRefreshing: false,
+                showingSources: false,
+                ingestionRefreshing: false
+            )
+        )
+        XCTAssertTrue(
+            topBarRefreshActive(
+                dashboardRefreshing: false,
+                glanceRefreshing: true,
+                showingSources: false,
+                ingestionRefreshing: false
+            )
+        )
+        XCTAssertTrue(
+            topBarRefreshActive(
+                dashboardRefreshing: false,
+                glanceRefreshing: false,
+                showingSources: true,
+                ingestionRefreshing: true
+            )
+        )
+        XCTAssertFalse(
+            topBarRefreshActive(
+                dashboardRefreshing: false,
+                glanceRefreshing: false,
+                showingSources: false,
+                ingestionRefreshing: true
+            )
+        )
+    }
 }
