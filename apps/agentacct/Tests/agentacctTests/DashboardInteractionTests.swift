@@ -1,8 +1,515 @@
+import AppKit
 import Foundation
 import XCTest
 @testable import agentacct
 
 final class DashboardInteractionTests: XCTestCase {
+    func testAttentionPayloadPreservesCompleteCountsAndRecordedReason() throws {
+        let payload = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [
+                {
+                  "task_id": "task-finding",
+                  "title": "Verify dashboard hierarchy",
+                  "project": "agentacct-gui",
+                  "decision_status": { "key": "finding", "label": "Open finding" },
+                  "evidence_strength": {
+                    "key": "unchecked",
+                    "gradeable": true,
+                    "checkable_total": 1,
+                    "checked_total": 0,
+                    "checks_failed": 1
+                  },
+                  "cost": {},
+                  "primary_root": { "client": "codex", "client_session_id": "session-1" },
+                  "attention": {
+                    "kind": "failed_check",
+                    "summary": "The reference image changed unexpectedly",
+                    "next_step": "Inspect the reference and rerun the snapshot check",
+                    "observed_at": 1000,
+                    "source": "mcp"
+                  }
+                }
+              ],
+              "total": 3,
+              "counts": { "failed_check": 2, "failed_step": 0, "blocker": 1 },
+              "limit": 1,
+              "truncated": true
+            }
+            """
+        )
+
+        XCTAssertEqual(payload.schema, "agentacct.v1-attention.v1")
+        XCTAssertEqual(payload.total, 3)
+        XCTAssertEqual(payload.counts.failedCheck, 2)
+        XCTAssertEqual(payload.counts.failedStep, 0)
+        XCTAssertEqual(payload.counts.blocker, 1)
+        XCTAssertEqual(payload.items.first?.project, "agentacct-gui")
+        XCTAssertEqual(payload.items.first?.attention?.kind, "failed_check")
+        XCTAssertEqual(
+            payload.items.first?.attention?.nextStep,
+            "Inspect the reference and rerun the snapshot check"
+        )
+        XCTAssertTrue(payload.truncated)
+    }
+
+    func testShiftBriefUsesServerReasonWithoutInventingRecoveryCopy() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-finding",
+              "title": "Verify dashboard hierarchy",
+              "project": "agentacct-gui",
+              "decision_status": { "key": "finding", "label": "Open finding" },
+              "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+              "cost": {},
+              "attention": {
+                "kind": "failed_check",
+                "summary": "The reference image changed unexpectedly",
+                "next_step": null,
+                "observed_at": 1000,
+                "source": "mcp"
+              }
+            }
+            """
+        )
+
+        let focus = try XCTUnwrap(DashboardAttentionItem(task: task))
+        XCTAssertEqual(focus.reasonLabel, "Failed check")
+        XCTAssertEqual(focus.summary, "The reference image changed unexpectedly")
+        XCTAssertNil(focus.nextStep)
+        XCTAssertEqual(focus.project, "agentacct-gui")
+        XCTAssertEqual(focus.sourceLabel, "MCP record")
+    }
+
+    func testReviewBriefContainsOnlyRecordedFactsAndNamesMissingNextStep() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-finding",
+              "title": "Verify dashboard hierarchy",
+              "project": "agentacct-gui",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked" },
+              "cost": {},
+              "primary_root": { "client": "codex", "client_session_id": "session-1" },
+              "attention": {
+                "kind": "failed_check",
+                "summary": "The reference image changed unexpectedly",
+                "next_step": null,
+                "observed_at": 1787889600,
+                "source": "ci"
+              }
+            }
+            """
+        )
+
+        let focus = try XCTUnwrap(DashboardAttentionItem(task: task))
+        let brief = DashboardActionBrief(focus: focus)
+
+        XCTAssertEqual(brief.kind, .review)
+        XCTAssertEqual(brief.buttonTitle, "Copy review brief")
+        XCTAssertEqual(brief.copiedAccessibilityLabel, "Review brief copied")
+        XCTAssertEqual(
+            brief.text,
+            """
+            Review brief
+            Task: Verify dashboard hierarchy
+            Task ID: task-finding
+            Project: agentacct-gui
+            Agent: codex
+            Recorded attention: Failed check — The reference image changed unexpectedly
+            Recorded next step: None recorded
+            Observed: 2026-08-28T04:00:00Z
+            Provenance: External CI or provider
+            """
+        )
+        XCTAssertFalse(brief.text.localizedCaseInsensitiveContains("rerun"))
+        XCTAssertFalse(brief.text.localizedCaseInsensitiveContains("resume"))
+    }
+
+    func testExpandedProvenanceLabelsPreserveMachineCheckSource() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-machine-check",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked" },
+              "cost": {},
+              "attention": {
+                "kind": "failed_check",
+                "summary": "Snapshot verification failed",
+                "source": "machine"
+              }
+            }
+            """
+        )
+
+        let focus = try XCTUnwrap(DashboardAttentionItem(task: task))
+        XCTAssertEqual(focus.sourceLabel, "Machine check")
+        XCTAssertTrue(DashboardActionBrief(focus: focus).text.contains("Provenance: Machine check"))
+    }
+
+    func testUnknownHandoffStateDoesNotImplyRecoveryOrContinuation() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-legacy",
+              "decision_status": { "key": "blocked" },
+              "evidence_strength": { "key": "none" },
+              "cost": {},
+              "attention": { "kind": "blocker", "summary": "Approval is missing" }
+            }
+            """
+        )
+
+        let focus = try XCTUnwrap(DashboardAttentionItem(task: task))
+        XCTAssertNil(focus.handedOff)
+        XCTAssertEqual(DashboardActionBrief(focus: focus).kind, .review)
+        XCTAssertEqual(DashboardActionBrief(focus: focus).buttonTitle, "Copy review brief")
+    }
+
+    func testHandedOffAttentionProducesContinuationBriefWithoutRewritingAgentGuidance() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-handoff",
+              "title": "Handoff dashboard polish",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked" },
+              "cost": {},
+              "handed_off": true,
+              "attention": {
+                "kind": "blocker",
+                "summary": "Canonical renderer is offline",
+                "next_step": "Retry when the renderer is available",
+                "source": "mcp"
+              }
+            }
+            """
+        )
+
+        let focus = try XCTUnwrap(DashboardAttentionItem(task: task))
+        let brief = DashboardActionBrief(focus: focus)
+
+        XCTAssertEqual(brief.kind, .continuation)
+        XCTAssertEqual(brief.buttonTitle, "Copy continuation brief")
+        XCTAssertEqual(brief.copiedAccessibilityLabel, "Continuation brief copied")
+        XCTAssertTrue(brief.text.hasPrefix("Continuation brief\n"))
+        XCTAssertTrue(brief.text.contains("Recorded attention: Recorded blocker — Canonical renderer is offline"))
+        XCTAssertTrue(brief.text.contains("Recorded next step: Retry when the renderer is available"))
+        XCTAssertTrue(brief.text.contains("Observed: Not recorded"))
+    }
+
+    @MainActor
+    func testActionBriefClipboardBoundaryAndFeedbackStates() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+
+        XCTAssertTrue(DashboardClipboard.copy("recorded brief", to: pasteboard))
+        XCTAssertEqual(pasteboard.string(forType: .string), "recorded brief")
+
+        var feedback = DashboardCopyFeedback.idle
+        feedback.record(succeeded: true, text: "recorded brief")
+        XCTAssertEqual(feedback, .copied("recorded brief"))
+        feedback.record(succeeded: false, text: "new brief")
+        XCTAssertEqual(feedback, .failed("new brief"))
+        feedback.clear()
+        XCTAssertEqual(feedback, .idle)
+    }
+
+    func testShiftBriefNeverTurnsLoadingUnavailableOrMalformedDataIntoAllClear() throws {
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: nil, error: nil),
+            .loading
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: nil, error: nil).dashboardHeadline,
+            "Checking recorded work"
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: nil, error: "daemon unavailable"),
+            .unavailable("daemon unavailable")
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: nil, error: "daemon unavailable").dashboardHeadline,
+            "Review status unavailable"
+        )
+
+        let clear = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [],
+              "total": 0,
+              "counts": { "failed_check": 0, "failed_step": 0, "blocker": 0 },
+              "limit": 5,
+              "truncated": false
+            }
+            """
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: clear, error: nil),
+            .clear
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: clear, error: nil).dashboardHeadline,
+            "No recorded work needs review"
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: clear, error: "refresh failed"),
+            .unavailable("refresh failed")
+        )
+
+        let nonHeadClear = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [],
+              "total": 0,
+              "counts": { "failed_check": 0, "failed_step": 0, "blocker": 0 },
+              "offset": 5,
+              "limit": 5,
+              "truncated": false
+            }
+            """
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: nonHeadClear, error: nil),
+            .inconsistent(total: 0),
+            "Only the head page can support a complete all-clear claim"
+        )
+
+        let falseClear = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "hidden-finding",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 0,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 0 },
+              "limit": 5,
+              "truncated": false
+            }
+            """
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: falseClear, error: nil),
+            .inconsistent(total: 0)
+        )
+
+        let inconsistent = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [],
+              "total": 1,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 0 },
+              "limit": 5,
+              "truncated": true
+            }
+            """
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: inconsistent, error: nil),
+            .inconsistent(total: 1)
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: inconsistent, error: nil).dashboardHeadline,
+            "Review details unavailable"
+        )
+
+        let mismatchedCounts = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "finding",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 0 },
+              "limit": 5,
+              "truncated": false
+            }
+            """
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: mismatchedCounts, error: nil),
+            .inconsistent(total: 2)
+        )
+    }
+
+    func testShiftBriefRejectsInvalidAttentionTaskIdentity() throws {
+        let item = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "duplicate",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+              "cost": {},
+              "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+            }
+            """
+        )
+        let duplicateIDs = V1AttentionPayload(
+            schema: "agentacct.v1-attention.v1",
+            items: [item, item],
+            total: 2,
+            counts: V1AttentionCounts(failedCheck: 2, failedStep: 0, blocker: 0),
+            snapshot: nil,
+            offset: 0,
+            limit: 5,
+            truncated: false
+        )
+
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: duplicateIDs, error: nil),
+            .inconsistent(total: 2)
+        )
+    }
+
+    func testShiftBriefHeadlineUsesTheLeadingRecordedTaskInsteadOfStaticCopy() throws {
+        let payload = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "task-finding",
+                "title": "Verify dashboard hierarchy",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "snapshot": "queue-headline",
+              "limit": 1,
+              "truncated": true
+            }
+            """
+        )
+
+        let presentation = DashboardAttentionPresentation(payload: payload, error: nil)
+        XCTAssertEqual(presentation.dashboardHeadline, "Verify dashboard hierarchy")
+        XCTAssertEqual(presentation.dashboardStatus, "2 review items")
+        XCTAssertFalse(presentation.dashboardStatusIsWarning)
+    }
+
+    func testSignalRailNeverPresentsRetainedSourceHealthAsCurrentAfterAnError() throws {
+        let healthy = try decode(
+            V1IngestionSnapshot.self,
+            from: """
+            {
+              "state": "healthy",
+              "last_success_at": 1000,
+              "issues": []
+            }
+            """
+        )
+
+        XCTAssertEqual(
+            DashboardIngestionPresentation(
+                snapshot: healthy,
+                failure: .requestFailed("source refresh failed")
+            ),
+            DashboardIngestionPresentation(
+                title: "Source health unavailable",
+                detail: "The latest source health request did not complete. Refresh after agentacct is reachable.",
+                tone: .warning
+            )
+        )
+        XCTAssertEqual(
+            DashboardIngestionPresentation(snapshot: healthy, failure: nil).title,
+            "Sources healthy"
+        )
+        XCTAssertEqual(
+            DashboardIngestionPresentation(snapshot: nil, failure: nil),
+            DashboardIngestionPresentation(
+                title: "Checking source status",
+                detail: "Waiting for the current ingestion record.",
+                tone: .muted
+            )
+        )
+    }
+
+    func testWorkAttentionEmptyCopyRequiresAnAuthoritativeZero() throws {
+        let clear = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [], "total": 0,
+              "counts": { "failed_check": 0, "failed_step": 0, "blocker": 0 },
+              "limit": 5, "truncated": false
+            }
+            """
+        )
+        let inconsistent = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [], "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "limit": 5, "truncated": true
+            }
+            """
+        )
+        let filtered = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "task-finding",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "limit": 1, "truncated": true
+            }
+            """
+        )
+
+        XCTAssertEqual(WorkAttentionEmptyCopy(payload: clear, query: "").title, "No current review items")
+        XCTAssertEqual(
+            WorkAttentionEmptyCopy(payload: filtered, query: "visual").title,
+            "No review items match this filter"
+        )
+        XCTAssertEqual(
+            WorkAttentionEmptyCopy(payload: inconsistent, query: "visual").title,
+            "Review queue details unavailable"
+        )
+    }
+
     @MainActor
     func testDestinationsReplaceStaleDashboardSelection() {
         let cases: [(DashboardDestination, MainPane, String?, String?)] = [
@@ -10,6 +517,7 @@ final class DashboardInteractionTests: XCTestCase {
             (.task("task-1"), .work, "task-1", nil),
             (.session("codex::session-1"), .work, nil, "codex::session-1"),
             (.limits, .usage, nil, nil),
+            (.sources, .sources, nil, nil),
         ]
 
         for (destination, pane, taskID, sessionID) in cases {
@@ -23,6 +531,105 @@ final class DashboardInteractionTests: XCTestCase {
             XCTAssertEqual(selection.taskId, taskID, "destination: \(destination)")
             XCTAssertEqual(selection.sessionId, sessionID, "destination: \(destination)")
         }
+    }
+
+    @MainActor
+    func testReviewQueueDestinationSelectsTheBoundedAttentionQueue() {
+        let selection = AppSelection()
+        selection.workSort = .latest
+        selection.workGroup = nil
+
+        selection.open(.reviewQueue)
+
+        XCTAssertEqual(selection.pane, .work)
+        XCTAssertNil(selection.taskId)
+        XCTAssertNil(selection.sessionId)
+        XCTAssertEqual(selection.workGroup, .attention)
+        XCTAssertEqual(selection.workSort, .attention)
+    }
+
+    @MainActor
+    func testTaskDestinationCarriesItsQueueOriginExplicitly() {
+        let selection = AppSelection()
+        selection.workGroup = .attention
+
+        selection.open(.task("recent-task"))
+        XCTAssertNil(selection.workGroup, "Recent work must not inherit a stale review filter")
+
+        selection.open(.attentionTask("review-task"))
+        XCTAssertEqual(selection.taskId, "review-task")
+        XCTAssertEqual(selection.workGroup, .attention, "Review-item back navigation should return to the queue")
+    }
+
+    func testAttentionRequestGenerationRejectsAStaleResponse() {
+        var generation = LatestRequestGeneration()
+        let slowRefresh = generation.begin()
+        let dispositionRefresh = generation.begin()
+
+        XCTAssertFalse(generation.accepts(slowRefresh))
+        XCTAssertTrue(generation.accepts(dispositionRefresh))
+    }
+
+    func testAttentionPagesMergeWithoutHidingLaterItems() throws {
+        let first = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "task-1",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked" },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "snapshot": "queue-v1",
+              "offset": 0, "limit": 1, "truncated": true
+            }
+            """
+        )
+        let second = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "task-2",
+                "decision_status": { "key": "blocked" },
+                "evidence_strength": { "key": "unchecked" },
+                "cost": {},
+                "attention": { "kind": "blocker", "summary": "work blocked" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "snapshot": "queue-v1",
+              "offset": 1, "limit": 1, "truncated": false
+            }
+            """
+        )
+
+        let merged = mergedAttentionPages(first, second)
+
+        XCTAssertEqual(merged.items.map(\.taskId), ["task-1", "task-2"])
+        XCTAssertEqual(merged.offset, 0)
+        XCTAssertEqual(merged.limit, 2)
+        XCTAssertFalse(merged.truncated)
+        XCTAssertTrue(attentionPageCanAppend(first, second))
+
+        let changedQueue = V1AttentionPayload(
+            schema: second.schema,
+            items: second.items,
+            total: 3,
+            counts: second.counts,
+            snapshot: "queue-v2",
+            offset: second.offset,
+            limit: second.limit,
+            truncated: true
+        )
+        XCTAssertFalse(attentionPageCanAppend(first, changedQueue))
+
     }
 
     func testRecentWorkProjectionKeepsDecisionEvidenceAndCostSeparate() throws {
@@ -157,6 +764,79 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(weekly.pinAccessibilityHint, "Pins or clears this week's value")
     }
 
+    func testUsageSeriesFormatsExtremeTokenValuesWithoutOverflow() throws {
+        let periods = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "fresh_tokens": 9223372036854775807 },
+              { "period": "2026-08-25", "fresh_tokens": 9223372036854775807 }
+            ]
+            """
+        )
+
+        XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: periods), "2e19 total")
+        let axisText = DashboardUsageSeries.tokens.axisText(for: Double(Int.max))
+        XCTAssertEqual(axisText, "9e18")
+        XCTAssertLessThanOrEqual(axisText.count, 5)
+        XCTAssertEqual(
+            DashboardUsageSeries.tokens.axisText(for: 999_900_000_000_000),
+            "1000T"
+        )
+        XCTAssertEqual(UsageTotals.compact(Int.min), "-9e18")
+        XCTAssertEqual(UsageTotals.compact(999.9), "999")
+    }
+
+    func testUsageSeriesAndPulseRejectNegativeHistoricalTokens() throws {
+        let periods = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-23", "fresh_tokens": -5 },
+              { "period": "2026-08-24", "fresh_tokens": 1200000 },
+              { "period": "2026-08-25", "fresh_tokens": 300000 }
+            ]
+            """
+        )
+
+        XCTAssertEqual(DashboardUsageSeries.tokens.value(for: periods[0]), 0)
+        XCTAssertEqual(DashboardUsageSeries.tokens.valueText(for: periods[0]), "—")
+        XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: periods), "~1.5M total")
+        XCTAssertEqual(usagePulse(periods: periods).state, .insufficient)
+        XCTAssertEqual(usagePulse(periods: periods).title, "Usage comparison incomplete")
+    }
+
+    func testUsageSeriesRejectsNegativeCostsAndKeepsAxisLabelsCompact() throws {
+        let periods = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "estimated_cost_usd": -5 },
+              { "period": "2026-08-25", "estimated_cost_usd": 12.34 }
+            ]
+            """
+        )
+
+        XCTAssertEqual(DashboardUsageSeries.cost.value(for: periods[0]), 0)
+        XCTAssertEqual(DashboardUsageSeries.cost.valueText(for: periods[0]), "—")
+        XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: periods), "~$12.34 total")
+        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 9.999), "$9.99")
+        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 12.34), "$12")
+        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 999_999), "$999k")
+        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 9e18), "$9e18")
+
+        let overflowingTotal = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "estimated_cost_usd": 1.7976931348623157e308 },
+              { "period": "2026-08-25", "estimated_cost_usd": 1.7976931348623157e308 }
+            ]
+            """
+        )
+        XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: overflowingTotal), "—")
+    }
+
     func testActiveWorkIncludesOnlyRunningStates() {
         let cases: [(status: String?, isActive: Bool)] = [
             ("started", true),
@@ -175,6 +855,176 @@ final class DashboardInteractionTests: XCTestCase {
                 "status: \(testCase.status ?? "nil")"
             )
         }
+    }
+
+    func testActiveWorkSignalNamesRecordedInactivityWithoutCallingItStalled() throws {
+        let sessions = try decode(
+            [RecentSession].self,
+            from: """
+            [
+              {
+                "client": "codex", "session_id": "quiet",
+                "title": "Snapshot harness", "status": "in_progress",
+                "last_activity_at": 100
+              },
+              {
+                "client": "codex", "session_id": "recent",
+                "title": "Dashboard hierarchy", "status": "checkpoint",
+                "last_activity_at": 990
+              },
+              {
+                "client": "codex", "session_id": "unknown-time",
+                "title": "Unknown timestamp", "status": "in_progress"
+              }
+            ]
+            """
+        )
+
+        let signal = DashboardActiveWorkSignal(
+            sessions: sessions,
+            availability: .connected,
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+
+        XCTAssertEqual(signal.title, "One session last active 15m ago")
+        XCTAssertEqual(signal.detail, "Snapshot harness · 3 recent active sessions shown")
+        XCTAssertTrue(signal.promotesInactivity)
+        XCTAssertTrue(signal.hasConfirmedActiveWork)
+        XCTAssertFalse(signal.title.localizedCaseInsensitiveContains("stalled"))
+    }
+
+    func testActiveWorkSignalKeepsLoadingEmptyAndMissingTimeDistinct() throws {
+        XCTAssertEqual(
+            DashboardActiveWorkSignal(
+                sessions: [], availability: .loading,
+                now: Date(timeIntervalSince1970: 1_000)
+            ).title,
+            "Checking active work"
+        )
+        XCTAssertEqual(
+            DashboardActiveWorkSignal(
+                sessions: [], availability: .connected,
+                now: Date(timeIntervalSince1970: 1_000)
+            ).title,
+            "No recent agent activity"
+        )
+
+        let missingTime = try decode(
+            [RecentSession].self,
+            from: """
+            [{ "client": "codex", "session_id": "unknown", "status": "in_progress" }]
+            """
+        )
+        let signal = DashboardActiveWorkSignal(
+            sessions: missingTime,
+            availability: .connected,
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+        XCTAssertEqual(signal.title, "1 active session shown")
+        XCTAssertEqual(signal.detail, "Activity time unavailable for the recorded session.")
+        XCTAssertFalse(signal.promotesInactivity)
+        XCTAssertTrue(signal.hasConfirmedActiveWork)
+
+        let emptyTitle = try decode(
+            [RecentSession].self,
+            from: """
+            [{
+              "client": "codex", "session_id": "unknown", "title": "  ",
+              "status": "in_progress", "last_activity_at": 990
+            }]
+            """
+        )
+        XCTAssertEqual(
+            DashboardActiveWorkSignal(
+                sessions: emptyTitle,
+                availability: .connected,
+                now: Date(timeIntervalSince1970: 1_000)
+            ).detail,
+            "codex · unknown · activity 10s ago"
+        )
+    }
+
+    func testStatuslessUsageActivityNeverBecomesANoActiveWorkClaim() throws {
+        let sessions = try decode(
+            [RecentSession].self,
+            from: """
+            [
+              {
+                "client": "codex", "session_id": "usage-only",
+                "last_activity_at": 990
+              },
+              {
+                "client": "claude-code", "session_id": "usage-only-2",
+                "last_activity_at": 980
+              }
+            ]
+            """
+        )
+
+        let signal = DashboardActiveWorkSignal(
+            sessions: sessions,
+            availability: .connected,
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+
+        XCTAssertEqual(signal.title, "Work status unavailable")
+        XCTAssertEqual(
+            signal.detail,
+            "codex · usage-on · activity 10s ago · 2/2 shown with no work status"
+        )
+        XCTAssertFalse(signal.promotesInactivity)
+        XCTAssertFalse(signal.hasConfirmedActiveWork)
+    }
+
+    func testActiveWorkCountsRemainQualifiedAtTheEightRowGlanceBound() {
+        let sessions = (0 ..< 8).map { index in
+            RecentSession(
+                client: "codex",
+                sessionId: "session-\(index)",
+                title: nil,
+                status: "in_progress",
+                lastActivityAt: 990 - Double(index),
+                planPct: nil
+            )
+        }
+
+        let signal = DashboardActiveWorkSignal(
+            sessions: sessions,
+            availability: .connected,
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+
+        XCTAssertEqual(signal.title, "8 active sessions shown")
+        XCTAssertTrue(signal.hasConfirmedActiveWork)
+    }
+
+    func testActiveWorkSignalNamesMixedUnknownStatusCoverage() {
+        let active = RecentSession(
+            client: "codex",
+            sessionId: "active",
+            title: nil,
+            status: "in_progress",
+            lastActivityAt: 990,
+            planPct: nil
+        )
+        let unknown = RecentSession(
+            client: "claude-code",
+            sessionId: "unknown",
+            title: nil,
+            status: nil,
+            lastActivityAt: 985,
+            planPct: nil
+        )
+
+        let signal = DashboardActiveWorkSignal(
+            sessions: [active, unknown],
+            availability: .connected,
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+
+        XCTAssertEqual(signal.title, "1 active session shown")
+        XCTAssertTrue(signal.detail.hasSuffix("1 more shown without work status"))
+        XCTAssertTrue(signal.hasConfirmedActiveWork)
     }
 
     func testAgentPlanRowCopyRequiresARealSevenDayWindow() throws {
@@ -223,6 +1073,222 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(available.meterCaption, "39% of 7-day limit")
         XCTAssertNil(available.resetText, "no reset time was reported — never fabricated")
         XCTAssertEqual(available.detailText, "39% of 7-day limit · provider reported")
+        XCTAssertEqual(available.decisionTitle, "codex · 61% headroom")
+
+        let exceeded = try decode(
+            LimitEntry.self,
+            from: """
+            { "client": "codex", "windows": [{ "kind": "7d", "used_percent": 104 }] }
+            """
+        )
+        let exceededRow = DashboardAgentPlanRow(client: "codex", limit: exceeded, plan: nil, usage: nil)
+        XCTAssertEqual(exceededRow.decisionTitle, "codex · limit exceeded")
+
+        let invalid = try decode(
+            LimitEntry.self,
+            from: """
+            { "client": "codex", "windows": [{ "kind": "7d", "used_percent": -3 }] }
+            """
+        )
+        let invalidRow = DashboardAgentPlanRow(client: "codex", limit: invalid, plan: nil, usage: nil)
+        XCTAssertNil(invalidRow.usedPercent)
+        XCTAssertEqual(invalidRow.decisionTitle, "codex")
+
+        let missingPercent = try decode(
+            LimitEntry.self,
+            from: """
+            { "client": "codex", "windows": [{ "kind": "7d" }] }
+            """
+        )
+        let missingRow = DashboardAgentPlanRow(client: "codex", limit: missingPercent, plan: nil, usage: nil)
+        XCTAssertEqual(missingRow.meterCaption, "7-day usage not reported")
+    }
+
+    func testUsagePulseComparesCompletedRecordedBucketsWithoutAnomalyLanguage() throws {
+        let periods = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-23", "fresh_tokens": 4800000 },
+              { "period": "2026-08-24", "fresh_tokens": 12100000 },
+              { "period": "2026-08-25", "fresh_tokens": 22500000 }
+            ]
+            """
+        )
+
+        let pulse = usagePulse(periods: periods)
+        XCTAssertEqual(pulse.state, .ready)
+        XCTAssertEqual(pulse.title, "Fresh tokens 86% higher")
+        XCTAssertEqual(
+            pulse.detail,
+            "22.5M on 2026-08-25 · 12.1M on 2026-08-24 · client reported"
+        )
+        XCTAssertFalse(pulse.title.localizedCaseInsensitiveContains("anomaly"))
+        XCTAssertFalse(pulse.title.localizedCaseInsensitiveContains("caused"))
+    }
+
+    func testUsagePulseGuardsLoadingErrorsSparseHistoryAndZeroBaselines() throws {
+        XCTAssertEqual(usagePulse(periods: nil, isLoaded: false).state, .loading)
+        XCTAssertEqual(usagePulse(periods: nil).title, "Usage history not reported")
+        XCTAssertEqual(
+            usagePulse(periods: nil, isLoaded: false, error: "usage unavailable").title,
+            "Usage comparison unavailable"
+        )
+
+        let sparse = try decode(
+            [PeriodBucket].self,
+            from: """
+            [{ "period": "2026-08-25", "fresh_tokens": 10 }]
+            """
+        )
+        XCTAssertEqual(usagePulse(periods: sparse).state, .insufficient)
+        XCTAssertEqual(
+            usagePulse(periods: sparse, error: "refresh failed").state,
+            .unavailable,
+            "a refresh error must not leave an old comparison looking current"
+        )
+
+        let zeroBaseline = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "fresh_tokens": 0 },
+              { "period": "2026-08-25", "fresh_tokens": 1200 }
+            ]
+            """
+        )
+        XCTAssertEqual(
+            usagePulse(periods: zeroBaseline).title,
+            "Fresh tokens rose from 0"
+        )
+
+        let invalid = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "fresh_tokens": -1 },
+              { "period": "2026-08-25", "fresh_tokens": 1200 }
+            ]
+            """
+        )
+        XCTAssertEqual(usagePulse(periods: invalid).state, .insufficient)
+
+        let duplicateDate = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-25", "fresh_tokens": 1200 },
+              { "period": "2026-08-25", "fresh_tokens": 1400 }
+            ]
+            """
+        )
+        XCTAssertEqual(
+            usagePulse(periods: duplicateDate).title,
+            "Usage comparison ambiguous"
+        )
+
+        let malformedDate = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-02-30", "fresh_tokens": 1200 },
+              { "period": "latest", "fresh_tokens": 1400 }
+            ]
+            """
+        )
+        XCTAssertEqual(usagePulse(periods: malformedDate).state, .insufficient)
+    }
+
+    func testUsagePulseNamesPartialDailyAndWeeklyBucketsWithoutComparingThem() throws {
+        let daily = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "fresh_tokens": 12100000 },
+              { "period": "2026-08-25", "fresh_tokens": 22500000 }
+            ]
+            """
+        )
+        let dailyPulse = usagePulse(
+            periods: daily,
+            now: Date(timeIntervalSince1970: 1_787_659_200)
+        )
+        XCTAssertEqual(dailyPulse.title, "Today so far · 22.5M")
+        XCTAssertEqual(dailyPulse.detail, "12.1M on 2026-08-24 · client reported")
+
+        let weekly = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-17", "fresh_tokens": 12100000 },
+              { "period": "2026-08-24", "fresh_tokens": 22500000 }
+            ]
+            """
+        )
+        let weeklyPulse = usagePulse(
+            periods: weekly,
+            rangeDays: 90,
+            now: Date(timeIntervalSince1970: 1_787_832_000)
+        )
+        XCTAssertEqual(weeklyPulse.title, "This week so far · 22.5M")
+        XCTAssertEqual(
+            weeklyPulse.detail,
+            "12.1M in week of 2026-08-17 · client reported"
+        )
+    }
+
+    func testUsagePulseFailsClosedOnNewestInvalidBucketAndBoundsExtremeRatios() throws {
+        let newestInvalid = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-23", "fresh_tokens": 10 },
+              { "period": "2026-08-24", "fresh_tokens": 20 },
+              { "period": "2026-08-25", "fresh_tokens": -1 }
+            ]
+            """
+        )
+        XCTAssertEqual(usagePulse(periods: newestInvalid).title, "Usage comparison incomplete")
+
+        let malformedNewest = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-23", "fresh_tokens": 10 },
+              { "period": "2026-08-24", "fresh_tokens": 20 },
+              { "period": "latest", "fresh_tokens": 30 }
+            ]
+            """
+        )
+        XCTAssertEqual(usagePulse(periods: malformedNewest).title, "Usage comparison ambiguous")
+
+        let extreme = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "fresh_tokens": 1 },
+              { "period": "2026-08-25", "fresh_tokens": 9223372036854775807 }
+            ]
+            """
+        )
+        XCTAssertEqual(usagePulse(periods: extreme).title, "Fresh tokens >999% higher")
+
+        let future = try decode(
+            [PeriodBucket].self,
+            from: """
+            [
+              { "period": "2026-08-24", "fresh_tokens": 10 },
+              { "period": "2026-08-25", "fresh_tokens": 20 }
+            ]
+            """
+        )
+        XCTAssertEqual(
+            usagePulse(
+                periods: future,
+                now: Date(timeIntervalSince1970: 1_787_572_800)
+            ).title,
+            "Usage history is ahead of local time"
+        )
     }
 
     func testAgentPlanRowsIncludeEveryRecordingClientWithoutFavoritism() throws {
@@ -264,6 +1330,57 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertNotNil(rows[2].usageText)
         // Every usage figure is anchored to the card's 7-day window.
         XCTAssertTrue(rows[2].usageText?.hasPrefix("7d · ") == true)
+
+        let invalidDuplicate = try decode(
+            LimitEntry.self,
+            from: """
+            { "client": "codex", "windows": [{ "kind": "7d", "used_percent": -4 }] }
+            """
+        )
+        let deduplicated = DashboardAgentPlanRow.rows(
+            limits: [invalidDuplicate, codex], planClients: [], usage: usage
+        )
+        XCTAssertEqual(
+            deduplicated.first(where: { $0.client == "codex" })?.usedPercent,
+            5,
+            "an invalid duplicate must not hide a valid provider reading"
+        )
+
+        let staleOnly = DashboardAgentPlanRow.rows(
+            limits: [],
+            staleClients: ["claude-code"],
+            planClients: [],
+            usage: []
+        )
+        XCTAssertEqual(staleOnly.map(\.client), ["claude-code"])
+        XCTAssertEqual(staleOnly[0].meterCaption, "limit reading stale — see Usage")
+
+        let liveShortWindow = try decode(
+            LimitEntry.self,
+            from: """
+            { "client": "codex", "windows": [{ "kind": "5h", "used_percent": 12 }] }
+            """
+        )
+        let staleSevenDay = try decode(
+            LimitEntry.self,
+            from: """
+            {
+              "client": "codex", "stale": true,
+              "windows": [{ "kind": "7d", "used_percent": 34 }]
+            }
+            """
+        )
+        let mixedStaleClients = staleSevenDayLimitClients(
+            in: [liveShortWindow, staleSevenDay]
+        )
+        XCTAssertEqual(mixedStaleClients, Set(["codex"]))
+        let mixedWindowRows = DashboardAgentPlanRow.rows(
+            limits: [liveShortWindow],
+            staleClients: mixedStaleClients,
+            planClients: [],
+            usage: []
+        )
+        XCTAssertEqual(mixedWindowRows[0].meterCaption, "limit reading stale — see Usage")
     }
 
     func testActiveSessionResolutionNeverDropsAnUnmatchedSession() throws {
@@ -297,7 +1414,7 @@ final class DashboardInteractionTests: XCTestCase {
     }
 
     @MainActor
-    func testWorkBrowseStateSurvivesReceiptRoundTrip() {
+    func testWorkBrowseStatePreservesNonRoutingFieldsAcrossReceiptDestination() {
         let selection = AppSelection()
         selection.workBrowse.query = "pytest"
         selection.workBrowse.group = .attention
@@ -308,7 +1425,10 @@ final class DashboardInteractionTests: XCTestCase {
         selection.open(.work)
 
         XCTAssertEqual(selection.workBrowse.query, "pytest")
-        XCTAssertEqual(selection.workBrowse.group, .attention)
+        XCTAssertNil(
+            selection.workBrowse.group,
+            "A recent-task destination must clear a stale attention-queue origin"
+        )
         XCTAssertEqual(selection.workBrowse.sort, .cost)
         XCTAssertEqual(selection.workBrowse.pendingFocusRestorationTaskId, "task-1")
     }
@@ -895,146 +2015,6 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(presentation.qualifier, "1 passed · 1 failed · tallies conflict with total")
     }
 
-    func testNeedsReviewProjectionUsesActionableTasks() throws {
-        let tasks = try decode(
-            [ReceiptSummary].self,
-            from: """
-            [
-              {
-                "task_id": "failed-check",
-                "decision_status": { "key": "reported", "label": "Agent reported" },
-                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
-                "cost": {}
-              },
-              {
-                "task_id": "blocked",
-                "decision_status": {
-                  "key": "blocked", "label": "Blocked", "asserted_by": "agent_report"
-                },
-                "evidence_strength": { "key": "not_gradeable" },
-                "cost": {}
-              },
-              {
-                "task_id": "complete",
-                "decision_status": { "key": "verified", "label": "Verified" },
-                "evidence_strength": { "key": "independently_checked" },
-                "cost": {}
-              },
-              {
-                "task_id": "finding",
-                "decision_status": { "key": "finding", "label": "Open finding" },
-                "evidence_strength": { "key": "unchecked" },
-                "cost": {}
-              },
-              {
-                "task_id": "superseded",
-                "decision_status": { "key": "finding_superseded", "label": "Finding superseded" },
-                "evidence_strength": { "key": "self_checked", "checks_failed": 1 },
-                "cost": {}
-              }
-            ]
-            """
-        )
-        let items = tasks.map(DashboardWorkItem.init)
-
-        XCTAssertTrue(items[0].needsReview)
-        XCTAssertTrue(items[0].hasFinding)
-        XCTAssertEqual(items[0].failedChecks, 1)
-        XCTAssertTrue(items[1].needsReview)
-        XCTAssertFalse(items[1].hasFinding)
-        XCTAssertEqual(items[1].outcomeSource, "agent reported")
-        XCTAssertFalse(items[2].needsReview)
-        XCTAssertTrue(items[3].needsReview)
-        XCTAssertTrue(items[3].hasFinding)
-        // A superseded finding's failed check belongs to the finding that
-        // superseded it — it never resurfaces as needing review.
-        XCTAssertFalse(items[4].needsReview)
-        XCTAssertFalse(items[4].hasFinding)
-    }
-
-    func testAttentionPresentationUsesCompleteAggregateAndFailsClosedForLegacyTruncation()
-        throws
-    {
-        let payload = try decode(
-            ReceiptTasksPayload.self,
-            from: """
-            {
-              "schema": "agentacct.receipt.v1",
-              "total": 203,
-              "truncated": true,
-              "tasks": [
-                {
-                  "task_id": "recent-complete",
-                  "decision_status": { "key": "verified" },
-                  "evidence_strength": { "key": "self_checked" },
-                  "cost": {}
-                }
-              ],
-              "attention": {
-                "total": 3,
-                "limit": 2,
-                "truncated": true,
-                "tasks": [
-                  {
-                    "task_id": "older-finding",
-                    "decision_status": { "key": "finding" },
-                    "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
-                    "cost": {}
-                  },
-                  {
-                    "task_id": "older-blocked",
-                    "decision_status": { "key": "blocked" },
-                    "evidence_strength": { "key": "not_gradeable" },
-                    "cost": {}
-                  }
-                ]
-              }
-            }
-            """
-        )
-        let complete = DashboardAttentionPresentation(
-            recentTasks: payload.tasks,
-            recentTasksTruncated: payload.truncated,
-            attention: payload.attention
-        )
-
-        XCTAssertEqual(complete.items.map(\.id), ["older-finding", "older-blocked"])
-        XCTAssertEqual(complete.totalCount, 3)
-        XCTAssertTrue(complete.isComplete)
-        XCTAssertTrue(complete.isTruncated)
-
-        let failedRefresh = DashboardAttentionPresentation(
-            recentTasks: payload.tasks,
-            recentTasksTruncated: payload.truncated,
-            attention: payload.attention,
-            fetchError: "receipts fetch failed: connection lost"
-        )
-        XCTAssertTrue(failedRefresh.items.isEmpty)
-        XCTAssertNil(failedRefresh.totalCount)
-        XCTAssertFalse(failedRefresh.isComplete)
-        XCTAssertFalse(failedRefresh.isTruncated)
-        XCTAssertTrue(failedRefresh.isUnavailable)
-
-        let legacy = DashboardAttentionPresentation(
-            recentTasks: [],
-            recentTasksTruncated: true,
-            attention: nil
-        )
-        XCTAssertTrue(legacy.items.isEmpty)
-        XCTAssertNil(legacy.totalCount)
-        XCTAssertFalse(legacy.isComplete)
-        XCTAssertTrue(legacy.isTruncated)
-
-        let exhaustiveLegacy = DashboardAttentionPresentation(
-            recentTasks: [],
-            recentTasksTruncated: false,
-            attention: nil
-        )
-        XCTAssertEqual(exhaustiveLegacy.totalCount, 0)
-        XCTAssertTrue(exhaustiveLegacy.isComplete)
-        XCTAssertFalse(exhaustiveLegacy.isTruncated)
-    }
-
     @MainActor
     func testLocalDataFreshnessUsesTheSnapshotClock() {
         SnapshotMode.setFixtureDate(Date(timeIntervalSince1970: 1_000))
@@ -1088,5 +2068,22 @@ final class DashboardInteractionTests: XCTestCase {
             from: "{\"by_client\":[],\"by_model\":[]\(filtersEcho)}"
         )
         return UsagePeriodPresentation(usage: usage)
+    }
+
+    private func usagePulse(
+        periods: [PeriodBucket]?,
+        isLoaded: Bool = true,
+        rangeDays: Int = 7,
+        error: String? = nil,
+        now: Date = Date(timeIntervalSince1970: 1_787_745_600)
+    ) -> DashboardUsagePulse {
+        return DashboardUsagePulse(
+            periods: periods,
+            isLoaded: isLoaded,
+            rangeDays: rangeDays,
+            error: error,
+            now: now,
+            timeZone: TimeZone(secondsFromGMT: 0)!
+        )
     }
 }

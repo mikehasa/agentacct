@@ -114,12 +114,26 @@ struct UsageTotals: Decodable {
     }
 
     static func compact(_ value: Int) -> String {
-        let magnitude = abs(value)
+        compact(Double(value))
+    }
+
+    /// Compact a chart-scale value without converting it back through `Int`.
+    /// `Double(Int.max)` rounds just beyond `Int.max`, so that conversion can
+    /// trap even when the original decoded token count was a valid integer.
+    static func compact(_ value: Double) -> String {
+        guard value.isFinite else { return "—" }
+        // Preserve the historical Int-backed toward-zero display semantics
+        // without performing a potentially trapping Double-to-Int conversion.
+        let whole = value.rounded(.towardZero)
+        let magnitude = abs(whole)
         switch magnitude {
-        case 1_000_000_000...: return String(format: "%.1fB", Double(value) / 1_000_000_000)
-        case 1_000_000...: return String(format: "%.1fM", Double(value) / 1_000_000)
-        case 1_000...: return String(format: "%.1fk", Double(value) / 1_000)
-        default: return "\(value)"
+        case 1_000_000_000_000_000...:
+            return String(format: "%.0e", whole).replacingOccurrences(of: "e+", with: "e")
+        case 1_000_000_000_000...: return String(format: "%.1fT", whole / 1_000_000_000_000)
+        case 1_000_000_000...: return String(format: "%.1fB", whole / 1_000_000_000)
+        case 1_000_000...: return String(format: "%.1fM", whole / 1_000_000)
+        case 1_000...: return String(format: "%.1fk", whole / 1_000)
+        default: return String(format: "%.0f", whole)
         }
     }
 }

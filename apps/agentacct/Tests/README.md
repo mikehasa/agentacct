@@ -10,7 +10,7 @@ connecting an account, or creating another snapshot system.
 Run the ordinary deterministic and unit checks during development:
 
 ```bash
-swift test
+swift test -c release
 ```
 
 Discover the available visual regression suites:
@@ -260,12 +260,14 @@ The dashboard renderer owns this complete fixed matrix at 2x scale:
 
 | Artifact | Viewport | Pixel size |
 | --- | --- | --- |
-| `dashboard-minimum-light.png` | 960 × 560 pt minimum window, light; single-column viewport | 1920 × 1120 px |
-| `dashboard-minimum-dark.png` | 960 × 560 pt minimum window, dark; single-column viewport | 1920 × 1120 px |
-| `dashboard-reference-light.png` | 1120 × 800 pt standard window, light; complete two-column dashboard | 2240 × 1600 px |
-| `dashboard-reference-dark.png` | 1120 × 800 pt standard window, dark; complete two-column dashboard | 2240 × 1600 px |
-| `dashboard-attention-unavailable-light.png` | 1120 × 800 pt failed receipt refresh with retained cache, light; proves cached attention is not presented as current | 2240 × 1600 px |
-| `dashboard-attention-unavailable-dark.png` | 1120 × 800 pt failed receipt refresh with retained cache, dark; proves cached attention is not presented as current | 2240 × 1600 px |
+| `dashboard-minimum-light.png` | 960 × 560 pt minimum window, light; compact shift brief + signal rail | 1920 × 1120 px |
+| `dashboard-minimum-dark.png` | 960 × 560 pt minimum window, dark; compact shift brief + signal rail | 1920 × 1120 px |
+| `dashboard-reference-light.png` | 1120 × 800 pt standard window, light; complete shift brief + work ledger | 2240 × 1600 px |
+| `dashboard-reference-dark.png` | 1120 × 800 pt standard window, dark; complete shift brief + work ledger | 2240 × 1600 px |
+| `dashboard-weekly-reference-light.png` | 1120 × 900 pt 90-day weekly usage state, light | 2240 × 1800 px |
+| `dashboard-weekly-reference-dark.png` | 1120 × 900 pt 90-day weekly usage state, dark | 2240 × 1800 px |
+| `dashboard-trust-unavailable-light.png` | 1120 × 800 pt failed attention and source refresh with retained success data, light | 2240 × 1600 px |
+| `dashboard-trust-unavailable-dark.png` | 1120 × 800 pt failed attention and source refresh with retained success data, dark | 2240 × 1600 px |
 
 References live under `Tests/agentacctTests/ReferenceImages/<platform-id>`.
 They are read directly from the source checkout and excluded from SwiftPM's
@@ -553,8 +555,9 @@ rendering the app.
 Each `*VisualRegressionTests` suite compares its complete surface matrix with
 reviewed PNGs. The CLI supplies `AGENTACCT_VERIFY_VISUAL_BASELINES=1`,
 `AGENTACCT_SNAPSHOT_MODE`, the exact platform ID, and the failure directory.
-Ordinary `swift test` runs compile the visual suites but skip their baseline
-comparison, so semantic tests remain useful on non-canonical developer
+Both the CLI and ordinary `swift test -c release` runs use the production
+optimization level. Ordinary runs compile the visual suites but skip their
+baseline comparison, so semantic tests remain useful on non-canonical developer
 machines. Always use the CLI when the intent is to verify visual references.
 
 ### Dashboard interaction coverage
@@ -581,7 +584,7 @@ duplicate them with brittle view-tree tests in the meantime.
 3. Have a human review the finished render before recording.
 4. Run `./Scripts/visual-snapshots record <same-target>`.
 5. Review every changed PNG in Git, including images that seem unchanged.
-6. Run verify, `swift test`, and `swift build -c release` again.
+6. Run verify, `swift test -c release`, and `swift build -c release` again.
 7. Commit the UI code and reviewed references together.
 
 Never record automatically after failure. That converts an unexpected

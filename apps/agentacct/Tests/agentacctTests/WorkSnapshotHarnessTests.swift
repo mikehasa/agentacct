@@ -111,9 +111,22 @@ final class WorkSnapshotHarnessTests: XCTestCase {
     }
 
     func testSessionStepsFixtureUsesARealisticSupersessionAndSeparateResolution() throws {
-        let superseded = SessionStepsSnapshotScene.denseCheck(20, kind: .denseChecks)
-        let supersedingPass = SessionStepsSnapshotScene.denseCheck(19, kind: .denseChecks)
-        let blockerResolution = SessionStepsSnapshotScene.denseCheck(18, kind: .denseChecks)
+        let referenceTimestamp: TimeInterval = 1_787_618_800
+        let superseded = SessionStepsSnapshotScene.denseCheck(
+            20,
+            kind: .denseChecks,
+            referenceTimestamp: referenceTimestamp
+        )
+        let supersedingPass = SessionStepsSnapshotScene.denseCheck(
+            19,
+            kind: .denseChecks,
+            referenceTimestamp: referenceTimestamp
+        )
+        let blockerResolution = SessionStepsSnapshotScene.denseCheck(
+            18,
+            kind: .denseChecks,
+            referenceTimestamp: referenceTimestamp
+        )
 
         XCTAssertEqual(superseded.result, "failed")
         XCTAssertEqual(superseded.supersessionState, "superseded")
@@ -158,6 +171,21 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         XCTAssertNotNil(
             DashboardStore(preloaded: fixture, workState: .empty).receiptListLastUpdated
         )
+    }
+
+    @MainActor
+    func testTransientTableStatesKeepAttentionEvidenceConsistent() throws {
+        let fixture = try DashboardSnapshotFixture.load(from: fixtureURL())
+        let empty = DashboardStore(preloaded: fixture, workState: .empty)
+        let listError = DashboardStore(preloaded: fixture, workState: .listError)
+
+        XCTAssertEqual(empty.totalReceiptTasks, 0)
+        XCTAssertEqual(empty.attention?.total, 0)
+        XCTAssertEqual(empty.attention?.items.count, 0)
+
+        XCTAssertNotNil(listError.receiptListError)
+        XCTAssertEqual(listError.attention?.total, fixture.attention.total)
+        XCTAssertEqual(listError.attention?.items.map(\.taskId), fixture.attention.items.map(\.taskId))
     }
 
     @MainActor

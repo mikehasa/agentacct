@@ -11,7 +11,7 @@ touch "$test_dir/TestFiles/DashboardVisualRegressionTests.swift"
 cat > "$test_dir/bin/swift" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "$1" == "test" && "$2" == "list" ]]; then
+if [[ "$1" == "test" && "$2" == "-c" && "$3" == "release" && "$4" == "list" ]]; then
   if [[ "${AGENTACCT_FAKE_NO_VISUAL_TESTS:-}" == "1" ]]; then
     echo 'agentacctTests.UnitTests/testUnrelatedBehavior'
     exit 0
@@ -24,12 +24,13 @@ TESTS
   if [[ "${AGENTACCT_FAKE_AMBIGUOUS_SUITE:-}" == "1" ]]; then
     echo 'otherTests.DashboardVisualRegressionTests/testAnotherDashboard'
   fi
-elif [[ "$1" == "test" && "$2" == "--filter" ]]; then
-  printf '%s|%s|%s|%s\n' \
+elif [[ "$1" == "test" && "$2" == "-c" && "$3" == "release" && "$4" == "--filter" ]]; then
+  printf '%s|%s|%s|%s|%s\n' \
     "${AGENTACCT_SNAPSHOT_MODE:-}" \
     "${AGENTACCT_VERIFY_VISUAL_BASELINES:-}" \
     "${AGENTACCT_SNAPSHOT_PLATFORM_ID:-}" \
-    "$3" >> "$AGENTACCT_FAKE_SWIFT_LOG"
+    "$3" \
+    "$5" >> "$AGENTACCT_FAKE_SWIFT_LOG"
 else
   echo "unexpected fake swift invocation: $*" >&2
   exit 1
@@ -130,17 +131,25 @@ non_overlapping="$("$app_dir/Scripts/visual-snapshots" list \
 
 "$app_dir/Scripts/visual-snapshots" verify \
   'SettingsVisualRegressionTests/testCompactDark' >/dev/null
-expected_verify="verify|1|$platform_id|"
+expected_verify="verify|1|$platform_id|release|"
 expected_verify+='^agentacctTests\.SettingsVisualRegressionTests\/testCompactDark$'
 [[ "$(cat "$AGENTACCT_FAKE_SWIFT_LOG")" == "$expected_verify" ]] \
   || fail "verify did not use the exact discovered test selector"
 
 : > "$AGENTACCT_FAKE_SWIFT_LOG"
+"$app_dir/Scripts/visual-snapshots" verify >/dev/null
+expected_all="verify|1|$platform_id|release|"
+expected_all+='^agentacctTests\.DashboardVisualRegressionTests/|'
+expected_all+='^agentacctTests\.SettingsVisualRegressionTests/'
+[[ "$(cat "$AGENTACCT_FAKE_SWIFT_LOG")" == "$expected_all" ]] \
+  || fail "verify did not combine all selected suites into one release test process"
+
+: > "$AGENTACCT_FAKE_SWIFT_LOG"
 CI=false "$app_dir/Scripts/visual-snapshots" record \
   "$test_dir/TestFiles/DashboardVisualRegressionTests.swift" >/dev/null
-expected_record="record|1|$platform_id|^agentacctTests\\.DashboardVisualRegressionTests/"
+expected_record="record|1|$platform_id|release|^agentacctTests\\.DashboardVisualRegressionTests/"
 expected_record+=$'\n'
-expected_record+="verify|1|$platform_id|^agentacctTests\\.DashboardVisualRegressionTests/"
+expected_record+="verify|1|$platform_id|release|^agentacctTests\\.DashboardVisualRegressionTests/"
 [[ "$(cat "$AGENTACCT_FAKE_SWIFT_LOG")" == "$expected_record" ]] \
   || fail "record did not replace and then verify the selected suite"
 

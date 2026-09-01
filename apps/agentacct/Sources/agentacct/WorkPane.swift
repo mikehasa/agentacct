@@ -373,6 +373,24 @@ struct WorkReceiptDecisionPresentation {
     }
 }
 
+struct WorkAttentionEmptyCopy: Equatable {
+    let title: String
+    let detail: String
+
+    init(payload: V1AttentionPayload, query: String) {
+        if payload.total == 0 {
+            title = "No current review items"
+            detail = "The complete attention projection reports no failed checks, failed steps, or unresolved blockers."
+        } else if !query.isEmpty, !payload.items.isEmpty {
+            title = "No review items match this filter"
+            detail = "The bounded queue has \(payload.items.count) of \(payload.total) review items; adjust the filter to inspect them."
+        } else {
+            title = "Review queue details unavailable"
+            detail = "The complete projection reports \(payload.total) review items, but no bounded queue rows were returned. Refresh before acting."
+        }
+    }
+}
+
 /// Shared ordering for the receipts table and master — one algorithm, so the
 /// two surfaces can never disagree. `.latest` is the daemon's own order
 /// (last_activity_at desc); `.attention` is a stable partition that keeps that
@@ -564,6 +582,10 @@ struct WorkPane: View {
             // error and collapse error/loading snapshots into the same frame.
             guard !SnapshotMode.enabled else { return }
             await resolveSelection()
+        }
+        .task(id: selection.workBrowse.group) {
+            guard !SnapshotMode.enabled, selection.workBrowse.group == .attention else { return }
+            await dashboard.fetchAttention()
         }
     }
 
@@ -780,9 +802,29 @@ struct WorkTaskPresentation {
     let groupCounts: [WorkGroup: Int]
     let visibleTasks: [ReceiptSummary]
 
-    init(tasks: [ReceiptSummary], group: WorkGroup?, query: String, sort: WorkSort) {
-        groupCounts = Dictionary(grouping: tasks, by: WorkGroup.forTask).mapValues(\.count)
-        visibleTasks = visibleWorkReceipts(tasks, query: query, group: group, sort: sort)
+    init(
+        tasks: [ReceiptSummary],
+        attention: V1AttentionPayload? = nil,
+        group: WorkGroup?,
+        query: String,
+        sort: WorkSort
+    ) {
+        var counts = Dictionary(grouping: tasks, by: WorkGroup.forTask).mapValues(\.count)
+        // Attention is complete across the store and can exceed the loaded
+        // receipts page; other lifecycle counts still describe that page.
+        if let total = attention?.total { counts[.attention] = total }
+        groupCounts = counts
+
+        // The endpoint has already classified and operationally ordered a
+        // bounded queue across every visible Task. Do not re-derive it from
+        // the latest receipts page.
+        let sourceTasks = group == .attention ? attention?.items ?? [] : tasks
+        visibleTasks = visibleWorkReceipts(
+            sourceTasks,
+            query: query,
+            group: group == .attention ? nil : group,
+            sort: sort
+        )
     }
 }
 
@@ -800,6 +842,7 @@ private struct WorkTablePage: View {
     var body: some View {
         let presentation = WorkTaskPresentation(
             tasks: dashboard.receiptTasks,
+            attention: dashboard.attention,
             group: browse.group,
             query: browse.query,
             sort: browse.sort
@@ -814,11 +857,15 @@ private struct WorkTablePage: View {
                     )
                     .padding(.top, Space.xl)
                     filterRow.padding(.top, Space.m)
-                    if let error = dashboard.receiptListError {
+                    if browse.group != .attention, let error = dashboard.receiptListError {
                         listStatusBanner(error).padding(.top, Space.m)
                     }
                     tableCard(visibleTasks: presentation.visibleTasks)
-                        .padding(.top, dashboard.receiptListError == nil ? Space.l : Space.m)
+                        .padding(
+                            .top,
+                            browse.group != .attention && dashboard.receiptListError != nil
+                                ? Space.m : Space.l
+                        )
                     footer(visibleTasks: presentation.visibleTasks).padding(.top, Space.m)
                     legend.padding(.top, Space.l)
                 }
@@ -945,10 +992,13 @@ private struct WorkTablePage: View {
                     ) || dashboard.totalReceiptTasks == nil
                     tabButton(nil, label: partialOrUnknown ? "Loaded" : "All", count: dashboard.receiptTasks.count)
                     ForEach(WorkGroup.allCases) { candidate in
-                        let count = groupCounts[candidate] ?? 0
-                        // "Other" appears only when an unmapped decision key exists,
-                        // so the visible tab counts always sum to All.
-                        if candidate != .other || count > 0 {
+                        let count: Int? = candidate == .attention
+                            ? dashboard.attention?.total
+                            : (groupCounts[candidate] ?? 0)
+                        // Attention is complete across the store and can exceed
+                        // Loaded; other lifecycle counts describe that page.
+                        // "Other" appears only for an unmapped decision key.
+                        if candidate != .other || (count ?? 0) > 0 {
                             tabButton(candidate, label: candidate.rawValue, count: count)
                         }
                     }
@@ -958,7 +1008,7 @@ private struct WorkTablePage: View {
         }
     }
 
-    private func tabButton(_ candidate: WorkGroup?, label: String, count: Int) -> some View {
+    private func tabButton(_ candidate: WorkGroup?, label: String, count: Int?) -> some View {
         let active = browse.group == candidate
         return Button {
             browse.group = candidate
@@ -968,9 +1018,9 @@ private struct WorkTablePage: View {
                     Text(label)
                         .workFont(size: 13, weight: active ? .semibold : .medium, relativeTo: .body)
                         .foregroundStyle(active ? Theme.accent : Theme.ink)
-                    Text("\(count)")
+                    Text(count.map(String.init) ?? "—")
                         .workFont(.dataSmall)
-                        .foregroundStyle(candidate == .attention && count > 0 ? Theme.coral : Theme.muted)
+                        .foregroundStyle(candidate == .attention && (count ?? 0) > 0 ? Theme.coral : Theme.muted)
                 }
                 .padding(.bottom, 10)
                 Rectangle()
@@ -1029,7 +1079,9 @@ private struct WorkTablePage: View {
                     columnHeader
                     Rectangle().fill(Theme.hairline).frame(height: 1).padding(.horizontal, Space.xl)
                 }
-                if dashboard.isLoadingReceipts, dashboard.receiptTasks.isEmpty {
+                if browse.group != .attention,
+                   dashboard.isLoadingReceipts,
+                   dashboard.receiptTasks.isEmpty {
                     HStack(spacing: Space.m) {
                         if SnapshotMode.enabled {
                             Image(systemName: "arrow.triangle.2.circlepath")
@@ -1048,25 +1100,56 @@ private struct WorkTablePage: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel("Loading receipts from the local store")
-                } else if let error = dashboard.receiptListError, dashboard.receiptTasks.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("No receipt data available").workFont(.rowLabel).foregroundStyle(Theme.ink)
-                        Text("The collection will return after a successful refresh.")
-                            .workFont(.caption).foregroundStyle(Theme.muted)
-                            .help(error)
+                } else if let error = visibleError, visibleTasks.isEmpty {
+                    if browse.group == .attention {
+                        Text(error).workFont(.body).foregroundStyle(Theme.muted)
+                            .padding(Space.xl)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("No receipt data available")
+                                .workFont(.rowLabel).foregroundStyle(Theme.ink)
+                            Text("The collection will return after a successful refresh.")
+                                .workFont(.caption).foregroundStyle(Theme.muted)
+                                .help(error)
+                        }
+                        .padding(Space.xl)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else if browse.group == .attention, dashboard.attention == nil {
+                    HStack(spacing: Space.m) {
+                        if SnapshotMode.enabled {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .foregroundStyle(Theme.muted)
+                                .accessibilityHidden(true)
+                        } else {
+                            ProgressView().controlSize(.small).tint(Theme.muted)
+                        }
+                        Text("Checking the complete review projection…")
+                            .workFont(.body).foregroundStyle(Theme.muted)
                     }
                     .padding(Space.xl)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 } else if visibleTasks.isEmpty {
+                    let attentionCopy = dashboard.attention.map {
+                        WorkAttentionEmptyCopy(payload: $0, query: browse.query)
+                    }
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(dashboard.receiptTasks.isEmpty ? "No receipts recorded yet" : "No receipts match")
-                            .workFont(.rowLabel).foregroundStyle(Theme.ink)
                         Text(
-                            dashboard.receiptTasks.isEmpty
-                                ? "Recorded coding work will appear here when the local store receives it."
-                                : filteredEmptyMessage
+                            browse.group == .attention
+                                ? attentionCopy?.title ?? "Review status unavailable"
+                                : dashboard.receiptTasks.isEmpty
+                                    ? "No receipts recorded yet" : "No receipts match"
                         )
-                            .workFont(.caption).foregroundStyle(Theme.muted)
+                        .workFont(.rowLabel).foregroundStyle(Theme.ink)
+                        Text(
+                            browse.group == .attention
+                                ? attentionCopy?.detail ?? "Refresh before acting on the review queue."
+                                : dashboard.receiptTasks.isEmpty
+                                    ? "Recorded coding work will appear here when the local store receives it."
+                                    : filteredEmptyMessage
+                        )
+                        .workFont(.caption).foregroundStyle(Theme.muted)
                     }
                     .padding(Space.xl)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1171,15 +1254,42 @@ private struct WorkTablePage: View {
     }
 
     private func footer(visibleTasks: [ReceiptSummary]) -> some View {
-        Text(
-            workBrowseCountText(
-                visible: visibleTasks.count,
-                loaded: dashboard.receiptTasks.count,
-                total: dashboard.totalReceiptTasks,
-                truncated: dashboard.receiptTasksTruncated
-            ) + " · \(browse.sort.footerText)"
-        )
-            .workFont(.dataSmall).foregroundStyle(Theme.muted)
+        HStack(spacing: Space.m) {
+            Text(footerText(visibleTasks: visibleTasks))
+                .workFont(.dataSmall).foregroundStyle(Theme.muted)
+            if browse.group == .attention, let error = dashboard.attentionError {
+                Text(error)
+                    .workFont(.dataSmall)
+                    .foregroundStyle(Theme.coral)
+                    .lineLimit(1)
+            }
+            Spacer()
+            if browse.group == .attention, dashboard.attention?.truncated == true {
+                Button(dashboard.isLoadingMoreAttention ? "Loading…" : "Load more") {
+                    Task { await dashboard.fetchMoreAttention() }
+                }
+                .buttonStyle(QuietButtonStyle())
+                .disabled(dashboard.isLoadingMoreAttention)
+                .accessibilityIdentifier("work.attention.load-more")
+            }
+        }
+    }
+
+    private var visibleError: String? {
+        browse.group == .attention ? dashboard.attentionError : dashboard.receiptListError
+    }
+
+    private func footerText(visibleTasks: [ReceiptSummary]) -> String {
+        if browse.group == .attention, let attention = dashboard.attention {
+            let scope = attention.truncated ? "bounded operational queue" : "complete queue"
+            return "\(visibleTasks.count) of \(attention.total) review items · \(scope)"
+        }
+        return workBrowseCountText(
+            visible: visibleTasks.count,
+            loaded: dashboard.receiptTasks.count,
+            total: dashboard.totalReceiptTasks,
+            truncated: dashboard.receiptTasksTruncated
+        ) + " · \(browse.sort.footerText)"
     }
 
     private var filteredEmptyMessage: String {

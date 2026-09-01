@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 /// Presentation-only join for the merged Usage surface. Provider limits and
