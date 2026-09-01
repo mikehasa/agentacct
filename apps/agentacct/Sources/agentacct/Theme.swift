@@ -301,6 +301,114 @@ enum Type {
     static let labelCapsTracking: CGFloat = 0.9
 }
 
+/// Work keeps the design system's compact base sizes, but these equivalents
+/// participate in Dynamic Type. WorkPane and its receipt-detail components use
+/// them together so accessibility settings scale the whole task record rather
+/// than only changing its column arrangement.
+enum WorkFontRole {
+    case titlePage, titleCard, kpi, rowLabel, body, caption, captionSemibold
+    case dataSmall, dataSmallSemibold, labelCaps
+
+    var metrics: (size: CGFloat, weight: Font.Weight, relativeTo: Font.TextStyle, monospaced: Bool) {
+        switch self {
+        case .titlePage: return (26, .semibold, .title, false)
+        case .titleCard: return (15, .semibold, .headline, false)
+        case .kpi: return (18, .bold, .title3, true)
+        case .rowLabel: return (14, .semibold, .body, false)
+        case .body: return (14, .regular, .body, false)
+        case .caption: return (12, .regular, .caption, false)
+        case .captionSemibold: return (12, .semibold, .caption, false)
+        case .dataSmall: return (12, .regular, .caption, true)
+        case .dataSmallSemibold: return (12, .semibold, .caption, true)
+        case .labelCaps: return (12, .bold, .caption, true)
+        }
+    }
+
+    var baseFont: Font {
+        switch self {
+        case .titlePage: return Type.titlePage
+        case .titleCard: return Type.titleCard
+        case .kpi: return Type.kpi
+        case .rowLabel: return Type.rowLabel
+        case .body: return Type.body
+        case .caption: return Type.caption
+        case .captionSemibold: return Type.captionSemibold
+        case .dataSmall: return Type.dataSmall
+        case .dataSmallSemibold: return Type.dataSmallSemibold
+        case .labelCaps: return Type.labelCaps
+        }
+    }
+}
+
+private struct WorkScaledFontModifier: ViewModifier {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric private var scaledSize: CGFloat
+    let baseFont: Font
+    let weight: Font.Weight
+    let monospaced: Bool
+
+    init(
+        size: CGFloat,
+        baseFont: Font,
+        weight: Font.Weight,
+        relativeTo: Font.TextStyle,
+        monospaced: Bool
+    ) {
+        _scaledSize = ScaledMetric(wrappedValue: size, relativeTo: relativeTo)
+        self.baseFont = baseFont
+        self.weight = weight
+        self.monospaced = monospaced
+    }
+
+    func body(content: Content) -> some View {
+        if dynamicTypeSize == .medium || dynamicTypeSize == .large {
+            return content.font(baseFont)
+        } else {
+            let font: Font
+            if monospaced {
+                if let name = Face.mono {
+                    font = .custom(name, size: scaledSize).weight(weight).monospacedDigit()
+                } else {
+                    font = .system(size: scaledSize, weight: weight, design: .monospaced).monospacedDigit()
+                }
+            } else if let name = Face.sans {
+                font = .custom(name, size: scaledSize).weight(weight)
+            } else {
+                font = .system(size: scaledSize, weight: weight)
+            }
+            return content.font(font)
+        }
+    }
+}
+
+extension View {
+    func workFont(_ role: WorkFontRole) -> some View {
+        let metrics = role.metrics
+        return modifier(WorkScaledFontModifier(
+            size: metrics.size,
+            baseFont: role.baseFont,
+            weight: metrics.weight,
+            relativeTo: metrics.relativeTo,
+            monospaced: metrics.monospaced
+        ))
+    }
+
+    func workFont(
+        size: CGFloat,
+        weight: Font.Weight,
+        relativeTo: Font.TextStyle,
+        monospaced: Bool = false
+    ) -> some View {
+        modifier(WorkScaledFontModifier(
+            size: size,
+            baseFont: monospaced ? Face.monoFont(size, weight) : Face.sansFont(size, weight),
+            weight: weight,
+            relativeTo: relativeTo,
+            monospaced: monospaced
+        ))
+    }
+}
+
 /// The spacing scale — 4px base grid. Padding and gaps come from here.
 enum Space {
     static let xs: CGFloat = 4
@@ -512,11 +620,11 @@ struct TierBadge: View {
         HStack(spacing: 6) {
             EvidencePip(shape: style.pip, tint: style.tint)
             Text(text ?? style.label)
-                .font(Type.captionSemibold)
+                .workFont(.captionSemibold)
                 .foregroundStyle(style.tint)
         }
         .padding(.horizontal, 11)
-        .frame(height: Metrics.tierBadgeH)
+        .frame(minHeight: Metrics.tierBadgeH)
         .background(style.tintBg, in: RoundedRectangle(cornerRadius: Metrics.radius))
     }
 }
@@ -589,10 +697,14 @@ struct DecisionBadge: View {
     var body: some View {
         let tint = DecisionTintClass.forKey(key)
         Text(label)
-            .font(compact ? Type.captionSemibold : Face.sansFont(13, .semibold))
+            .workFont(
+                size: compact ? 12 : 13,
+                weight: .semibold,
+                relativeTo: .caption
+            )
             .foregroundStyle(tint.text)
             .padding(.horizontal, compact ? 8 : 12)
-            .frame(height: compact ? Metrics.decisionBadgeRowH : Metrics.decisionBadgeH)
+            .frame(minHeight: compact ? Metrics.decisionBadgeRowH : Metrics.decisionBadgeH)
             .background(tint.wash, in: RoundedRectangle(cornerRadius: Metrics.radius))
             .overlay {
                 if tint.outlined {
@@ -613,10 +725,10 @@ struct ProvenanceChip: View {
 
     var body: some View {
         Text(text)
-            .font(Type.dataSmall)
+            .workFont(.dataSmall)
             .foregroundStyle(tint)
             .padding(.horizontal, 12)
-            .frame(height: Metrics.chipH)
+            .frame(minHeight: Metrics.chipH)
             .background(Theme.chipBg, in: Capsule())
             .overlay(Capsule().strokeBorder(Theme.chipLine, lineWidth: Metrics.borderW))
     }
@@ -630,10 +742,10 @@ struct Chip: View {
 
     var body: some View {
         Text(text)
-            .font(Type.dataSmall)
+            .workFont(.dataSmall)
             .foregroundStyle(tint)
             .padding(.horizontal, 10)
-            .frame(height: Metrics.chipH)
+            .frame(minHeight: Metrics.chipH)
             .background(Theme.chipBg, in: Capsule())
             .overlay(Capsule().strokeBorder(Theme.chipLine, lineWidth: Metrics.borderW))
     }
@@ -647,7 +759,7 @@ struct CapsLabel: View {
 
     var body: some View {
         Text(text.uppercased())
-            .font(Type.labelCaps)
+            .workFont(.labelCaps)
             .tracking(Type.labelCapsTracking)
             .foregroundStyle(tone)
     }
@@ -1080,6 +1192,34 @@ struct ScrollBox<Content: View>: View {
             }
         } else {
             ScrollView(showsIndicators: false) { content() }
+        }
+    }
+}
+
+/// Repeated content inside a ScrollBox: lazy in the live app, eager in the
+/// deterministic ImageRenderer path (which cannot lay out lazy containers).
+/// Keeping that renderer exception here prevents performance fixes from
+/// forking production and review markup at every large collection.
+struct ScrollContentStack<Content: View>: View {
+    let alignment: HorizontalAlignment
+    let spacing: CGFloat?
+    @ViewBuilder let content: () -> Content
+
+    init(
+        alignment: HorizontalAlignment = .center,
+        spacing: CGFloat? = nil,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.alignment = alignment
+        self.spacing = spacing
+        self.content = content
+    }
+
+    var body: some View {
+        if SnapshotMode.enabled {
+            VStack(alignment: alignment, spacing: spacing, content: content)
+        } else {
+            LazyVStack(alignment: alignment, spacing: spacing, content: content)
         }
     }
 }

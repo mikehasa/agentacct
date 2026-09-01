@@ -6,6 +6,91 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.4] — 2026-08-31
+
+Small correctness, privacy, and coverage fixes.
+
+### Fixed
+
+- Receipt: a step's cost reads as an estimate (`≈$`) when it was priced from
+  tokens rather than reported, instead of always showing a complete step cost
+  as exact (`$`). The daemon now carries one cost-confidence per step and the
+  app renders the prefix from it, matching the app-wide cost grammar. (#179)
+- Packaging: the frozen CLI no longer ships pip's `direct_url.json`, which
+  recorded the absolute local build path and leaked the builder's account name
+  and path inside the distributed DMG. (#176)
+
+### Added
+
+- Privacy: value redaction now covers xAI (`xai-`), Groq (`gsk_`), and Google
+  OAuth 2.0 access tokens (`ya29.`), and reports Anthropic keys (`sk-ant-`)
+  under their own class ahead of the generic `sk-` family. (#178)
+- Capture: the tool-category taxonomy recognizes more agent tool names —
+  opencode (`list`/`patch`/`todoread`), Anthropic's text-editor tool, and
+  common cross-agent snake_case names (`read_file`/`write_file`/`edit_file`/
+  `list_dir`/`codebase_search`/`run_terminal_cmd`/`web_search`) — so their
+  Actions category breakdown is no longer bucketed as `other`. (#177)
+
+### Changed
+
+- Repository: `.DS_Store` is ignored. (#175)
+
+## [0.10.3] — 2026-08-30
+
+Fixes seven UI and receipt-honesty bugs found in a post-push review: an
+oversized disposition popover, a misaligned Usage pane, an inconsistent cost
+prefix, a usage-ingestion freeze on unparseable workflow journals, a check
+tally that over-counted superseded failures, an unreachable blocker Reopen, and
+a surfaced blocker the user could not dispose.
+
+### Fixed
+
+- Usage ingestion: quarantine an unparseable or oversized Claude Code workflow
+  journal per file instead of failing closed for the whole home. A journal with
+  an unknown row shape, or one past the scan caps, raised inside the discovery
+  loop and zeroed all claude-code usage import; it is now recorded as a
+  diagnostic and skipped while every other transcript in the home still imports.
+  (#173)
+- macOS app: pin the resolve/finding disposition popover width so it no longer
+  balloons into a tall empty sheet during the popover's size negotiation. (#173)
+- macOS app: left-align the Usage pane content column so it no longer shifts
+  sideways on wide windows when switching tabs. (#173)
+- macOS app: render a complete provider-billed cost as exact (`$`) across the
+  receipt, dashboard, and per-session surfaces, matching the app-wide cost
+  grammar so the same figure never reads exact on one surface and estimated on
+  another. (#173)
+- Receipt: count check passes and failures over the frontier, excluding a
+  failure a later run superseded, so the header no longer overstates current
+  failures — the superseded run still counts in the total and shows in history.
+  (#173)
+- Receipt: keep a user-resolved blocker surfaced in a calm, neutral tone so its
+  Reopen control stays reachable; the decision word stays
+  `blocker_resolved_by_user` and the row does not read as needing attention.
+  (#173)
+- Receipt: prefer a surfaced blocker that carries both text and a blocked-event
+  id, so the blocker shown is one the user can actually dispose. (#173)
+
+## [0.10.2] — 2026-08-29
+
+Restores claude-code usage ingestion (frozen by a new Workflow-tool journal
+row) and surfaces the weekly-plan share as its own receipt row, on top of the
+receipt, dashboard, and usage UI refinements merged since 0.10.1.
+
+### Fixed
+
+- Ingestion: accept the Claude Code Workflow tool's `failed` journal row. Its
+  new per-agent lifecycle row raised `claude_workflow_journal_schema_drift`,
+  which fails closed for the whole home and froze claude-code usage/cost import
+  while already-stored sessions kept rendering. A journal row that carries token
+  usage still fails closed. (#169)
+
+### Added
+
+- Receipt: a dedicated "Weekly plan" row (macOS app, CLI, TUI) showing the
+  Task's calibrated share of its client's weekly plan — calibrated-or-nothing,
+  a named calibration state instead of a fabricated number when uncalibrated.
+  (#169)
+
 ### Changed
 
 - macOS app: packaged builds derive their release version from the same
@@ -807,7 +892,10 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.4...HEAD
+[0.10.4]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.4
+[0.10.3]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.3
+[0.10.2]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.2
 [0.10.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.1
 [0.10.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.0
 [0.9.4]: https://github.com/mikehasa/agentacct/releases/tag/v0.9.4

@@ -8,6 +8,9 @@ whole-file rewrite), not just the RawEventLog unit.
 from __future__ import annotations
 
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -115,6 +118,68 @@ def test_authoritative_mode_writes_to_the_log_and_survives_file_deletion(
     assert not _events_file(store_root).exists()
     assert len(service.list_all_events()) == 3
     assert service.verify_event_log_parity()["authoritative"] is True
+
+
+def test_event_snapshot_reuses_parsed_rows_and_invalidates_cross_process(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "1")
+    store_root = tmp_path / "store"
+    service = SentinelService(store_root)
+    service.record_event(_note("first"))
+
+    reads = 0
+    original = service._read_events_file_order
+
+    def counted_read(*, run_id=None):
+        nonlocal reads
+        reads += 1
+        return original(run_id=run_id)
+
+    monkeypatch.setattr(service, "_read_events_file_order", counted_read)
+    first = service.all_events_snapshot()
+    second = service.all_events_snapshot()
+
+    assert first is second
+    assert reads == 1
+    assert len(first.events) == 1
+
+    # A separate service simulates another MCP/CLI process writing the same
+    # authoritative store. The persistent SQLite revision must invalidate the
+    # first process without a restart or a full-ledger probe.
+    writer = SentinelService(store_root)
+    writer.record_event(_note("second"))
+
+    refreshed = service.all_events_snapshot()
+    assert refreshed is not first
+    assert reads == 2
+    assert len(refreshed.events) == 2
+
+
+def test_event_snapshot_single_flights_concurrent_cold_read(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AGENTACCT_EVENT_LOG_AUTHORITATIVE", "1")
+    service = SentinelService(tmp_path / "store")
+    for index in range(25):
+        service.record_event(_note(f"event-{index}"))
+
+    reads = 0
+    reads_lock = threading.Lock()
+    original = service._read_events_file_order
+
+    def slow_read(*, run_id=None):
+        nonlocal reads
+        with reads_lock:
+            reads += 1
+        time.sleep(0.03)
+        return original(run_id=run_id)
+
+    monkeypatch.setattr(service, "_read_events_file_order", slow_read)
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        snapshots = list(executor.map(lambda _: service.all_events_snapshot(), range(8)))
+
+    assert reads == 1
+    assert all(snapshot is snapshots[0] for snapshot in snapshots)
+    assert len(snapshots[0].events) == 25
 
 
 def test_authoritative_mode_rewrite_operates_on_the_log(tmp_path: Path, monkeypatch) -> None:

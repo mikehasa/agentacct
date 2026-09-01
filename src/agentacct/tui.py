@@ -1232,7 +1232,11 @@ def _render_receipt_markup(receipt: dict) -> str:
         lines.append("Lifecycle          [b magenta]↗ Handed off[/]")
         if handoff.get("statement"):
             lines.append(f"                   [dim]{_escape(str(handoff['statement']))}[/]")
-    from .receipt import evidence_coverage_headline, evidence_coverage_ledger
+    from .receipt import (
+        evidence_coverage_headline,
+        evidence_coverage_ledger,
+        plan_share_headline,
+    )
 
     lines.append(f"Evidence coverage  [b {ecolor}]{_escape(evidence_coverage_headline(evidence))}[/]")
     _ledger = evidence_coverage_ledger(evidence)
@@ -1298,6 +1302,7 @@ def _render_receipt_markup(receipt: dict) -> str:
 
     cost = dims.get("cost") or {}
     lines.append(f"[b]Cost[/]      {_escape(_receipt_summary_cost(cost))}   [dim]\\[{_prov('cost')}][/]")
+    lines.append(f"[b]Weekly plan[/] {_escape(plan_share_headline(cost.get('plan_share')))}")
 
     ev = dims.get("evidence") or {}
     lines.append(

@@ -136,6 +136,9 @@ struct DashboardWorkItem: Identifiable {
     let outcome: String
     let outcomeKey: String
     let evidence: String
+    let evidenceQualifier: String
+    let evidenceIsInconsistent: Bool
+    let failedChecks: Int
     let cost: String
     let gradeable: Bool
     let strongestTierKey: String?
@@ -152,7 +155,11 @@ struct DashboardWorkItem: Identifiable {
         } else {
             outcome = Self.outcomeLabel(for: task.decisionStatus.key)
         }
+        let evidencePresentation = ReceiptCoveragePresentation(evidence: task.evidenceStrength)
         evidence = task.evidenceStrength.compactHeadline
+        evidenceQualifier = evidencePresentation.qualifier
+        evidenceIsInconsistent = evidencePresentation.isInconsistent
+        failedChecks = task.evidenceStrength.checksFailed ?? 0
         cost = Self.compactCost(task.cost)
         gradeable = task.evidenceStrength.gradeable == true
         strongestTierKey = task.evidenceStrength.strongestTier
@@ -197,9 +204,13 @@ struct DashboardWorkItem: Identifiable {
     private static func compactCost(_ cost: ReceiptCost) -> String {
         guard let value = cost.estimatedCostUsd else { return "—" }
         let prefix: String
+        // A complete reported OR billed figure is exact ("$"); everything else
+        // is an estimate. Matches Fmt.costDisplay and receiptCostDisplay so the
+        // same cost never reads exact on Usage and estimated on the Dashboard.
+        let reported = cost.costConfidence == "client_reported" || cost.costConfidence == "provider_billed"
         if cost.costComplete == false {
             prefix = "~$"
-        } else if cost.costComplete == true && cost.costConfidence == "client_reported" {
+        } else if cost.costComplete == true && reported {
             prefix = "$"
         } else {
             prefix = "≈$"
@@ -474,10 +485,11 @@ enum DashboardUsageSeries: String, CaseIterable, Identifiable {
         }
     }
 
-    func subtitle(dayCount: Int) -> String {
+    func subtitle(rangeDays: Int, periodPresentation: UsagePeriodPresentation) -> String {
+        let range = periodPresentation.historyRangeDescription(days: rangeDays)
         switch self {
-        case .tokens: return "Fresh tokens · last \(dayCount) days · client reported"
-        case .cost: return "Estimated cost · last \(dayCount) days · pricing-table basis"
+        case .tokens: return "Fresh tokens · \(range) · client reported"
+        case .cost: return "Estimated cost · \(range) · pricing-table basis"
         }
     }
 
@@ -819,9 +831,9 @@ struct DashboardUsagePulse: Equatable {
 }
 
 struct DashboardPane: View {
-    @EnvironmentObject var dashboard: DashboardStore
-    @EnvironmentObject var glance: GlanceState
-    @EnvironmentObject var selection: AppSelection
+    @Environment(DashboardStore.self) var dashboard
+    @Environment(GlanceState.self) var glance
+    @Environment(AppSelection.self) var selection
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var usesScrollViewport = true
@@ -946,8 +958,15 @@ struct DashboardPane: View {
                 selection.open(destination)
             }
 
-            if let periods = dashboard.usage?.byPeriod, periods.count > 1 {
-                DashboardUsageChart(periods: periods)
+            if let usage = dashboard.usage,
+               let periods = usage.byPeriod,
+               periods.count > 1
+            {
+                DashboardUsageChart(
+                    periods: periods,
+                    rangeDays: dashboard.usageDays,
+                    periodPresentation: UsagePeriodPresentation(usage: usage)
+                )
             }
         }
         .padding(Space.gutter)
@@ -1889,7 +1908,12 @@ private struct RecentWorkRow: View {
 
     private var evidence: some View {
         HStack(spacing: 6) {
-            if let tier = item.strongestTier {
+            if item.evidenceIsInconsistent {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.amber)
+                    .accessibilityHidden(true)
+            } else if let tier = item.strongestTier {
                 let style = EvidenceTierStyle.forGrade(tier)
                 EvidencePip(shape: style.pip, tint: style.tint)
             } else {
@@ -1897,8 +1921,9 @@ private struct RecentWorkRow: View {
             }
             Text(item.evidence)
                 .dashboardFont(.dataSmall)
-                .foregroundStyle(Theme.muted)
+                .foregroundStyle(item.evidenceIsInconsistent ? Theme.amber : Theme.muted)
         }
+        .help(item.evidenceQualifier)
     }
 }
 
@@ -2086,6 +2111,8 @@ func staleSevenDayLimitClients(in limits: [LimitEntry]) -> Set<String> {
 
 private struct DashboardUsageChart: View {
     let periods: [PeriodBucket]
+    let rangeDays: Int
+    let periodPresentation: UsagePeriodPresentation
 
     @State private var series: DashboardUsageSeries = .tokens
     @State private var hoveredIndex: Int?
@@ -2128,7 +2155,12 @@ private struct DashboardUsageChart: View {
                     Text("Usage history")
                         .dashboardFont(.titleCard)
                         .foregroundStyle(Theme.muted)
-                    Text(series.subtitle(dayCount: periods.count))
+                    Text(
+                        series.subtitle(
+                            rangeDays: rangeDays,
+                            periodPresentation: periodPresentation
+                        )
+                    )
                         .dashboardFont(.caption)
                         .foregroundStyle(Theme.muted)
                 }
@@ -2145,7 +2177,12 @@ private struct DashboardUsageChart: View {
                     Text("Usage history")
                         .dashboardFont(.titleCard)
                         .foregroundStyle(Theme.muted)
-                    Text(series.subtitle(dayCount: periods.count))
+                    Text(
+                        series.subtitle(
+                            rangeDays: rangeDays,
+                            periodPresentation: periodPresentation
+                        )
+                    )
                         .dashboardFont(.caption)
                         .foregroundStyle(Theme.muted)
                 }
@@ -2277,7 +2314,7 @@ private struct DashboardUsageChart: View {
                                 .accessibilityLabel(
                                     "\(period.period ?? period.shortLabel), \(series.valueText(for: period))"
                                 )
-                                .accessibilityHint("Pins or clears this day's value")
+                                .accessibilityHint(periodPresentation.pinAccessibilityHint)
                                 .accessibilityAddTraits(pinnedIndex == index ? .isSelected : [])
                                 .accessibilityIdentifier("dashboard.usage.day.\(index)")
 

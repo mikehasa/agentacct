@@ -34,7 +34,8 @@ host or running Swift tests:
 
 This project currently discovers `AboutVisualRegressionTests`,
 `DashboardVisualRegressionTests`, `MenuVisualRegressionTests`,
-`UsageVisualRegressionTests`, and `WorkVisualRegressionTests`. An empty list
+`SetupVisualRegressionTests`, `UsageVisualRegressionTests`, and
+`WorkVisualRegressionTests`. An empty list
 remains valid for another project or branch before its first visual suite.
 
 Verify one suite before changing its UI:
@@ -263,6 +264,8 @@ The dashboard renderer owns this complete fixed matrix at 2x scale:
 | `dashboard-minimum-dark.png` | 960 × 560 pt minimum window, dark; compact shift brief + signal rail | 1920 × 1120 px |
 | `dashboard-reference-light.png` | 1120 × 800 pt standard window, light; complete shift brief + work ledger | 2240 × 1600 px |
 | `dashboard-reference-dark.png` | 1120 × 800 pt standard window, dark; complete shift brief + work ledger | 2240 × 1600 px |
+| `dashboard-weekly-reference-light.png` | 1120 × 900 pt 90-day weekly usage state, light | 2240 × 1800 px |
+| `dashboard-weekly-reference-dark.png` | 1120 × 900 pt 90-day weekly usage state, dark | 2240 × 1800 px |
 | `dashboard-trust-unavailable-light.png` | 1120 × 800 pt failed attention and source refresh with retained success data, light | 2240 × 1600 px |
 | `dashboard-trust-unavailable-dark.png` | 1120 × 800 pt failed attention and source refresh with retained success data, dark | 2240 × 1600 px |
 
@@ -315,17 +318,32 @@ open /tmp/agentacct-usage-review
 The Work renderer drives the real `MainWindow` through the browse and selected-
 receipt paths. Its versioned fixture includes representative action counts, six checks,
 missing CI evidence, two root-session groups, and a subagent. The two primary
-states render at both supported window sizes; transient states render at the
-standard viewport in both appearances.
+states render at both supported window sizes, the first and maximum accessibility
+text sizes, and both appearances; transient states render at the standard viewport.
 
 | State | Viewport coverage | Source-tree artifacts |
 | --- | --- | --- |
 | populated table | 960 × 560 pt and 1120 × 800 pt, light/dark | `work-table-*.png` |
 | populated receipt | 960 × 560 pt and 1120 × 800 pt, light/dark | `work-receipt-{minimum,reference}-*.png` |
+| accessibility table | 1120 × 800 pt at accessibility1 and 1120 × 1000 pt at accessibility5, light/dark | `work-table-accessibility*.png` |
+| accessibility receipt | 1120 × 800 pt at accessibility1 and 1120 × 1000 pt at accessibility5, light/dark | `work-receipt-accessibility*.png` |
+| initial list loading | 1120 × 800 pt, light/dark | `work-list-loading-reference-*.png` |
 | empty table | 1120 × 800 pt, light/dark | `work-empty-reference-*.png` |
 | list error | 1120 × 800 pt, light/dark | `work-list-error-reference-*.png` |
 | receipt loading | 1120 × 800 pt, light/dark | `work-receipt-loading-reference-*.png` |
 | receipt error | 1120 × 800 pt, light/dark | `work-receipt-error-reference-*.png` |
+| saved stale receipt | 1120 × 800 pt, light/dark | `work-receipt-stale-reference-*.png` |
+| blocked attention receipt | 1120 × 800 pt, light/dark | `work-attention-receipt-reference-*.png` |
+| focused Checks ledger | exception-first overview, all-pass, expanded evidence, 360 pt compact, compact accessibility5, and accessibility5 RTL, light/dark | `work-checks-*.png` |
+| Session/step hierarchy | 760 × 1050 pt, light/dark | `work-session-steps-hierarchy-*.png` |
+| dense check preview | 760 × 1200 pt, light/dark | `work-session-steps-dense-checks-*.png` |
+| expanded current checks | 760 × 2500 pt, light/dark | `work-session-steps-expanded-current-*.png` |
+| expanded check history | 760 × 1450 pt, light/dark | `work-session-steps-expanded-history-*.png` |
+| session load failure | 760 × 240 pt, light/dark | `work-session-steps-load-failure-*.png` |
+| in-place Retry progress | 760 × 240 pt, light/dark | `work-session-steps-retrying-*.png` |
+| compact check preview | 360 × 1600 pt, light/dark | `work-session-steps-compact-checks-*.png` |
+| Arabic RTL/mixed-text stress | 760 × 1250 pt, light/dark | `work-session-steps-rtl-stress-*.png` |
+| accessibility5 compact and Arabic RTL stress | 360 × 4000 pt, light/dark | `work-session-steps-{compact,rtl}-accessibility-*.png` |
 
 For an ad-hoc render that does not compare or update references:
 
@@ -336,8 +354,9 @@ swift run agentacct --snapshot-work-fixture \
 open /tmp/agentacct-work-review
 ```
 
-Ad-hoc and CI artifact images are review aids only. The visual test reads the
-28 canonical PNGs from `Tests/agentacctTests/ReferenceImages/<platform-id>`, so
+Ad-hoc and CI artifact images are review aids only. Including the focused
+Checks, Session/steps, and action matrices, the visual test reads 74 canonical PNGs from
+`Tests/agentacctTests/ReferenceImages/<platform-id>`, so
 a Work UI change is not visually verified until those source-tree files are
 reviewed and committed.
 
@@ -393,6 +412,26 @@ open /tmp/agentacct-about-review
 The canonical references keep the standard window controls in their inactive
 state because the deterministic renderer is headless. AppKit still owns the
 panel chrome, spacing, icon treatment, typography, and light/dark appearance.
+
+## Setup failure review matrix
+
+The Setup renderer exercises the false-success regression's user-visible
+endpoint: a nonzero recorder exit with retained log output, selectable
+diagnostics, recovery guidance, and retry controls.
+
+| Artifact | Appearance | Pixel size |
+| --- | --- | --- |
+| `setup-failure-light.png` | light | 920 × 1028 px |
+| `setup-failure-dark.png` | dark | 920 × 1028 px |
+
+Run the canonical pair with:
+
+```bash
+./Scripts/visual-snapshots verify SetupVisualRegressionTests
+```
+
+The pixel references verify layout and copy. Text selection and retry remain
+interaction checks because an offscreen renderer cannot activate controls.
 
 ## Color contrast guardrail
 

@@ -445,8 +445,25 @@ def _evidence_strength(
     }
     unattributed_checks = len(task_passing_ids - linked)
 
-    passed = sum(1 for check in checks if _text(check.get("result")).lower() == "passed")
-    failed = sum(1 for check in checks if _text(check.get("result")).lower() in {"failed", "error"})
+    # Count passes/failures over the FRONTIER only. A run that a later run of the
+    # same check superseded (a fail that a re-run then passed) stays in
+    # checks_total and stays visible in the history group, but it must not read
+    # as a current failure in the header tally — otherwise "N failed" overstates
+    # failures the frontier already cleared, contradicting the row that is marked
+    # "superseded by a later passing run". The decision_status lane already
+    # excludes superseded checks the same way.
+    passed = sum(
+        1
+        for check in checks
+        if not check.get("superseded")
+        and _text(check.get("result")).lower() == "passed"
+    )
+    failed = sum(
+        1
+        for check in checks
+        if not check.get("superseded")
+        and _text(check.get("result")).lower() in {"failed", "error"}
+    )
 
     # Coarse key kept ONLY for colour + list sort/filter. It is an ordinal, not a
     # headline: undefined < unchecked < self_checked < independently < externally.
@@ -532,6 +549,33 @@ def evidence_coverage_ledger(evidence: Mapping[str, Any]) -> str:
     return " · ".join(bits)
 
 
+def plan_share_headline(plan_share: Mapping[str, Any] | None) -> str:
+    """One honest line for a Task's share of its client's weekly plan.
+
+    Calibrated-or-nothing, the same rule every plan surface honors: a real
+    percentage only once the fit is calibrated; otherwise a named calibration
+    state, never a fabricated number. Mirrors the macOS ``ReceiptPlanShare``
+    wording so the receipt reads identically on every surface.
+    """
+
+    share = plan_share or {}
+    pct = share.get("pct")
+    state = share.get("calibration_state")
+    if state == "calibrated" and isinstance(pct, (int, float)) and not isinstance(pct, bool):
+        if pct >= 0.1:
+            shown = f"≈{pct:.1f}%"
+        elif pct > 0:
+            shown = "≈<0.1%"
+        else:
+            shown = "≈0%"
+        return f"{shown} of weekly plan"
+    if state == "calibrating":
+        return "calibrating — not enough 7-day history yet"
+    if state == "never":
+        return "undefined for this client"
+    return "—"
+
+
 # --- Decision axis ------------------------------------------------------------
 
 def _decision_status(
@@ -574,8 +618,10 @@ def _decision_status(
     # The newest blocker's own words (agent-recorded text, next step, when, and
     # how many successful steps were recorded AFTER it) — computed by the
     # outcome reducer, passed through verbatim so every surface can finally SAY
-    # why a Task is blocked instead of only that it is. None off the
-    # blocked/failed keys.
+    # why a Task is blocked instead of only that it is. Present on the
+    # blocked/failed keys and on ``blocker_resolved_by_user`` (which carries a
+    # resolved blocker so its callout stays reachable for reopen); None
+    # otherwise.
     blocker = canonical.get("blocker") if isinstance(canonical.get("blocker"), Mapping) else None
 
     return {

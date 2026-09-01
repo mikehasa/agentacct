@@ -9480,7 +9480,11 @@ def _find_receipt_task(projection: dict[str, Any], task_id: str) -> dict[str, An
 
 
 def _render_receipt_text(receipt: dict[str, Any]) -> None:
-    from .receipt import evidence_coverage_headline, evidence_coverage_ledger
+    from .receipt import (
+        evidence_coverage_headline,
+        evidence_coverage_ledger,
+        plan_share_headline,
+    )
 
     axes = receipt.get("axes", {})
     dims = receipt.get("dimensions", {})
@@ -9575,6 +9579,7 @@ def _render_receipt_text(receipt: dict[str, Any]) -> None:
 
     cost = dims.get("cost", {})
     table.add_row("Cost", _receipt_cost_text(cost), ", ".join(cost.get("provenance") or []))
+    table.add_row("Weekly plan", plan_share_headline(cost.get("plan_share")), "")
 
     evidence_dim = dims.get("evidence", {})
     table.add_row(

@@ -12,7 +12,9 @@ import time
 import uuid
 from collections import Counter
 from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable, Iterator, Mapping
 
 from .confidence import normalize_cost_confidence, normalize_usage_confidence
@@ -103,6 +105,20 @@ class SessionObservationConflict(ValueError):
     def __init__(self, reason: str, message: str) -> None:
         super().__init__(message)
         self.reason = reason
+
+
+@dataclass(frozen=True)
+class EventSnapshot:
+    """One immutable-by-contract parsed view of a ledger revision.
+
+    The tuple prevents callers from reordering the shared collection. Event
+    mappings remain ordinary dictionaries for compatibility with the existing
+    reducers; snapshot consumers are read-only and receive a new snapshot as
+    soon as the persistent change token moves.
+    """
+
+    change_token: tuple[str, object]
+    events: tuple[dict[str, Any], ...]
 
 
 def _session_observation_conflict_reason(diagnostics: Mapping[str, int]) -> str:
@@ -430,6 +446,9 @@ _PROVIDER_TOKEN_ALTERNATIVES = (
     r"(?-i:pypi-AgE)[A-Za-z0-9_-]{16,}",  # PyPI upload token (macaroon body)
     r"(?-i:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])",  # AWS access/session key id
     r"(?-i:AIza)[A-Za-z0-9_-]{16,}",  # Google API key
+    r"xai-[A-Za-z0-9]{16,}",  # xAI (Grok) API key
+    r"gsk_[A-Za-z0-9]{16,}",  # Groq API key
+    r"ya29\.[A-Za-z0-9_-]{20,}",  # Google OAuth 2.0 access token
 )
 _PROVIDER_TOKEN_PATTERN = re.compile(
     r"(?:\bBearer\s+)?\b(?:" + r"|".join(_PROVIDER_TOKEN_ALTERNATIVES) + r")",
@@ -517,8 +536,9 @@ SECRET_VALUE_PATTERNS = (
     ("bearer_token", _BARE_BEARER_PATTERN),
     # Family 1 members too -- self-identifying prefix, no context, no prose
     # refusal. They keep their own class names because the redaction marker
-    # vocabulary is read downstream, and `sk-or-v1-` must be reported ahead of
-    # its own prefix-subset `sk-`.
+    # vocabulary is read downstream, and the specific `sk-ant-` / `sk-or-v1-`
+    # prefixes must be reported ahead of their own prefix-subset `sk-`.
+    ("anthropic_api_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{12,}")),
     ("openrouter_api_key", re.compile(r"\bsk-or-v1-[A-Za-z0-9_-]{12,}")),
     ("api_key", re.compile(r"\bsk-[A-Za-z0-9_-]{12,}")),
 )
@@ -960,6 +980,8 @@ class SentinelService:
         self.event_log: RawEventLog | None = None
         self._event_log_synced_signature: tuple[int, int] | None = None
         self._is_authoritative = False
+        self._event_snapshot_lock = Lock()
+        self._event_snapshot: EventSnapshot | None = None
         self._init_event_log()
 
     def _authoritative_intended(self) -> bool:
@@ -2669,6 +2691,44 @@ class SentinelService:
         # proven flat file until the read cutover.
         self._sync_event_log()
         return self._read_events_file_order(run_id=run_id)
+
+    def all_events_snapshot(self) -> EventSnapshot:
+        """Return a single-flight parsed snapshot for read-only projections.
+
+        Dashboard polling used to read and JSON-decode the complete ledger once
+        per endpoint before any higher-level cache could answer. The SQLite
+        revision makes the unchanged path constant-time; the lock coalesces a
+        cold fan-out so concurrent glance/plan/tasks requests parse exactly
+        once. Legacy flat-file mode retains its existing mtime+size change key.
+        """
+
+        self._sync_event_log()
+        token = self._event_snapshot_change_token()
+        cached = self._event_snapshot
+        if cached is not None and cached.change_token == token:
+            return cached
+
+        with self._event_snapshot_lock:
+            # A concurrent writer or rolling-upgrade absorb may have moved the
+            # ledger while this reader waited. Re-sync and re-key under the
+            # single-flight lock before deciding whether to rebuild.
+            self._sync_event_log()
+            token = self._event_snapshot_change_token()
+            cached = self._event_snapshot
+            if cached is not None and cached.change_token == token:
+                return cached
+            snapshot = EventSnapshot(
+                change_token=token,
+                events=tuple(self._read_events_file_order()),
+            )
+            self._event_snapshot = snapshot
+            return snapshot
+
+    def _event_snapshot_change_token(self) -> tuple[str, object]:
+        if self._authoritative():
+            assert self.event_log is not None  # _authoritative fails loud otherwise.
+            return ("sqlite", self.event_log.revision())
+        return ("flat-file", self._events_file_signature())
 
     def reconcile_evidence_refreshable_usage_snapshot(
         self,
