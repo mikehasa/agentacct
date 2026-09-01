@@ -10,6 +10,7 @@ import SwiftUI
 struct DashboardWorkItem: Identifiable {
     let id: String
     let title: String
+    let project: String?
     let client: String
     let lastActivityAt: Double?
     let outcome: String
@@ -24,12 +25,9 @@ struct DashboardWorkItem: Identifiable {
 
     init(task: ReceiptSummary) {
         id = task.taskId
-        if let taskTitle = task.title, !taskTitle.isEmpty {
-            title = taskTitle
-        } else {
-            title = task.taskId
-        }
-        client = task.primaryRoot?.client ?? "Unknown agent"
+        title = recordedTaskDisplayTitle(task.title, taskId: task.taskId)
+        project = Self.nonempty(task.project)
+        client = Self.nonempty(task.primaryRoot?.client) ?? "Unknown agent"
         lastActivityAt = task.lastActivityAt
         outcomeKey = task.decisionStatus.key
         if let label = task.decisionStatus.label, !label.isEmpty {
@@ -51,6 +49,12 @@ struct DashboardWorkItem: Identifiable {
         agoText(lastActivityAt)
     }
 
+    var contextComponents: [String] {
+        [project, client, recency].compactMap { $0 }
+    }
+
+    var visibleCost: String { cost == "—" ? "unpriced" : cost }
+
     /// Strongest evidence tier present (drives the row's tier pip).
     var strongestTier: String? {
         gradeable ? (strongestTierKey ?? "unchecked") : nil
@@ -66,6 +70,15 @@ struct DashboardWorkItem: Identifiable {
         case "handed_off": return "Handed off"
         default: return key.replacingOccurrences(of: "_", with: " ").capitalized
         }
+    }
+
+    private static func nonempty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else {
+            return nil
+        }
+        return trimmed
     }
 
     private static func compactCost(_ cost: ReceiptCost) -> String {
@@ -104,19 +117,15 @@ struct DashboardAttentionItem: Identifiable, Equatable {
     init?(task: ReceiptSummary) {
         guard let reason = task.attention else { return nil }
         id = task.taskId
-        if let taskTitle = task.title, !taskTitle.isEmpty {
-            title = taskTitle
-        } else {
-            title = task.taskId
-        }
-        project = task.project
-        client = task.primaryRoot?.client
+        title = recordedTaskDisplayTitle(task.title, taskId: task.taskId)
+        project = Self.nonempty(task.project)
+        client = Self.nonempty(task.primaryRoot?.client)
         reasonKind = reason.kind
-        summary = reason.summary
-        nextStep = reason.nextStep
+        summary = reason.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        nextStep = Self.nonempty(reason.nextStep)
         observedAt = reason.observedAt
         handedOff = task.handedOff
-        switch reason.source {
+        switch Self.nonempty(reason.source) {
         case "mcp": sourceLabel = "MCP record"
         case "client_log": sourceLabel = "Local client log"
         case "machine": sourceLabel = "Machine check"
@@ -139,6 +148,15 @@ struct DashboardAttentionItem: Identifiable, Equatable {
         case "blocker": return "Recorded blocker"
         default: return reasonKind.replacingOccurrences(of: "_", with: " ").capitalized
         }
+    }
+
+    private static func nonempty(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty
+        else {
+            return nil
+        }
+        return value
     }
 
     var recency: String? { agoText(observedAt) }
@@ -247,7 +265,7 @@ enum DashboardAttentionPresentation: Equatable {
             self = .loading
             return
         }
-        guard Self.hasConsistentEnvelope(payload) else {
+        guard hasConsistentAttentionHeadEnvelope(payload) else {
             self = .inconsistent(total: max(0, payload.total))
             return
         }
@@ -260,36 +278,6 @@ enum DashboardAttentionPresentation: Equatable {
         } else {
             self = .inconsistent(total: payload.total)
         }
-    }
-
-    private static func hasConsistentEnvelope(_ payload: V1AttentionPayload) -> Bool {
-        let taskIDs = payload.items.map {
-            $0.taskId.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        guard payload.schema == "agentacct.v1-attention.v1",
-              payload.total >= 0,
-              payload.offset == 0,
-              (1 ... 50).contains(payload.limit),
-              payload.counts.failedCheck >= 0,
-              payload.counts.failedStep >= 0,
-              payload.counts.blocker >= 0,
-              payload.items.count <= payload.limit,
-              payload.items.count <= payload.total,
-              taskIDs.allSatisfy({ !$0.isEmpty }),
-              Set(taskIDs).count == payload.items.count,
-              payload.items.allSatisfy({ $0.attention != nil }),
-              payload.total == 0 || !payload.items.isEmpty,
-              payload.truncated == (payload.total > payload.items.count)
-        else {
-            return false
-        }
-
-        let first = payload.counts.failedCheck.addingReportingOverflow(
-            payload.counts.failedStep
-        )
-        guard !first.overflow else { return false }
-        let total = first.partialValue.addingReportingOverflow(payload.counts.blocker)
-        return !total.overflow && total.partialValue == payload.total
     }
 
     var dashboardHeadline: String {
@@ -305,7 +293,7 @@ enum DashboardAttentionPresentation: Equatable {
     var dashboardStatus: String {
         switch self {
         case .loading: return "Loading review projection"
-        case .unavailable: return "Refresh to retry"
+        case .unavailable: return "Unavailable"
         case .clear: return "0 review items"
         case .focus(_, let total), .inconsistent(let total):
             return "\(total) review item\(total == 1 ? "" : "s")"
@@ -812,7 +800,9 @@ struct DashboardPane: View {
 
                 RecentWorkCard(
                     items: recentWork,
-                    totalCount: dashboard.totalReceiptTasks ?? dashboard.receiptTasks.count
+                    totalCount: dashboard.totalReceiptTasks,
+                    hasLoaded: dashboard.hasLoadedReceiptTasks,
+                    error: dashboard.receiptListError
                 ) { destination in
                     selection.open(destination)
                 }
@@ -1486,10 +1476,42 @@ private extension DashboardCardHeader where Action == EmptyView {
     }
 }
 
+enum DashboardRecentWorkPresentation: Equatable {
+    case loading
+    case unavailable(String)
+    case empty
+    case populated
+
+    init(items: [DashboardWorkItem], total: Int?, hasLoaded: Bool, error: String?) {
+        if !items.isEmpty {
+            self = .populated
+        } else if let error {
+            self = .unavailable(error)
+        } else if !hasLoaded {
+            self = .loading
+        } else if let total, total > 0 {
+            self = .unavailable("The receipt count loaded, but no recent rows were returned.")
+        } else {
+            self = .empty
+        }
+    }
+}
+
 private struct RecentWorkCard: View {
     let items: [DashboardWorkItem]
-    let totalCount: Int
+    let totalCount: Int?
+    let hasLoaded: Bool
+    let error: String?
     let open: (DashboardDestination) -> Void
+
+    private var presentation: DashboardRecentWorkPresentation {
+        DashboardRecentWorkPresentation(
+            items: items,
+            total: totalCount,
+            hasLoaded: hasLoaded,
+            error: error
+        )
+    }
 
     var body: some View {
         Card(padding: 0, fillsHeight: true) {
@@ -1504,14 +1526,43 @@ private struct RecentWorkCard: View {
                 }
                 Divider().overlay(Theme.hairline)
 
-                if items.isEmpty {
+                switch presentation {
+                case .loading:
+                    HStack(spacing: Space.m) {
+                        ProgressView().controlSize(.small).tint(Theme.muted)
+                        Text("Loading recent work…")
+                            .font(Type.body)
+                            .foregroundStyle(Theme.muted)
+                    }
+                    .padding(Space.xl)
+                    .frame(maxWidth: .infinity, minHeight: 222, alignment: .leading)
+                case .unavailable(let message):
+                    DashboardEmptyState(
+                        icon: "exclamationmark.triangle",
+                        title: "Recent work unavailable",
+                        message: message
+                    )
+                    .frame(minHeight: 222)
+                case .empty:
                     DashboardEmptyState(
                         icon: "checklist",
                         title: "No recorded work yet",
                         message: "Set up recording to see task outcomes and evidence here."
                     )
                     .frame(minHeight: 222)
-                } else {
+                case .populated:
+                    if let error {
+                        Label(
+                            "Showing last loaded work · \(error)",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(Type.dataSmall)
+                        .foregroundStyle(Theme.amber)
+                        .padding(.horizontal, Space.l)
+                        .padding(.vertical, Space.s)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        Divider().overlay(Theme.hairline)
+                    }
                     workColumnLabels
                     Divider().overlay(Theme.hairline)
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
@@ -1552,7 +1603,7 @@ private struct RecentWorkRow: View {
                         .font(Type.rowLabel)
                         .foregroundStyle(Theme.ink)
                         .lineLimit(2)
-                    Text([item.client, item.recency].compactMap { $0 }.joined(separator: " · "))
+                    Text(item.contextComponents.joined(separator: " · "))
                         .font(Type.caption)
                         .foregroundStyle(Theme.muted)
                         .lineLimit(1)
@@ -1585,7 +1636,7 @@ private struct RecentWorkRow: View {
                 .frame(width: 118, alignment: .leading)
                 .help(item.evidenceQualifier)
 
-                Text(item.cost == "—" ? "unpriced" : item.cost)
+                Text(item.visibleCost)
                     .font(Type.dataSmall)
                     .foregroundStyle(Theme.muted)
                     .frame(width: 68, alignment: .trailing)
@@ -1598,7 +1649,13 @@ private struct RecentWorkRow: View {
         }
         .buttonStyle(DashboardRowButtonStyle())
         .accessibilityLabel(
-            "\(item.title), \(item.outcome), \(item.evidence), \(item.cost)"
+            [
+                item.title,
+                item.contextComponents.joined(separator: ", "),
+                item.outcome,
+                item.evidence,
+                item.visibleCost,
+            ].joined(separator: ", ")
         )
         .accessibilityHint("Opens this task in Work")
         .accessibilityIdentifier("dashboard.recent-work.task.\(item.id)")

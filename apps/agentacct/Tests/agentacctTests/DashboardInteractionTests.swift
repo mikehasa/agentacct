@@ -156,6 +156,59 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertTrue(DashboardActionBrief(focus: focus).text.contains("Provenance: Machine check"))
     }
 
+    func testAttentionProjectionNormalizesOptionalContextAndOpenProvenance() throws {
+        let blankTask = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-blank-context",
+              "project": "   ",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked" },
+              "cost": {},
+              "primary_root": { "client": "  ", "client_session_id": "session-1" },
+              "attention": {
+                "kind": "failed_check",
+                "summary": "Snapshot verification failed",
+                "source": "   "
+              }
+            }
+            """
+        )
+        let blankFocus = try XCTUnwrap(DashboardAttentionItem(task: blankTask))
+
+        XCTAssertNil(blankFocus.project)
+        XCTAssertNil(blankFocus.client)
+        XCTAssertNil(blankFocus.sourceLabel)
+        XCTAssertFalse(DashboardActionBrief(focus: blankFocus).text.contains("Project:"))
+        XCTAssertFalse(DashboardActionBrief(focus: blankFocus).text.contains("Agent:"))
+        XCTAssertTrue(DashboardActionBrief(focus: blankFocus).text.contains("Provenance: Not recorded"))
+
+        let paddedTask = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-padded-context",
+              "project": " agentacct-gui ",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked" },
+              "cost": {},
+              "primary_root": { "client": " codex ", "client_session_id": "session-2" },
+              "attention": {
+                "kind": "failed_check",
+                "summary": "Snapshot verification failed",
+                "source": " custom_provider "
+              }
+            }
+            """
+        )
+        let paddedFocus = try XCTUnwrap(DashboardAttentionItem(task: paddedTask))
+
+        XCTAssertEqual(paddedFocus.project, "agentacct-gui")
+        XCTAssertEqual(paddedFocus.client, "codex")
+        XCTAssertEqual(paddedFocus.sourceLabel, "Custom Provider")
+    }
+
     func testUnknownHandoffStateDoesNotImplyRecoveryOrContinuation() throws {
         let task = try decode(
             ReceiptSummary.self,
@@ -379,7 +432,7 @@ final class DashboardInteractionTests: XCTestCase {
             items: [item, item],
             total: 2,
             counts: V1AttentionCounts(failedCheck: 2, failedStep: 0, blocker: 0),
-            snapshot: nil,
+            revision: "duplicate-test",
             offset: 0,
             limit: 5,
             truncated: false
@@ -408,6 +461,7 @@ final class DashboardInteractionTests: XCTestCase {
               "total": 2,
               "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
               "snapshot": "queue-headline",
+              "offset": 0,
               "limit": 1,
               "truncated": true
             }
@@ -418,6 +472,23 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(presentation.dashboardHeadline, "Verify dashboard hierarchy")
         XCTAssertEqual(presentation.dashboardStatus, "2 review items")
         XCTAssertFalse(presentation.dashboardStatusIsWarning)
+    }
+
+    func testUnavailableShiftBriefDoesNotPromiseThatRefreshCanRepairEveryFailure() {
+        let presentation = DashboardAttentionPresentation(
+            payload: nil,
+            error: DashboardDaemonFeature.attention.upgradeMessage
+        )
+
+        XCTAssertEqual(presentation.dashboardStatus, "Unavailable")
+        XCTAssertEqual(
+            DashboardDaemonFeature.attention.upgradeMessage,
+            "Update agentacct, then restart its local service to enable review status."
+        )
+        XCTAssertEqual(
+            DashboardDaemonFeature.ingestion.upgradeMessage,
+            "Update agentacct, then restart its local service to enable source status."
+        )
     }
 
     func testSignalRailNeverPresentsRetainedSourceHealthAsCurrentAfterAnError() throws {
@@ -451,6 +522,28 @@ final class DashboardInteractionTests: XCTestCase {
                 detail: "Waiting for the current ingestion record.",
                 tone: .muted
             )
+        )
+    }
+
+    func testSourcesPaneAlsoLetsCurrentErrorsOutrankRetainedHealth() {
+        XCTAssertEqual(
+            SourcesHealthAvailability(hasSnapshot: true, error: "network unavailable"),
+            .unavailable("network unavailable")
+        )
+        XCTAssertEqual(
+            SourcesHealthAvailability(
+                hasSnapshot: false,
+                error: DashboardDaemonFeature.ingestion.upgradeMessage
+            ),
+            .unavailable(DashboardDaemonFeature.ingestion.upgradeMessage)
+        )
+        XCTAssertEqual(
+            SourcesHealthAvailability(hasSnapshot: true, error: nil),
+            .connected
+        )
+        XCTAssertEqual(
+            SourcesHealthAvailability(hasSnapshot: false, error: nil),
+            .loading
         )
     }
 
@@ -502,9 +595,627 @@ final class DashboardInteractionTests: XCTestCase {
             "No review items match this filter"
         )
         XCTAssertEqual(
+            WorkAttentionEmptyCopy(
+                payload: filtered,
+                query: " visual ",
+                loadedCount: 2
+            ).detail,
+            "The loaded queue has 2 of 2 review items; adjust the filter to inspect them."
+        )
+        XCTAssertEqual(
             WorkAttentionEmptyCopy(payload: inconsistent, query: "visual").title,
             "Review queue details unavailable"
         )
+    }
+
+    func testAttentionPagesAppendWithoutChangingCompleteCountsOrRepeatingRows() throws {
+        let first = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "failed-check",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "revision": "revision-1",
+              "offset": 0, "limit": 1, "truncated": true
+            }
+            """
+        )
+        let next = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "blocker",
+                "decision_status": { "key": "blocked" },
+                "evidence_strength": { "key": "unchecked" },
+                "cost": {},
+                "attention": { "kind": "blocker", "summary": "waiting for approval" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "revision": "revision-1",
+              "offset": 1, "limit": 1, "truncated": false
+            }
+            """
+        )
+        let whitespaceDuplicate = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": " failed-check ",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "revision": "revision-1",
+              "offset": 1, "limit": 1, "truncated": false
+            }
+            """
+        )
+        let blankIdentity = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "   ",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "revision": "revision-1",
+              "offset": 1, "limit": 1, "truncated": false
+            }
+            """
+        )
+        let contradictoryCompletion = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "another-failed-check",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "another failure" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "revision": "revision-1",
+              "offset": 1, "limit": 1, "truncated": false
+            }
+            """
+        )
+
+        XCTAssertEqual(first.resolvedOffset, 0)
+        XCTAssertEqual(
+            mergedAttentionItems(existing: first.items, summary: first, page: next)?.map(\.taskId),
+            ["failed-check", "blocker"]
+        )
+        XCTAssertNil(
+            mergedAttentionItems(existing: first.items, summary: first, page: first),
+            "a daemon that ignores offset must fail closed instead of repeating page one"
+        )
+        XCTAssertNil(
+            mergedAttentionItems(existing: first.items, summary: first, page: whitespaceDuplicate),
+            "whitespace-equivalent task ids must not appear as additional queue coverage"
+        )
+        XCTAssertNil(
+            mergedAttentionItems(existing: first.items, summary: first, page: blankIdentity),
+            "a blank task id must not count as additional queue coverage"
+        )
+        XCTAssertNil(
+            mergedAttentionItems(existing: first.items, summary: first, page: contradictoryCompletion),
+            "a complete queue must reconcile its recorded reasons with aggregate counts"
+        )
+
+        let loaded = try XCTUnwrap(
+            mergedAttentionItems(existing: first.items, summary: first, page: next)
+        )
+        XCTAssertEqual(
+            attentionItemsAfterHeadRefresh(existing: loaded, previous: first, refreshed: first)
+                .map(\.taskId),
+            ["failed-check", "blocker"],
+            "an unchanged minute refresh must preserve pages the user already loaded"
+        )
+    }
+
+    func testAttentionPagesRejectQueueDriftAndImpossibleContinuation() throws {
+        let first = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "failed-check",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 3,
+              "counts": { "failed_check": 2, "failed_step": 0, "blocker": 1 },
+              "revision": "revision-1",
+              "offset": 0, "limit": 1, "truncated": true
+            }
+            """
+        )
+        let changedQueue = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "blocker",
+                "decision_status": { "key": "blocked" },
+                "evidence_strength": { "key": "unchecked" },
+                "cost": {},
+                "attention": { "kind": "blocker", "summary": "waiting for approval" }
+              }],
+              "total": 3,
+              "counts": { "failed_check": 2, "failed_step": 0, "blocker": 1 },
+              "revision": "revision-2",
+              "offset": 1, "limit": 1, "truncated": true
+            }
+            """
+        )
+        let emptyMiddlePage = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [],
+              "total": 3,
+              "counts": { "failed_check": 2, "failed_step": 0, "blocker": 1 },
+              "revision": "revision-1",
+              "offset": 1, "limit": 1, "truncated": true
+            }
+            """
+        )
+        let prematureBlocker = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "blocker",
+                "decision_status": { "key": "blocked" },
+                "evidence_strength": { "key": "unchecked" },
+                "cost": {},
+                "attention": { "kind": "blocker", "summary": "waiting for approval" }
+              }],
+              "total": 3,
+              "counts": { "failed_check": 2, "failed_step": 0, "blocker": 1 },
+              "revision": "revision-1",
+              "offset": 1, "limit": 1, "truncated": true
+            }
+            """
+        )
+
+        XCTAssertNil(
+            mergedAttentionItems(existing: first.items, summary: first, page: changedQueue),
+            "a changed revision means the server-ranked queue moved between requests"
+        )
+        XCTAssertNil(
+            mergedAttentionItems(existing: first.items, summary: first, page: emptyMiddlePage),
+            "a truncated continuation cannot make progress with an empty page"
+        )
+        XCTAssertNil(
+            mergedAttentionItems(existing: first.items, summary: first, page: prematureBlocker),
+            "a blocker cannot appear while a reported failure-class row remains unseen"
+        )
+    }
+
+    @MainActor
+    func testAttentionRevisionDriftInvalidatesTheDashboardHead() throws {
+        let head = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "failed-check",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "revision": "revision-1",
+              "offset": 0, "limit": 1, "truncated": true
+            }
+            """
+        )
+        let driftedPage = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "blocker",
+                "decision_status": { "key": "blocked" },
+                "evidence_strength": { "key": "unchecked" },
+                "cost": {},
+                "attention": { "kind": "blocker", "summary": "waiting" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
+              "revision": "revision-2",
+              "offset": 1, "limit": 1, "truncated": false
+            }
+            """
+        )
+
+        let store = DashboardStore()
+        let generation = store.beginAttentionRequest()
+        store.publishAttentionHead(head, requestGeneration: generation)
+        store.publishAttentionPage(driftedPage, requestGeneration: generation)
+
+        XCTAssertNil(store.attention)
+        XCTAssertTrue(store.attentionQueueItems.isEmpty)
+        XCTAssertNil(store.attentionPageError)
+        XCTAssertEqual(
+            store.attentionError,
+            "Review queue changed while loading. Refresh before acting on it."
+        )
+        XCTAssertEqual(
+            DashboardAttentionPresentation(payload: store.attention, error: store.attentionError),
+            .unavailable("Review queue changed while loading. Refresh before acting on it.")
+        )
+    }
+
+    @MainActor
+    func testNewerDashboardRequestsWinWhenOlderResponsesArriveLast() throws {
+        let oldAttention = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1", "items": [], "total": 0,
+              "counts": { "failed_check": 0, "failed_step": 0, "blocker": 0 },
+              "revision": "old", "offset": 0, "limit": 5, "truncated": false
+            }
+            """
+        )
+        let currentAttention = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1", "items": [], "total": 0,
+              "counts": { "failed_check": 0, "failed_step": 0, "blocker": 0 },
+              "revision": "current", "offset": 0, "limit": 5, "truncated": false
+            }
+            """
+        )
+        let oldReceipts = try decode(
+            ReceiptTasksPayload.self,
+            from: """
+            { "schema": "agentacct.receipt.v1", "tasks": [], "total": 0, "limit": 200, "offset": 0 }
+            """
+        )
+        let currentReceipts = try decode(
+            ReceiptTasksPayload.self,
+            from: """
+            { "schema": "agentacct.receipt.v1", "tasks": [], "total": 4, "limit": 200, "offset": 0 }
+            """
+        )
+        let store = DashboardStore()
+
+        let oldAttentionRequest = store.beginAttentionRequest()
+        let currentAttentionRequest = store.beginAttentionRequest()
+        store.publishAttentionHead(
+            currentAttention,
+            requestGeneration: currentAttentionRequest
+        )
+        store.publishAttentionHead(oldAttention, requestGeneration: oldAttentionRequest)
+        XCTAssertEqual(store.attention?.revision, "current")
+
+        let oldReceiptRequest = store.beginReceiptListRequest()
+        let currentReceiptRequest = store.beginReceiptListRequest()
+        store.publishReceiptList(
+            currentReceipts,
+            requestGeneration: currentReceiptRequest
+        )
+        store.publishReceiptList(oldReceipts, requestGeneration: oldReceiptRequest)
+        store.publishReceiptListFailure(
+            "stale failure",
+            requestGeneration: oldReceiptRequest
+        )
+        XCTAssertEqual(store.totalReceiptTasks, 4)
+        XCTAssertNil(store.receiptListError)
+
+        let legacyEmptyReceipts = try decode(
+            ReceiptTasksPayload.self,
+            from: """
+            { "schema": "agentacct.receipt.v1", "tasks": [] }
+            """
+        )
+        let legacyRequest = store.beginReceiptListRequest()
+        store.publishReceiptList(legacyEmptyReceipts, requestGeneration: legacyRequest)
+        XCTAssertTrue(store.hasLoadedReceiptTasks)
+        XCTAssertTrue(store.receiptTasks.isEmpty)
+        XCTAssertNil(store.totalReceiptTasks)
+    }
+
+    @MainActor
+    func testMalformedAttentionHeadsNeverReachTheWorkQueue() throws {
+        let item = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "failed-check",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+              "cost": {},
+              "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+            }
+            """
+        )
+        let validLegacy = V1AttentionPayload(
+            schema: "agentacct.v1-attention.v1",
+            items: [item],
+            total: 1,
+            counts: V1AttentionCounts(failedCheck: 1, failedStep: 0, blocker: 0),
+            revision: nil,
+            offset: nil,
+            limit: 5,
+            truncated: false
+        )
+        XCTAssertTrue(hasConsistentAttentionHeadEnvelope(validLegacy))
+
+        let legacyTruncated = V1AttentionPayload(
+            schema: validLegacy.schema,
+            items: [item],
+            total: 2,
+            counts: V1AttentionCounts(failedCheck: 2, failedStep: 0, blocker: 0),
+            revision: nil,
+            offset: nil,
+            limit: 1,
+            truncated: true
+        )
+        XCTAssertTrue(hasConsistentAttentionHeadEnvelope(legacyTruncated))
+        let legacyStore = DashboardStore()
+        legacyStore.publishAttentionHead(
+            legacyTruncated,
+            requestGeneration: legacyStore.beginAttentionRequest()
+        )
+        XCTAssertTrue(legacyStore.hasMoreAttention)
+        XCTAssertFalse(legacyStore.supportsAttentionPaging)
+        XCTAssertFalse(legacyStore.canLoadMoreAttention)
+
+        let predecessorHead = try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1",
+              "items": [{
+                "task_id": "failed-check",
+                "decision_status": { "key": "finding" },
+                "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+                "cost": {},
+                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+              }],
+              "total": 2,
+              "counts": { "failed_check": 2, "failed_step": 0, "blocker": 0 },
+              "snapshot": "predecessor-queue",
+              "offset": 0, "limit": 1, "truncated": true
+            }
+            """
+        )
+        XCTAssertEqual(predecessorHead.revision, "predecessor-queue")
+        XCTAssertTrue(hasConsistentAttentionHeadEnvelope(predecessorHead))
+        let predecessorStore = DashboardStore()
+        predecessorStore.publishAttentionHead(
+            predecessorHead,
+            requestGeneration: predecessorStore.beginAttentionRequest()
+        )
+        XCTAssertTrue(predecessorStore.canLoadMoreAttention)
+
+        XCTAssertThrowsError(try decode(
+            V1AttentionPayload.self,
+            from: """
+            {
+              "schema": "agentacct.v1-attention.v1", "items": [], "total": 0,
+              "counts": { "failed_check": 0, "failed_step": 0, "blocker": 0 },
+              "revision": "new", "snapshot": "old",
+              "offset": 0, "limit": 5, "truncated": false
+            }
+            """
+        ))
+
+        let whitespaceEquivalentItem = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": " failed-check ",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+              "cost": {},
+              "attention": { "kind": "failed_check", "summary": "snapshot failed" }
+            }
+            """
+        )
+        let blankSummaryItem = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "blank-summary",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+              "cost": {},
+              "attention": { "kind": "failed_check", "summary": "   " }
+            }
+            """
+        )
+        let unknownKindItem = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "unknown-kind",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+              "cost": {},
+              "attention": { "kind": "future_kind", "summary": "needs review" }
+            }
+            """
+        )
+        let blockerItem = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "blocker-kind",
+              "decision_status": { "key": "blocked" },
+              "evidence_strength": { "key": "unchecked" },
+              "cost": {},
+              "attention": { "kind": "blocker", "summary": "waiting" }
+            }
+            """
+        )
+
+        let malformed = [
+            V1AttentionPayload(
+                schema: validLegacy.schema,
+                items: [item],
+                total: 2,
+                counts: validLegacy.counts,
+                revision: "counts-mismatch",
+                offset: 0,
+                limit: 5,
+                truncated: true
+            ),
+            V1AttentionPayload(
+                schema: validLegacy.schema,
+                items: [item, item],
+                total: 2,
+                counts: V1AttentionCounts(failedCheck: 2, failedStep: 0, blocker: 0),
+                revision: "duplicate-ids",
+                offset: 0,
+                limit: 5,
+                truncated: false
+            ),
+            V1AttentionPayload(
+                schema: validLegacy.schema,
+                items: [item, whitespaceEquivalentItem],
+                total: 2,
+                counts: V1AttentionCounts(failedCheck: 2, failedStep: 0, blocker: 0),
+                revision: "trimmed-duplicate-ids",
+                offset: 0,
+                limit: 5,
+                truncated: false
+            ),
+            V1AttentionPayload(
+                schema: validLegacy.schema,
+                items: [whitespaceEquivalentItem],
+                total: 1,
+                counts: validLegacy.counts,
+                revision: "padded-id",
+                offset: 0,
+                limit: 5,
+                truncated: false
+            ),
+            V1AttentionPayload(
+                schema: validLegacy.schema,
+                items: [blankSummaryItem],
+                total: 1,
+                counts: validLegacy.counts,
+                revision: "blank-summary",
+                offset: 0,
+                limit: 5,
+                truncated: false
+            ),
+            V1AttentionPayload(
+                schema: validLegacy.schema,
+                items: [unknownKindItem],
+                total: 1,
+                counts: validLegacy.counts,
+                revision: "unknown-kind",
+                offset: 0,
+                limit: 5,
+                truncated: false
+            ),
+            V1AttentionPayload(
+                schema: validLegacy.schema,
+                items: [blockerItem],
+                total: 1,
+                counts: validLegacy.counts,
+                revision: "kind-count-mismatch",
+                offset: 0,
+                limit: 5,
+                truncated: false
+            ),
+            V1AttentionPayload(
+                schema: validLegacy.schema,
+                items: [blockerItem],
+                total: 2,
+                counts: V1AttentionCounts(failedCheck: 1, failedStep: 0, blocker: 1),
+                revision: "blocker-before-failure",
+                offset: 0,
+                limit: 1,
+                truncated: true
+            ),
+            V1AttentionPayload(
+                schema: validLegacy.schema,
+                items: [item],
+                total: 1,
+                counts: validLegacy.counts,
+                revision: "nonzero-head",
+                offset: 1,
+                limit: 5,
+                truncated: false
+            ),
+            V1AttentionPayload(
+                schema: validLegacy.schema,
+                items: [item],
+                total: 1,
+                counts: validLegacy.counts,
+                revision: "missing-offset",
+                offset: nil,
+                limit: 5,
+                truncated: false
+            ),
+            V1AttentionPayload(
+                schema: validLegacy.schema,
+                items: [],
+                total: 1,
+                counts: validLegacy.counts,
+                revision: "empty-truncated-head",
+                offset: 0,
+                limit: 5,
+                truncated: true
+            ),
+        ]
+
+        let store = DashboardStore()
+        for payload in malformed {
+            XCTAssertFalse(hasConsistentAttentionHeadEnvelope(payload))
+            let generation = store.beginAttentionRequest()
+            store.publishAttentionHead(payload, requestGeneration: generation)
+            XCTAssertNil(store.attention)
+            XCTAssertTrue(store.attentionQueueItems.isEmpty)
+            XCTAssertFalse(store.hasMoreAttention)
+            XCTAssertEqual(
+                store.attentionError,
+                "Review status response was inconsistent. Refresh before acting on it."
+            )
+        }
     }
 
     @MainActor
@@ -558,77 +1269,6 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(selection.workGroup, .attention, "Review-item back navigation should return to the queue")
     }
 
-    func testAttentionRequestGenerationRejectsAStaleResponse() {
-        var generation = LatestRequestGeneration()
-        let slowRefresh = generation.begin()
-        let dispositionRefresh = generation.begin()
-
-        XCTAssertFalse(generation.accepts(slowRefresh))
-        XCTAssertTrue(generation.accepts(dispositionRefresh))
-    }
-
-    func testAttentionPagesMergeWithoutHidingLaterItems() throws {
-        let first = try decode(
-            V1AttentionPayload.self,
-            from: """
-            {
-              "schema": "agentacct.v1-attention.v1",
-              "items": [{
-                "task_id": "task-1",
-                "decision_status": { "key": "finding" },
-                "evidence_strength": { "key": "unchecked" },
-                "cost": {},
-                "attention": { "kind": "failed_check", "summary": "snapshot failed" }
-              }],
-              "total": 2,
-              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
-              "snapshot": "queue-v1",
-              "offset": 0, "limit": 1, "truncated": true
-            }
-            """
-        )
-        let second = try decode(
-            V1AttentionPayload.self,
-            from: """
-            {
-              "schema": "agentacct.v1-attention.v1",
-              "items": [{
-                "task_id": "task-2",
-                "decision_status": { "key": "blocked" },
-                "evidence_strength": { "key": "unchecked" },
-                "cost": {},
-                "attention": { "kind": "blocker", "summary": "work blocked" }
-              }],
-              "total": 2,
-              "counts": { "failed_check": 1, "failed_step": 0, "blocker": 1 },
-              "snapshot": "queue-v1",
-              "offset": 1, "limit": 1, "truncated": false
-            }
-            """
-        )
-
-        let merged = mergedAttentionPages(first, second)
-
-        XCTAssertEqual(merged.items.map(\.taskId), ["task-1", "task-2"])
-        XCTAssertEqual(merged.offset, 0)
-        XCTAssertEqual(merged.limit, 2)
-        XCTAssertFalse(merged.truncated)
-        XCTAssertTrue(attentionPageCanAppend(first, second))
-
-        let changedQueue = V1AttentionPayload(
-            schema: second.schema,
-            items: second.items,
-            total: 3,
-            counts: second.counts,
-            snapshot: "queue-v2",
-            offset: second.offset,
-            limit: second.limit,
-            truncated: true
-        )
-        XCTAssertFalse(attentionPageCanAppend(first, changedQueue))
-
-    }
-
     func testRecentWorkProjectionKeepsDecisionEvidenceAndCostSeparate() throws {
         let task = try decode(
             ReceiptSummary.self,
@@ -636,6 +1276,7 @@ final class DashboardInteractionTests: XCTestCase {
             {
               "task_id": "task-1",
               "title": "Build reusable snapshot harness",
+              "project": "agentacct-gui",
               "decision_status": { "key": "verified", "label": "Verified" },
               "evidence_strength": {
                 "key": "independently_checked",
@@ -658,10 +1299,165 @@ final class DashboardInteractionTests: XCTestCase {
         let item = DashboardWorkItem(task: task)
 
         XCTAssertEqual(item.title, "Build reusable snapshot harness")
+        XCTAssertEqual(item.project, "agentacct-gui")
         XCTAssertEqual(item.client, "codex")
         XCTAssertEqual(item.outcome, "Verified")
         XCTAssertEqual(item.evidence, "4/4 supported")
         XCTAssertEqual(item.cost, "≈$4.82")
+        XCTAssertEqual(
+            DashboardRecentWorkPresentation(
+                items: [item], total: 1, hasLoaded: true, error: "refresh failed"
+            ),
+            .populated,
+            "retained rows remain useful even when the latest refresh fails"
+        )
+    }
+
+    func testWhitespaceTaskTitleFallsBackToRecordedIdentity() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-fallback",
+              "title": "   ",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+              "cost": {},
+              "attention": {
+                "kind": "failed_check", "summary": "  snapshot failed  ",
+                "next_step": "   "
+              }
+            }
+            """
+        )
+
+        XCTAssertEqual(
+            recordedTaskDisplayTitle(task.title, taskId: task.taskId),
+            "task-fallback"
+        )
+        XCTAssertEqual(DashboardWorkItem(task: task).title, "task-fallback")
+        let attention = try XCTUnwrap(DashboardAttentionItem(task: task))
+        XCTAssertEqual(attention.title, "task-fallback")
+        XCTAssertEqual(attention.summary, "snapshot failed")
+        XCTAssertNil(attention.nextStep)
+    }
+
+    func testRecentWorkLoadingFailureAndEmptyStatesStayDistinct() {
+        XCTAssertEqual(
+            DashboardRecentWorkPresentation(
+                items: [], total: nil, hasLoaded: false, error: nil
+            ),
+            .loading
+        )
+        XCTAssertEqual(
+            DashboardRecentWorkPresentation(
+                items: [], total: nil, hasLoaded: false, error: "daemon unavailable"
+            ),
+            .unavailable("daemon unavailable")
+        )
+        XCTAssertEqual(
+            DashboardRecentWorkPresentation(
+                items: [], total: 0, hasLoaded: true, error: nil
+            ),
+            .empty
+        )
+        XCTAssertEqual(
+            DashboardRecentWorkPresentation(
+                items: [], total: 4, hasLoaded: true, error: nil
+            ),
+            .unavailable("The receipt count loaded, but no recent rows were returned.")
+        )
+        XCTAssertEqual(
+            DashboardRecentWorkPresentation(
+                items: [], total: 0, hasLoaded: true, error: "refresh failed"
+            ),
+            .unavailable("refresh failed")
+        )
+        XCTAssertEqual(
+            DashboardRecentWorkPresentation(
+                items: [], total: nil, hasLoaded: true, error: nil
+            ),
+            .empty,
+            "a successful legacy response without total is loaded, not perpetual loading"
+        )
+    }
+
+    func testWorkQueryIncludesRecordedProjectContext() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-1",
+              "title": "Review snapshots",
+              "project": "agentacct-gui",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked" },
+              "cost": {},
+              "primary_root": { "client": "codex", "client_session_id": "session-1" }
+            }
+            """
+        )
+
+        XCTAssertTrue(receiptMatchesWorkQuery(task, query: "agentacct-gui"))
+        XCTAssertEqual(receiptProjectContext(task), "agentacct-gui")
+        XCTAssertTrue(receiptMatchesWorkQuery(task, query: "CODEX"))
+        XCTAssertTrue(receiptMatchesWorkQuery(task, query: "   "))
+        XCTAssertFalse(hasWorkQuery(" \n\t "))
+        XCTAssertFalse(receiptMatchesWorkQuery(task, query: "another-project"))
+
+        let blankProject = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-2", "project": "   ",
+              "decision_status": { "key": "reported" },
+              "evidence_strength": { "key": "none" },
+              "cost": { "estimated_cost_usd": 99 },
+              "primary_root": { "client": "codex", "client_session_id": "session-2" }
+            }
+            """
+        )
+        XCTAssertNil(DashboardWorkItem(task: blankProject).project)
+        XCTAssertNil(receiptProjectContext(blankProject))
+        XCTAssertEqual(
+            workTableRows(
+                receipts: [task, blankProject],
+                attention: [task, blankProject],
+                group: .attention,
+                query: "",
+                sort: .cost
+            ).map(\.taskId),
+            ["task-1", "task-2"],
+            "loaded attention pages must retain the server's whole-store ranking"
+        )
+        XCTAssertEqual(
+            workTableRows(
+                receipts: [task, blankProject],
+                attention: [],
+                group: nil,
+                query: "",
+                sort: .cost
+            ).map(\.taskId),
+            ["task-2", "task-1"]
+        )
+    }
+
+    func testWorkFooterNamesLoadedSearchScopeAndRetainedErrors() {
+        XCTAssertEqual(
+            workReceiptFooterText(
+                visibleCount: 2,
+                loadedCount: 200,
+                totalCount: 500,
+                query: "dashboard",
+                sort: .latest
+            ),
+            "2 match filter in latest 200 loaded · 500 total receipts · most recent first"
+        )
+        XCTAssertEqual(
+            retainedWorkListWarning(error: "refresh failed", visibleCount: 4),
+            "Showing last loaded receipts · refresh failed"
+        )
+        XCTAssertNil(retainedWorkListWarning(error: "refresh failed", visibleCount: 0))
     }
 
     func testRecentWorkCostLabelsDoNotClaimUnknownCompleteness() throws {

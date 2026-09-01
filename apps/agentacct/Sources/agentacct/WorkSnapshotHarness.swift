@@ -7,6 +7,8 @@ enum WorkSnapshotState: String {
     case listLoading = "list-loading"
     case empty
     case listError = "list-error"
+    case retainedListError = "retained-list-error"
+    case attentionOverflow = "attention-overflow"
     case receiptLoading = "receipt-loading"
     case receiptError = "receipt-error"
     case receiptStale = "receipt-stale"
@@ -16,8 +18,10 @@ enum WorkSnapshotState: String {
         case .table, .receipt: return .populated
         case .attentionReceipt: return .attentionReceipt
         case .listLoading: return .listLoading
+        case .attentionOverflow: return .attentionOverflow
         case .empty: return .empty
         case .listError: return .listError
+        case .retainedListError: return .listErrorWithRetainedData
         case .receiptLoading: return .receiptLoading
         case .receiptError: return .receiptError
         case .receiptStale: return .receiptStale
@@ -27,9 +31,12 @@ enum WorkSnapshotState: String {
     var selectsReceipt: Bool {
         switch self {
         case .receipt, .attentionReceipt, .receiptLoading, .receiptError, .receiptStale: return true
-        case .table, .listLoading, .empty, .listError: return false
+        case .table, .listLoading, .empty, .listError, .retainedListError, .attentionOverflow:
+            return false
         }
     }
+
+    var selectsAttention: Bool { self == .attentionOverflow }
 }
 
 struct WorkSnapshotConfiguration {
@@ -65,6 +72,8 @@ struct WorkSnapshotConfiguration {
             WorkSnapshotState.listLoading,
             WorkSnapshotState.empty,
             .listError,
+            .retainedListError,
+            .attentionOverflow,
             .receiptLoading,
             .receiptError,
             .receiptStale,
@@ -143,6 +152,7 @@ enum WorkSnapshotRenderer {
             } else {
                 selection.taskId = configuration.state.selectsReceipt ? work.receipt.taskId : nil
             }
+            selection.workGroup = configuration.state.selectsAttention ? .attention : nil
 
             let view = MainWindow(canSetUpOverride: true)
                 .environment(glance)

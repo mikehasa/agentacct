@@ -3135,7 +3135,7 @@ def create_local_api_app(
                 return cached[2]
 
             if cached is not None and cached[1] == attention_fingerprint:
-                cached_candidates, _, cached_counts, _ = cached[2]
+                cached_candidates, _, cached_counts, cached_revision = cached[2]
                 tasks_by_id = {
                     str(task.get("public_task_id")): task
                     for task in tasks
@@ -3149,7 +3149,7 @@ def create_local_api_app(
                     candidates,
                     latest_store_activity(tasks),
                     cached_counts,
-                    attention_fingerprint,
+                    cached_revision,
                 )
                 v1_attention_projection_cache["value"] = (
                     projection,
@@ -3256,7 +3256,7 @@ def create_local_api_app(
 
         _require_v1_token(request)
         projection = _v1_task_projection()
-        candidates, latest, counts, snapshot = _v1_attention_candidates(projection)
+        candidates, latest, counts, revision = _v1_attention_candidates(projection)
         selected = candidates[offset : offset + limit]
         items = []
         for _, _, task_id, task, reason in selected:
@@ -3275,7 +3275,10 @@ def create_local_api_app(
             "items": items,
             "total": total,
             "counts": counts,
-            "snapshot": snapshot,
+            "revision": revision,
+            # Immediate predecessor builds called this identity `snapshot`.
+            # Keep the additive alias while desktop clients roll forward.
+            "snapshot": revision,
             "offset": offset,
             "limit": limit,
             "truncated": offset + len(items) < total,
@@ -3476,7 +3479,7 @@ def create_local_api_app(
                 "/v1/session?client=&session_id= (bearer token from the store's local-api.json)",
                 "/v1/plan (bearer token from the store's local-api.json)",
                 "/v1/tasks (bearer token from the store's local-api.json)",
-                "/v1/attention?limit= (bearer token from the store's local-api.json)",
+                "/v1/attention?limit=&offset= (bearer token from the store's local-api.json)",
                 "/v1/receipt?task= (bearer token from the store's local-api.json)",
                 "/v1/ingestion (bearer token from the store's local-api.json)",
             ],

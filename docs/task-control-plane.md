@@ -84,11 +84,13 @@ recorded failed steps lead unresolved blockers—even when a Task has both a
 failure and a blocker—and recency orders Tasks within each class. This is review
 ordering, not a claim about business priority. Each row includes its recorded
 reason and next step when available; agentacct does not invent a recovery action
-for a failed check. Every page carries the same opaque `snapshot` digest while
-that classification is stable; clients restart paging if the digest changes.
-The complete classification and ordering are cached with the
-parent Task projection, so repeated dashboard polls rebuild them only when that
-projection changes.
+for a failed check. Every page carries the same opaque ranking `revision` and
+complete counts while that classification is stable; the additive `snapshot`
+field carries the same value for immediate-predecessor desktop clients. Clients
+restart paging if the revision changes. The complete classification and ordering are cached with
+the parent Task projection, so repeated dashboard polls rebuild them only when
+that projection changes. Clients load later ranked rows with `offset` and reject
+pages from a changed projection instead of skipping or repeating work.
 
 ## Owned execution boundary
 

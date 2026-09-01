@@ -1,5 +1,21 @@
 import SwiftUI
 
+enum SourcesHealthAvailability: Equatable {
+    case loading
+    case unavailable(String)
+    case connected
+
+    init(hasSnapshot: Bool, error: String?) {
+        if let error {
+            self = .unavailable(error)
+        } else if hasSnapshot {
+            self = .connected
+        } else {
+            self = .loading
+        }
+    }
+}
+
 // Sources — what feeds the evidence store, exactly as the ingestion-health
 // snapshot reports it: per-source import state and recency, the continuous-
 // sync watcher, actionable issues, the verifier shelf (named not-connected
@@ -96,22 +112,26 @@ struct SourcesPane: View {
 
     @ViewBuilder
     private var content: some View {
-        if let snapshot = dashboard.ingestion {
-            connectedCard(snapshot)
-            watcherCard(snapshot.watcher).padding(.top, Space.xl)
-            issuesCard(snapshot.issues ?? []).padding(.top, Space.xl)
-            verifierShelf.padding(.top, Space.xl)
-            scopeCard.padding(.top, Space.xl)
-        } else if let error = dashboard.ingestionError {
+        switch SourcesHealthAvailability(
+            hasSnapshot: dashboard.ingestion != nil,
+            error: dashboard.ingestionError
+        ) {
+        case .connected:
+            if let snapshot = dashboard.ingestion {
+                connectedCard(snapshot)
+                watcherCard(snapshot.watcher).padding(.top, Space.xl)
+                issuesCard(snapshot.issues ?? []).padding(.top, Space.xl)
+                verifierShelf.padding(.top, Space.xl)
+                scopeCard.padding(.top, Space.xl)
+            }
+        case .unavailable(let error):
             VStack(alignment: .leading, spacing: 4) {
                 Text("Source health unavailable").font(Type.rowLabel).foregroundStyle(Theme.ink)
                 Text(error).font(Type.caption).foregroundStyle(Theme.muted)
-                Text("An older daemon serves no /v1/ingestion — update and restart it.")
-                    .font(Type.caption).foregroundStyle(Theme.muted)
             }
             verifierShelf.padding(.top, Space.xl)
             scopeCard.padding(.top, Space.xl)
-        } else {
+        case .loading:
             Text("Loading source health…").font(Type.body).foregroundStyle(Theme.muted)
         }
     }

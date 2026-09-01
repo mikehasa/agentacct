@@ -20,6 +20,8 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "dashboard-weekly-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1800),
         ExpectedArtifact(filename: "dashboard-trust-unavailable-light.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "dashboard-trust-unavailable-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "dashboard-old-daemon-statusless-light.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "dashboard-old-daemon-statusless-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
     ]
 
     @MainActor
@@ -256,6 +258,9 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         defer { SnapshotMode.setFixtureDate(nil) }
 
         XCTAssertEqual(Theme.resetsIn(1_000_000 + 6 * 86_400 + 13 * 3_600), "6d 13h")
+        XCTAssertNil(Theme.resetsIn(.greatestFiniteMagnitude))
+        XCTAssertNil(Theme.resetsIn(.infinity))
+        XCTAssertNil(Theme.resetsIn(.nan))
         XCTAssertEqual(agoText(1_000_000 - 3_600), "1h ago")
     }
 

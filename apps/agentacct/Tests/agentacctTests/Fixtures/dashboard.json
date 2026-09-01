@@ -279,6 +279,8 @@
       "failed_step": 0,
       "blocker": 1
     },
+    "revision": "dashboard-snapshot-fixture-v1",
+    "offset": 0,
     "limit": 5,
     "truncated": false,
     "items": [
@@ -363,6 +365,7 @@
       {
         "task_id": "task-snapshot-harness",
         "title": "Build reusable snapshot harness",
+        "project": "agentacct-gui",
         "decision_status": {
           "key": "verified",
           "label": "Verified",
@@ -396,6 +399,7 @@
       {
         "task_id": "task-dashboard-hierarchy",
         "title": "Rethink dashboard product hierarchy",
+        "project": "agentacct-gui",
         "decision_status": {
           "key": "reported",
           "label": "Agent reported",
@@ -430,6 +434,7 @@
       {
         "task_id": "task-provider-calibration",
         "title": "Resolve provider calibration",
+        "project": "provider-integration",
         "decision_status": {
           "key": "blocked",
           "label": "Blocked",
@@ -454,6 +459,7 @@
       {
         "task_id": "task-visual-regression",
         "title": "Review dashboard visual regression",
+        "project": "agentacct-gui",
         "decision_status": {
           "key": "finding",
           "label": "Open finding",

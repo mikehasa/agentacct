@@ -235,6 +235,12 @@ struct LimitWindowPresentation {
 
     var resetText: String {
         guard let resetsAt = window.resetsAt else { return "Reset time not reported" }
+        guard resetsAt.isFinite,
+              (Date.distantPast.timeIntervalSince1970 ... Date.distantFuture.timeIntervalSince1970)
+              .contains(resetsAt)
+        else {
+            return "Invalid reset time"
+        }
         let date = Date(timeIntervalSince1970: resetsAt)
         let now = SnapshotMode.currentDate
         let time = usageResetClockText(date)

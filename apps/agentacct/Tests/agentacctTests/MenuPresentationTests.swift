@@ -69,6 +69,26 @@ final class MenuPresentationTests: XCTestCase {
         XCTAssertNotEqual(presentation.primary?.id, presentation.secondary.first?.id)
     }
 
+    func testPercentageTextRejectsValuesThatCannotBeDisplayedSafely() {
+        func item(_ usedPercent: Double?) -> MenuLimitItem {
+            MenuLimitItem(
+                id: "test",
+                client: "codex",
+                clientLabel: "Codex",
+                windowLabel: "7-day limit",
+                usedPercent: usedPercent,
+                resetText: nil
+            )
+        }
+
+        XCTAssertEqual(item(nil).percentageText, "Not reported")
+        XCTAssertEqual(item(0.5).percentageText, "<1%")
+        XCTAssertEqual(item(.greatestFiniteMagnitude).percentageText, "Invalid percentage")
+        XCTAssertEqual(item(.infinity).percentageText, "Invalid percentage")
+        XCTAssertEqual(item(.nan).percentageText, "Invalid percentage")
+        XCTAssertEqual(item(-1).percentageText, "Invalid percentage")
+    }
+
     func testUsageUsesWindowDurationAndNamesMissingEvidence() throws {
         let fixture = try DashboardSnapshotFixture.load(from: fixtureURL())
         let sparse = try XCTUnwrap(fixture.menuSparseGlance)

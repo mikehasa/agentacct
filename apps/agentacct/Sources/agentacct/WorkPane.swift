@@ -128,12 +128,25 @@ final class WorkBrowseState: ObservableObject {
     @Published var pendingFocusRestorationTaskId: String?
     @Published var shouldFocusSearchOnReturn = false
 
-    func visibleTasks(in tasks: [ReceiptSummary]) -> [ReceiptSummary] {
-        visibleWorkReceipts(tasks, query: query, group: group, sort: sort)
+    func visibleTasks(
+        in tasks: [ReceiptSummary],
+        attentionItems: [ReceiptSummary] = []
+    ) -> [ReceiptSummary] {
+        workTableRows(
+            receipts: tasks,
+            attention: attentionItems,
+            group: group,
+            query: query,
+            sort: sort
+        )
     }
 
-    func prepareReturnFocus(from taskId: String?, in tasks: [ReceiptSummary]) {
-        let visible = visibleTasks(in: tasks)
+    func prepareReturnFocus(
+        from taskId: String?,
+        in tasks: [ReceiptSummary],
+        attentionItems: [ReceiptSummary] = []
+    ) {
+        let visible = visibleTasks(in: tasks, attentionItems: attentionItems)
         if let taskId, visible.contains(where: { $0.taskId == taskId }) {
             pendingFocusRestorationTaskId = taskId
             shouldFocusSearchOnReturn = false
@@ -229,6 +242,7 @@ func workLayoutMode(
 struct WorkReceiptRowPresentation {
     let taskId: String
     let title: String
+    let projectText: String?
     let decisionKey: String
     let decisionLabel: String
     let decisionHelp: String
@@ -257,7 +271,11 @@ struct WorkReceiptRowPresentation {
         let checksFailed = detailChecks?.checksFailed ?? resolvedEvidence.checksFailed
 
         taskId = task.taskId
-        title = selectedDetail?.title ?? task.title ?? task.taskId
+        title = recordedTaskDisplayTitle(
+            selectedDetail?.title ?? task.title,
+            taskId: task.taskId
+        )
+        projectText = receiptProjectContext(task)
         decisionKey = decision.key
         decisionLabel = decision.label ?? decision.key
         // A resolved blocker is surfaced (so it can be reopened) but must not
@@ -307,6 +325,7 @@ struct WorkReceiptRowPresentation {
 
     var accessibilityLabel: String {
         var parts = [title, decisionLabel]
+        if let projectText { parts.insert("project \(projectText)", at: 1) }
         if handedOff && decisionKey != "handed_off" { parts.append("handed off") }
         if let attentionReason, !attentionReason.isEmpty { parts.append(attentionReason) }
         parts.append(coverageText)
@@ -377,18 +396,49 @@ struct WorkAttentionEmptyCopy: Equatable {
     let title: String
     let detail: String
 
-    init(payload: V1AttentionPayload, query: String) {
+    init(payload: V1AttentionPayload, query: String, loadedCount: Int? = nil) {
+        let loadedCount = min(
+            max(0, loadedCount ?? payload.items.count),
+            max(0, payload.total)
+        )
+        let hasQuery = hasWorkQuery(query)
         if payload.total == 0 {
             title = "No current review items"
             detail = "The complete attention projection reports no failed checks, failed steps, or unresolved blockers."
-        } else if !query.isEmpty, !payload.items.isEmpty {
+        } else if hasQuery, loadedCount > 0 {
             title = "No review items match this filter"
-            detail = "The bounded queue has \(payload.items.count) of \(payload.total) review items; adjust the filter to inspect them."
+            detail = "The loaded queue has \(loadedCount) of \(payload.total) review items; adjust the filter to inspect them."
         } else {
             title = "Review queue details unavailable"
             detail = "The complete projection reports \(payload.total) review items, but no bounded queue rows were returned. Refresh before acting."
         }
     }
+}
+
+func workReceiptFooterText(
+    visibleCount: Int,
+    loadedCount: Int,
+    totalCount: Int?,
+    query: String,
+    sort: WorkSort
+) -> String {
+    let total = totalCount ?? loadedCount
+    let hasQuery = hasWorkQuery(query)
+    if total > loadedCount {
+        let visible = hasQuery
+            ? "\(visibleCount) match filter in latest \(loadedCount) loaded"
+            : "\(visibleCount) shown from latest \(loadedCount) loaded"
+        return "\(visible) · \(total) total receipts · \(sort.footerText)"
+    }
+    if hasQuery {
+        return "\(visibleCount) match filter · \(loadedCount) receipts loaded · \(sort.footerText)"
+    }
+    return "\(visibleCount) of \(total) receipts · \(sort.footerText)"
+}
+
+func retainedWorkListWarning(error: String?, visibleCount: Int) -> String? {
+    guard visibleCount > 0, let error else { return nil }
+    return "Showing last loaded receipts · \(error)"
 }
 
 /// Shared ordering for the receipts table and master — one algorithm, so the
@@ -405,6 +455,46 @@ func sortedReceipts(_ rows: [ReceiptSummary], by sort: WorkSort) -> [ReceiptSumm
     case .cost:
         return rows.sorted { ($0.cost.estimatedCostUsd ?? -1) > ($1.cost.estimatedCostUsd ?? -1) }
     }
+}
+
+func receiptMatchesWorkQuery(_ receipt: ReceiptSummary, query: String) -> Bool {
+    let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !needle.isEmpty else { return true }
+    return (receipt.title ?? "").lowercased().contains(needle)
+        || receipt.taskId.lowercased().contains(needle)
+        || (receiptProjectContext(receipt) ?? "").lowercased().contains(needle)
+        || (receipt.primaryRoot?.client ?? "").lowercased().contains(needle)
+}
+
+func hasWorkQuery(_ query: String) -> Bool {
+    !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+}
+
+func receiptProjectContext(_ receipt: ReceiptSummary) -> String? {
+    guard let project = receipt.project?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !project.isEmpty
+    else {
+        return nil
+    }
+    return project
+}
+
+func workTableRows(
+    receipts: [ReceiptSummary],
+    attention: [ReceiptSummary],
+    group: WorkGroup?,
+    query: String,
+    sort: WorkSort
+) -> [ReceiptSummary] {
+    var rows = group == .attention ? attention : receipts
+    if let group, group != .attention {
+        rows = rows.filter { WorkGroup.forKey($0.decisionStatus.key) == group }
+    }
+    rows = rows.filter { receiptMatchesWorkQuery($0, query: query) }
+    // Attention is already operationally ranked across the whole store. A
+    // client-side cost/lifecycle sort over only loaded pages would falsify
+    // that order, so filtering is the only transformation allowed there.
+    return group == .attention ? rows : sortedReceipts(rows, by: sort)
 }
 
 // MARK: - Decision-status legend
@@ -721,7 +811,6 @@ private struct WorkRecordPlaceholder: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             backButton
-
             Card {
                 VStack(spacing: Space.m) {
                     if showsProgress && !SnapshotMode.enabled {
@@ -776,7 +865,8 @@ private struct WorkRecordPlaceholder: View {
         Button {
             selection.workBrowse.prepareReturnFocus(
                 from: selection.taskId,
-                in: dashboard.receiptTasks
+                in: dashboard.receiptTasks,
+                attentionItems: dashboard.attentionQueueItems
             )
             selection.taskId = nil
             selection.sessionId = nil
@@ -802,6 +892,7 @@ struct WorkTaskPresentation {
     init(
         tasks: [ReceiptSummary],
         attention: V1AttentionPayload? = nil,
+        attentionItems: [ReceiptSummary]? = nil,
         group: WorkGroup?,
         query: String,
         sort: WorkSort
@@ -813,13 +904,13 @@ struct WorkTaskPresentation {
         groupCounts = counts
 
         // The endpoint has already classified and operationally ordered a
-        // bounded queue across every visible Task. Do not re-derive it from
-        // the latest receipts page.
-        let sourceTasks = group == .attention ? attention?.items ?? [] : tasks
-        visibleTasks = visibleWorkReceipts(
-            sourceTasks,
+        // bounded queue across every visible Task. Do not re-derive or sort it
+        // from the latest receipts page.
+        visibleTasks = workTableRows(
+            receipts: tasks,
+            attention: attentionItems ?? attention?.items ?? [],
+            group: group,
             query: query,
-            group: group == .attention ? nil : group,
             sort: sort
         )
     }
@@ -840,6 +931,7 @@ private struct WorkTablePage: View {
         let presentation = WorkTaskPresentation(
             tasks: dashboard.receiptTasks,
             attention: dashboard.attention,
+            attentionItems: dashboard.attentionQueueItems,
             group: browse.group,
             query: browse.query,
             sort: browse.sort
@@ -972,7 +1064,11 @@ private struct WorkTablePage: View {
                         .pickerStyle(.menu)
                         .accessibilityIdentifier("work.table.status")
                     }
-                    Text("\(visibleCount) shown")
+                    Text(
+                        dashboard.hasLoadedReceiptTasks
+                            ? "\(visibleCount) shown"
+                            : "Count unavailable"
+                    )
                         .workFont(.dataSmall).foregroundStyle(Theme.muted)
                     Spacer(minLength: 0)
                 }
@@ -984,11 +1080,15 @@ private struct WorkTablePage: View {
                         total: dashboard.totalReceiptTasks,
                         truncated: dashboard.receiptTasksTruncated
                     ) || dashboard.totalReceiptTasks == nil
-                    tabButton(nil, label: partialOrUnknown ? "Loaded" : "All", count: dashboard.receiptTasks.count)
+                    tabButton(
+                        nil,
+                        label: partialOrUnknown ? "Loaded" : "All",
+                        count: dashboard.hasLoadedReceiptTasks ? dashboard.receiptTasks.count : nil
+                    )
                     ForEach(WorkGroup.allCases) { candidate in
                         let count: Int? = candidate == .attention
                             ? dashboard.attention?.total
-                            : (groupCounts[candidate] ?? 0)
+                            : (dashboard.hasLoadedReceiptTasks ? groupCounts[candidate] ?? 0 : nil)
                         // Attention is complete across the store and can exceed
                         // Loaded; other lifecycle counts describe that page.
                         // "Other" appears only for an unmapped decision key.
@@ -1036,9 +1136,10 @@ private struct WorkTablePage: View {
                 if SnapshotMode.enabled {
                     // ImageRenderer draws a TextField / .menu Picker as a yellow
                     // placeholder; a snapshot shows plain stand-ins instead.
-                    Text("Filter by task, client, or id").workFont(.caption).foregroundStyle(Theme.muted)
+                    Text("Filter by task, project, client, or id")
+                        .workFont(.caption).foregroundStyle(Theme.muted)
                 } else {
-                    TextField("Filter by task, client, or id", text: $browse.query)
+                    TextField("Filter by task, project, client, or id", text: $browse.query)
                         .textFieldStyle(.plain).workFont(.caption)
                         .focused($searchFocused)
                         .accessibilityFocused($searchAccessibilityFocused)
@@ -1053,7 +1154,12 @@ private struct WorkTablePage: View {
                     .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW)
             )
             if SnapshotMode.enabled {
-                Chip(text: "sort: \(browse.sort.rawValue)", tint: Theme.accent)
+                Chip(
+                    text: browse.group == .attention ? "server ranked" : "sort: \(browse.sort.rawValue)",
+                    tint: browse.group == .attention ? Theme.coral : Theme.accent
+                )
+            } else if browse.group == .attention {
+                Chip(text: "server ranked", tint: Theme.coral)
             } else {
                 Picker("Sort", selection: $browse.sort) {
                     ForEach(WorkSort.allCases) { Text($0.rawValue).tag($0) }
@@ -1114,6 +1220,7 @@ private struct WorkTablePage: View {
                     HStack(spacing: Space.m) {
                         if SnapshotMode.enabled {
                             Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 14, weight: .medium))
                                 .foregroundStyle(Theme.muted)
                                 .accessibilityHidden(true)
                         } else {
@@ -1124,9 +1231,27 @@ private struct WorkTablePage: View {
                     }
                     .padding(Space.xl)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                } else if browse.group != .attention, !dashboard.hasLoadedReceiptTasks {
+                    HStack(spacing: Space.m) {
+                        if SnapshotMode.enabled {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(Theme.muted)
+                        } else {
+                            ProgressView().controlSize(.small).tint(Theme.muted)
+                        }
+                        Text("Loading recorded work…")
+                            .workFont(.body).foregroundStyle(Theme.muted)
+                    }
+                    .padding(Space.xl)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 } else if visibleTasks.isEmpty {
                     let attentionCopy = dashboard.attention.map {
-                        WorkAttentionEmptyCopy(payload: $0, query: browse.query)
+                        WorkAttentionEmptyCopy(
+                            payload: $0,
+                            query: browse.query,
+                            loadedCount: dashboard.attentionQueueItems.count
+                        )
                     }
                     VStack(alignment: .leading, spacing: 4) {
                         Text(
@@ -1248,23 +1373,43 @@ private struct WorkTablePage: View {
     }
 
     private func footer(visibleTasks: [ReceiptSummary]) -> some View {
-        HStack(spacing: Space.m) {
-            Text(footerText(visibleTasks: visibleTasks))
-                .workFont(.dataSmall).foregroundStyle(Theme.muted)
-            if browse.group == .attention, let error = dashboard.attentionError {
+        VStack(alignment: .leading, spacing: Space.s) {
+            HStack(spacing: Space.m) {
+                Text(footerText(visibleTasks: visibleTasks))
+                    .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                Spacer(minLength: Space.m)
+                if browse.group == .attention, dashboard.canLoadMoreAttention {
+                    Button {
+                        Task { await dashboard.fetchMoreAttention() }
+                    } label: {
+                        if dashboard.isLoadingMoreAttention {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text("Loading…")
+                            }
+                        } else {
+                            Text(dashboard.attentionPageError == nil ? "Load more" : "Retry")
+                        }
+                    }
+                    .workFont(.captionSemibold)
+                    .buttonStyle(QuietButtonStyle())
+                    .disabled(dashboard.isLoadingMoreAttention)
+                    .accessibilityLabel(
+                        dashboard.attentionPageError == nil
+                            ? "Load more review items"
+                            : "Retry loading review items"
+                    )
+                    .accessibilityHint(
+                        dashboard.attentionPageError
+                            ?? "Loads the next server-ranked review items"
+                    )
+                    .accessibilityIdentifier("work.attention.load-more")
+                }
+            }
+            if browse.group == .attention, let error = dashboard.attentionPageError {
                 Text(error)
                     .workFont(.dataSmall)
-                    .foregroundStyle(Theme.coral)
-                    .lineLimit(1)
-            }
-            Spacer()
-            if browse.group == .attention, dashboard.attention?.truncated == true {
-                Button(dashboard.isLoadingMoreAttention ? "Loading…" : "Load more") {
-                    Task { await dashboard.fetchMoreAttention() }
-                }
-                .buttonStyle(QuietButtonStyle())
-                .disabled(dashboard.isLoadingMoreAttention)
-                .accessibilityIdentifier("work.attention.load-more")
+                    .foregroundStyle(Theme.amber)
             }
         }
     }
@@ -1275,8 +1420,24 @@ private struct WorkTablePage: View {
 
     private func footerText(visibleTasks: [ReceiptSummary]) -> String {
         if browse.group == .attention, let attention = dashboard.attention {
-            let scope = attention.truncated ? "bounded operational queue" : "complete queue"
-            return "\(visibleTasks.count) of \(attention.total) review items · \(scope)"
+            let loaded = dashboard.attentionQueueItems.count
+            let scope: String
+            if loaded >= attention.total {
+                scope = "complete queue loaded"
+            } else if dashboard.supportsAttentionPaging {
+                scope = "more available"
+            } else {
+                scope = "update agentacct to load more"
+            }
+            if !hasWorkQuery(browse.query) {
+                return "\(loaded) of \(attention.total) review items loaded · \(scope)"
+            }
+            return "\(visibleTasks.count) match filter · \(loaded) of \(attention.total) loaded · \(scope)"
+        }
+        guard dashboard.hasLoadedReceiptTasks else {
+            return dashboard.receiptListError == nil
+                ? "Loading recorded work…"
+                : "Receipt list unavailable · refresh to retry"
         }
         return workBrowseCountText(
             visible: visibleTasks.count,
@@ -1302,6 +1463,11 @@ private struct WorkTablePage: View {
     }
 
     private var receiptCollectionHeaderText: String {
+        guard dashboard.hasLoadedReceiptTasks else {
+            return dashboard.receiptListError == nil
+                ? "local store · loading receipts"
+                : "local store · receipts unavailable"
+        }
         if dashboard.isLoadingReceipts, dashboard.receiptTasks.isEmpty {
             return "local store · loading receipts"
         }
@@ -1380,10 +1546,19 @@ private struct WorkTableRow: View {
         Button(action: action) {
             HStack(spacing: Space.l) {
                 HStack(spacing: Space.m) {
-                    Text(presentation.title)
-                        .workFont(.rowLabel).foregroundStyle(Theme.ink)
-                        .lineLimit(1).truncationMode(.tail)
-                        .help(presentation.title)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(presentation.title)
+                            .workFont(.rowLabel).foregroundStyle(Theme.ink)
+                            .lineLimit(1).truncationMode(.tail)
+                            .help(presentation.title)
+                        if let project = presentation.projectText {
+                            Text(project)
+                                .workFont(.dataSmall)
+                                .foregroundStyle(Theme.muted)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
                     DecisionBadge(
                         key: presentation.decisionKey,
                         label: presentation.decisionLabel,
@@ -1567,8 +1742,58 @@ private struct WorkMasterList: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var focusedTaskId: String?
 
+    private var presentation: WorkTaskPresentation {
+        WorkTaskPresentation(
+            tasks: dashboard.receiptTasks,
+            attention: dashboard.attention,
+            attentionItems: dashboard.attentionQueueItems,
+            group: browse.group,
+            query: browse.query,
+            sort: browse.sort
+        )
+    }
+
     private var visibleTasks: [ReceiptSummary] {
-        browse.visibleTasks(in: dashboard.receiptTasks)
+        presentation.visibleTasks
+    }
+
+    private var availableTasks: [ReceiptSummary] {
+        browse.group == .attention
+            ? dashboard.attentionQueueItems
+            : dashboard.receiptTasks
+    }
+
+    private var knownTasks: [ReceiptSummary] {
+        dashboard.receiptTasks + dashboard.attentionQueueItems
+    }
+
+    private var visibleError: String? {
+        browse.group == .attention ? dashboard.attentionError : dashboard.receiptListError
+    }
+
+    private var isLoadingEmptyCollection: Bool {
+        if browse.group == .attention {
+            return dashboard.attention == nil && dashboard.attentionError == nil
+        }
+        return dashboard.isLoadingReceipts && dashboard.receiptTasks.isEmpty
+    }
+
+    private var countText: String {
+        if browse.group == .attention {
+            guard let attention = dashboard.attention else {
+                return dashboard.attentionError == nil ? "Loading review queue" : "Review queue unavailable"
+            }
+            return "\(visibleTasks.count) shown · \(dashboard.attentionQueueItems.count) of \(attention.total) loaded"
+        }
+        guard dashboard.hasLoadedReceiptTasks else {
+            return dashboard.receiptListError == nil ? "Loading receipts" : "Receipts unavailable"
+        }
+        return workBrowseCountText(
+            visible: visibleTasks.count,
+            loaded: dashboard.receiptTasks.count,
+            total: dashboard.totalReceiptTasks,
+            truncated: dashboard.receiptTasksTruncated
+        )
     }
 
     private var renderedTasks: [ReceiptSummary] {
@@ -1579,7 +1804,7 @@ private struct WorkMasterList: View {
     private var selectionIsOutsideBrowse: Bool {
         workSelectionIsOutsideBrowse(
             taskId: selection.taskId,
-            allTasks: dashboard.receiptTasks,
+            allTasks: knownTasks,
             visibleTasks: visibleTasks
         )
     }
@@ -1590,14 +1815,7 @@ private struct WorkMasterList: View {
                 Text("Work receipts").workFont(.titleCard).foregroundStyle(Theme.ink)
                     .accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 0)
-                Text(
-                    workBrowseCountText(
-                        visible: visibleTasks.count,
-                        loaded: dashboard.receiptTasks.count,
-                        total: dashboard.totalReceiptTasks,
-                        truncated: dashboard.receiptTasksTruncated
-                    )
-                )
+                Text(countText)
                     .workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
             .padding(.horizontal, Space.l)
@@ -1620,16 +1838,22 @@ private struct WorkMasterList: View {
                 .padding(.bottom, Space.s)
                 .accessibilityElement(children: .contain)
             }
-            if let error = dashboard.receiptListError, !dashboard.receiptTasks.isEmpty {
+            if let error = visibleError, !availableTasks.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    if dashboard.isLoadingReceipts, !SnapshotMode.enabled {
+                    if browse.group != .attention,
+                       dashboard.isLoadingReceipts,
+                       !SnapshotMode.enabled {
                         ProgressView().controlSize(.mini)
                     } else {
                         Image(systemName: "exclamationmark.triangle")
                             .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.amber)
                             .accessibilityHidden(true)
                     }
-                    Text(dashboard.isLoadingReceipts ? "Retrying · showing saved list" : "Showing saved list · refresh failed")
+                    Text(
+                        browse.group != .attention && dashboard.isLoadingReceipts
+                            ? "Retrying · showing saved list"
+                            : "Showing saved list · refresh failed"
+                    )
                         .workFont(.dataSmall).foregroundStyle(Theme.muted)
                         .help(error)
                     Spacer(minLength: 0)
@@ -1643,16 +1867,29 @@ private struct WorkMasterList: View {
             ScrollViewReader { scrollProxy in
                 ScrollBox {
                     ScrollContentStack(spacing: 0) {
-                    if dashboard.isLoadingReceipts, dashboard.receiptTasks.isEmpty {
+                    if isLoadingEmptyCollection {
                         masterEmpty(
-                            title: "Loading receipts",
-                            message: "Reading the latest recorded work from the local store."
+                            title: browse.group == .attention ? "Loading review queue" : "Loading receipts",
+                            message: browse.group == .attention
+                                ? "Reading the complete review projection from the local store."
+                                : "Reading the latest recorded work from the local store."
                         )
-                        .accessibilityLabel("Loading receipts from the local store")
-                    } else if let error = dashboard.receiptListError, dashboard.receiptTasks.isEmpty {
+                        .accessibilityLabel(
+                            browse.group == .attention
+                                ? "Loading review queue from the local store"
+                                : "Loading receipts from the local store"
+                        )
+                    } else if let error = visibleError, availableTasks.isEmpty {
                         VStack(alignment: .leading, spacing: Space.s) {
-                            masterEmpty(title: "Receipts unavailable", message: error)
-                            if !SnapshotMode.enabled, !dashboard.isLoadingReceipts {
+                            masterEmpty(
+                                title: browse.group == .attention
+                                    ? "Review queue unavailable"
+                                    : "Receipts unavailable",
+                                message: error
+                            )
+                            if browse.group != .attention,
+                               !SnapshotMode.enabled,
+                               !dashboard.isLoadingReceipts {
                                 Button("Retry") { Task { await dashboard.fetchReceipts() } }
                                     .buttonStyle(QuietButtonStyle(tint: Theme.accent))
                                     .padding(.horizontal, Space.l)
@@ -1660,11 +1897,23 @@ private struct WorkMasterList: View {
                             }
                         }
                     } else if visibleTasks.isEmpty {
+                        let attentionCopy = dashboard.attention.map {
+                            WorkAttentionEmptyCopy(
+                                payload: $0,
+                                query: browse.query,
+                                loadedCount: dashboard.attentionQueueItems.count
+                            )
+                        }
                         masterEmpty(
-                            title: dashboard.receiptTasks.isEmpty ? "No receipts recorded yet" : "No matching receipts",
-                            message: dashboard.receiptTasks.isEmpty
-                                ? "Recorded work will appear here."
-                                : "Clear the filter or choose another status."
+                            title: browse.group == .attention
+                                ? attentionCopy?.title ?? "Review status unavailable"
+                                : dashboard.receiptTasks.isEmpty
+                                    ? "No receipts recorded yet" : "No matching receipts",
+                            message: browse.group == .attention
+                                ? attentionCopy?.detail ?? "Refresh before acting on the review queue."
+                                : dashboard.receiptTasks.isEmpty
+                                    ? "Recorded work will appear here."
+                                    : "Clear the filter or choose another status."
                         )
                     } else {
                         ForEach(renderedTasks) { task in
@@ -1687,6 +1936,24 @@ private struct WorkMasterList: View {
                             .workFont(.dataSmall).foregroundStyle(Theme.muted)
                             .padding(Space.l)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if browse.group == .attention, dashboard.canLoadMoreAttention {
+                        Button {
+                            Task { await dashboard.fetchMoreAttention() }
+                        } label: {
+                            Text(dashboard.attentionPageError == nil ? "Load more" : "Retry")
+                        }
+                        .workFont(.captionSemibold)
+                        .buttonStyle(QuietButtonStyle())
+                        .disabled(dashboard.isLoadingMoreAttention)
+                        .padding(Space.l)
+                        .accessibilityIdentifier("work.master.attention.load-more")
+                    }
+                    if browse.group == .attention, let error = dashboard.attentionPageError {
+                        Text(error)
+                            .workFont(.dataSmall).foregroundStyle(Theme.amber)
+                            .padding(.horizontal, Space.l)
+                            .padding(.bottom, Space.l)
                     }
                 }
                 }
@@ -1724,7 +1991,10 @@ private struct WorkMasterList: View {
             HStack(spacing: Space.s) {
                 if SnapshotMode.enabled {
                     Chip(text: browse.group?.rawValue ?? "All statuses", tint: Theme.accent)
-                    Chip(text: browse.sort.rawValue, tint: Theme.muted)
+                    Chip(
+                        text: browse.group == .attention ? "server ranked" : browse.sort.rawValue,
+                        tint: browse.group == .attention ? Theme.coral : Theme.muted
+                    )
                 } else {
                     Picker("Status", selection: $browse.group) {
                         Text("All statuses").tag(nil as WorkGroup?)
@@ -1734,11 +2004,15 @@ private struct WorkMasterList: View {
                     }
                     .pickerStyle(.menu)
                     .accessibilityIdentifier("work.master.status")
-                    Picker("Sort", selection: $browse.sort) {
-                        ForEach(WorkSort.allCases) { Text($0.rawValue).tag($0) }
+                    if browse.group == .attention {
+                        Chip(text: "server ranked", tint: Theme.coral)
+                    } else {
+                        Picker("Sort", selection: $browse.sort) {
+                            ForEach(WorkSort.allCases) { Text($0.rawValue).tag($0) }
+                        }
+                        .pickerStyle(.menu)
+                        .accessibilityIdentifier("work.master.sort")
                     }
-                    .pickerStyle(.menu)
-                    .accessibilityIdentifier("work.master.sort")
                 }
                 DecisionLegendButton()
                 Spacer(minLength: 0)
@@ -1958,7 +2232,8 @@ struct WorkRecordPage: View {
         Button {
             selection.workBrowse.prepareReturnFocus(
                 from: receipt.taskId,
-                in: dashboard.receiptTasks
+                in: dashboard.receiptTasks,
+                attentionItems: dashboard.attentionQueueItems
             )
             selection.taskId = nil
             selection.sessionId = nil
@@ -1981,7 +2256,7 @@ struct WorkRecordPage: View {
     private var titleBlock: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             HStack(alignment: .center, spacing: Space.m) {
-                Text(receipt.title ?? receipt.taskId)
+                Text(recordedTaskDisplayTitle(receipt.title, taskId: receipt.taskId))
                     .workFont(.titlePage).tracking(Type.titlePageTracking)
                     .foregroundStyle(Theme.ink)
                     .lineLimit(2)

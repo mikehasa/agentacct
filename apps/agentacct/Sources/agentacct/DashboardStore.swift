@@ -2,49 +2,19 @@ import Foundation
 import Observation
 import SwiftUI
 
-struct LatestRequestGeneration {
-    private(set) var current = 0
+enum DashboardDaemonFeature {
+    case attention
+    case ingestion
 
-    mutating func begin() -> Int {
-        current += 1
-        return current
+    var upgradeMessage: String {
+        switch self {
+        case .attention:
+            return "Update agentacct, then restart its local service to enable review status."
+        case .ingestion:
+            return "Update agentacct, then restart its local service to enable source status."
+        }
     }
-
-    func accepts(_ generation: Int) -> Bool {
-        generation == current
-    }
 }
-
-func mergedAttentionPages(
-    _ current: V1AttentionPayload,
-    _ next: V1AttentionPayload
-) -> V1AttentionPayload {
-    var seen = Set<String>()
-    let items = (current.items + next.items).filter { seen.insert($0.taskId).inserted }
-    return V1AttentionPayload(
-        schema: next.schema,
-        items: items,
-        total: next.total,
-        counts: next.counts,
-        snapshot: next.snapshot,
-        offset: current.offset,
-        limit: items.count,
-        truncated: next.truncated
-    )
-}
-
-func attentionPageCanAppend(
-    _ current: V1AttentionPayload,
-    _ next: V1AttentionPayload
-) -> Bool {
-    current.snapshot != nil
-        && next.snapshot == current.snapshot
-        && next.schema == current.schema
-        && next.offset == current.offset + current.items.count
-        && next.total == current.total
-        && next.counts == current.counts
-}
-
 /// Named state variants used only by deterministic offscreen review tooling.
 /// Keeping the mutation inside DashboardStore preserves its private setters;
 /// the live initializer and network lifecycle remain unchanged.
@@ -55,6 +25,8 @@ enum SnapshotWorkStoreState {
     case listError
     case listErrorWithRetainedData
     case shiftBriefUnavailable
+    case oldDaemonUnavailable
+    case attentionOverflow
     case receiptLoading
     case receiptError
     case receiptStale
@@ -81,11 +53,14 @@ final class DashboardStore {
     private(set) var usage: UsageSummary?
     private(set) var receiptTasks: [ReceiptSummary] = []
     private(set) var totalReceiptTasks: Int?
+    private(set) var hasLoadedReceiptTasks = false
     private(set) var receiptTasksTruncated: Bool?
     private(set) var receiptAttention: ReceiptAttentionPayload?
     /// Complete review classification plus a bounded operational queue.
     private(set) var attention: V1AttentionPayload?
     private(set) var attentionError: String?
+    private(set) var attentionQueueItems: [ReceiptSummary] = []
+    private(set) var attentionPageError: String?
     private(set) var isLoadingMoreAttention = false
     private(set) var receipt: Receipt?
     private(set) var receiptListError: String?
@@ -120,7 +95,8 @@ final class DashboardStore {
     /// Monotonic token so rapid range switches can't land out of order and a
     /// failed fetch can't leave the old data labeled with the new range.
     @ObservationIgnored private var usageDaysGeneration = 0
-    @ObservationIgnored private var attentionGeneration = LatestRequestGeneration()
+    @ObservationIgnored private var attentionGeneration = 0
+    @ObservationIgnored private var receiptListGeneration = 0
 
     @ObservationIgnored private let client = GlanceClient()
 
@@ -137,9 +113,11 @@ final class DashboardStore {
         usage = usageState?.summary ?? fixture.usage
         usageDays = usageState?.days ?? 7
         attention = fixture.attention
+        attentionQueueItems = fixture.attention.items
         ingestion = fixture.ingestion?.ingestion
         switch workState {
         case .populated:
+            hasLoadedReceiptTasks = true
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
             receiptTasksTruncated = fixture.tasks.truncated
@@ -153,6 +131,7 @@ final class DashboardStore {
             receiptTasks = []
             isLoadingReceipts = true
         case .empty:
+            hasLoadedReceiptTasks = true
             receiptTasks = []
             totalReceiptTasks = 0
             receiptTasksTruncated = false
@@ -161,33 +140,63 @@ final class DashboardStore {
                 items: [],
                 total: 0,
                 counts: V1AttentionCounts(failedCheck: 0, failedStep: 0, blocker: 0),
-                snapshot: nil,
-                offset: 0,
+                revision: fixture.attention.revision,
+                offset: fixture.attention.revision == nil ? nil : 0,
                 limit: fixture.attention.limit,
                 truncated: false
             )
+            attentionQueueItems = []
         case .listError:
             receiptTasks = []
             receiptListError = "receipts fetch failed: synthetic review error"
         case .listErrorWithRetainedData:
+            hasLoadedReceiptTasks = true
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
             receiptTasksTruncated = fixture.tasks.truncated
             receiptAttention = fixture.tasks.attention
             receiptListError = "receipts fetch failed: synthetic review error"
         case .shiftBriefUnavailable:
+            hasLoadedReceiptTasks = true
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
             receiptTasksTruncated = fixture.tasks.truncated
             receiptAttention = fixture.tasks.attention
             attentionError = "attention fetch failed: synthetic review error"
             ingestionError = "source health fetch failed: synthetic review error"
+        case .oldDaemonUnavailable:
+            hasLoadedReceiptTasks = true
+            receiptTasks = fixture.tasks.tasks
+            totalReceiptTasks = fixture.tasks.total
+            attention = nil
+            attentionQueueItems = []
+            ingestion = nil
+            attentionError = DashboardDaemonFeature.attention.upgradeMessage
+            ingestionError = DashboardDaemonFeature.ingestion.upgradeMessage
+        case .attentionOverflow:
+            hasLoadedReceiptTasks = true
+            receiptTasks = fixture.tasks.tasks
+            totalReceiptTasks = fixture.tasks.total
+            let overflow = V1AttentionPayload(
+                schema: fixture.attention.schema,
+                items: fixture.attention.items,
+                total: 7,
+                counts: V1AttentionCounts(failedCheck: 4, failedStep: 1, blocker: 2),
+                revision: fixture.attention.revision ?? "snapshot-overflow-revision",
+                offset: 0,
+                limit: 5,
+                truncated: true
+            )
+            attention = overflow
+            attentionQueueItems = overflow.items
         case .receiptLoading:
+            hasLoadedReceiptTasks = true
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
             receiptTasksTruncated = fixture.tasks.truncated
             receiptAttention = fixture.tasks.attention
         case .receiptError:
+            hasLoadedReceiptTasks = true
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
             receiptTasksTruncated = fixture.tasks.truncated
@@ -195,6 +204,7 @@ final class DashboardStore {
             receiptError = "receipt fetch failed: synthetic review error"
             receiptErrorTaskId = fixture.work?.receipt.taskId
         case .receiptStale:
+            hasLoadedReceiptTasks = true
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
             receiptTasksTruncated = fixture.tasks.truncated
@@ -203,6 +213,7 @@ final class DashboardStore {
             receiptError = "receipt refresh failed: synthetic review error"
             receiptErrorTaskId = fixture.work?.receipt.taskId
         case .attentionReceipt:
+            hasLoadedReceiptTasks = true
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
             receiptTasksTruncated = fixture.tasks.truncated
@@ -223,13 +234,13 @@ final class DashboardStore {
     func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
-        let receiptListGeneration = beginReceiptListLoad()
         defer {
             isRefreshing = false
         }
         let days = usageDays
         let rangeGeneration = usageDaysGeneration
-        let attentionRequestGeneration = attentionGeneration.begin()
+        let receiptRequestGeneration = beginReceiptListRequest()
+        let attentionRequestGeneration = beginAttentionRequest()
         isLoadingMoreAttention = false
         // Launch independent lanes together, but publish each error through
         // its own state so a successful range request cannot hide a stale Task
@@ -243,46 +254,47 @@ final class DashboardStore {
         var tasksSucceeded = false
         do {
             let tasks = try await tasksRequest
-            if receiptListGeneration == self.receiptListGeneration {
-                publishReceiptTasks(tasks)
+            if receiptRequestGeneration == receiptListGeneration {
+                publishReceiptList(tasks, requestGeneration: receiptRequestGeneration)
                 tasksSucceeded = true
             }
         } catch GlanceClientError.noDiscovery(_) {
-            if !Task.isCancelled,
-               receiptListGeneration == self.receiptListGeneration {
-                receiptListError = "daemon not running (no discovery file) — start it with `agentacct start`"
-            }
+            publishReceiptListFailure(
+                "daemon not running (no discovery file) — start it with `agentacct start`",
+                requestGeneration: receiptRequestGeneration
+            )
         } catch {
-            if receiptListGeneration == self.receiptListGeneration,
-               !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
-                receiptListError = "receipts fetch failed: \(error.localizedDescription)"
+            if !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
+                publishReceiptListFailure(
+                    "receipts fetch failed: \(error.localizedDescription)",
+                    requestGeneration: receiptRequestGeneration
+                )
             }
         }
-        endReceiptListLoad(generation: receiptListGeneration)
+        finishReceiptListRequest(receiptRequestGeneration)
 
         do {
             let payload = try await attentionRequest
-            if !Task.isCancelled,
-               attentionGeneration.accepts(attentionRequestGeneration) {
-                attention = payload
-                attentionError = nil
+            if !Task.isCancelled {
+                publishAttentionHead(payload, requestGeneration: attentionRequestGeneration)
             }
         } catch GlanceClientError.http(404) {
-            if attentionGeneration.accepts(attentionRequestGeneration) {
-                // A pre-attention daemon cannot support a complete review claim.
-                attention = nil
-                attentionError = "this daemon predates /v1/attention"
-            }
+            // A pre-attention daemon cannot support a complete review claim.
+            publishAttentionFailure(
+                DashboardDaemonFeature.attention.upgradeMessage,
+                requestGeneration: attentionRequestGeneration
+            )
         } catch GlanceClientError.noDiscovery(_) {
-            if attentionGeneration.accepts(attentionRequestGeneration) {
-                attention = nil
-                attentionError = "daemon not running (no discovery file) — start it with `agentacct start`"
-            }
+            publishAttentionFailure(
+                "daemon not running (no discovery file) — start it with `agentacct start`",
+                requestGeneration: attentionRequestGeneration
+            )
         } catch {
-            if attentionGeneration.accepts(attentionRequestGeneration),
-               !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
-                attention = nil
-                attentionError = "attention fetch failed: \(error.localizedDescription)"
+            if !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
+                publishAttentionFailure(
+                    "attention fetch failed: \(error.localizedDescription)",
+                    requestGeneration: attentionRequestGeneration
+                )
             }
         }
 
@@ -293,7 +305,7 @@ final class DashboardStore {
         } catch GlanceClientError.http(404) {
             // An older daemon without the route: a named state, not an error toast.
             if !Task.isCancelled {
-                ingestionError = "this daemon predates /v1/ingestion"
+                ingestionError = DashboardDaemonFeature.ingestion.upgradeMessage
             }
         } catch GlanceClientError.noDiscovery(_) {
             if !Task.isCancelled {
@@ -327,86 +339,209 @@ final class DashboardStore {
 
     /// The Task list for the Receipts pane (one compact Receipt summary each).
     func fetchReceipts() async {
-        let generation = beginReceiptListLoad()
-        defer { endReceiptListLoad(generation: generation) }
+        // The window refresh already owns this lane. Starting a second request
+        // here would advance the generation; if Work then disappears and its
+        // task is cancelled, the still-valid window response could be rejected.
+        guard !isRefreshing else { return }
+        let requestGeneration = beginReceiptListRequest()
+        defer { finishReceiptListRequest(requestGeneration) }
         do {
             let payload: ReceiptTasksPayload = try await client.getAuthed("/v1/tasks?limit=200")
-            guard generation == receiptListGeneration else { return }
-            publishReceiptTasks(payload)
+            guard !Task.isCancelled else { return }
+            publishReceiptList(payload, requestGeneration: requestGeneration)
+        } catch is CancellationError {
+            return
+        } catch let error as URLError where error.code == .cancelled {
+            return
         } catch GlanceClientError.noDiscovery(_) {
-            guard !Task.isCancelled,
-                  generation == receiptListGeneration else { return }
-            receiptListError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            publishReceiptListFailure(
+                "daemon not running (no discovery file) — start it with `agentacct start`",
+                requestGeneration: requestGeneration
+            )
         } catch {
-            guard generation == receiptListGeneration,
-                  !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) else { return }
-            receiptListError = "receipts fetch failed: \(error.localizedDescription)"
+            guard !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) else { return }
+            publishReceiptListFailure(
+                "receipts fetch failed: \(error.localizedDescription)",
+                requestGeneration: requestGeneration
+            )
         }
+    }
+
+    @discardableResult
+    func beginReceiptListRequest() -> Int {
+        receiptListGeneration += 1
+        isLoadingReceipts = true
+        return receiptListGeneration
+    }
+
+    private func finishReceiptListRequest(_ requestGeneration: Int) {
+        guard requestGeneration == receiptListGeneration else { return }
+        isLoadingReceipts = false
+    }
+
+    func publishReceiptList(_ payload: ReceiptTasksPayload, requestGeneration: Int) {
+        guard requestGeneration == receiptListGeneration else { return }
+        receiptTasks = payload.tasks
+        totalReceiptTasks = payload.total
+        receiptTasksTruncated = payload.truncated
+        receiptAttention = payload.attention
+        hasLoadedReceiptTasks = true
+        receiptListError = nil
+        receiptListLastUpdated = Date()
+    }
+
+    func publishReceiptListFailure(_ message: String, requestGeneration: Int) {
+        guard requestGeneration == receiptListGeneration else { return }
+        receiptListError = message
     }
 
     /// Refresh the complete attention classification independently of the
     /// paginated Receipt list. Used after a human disposition changes whether
     /// a finding or blocker still demands review.
     func fetchAttention() async {
-        let generation = attentionGeneration.begin()
+        let requestGeneration = beginAttentionRequest()
         isLoadingMoreAttention = false
         do {
-            let payload: V1AttentionPayload = try await client.getAuthed("/v1/attention?limit=50&offset=0")
-            guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
-            attention = payload
-            attentionError = nil
+            let payload: V1AttentionPayload = try await client.getAuthed("/v1/attention?limit=5")
+            guard !Task.isCancelled else { return }
+            publishAttentionHead(payload, requestGeneration: requestGeneration)
+        } catch is CancellationError {
+            return
+        } catch let error as URLError where error.code == .cancelled {
+            return
         } catch GlanceClientError.http(404) {
-            guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
-            attention = nil
-            attentionError = "this daemon predates /v1/attention"
+            publishAttentionFailure(
+                DashboardDaemonFeature.attention.upgradeMessage,
+                requestGeneration: requestGeneration
+            )
         } catch GlanceClientError.noDiscovery(_) {
-            guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
-            attention = nil
-            attentionError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            publishAttentionFailure(
+                "daemon not running (no discovery file) — start it with `agentacct start`",
+                requestGeneration: requestGeneration
+            )
         } catch {
-            guard attentionGeneration.accepts(generation),
-                  !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) else { return }
-            attention = nil
-            attentionError = "attention fetch failed: \(error.localizedDescription)"
+            guard !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) else { return }
+            publishAttentionFailure(
+                "attention fetch failed: \(error.localizedDescription)",
+                requestGeneration: requestGeneration
+            )
         }
     }
 
-    func fetchMoreAttention() async {
-        guard let current = attention, current.truncated, !isLoadingMoreAttention else { return }
-        let generation = attentionGeneration.begin()
-        isLoadingMoreAttention = true
-        defer {
-            if attentionGeneration.accepts(generation) { isLoadingMoreAttention = false }
+    @discardableResult
+    func beginAttentionRequest() -> Int {
+        attentionGeneration += 1
+        return attentionGeneration
+    }
+
+    func publishAttentionHead(_ payload: V1AttentionPayload, requestGeneration: Int) {
+        guard requestGeneration == attentionGeneration else { return }
+        guard hasConsistentAttentionHeadEnvelope(payload) else {
+            attention = nil
+            attentionQueueItems = []
+            attentionError = "Review status response was inconsistent. Refresh before acting on it."
+            attentionPageError = nil
+            return
         }
-        let offset = current.offset + current.items.count
+        attentionQueueItems = attentionItemsAfterHeadRefresh(
+            existing: attentionQueueItems,
+            previous: attention,
+            refreshed: payload
+        )
+        attention = payload
+        attentionError = nil
+        attentionPageError = nil
+    }
+
+    func publishAttentionFailure(_ message: String, requestGeneration: Int) {
+        guard requestGeneration == attentionGeneration else { return }
+        attention = nil
+        attentionQueueItems = []
+        attentionError = message
+        attentionPageError = nil
+    }
+
+    var hasMoreAttention: Bool {
+        guard let attention else { return false }
+        return attentionQueueItems.count < attention.total
+    }
+
+    var supportsAttentionPaging: Bool {
+        guard let attention else { return false }
+        return attention.offset != nil && attention.revision != nil
+    }
+
+    var canLoadMoreAttention: Bool {
+        hasMoreAttention && supportsAttentionPaging
+    }
+
+    /// Fetch the next server-ranked page without replacing the Shift Brief's
+    /// complete count or leading row. Page compatibility is validated before
+    /// publishing so older daemons that ignore `offset` cannot duplicate page
+    /// one and make a bounded queue look complete.
+    func fetchMoreAttention() async {
+        guard attention != nil,
+              canLoadMoreAttention,
+              !isLoadingMoreAttention
+        else {
+            return
+        }
+
+        isLoadingMoreAttention = true
+        let generation = attentionGeneration
+        defer {
+            if generation == attentionGeneration {
+                isLoadingMoreAttention = false
+            }
+        }
+        let offset = attentionQueueItems.count
         do {
             let page: V1AttentionPayload = try await client.getAuthed(
                 "/v1/attention?limit=50&offset=\(offset)"
             )
-            guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
-            guard page.offset == offset else {
-                attentionError = "this daemon predates paged /v1/attention"
-                return
-            }
-            guard attentionPageCanAppend(current, page) else {
-                // The queue changed between page requests. Restart instead of
-                // stitching two incompatible classifications together.
-                await fetchAttention()
-                return
-            }
-            attention = mergedAttentionPages(current, page)
-            attentionError = nil
+            guard !Task.isCancelled, generation == attentionGeneration else { return }
+            publishAttentionPage(page, requestGeneration: generation)
+        } catch is CancellationError {
+            return
+        } catch let error as URLError where error.code == .cancelled {
+            return
         } catch GlanceClientError.http(404) {
-            guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
-            attentionError = "this daemon predates paged /v1/attention"
+            guard generation == attentionGeneration else { return }
+            attentionPageError = DashboardDaemonFeature.attention.upgradeMessage
         } catch GlanceClientError.noDiscovery(_) {
-            guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
-            attentionError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            guard generation == attentionGeneration else { return }
+            attentionPageError = "daemon not running (no discovery file) — start it with `agentacct start`"
         } catch {
-            guard attentionGeneration.accepts(generation),
+            guard generation == attentionGeneration,
                   !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) else { return }
-            attentionError = "attention page fetch failed: \(error.localizedDescription)"
+            attentionPageError = "review queue page failed: \(error.localizedDescription)"
         }
+    }
+
+    func publishAttentionPage(_ page: V1AttentionPayload, requestGeneration: Int) {
+        guard requestGeneration == attentionGeneration, let summary = attention else { return }
+        if let summaryRevision = summary.revision,
+           let pageRevision = page.revision,
+           pageRevision != summaryRevision
+        {
+            attention = nil
+            attentionQueueItems = []
+            attentionError = "Review queue changed while loading. Refresh before acting on it."
+            attentionPageError = nil
+            return
+        }
+        guard let merged = mergedAttentionItems(
+            existing: attentionQueueItems,
+            summary: summary,
+            page: page
+        ) else {
+            attentionPageError = page.offset == nil
+                ? "Update agentacct, then restart its local service to load the complete review queue."
+                : "The review queue changed while loading. Refresh before acting on it."
+            return
+        }
+        attentionQueueItems = merged
+        attentionPageError = nil
     }
 
     /// One Task's full Receipt. 404 (task unknown / recorded elsewhere) is a
@@ -418,28 +553,6 @@ final class DashboardStore {
     /// page. A same-task refresh keeps the current receipt on screen instead
     /// of unmounting the record page for the rebuild.
     @ObservationIgnored private var receiptGeneration = 0
-    @ObservationIgnored private var receiptListGeneration = 0
-
-    @discardableResult
-    private func beginReceiptListLoad() -> Int {
-        receiptListGeneration += 1
-        isLoadingReceipts = true
-        return receiptListGeneration
-    }
-
-    private func endReceiptListLoad(generation: Int) {
-        guard generation == receiptListGeneration else { return }
-        isLoadingReceipts = false
-    }
-
-    private func publishReceiptTasks(_ payload: ReceiptTasksPayload) {
-        receiptTasks = payload.tasks
-        totalReceiptTasks = payload.total
-        receiptTasksTruncated = payload.truncated
-        receiptAttention = payload.attention
-        receiptListError = nil
-        receiptListLastUpdated = Date()
-    }
 
     func fetchReceipt(taskId: String) async {
         receiptGeneration += 1
