@@ -24,6 +24,7 @@ enum SnapshotWorkStoreState {
     case empty
     case listError
     case listErrorWithRetainedData
+    case retainedLongListError
     case shiftBriefUnavailable
     case oldDaemonUnavailable
     case attentionOverflow
@@ -156,6 +157,11 @@ final class DashboardStore {
             receiptTasksTruncated = fixture.tasks.truncated
             receiptAttention = fixture.tasks.attention
             receiptListError = "receipts fetch failed: synthetic review error"
+        case .retainedLongListError:
+            hasLoadedReceiptTasks = true
+            receiptTasks = fixture.tasks.tasks
+            totalReceiptTasks = fixture.tasks.total
+            receiptListError = "receipts fetch failed: The local service returned an incomplete response while refreshing cached work. Existing items remain visible and may be stale."
         case .shiftBriefUnavailable:
             hasLoadedReceiptTasks = true
             receiptTasks = fixture.tasks.tasks

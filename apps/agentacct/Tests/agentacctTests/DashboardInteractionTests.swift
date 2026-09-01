@@ -1,9 +1,37 @@
 import AppKit
 import Foundation
+import SwiftUI
 import XCTest
 @testable import agentacct
 
 final class DashboardInteractionTests: XCTestCase {
+    @MainActor
+    func testDashboardAccessibilityTextIsMateriallyLargerInTheNativeHost() throws {
+        func renderedSize(_ dynamicTypeSize: DynamicTypeSize) throws -> CGSize {
+            try SnapshotImageWriter.renderedSize(
+                Text("Readable dashboard")
+                    .dashboardFont(.body)
+                    .environment(\.dynamicTypeSize, dynamicTypeSize)
+            )
+        }
+
+        let medium = try renderedSize(.medium)
+        let accessibility5 = try renderedSize(.accessibility5)
+
+        XCTAssertGreaterThan(accessibility5.width, medium.width * 1.7)
+        XCTAssertGreaterThan(accessibility5.height, medium.height * 1.7)
+    }
+
+    func testDashboardAccessibleLayoutStartsBeforeFixedGeometryBecomesUnsafe() {
+        XCTAssertFalse(dashboardUsesAccessibilityLayout(.medium))
+        XCTAssertFalse(dashboardUsesAccessibilityLayout(.xLarge))
+        XCTAssertTrue(dashboardUsesAccessibilityLayout(.xxLarge))
+        XCTAssertTrue(dashboardUsesAccessibilityLayout(.xxxLarge))
+        XCTAssertTrue(dashboardUsesAccessibilityLayout(.accessibility1))
+        XCTAssertTrue(dashboardUsesAccessibilityLayout(.accessibility3))
+        XCTAssertTrue(dashboardUsesAccessibilityLayout(.accessibility5))
+    }
+
     func testAttentionPayloadPreservesCompleteCountsAndRecordedReason() throws {
         let payload = try decode(
             V1AttentionPayload.self,

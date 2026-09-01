@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import agentacct
 
@@ -22,6 +23,11 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "dashboard-trust-unavailable-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "dashboard-old-daemon-statusless-light.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "dashboard-old-daemon-statusless-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "dashboard-xlarge-minimum-light.png", pixelsWide: 1920, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "dashboard-xxlarge-minimum-light.png", pixelsWide: 1920, pixelsHigh: 4100),
+        ExpectedArtifact(filename: "dashboard-accessibility5-minimum-light.png", pixelsWide: 1920, pixelsHigh: 5400),
+        ExpectedArtifact(filename: "dashboard-accessibility5-minimum-dark.png", pixelsWide: 1920, pixelsHigh: 5400),
+        ExpectedArtifact(filename: "dashboard-accessibility5-error-minimum-light.png", pixelsWide: 1920, pixelsHigh: 5800),
     ]
 
     @MainActor
@@ -46,6 +52,84 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         XCTAssertEqual(fixture.glance.usage.byClient?.count, 3)
         XCTAssertEqual(fixture.glance.recentSessions.count, 2)
         XCTAssertNotNil(fixture.glance.usage.windows.first { $0.label == "today" })
+    }
+
+    @MainActor
+    func testFullContentConfigurationsRejectClippedCanvases() throws {
+        let fixture = try DashboardSnapshotFixture.load(from: dashboardFixtureURL())
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentacct-dashboard-clipping-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outputDirectory) }
+        let cases: [(String, DynamicTypeSize)] = [
+            ("xxlarge-too-short", .xxLarge),
+            ("accessibility5-too-short", .accessibility5),
+        ]
+
+        for (viewport, dynamicTypeSize) in cases {
+            let configuration = DashboardSnapshotConfiguration(
+                viewport: viewport,
+                width: 960,
+                height: 560,
+                colorScheme: .light,
+                workState: .populated,
+                dynamicTypeSize: dynamicTypeSize,
+                capturesFullContent: true
+            )
+
+            XCTAssertThrowsError(
+                try DashboardSnapshotRenderer.render(
+                    fixture: fixture,
+                    outputDirectory: outputDirectory,
+                    configurations: [configuration]
+                )
+            ) { error in
+                guard case SnapshotError.snapshotContentExceedsCanvas(
+                    let filename,
+                    let requiredHeight,
+                    let availableHeight
+                ) = error else {
+                    return XCTFail("Unexpected error: \(error)")
+                }
+                XCTAssertEqual(filename, "dashboard-\(viewport)-light.png")
+                XCTAssertGreaterThan(requiredHeight, availableHeight)
+                XCTAssertEqual(availableHeight, 560)
+            }
+        }
+    }
+
+    @MainActor
+    func testMaximumTextErrorAlertParticipatesInFullContentLayout() throws {
+        let fixture = try DashboardSnapshotFixture.load(from: dashboardFixtureURL())
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentacct-dashboard-error-layout-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outputDirectory) }
+        let configuration = DashboardSnapshotConfiguration(
+            viewport: "accessibility5-error-too-short",
+            width: 960,
+            height: 2700,
+            colorScheme: .light,
+            workState: .retainedLongListError,
+            dynamicTypeSize: .accessibility5,
+            capturesFullContent: true
+        )
+
+        XCTAssertThrowsError(
+            try DashboardSnapshotRenderer.render(
+                fixture: fixture,
+                outputDirectory: outputDirectory,
+                configurations: [configuration]
+            )
+        ) { error in
+            guard case SnapshotError.snapshotContentExceedsCanvas(
+                _,
+                let requiredHeight,
+                let availableHeight
+            ) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertGreaterThan(requiredHeight, availableHeight)
+            XCTAssertEqual(availableHeight, 2700)
+        }
     }
 
     @MainActor
