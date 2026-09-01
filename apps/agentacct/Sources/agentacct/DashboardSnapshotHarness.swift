@@ -17,10 +17,12 @@ struct DashboardSnapshotFixture: Decodable {
     let ingestion: V1IngestionPayload?
     let tasks: ReceiptTasksPayload
     let usage: UsageSummary
+    let usage90Days: UsageSummary
     let work: WorkSnapshotFixture?
 
     enum CodingKeys: String, CodingKey {
         case glance, plan, attention, ingestion, tasks, usage, work
+        case usage90Days = "usage_90_days"
         case menuSparseGlance = "menu_sparse_glance"
         case daemonVersion = "daemon_version"
     }
@@ -76,6 +78,14 @@ struct DashboardSnapshotFixture: Decodable {
                     expected: supportedTasksSchema
                 )
             }
+            if let attentionReceipt = work.attentionReceipt,
+               attentionReceipt.schemaVersion != supportedTasksSchema {
+                throw SnapshotError.unsupportedSchema(
+                    payload: "attention work receipt",
+                    actual: attentionReceipt.schemaVersion,
+                    expected: supportedTasksSchema
+                )
+            }
             for session in work.sessions where session.schema != WorkSnapshotFixture.supportedSessionSchema {
                 throw SnapshotError.unsupportedSchema(
                     payload: "work session",
@@ -100,7 +110,27 @@ struct WorkSnapshotFixture: Decodable {
     static let supportedSessionSchema = "agentacct.v1-session-detail.v1"
 
     let receipt: Receipt
+    let attentionReceipt: Receipt?
     let sessions: [V1SessionDetail]
+
+    enum CodingKeys: String, CodingKey {
+        case receipt, sessions
+        case attentionReceipt = "attention_receipt"
+    }
+}
+
+enum SnapshotRecordedUsageState {
+    case sevenDays
+    case ninetyDays
+
+    func storeState(for fixture: DashboardSnapshotFixture) -> SnapshotUsageStoreState {
+        switch self {
+        case .sevenDays:
+            return SnapshotUsageStoreState(days: 7, summary: fixture.usage)
+        case .ninetyDays:
+            return SnapshotUsageStoreState(days: 90, summary: fixture.usage90Days)
+        }
+    }
 }
 
 enum SnapshotError: LocalizedError {
@@ -136,6 +166,7 @@ struct DashboardSnapshotConfiguration {
     let colorScheme: ColorScheme
     let workState: SnapshotWorkStoreState
     let glanceState: DashboardSnapshotGlanceState
+    let recordedUsageState: SnapshotRecordedUsageState
 
     init(
         viewport: String,
@@ -143,7 +174,8 @@ struct DashboardSnapshotConfiguration {
         height: CGFloat,
         colorScheme: ColorScheme,
         workState: SnapshotWorkStoreState,
-        glanceState: DashboardSnapshotGlanceState = .fixture
+        glanceState: DashboardSnapshotGlanceState = .fixture,
+        recordedUsageState: SnapshotRecordedUsageState = .sevenDays
     ) {
         self.viewport = viewport
         self.width = width
@@ -151,6 +183,7 @@ struct DashboardSnapshotConfiguration {
         self.colorScheme = colorScheme
         self.workState = workState
         self.glanceState = glanceState
+        self.recordedUsageState = recordedUsageState
     }
 
     var filename: String {
@@ -162,10 +195,12 @@ struct DashboardSnapshotConfiguration {
         Self(viewport: "minimum", width: 960, height: 560, colorScheme: .light, workState: .populated),
         Self(viewport: "minimum", width: 960, height: 560, colorScheme: .dark, workState: .populated),
         // The reference viewport verifies the full decision brief and work
-        // ledger at the standard window size; usage history remains the next
-        // scroll region (its chart has a dedicated interactive test surface).
+        // ledger at the standard window size. The shorter minimum pair
+        // intentionally verifies the real top-of-scroll experience instead.
         Self(viewport: "reference", width: 1120, height: 800, colorScheme: .light, workState: .populated),
         Self(viewport: "reference", width: 1120, height: 800, colorScheme: .dark, workState: .populated),
+        Self(viewport: "weekly-reference", width: 1120, height: 900, colorScheme: .light, workState: .populated, recordedUsageState: .ninetyDays),
+        Self(viewport: "weekly-reference", width: 1120, height: 900, colorScheme: .dark, workState: .populated, recordedUsageState: .ninetyDays),
         Self(viewport: "trust-unavailable", width: 1120, height: 800, colorScheme: .light, workState: .shiftBriefUnavailable),
         Self(viewport: "trust-unavailable", width: 1120, height: 800, colorScheme: .dark, workState: .shiftBriefUnavailable),
         Self(viewport: "old-daemon-statusless", width: 1120, height: 800, colorScheme: .light, workState: .oldDaemonUnavailable, glanceState: .statuslessUsage),
@@ -254,16 +289,17 @@ enum DashboardSnapshotRenderer {
             )
             let dashboard = DashboardStore(
                 preloaded: fixture,
-                workState: configuration.workState
+                workState: configuration.workState,
+                usageState: configuration.recordedUsageState.storeState(for: fixture)
             )
             let selection = AppSelection()
             selection.pane = .dashboard
             // A packaged app consistently offers setup here. Injecting that
             // state keeps SwiftPM and packaged-build snapshots identical.
             let view = MainWindow(canSetUpOverride: true)
-                .environmentObject(glance)
-                .environmentObject(dashboard)
-                .environmentObject(selection)
+                .environment(glance)
+                .environment(dashboard)
+                .environment(selection)
                 .frame(
                     width: configuration.width,
                     height: configuration.height,

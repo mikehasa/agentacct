@@ -4,8 +4,8 @@ import SwiftUI
 // recorded usage second. The two lanes share client rows but never a denominator,
 // freshness claim, error state, or range control.
 struct UsagePane: View {
-    @EnvironmentObject var dashboard: DashboardStore
-    @EnvironmentObject var glance: GlanceState
+    @Environment(DashboardStore.self) var dashboard
+    @Environment(GlanceState.self) var glance
     @State private var showStale = false
     @State private var showAbout = false
 
@@ -19,7 +19,10 @@ struct UsagePane: View {
             }
             .padding(Space.gutter)
             .frame(maxWidth: 1172 + Space.gutter * 2, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .center)
+            // Left-align the capped content column to match Work and Sources
+            // (WorkPane .leading, SourcesPane .leading). Centering here made the
+            // whole pane slide sideways on wide windows when switching tabs.
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -200,7 +203,10 @@ struct UsagePane: View {
             if let usage = dashboard.usage {
                 summaryStrip(usage)
                 if let periods = usage.byPeriod, periods.count > 1 {
-                    UsageDailyChart(periods: periods)
+                    UsagePeriodChart(
+                        periods: periods,
+                        presentation: UsagePeriodPresentation(usage: usage)
+                    )
                 }
                 if !capacityIsConnected {
                     UsageBreakdownTable(
@@ -257,8 +263,7 @@ struct UsagePane: View {
 
     private func summaryStrip(_ usage: UsageSummary) -> some View {
         let totals = usage.totals
-        let periods = usage.byPeriod ?? []
-        let activeDays = periods.filter { ($0.freshTokens ?? 0) > 0 || $0.estimatedCostUsd != nil }.count
+        let activity = UsagePeriodPresentation(usage: usage)
 
         return StripRow(cells: [
             StripRow.Cell(
@@ -283,11 +288,11 @@ struct UsagePane: View {
                 absent: "no priced usage"
             ),
             StripRow.Cell(
-                id: "days",
-                label: "Active days",
-                value: periods.isEmpty ? nil : "\(activeDays)/\(periods.count)",
+                id: "periods",
+                label: activity.label,
+                value: activity.value,
                 qualifier: "with recorded usage",
-                absent: "no daily series"
+                absent: activity.absent
             ),
         ])
     }
@@ -364,6 +369,57 @@ struct UsagePane: View {
     }
 }
 
+struct UsagePeriodPresentation {
+    let label: String
+    let value: String?
+    let absent: String
+    private let unit: String
+    private let bucketDescription: String?
+
+    init(usage: UsageSummary) {
+        switch usage.filtersEcho?.granularity {
+        case "daily":
+            unit = "day"
+            bucketDescription = nil
+            label = "Active days"
+            absent = "no daily series"
+        case "weekly":
+            unit = "week"
+            bucketDescription = "weekly buckets"
+            label = "Active weeks"
+            absent = "no weekly series"
+        default:
+            unit = "period"
+            bucketDescription = "period buckets"
+            label = "Active periods"
+            absent = "no period series"
+        }
+
+        let periods = usage.byPeriod ?? []
+        let activeCount = periods.filter {
+            ($0.freshTokens ?? 0) > 0 || $0.estimatedCostUsd != nil
+        }.count
+        value = periods.isEmpty ? nil : "\(activeCount)/\(periods.count)"
+    }
+
+    var costChartTitle: String { "Cost per \(unit)" }
+
+    func tokenChartTitle(group: String?) -> String {
+        let title = "Fresh tokens per \(unit)"
+        return group.map { "\(title) · \($0)" } ?? title
+    }
+
+    var previousAccessibilityLabel: String { "Previous usage \(unit)" }
+    var nextAccessibilityLabel: String { "Next usage \(unit)" }
+    var selectionAccessibilityHint: String { "Selects this \(unit)'s value" }
+    var pinAccessibilityHint: String { "Pins or clears this \(unit)'s value" }
+
+    func historyRangeDescription(days: Int) -> String {
+        let range = "last \(days) days"
+        return bucketDescription.map { "\(range) · \($0)" } ?? range
+    }
+}
+
 private struct UsagePlanClientDetail: View {
     let client: V1PlanClient
     let days: Int
@@ -401,8 +457,10 @@ private struct UsagePlanClientDetail: View {
             }
             if !presentation.modelRows.isEmpty {
                 CapsLabel(text: presentation.modelHeading)
-                ForEach(Array(presentation.modelRows.enumerated()), id: \.offset) { _, row in
-                    Text(row).font(Type.caption).foregroundStyle(Theme.muted)
+                ScrollContentStack(alignment: .leading, spacing: Space.s) {
+                    ForEach(Array(presentation.modelRows.enumerated()), id: \.offset) { _, row in
+                        Text(row).font(Type.caption).foregroundStyle(Theme.muted)
+                    }
                 }
             }
         }
@@ -456,14 +514,15 @@ struct StripRow: View {
     }
 }
 
-// MARK: - Daily chart (one series per chart)
+// MARK: - Period chart (one series per chart)
 
-/// The daily usage chart: estimated cost per day, or fresh tokens per day with
+/// The usage chart: estimated cost or fresh tokens per API-reported period, with
 /// an optional single-client group filter. Always ONE series — a stack never
-/// appears (v7 chart discipline). Days without a priced value render as flat
+/// appears (v7 chart discipline). Periods without a priced value render as flat
 /// neutral stubs and their tooltip says so; heights are strictly proportional.
-struct UsageDailyChart: View {
+struct UsagePeriodChart: View {
     let periods: [PeriodBucket]
+    let presentation: UsagePeriodPresentation
 
     enum Series: String, CaseIterable, Identifiable {
         case cost = "Cost"
@@ -479,8 +538,9 @@ struct UsageDailyChart: View {
     @FocusState private var focusedIndex: Int?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(periods: [PeriodBucket]) {
+    init(periods: [PeriodBucket], presentation: UsagePeriodPresentation) {
         self.periods = periods
+        self.presentation = presentation
         let initialSeries: Series = periods.contains { $0.estimatedCostUsd != nil } ? .cost : .tokens
         _series = State(initialValue: initialSeries)
         _selectedIndex = State(initialValue: periods.indices.last)
@@ -494,8 +554,8 @@ struct UsageDailyChart: View {
         return seen.sorted()
     }
 
-    /// The plotted value for a day, or nil when the day has no value to plot
-    /// (an unpriced day is NOT a $0 day).
+    /// The plotted value for a period, or nil when it has no value to plot
+    /// (an unpriced period is NOT a $0 period).
     private func value(_ period: PeriodBucket) -> Double? {
         switch series {
         case .cost:
@@ -569,8 +629,8 @@ struct UsageDailyChart: View {
 
     private var chartTitle: String {
         switch series {
-        case .cost: return "Cost per day"
-        case .tokens: return group.map { "Fresh tokens per day · \($0)" } ?? "Fresh tokens per day"
+        case .cost: return presentation.costChartTitle
+        case .tokens: return presentation.tokenChartTitle(group: group)
         }
     }
 
@@ -595,7 +655,7 @@ struct UsageDailyChart: View {
                             verticalPadding: 2
                         ))
                         .disabled(selectedIndex == periods.startIndex)
-                        .accessibilityLabel("Previous usage day")
+                        .accessibilityLabel(presentation.previousAccessibilityLabel)
 
                         Text("\(periods[selectedIndex].shortLabel) · \(valueText(periods[selectedIndex]))")
                             .font(Type.dataSmallSemibold)
@@ -616,7 +676,7 @@ struct UsageDailyChart: View {
                             verticalPadding: 2
                         ))
                         .disabled(selectedIndex == periods.index(before: periods.endIndex))
-                        .accessibilityLabel("Next usage day")
+                        .accessibilityLabel(presentation.nextAccessibilityLabel)
                     }
                     if SnapshotMode.enabled {
                         Chip(text: series.rawValue, tint: Theme.accent)
@@ -683,7 +743,7 @@ struct UsageDailyChart: View {
                                                               ? Theme.chartBar : Theme.chartBarDim)
                                                         .frame(height: max(1, Self.plotHeight * dayValue / maxValue))
                                                 } else {
-                                                    // A day with no plottable value: a flat
+                                                    // A period with no plottable value: a flat
                                                     // neutral stub, never a zero-height lie.
                                                     RoundedRectangle(cornerRadius: 1)
                                                         .fill(Theme.tintNeutral)
@@ -695,7 +755,7 @@ struct UsageDailyChart: View {
                                         }
                                         // Preserve proportional 7/30/90-day geometry. The
                                         // 28pt Previous/Next controls above are equivalent
-                                        // controls for reaching every day at a large target.
+                                        // controls for reaching every period at a large target.
                                         .buttonStyle(TransparentButtonStyle(cornerRadius: 2))
                                         .focused($focusedIndex, equals: index)
                                         .onHover { inside in
@@ -708,7 +768,7 @@ struct UsageDailyChart: View {
                                         .accessibilityLabel(
                                             "\(period.period ?? period.shortLabel), \(valueText(period))"
                                         )
-                                        .accessibilityHint("Selects this day's value")
+                                        .accessibilityHint(presentation.selectionAccessibilityHint)
                                         .accessibilityAddTraits(selectedIndex == index ? .isSelected : [])
                                         .accessibilityIdentifier("usage.history.day.\(index)")
                                     }
@@ -823,11 +883,7 @@ struct UsageBreakdownTable: View {
                         .padding(Space.xl)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    if SnapshotMode.enabled {
-                        VStack(spacing: 0) { populatedRows }
-                    } else {
-                        LazyVStack(spacing: 0) { populatedRows }
-                    }
+                    ScrollContentStack(spacing: 0) { populatedRows }
                 }
             }
         }

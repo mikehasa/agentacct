@@ -19,6 +19,14 @@ struct VisualSnapshotTolerance: Equatable {
         maximumChannelDelta: 1,
         maximumChangedChannelFraction: 0.0015
     )
+
+    /// Selectable diagnostics add dense antialiased glyph edges. Repeated
+    /// renders may move only one channel step on a similarly small fraction
+    /// of channels; visible changes remain far outside this bound.
+    static let setupRenderingNoise = Self(
+        maximumChannelDelta: 1,
+        maximumChangedChannelFraction: 0.0015
+    )
 }
 
 enum VisualSnapshotMode: String, Equatable {

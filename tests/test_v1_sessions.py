@@ -1052,3 +1052,29 @@ def test_plan_endpoint_calibrated_aggregates_agree(tmp_path):
     # Cache: an unchanged store serves the same build (same generated_at).
     again = client.get("/v1/plan", headers=AUTH, params={"days": 14}).json()
     assert again["generated_at"] == payload["generated_at"]
+
+
+def test_step_cost_confidence_is_exact_only_when_every_priced_record_is_reported() -> None:
+    from agentacct.v1_sessions import _step_cost_confidence
+
+    # Nothing priced -> no confidence (the step renders "—", never an exact $0).
+    assert _step_cost_confidence(None) is None
+    assert _step_cost_confidence({}) is None
+    assert _step_cost_confidence({"client_reported": 0}) is None
+    # All reported/billed -> exact.
+    assert _step_cost_confidence({"client_reported": 3}) == "client_reported"
+    assert _step_cost_confidence({"provider_billed": 2}) == "provider_billed"
+    assert (
+        _step_cost_confidence({"client_reported": 2, "provider_billed": 1})
+        == "provider_billed"
+    )
+    # Any token-based estimate (or an unknown confidence) pulls the whole step
+    # down to an estimate — the header must not over-claim exactness.
+    assert (
+        _step_cost_confidence({"client_reported": 5, "estimated_from_tokens": 1})
+        == "estimated_from_tokens"
+    )
+    assert _step_cost_confidence({"estimated_from_tokens": 4}) == "estimated_from_tokens"
+    assert _step_cost_confidence({"unknown": 1}) == "estimated_from_tokens"
+    # Boolean counts are not integer counts we trust.
+    assert _step_cost_confidence({"client_reported": True}) is None

@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import SwiftUI
 
 enum DashboardDaemonFeature {
@@ -19,15 +20,24 @@ enum DashboardDaemonFeature {
 /// the live initializer and network lifecycle remain unchanged.
 enum SnapshotWorkStoreState {
     case populated
-    case loading
+    case listLoading
     case empty
     case listError
-    case retainedListError
+    case listErrorWithRetainedData
     case shiftBriefUnavailable
     case oldDaemonUnavailable
     case attentionOverflow
     case receiptLoading
     case receiptError
+    case receiptStale
+    case attentionReceipt
+}
+
+struct SnapshotUsageStoreState {
+    /// Keep the selected range and its matching response inseparable in
+    /// deterministic renders; a stale summary must never wear a new range.
+    let days: Int
+    let summary: UsageSummary
 }
 
 // Data for the full window: /v1/tasks and /v1/receipt supply task-level work
@@ -37,49 +47,58 @@ enum SnapshotWorkStoreState {
 // store never re-derives a number.
 
 @MainActor
-final class DashboardStore: ObservableObject {
-    @Published private(set) var planClients: [V1PlanClient] = []
-    @Published private(set) var usage: UsageSummary?
-    @Published private(set) var receiptTasks: [ReceiptSummary] = []
-    @Published private(set) var totalReceiptTasks: Int?
-    @Published private(set) var hasLoadedReceiptTasks = false
+@Observable
+final class DashboardStore {
+    private(set) var planClients: [V1PlanClient] = []
+    private(set) var usage: UsageSummary?
+    private(set) var receiptTasks: [ReceiptSummary] = []
+    private(set) var totalReceiptTasks: Int?
+    private(set) var hasLoadedReceiptTasks = false
+    private(set) var receiptTasksTruncated: Bool?
+    private(set) var receiptAttention: ReceiptAttentionPayload?
     /// Complete review classification plus a bounded operational queue.
-    @Published private(set) var attention: V1AttentionPayload?
-    @Published private(set) var attentionError: String?
-    @Published private(set) var attentionQueueItems: [ReceiptSummary] = []
-    @Published private(set) var attentionPageError: String?
-    @Published private(set) var isLoadingMoreAttention = false
-    @Published private(set) var receipt: Receipt?
-    @Published private(set) var receiptListError: String?
-    @Published private(set) var receiptError: String?
+    private(set) var attention: V1AttentionPayload?
+    private(set) var attentionError: String?
+    private(set) var attentionQueueItems: [ReceiptSummary] = []
+    private(set) var attentionPageError: String?
+    private(set) var isLoadingMoreAttention = false
+    private(set) var receipt: Receipt?
+    private(set) var receiptListError: String?
+    private(set) var receiptError: String?
+    private(set) var receiptErrorTaskId: String?
+    private(set) var receiptLoadingTaskId: String?
     /// Session deep views preloaded by key ("client::session"). Only the offscreen
     /// snapshot path fills this (the live app loads each drill row lazily via a
     /// SwiftUI `.task`, while deterministic rendering cannot wait on network
     /// work); a drill row reads it as a fallback so its steps render in a snapshot.
-    @Published private(set) var preloadedSessions: [String: V1SessionDetail] = [:]
-    @Published private(set) var errorText: String?
+    private(set) var preloadedSessions: [String: V1SessionDetail] = [:]
+    private(set) var errorText: String?
     /// Source/watcher health from /v1/ingestion (the Sources pane).
-    @Published private(set) var ingestion: V1IngestionSnapshot?
-    @Published private(set) var ingestionError: String?
-    @Published private(set) var isRefreshing = false
-    @Published private(set) var lastUpdated: Date?
+    private(set) var ingestion: V1IngestionSnapshot?
+    private(set) var ingestionError: String?
+    private(set) var isRefreshing = false
+    private(set) var isLoadingReceipts = false
+    private(set) var lastUpdated: Date?
+    /// Freshness of the independently published receipt collection.
+    /// A Work-only retry must not relabel the other dashboard panes as fresh.
+    private(set) var receiptListLastUpdated: Date?
     /// Freshness of the independently published plan + recorded-usage pair.
     /// Receipt-list failures must not make a successful usage refresh look old.
-    @Published private(set) var usageLastUpdated: Date?
+    private(set) var usageLastUpdated: Date?
 
     /// The usage-pane range (7/30/90 trailing days). Defaults to 7 so the
     /// per-model plan breakdown lines up with the 7d headline out of the box
     /// (a 30-day accumulation reads as >100% of a weekly plan and confuses);
     /// the today/7d headline windows are fixed regardless of this.
-    @Published private(set) var usageDays = 7
+    private(set) var usageDays = 7
 
     /// Monotonic token so rapid range switches can't land out of order and a
     /// failed fetch can't leave the old data labeled with the new range.
-    private var usageDaysGeneration = 0
-    private var attentionGeneration = 0
-    private var receiptListGeneration = 0
+    @ObservationIgnored private var usageDaysGeneration = 0
+    @ObservationIgnored private var attentionGeneration = 0
+    @ObservationIgnored private var receiptListGeneration = 0
 
-    private let client = GlanceClient()
+    @ObservationIgnored private let client = GlanceClient()
 
     init() {}
 
@@ -87,10 +106,12 @@ final class DashboardStore: ObservableObject {
     /// would, without network access or a developer's local account data.
     init(
         preloaded fixture: DashboardSnapshotFixture,
-        workState: SnapshotWorkStoreState = .populated
+        workState: SnapshotWorkStoreState = .populated,
+        usageState: SnapshotUsageStoreState? = nil
     ) {
         planClients = fixture.plan.clients
-        usage = fixture.usage
+        usage = usageState?.summary ?? fixture.usage
+        usageDays = usageState?.days ?? 7
         attention = fixture.attention
         attentionQueueItems = fixture.attention.items
         ingestion = fixture.ingestion?.ingestion
@@ -99,17 +120,21 @@ final class DashboardStore: ObservableObject {
             hasLoadedReceiptTasks = true
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
             receipt = fixture.work?.receipt
             for session in fixture.work?.sessions ?? [] {
                 let key = "\(session.session.client)::\(session.session.clientSessionId)"
                 preloadedSessions[key] = session
             }
-        case .loading:
-            break
+        case .listLoading:
+            receiptTasks = []
+            isLoadingReceipts = true
         case .empty:
             hasLoadedReceiptTasks = true
             receiptTasks = []
             totalReceiptTasks = 0
+            receiptTasksTruncated = false
             attention = V1AttentionPayload(
                 schema: fixture.attention.schema,
                 items: [],
@@ -120,18 +145,23 @@ final class DashboardStore: ObservableObject {
                 limit: fixture.attention.limit,
                 truncated: false
             )
+            attentionQueueItems = []
         case .listError:
             receiptTasks = []
             receiptListError = "receipts fetch failed: synthetic review error"
-        case .retainedListError:
+        case .listErrorWithRetainedData:
             hasLoadedReceiptTasks = true
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
             receiptListError = "receipts fetch failed: synthetic review error"
         case .shiftBriefUnavailable:
             hasLoadedReceiptTasks = true
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
             attentionError = "attention fetch failed: synthetic review error"
             ingestionError = "source health fetch failed: synthetic review error"
         case .oldDaemonUnavailable:
@@ -163,21 +193,50 @@ final class DashboardStore: ObservableObject {
             hasLoadedReceiptTasks = true
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
         case .receiptError:
             hasLoadedReceiptTasks = true
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
             receiptError = "receipt fetch failed: synthetic review error"
+            receiptErrorTaskId = fixture.work?.receipt.taskId
+        case .receiptStale:
+            hasLoadedReceiptTasks = true
+            receiptTasks = fixture.tasks.tasks
+            totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
+            receipt = fixture.work?.receipt
+            receiptError = "receipt refresh failed: synthetic review error"
+            receiptErrorTaskId = fixture.work?.receipt.taskId
+        case .attentionReceipt:
+            hasLoadedReceiptTasks = true
+            receiptTasks = fixture.tasks.tasks
+            totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
+            receipt = fixture.work?.attentionReceipt
         }
         let updated = fixture.glance.generatedAt.map(Date.init(timeIntervalSince1970:))
         lastUpdated = updated
+        switch workState {
+        case .listLoading, .listError:
+            receiptListLastUpdated = nil
+        default:
+            receiptListLastUpdated = updated
+        }
         usageLastUpdated = updated
     }
 
     func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
-        defer { isRefreshing = false }
+        defer {
+            isRefreshing = false
+        }
         let days = usageDays
         let rangeGeneration = usageDaysGeneration
         let receiptRequestGeneration = beginReceiptListRequest()
@@ -205,15 +264,20 @@ final class DashboardStore: ObservableObject {
                 requestGeneration: receiptRequestGeneration
             )
         } catch {
-            publishReceiptListFailure(
-                "receipts fetch failed: \(error.localizedDescription)",
-                requestGeneration: receiptRequestGeneration
-            )
+            if !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
+                publishReceiptListFailure(
+                    "receipts fetch failed: \(error.localizedDescription)",
+                    requestGeneration: receiptRequestGeneration
+                )
+            }
         }
+        finishReceiptListRequest(receiptRequestGeneration)
 
         do {
             let payload = try await attentionRequest
-            publishAttentionHead(payload, requestGeneration: attentionRequestGeneration)
+            if !Task.isCancelled {
+                publishAttentionHead(payload, requestGeneration: attentionRequestGeneration)
+            }
         } catch GlanceClientError.http(404) {
             // A pre-attention daemon cannot support a complete review claim.
             publishAttentionFailure(
@@ -226,10 +290,12 @@ final class DashboardStore: ObservableObject {
                 requestGeneration: attentionRequestGeneration
             )
         } catch {
-            publishAttentionFailure(
-                "attention fetch failed: \(error.localizedDescription)",
-                requestGeneration: attentionRequestGeneration
-            )
+            if !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
+                publishAttentionFailure(
+                    "attention fetch failed: \(error.localizedDescription)",
+                    requestGeneration: attentionRequestGeneration
+                )
+            }
         }
 
         do {
@@ -238,11 +304,17 @@ final class DashboardStore: ObservableObject {
             ingestionError = nil
         } catch GlanceClientError.http(404) {
             // An older daemon without the route: a named state, not an error toast.
-            ingestionError = DashboardDaemonFeature.ingestion.upgradeMessage
+            if !Task.isCancelled {
+                ingestionError = DashboardDaemonFeature.ingestion.upgradeMessage
+            }
         } catch GlanceClientError.noDiscovery(_) {
-            ingestionError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            if !Task.isCancelled {
+                ingestionError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            }
         } catch {
-            ingestionError = "source health fetch failed: \(error.localizedDescription)"
+            if !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
+                ingestionError = "source health fetch failed: \(error.localizedDescription)"
+            }
         }
 
         do {
@@ -255,10 +327,12 @@ final class DashboardStore: ObservableObject {
             usageLastUpdated = updated
             if tasksSucceeded { lastUpdated = updated }
         } catch GlanceClientError.noDiscovery(_) {
-            guard rangeGeneration == usageDaysGeneration else { return }
+            guard !Task.isCancelled,
+                  rangeGeneration == usageDaysGeneration else { return }
             errorText = "daemon not running (no discovery file) — start it with `agentacct start`"
         } catch {
-            guard rangeGeneration == usageDaysGeneration else { return }
+            guard rangeGeneration == usageDaysGeneration,
+                  !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) else { return }
             errorText = "daemon fetch failed: \(error.localizedDescription)"
         }
     }
@@ -270,6 +344,7 @@ final class DashboardStore: ObservableObject {
         // task is cancelled, the still-valid window response could be rejected.
         guard !isRefreshing else { return }
         let requestGeneration = beginReceiptListRequest()
+        defer { finishReceiptListRequest(requestGeneration) }
         do {
             let payload: ReceiptTasksPayload = try await client.getAuthed("/v1/tasks?limit=200")
             guard !Task.isCancelled else { return }
@@ -284,6 +359,7 @@ final class DashboardStore: ObservableObject {
                 requestGeneration: requestGeneration
             )
         } catch {
+            guard !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) else { return }
             publishReceiptListFailure(
                 "receipts fetch failed: \(error.localizedDescription)",
                 requestGeneration: requestGeneration
@@ -294,15 +370,24 @@ final class DashboardStore: ObservableObject {
     @discardableResult
     func beginReceiptListRequest() -> Int {
         receiptListGeneration += 1
+        isLoadingReceipts = true
         return receiptListGeneration
+    }
+
+    private func finishReceiptListRequest(_ requestGeneration: Int) {
+        guard requestGeneration == receiptListGeneration else { return }
+        isLoadingReceipts = false
     }
 
     func publishReceiptList(_ payload: ReceiptTasksPayload, requestGeneration: Int) {
         guard requestGeneration == receiptListGeneration else { return }
         receiptTasks = payload.tasks
         totalReceiptTasks = payload.total
+        receiptTasksTruncated = payload.truncated
+        receiptAttention = payload.attention
         hasLoadedReceiptTasks = true
         receiptListError = nil
+        receiptListLastUpdated = Date()
     }
 
     func publishReceiptListFailure(_ message: String, requestGeneration: Int) {
@@ -335,6 +420,7 @@ final class DashboardStore: ObservableObject {
                 requestGeneration: requestGeneration
             )
         } catch {
+            guard !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) else { return }
             publishAttentionFailure(
                 "attention fetch failed: \(error.localizedDescription)",
                 requestGeneration: requestGeneration
@@ -426,7 +512,8 @@ final class DashboardStore: ObservableObject {
             guard generation == attentionGeneration else { return }
             attentionPageError = "daemon not running (no discovery file) — start it with `agentacct start`"
         } catch {
-            guard generation == attentionGeneration else { return }
+            guard generation == attentionGeneration,
+                  !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) else { return }
             attentionPageError = "review queue page failed: \(error.localizedDescription)"
         }
     }
@@ -465,29 +552,44 @@ final class DashboardStore: ObservableObject {
     /// fetch may write, so a late straggler can never wedge another task's
     /// page. A same-task refresh keeps the current receipt on screen instead
     /// of unmounting the record page for the rebuild.
-    private var receiptGeneration = 0
+    @ObservationIgnored private var receiptGeneration = 0
 
     func fetchReceipt(taskId: String) async {
         receiptGeneration += 1
         let generation = receiptGeneration
-        if receipt?.taskId != taskId { receipt = nil }
-        receiptError = nil
+        if receipt?.taskId != taskId {
+            receipt = nil
+            receiptError = nil
+            receiptErrorTaskId = nil
+        }
+        receiptLoadingTaskId = taskId
+        defer {
+            if generation == receiptGeneration { receiptLoadingTaskId = nil }
+        }
         do {
             let encoded = taskId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? taskId
             let payload: Receipt = try await client.getAuthed("/v1/receipt?task=\(encoded)")
             guard !Task.isCancelled, generation == receiptGeneration else { return }
             receipt = payload
             receiptError = nil
+            receiptErrorTaskId = nil
+            receiptLoadingTaskId = nil
         } catch is CancellationError {
+            if generation == receiptGeneration { receiptLoadingTaskId = nil }
             return
         } catch let error as URLError where error.code == .cancelled {
+            if generation == receiptGeneration { receiptLoadingTaskId = nil }
             return
         } catch GlanceClientError.http(404) {
             guard !Task.isCancelled, generation == receiptGeneration else { return }
             receiptError = "this Task is not in the store (it may have been recorded elsewhere)"
+            receiptErrorTaskId = taskId
+            receiptLoadingTaskId = nil
         } catch {
             guard !Task.isCancelled, generation == receiptGeneration else { return }
             receiptError = "receipt fetch failed: \(error.localizedDescription)"
+            receiptErrorTaskId = taskId
+            receiptLoadingTaskId = nil
         }
     }
 
@@ -555,7 +657,7 @@ final class DashboardStore: ObservableObject {
     }
 
     /// Switch the pane range and refetch BOTH the plan lane and the cost cube
-    /// so the plan breakdown, the daily bars, and the $ view stay on one window.
+    /// so the plan breakdown, the period bars, and the $ view stay on one window.
     /// The range label only flips once both payloads have landed, and only the
     /// newest in-flight switch is allowed to write.
     func setUsageDays(_ days: Int) async {
@@ -590,17 +692,22 @@ struct DispositionResponse: Decodable {
 
 /// The menu bar → main window selection channel.
 @MainActor
-final class AppSelection: ObservableObject {
-    @Published var sessionId: String?
-    @Published var taskId: String?
-    @Published var pane: MainPane = .dashboard
-    /// The Work surface's shared sort. Lives here (not in the table's @State)
-    /// so opening a record — which unmounts the table — never resets it, and
-    /// the record-mode rail stays on the same order as the table.
-    @Published var workSort: WorkSort = .latest
+@Observable
+final class AppSelection {
+    var sessionId: String?
+    var taskId: String?
+    var pane: MainPane = .dashboard
+    let workBrowse = WorkBrowseState()
+    var workSort: WorkSort {
+        get { workBrowse.sort }
+        set { workBrowse.sort = newValue }
+    }
     /// Shared lifecycle filter so a dashboard review-queue deep link survives
     /// the Work table being mounted and later round-tripped through a Receipt.
-    @Published var workGroup: WorkGroup?
+    var workGroup: WorkGroup? {
+        get { workBrowse.group }
+        set { workBrowse.group = newValue }
+    }
 
     /// Dashboard actions replace stale deep links before changing panes. This
     /// keeps a previous Task or session from overriding the control the user

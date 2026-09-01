@@ -549,7 +549,17 @@ def reduce_task_outcome(
         # agent's own words); only when no blocked step has text does the newest
         # blocked step itself stand in (e.g. a bare ``failed``).
         texted = [item for item in blocked_items if _text(item.get("blocker"))]
-        newest = max(texted or blocked_items, key=_item_time)
+        # Prefer a blocker the user can actually DISPOSE: one that carries both
+        # the agent's text AND a current_blocked_event_id (the write handle a
+        # disposition needs). Blocker text can ride a NON-blocked event — e.g. a
+        # checkpoint noting "waiting on X" — which never receives a blocked event
+        # id; surfacing that one would show a blocker whose Resolve/Reopen
+        # control cannot post, while the actually-disposable blocked step stays
+        # hidden. Fall back to any texted blocker, then to any blocked item.
+        texted_disposable = [
+            item for item in texted if _text(item.get("current_blocked_event_id"))
+        ]
+        newest = max(texted_disposable or texted or blocked_items, key=_item_time)
         newest_at = _item_time(newest)
         # Staleness, stated as a fact, never a re-grade: ``blocked`` is sticky by
         # design (an explicit blocker is the user-action contract), but a count
@@ -726,12 +736,61 @@ def reduce_task_outcome(
             for item, status in zip(items, statuses)
         )
         if non_success_all_dismissed:
+            # Keep the resolved blocker's callout REACHABLE so the user can
+            # reopen it in-app. The backend supports resolved->open for blockers,
+            # but the only host of the blocker's disposition controls is this
+            # callout — dropping the blocker entirely made "Reopen" unreachable
+            # (findings stay reopenable because their failing check row persists;
+            # a resolved blocker had no such surface). Surface the newest resolved
+            # blocker that carries text, with its disposition and reopen handle.
+            # The decision word stays ``blocker_resolved_by_user`` — this never
+            # re-blocks the Task; the callout renders in a resolved (calm) tone.
+            resolved_texted = [
+                item
+                for item, status in zip(items, statuses)
+                if _blocker_resolved_by_user(item) and _text(item.get("blocker"))
+            ]
+            resolved_blocker = None
+            if resolved_texted:
+                newest_resolved = max(
+                    resolved_texted,
+                    key=lambda item: _number(
+                        item.get("updated_at") or item.get("started_at")
+                    ),
+                )
+                resolved_blocker = {
+                    "step_title": _text(newest_resolved.get("title")) or None,
+                    "section_id": _text(newest_resolved.get("section_id")) or None,
+                    "text": _text(newest_resolved.get("blocker")) or None,
+                    "next_step": _text(newest_resolved.get("next_step")) or None,
+                    "updated_at": _number(
+                        newest_resolved.get("updated_at")
+                        or newest_resolved.get("started_at")
+                    )
+                    or None,
+                    "blocked_step_count": len(resolved_texted),
+                    # A resolved blocker was not "moved on past" — the later-steps
+                    # nudge is only meaningful for a standing blocker.
+                    "later_completed_steps": 0,
+                    "blocked_event_id": _text(
+                        newest_resolved.get("current_blocked_event_id")
+                    )
+                    or None,
+                    "disposition_revision": _integer(
+                        newest_resolved.get("blocker_target_revision")
+                    ),
+                    "disposition": (
+                        dict(newest_resolved["blocker_disposition"])
+                        if isinstance(newest_resolved.get("blocker_disposition"), Mapping)
+                        else None
+                    ),
+                }
             return {
                 "key": "blocker_resolved_by_user",
                 "finding": None,
                 "verification": None,
                 "latest_checks": checks,
-                "blocker": None,
+                "blocker": resolved_blocker,
                 "max_work_updated_at": max_work_updated_at,
                 "open_step_count": open_step_count,
                 "handoff_current": handoff_current,

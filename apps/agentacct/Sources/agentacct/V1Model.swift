@@ -137,8 +137,9 @@ struct V1Step: Decodable, Identifiable {
     let evidenceGradeReason: String?
     let models: [V1ModelLane]?
     let checks: [V1Check]?
+    private let fallbackId = UUID().uuidString
 
-    var id: String { workId ?? sectionId ?? UUID().uuidString }
+    var id: String { workId ?? sectionId ?? fallbackId }
 
     enum CodingKeys: String, CodingKey {
         case title, kind, phase, summary, files, blocker, usage, models, checks
@@ -164,6 +165,7 @@ struct V1StepUsage: Decodable {
     let linkedUsageRecords: Int?
     let pricedUsageRecords: Int?
     let unpricedUsageRecords: Int?
+    let costConfidence: String?
 
     enum CodingKeys: String, CodingKey {
         case totalTokens = "total_tokens"
@@ -174,14 +176,18 @@ struct V1StepUsage: Decodable {
         case linkedUsageRecords = "linked_usage_records"
         case pricedUsageRecords = "priced_usage_records"
         case unpricedUsageRecords = "unpriced_usage_records"
+        case costConfidence = "cost_confidence"
     }
 
-    /// The shared cost honesty rule: None-never-$0; a value with unpriced
-    /// rows alongside is a partial subtotal (~$).
+    /// The shared cost honesty rule: None-never-$0; a value with unpriced rows
+    /// alongside is a partial subtotal (~$); a complete figure is exact ("$")
+    /// only when its priced records are all reported/billed — an estimated
+    /// (token-priced) step reads "≈$" rather than over-claiming exactness.
     var costText: String {
         guard let cost = estimatedCostUsd else { return "—" }
-        let partial = (unpricedUsageRecords ?? 0) > 0
-        return Fmt.dollars(cost, prefix: partial ? "~$" : "$")
+        if (unpricedUsageRecords ?? 0) > 0 { return Fmt.dollars(cost, prefix: "~$") }
+        let reported = costConfidence == "client_reported" || costConfidence == "provider_billed"
+        return Fmt.dollars(cost, prefix: reported ? "$" : "≈$")
     }
 }
 
@@ -208,15 +214,20 @@ struct V1Check: Decodable, Identifiable {
     let sourceType: String?
     let checkIdentity: String?
     let supersessionState: String?
+    let supersededByEventId: String?
     let resolutionScope: String?
     let resolutionSummary: String?
+    let resolvesBlockedEventId: String?
     let files: [String]?
     let artifactRef: String?
     let artifactPath: String?
     let artifactUrl: String?
     let commandRedacted: Bool?
+    let artifactPathRedacted: Bool?
+    let artifactUrlRedacted: Bool?
+    private let fallbackId = UUID().uuidString
 
-    var id: String { eventId ?? UUID().uuidString }
+    var id: String { eventId ?? fallbackId }
 
     /// How independent of the agent this check is — the honest counter to a
     /// check whose free-text summary claims "CI green" while its source is only
@@ -239,12 +250,16 @@ struct V1Check: Decodable, Identifiable {
         case sourceType = "source_type"
         case checkIdentity = "check_identity"
         case supersessionState = "supersession_state"
+        case supersededByEventId = "superseded_by_event_id"
         case resolutionScope = "resolution_scope"
         case resolutionSummary = "resolution_summary"
+        case resolvesBlockedEventId = "resolves_blocked_event_id"
         case artifactRef = "artifact_ref"
         case artifactPath = "artifact_path"
         case artifactUrl = "artifact_url"
         case commandRedacted = "command_redacted"
+        case artifactPathRedacted = "artifact_path_redacted"
+        case artifactUrlRedacted = "artifact_url_redacted"
     }
 }
 
@@ -261,8 +276,9 @@ struct V1Descendant: Decodable, Identifiable {
     /// type (Explore / Plan / workflow-subagent / …) and its Task prompt.
     let agentType: String?
     let task: String?
+    private let fallbackId = UUID().uuidString
 
-    var id: String { "\(client ?? "?")::\(clientSessionId ?? UUID().uuidString)" }
+    var id: String { "\(client ?? "?")::\(clientSessionId ?? fallbackId)" }
 
     /// The best human label: Task prompt first line > recorded title >
     /// agent type > short id.
@@ -408,6 +424,16 @@ struct ReceiptTasksPayload: Decodable {
     let tasks: [ReceiptSummary]
     let total: Int?
     let truncated: Bool?
+    /// Exact all-store attention count plus a bounded Dashboard preview.
+    /// Optional so the app can fail closed against an older daemon.
+    let attention: ReceiptAttentionPayload?
+}
+
+struct ReceiptAttentionPayload: Decodable {
+    let tasks: [ReceiptSummary]
+    let total: Int
+    let limit: Int?
+    let truncated: Bool
 }
 
 /// Complete review classification plus one page from `/v1/attention`. Unlike
@@ -947,20 +973,35 @@ struct ReceiptEvidence: Decodable {
     /// The coverage ratio, tier by tier. The one non-ratio case is
     /// ``Not gradeable`` (no checkable step — a 0/0 ratio is meaningless).
     var headline: String {
-        if gradeable != true { return "Not gradeable (no verifiable steps recorded)" }
-        let total = checkableTotal ?? 0
+        let presentation = ReceiptCoveragePresentation(evidence: self)
+        if presentation.isInconsistent {
+            return "\(presentation.value) (\(presentation.qualifier))"
+        }
+        guard gradeable != false, let total = checkableTotal, total > 0 else {
+            return "\(presentation.value) (\(presentation.qualifier))"
+        }
         var parts: [String] = []
         if let value = byTier?.externallyVerified, value > 0 { parts.append("\(value)/\(total) externally-verified") }
         if let value = byTier?.independentlyChecked, value > 0 { parts.append("\(value)/\(total) independently-checked") }
         if let value = byTier?.selfChecked, value > 0 { parts.append("\(value)/\(total) self-checked") }
         if let value = byTier?.unchecked, value > 0 { parts.append("\(value) unchecked") }
-        return parts.isEmpty ? "0/\(total) checked" : parts.joined(separator: " · ")
+        return parts.isEmpty
+            ? "\(presentation.value) \(presentation.qualifier)"
+            : parts.joined(separator: " · ")
     }
 
-    /// A compact list-row form: "checked/checkable" tinted by the strongest tier.
+    /// A compact dashboard form. "Supported" names claim coverage without
+    /// conflating it with recorded check runs, while fitting the small column.
     var compactHeadline: String {
-        if gradeable != true { return "not gradeable" }
-        return "\(checkedTotal ?? 0)/\(checkableTotal ?? 0) checked"
+        let presentation = ReceiptCoveragePresentation(evidence: self)
+        if presentation.isInconsistent { return presentation.rowText }
+        if gradeable != false,
+           let checked = checkedTotal,
+           let total = checkableTotal,
+           total > 0 {
+            return "\(checked)/\(total) supported"
+        }
+        return presentation.rowText
     }
 
     /// The honest ledger: where the evidence is, and what the ratio does not cover.
@@ -971,6 +1012,132 @@ struct ReceiptEvidence: Decodable {
         if let value = unattributedChecks, value > 0 { bits.append("\(value) check(s) attach to no step") }
         if let value = openOrIncomplete, value > 0 { bits.append("\(value) step(s) still open") }
         return bits.isEmpty ? nil : bits.joined(separator: " · ")
+    }
+}
+
+/// One honest rendering contract for claim coverage across summaries, Work,
+/// and Receipt detail. Only an explicit `gradeable: false` becomes "Not
+/// gradeable"; missing counts stay missing and supplied partial counts remain
+/// visible.
+struct ReceiptCoveragePresentation {
+    let value: String
+    let qualifier: String
+    let rowText: String
+    let isInconsistent: Bool
+    let tierBreakdownAvailable: Bool
+    let tierBreakdownNotice: String?
+
+    init(evidence: ReceiptEvidence) {
+        let total = evidence.checkableTotal
+        let checked = evidence.checkedTotal
+
+        let tierCounts = evidence.byTier.map {
+            [
+                $0.externallyVerified ?? 0,
+                $0.independentlyChecked ?? 0,
+                $0.selfChecked ?? 0,
+                $0.unchecked ?? 0,
+            ]
+        }
+        let tierTotal = tierCounts?.reduce(0, +)
+        let checkedByTier = evidence.byTier.map {
+            ($0.externallyVerified ?? 0)
+                + ($0.independentlyChecked ?? 0)
+                + ($0.selfChecked ?? 0)
+        }
+        let negativeTierCounts = tierCounts?.contains(where: { $0 < 0 }) == true
+        let tierTotalConflict = if let total, let tierTotal {
+            total != tierTotal
+        } else {
+            false
+        }
+        let checkedTierConflict = if let checked, let checkedByTier {
+            checked != checkedByTier
+        } else {
+            false
+        }
+        if evidence.byTier == nil {
+            tierBreakdownAvailable = false
+            tierBreakdownNotice = "Evidence-tier breakdown not reported."
+        } else if negativeTierCounts {
+            tierBreakdownAvailable = false
+            tierBreakdownNotice = "Evidence-tier breakdown contains invalid negative counts."
+        } else if tierTotalConflict, let total, let tierTotal {
+            tierBreakdownAvailable = false
+            tierBreakdownNotice = "Evidence-tier breakdown reports \(tierTotal) of \(total) checkable claims."
+        } else if checkedTierConflict, let checked, let checkedByTier {
+            tierBreakdownAvailable = false
+            tierBreakdownNotice = "Evidence tiers report \(checkedByTier) supported claims; the summary reports \(checked)."
+        } else {
+            tierBreakdownAvailable = true
+            tierBreakdownNotice = nil
+        }
+
+        let supportedExceedsCheckable = if let total, let checked {
+            checked > total
+        } else {
+            false
+        }
+        let primaryCountsConflict = total.map { $0 < 0 } == true
+            || checked.map { $0 < 0 } == true
+            || supportedExceedsCheckable
+            || (evidence.gradeable == false && ((total ?? 0) > 0 || (checked ?? 0) > 0))
+            || (evidence.gradeable == true && total == 0)
+        let tierCountsConflict = evidence.byTier != nil
+            && (negativeTierCounts || tierTotalConflict || checkedTierConflict)
+        isInconsistent = primaryCountsConflict || tierCountsConflict
+
+        if primaryCountsConflict {
+            value = "Inconsistent counts"
+            switch (checked, total) {
+            case let (.some(checked), .some(total)):
+                qualifier = "\(checked) supported · \(total) checkable reported"
+                rowText = "inconsistent coverage · \(checked) supported of \(total) reported"
+            case let (.some(checked), .none):
+                qualifier = "\(checked) supported · checkable total unavailable"
+                rowText = "inconsistent coverage · \(checked) supported · total not reported"
+            case let (.none, .some(total)):
+                qualifier = "support count unavailable · \(total) checkable reported"
+                rowText = "inconsistent coverage · support count missing · \(total) checkable"
+            case (.none, .none):
+                qualifier = "coverage fields conflict"
+                rowText = "inconsistent coverage counts"
+            }
+        } else if tierCountsConflict {
+            value = "Inconsistent counts"
+            qualifier = "tier breakdown conflicts with reported coverage"
+            rowText = "inconsistent coverage · tier breakdown conflicts"
+        } else if evidence.gradeable == false {
+            value = "Not gradeable"
+            qualifier = "no checkable claims recorded"
+            rowText = "not gradeable"
+        } else if let total, total > 0, let checked {
+            value = "\(checked) of \(total)"
+            qualifier = evidence.gradeable == nil
+                ? "claims supported · gradeability not reported"
+                : "claims supported"
+            rowText = "\(checked)/\(total) claims supported"
+        } else if let total, total > 0 {
+            value = "Not reported"
+            qualifier = "support count unavailable · \(total) checkable claims"
+                + (evidence.gradeable == nil ? " · gradeability not reported" : "")
+            rowText = "support count not reported · \(total) checkable claims"
+        } else if total == 0 {
+            value = "No checkable claims"
+            qualifier = "zero checkable claims reported"
+                + (evidence.gradeable == nil ? " · gradeability not reported" : "")
+            rowText = "no checkable claims"
+        } else if let checked {
+            value = "Total not reported"
+            qualifier = "\(checked) supported reported · checkable total unavailable"
+                + (evidence.gradeable == nil ? " · gradeability not reported" : "")
+            rowText = "\(checked) supported · checkable total not reported"
+        } else {
+            value = "Not reported"
+            qualifier = "claim-coverage counts unavailable"
+                + (evidence.gradeable == nil ? " · gradeability not reported" : "")
+            rowText = "claim coverage not reported"
+        }
     }
 }
 
@@ -997,6 +1164,21 @@ struct ReceiptPlanShare: Decodable {
     var text: String? {
         guard let formatted = Fmt.planPct(pct) else { return nil }
         return "\(formatted) of weekly plan"
+    }
+
+    /// The dedicated "Weekly plan" receipt row. Calibrated → the percentage
+    /// (≈0% when calibrated-but-negligible, never a bare "—"); otherwise a
+    /// named calibration state, never a fabricated number. Mirrors
+    /// receipt.plan_share_headline so every surface reads identically.
+    var rowSummary: String {
+        if calibrationState == "calibrated", let pct {
+            return (Fmt.planPct(pct) ?? "≈0%") + " of weekly plan"
+        }
+        switch calibrationState {
+        case "calibrating": return "calibrating — not enough 7-day history yet"
+        case "never": return "undefined for this client"
+        default: return "—"
+        }
     }
 }
 
@@ -1204,6 +1386,191 @@ struct ReceiptCheck: Decodable, Identifiable {
     }
 }
 
+enum ReceiptCheckGroup: String, CaseIterable {
+    case attention
+    case other
+    case passed
+    case history
+}
+
+/// Stable, readable semantics for one itemized check run. The daemon may emit
+/// exact duplicate rows, so the collection adds an occurrence ordinal to the
+/// content identity instead of attaching disclosure state to an array index.
+struct ReceiptCheckRowPresentation: Identifiable {
+    let id: String
+    let accessibilityIdentifier: String
+    let check: ReceiptCheck
+    let title: String
+    let resultLabel: String
+    let sourceLabel: String?
+    let group: ReceiptCheckGroup
+
+    var scope: String? { Self.nonEmpty(check.scope) }
+
+    var collapsedExitText: String? {
+        guard let exitCode = check.exitCode, exitCode != 0 else { return nil }
+        return "exit \(exitCode)"
+    }
+
+    var runDetailText: String {
+        var parts = [resultLabel]
+        if let exitCode = check.exitCode { parts.append("exit \(exitCode)") }
+        if let sourceLabel { parts.append(sourceLabel) }
+        return parts.joined(separator: " · ")
+    }
+
+    init(check: ReceiptCheck, occurrence: Int) {
+        self.check = check
+        title = Self.nonEmpty(check.name) ?? Self.nonEmpty(check.kind) ?? "Unnamed check"
+        resultLabel = Self.resultLabel(check.result)
+        sourceLabel = Self.sourceLabel(check.source)
+        group = Self.group(check)
+
+        let fingerprint = Self.fingerprint(check)
+        id = "\(fingerprint)#\(occurrence)"
+        accessibilityIdentifier = "receipt.check.\(Self.stableDigest(fingerprint)).\(occurrence)"
+    }
+
+    func accessibilityValue(isExpanded: Bool) -> String {
+        var parts = [resultLabel]
+        if let sourceLabel { parts.append("source \(sourceLabel)") }
+        if let exitCode = check.exitCode { parts.append("exit \(exitCode)") }
+        if let scope { parts.append("scope \(scope)") }
+        if check.superseded == true { parts.append("superseded by a later passing run") }
+        if let findingState = Self.nonEmpty(check.finding?.state), findingState != "open" {
+            parts.append("marked \(findingState) by you")
+        }
+        parts.append(isExpanded ? "expanded" : "collapsed")
+        return parts.joined(separator: ", ")
+    }
+
+    private static func resultLabel(_ result: String?) -> String {
+        switch result {
+        case "passed": return "Passed"
+        case "failed": return "Failed"
+        case "error": return "Error"
+        case "skipped": return "Skipped"
+        default: return "Unknown"
+        }
+    }
+
+    private static func sourceLabel(_ source: String?) -> String? {
+        guard let source = nonEmpty(source) else { return nil }
+        switch source {
+        case "ci": return "CI"
+        case "hook": return "Hook"
+        case "client_hook": return "Client hook"
+        case "mcp": return "Connected tool"
+        case "agent_report": return "Agent report"
+        case "external": return "External"
+        case "provider": return "Provider"
+        default:
+            return source.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    private static func group(_ check: ReceiptCheck) -> ReceiptCheckGroup {
+        if check.superseded == true { return .history }
+        if check.finding?.attentionOpen == false { return .history }
+        if let state = nonEmpty(check.finding?.state), state != "open" { return .history }
+        switch check.result {
+        case "failed", "error": return .attention
+        case "passed": return .passed
+        default: return .other
+        }
+    }
+
+    private static func fingerprint(_ check: ReceiptCheck) -> String {
+        // A run's disclosure identity must survive later enrichment and human
+        // disposition changes. Keep mutable detail (summary, files, artifact,
+        // supersession, finding state) out of this key.
+        let fields = [
+            check.kind, check.name, check.result, check.exitCode.map { String($0) },
+            check.scope, check.source, check.at.map { String($0) },
+        ]
+        return fields.map { value in
+            let value = value ?? ""
+            return "\(value.utf8.count):\(value)"
+        }.joined(separator: "|")
+    }
+
+    private static func stableDigest(_ value: String) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211
+        }
+        return String(hash, radix: 16)
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        return value
+    }
+}
+
+struct ReceiptCheckCollectionPresentation {
+    static let routineExpansionLimit = 10
+
+    let rows: [ReceiptCheckRowPresentation]
+    let sharedScope: String?
+    let aggregateNotice: String?
+    let itemizedNotice: String?
+
+    init(evidence: ReceiptEvidenceDim) {
+        var occurrences: [String: Int] = [:]
+        rows = (evidence.checks ?? []).map { check in
+            let probe = ReceiptCheckRowPresentation(check: check, occurrence: 0)
+            let occurrence = occurrences[probe.id, default: 0]
+            occurrences[probe.id] = occurrence + 1
+            return ReceiptCheckRowPresentation(check: check, occurrence: occurrence)
+        }
+
+        let scopes = rows.compactMap(\.scope)
+        sharedScope = rows.count > 1 && scopes.count == rows.count && Set(scopes).count == 1
+            ? scopes[0]
+            : nil
+
+        aggregateNotice = Self.aggregateNotice(evidence)
+        if let total = evidence.checksTotal, total > 0, !rows.isEmpty, total != rows.count {
+            let noun = rows.count == 1 ? "entry is" : "entries are"
+            itemizedNotice = "\(rows.count) itemized \(noun) available for \(total) reported check runs."
+        } else {
+            itemizedNotice = nil
+        }
+
+    }
+
+    var initiallyExpandsRoutineGroups: Bool {
+        rows.count <= Self.routineExpansionLimit
+    }
+
+    func routineGroupExpanded(
+        userOverride: Bool?,
+        forcedDefault: Bool? = nil
+    ) -> Bool {
+        userOverride ?? forcedDefault ?? initiallyExpandsRoutineGroups
+    }
+
+    func rows(in group: ReceiptCheckGroup) -> [ReceiptCheckRowPresentation] {
+        rows.filter { $0.group == group }
+    }
+
+    private static func aggregateNotice(_ evidence: ReceiptEvidenceDim) -> String? {
+        let supplied = [evidence.checksTotal, evidence.checksPassed, evidence.checksFailed]
+            .compactMap { $0 }
+        if supplied.contains(where: { $0 < 0 }) {
+            return "Reported check tallies contain a negative value."
+        }
+        guard let total = evidence.checksTotal, total >= 0 else { return nil }
+        let passed = evidence.checksPassed ?? 0
+        let failed = evidence.checksFailed ?? 0
+        if passed > total || failed > total || passed + failed > total {
+            return "Reported passed and failed tallies conflict with the total."
+        }
+        return nil
+    }
+}
+
 struct ReceiptEvidenceDim: Decodable {
     let checks: [ReceiptCheck]?
     let checksTotal: Int?
@@ -1218,6 +1585,103 @@ struct ReceiptEvidenceDim: Decodable {
         case checksPassed = "checks_passed"
         case checksFailed = "checks_failed"
         case provenance, gaps
+    }
+}
+
+/// Recorded check runs are independent from claim coverage. This presentation
+/// preserves any passed/failed tally even when the total is absent or
+/// inconsistent, instead of silently converting missing values to zero.
+struct ReceiptCheckRunsPresentation {
+    let value: String
+    let qualifier: String
+    let rowText: String
+    let headerText: String
+    let isInconsistent: Bool
+
+    init(total: Int?, passed: Int?, failed: Int?) {
+        let genericCountsConflict = Self.genericCountsConflict(
+            total: total,
+            passed: passed,
+            failed: failed
+        )
+        let zeroTotalConflict = total == 0 && ((passed ?? 0) != 0 || (failed ?? 0) != 0)
+        isInconsistent = genericCountsConflict || zeroTotalConflict
+        if genericCountsConflict {
+            value = "Inconsistent counts"
+            let tallies = Self.tallies(passed: passed, failed: failed)
+            let totalText = total.map { "\($0) total reported" } ?? "total not reported"
+            qualifier = "\(tallies) · \(totalText)"
+            rowText = "inconsistent check runs · \(tallies) · "
+                + (total.map { "\($0) total" } ?? "total not reported")
+            headerText = "inconsistent · \(tallies) · "
+                + (total.map { "\($0) total" } ?? "total not reported")
+        } else if let total, total > 0 {
+            if let passed {
+                value = "\(passed) of \(total)"
+                qualifier = "check runs passed" + Self.failedSuffix(failed)
+                rowText = "\(passed)/\(total) check runs passed" + Self.failedSuffix(failed)
+                headerText = "\(passed)/\(total) passed" + Self.failedSuffix(failed)
+            } else {
+                value = "Not reported"
+                qualifier = "passes unavailable · \(total) runs" + Self.failedSuffix(failed)
+                rowText = "passes not reported · \(total) check runs" + Self.failedSuffix(failed)
+                headerText = "passes not reported · \(total) total" + Self.failedSuffix(failed)
+            }
+        } else if total == 0, (passed ?? 0) == 0, (failed ?? 0) == 0 {
+            value = "None"
+            qualifier = "no check runs recorded"
+            rowText = "no check runs"
+            headerText = "no check runs"
+        } else if total == 0 {
+            value = "0 total reported"
+            let tallies = Self.tallies(passed: passed, failed: failed)
+            qualifier = tallies + " · tallies conflict with total"
+            rowText = "0 total reported · \(tallies)"
+            headerText = rowText
+        } else {
+            value = "Total not reported"
+            let tallies = Self.tallies(passed: passed, failed: failed)
+            qualifier = tallies == "no tallies reported"
+                ? "check-run totals unavailable"
+                : tallies
+            rowText = tallies == "no tallies reported"
+                ? "check runs not reported"
+                : "total not reported · \(tallies)"
+            headerText = rowText
+        }
+    }
+
+    private static func failedSuffix(_ failed: Int?) -> String {
+        guard let failed, failed > 0 else { return "" }
+        return " · \(failed) failed"
+    }
+
+    private static func tallies(passed: Int?, failed: Int?) -> String {
+        var parts: [String] = []
+        if let passed { parts.append("\(passed) passed") }
+        if let failed { parts.append("\(failed) failed") }
+        return parts.isEmpty ? "no tallies reported" : parts.joined(separator: " · ")
+    }
+
+    private static func genericCountsConflict(
+        total: Int?,
+        passed: Int?,
+        failed: Int?
+    ) -> Bool {
+        if total.map({ $0 < 0 }) == true
+            || passed.map({ $0 < 0 }) == true
+            || failed.map({ $0 < 0 }) == true {
+            return true
+        }
+        guard let total else { return false }
+        // The dedicated zero-total branch preserves supplied tallies and says
+        // they conflict with the reported total in more concrete language.
+        if total == 0 { return false }
+        if passed.map({ $0 > total }) == true || failed.map({ $0 > total }) == true {
+            return true
+        }
+        if let passed, let failed, passed + failed > total { return true }
+        return false
     }
 }
 

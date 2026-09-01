@@ -44,11 +44,15 @@ func receiptSourceTint(_ source: String) -> Color {
 }
 
 /// The app-wide cost prefix grammar, applied wherever a receipt cost renders:
-/// bare `$` only for a complete client-reported figure, `~$` for a knowingly
-/// partial one, `≈$` for every other estimate. One prefix per basis — the
-/// same number never appears with and without its estimate marker.
+/// bare `$` only for a complete figure whose confidence is reported OR billed,
+/// `~$` for a knowingly partial one, `≈$` for every other estimate. One prefix
+/// per basis — the same number never appears with and without its estimate
+/// marker, and the same figure never reads exact on one pane and estimated on
+/// another. Mirrors `Fmt.costDisplay`'s `reported` set (the single source of
+/// truth for the grammar).
 func receiptCostDisplay(_ usd: Double, complete: Bool?, confidence: String?) -> String {
-    if complete == true && confidence == "client_reported" { return Fmt.dollars(usd) }
+    let reported = confidence == "client_reported" || confidence == "provider_billed"
+    if complete == true && reported { return Fmt.dollars(usd) }
     if complete == false { return Fmt.dollars(usd, prefix: "~$") }
     return Fmt.dollars(usd, prefix: "≈$")
 }
@@ -108,6 +112,25 @@ func receiptCIEvidenceNotice(sources: [String]) -> ReceiptCIEvidenceNotice? {
     return ReceiptCIEvidenceNotice(
         headline: "No CI evidence on this receipt",
         detail: "CI can strengthen supporting evidence, but it does not change the separately recorded decision status."
+    )
+}
+
+struct ReceiptEmptyCheckDetailsCopy: Equatable {
+    let title: String
+    let detail: String
+}
+
+func receiptEmptyCheckDetailsCopy(
+    total: Int?,
+    passed: Int?,
+    failed: Int?
+) -> ReceiptEmptyCheckDetailsCopy {
+    let hasSummaryTallies = total != nil || passed != nil || failed != nil
+    return ReceiptEmptyCheckDetailsCopy(
+        title: hasSummaryTallies ? "No itemized check details recorded" : "No check runs recorded",
+        detail: hasSummaryTallies
+            ? "Summary counts are available above; this payload did not include per-run details."
+            : "Machine checks land here when a hook or CI reports one."
     )
 }
 
@@ -443,9 +466,12 @@ func receiptActionSourceText(_ sources: [String]?) -> String {
 
 // MARK: - Record summary strip
 
-/// The record page's summary strip: Actions · Est. cost · Elapsed · Checks ·
-/// Sessions, each a caps caption over an 18/700 mono value with 1px verticals
+/// The record page's context strip: Actions · Est. cost · Elapsed · Sessions,
+/// each a caps caption over an 18/700 mono value with 1px verticals
 /// between the cells. Absent facts are named ("not recorded"), never zeroed.
+/// Check runs live in the decision summary above this strip, beside the distinct
+/// claim-coverage measure; duplicating the fraction here made those concepts
+/// look interchangeable.
 struct RecordSummaryStrip: View {
     let receipt: Receipt
     let summary: ReceiptSummary?
@@ -461,7 +487,6 @@ struct RecordSummaryStrip: View {
     private var cells: [Cell] {
         let actions = receipt.dimensions.actions
         let cost = receipt.dimensions.cost
-        let evidence = receipt.dimensions.evidence
 
         let actionKPI = receiptActionKPI(
             receiptActionSynopsis(
@@ -481,7 +506,8 @@ struct RecordSummaryStrip: View {
         if let usd = cost.estimatedCostUsd {
             var qualifier = costBasisLabel(cost.costBasis)
             if cost.costComplete == false { qualifier += " · partial" }
-            if let pct = Fmt.planPct(cost.planShare?.pct) { qualifier += " · \(pct) wkly" }
+            // Weekly-plan share lives in its own "Weekly plan" receipt row now;
+            // don't duplicate it (in a second phrasing) on the cost KPI tile.
             costCell = Cell(
                 id: "cost",
                 label: "Est. cost",
@@ -500,20 +526,6 @@ struct RecordSummaryStrip: View {
             elapsedCell = Cell(id: "elapsed", label: "Elapsed", value: nil, qualifier: nil, absent: "not recorded")
         }
 
-        let checksCell: Cell
-        if let total = evidence.checksTotal, total > 0 {
-            let failed = evidence.checksFailed ?? 0
-            checksCell = Cell(
-                id: "checks",
-                label: "Checks",
-                value: "\(evidence.checksPassed ?? 0)/\(total)",
-                qualifier: failed > 0 ? "passed · \(failed) failed" : "passed",
-                absent: nil
-            )
-        } else {
-            checksCell = Cell(id: "checks", label: "Checks", value: nil, qualifier: nil, absent: "none recorded")
-        }
-
         let sessionsCell: Cell
         if let count = summary?.sessionCount ?? receipt.dimensions.task.boundary?.sessionCount {
             let roots = receipt.sessions?.count ?? 0
@@ -528,7 +540,7 @@ struct RecordSummaryStrip: View {
             sessionsCell = Cell(id: "sessions", label: "Sessions", value: nil, qualifier: nil, absent: "not recorded")
         }
 
-        return [actionCell, costCell, elapsedCell, checksCell, sessionsCell]
+        return [actionCell, costCell, elapsedCell, sessionsCell]
     }
 
     var body: some View {
@@ -546,16 +558,16 @@ struct RecordSummaryStrip: View {
                             // Qualifier under the value: cells are narrow and a
                             // basis word must never wrap the number itself.
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(value).font(Type.kpi).foregroundStyle(Theme.ink)
+                                Text(value).workFont(.kpi).foregroundStyle(Theme.ink)
                                 if let qualifier = cell.qualifier {
-                                    Text(qualifier).font(Type.dataSmall).foregroundStyle(Theme.muted)
+                                    Text(qualifier).workFont(.dataSmall).foregroundStyle(Theme.muted)
                                         .lineLimit(1)
                                 }
                             }
                         } else {
                             // Absence is a named state at value position — never "0".
                             Text(cell.absent ?? "not recorded")
-                                .font(Type.body).foregroundStyle(Theme.muted)
+                                .workFont(.body).foregroundStyle(Theme.muted)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -841,7 +853,8 @@ struct RecordDimensionsCard: View {
     var body: some View {
         Card(padding: Space.xl) {
             VStack(alignment: .leading, spacing: 0) {
-                Text("Receipt dimensions").font(Type.titleCard).foregroundStyle(Theme.ink)
+                Text("Receipt dimensions").workFont(.titleCard).foregroundStyle(Theme.ink)
+                    .accessibilityAddTraits(.isHeader)
                 Rectangle().fill(Theme.hairline).frame(height: 1).padding(.top, Space.m)
                 dimensionRow("Task", taskSummary,
                              provenance: receipt.dimensions.task.provenance,
@@ -856,6 +869,10 @@ struct RecordDimensionsCard: View {
                 dimensionRow("Cost", costSummary,
                              provenance: receipt.dimensions.cost.provenance,
                              gaps: receipt.dimensions.cost.gaps)
+                hairline
+                dimensionRow("Weekly plan", weeklyPlanSummary,
+                             provenance: nil,
+                             gaps: nil)
                 hairline
                 dimensionRow("Checks", evidenceSummary,
                              provenance: receipt.dimensions.evidence.provenance,
@@ -881,15 +898,15 @@ struct RecordDimensionsCard: View {
         verbatimValue: Bool = false
     ) -> some View {
         HStack(alignment: .top, spacing: Space.l) {
-            Text(name).font(Type.rowLabel).foregroundStyle(Theme.ink)
+            Text(name).workFont(.rowLabel).foregroundStyle(Theme.ink)
                 .frame(width: 128, alignment: .leading)
             VStack(alignment: .leading, spacing: 6) {
                 if verbatimValue {
                     // Outcome statements quote agent text — never parse as markdown.
-                    Text(verbatim: summary).font(Type.body).foregroundStyle(Theme.ink)
+                    Text(verbatim: summary).workFont(.body).foregroundStyle(Theme.ink)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    Text(summary).font(Type.body).foregroundStyle(Theme.ink)
+                    Text(summary).workFont(.body).foregroundStyle(Theme.ink)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let provenance, !provenance.isEmpty {
@@ -903,7 +920,7 @@ struct RecordDimensionsCard: View {
                     // A dimension's own blind spot, named where the value lives.
                     HStack(spacing: 6) {
                         EvidencePip(shape: .hollow, tint: Theme.amber)
-                        Text(gap).font(Type.caption).foregroundStyle(Theme.amber)
+                        Text(gap).workFont(.caption).foregroundStyle(Theme.amber)
                     }
                 }
             }
@@ -969,23 +986,22 @@ struct RecordDimensionsCard: View {
             tokensLine = "tokens: " + parts.joined(separator: " · ")
         }
         guard let cost = dim.estimatedCostUsd else {
-            // The share is token-derived, not dollar-derived — an unpriced
-            // task with a calibrated share still states it.
-            var absent = "no priced usage"
-            if let share = dim.planShare?.text { absent += " · \(share)" }
+            let absent = "no priced usage"
             guard let tokensLine else { return absent }
             return absent + "\n" + tokensLine
         }
         let display = receiptCostDisplay(cost, complete: dim.costComplete, confidence: dim.costConfidence)
         var line = "\(display) · \(costBasisLabel(dim.costBasis))\((dim.costComplete ?? true) ? "" : " (partial)")"
-        // The task's share of the weekly plan — shown only once calibrated
-        // (the daemon sends null until then; absence stays a named state on
-        // the merged Usage & limits pane, never a number here).
-        if let share = dim.planShare?.text {
-            line += " · \(share)"
-        }
+        // The Task's weekly-plan share has its own "Weekly plan" row below.
         if let tokensLine { line += "\n" + tokensLine }
         return line
+    }
+
+    // The Task's share of its client's weekly plan, as its own receipt row:
+    // the calibrated percentage, or a named calibration state — never a
+    // fabricated number (calibrated-or-nothing). Absent payload → "—".
+    private var weeklyPlanSummary: String {
+        receipt.dimensions.cost.planShare?.rowSummary ?? "—"
     }
 
     private var evidenceSummary: String {
@@ -1021,7 +1037,7 @@ struct DispositionControls: View {
     let taskId: String
     var targetDigest: String? = nil
     var blockedEventId: String? = nil
-    @EnvironmentObject var dashboard: DashboardStore
+    @Environment(DashboardStore.self) var dashboard
     @State private var resolvePopoverShown = false
     @State private var note = ""
     @State private var busy = false
@@ -1040,7 +1056,7 @@ struct DispositionControls: View {
                         Button {
                             resolvePopoverShown = true
                         } label: {
-                            Text("Resolve…").font(Type.captionSemibold).foregroundStyle(Theme.accent)
+                            Text("Resolve…").workFont(.captionSemibold).foregroundStyle(Theme.accent)
                         }
                         .buttonStyle(QuietButtonStyle())
                         .accessibilityIdentifier("disposition.resolve.\(kind)")
@@ -1055,7 +1071,7 @@ struct DispositionControls: View {
             }
             if let errorText {
                 Text(verbatim: errorText)
-                    .font(Type.dataSmall).foregroundStyle(Theme.coral)
+                    .workFont(.dataSmall).foregroundStyle(Theme.coral)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -1063,7 +1079,7 @@ struct DispositionControls: View {
 
     private func actionButton(_ label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(label).font(Type.captionSemibold).foregroundStyle(Theme.accent)
+            Text(label).workFont(.captionSemibold).foregroundStyle(Theme.accent)
         }
         .buttonStyle(QuietButtonStyle())
         .accessibilityIdentifier("disposition.\(label.lowercased().replacingOccurrences(of: " ", with: "-")).\(kind)")
@@ -1073,20 +1089,19 @@ struct DispositionControls: View {
         VStack(alignment: .leading, spacing: Space.s) {
             CapsLabel(text: "Resolve \(kind)")
             Text("Say what resolved it — recorded as your assertion, never machine verification.")
-                .font(Type.caption).foregroundStyle(Theme.muted)
+                .workFont(.caption).foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
             TextField("e.g. fixed by hand in a later commit", text: $note, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
-                .font(Type.body)
+                .workFont(.body)
                 .lineLimit(2...4)
-                .frame(width: 300)
             HStack {
                 Spacer()
                 Button {
                     resolvePopoverShown = false
                     post("resolve", note: note)
                 } label: {
-                    Text("Record resolve").font(Type.captionSemibold)
+                    Text("Record resolve").workFont(.captionSemibold)
                 }
                 .foregroundStyle(Theme.accent)
                 .buttonStyle(QuietButtonStyle(prominent: true))
@@ -1095,6 +1110,12 @@ struct DispositionControls: View {
             }
         }
         .padding(Space.l)
+        // Pin the popover width. Without a definite width the two
+        // .fixedSize(vertical:) Text rows wrap into a tall tower during the
+        // popover's width negotiation (measured 949pt), ballooning the sheet;
+        // a fixed width holds it at a stable ~130pt. Mirrors the status legend
+        // popover, which pins .frame(width: 440) for the same reason.
+        .frame(width: 340)
     }
 
     private func post(_ action: String, note: String?) {
@@ -1129,34 +1150,41 @@ struct BlockerCallout: View {
     let blocker: ReceiptBlocker
     let taskId: String
 
+    // A blocker the user resolved must not keep wearing the coral "blocked"
+    // tone — in this app coral means "needs you". It still shows here (so the
+    // resolve is auditable and reopenable), but in a calm, neutral treatment.
+    private var isResolved: Bool {
+        (blocker.disposition?.state ?? "open") == "resolved"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Image(systemName: "hand.raised")
+                Image(systemName: isResolved ? "checkmark.circle" : "hand.raised")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Theme.coral)
+                    .foregroundStyle(isResolved ? Theme.muted : Theme.coral)
                     .accessibilityHidden(true)
-                Text(blocker.stepTitle ?? "Blocked step")
-                    .font(Type.rowLabel).foregroundStyle(Theme.ink)
+                Text(blocker.stepTitle ?? (isResolved ? "Resolved blocker" : "Blocked step"))
+                    .workFont(.rowLabel).foregroundStyle(Theme.ink)
                     .lineLimit(2)
                 Spacer(minLength: Space.s)
                 // "last updated": the projection carries the step's last-activity
                 // time, which later non-terminal events can bump past the moment
                 // the blocker itself was recorded.
                 if let ago = agoText(blocker.updatedAt) {
-                    Text("last updated \(ago)").font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    Text("last updated \(ago)").workFont(.dataSmall).foregroundStyle(Theme.muted)
                 }
             }
             if let text = blocker.text {
                 // verbatim: the blocker is agent-authored text, never markdown.
                 Text(verbatim: text)
-                    .font(Type.body).foregroundStyle(Theme.ink)
+                    .workFont(.body).foregroundStyle(Theme.ink)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
             if let next = blocker.nextStep {
                 Text(verbatim: "next: \(next)")
-                    .font(Type.caption).foregroundStyle(Theme.muted)
+                    .workFont(.caption).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
@@ -1166,7 +1194,7 @@ struct BlockerCallout: View {
                 HStack(spacing: 6) {
                     EvidencePip(shape: .hollow, tint: Theme.amber)
                     Text("\(later) step\(later == 1 ? "" : "s") completed after this blocker's last update.")
-                        .font(Type.caption).foregroundStyle(Theme.amber)
+                        .workFont(.caption).foregroundStyle(Theme.amber)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -1174,12 +1202,12 @@ struct BlockerCallout: View {
                 // "steps with recorded blockers": sticky blocker text keeps a
                 // step in this count even when its latest status moved on.
                 Text("+\(count - 1) more step\(count == 2 ? "" : "s") with recorded blockers in Sessions & steps below")
-                    .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    .workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
             if let state = blocker.disposition?.state, state != "open" {
                 Text(verbatim: "marked \(state) by you"
                      + (blocker.disposition?.note.map { " — \($0)" } ?? ""))
-                    .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    .workFont(.dataSmall).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
             // Resolve/review this exact blocker. Snapshots skip the controls
@@ -1196,7 +1224,10 @@ struct BlockerCallout: View {
         }
         .padding(Space.l)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.tintCoral, in: RoundedRectangle(cornerRadius: Metrics.radius))
+        .background(
+            isResolved ? Theme.tintNeutral : Theme.tintCoral,
+            in: RoundedRectangle(cornerRadius: Metrics.radius)
+        )
         .accessibilityIdentifier("receipt.blocker")
     }
 }
@@ -1220,53 +1251,68 @@ struct RecordCoverageCard: View {
         ]
     }
 
+    private var presentation: ReceiptCoveragePresentation {
+        .init(evidence: evidence)
+    }
+
     var body: some View {
         Card(padding: Space.xl) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
-                    Text("Evidence coverage").font(Type.titleCard).foregroundStyle(Theme.ink)
+                    Text("Evidence coverage").workFont(.titleCard).foregroundStyle(Theme.ink)
+                        .accessibilityAddTraits(.isHeader)
                     Spacer()
-                    Text(schemaVersion).font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    Text(schemaVersion).workFont(.dataSmall).foregroundStyle(Theme.muted)
                 }
                 Rectangle().fill(Theme.hairline).frame(height: 1).padding(.vertical, Space.m)
 
-                if evidence.gradeable == true, let checkable = evidence.checkableTotal, checkable > 0 {
-                    Text("\(evidence.checkedTotal ?? 0) of \(checkable) checkable steps checked")
-                        .font(Face.sansFont(16, .semibold))
-                        .foregroundStyle(Theme.ink)
-                    CoverageBar(segments: tiers.map { CoverageSegment(count: $0.count, grade: $0.grade) })
-                        .padding(.top, Space.m)
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(tiers.filter { $0.count > 0 }, id: \.grade) { tier in
-                            let style = EvidenceTierStyle.forGrade(tier.grade)
-                            HStack(spacing: 7) {
-                                EvidencePip(shape: style.pip, tint: style.tint)
-                                Text(style.label).font(Type.caption).foregroundStyle(Theme.ink)
-                                Text("\(tier.count)").font(Type.dataSmall).foregroundStyle(Theme.muted)
+                Text(presentation.value)
+                    .workFont(size: 16, weight: .semibold, relativeTo: .headline)
+                    .foregroundStyle(
+                        presentation.isInconsistent
+                            ? Theme.amber
+                            : evidence.gradeable == false ? Theme.muted : Theme.ink
+                    )
+                Text(presentation.qualifier)
+                    .workFont(.caption).foregroundStyle(Theme.muted)
+                    .padding(.top, 4)
+
+                if evidence.gradeable != false,
+                   let checkable = evidence.checkableTotal,
+                   checkable > 0 {
+                    if presentation.tierBreakdownAvailable {
+                        CoverageBar(segments: tiers.map { CoverageSegment(count: $0.count, grade: $0.grade) })
+                            .padding(.top, Space.m)
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(tiers.filter { $0.count > 0 }, id: \.grade) { tier in
+                                let style = EvidenceTierStyle.forGrade(tier.grade)
+                                HStack(spacing: 7) {
+                                    EvidencePip(shape: style.pip, tint: style.tint)
+                                    Text(style.label).workFont(.caption).foregroundStyle(Theme.ink)
+                                    Text("\(tier.count)").workFont(.dataSmall).foregroundStyle(Theme.muted)
+                                }
                             }
                         }
-                    }
-                    .padding(.top, Space.m)
-                    if let notice = receiptExternalEvidenceNotice(byTier: evidence.byTier) {
+                        .padding(.top, Space.m)
+                        if let notice = receiptExternalEvidenceNotice(byTier: evidence.byTier) {
+                            Text(notice)
+                                .workFont(.caption).foregroundStyle(Theme.muted)
+                                .padding(.top, Space.s)
+                        }
+                    } else if let notice = presentation.tierBreakdownNotice {
                         Text(notice)
-                            .font(Type.caption).foregroundStyle(Theme.muted)
+                            .workFont(.caption).foregroundStyle(Theme.muted)
                             .padding(.top, Space.s)
                     }
-                } else {
-                    // No verifiable steps: a named state, never a fabricated 0/0.
-                    Text("Not gradeable").font(Face.sansFont(16, .semibold)).foregroundStyle(Theme.muted)
-                    Text("No verifiable steps recorded for this task.")
-                        .font(Type.caption).foregroundStyle(Theme.muted)
-                        .padding(.top, 4)
                 }
 
                 if let ledger = evidence.ledger {
-                    Text(ledger).font(Type.caption).foregroundStyle(Theme.muted)
+                    Text(ledger).workFont(.caption).foregroundStyle(Theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, Space.s)
                 }
                 Text("Counts show how many checkable steps carry a passing check, and how independent that check is — counts, not a probability of correctness.")
-                    .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                    .workFont(.dataSmall).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, Space.s)
             }
@@ -1282,48 +1328,274 @@ struct RecordCoverageCard: View {
 struct RecordChecksCard: View {
     let evidence: ReceiptEvidenceDim
     let taskId: String
+    private let initiallyExpandedCheckIDs: Set<String>
+    private let initiallyShowsRoutineGroups: Bool?
+    private let collection: ReceiptCheckCollectionPresentation
+
+    @State private var passedExpansionOverride: Bool?
+    @State private var historyExpansionOverride: Bool?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var presentation: ReceiptCheckRunsPresentation {
+        .init(
+            total: evidence.checksTotal,
+            passed: evidence.checksPassed,
+            failed: evidence.checksFailed
+        )
+    }
+
+    init(
+        evidence: ReceiptEvidenceDim,
+        taskId: String,
+        initiallyShowsRoutineGroups: Bool? = nil,
+        initiallyExpandedCheckIDs: Set<String> = []
+    ) {
+        self.evidence = evidence
+        self.taskId = taskId
+        self.initiallyExpandedCheckIDs = initiallyExpandedCheckIDs
+        self.initiallyShowsRoutineGroups = initiallyShowsRoutineGroups
+        self.collection = ReceiptCheckCollectionPresentation(evidence: evidence)
+        _passedExpansionOverride = State(initialValue: nil)
+        _historyExpansionOverride = State(initialValue: nil)
+    }
 
     var body: some View {
         Card(padding: Space.xl) {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 8) {
-                    Text("Checks").font(Type.titleCard).foregroundStyle(Theme.ink)
-                    if let total = evidence.checksTotal, total > 0 {
-                        Text("\(evidence.checksPassed ?? 0)/\(total) passed")
-                            .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                        checksHeading
+                        Spacer(minLength: Space.m)
+                        checksTally
                     }
-                    Spacer()
+                    VStack(alignment: .leading, spacing: Space.xs) {
+                        checksHeading
+                        checksTally
+                    }
                 }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Checks, \(presentation.headerText)")
+                .accessibilityAddTraits(.isHeader)
+
+                if let scope = collection.sharedScope {
+                    HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                        CapsLabel(text: "Scope")
+                        Text(verbatim: scope)
+                            .workFont(.dataSmall)
+                            .foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                    .padding(.top, Space.s)
+                }
+
+                if let notice = collection.aggregateNotice {
+                    HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundStyle(Theme.amber)
+                            .accessibilityHidden(true)
+                        Text(notice)
+                            .workFont(.caption)
+                            .foregroundStyle(Theme.amber)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.top, Space.s)
+                }
+
+                if let notice = collection.itemizedNotice {
+                    Text(notice)
+                        .workFont(.dataSmall)
+                        .foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, Space.s)
+                }
+
                 Rectangle().fill(Theme.hairline).frame(height: 1).padding(.top, Space.m)
-                let checks = evidence.checks ?? []
-                if checks.isEmpty {
-                    Text("No checks recorded").font(Type.body).foregroundStyle(Theme.muted)
+                if collection.rows.isEmpty {
+                    let copy = receiptEmptyCheckDetailsCopy(
+                        total: evidence.checksTotal,
+                        passed: evidence.checksPassed,
+                        failed: evidence.checksFailed
+                    )
+                    Text(copy.title)
+                        .workFont(.body).foregroundStyle(Theme.muted)
                         .padding(.top, Space.m)
-                    Text("Machine checks land here when a hook or CI reports one.")
-                        .font(Type.caption).foregroundStyle(Theme.muted)
-                        .padding(.top, 2)
+                    Text(copy.detail)
+                        .workFont(.caption).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, Space.xs)
+                } else if collection.rows.count == 1, let row = collection.rows.first {
+                    checkRow(row)
                 } else {
-                    ForEach(Array(checks.enumerated()), id: \.offset) { index, check in
-                        if index > 0 {
-                            Rectangle().fill(Theme.hairline).frame(height: 1)
-                        }
-                        RecordCheckRow(check: check, taskId: taskId)
+                    let attention = collection.rows(in: .attention)
+                    let other = collection.rows(in: .other)
+                    let passed = collection.rows(in: .passed)
+                    let history = collection.rows(in: .history)
+
+                    if !attention.isEmpty {
+                        fixedGroup(title: "Needs attention", rows: attention, tone: Theme.coral)
+                    }
+                    if !other.isEmpty {
+                        if !attention.isEmpty { sectionDivider }
+                        fixedGroup(title: "Other results", rows: other, tone: Theme.amber)
+                    }
+                    if !passed.isEmpty {
+                        if !attention.isEmpty || !other.isEmpty { sectionDivider }
+                        disclosureGroup(
+                            title: "Passed checks",
+                            rows: passed,
+                            expanded: routineGroupExpansion($passedExpansionOverride)
+                        )
+                    }
+                    if !history.isEmpty {
+                        if !attention.isEmpty || !other.isEmpty || !passed.isEmpty { sectionDivider }
+                        disclosureGroup(
+                            title: "History",
+                            rows: history,
+                            expanded: routineGroupExpansion($historyExpansionOverride)
+                        )
                     }
                 }
             }
         }
     }
+
+    private var checksHeading: some View {
+        Text("Checks")
+            .workFont(.titleCard)
+            .foregroundStyle(Theme.ink)
+    }
+
+    private var checksTally: some View {
+        Text(presentation.headerText)
+            .workFont(.dataSmall)
+            .foregroundStyle(Theme.muted)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var sectionDivider: some View {
+        Rectangle().fill(Theme.hairline).frame(height: 1)
+    }
+
+    private func routineGroupExpansion(_ override: Binding<Bool?>) -> Binding<Bool> {
+        Binding(
+            get: {
+                collection.routineGroupExpanded(
+                    userOverride: override.wrappedValue,
+                    forcedDefault: initiallyShowsRoutineGroups
+                )
+            },
+            set: { override.wrappedValue = $0 }
+        )
+    }
+
+    private func fixedGroup(
+        title: String,
+        rows: [ReceiptCheckRowPresentation],
+        tone: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                Text(title)
+                    .workFont(.captionSemibold)
+                    .foregroundStyle(tone)
+                Text("\(rows.count)")
+                    .workFont(.dataSmall)
+                    .foregroundStyle(Theme.muted)
+            }
+            .padding(.top, Space.m)
+            rowsView(rows)
+        }
+    }
+
+    private func disclosureGroup(
+        title: String,
+        rows: [ReceiptCheckRowPresentation],
+        expanded: Binding<Bool>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                expanded.wrappedValue.toggle()
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Theme.muted)
+                        .rotationEffect(.degrees(expanded.wrappedValue ? 90 : 0))
+                        .accessibilityHidden(true)
+                    Text(title)
+                        .workFont(.captionSemibold)
+                        .foregroundStyle(Theme.ink)
+                    Text("\(rows.count)")
+                        .workFont(.dataSmall)
+                        .foregroundStyle(Theme.muted)
+                    Spacer(minLength: Space.s)
+                    Text(expanded.wrappedValue ? "Hide" : "Show")
+                        .workFont(.dataSmallSemibold)
+                        .foregroundStyle(Theme.accent)
+                }
+                .padding(.vertical, Space.m)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(SurfaceButtonStyle(focusInset: 2))
+            .accessibilityLabel("\(title), \(rows.count)")
+            .accessibilityValue(expanded.wrappedValue ? "Expanded" : "Collapsed")
+            .accessibilityHint(expanded.wrappedValue ? "Hides these check runs" : "Shows these check runs")
+            .accessibilityIdentifier("receipt.check-group.\(title.lowercased().replacingOccurrences(of: " ", with: "-"))")
+
+            if expanded.wrappedValue {
+                rowsView(rows)
+                    .transition(.opacity)
+            }
+        }
+        .animation(reduceMotion ? nil : Motion.contentUpdate, value: expanded.wrappedValue)
+    }
+
+    private func rowsView(_ rows: [ReceiptCheckRowPresentation]) -> some View {
+        ScrollContentStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                if index > 0 {
+                    Rectangle().fill(Theme.hairline).frame(height: 1)
+                }
+                checkRow(row)
+            }
+        }
+    }
+
+    private func checkRow(_ row: ReceiptCheckRowPresentation) -> some View {
+        RecordCheckRow(
+            row: row,
+            taskId: taskId,
+            showsScope: collection.sharedScope == nil,
+            initiallyExpanded: initiallyExpandedCheckIDs.contains(row.id)
+        )
+    }
 }
 
-/// One check: the scannable one-liner, now expandable in place for the detail
-/// behind it (summary, files, timestamp, superseded state, artifact refs — and
-/// an honest note that command text is never captured). Snapshot mode keeps
-/// the plain one-liner: the offscreen renderer can't drive the toggle.
+/// One check: a scannable summary that expands in place to the full recorded
+/// detail (result, source, scope, files, timestamp, disposition, artifact refs,
+/// and an honest note when command text was intentionally not captured).
 private struct RecordCheckRow: View {
-    let check: ReceiptCheck
+    let row: ReceiptCheckRowPresentation
     let taskId: String
-    @State private var expanded = false
+    let showsScope: Bool
+
+    @State private var expanded: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var check: ReceiptCheck { row.check }
+
+    init(
+        row: ReceiptCheckRowPresentation,
+        taskId: String,
+        showsScope: Bool,
+        initiallyExpanded: Bool = false
+    ) {
+        self.row = row
+        self.taskId = taskId
+        self.showsScope = showsScope
+        _expanded = State(initialValue: initiallyExpanded)
+    }
 
     private var mark: (symbol: String, tint: Color) {
         let machineObserved = ["hook", "ci"].contains(check.source ?? "")
@@ -1336,63 +1608,113 @@ private struct RecordCheckRow: View {
     }
 
     private var headerLine: some View {
-        HStack(alignment: .firstTextBaseline, spacing: Space.s) {
-            if !SnapshotMode.enabled {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(Theme.muted)
-                    .frame(width: 10)
-                    .rotationEffect(.degrees(expanded ? 90 : 0))
-                    .accessibilityHidden(true)
-            }
+        HStack(alignment: .top, spacing: Space.s) {
+            Image(systemName: "chevron.right")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(Theme.muted)
+                .frame(minWidth: 12, minHeight: 20)
+                .rotationEffect(.degrees(expanded ? 90 : 0))
+                .accessibilityHidden(true)
             Image(systemName: mark.symbol)
-                .font(.system(size: 10, weight: .bold))
+                .font(.caption.weight(.bold))
                 .foregroundStyle(mark.tint)
-                .frame(width: 14)
+                .frame(minWidth: 16, minHeight: 20)
                 .accessibilityHidden(true)  // the row label names the result
-            Text(check.name ?? check.kind ?? "check")
-                .font(Type.body).foregroundStyle(Theme.ink)
-                .lineLimit(1).truncationMode(.middle)
-            if check.superseded == true {
-                Chip(text: "superseded", tint: Theme.muted)
-                    .help("A later run of the same-scope check passed; kept in history.")
-            }
-            if let scope = check.scope {
-                Text(scope).font(Type.dataSmall).foregroundStyle(Theme.muted)
-            }
-            Spacer(minLength: Space.s)
-            if let exit = check.exitCode {
-                Text("exit \(exit)").font(Type.dataSmall).foregroundStyle(Theme.muted)
-            }
-            if let source = check.source {
-                ProvenanceChip(text: source)
+
+            VStack(alignment: .leading, spacing: Space.s) {
+                HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                    Text(row.resultLabel)
+                        .workFont(.dataSmallSemibold)
+                        .foregroundStyle(mark.tint)
+                        .fixedSize(horizontal: true, vertical: false)
+                    Text(verbatim: row.title)
+                        .workFont(.body)
+                        .foregroundStyle(Theme.ink)
+                        .lineLimit(expanded ? nil : 2)
+                        .truncationMode(.tail)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .layoutPriority(1)
+                }
+
+                if hasCollapsedMetadata {
+                    VStack(alignment: .leading, spacing: Space.xs) {
+                        if showsScope, let scope = row.scope {
+                            HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                                Text("Scope")
+                                    .workFont(.dataSmallSemibold)
+                                    .foregroundStyle(Theme.muted)
+                                Text(verbatim: scope)
+                                    .workFont(.dataSmall)
+                                    .foregroundStyle(Theme.muted)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .help(scope)
+                            }
+                        }
+                        ViewThatFits(in: .horizontal) {
+                            HStack(alignment: .center, spacing: Space.s) {
+                                collapsedMetadataItems
+                            }
+                            VStack(alignment: .leading, spacing: Space.xs) {
+                                collapsedMetadataItems
+                            }
+                        }
+                    }
+                }
             }
         }
-        .padding(.vertical, 10)
+        .padding(.vertical, Space.m)
         .contentShape(Rectangle())
+        .help(row.title)
+    }
+
+    private var hasCollapsedMetadata: Bool {
+        (showsScope && row.scope != nil)
+            || row.collapsedExitText != nil
+            || row.sourceLabel != nil
+            || check.superseded == true
+            || (check.finding?.state != nil && check.finding?.state != "open")
+    }
+
+    @ViewBuilder
+    private var collapsedMetadataItems: some View {
+        if let exitText = row.collapsedExitText {
+            Text(exitText)
+                .workFont(.dataSmallSemibold)
+                .foregroundStyle(mark.tint)
+        }
+        if let sourceLabel = row.sourceLabel {
+            ProvenanceChip(text: sourceLabel)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(sourceLabel)
+        }
+        if check.superseded == true {
+            Chip(text: "Superseded", tint: Theme.muted)
+                .help("A later run of the same-scope check passed; kept in history.")
+        }
+        if let state = check.finding?.state, state != "open" {
+            Chip(text: state.capitalized, tint: Theme.muted)
+        }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if SnapshotMode.enabled {
+            Button {
+                expanded.toggle()
+            } label: {
                 headerLine
-            } else {
-                Button {
-                    expanded.toggle()
-                } label: {
-                    headerLine
-                }
-                .buttonStyle(SurfaceButtonStyle(focusInset: 2))
-                .accessibilityLabel(
-                    "\(check.name ?? check.kind ?? "check"), \(check.result ?? "unknown")"
-                    + ", \(expanded ? "expanded" : "collapsed")"
-                )
-                .accessibilityIdentifier("receipt.check.\(check.name ?? "check")")
             }
+            .buttonStyle(SurfaceButtonStyle(focusInset: 2))
+            .accessibilityLabel(row.title)
+            .accessibilityValue(row.accessibilityValue(isExpanded: expanded))
+            .accessibilityHint(expanded ? "Hides full check details" : "Shows full check details")
+            .accessibilityIdentifier(row.accessibilityIdentifier)
+
             if expanded {
                 expandedBody
-                    .padding(.leading, 10 + Space.s + 14 + Space.s)
-                    .padding(.bottom, 10)
+                    .padding(.leading, 12 + Space.s + 16 + Space.s)
+                    .padding(.bottom, Space.m)
                     .transition(.opacity)
             }
         }
@@ -1401,44 +1723,93 @@ private struct RecordCheckRow: View {
 
     @ViewBuilder
     private var expandedBody: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let summary = check.summary {
-                // verbatim: agent/hook-authored text, never markdown.
-                Text(verbatim: summary)
-                    .font(Type.caption).foregroundStyle(Theme.ink)
+        VStack(alignment: .leading, spacing: Space.m) {
+            CheckDetailField(label: "Check") {
+                Text(verbatim: row.title)
+                    .workFont(.caption)
+                    .foregroundStyle(Theme.ink)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
+            }
+            CheckDetailField(label: "Run") {
+                Text(row.runDetailText)
+                    .workFont(.dataSmall)
+                    .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            if let reportedResult = check.result,
+               !["passed", "failed", "error", "skipped"].contains(reportedResult) {
+                CheckDetailField(label: "Reported result") {
+                    Text(verbatim: reportedResult)
+                        .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            }
+            if let source = check.source {
+                CheckDetailField(label: "Source") {
+                    Text(verbatim: source)
+                        .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            }
+            if let summary = check.summary {
+                CheckDetailField(label: "Summary") {
+                    // verbatim: agent/hook-authored text, never markdown.
+                    Text(verbatim: summary)
+                        .workFont(.caption).foregroundStyle(Theme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            }
+            if let scope = row.scope {
+                CheckDetailField(label: "Scope") {
+                    Text(verbatim: scope)
+                        .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
             }
             if let at = check.at, let ago = agoText(at) {
-                Text("recorded \(ago)").font(Type.dataSmall).foregroundStyle(Theme.muted)
+                CheckDetailField(label: "Recorded") {
+                    Text(ago).workFont(.dataSmall).foregroundStyle(Theme.muted)
+                }
             }
             if let files = check.files, !files.isEmpty {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(files.enumerated()), id: \.offset) { _, path in
-                        Text(verbatim: path)
-                            .font(Type.dataSmall).foregroundStyle(Theme.muted)
-                            .lineLimit(1).truncationMode(.middle)
+                CheckDetailField(label: "Files") {
+                    ScrollContentStack(alignment: .leading, spacing: Space.xs) {
+                        ForEach(Array(files.enumerated()), id: \.offset) { _, path in
+                            Text(verbatim: path)
+                                .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
+                    .textSelection(.enabled)
                 }
-                .textSelection(.enabled)
             }
             if check.commandRedacted == true {
-                // Absence is a named state: a command ran, and agentacct
-                // deliberately never records command text for checks.
-                Text("command text not captured for checks — agentacct records the check's name, result, and files, not the command itself")
-                    .font(Type.dataSmall).foregroundStyle(Theme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
+                CheckDetailField(label: "Privacy") {
+                    // Absence is a named state: a command ran, and agentacct
+                    // deliberately never records command text for checks.
+                    Text("Command text was intentionally not captured; agentacct records the check name, result, and files.")
+                        .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             if let artifact = check.artifactUrl ?? check.artifactRef {
-                Text(verbatim: "artifact: \(artifact)")
-                    .font(Type.dataSmall).foregroundStyle(Theme.muted)
-                    .lineLimit(1).truncationMode(.middle)
-                    .textSelection(.enabled)
+                CheckDetailField(label: "Artifact") {
+                    Text(verbatim: artifact)
+                        .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
             }
             if check.summary == nil, check.at == nil, (check.files ?? []).isEmpty,
                check.commandRedacted != true, check.artifactUrl == nil, check.artifactRef == nil {
-                Text("no further detail recorded for this check")
-                    .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                Text("No additional detail was recorded for this check.")
+                    .workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
             // A surfaced failing check carries its human attention handle:
             // review/resolve it here instead of leaving the red forever.
@@ -1446,10 +1817,10 @@ private struct RecordCheckRow: View {
                 if let state = finding.state, state != "open" {
                     Text(verbatim: "marked \(state) by you"
                          + (finding.note.map { " — \($0)" } ?? ""))
-                        .font(Type.dataSmall).foregroundStyle(Theme.muted)
+                        .workFont(.dataSmall).foregroundStyle(Theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if !SnapshotMode.enabled, let digest = finding.targetDigest {
+                if let digest = finding.targetDigest {
                     DispositionControls(
                         kind: "finding",
                         state: finding.state ?? "open",
@@ -1459,6 +1830,18 @@ private struct RecordCheckRow: View {
                     )
                 }
             }
+        }
+    }
+}
+
+private struct CheckDetailField<Content: View>: View {
+    let label: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            CapsLabel(text: label)
+            content
         }
     }
 }
@@ -1474,14 +1857,15 @@ struct RecordGapsCard: View {
             Card(padding: Space.xl) {
                 VStack(alignment: .leading, spacing: 0) {
                     Text("Gaps (\(items.count)) — what could not be proven")
-                        .font(Type.titleCard).foregroundStyle(Theme.ink)
+                        .workFont(.titleCard).foregroundStyle(Theme.ink)
+                        .accessibilityAddTraits(.isHeader)
                     Rectangle().fill(Theme.hairline).frame(height: 1).padding(.vertical, Space.m)
-                    VStack(alignment: .leading, spacing: Space.s) {
+                    ScrollContentStack(alignment: .leading, spacing: Space.s) {
                         ForEach(items) { item in
                             HStack(alignment: .firstTextBaseline, spacing: Space.s) {
-                                Text(item.dimension).font(Type.captionSemibold).foregroundStyle(Theme.muted)
+                                Text(item.dimension).workFont(.captionSemibold).foregroundStyle(Theme.muted)
                                     .frame(width: 70, alignment: .leading)
-                                Text(item.reason).font(Type.caption).foregroundStyle(Theme.muted)
+                                Text(item.reason).workFont(.caption).foregroundStyle(Theme.muted)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }
@@ -1510,17 +1894,18 @@ struct RecordSourcesCard: View {
         if !presentSources.isEmpty {
             Card(padding: Space.xl) {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("Evidence sources").font(Type.titleCard).foregroundStyle(Theme.ink)
+                    Text("Evidence sources").workFont(.titleCard).foregroundStyle(Theme.ink)
+                        .accessibilityAddTraits(.isHeader)
                     Rectangle().fill(Theme.hairline).frame(height: 1).padding(.top, Space.m)
                     ForEach(Array(presentSources.enumerated()), id: \.element) { index, source in
                         if index > 0 {
                             Rectangle().fill(Theme.hairline).frame(height: 1)
                         }
                         HStack(alignment: .top, spacing: Space.m) {
-                            Text(source).font(Type.rowLabel).foregroundStyle(Theme.ink)
+                            Text(source).workFont(.rowLabel).foregroundStyle(Theme.ink)
                                 .frame(width: 96, alignment: .leading)
                             Text(legend[source] ?? "recorded on this receipt")
-                                .font(Type.caption).foregroundStyle(Theme.muted)
+                                .workFont(.caption).foregroundStyle(Theme.muted)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         .padding(.vertical, Space.m)
@@ -1529,9 +1914,9 @@ struct RecordSourcesCard: View {
                         Rectangle().fill(Theme.hairline).frame(height: 1)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(notice.headline)
-                                .font(Type.rowLabel).foregroundStyle(Theme.muted)
+                                .workFont(.rowLabel).foregroundStyle(Theme.muted)
                             Text(notice.detail)
-                                .font(Type.caption).foregroundStyle(Theme.muted)
+                                .workFont(.caption).foregroundStyle(Theme.muted)
                         }
                         .padding(.top, Space.m)
                     }

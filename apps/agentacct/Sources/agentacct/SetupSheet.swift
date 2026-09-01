@@ -25,6 +25,7 @@ func setupPhaseKey(for phase: SetupModel.Phase) -> SetupPhaseKey {
 struct SetupSheet: View {
     @ObservedObject var setup: SetupModel
     var onClose: () -> Void
+    @State private var setupTask: Task<Void, Never>?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var phaseKey: SetupPhaseKey {
@@ -55,17 +56,13 @@ struct SetupSheet: View {
 
             if !setup.log.isEmpty {
                 ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(Array(setup.log.enumerated()), id: \.offset) { i, line in
-                                Text(line)
-                                    .font(Type.dataSmall)
-                                    .foregroundStyle(Theme.muted)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .id(i)
-                            }
+                    Group {
+                        if SnapshotMode.enabled {
+                            setupLog
+                                .frame(maxHeight: .infinity, alignment: .top)
+                        } else {
+                            ScrollView { setupLog }
                         }
-                        .padding(8)
                     }
                     .frame(height: 150)
                     .background(Theme.chrome, in: RoundedRectangle(cornerRadius: Metrics.radius))
@@ -97,6 +94,24 @@ struct SetupSheet: View {
         .padding(Space.l)
         .frame(width: 460)
         .background(Theme.canvas)
+        .onDisappear {
+            setupTask?.cancel()
+            setupTask = nil
+        }
+    }
+
+    private var setupLog: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(setup.log.enumerated()), id: \.offset) { i, line in
+                Text(line)
+                    .font(Type.dataSmall)
+                    .foregroundStyle(Theme.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .id(i)
+            }
+        }
+        .padding(8)
     }
 
     @ViewBuilder
@@ -108,9 +123,7 @@ struct SetupSheet: View {
                     .buttonStyle(QuietButtonStyle(tint: Theme.muted))
                     .foregroundStyle(Theme.muted)
                 Spacer()
-                Button {
-                    Task { await setup.setUp() }
-                } label: {
+                Button(action: startSetup) {
                     Text("Set up recording").font(Face.sansFont(13, .semibold))
                 }
                 .buttonStyle(.borderedProminent)
@@ -141,16 +154,29 @@ struct SetupSheet: View {
                 }
                 Text(message).font(Type.caption).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                Text("Review the final log lines, resolve the reported issue, then try again.")
+                    .font(Type.caption)
+                    .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Button("Close", action: onClose)
                         .buttonStyle(QuietButtonStyle(tint: Theme.muted))
                         .foregroundStyle(Theme.muted)
                     Spacer()
-                    Button("Try again") { setup.reset(); Task { await setup.setUp() } }
-                        .buttonStyle(.borderedProminent).tint(Theme.accent)
+                    Button("Try again") {
+                        setup.reset()
+                        startSetup()
+                    }
+                    .buttonStyle(.borderedProminent).tint(Theme.accent)
                 }
             }
         }
+    }
+
+    private func startSetup() {
+        setupTask?.cancel()
+        setupTask = Task { await setup.setUp() }
     }
 }
 

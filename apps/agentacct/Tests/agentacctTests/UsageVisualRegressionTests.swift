@@ -8,6 +8,8 @@ final class UsageVisualRegressionTests: XCTestCase {
         "usage-minimum-dark.png",
         "usage-reference-light.png",
         "usage-reference-dark.png",
+        "usage-weekly-reference-light.png",
+        "usage-weekly-reference-dark.png",
         "usage-disconnected-reference-light.png",
         "usage-disconnected-reference-dark.png",
     ]

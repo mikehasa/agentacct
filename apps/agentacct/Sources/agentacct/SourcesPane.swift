@@ -86,7 +86,7 @@ struct V1IngestionIssue: Decodable, Identifiable {
 // MARK: - Pane
 
 struct SourcesPane: View {
-    @EnvironmentObject var dashboard: DashboardStore
+    @Environment(DashboardStore.self) var dashboard
 
     var body: some View {
         ScrollBox {
