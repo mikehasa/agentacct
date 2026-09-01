@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentacct"
-version = "0.10.2"
+version = "0.10.4"
 description = "Local-first Agent Work Intelligence for coding agents: usage truth, recorded work, and honest joins"
 readme = "README.md"
 requires-python = ">=3.11"

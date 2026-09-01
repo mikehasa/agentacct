@@ -260,7 +260,10 @@ struct WorkReceiptRowPresentation {
         title = selectedDetail?.title ?? task.title ?? task.taskId
         decisionKey = decision.key
         decisionLabel = decision.label ?? decision.key
-        decisionHelp = decision.blocker?.text ?? decision.statement ?? ""
+        // A resolved blocker is surfaced (so it can be reopened) but must not
+        // colour the row or the badge tooltip as if the task still needs you.
+        let blockerIsStanding = (decision.blocker?.disposition?.state ?? "open") != "resolved"
+        decisionHelp = (blockerIsStanding ? decision.blocker?.text : nil) ?? decision.statement ?? ""
         evidence = resolvedEvidence
         handedOff = selectedDetail?.axes.handoff?.handedOff ?? (task.handedOff == true)
         let coveragePresentation = ReceiptCoveragePresentation(evidence: resolvedEvidence)
@@ -289,7 +292,9 @@ struct WorkReceiptRowPresentation {
             costText = compact == "—" ? "cost unknown" : compact
         }
         updatedText = agoText(task.lastActivityAt) ?? "no activity"
-        if let blocker = decision.blocker?.text, !blocker.isEmpty {
+        // Only a STANDING blocker states the (coral) attention reason; a resolved
+        // one is surfaced for reopen but must not read as needing attention.
+        if let blocker = decision.blocker?.text, !blocker.isEmpty, blockerIsStanding {
             attentionReason = blocker
         } else if let checksFailed, checksFailed > 0 {
             attentionReason = "\(checksFailed) failed check run\(checksFailed == 1 ? "" : "s")"
@@ -1999,10 +2004,18 @@ struct WorkRecordPage: View {
 
     @ViewBuilder
     private var sessionsSection: some View {
-        if let groups = receipt.sessions, !groups.isEmpty {
-            VStack(alignment: .leading, spacing: Space.s) {
+        VStack(alignment: .leading, spacing: Space.s) {
+            HStack(alignment: .firstTextBaseline, spacing: Space.s) {
                 SectionCaption(tone: Theme.muted, text: "Sessions & steps")
-                    .accessibilityAddTraits(.isHeader)
+                    .accessibilityHeading(.h2)
+                if let groups = receipt.sessions, !groups.isEmpty {
+                    let count = groups.reduce(0) { $0 + $1.members.count }
+                    Text("\(count) session\(count == 1 ? "" : "s")")
+                        .workFont(.dataSmall)
+                        .foregroundStyle(Theme.muted)
+                }
+            }
+            if let groups = receipt.sessions, !groups.isEmpty {
                 ForEach(groups) { group in
                     VStack(alignment: .leading, spacing: 5) {
                         // Only label the group when there's more than one root (a
@@ -2028,6 +2041,11 @@ struct WorkRecordPage: View {
                         }
                     }
                 }
+            } else {
+                Text("Session details aren't available for this receipt.")
+                    .workFont(.caption)
+                    .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -2161,11 +2179,54 @@ private struct WorkRecordSplitLayout: Layout {
 
 // MARK: - Session drill-down
 
+struct SessionDrillAccessibilityPresentation {
+    let title: String
+    let distinguishingId: String
+    let project: String?
+    let role: String?
+    let sessionKind: String?
+    let expanded: Bool
+    let detailSummary: String?
+    let loading: Bool
+    let failed: Bool
+    let lastActivity: String?
+
+    var label: String {
+        var parts = [title, "session \(distinguishingId)"]
+        if let project = nonempty(project) { parts.append("project \(project)") }
+        return parts.joined(separator: ", ")
+    }
+
+    var value: String {
+        var parts = [expanded ? "Expanded" : "Collapsed"]
+        switch role {
+        case "subagent": parts.append(nonempty(sessionKind) ?? "subagent")
+        case "root": parts.append("root")
+        default: parts.append("role unknown")
+        }
+        if let detailSummary = nonempty(detailSummary) { parts.append(detailSummary) }
+        if let lastActivity = nonempty(lastActivity) { parts.append("updated \(lastActivity)") }
+        if loading {
+            parts.append(failed ? "Retrying session steps" : "Loading session steps")
+        } else if failed {
+            parts.append("Session steps unavailable")
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    private func nonempty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else { return nil }
+        return trimmed
+    }
+}
+
 /// One session in the drill-down: a header row (role/kind + title) that expands
 /// to lazily load `/v1/session` and render its steps — reusing StepCard — and
 /// its subagent sessions. Each row owns its own loaded detail (the shared store
 /// slot would clobber across several expanded sessions).
-private struct SessionDrillRow: View {
+struct SessionDrillRow: View {
     let member: ReceiptSessionMember
     let initiallyExpanded: Bool
     @Environment(DashboardStore.self) var dashboard
@@ -2175,14 +2236,21 @@ private struct SessionDrillRow: View {
     @State private var failed = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(member: ReceiptSessionMember, initiallyExpanded: Bool = false) {
+    init(
+        member: ReceiptSessionMember,
+        initiallyExpanded: Bool = false,
+        initiallyLoading: Bool = false,
+        initiallyFailed: Bool = false
+    ) {
         self.member = member
         self.initiallyExpanded = initiallyExpanded
         _expanded = State(initialValue: initiallyExpanded)
+        _loading = State(initialValue: initiallyLoading)
+        _failed = State(initialValue: initiallyFailed)
     }
 
-    /// The lazily-loaded detail, or a snapshot-preloaded one (the offscreen
-    /// renderer never runs the `.task` that would load it live).
+    /// The lazily-loaded detail, or a snapshot-preloaded one. The load guards
+    /// use this value so deterministic renderers never start a redundant task.
     private var effectiveDetail: V1SessionDetail? {
         detail ?? dashboard.preloadedSessions["\(member.client)::\(member.clientSessionId)"]
     }
@@ -2204,30 +2272,83 @@ private struct SessionDrillRow: View {
         return String(id.prefix(8))
     }
 
+    private var detailSummary: String? {
+        guard let detail = effectiveDetail else { return nil }
+        let checkDigest = StepCheckDigest(checks: detail.steps.flatMap { $0.checks ?? [] })
+        var parts = ["\(detail.steps.count) step\(detail.steps.count == 1 ? "" : "s")"]
+        if !checkDigest.all.isEmpty { parts.append(checkDigest.summary) }
+        return parts.joined(separator: " · ")
+    }
+
+    private var roleLabel: String {
+        switch member.role {
+        case "subagent": return member.sessionKind ?? "subagent"
+        case "root": return "root"
+        default: return "role unknown"
+        }
+    }
+
+    private var accessibilityPresentation: SessionDrillAccessibilityPresentation {
+        SessionDrillAccessibilityPresentation(
+            title: label,
+            distinguishingId: distinguishingId,
+            project: member.project,
+            role: member.role,
+            sessionKind: member.sessionKind,
+            expanded: expanded,
+            detailSummary: detailSummary,
+            loading: loading,
+            failed: failed,
+            lastActivity: agoText(member.lastActivityAt)
+        )
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
                 expanded.toggle()
-                if expanded, detail == nil, !loading { Task { await load() } }
+                if expanded, effectiveDetail == nil, !loading, !failed { Task { await load() } }
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.muted).frame(width: 10)
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
-                    Chip(text: member.role == "subagent" ? (member.sessionKind ?? "subagent") : "root",
-                         tint: member.role == "subagent" ? Theme.muted : Theme.accent)
-                    Text(label).workFont(.body).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.tail)
-                    Spacer(minLength: 8)
-                    if let project = member.project, member.role == "root" {
-                        Text(project).workFont(.caption).foregroundStyle(Theme.muted)
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.forward")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(Theme.muted)
+                            .frame(width: 10, height: 18)
+                        Text(label)
+                            .workFont(.body)
+                            .foregroundStyle(Theme.ink)
+                            .lineLimit(expanded ? nil : 2)
+                            .fixedSize(horizontal: false, vertical: expanded)
+                            .layoutPriority(1)
+                        Spacer(minLength: 8)
+                        if let detailSummary {
+                            Text(detailSummary)
+                                .workFont(.dataSmall)
+                                .foregroundStyle(Theme.muted)
+                        }
                     }
-                    if let ago = agoText(member.lastActivityAt) {
-                        Text("Activity \(ago)").workFont(.dataSmall).foregroundStyle(Theme.muted)
+                    HStack(spacing: 8) {
+                        Chip(
+                            text: roleLabel,
+                            tint: member.role == "root" ? Theme.accent : Theme.muted
+                        )
+                        if let project = member.project, member.role == "root" {
+                            Text(project).workFont(.caption).foregroundStyle(Theme.muted)
+                        }
+                        if let ago = agoText(member.lastActivityAt) {
+                            Text("Activity \(ago)").workFont(.dataSmall).foregroundStyle(Theme.muted)
+                        }
                     }
+                    .padding(.leading, 18)
                 }
                 .padding(.horizontal, 10).padding(.vertical, 7).contentShape(Rectangle())
             }
             .buttonStyle(SurfaceButtonStyle(focusInset: 2))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityPresentation.label)
+            .accessibilityValue(accessibilityPresentation.value)
+            .accessibilityHint(expanded ? "Hides session steps" : "Shows session steps")
 
             if expanded {
                 expandedBody
@@ -2241,7 +2362,7 @@ private struct SessionDrillRow: View {
         .task {
             // The root session opens expanded — its step-by-step is the point;
             // load its steps up front.
-            if expanded, detail == nil, !loading { await load() }
+            if expanded, effectiveDetail == nil, !loading, !failed { await load() }
         }
     }
 
@@ -2250,21 +2371,28 @@ private struct SessionDrillRow: View {
         if let detail = effectiveDetail {
             VStack(alignment: .leading, spacing: 6) {
                 if detail.steps.isEmpty {
-                    Text("no recorded steps for this session").workFont(.caption).foregroundStyle(Theme.muted)
+                    Text("No recorded steps are linked to this session.")
+                        .workFont(.caption)
+                        .foregroundStyle(Theme.muted)
                 } else {
+                    let stepItems = SessionStepItem.make(detail.steps)
                     // A snapshot opens the first couple of check-bearing steps
                     // (so their check evidence — command + exit code — shows) plus
                     // one un-checked step (so an honest "no passing check" step is
                     // visible too); the live app opens every step collapsed.
                     let opened: Set<String> = SnapshotMode.enabled
                         ? Set(
-                            detail.steps.filter { !($0.checks?.isEmpty ?? true) }.prefix(2).map(\.id)
-                            + detail.steps.filter { ($0.checks?.isEmpty ?? true) }.prefix(1).map(\.id)
+                            stepItems.filter { !($0.step.checks?.isEmpty ?? true) }.prefix(2).map(\.id)
+                            + stepItems.filter { ($0.step.checks?.isEmpty ?? true) }.prefix(1).map(\.id)
                           )
                         : []
                     ScrollContentStack(alignment: .leading, spacing: 6) {
-                        ForEach(detail.steps) { step in
-                            StepCard(step: step, initiallyExpanded: opened.contains(step.id))
+                        ForEach(stepItems) { item in
+                            StepCard(
+                                step: item.step,
+                                initiallyExpanded: opened.contains(item.id),
+                                accessibilityContext: item.id
+                            )
                         }
                     }
                 }
@@ -2274,22 +2402,42 @@ private struct SessionDrillRow: View {
                 // same subagents a second time (a confusing "41 and 41"), so the
                 // member list is the single source of truth for the tree.
             }
+        } else if failed {
+            HStack(spacing: Space.s) {
+                Text(loading ? "Retrying session steps…" : "Session steps couldn't be loaded.")
+                    .workFont(.caption)
+                    .foregroundStyle(Theme.amber)
+                Button {
+                    if !loading { Task { await load() } }
+                } label: {
+                    Text(loading ? "Retrying…" : "Retry")
+                        .workFont(.captionSemibold)
+                        .frame(
+                            minWidth: ButtonFeedback.minimumHitDimension,
+                            minHeight: ButtonFeedback.minimumHitDimension
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(SurfaceButtonStyle(focusInset: 2))
+                .disabled(loading)
+                .accessibilityHint(loading ? "Retry is in progress" : "Loads this session's steps again")
+            }
         } else if loading {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("loading steps…").workFont(.caption).foregroundStyle(Theme.muted)
+                Text("Loading session steps…").workFont(.caption).foregroundStyle(Theme.muted)
             }
-        } else if failed {
-            Text("Unable to load this session").workFont(.caption).foregroundStyle(Theme.amber)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Loading session steps")
         }
     }
 
     private func load() async {
         loading = true
-        failed = false
         defer { loading = false }
         do {
             detail = try await dashboard.loadSession(client: member.client, sessionId: member.clientSessionId)
+            failed = false
         } catch {
             failed = true
         }

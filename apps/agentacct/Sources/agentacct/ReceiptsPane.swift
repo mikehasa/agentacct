@@ -44,11 +44,15 @@ func receiptSourceTint(_ source: String) -> Color {
 }
 
 /// The app-wide cost prefix grammar, applied wherever a receipt cost renders:
-/// bare `$` only for a complete client-reported figure, `~$` for a knowingly
-/// partial one, `≈$` for every other estimate. One prefix per basis — the
-/// same number never appears with and without its estimate marker.
+/// bare `$` only for a complete figure whose confidence is reported OR billed,
+/// `~$` for a knowingly partial one, `≈$` for every other estimate. One prefix
+/// per basis — the same number never appears with and without its estimate
+/// marker, and the same figure never reads exact on one pane and estimated on
+/// another. Mirrors `Fmt.costDisplay`'s `reported` set (the single source of
+/// truth for the grammar).
 func receiptCostDisplay(_ usd: Double, complete: Bool?, confidence: String?) -> String {
-    if complete == true && confidence == "client_reported" { return Fmt.dollars(usd) }
+    let reported = confidence == "client_reported" || confidence == "provider_billed"
+    if complete == true && reported { return Fmt.dollars(usd) }
     if complete == false { return Fmt.dollars(usd, prefix: "~$") }
     return Fmt.dollars(usd, prefix: "≈$")
 }
@@ -1064,7 +1068,6 @@ struct DispositionControls: View {
                 .textFieldStyle(.roundedBorder)
                 .workFont(.body)
                 .lineLimit(2...4)
-                .frame(width: 300)
             HStack {
                 Spacer()
                 Button {
@@ -1080,6 +1083,12 @@ struct DispositionControls: View {
             }
         }
         .padding(Space.l)
+        // Pin the popover width. Without a definite width the two
+        // .fixedSize(vertical:) Text rows wrap into a tall tower during the
+        // popover's width negotiation (measured 949pt), ballooning the sheet;
+        // a fixed width holds it at a stable ~130pt. Mirrors the status legend
+        // popover, which pins .frame(width: 440) for the same reason.
+        .frame(width: 340)
     }
 
     private func post(_ action: String, note: String?) {
@@ -1114,14 +1123,21 @@ struct BlockerCallout: View {
     let blocker: ReceiptBlocker
     let taskId: String
 
+    // A blocker the user resolved must not keep wearing the coral "blocked"
+    // tone — in this app coral means "needs you". It still shows here (so the
+    // resolve is auditable and reopenable), but in a calm, neutral treatment.
+    private var isResolved: Bool {
+        (blocker.disposition?.state ?? "open") == "resolved"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Image(systemName: "hand.raised")
+                Image(systemName: isResolved ? "checkmark.circle" : "hand.raised")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Theme.coral)
+                    .foregroundStyle(isResolved ? Theme.muted : Theme.coral)
                     .accessibilityHidden(true)
-                Text(blocker.stepTitle ?? "Blocked step")
+                Text(blocker.stepTitle ?? (isResolved ? "Resolved blocker" : "Blocked step"))
                     .workFont(.rowLabel).foregroundStyle(Theme.ink)
                     .lineLimit(2)
                 Spacer(minLength: Space.s)
@@ -1180,7 +1196,10 @@ struct BlockerCallout: View {
         }
         .padding(Space.l)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.tintCoral, in: RoundedRectangle(cornerRadius: Metrics.radius))
+        .background(
+            isResolved ? Theme.tintNeutral : Theme.tintCoral,
+            in: RoundedRectangle(cornerRadius: Metrics.radius)
+        )
         .accessibilityIdentifier("receipt.blocker")
     }
 }

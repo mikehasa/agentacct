@@ -165,6 +165,7 @@ struct V1StepUsage: Decodable {
     let linkedUsageRecords: Int?
     let pricedUsageRecords: Int?
     let unpricedUsageRecords: Int?
+    let costConfidence: String?
 
     enum CodingKeys: String, CodingKey {
         case totalTokens = "total_tokens"
@@ -175,14 +176,18 @@ struct V1StepUsage: Decodable {
         case linkedUsageRecords = "linked_usage_records"
         case pricedUsageRecords = "priced_usage_records"
         case unpricedUsageRecords = "unpriced_usage_records"
+        case costConfidence = "cost_confidence"
     }
 
-    /// The shared cost honesty rule: None-never-$0; a value with unpriced
-    /// rows alongside is a partial subtotal (~$).
+    /// The shared cost honesty rule: None-never-$0; a value with unpriced rows
+    /// alongside is a partial subtotal (~$); a complete figure is exact ("$")
+    /// only when its priced records are all reported/billed — an estimated
+    /// (token-priced) step reads "≈$" rather than over-claiming exactness.
     var costText: String {
         guard let cost = estimatedCostUsd else { return "—" }
-        let partial = (unpricedUsageRecords ?? 0) > 0
-        return Fmt.dollars(cost, prefix: partial ? "~$" : "$")
+        if (unpricedUsageRecords ?? 0) > 0 { return Fmt.dollars(cost, prefix: "~$") }
+        let reported = costConfidence == "client_reported" || costConfidence == "provider_billed"
+        return Fmt.dollars(cost, prefix: reported ? "$" : "≈$")
     }
 }
 
@@ -209,13 +214,17 @@ struct V1Check: Decodable, Identifiable {
     let sourceType: String?
     let checkIdentity: String?
     let supersessionState: String?
+    let supersededByEventId: String?
     let resolutionScope: String?
     let resolutionSummary: String?
+    let resolvesBlockedEventId: String?
     let files: [String]?
     let artifactRef: String?
     let artifactPath: String?
     let artifactUrl: String?
     let commandRedacted: Bool?
+    let artifactPathRedacted: Bool?
+    let artifactUrlRedacted: Bool?
     private let fallbackId = UUID().uuidString
 
     var id: String { eventId ?? fallbackId }
@@ -241,12 +250,16 @@ struct V1Check: Decodable, Identifiable {
         case sourceType = "source_type"
         case checkIdentity = "check_identity"
         case supersessionState = "supersession_state"
+        case supersededByEventId = "superseded_by_event_id"
         case resolutionScope = "resolution_scope"
         case resolutionSummary = "resolution_summary"
+        case resolvesBlockedEventId = "resolves_blocked_event_id"
         case artifactRef = "artifact_ref"
         case artifactPath = "artifact_path"
         case artifactUrl = "artifact_url"
         case commandRedacted = "command_redacted"
+        case artifactPathRedacted = "artifact_path_redacted"
+        case artifactUrlRedacted = "artifact_url_redacted"
     }
 }
 

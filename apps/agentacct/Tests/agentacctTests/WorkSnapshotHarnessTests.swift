@@ -42,6 +42,26 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "work-table-accessibility-maximum-dark.png", pixelsWide: 2240, pixelsHigh: 2000),
         ExpectedArtifact(filename: "work-receipt-accessibility-maximum-light.png", pixelsWide: 2240, pixelsHigh: 2000),
         ExpectedArtifact(filename: "work-receipt-accessibility-maximum-dark.png", pixelsWide: 2240, pixelsHigh: 2000),
+        ExpectedArtifact(filename: "work-session-steps-hierarchy-light.png", pixelsWide: 1520, pixelsHigh: 2100),
+        ExpectedArtifact(filename: "work-session-steps-hierarchy-dark.png", pixelsWide: 1520, pixelsHigh: 2100),
+        ExpectedArtifact(filename: "work-session-steps-dense-checks-light.png", pixelsWide: 1520, pixelsHigh: 2400),
+        ExpectedArtifact(filename: "work-session-steps-dense-checks-dark.png", pixelsWide: 1520, pixelsHigh: 2400),
+        ExpectedArtifact(filename: "work-session-steps-expanded-current-light.png", pixelsWide: 1520, pixelsHigh: 5000),
+        ExpectedArtifact(filename: "work-session-steps-expanded-current-dark.png", pixelsWide: 1520, pixelsHigh: 5000),
+        ExpectedArtifact(filename: "work-session-steps-expanded-history-light.png", pixelsWide: 1520, pixelsHigh: 2900),
+        ExpectedArtifact(filename: "work-session-steps-expanded-history-dark.png", pixelsWide: 1520, pixelsHigh: 2900),
+        ExpectedArtifact(filename: "work-session-steps-load-failure-light.png", pixelsWide: 1520, pixelsHigh: 480),
+        ExpectedArtifact(filename: "work-session-steps-load-failure-dark.png", pixelsWide: 1520, pixelsHigh: 480),
+        ExpectedArtifact(filename: "work-session-steps-retrying-light.png", pixelsWide: 1520, pixelsHigh: 480),
+        ExpectedArtifact(filename: "work-session-steps-retrying-dark.png", pixelsWide: 1520, pixelsHigh: 480),
+        ExpectedArtifact(filename: "work-session-steps-compact-checks-light.png", pixelsWide: 720, pixelsHigh: 3240),
+        ExpectedArtifact(filename: "work-session-steps-compact-checks-dark.png", pixelsWide: 720, pixelsHigh: 3240),
+        ExpectedArtifact(filename: "work-session-steps-rtl-stress-light.png", pixelsWide: 1520, pixelsHigh: 2500),
+        ExpectedArtifact(filename: "work-session-steps-rtl-stress-dark.png", pixelsWide: 1520, pixelsHigh: 2500),
+        ExpectedArtifact(filename: "work-session-steps-compact-accessibility-light.png", pixelsWide: 720, pixelsHigh: 8000),
+        ExpectedArtifact(filename: "work-session-steps-compact-accessibility-dark.png", pixelsWide: 720, pixelsHigh: 8000),
+        ExpectedArtifact(filename: "work-session-steps-rtl-accessibility-light.png", pixelsWide: 720, pixelsHigh: 8000),
+        ExpectedArtifact(filename: "work-session-steps-rtl-accessibility-dark.png", pixelsWide: 720, pixelsHigh: 8000),
         ExpectedArtifact(filename: "work-actions-exact-regular-light.png", pixelsWide: 1520, pixelsHigh: 1080),
         ExpectedArtifact(filename: "work-actions-exact-regular-dark.png", pixelsWide: 1520, pixelsHigh: 1080),
         ExpectedArtifact(filename: "work-actions-exact-compact-light.png", pixelsWide: 720, pixelsHigh: 1280),
@@ -90,6 +110,38 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(work.receipt.sessions?.count ?? 0, 2)
     }
 
+    func testSessionStepsFixtureUsesARealisticSupersessionAndSeparateResolution() throws {
+        let superseded = SessionStepsSnapshotScene.denseCheck(20, kind: .denseChecks)
+        let supersedingPass = SessionStepsSnapshotScene.denseCheck(19, kind: .denseChecks)
+        let blockerResolution = SessionStepsSnapshotScene.denseCheck(18, kind: .denseChecks)
+
+        XCTAssertEqual(superseded.result, "failed")
+        XCTAssertEqual(superseded.supersessionState, "superseded")
+        XCTAssertEqual(superseded.supersededByEventId, supersedingPass.eventId)
+        XCTAssertEqual(supersedingPass.result, "passed")
+        XCTAssertGreaterThan(
+            try XCTUnwrap(supersedingPass.createdAt),
+            try XCTUnwrap(superseded.createdAt)
+        )
+        XCTAssertEqual(supersedingPass.evidenceType, superseded.evidenceType)
+        XCTAssertEqual(supersedingPass.checkIdentity, superseded.checkIdentity)
+        XCTAssertEqual(
+            superseded.summary,
+            "An earlier artifact verification failed before a later matching rerun passed."
+        )
+        XCTAssertEqual(
+            supersedingPass.summary,
+            "A later matching artifact verification passed and superseded the earlier failure."
+        )
+        XCTAssertNil(superseded.resolutionScope)
+        XCTAssertNil(supersedingPass.resolutionScope)
+
+        XCTAssertEqual(blockerResolution.result, "passed")
+        XCTAssertEqual(blockerResolution.resolutionScope, "partial")
+        XCTAssertNotNil(blockerResolution.resolvesBlockedEventId)
+        XCTAssertNotEqual(blockerResolution.checkIdentity, superseded.checkIdentity)
+    }
+
     @MainActor
     func testInitialWorkStatesDoNotInventReceiptFreshness() throws {
         let fixture = try DashboardSnapshotFixture.load(from: fixtureURL())
@@ -121,6 +173,7 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         }
 
         let workRendered: [URL]
+        let sessionStepsRendered: [URL]
         let actionRendered: [URL]
         let checkRendered: [URL]
         do {
@@ -130,6 +183,15 @@ final class WorkSnapshotHarnessTests: XCTestCase {
             )
         } catch {
             XCTFail("First full-page Work render failed: \(error)")
+            throw error
+        }
+        do {
+            sessionStepsRendered = try SessionStepsSnapshotRenderer.render(
+                fixture: fixture,
+                outputDirectory: firstDirectory
+            )
+        } catch {
+            XCTFail("First focused Session and steps render failed: \(error)")
             throw error
         }
         do {
@@ -158,6 +220,15 @@ final class WorkSnapshotHarnessTests: XCTestCase {
             throw error
         }
         do {
+            _ = try SessionStepsSnapshotRenderer.render(
+                fixture: fixture,
+                outputDirectory: secondDirectory
+            )
+        } catch {
+            XCTFail("Second focused Session and steps render failed: \(error)")
+            throw error
+        }
+        do {
             _ = try ReceiptActionSnapshotRenderer.render(
                 outputDirectory: secondDirectory
             )
@@ -173,7 +244,7 @@ final class WorkSnapshotHarnessTests: XCTestCase {
             XCTFail("Second focused Checks render failed: \(error)")
             throw error
         }
-        let rendered = workRendered + actionRendered + checkRendered
+        let rendered = workRendered + sessionStepsRendered + actionRendered + checkRendered
 
         XCTAssertEqual(rendered.map(\.lastPathComponent), expectedArtifacts.map(\.filename))
         for artifact in expectedArtifacts {
@@ -255,6 +326,41 @@ final class WorkSnapshotHarnessTests: XCTestCase {
 
         XCTAssertThrowsError(
             try ReceiptActionSnapshotRenderer.render(
+                outputDirectory: outputDirectory,
+                configurations: [configuration]
+            )
+        ) { error in
+            guard case SnapshotError.snapshotContentExceedsCanvas(
+                let filename,
+                let requiredHeight,
+                let availableHeight
+            ) = error else {
+                return XCTFail("Expected clipped-canvas failure; got \(error)")
+            }
+            XCTAssertEqual(filename, configuration.filename)
+            XCTAssertGreaterThan(requiredHeight, availableHeight)
+            XCTAssertEqual(availableHeight, 100)
+        }
+        XCTAssertFalse(SnapshotMode.enabled)
+        XCTAssertNil(SnapshotScheme.override)
+    }
+
+    @MainActor
+    func testFocusedSessionStepsRendererRejectsAClippedCanvas() throws {
+        let fixture = try DashboardSnapshotFixture.load(from: fixtureURL())
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentacct-clipped-session-steps-snapshot-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outputDirectory) }
+        let configuration = SessionStepsSnapshotConfiguration(
+            kind: .denseChecks,
+            width: 760,
+            height: 100,
+            colorScheme: .light
+        )
+
+        XCTAssertThrowsError(
+            try SessionStepsSnapshotRenderer.render(
+                fixture: fixture,
                 outputDirectory: outputDirectory,
                 configurations: [configuration]
             )
