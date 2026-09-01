@@ -79,7 +79,7 @@ check_environment() {
 
 discover_visual_tests() {
   discovered_file="$(mktemp "${TMPDIR:-/tmp}/agentacct-visual-tests.XXXXXX")"
-  "$swift_bin" test list \
+  "$swift_bin" test -c release list \
     | awk -F/ '$1 ~ /VisualRegressionTests$/ { print }' \
     | sort -u > "$discovered_file"
 }
@@ -183,16 +183,21 @@ filter_for_selector() {
 
 run_selected() {
   local mode="$1"
-  local selector filter
+  local selector filter combined_filter=""
   while IFS= read -r selector; do
     filter="$(filter_for_selector "$selector")"
     echo "$mode $selector"
-    AGENTACCT_SNAPSHOT_MODE="$mode" \
-      AGENTACCT_VERIFY_VISUAL_BASELINES=1 \
-      AGENTACCT_SNAPSHOT_PLATFORM_ID="$platform_id" \
-      AGENTACCT_SNAPSHOT_ARTIFACT_DIR="$failure_dir" \
-      "$swift_bin" test --filter "$filter"
+    if [[ -n "$combined_filter" ]]; then
+      combined_filter+="|"
+    fi
+    combined_filter+="$filter"
   done < "$selected_file"
+
+  AGENTACCT_SNAPSHOT_MODE="$mode" \
+    AGENTACCT_VERIFY_VISUAL_BASELINES=1 \
+    AGENTACCT_SNAPSHOT_PLATFORM_ID="$platform_id" \
+    AGENTACCT_SNAPSHOT_ARTIFACT_DIR="$failure_dir" \
+    "$swift_bin" test -c release --filter "$combined_filter"
 }
 
 [[ $# -ge 1 ]] || usage

@@ -371,7 +371,7 @@ def test_cli_install_autostart_dry_run_writes_and_loads_nothing(
     expected = home / ".config" / "systemd" / "user" / SYSTEMD_SERVICE_FILENAME
     assert not expected.exists()
     assert called == []
-    assert "start --foreground" in result.output
+    assert "start --foreground" in " ".join(result.output.split())
 
 
 # --- foreground supervisor loop ---------------------------------------------

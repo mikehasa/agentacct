@@ -10,7 +10,7 @@ connecting an account, or creating another snapshot system.
 Run the ordinary deterministic and unit checks during development:
 
 ```bash
-swift test
+swift test -c release
 ```
 
 Discover the available visual regression suites:
@@ -553,8 +553,9 @@ rendering the app.
 Each `*VisualRegressionTests` suite compares its complete surface matrix with
 reviewed PNGs. The CLI supplies `AGENTACCT_VERIFY_VISUAL_BASELINES=1`,
 `AGENTACCT_SNAPSHOT_MODE`, the exact platform ID, and the failure directory.
-Ordinary `swift test` runs compile the visual suites but skip their baseline
-comparison, so semantic tests remain useful on non-canonical developer
+Both the CLI and ordinary `swift test -c release` runs use the production
+optimization level. Ordinary runs compile the visual suites but skip their
+baseline comparison, so semantic tests remain useful on non-canonical developer
 machines. Always use the CLI when the intent is to verify visual references.
 
 ### Dashboard interaction coverage
@@ -581,7 +582,7 @@ duplicate them with brittle view-tree tests in the meantime.
 3. Have a human review the finished render before recording.
 4. Run `./Scripts/visual-snapshots record <same-target>`.
 5. Review every changed PNG in Git, including images that seem unchanged.
-6. Run verify, `swift test`, and `swift build -c release` again.
+6. Run verify, `swift test -c release`, and `swift build -c release` again.
 7. Commit the UI code and reviewed references together.
 
 Never record automatically after failure. That converts an unexpected

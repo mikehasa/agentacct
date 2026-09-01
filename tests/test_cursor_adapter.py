@@ -247,7 +247,11 @@ def test_cursor_accepts_consistent_seconds_and_milliseconds(tmp_path: Path) -> N
         (0, None),
         (-1, None),
         (10**30, None),
-        (int((time.time() + 2 * 24 * 60 * 60) * 1_000), None),
+        pytest.param(
+            int((time.time() + 2 * 24 * 60 * 60) * 1_000),
+            None,
+            id="future-created-at-milliseconds",
+        ),
         (1_750_000_100_000, 1_750_000_000_000),
         (1_750_000_000, 1_750_000_001_000),
     ],
