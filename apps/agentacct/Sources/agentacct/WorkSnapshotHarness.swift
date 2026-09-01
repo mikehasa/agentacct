@@ -268,7 +268,8 @@ enum SessionStepsSnapshotRenderer {
             let dashboard = DashboardStore(preloaded: fixture)
             let unconstrainedScene = SessionStepsSnapshotScene(
                 kind: configuration.kind,
-                member: member
+                member: member,
+                referenceTimestamp: generatedAt
             )
             .environment(dashboard)
             .frame(width: configuration.width, alignment: .topLeading)
@@ -286,7 +287,11 @@ enum SessionStepsSnapshotRenderer {
                 )
             }
 
-            let scene = SessionStepsSnapshotScene(kind: configuration.kind, member: member)
+            let scene = SessionStepsSnapshotScene(
+                kind: configuration.kind,
+                member: member,
+                referenceTimestamp: generatedAt
+            )
                 .environment(dashboard)
                 .frame(
                     width: configuration.width,
@@ -329,6 +334,7 @@ private struct SessionStepsSnapshotEnvironment: ViewModifier {
 struct SessionStepsSnapshotScene: View {
     let kind: SessionStepsSnapshotKind
     let member: ReceiptSessionMember
+    let referenceTimestamp: TimeInterval
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
@@ -379,7 +385,9 @@ struct SessionStepsSnapshotScene: View {
         case .compactAccessibility, .rtlAccessibility: [0, 5, 6, 9, 18, 19, 20]
         default: Array(0..<25)
         }
-        let checks = indexes.map { Self.denseCheck($0, kind: kind) }
+        let checks = indexes.map {
+            Self.denseCheck($0, kind: kind, referenceTimestamp: referenceTimestamp)
+        }
         return V1Step(
             workId: "session-steps-dense",
             sectionId: "scenario-review",
@@ -389,8 +397,8 @@ struct SessionStepsSnapshotScene: View {
             latestStatus: "completed",
             kind: "review",
             phase: "verification",
-            startedAt: 1_787_585_000,
-            updatedAt: 1_787_590_000,
+            startedAt: referenceTimestamp - 5_000,
+            updatedAt: referenceTimestamp,
             summary: kind == .rtlStress
                 ? "اكتملت المراجعة، لكن فحص CI حالي ما زال يفشل. يجب أن يبقى هذا التعارض واضحًا من دون إخفاء مسارات الملفات أو نتائج exit."
                 : "The review is marked done, but one current check is still failing. The ledger must keep that contradiction visible without turning routine verification into a wall of repeated pills.",
@@ -422,11 +430,15 @@ struct SessionStepsSnapshotScene: View {
             role: "root",
             title: "Review a temporarily unavailable session",
             project: "agentacct-gui",
-            lastActivityAt: 1_787_590_000
+            lastActivityAt: referenceTimestamp
         )
     }
 
-    static func denseCheck(_ index: Int, kind: SessionStepsSnapshotKind) -> V1Check {
+    static func denseCheck(
+        _ index: Int,
+        kind: SessionStepsSnapshotKind,
+        referenceTimestamp: TimeInterval
+    ) -> V1Check {
         let result: String?
         let supersession: String?
         let exitCode: Int?
@@ -487,7 +499,7 @@ struct SessionStepsSnapshotScene: View {
         }
         return V1Check(
             eventId: "session-check-\(index)",
-            createdAt: 1_787_590_000 - Double(index * 75),
+            createdAt: referenceTimestamp - Double(index * 75),
             evidenceType: (index == 19 || index == 20)
                 ? "artifact"
                 : (index % 5 == 0 ? "artifact" : (index % 4 == 0 ? "build" : "test")),

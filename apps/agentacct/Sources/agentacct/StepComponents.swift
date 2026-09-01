@@ -558,7 +558,7 @@ struct StepCard: View {
         }
         if let ago = agoText(step.updatedAt) { parts.append("updated \(ago)") }
         if let usage = step.usage, let tokens = usage.totalTokens, tokens > 0 {
-            parts.append("\(UsageTotals.compact(Int(tokens))) tok")
+            parts.append("\(UsageTotals.compact(tokens)) tok")
             parts.append(usage.costText)
         }
         if let models = step.models, !models.isEmpty {

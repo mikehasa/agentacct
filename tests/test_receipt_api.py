@@ -282,11 +282,15 @@ def test_attention_empty_state_and_query_bounds(tmp_path: Path) -> None:
     client = _app(tmp_path)
 
     payload = client.get("/v1/attention", headers=_auth()).json()
+    snapshot = payload.pop("snapshot")
+    assert len(snapshot) == 64
+    assert all(character in "0123456789abcdef" for character in snapshot)
     assert payload == {
         "schema": V1_ATTENTION_SCHEMA_VERSION,
         "items": [],
         "total": 0,
         "counts": {"failed_check": 0, "failed_step": 0, "blocker": 0},
+        "offset": 0,
         "limit": 5,
         "truncated": False,
     }
@@ -295,6 +299,9 @@ def test_attention_empty_state_and_query_bounds(tmp_path: Path) -> None:
     ).status_code == 422
     assert client.get(
         "/v1/attention", headers=_auth(), params={"limit": 51}
+    ).status_code == 422
+    assert client.get(
+        "/v1/attention", headers=_auth(), params={"offset": -1}
     ).status_code == 422
 
 
@@ -336,12 +343,15 @@ def test_attention_is_complete_bounded_and_operationally_ordered(
     assert recent_page["tasks"][0]["primary_root"]["client_session_id"] == "clean"
 
     attention = client.get("/v1/attention", headers=_auth(), params={"limit": 1}).json()
-    assert set(attention) == {"schema", "items", "total", "counts", "limit", "truncated"}
+    assert set(attention) == {
+        "schema", "items", "total", "counts", "snapshot", "offset", "limit", "truncated"
+    }
     assert attention["schema"] == V1_ATTENTION_SCHEMA_VERSION
     assert attention["total"] == 2
     assert attention["counts"] == {"failed_check": 1, "failed_step": 0, "blocker": 1}
     assert attention["limit"] == 1
     assert attention["truncated"] is True
+    assert attention["offset"] == 0
     assert len(attention["items"]) == 1
     leading = attention["items"][0]
     assert leading["primary_root"]["client_session_id"] == "finding"
@@ -356,6 +366,18 @@ def test_attention_is_complete_bounded_and_operationally_ordered(
         "source": "mcp",
     }
     assert leading["attention"]["observed_at"] is not None
+
+    next_attention = client.get(
+        "/v1/attention",
+        headers=_auth(),
+        params={"limit": 1, "offset": 1},
+    ).json()
+    assert next_attention["offset"] == 1
+    assert next_attention["truncated"] is False
+    assert next_attention["snapshot"] == attention["snapshot"]
+    assert [row["primary_root"]["client_session_id"] for row in next_attention["items"]] == [
+        "blocked"
+    ]
 
     all_attention = client.get("/v1/attention", headers=_auth(), params={"limit": 5}).json()
     assert [row["primary_root"]["client_session_id"] for row in all_attention["items"]] == [
@@ -386,6 +408,7 @@ def test_attention_is_complete_bounded_and_operationally_ordered(
         params={"limit": 5},
     ).json()
     assert after_parent_ttl["total"] == 2
+    assert after_parent_ttl["snapshot"] == attention["snapshot"]
     assert len(classification_calls) == 3
 
     _record_usage(service, session_id="new-finding", at=400.0)
@@ -408,6 +431,7 @@ def test_attention_is_complete_bounded_and_operationally_ordered(
         params={"limit": 5},
     ).json()
     assert changed_attention["total"] == 3
+    assert changed_attention["snapshot"] != attention["snapshot"]
     # Changed content invalidates the index and classifies all four current
     # Tasks; the clean Task still does not enter the three-item queue.
     assert len(classification_calls) == 7

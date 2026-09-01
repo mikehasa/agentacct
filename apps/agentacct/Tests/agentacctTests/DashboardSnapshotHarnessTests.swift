@@ -18,8 +18,8 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "dashboard-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "dashboard-weekly-reference-light.png", pixelsWide: 2240, pixelsHigh: 1800),
         ExpectedArtifact(filename: "dashboard-weekly-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1800),
-        ExpectedArtifact(filename: "dashboard-attention-unavailable-light.png", pixelsWide: 2240, pixelsHigh: 1600),
-        ExpectedArtifact(filename: "dashboard-attention-unavailable-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "dashboard-trust-unavailable-light.png", pixelsWide: 2240, pixelsHigh: 1600),
+        ExpectedArtifact(filename: "dashboard-trust-unavailable-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
     ]
 
     @MainActor
@@ -31,6 +31,10 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
 
         XCTAssertEqual(store.receiptTasks.count, 4)
         XCTAssertEqual(store.totalReceiptTasks, 4)
+        XCTAssertEqual(store.attention?.total, 2)
+        XCTAssertEqual(store.attention?.counts.failedCheck, 1)
+        XCTAssertEqual(store.attention?.counts.blocker, 1)
+        XCTAssertEqual(store.ingestion?.state, "healthy")
         // Two plan lanes + two limit clients: the fixture demos the
         // multi-agent Plan and usage card (codex metered + claude-code
         // metered/calibrating), plus a usage-only hermes row.
@@ -43,16 +47,17 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
     }
 
     @MainActor
-    func testUnavailableReviewStateRetainsCacheOnlyToProveErrorPrecedence() throws {
+    func testUnavailableTrustStateRetainsSuccessOnlyToProveErrorPrecedence() throws {
         let fixture = try DashboardSnapshotFixture.load(from: dashboardFixtureURL())
         let store = DashboardStore(
             preloaded: fixture,
-            workState: .listErrorWithRetainedData
+            workState: .shiftBriefUnavailable
         )
 
-        XCTAssertNotNil(store.receiptAttention)
-        XCTAssertFalse(store.receiptTasks.isEmpty)
-        XCTAssertNotNil(store.receiptListError)
+        XCTAssertNotNil(store.attention)
+        XCTAssertEqual(store.ingestion?.state, "healthy")
+        XCTAssertNotNil(store.attentionError)
+        XCTAssertNotNil(store.ingestionError)
     }
 
     @MainActor
@@ -124,12 +129,77 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         XCTAssertNil(SnapshotScheme.override)
     }
 
+    @MainActor
+    func testMinimumViewportKeepsRecentWorkInTheInitialReadingPath() throws {
+        let fixture = try DashboardSnapshotFixture.load(from: dashboardFixtureURL())
+        let configurations = DashboardSnapshotConfiguration.reviewConfigurations.filter {
+            $0.viewport == "minimum"
+        }
+        XCTAssertEqual(configurations.count, 2, "Both minimum-window appearances must be covered")
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentacct-dashboard-layout-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outputDirectory) }
+
+        let rendered = try DashboardSnapshotRenderer.render(
+            fixture: fixture,
+            outputDirectory: outputDirectory,
+            configurations: configurations
+        )
+        for imageURL in rendered {
+            let image = try VisualSnapshotImage(contentsOf: imageURL)
+            let windowBackground = rgba(in: image, x: 10, topY: 200)
+
+            // At 2x, the 16pt section spacing should leave a visible background
+            // separator before y=500pt. Sampling both columns prevents a shorter
+            // attention-card background from hiding an over-tall signal rail.
+            let separatorRows = (850..<1_000).filter { topY in
+                pixelsMatch(rgba(in: image, x: 100, topY: topY), windowBackground)
+                    && pixelsMatch(rgba(in: image, x: 1_280, topY: topY), windowBackground)
+            }
+            XCTAssertGreaterThanOrEqual(
+                longestConsecutiveRun(separatorRows),
+                24,
+                "\(imageURL.lastPathComponent) must expose Recent work after the decision row; supporting signals must not consume the entire first viewport"
+            )
+        }
+    }
+
+    @MainActor
+    func testExtremeTokenBucketsRenderWithoutTrapping() throws {
+        let fixtureURL = try dashboardFixtureURL()
+        let original = try String(contentsOf: fixtureURL, encoding: .utf8)
+        let extreme = original.replacingOccurrences(
+            of: #""fresh_tokens": 22500000"#,
+            with: #""fresh_tokens": 9223372036854775807"#
+        )
+        XCTAssertNotEqual(extreme, original, "The test must replace a real token bucket")
+
+        let fixture = try DashboardSnapshotFixture.decode(Data(extreme.utf8))
+        let configuration = try XCTUnwrap(
+            DashboardSnapshotConfiguration.reviewConfigurations.first {
+                $0.filename == "dashboard-minimum-light.png"
+            }
+        )
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentacct-dashboard-extreme-tokens-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outputDirectory) }
+
+        let rendered = try DashboardSnapshotRenderer.render(
+            fixture: fixture,
+            outputDirectory: outputDirectory,
+            configurations: [configuration]
+        )
+        XCTAssertEqual(rendered.count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(rendered.first).path))
+    }
+
     func testRejectsUnsupportedVersionedFixtureSchemas() throws {
         let fixtureURL = try dashboardFixtureURL()
         let validFixture = try String(contentsOf: fixtureURL, encoding: .utf8)
         let schemas = [
             (payload: "glance", supported: GlanceClient.supportedGlanceSchema),
             (payload: "plan", supported: DashboardSnapshotFixture.supportedPlanSchema),
+            (payload: "attention", supported: DashboardSnapshotFixture.supportedAttentionSchema),
             (payload: "tasks", supported: DashboardSnapshotFixture.supportedTasksSchema),
         ]
 
@@ -159,8 +229,12 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
     func testRejectsFixtureWithoutSnapshotClock() throws {
         let fixtureURL = try dashboardFixtureURL()
         var fixtureJSON = try String(contentsOf: fixtureURL, encoding: .utf8)
-        let generatedAtLine = "    \"generated_at\": 1787590000,\n"
-        let generatedAtRange = try XCTUnwrap(fixtureJSON.range(of: generatedAtLine))
+        let generatedAtRange = try XCTUnwrap(
+            fixtureJSON.range(
+                of: #"    "generated_at": [0-9]+,\n"#,
+                options: .regularExpression
+            )
+        )
         fixtureJSON.removeSubrange(generatedAtRange)
         let fixture = try DashboardSnapshotFixture.decode(Data(fixtureJSON.utf8))
 
@@ -189,5 +263,49 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         try XCTUnwrap(
             Bundle.module.url(forResource: "dashboard", withExtension: "json")
         )
+    }
+
+    private func rgba(
+        in image: VisualSnapshotImage,
+        x: Int,
+        topY: Int
+    ) -> (UInt8, UInt8, UInt8, UInt8) {
+        precondition((0..<image.width).contains(x))
+        precondition((0..<image.height).contains(topY))
+        return image.rgba.withUnsafeBytes { storage in
+            let pixels = storage.bindMemory(to: UInt8.self)
+            let offset = (topY * image.width + x) * 4
+            return (
+                pixels[offset],
+                pixels[offset + 1],
+                pixels[offset + 2],
+                pixels[offset + 3]
+            )
+        }
+    }
+
+    private func pixelsMatch(
+        _ left: (UInt8, UInt8, UInt8, UInt8),
+        _ right: (UInt8, UInt8, UInt8, UInt8),
+        tolerance: Int = 1
+    ) -> Bool {
+        zip([left.0, left.1, left.2, left.3], [right.0, right.1, right.2, right.3])
+            .allSatisfy { abs(Int($0.0) - Int($0.1)) <= tolerance }
+    }
+
+    private func longestConsecutiveRun(_ values: [Int]) -> Int {
+        guard var previous = values.first else { return 0 }
+        var longest = 1
+        var current = 1
+        for value in values.dropFirst() {
+            if value == previous + 1 {
+                current += 1
+                longest = max(longest, current)
+            } else {
+                current = 1
+            }
+            previous = value
+        }
+        return longest
     }
 }
