@@ -12,6 +12,7 @@ struct UsageSnapshotConfiguration {
     let height: CGFloat
     let colorScheme: ColorScheme
     let capacityState: CapacityState
+    let recordedUsageState: SnapshotRecordedUsageState
 
     var filename: String {
         let appearance = colorScheme == .dark ? "dark" : "light"
@@ -19,12 +20,14 @@ struct UsageSnapshotConfiguration {
     }
 
     static let reviewConfigurations: [Self] = [
-        Self(viewport: "minimum", width: 960, height: 560, colorScheme: .light, capacityState: .connected),
-        Self(viewport: "minimum", width: 960, height: 560, colorScheme: .dark, capacityState: .connected),
-        Self(viewport: "reference", width: 1120, height: 900, colorScheme: .light, capacityState: .connected),
-        Self(viewport: "reference", width: 1120, height: 900, colorScheme: .dark, capacityState: .connected),
-        Self(viewport: "disconnected-reference", width: 1120, height: 900, colorScheme: .light, capacityState: .disconnected),
-        Self(viewport: "disconnected-reference", width: 1120, height: 900, colorScheme: .dark, capacityState: .disconnected),
+        Self(viewport: "minimum", width: 960, height: 560, colorScheme: .light, capacityState: .connected, recordedUsageState: .sevenDays),
+        Self(viewport: "minimum", width: 960, height: 560, colorScheme: .dark, capacityState: .connected, recordedUsageState: .sevenDays),
+        Self(viewport: "reference", width: 1120, height: 900, colorScheme: .light, capacityState: .connected, recordedUsageState: .sevenDays),
+        Self(viewport: "reference", width: 1120, height: 900, colorScheme: .dark, capacityState: .connected, recordedUsageState: .sevenDays),
+        Self(viewport: "weekly-reference", width: 1120, height: 1120, colorScheme: .light, capacityState: .connected, recordedUsageState: .ninetyDays),
+        Self(viewport: "weekly-reference", width: 1120, height: 1120, colorScheme: .dark, capacityState: .connected, recordedUsageState: .ninetyDays),
+        Self(viewport: "disconnected-reference", width: 1120, height: 900, colorScheme: .light, capacityState: .disconnected, recordedUsageState: .sevenDays),
+        Self(viewport: "disconnected-reference", width: 1120, height: 900, colorScheme: .dark, capacityState: .disconnected, recordedUsageState: .sevenDays),
     ]
 }
 
@@ -72,13 +75,16 @@ enum UsageSnapshotRenderer {
                     lastUpdated: nil
                 )
             }
-            let dashboard = DashboardStore(preloaded: fixture)
+            let dashboard = DashboardStore(
+                preloaded: fixture,
+                usageState: configuration.recordedUsageState.storeState(for: fixture)
+            )
             let selection = AppSelection()
             selection.pane = .usage
             let view = MainWindow(canSetUpOverride: true)
-                .environmentObject(glance)
-                .environmentObject(dashboard)
-                .environmentObject(selection)
+                .environment(glance)
+                .environment(dashboard)
+                .environment(selection)
                 .frame(width: configuration.width, height: configuration.height, alignment: .top)
                 .clipped()
                 .environment(\.colorScheme, configuration.colorScheme)

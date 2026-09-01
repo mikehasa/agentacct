@@ -27,6 +27,26 @@ final class SetupModel: ObservableObject {
     @Published private(set) var log: [String] = []
 
     private let fm = FileManager.default
+    private let installer: (() throws -> URL)?
+    private let processRunner: (URL, [String]) -> AsyncThrowingStream<String, Error>
+
+    init(
+        installer: (() throws -> URL)? = nil,
+        processRunner: @escaping (URL, [String]) -> AsyncThrowingStream<String, Error> = ProcessRunner.run
+    ) {
+        self.installer = installer
+        self.processRunner = processRunner
+    }
+
+    /// Deterministic state injection for offscreen review renders. Live setup
+    /// still uses the production initializer above and reaches these states
+    /// only through `setUp()`.
+    init(preloaded phase: Phase, log: [String]) {
+        self.phase = phase
+        self.log = Array(log.suffix(200))
+        installer = nil
+        processRunner = ProcessRunner.run
+    }
 
     // MARK: locations
 
@@ -57,9 +77,14 @@ final class SetupModel: ObservableObject {
         guard case .idle = phase else { return }
         log = []
         do {
-            try installCLI()
-            try await runOnboard()
+            try Task.checkCancellation()
+            let executable = try installer?() ?? installCLI()
+            try Task.checkCancellation()
+            try await runOnboard(executable: executable)
+            try Task.checkCancellation()
             phase = .done
+        } catch is CancellationError {
+            phase = .idle
         } catch {
             phase = .failed(error.localizedDescription)
             append("error: \(error.localizedDescription)")
@@ -70,7 +95,7 @@ final class SetupModel: ObservableObject {
 
     // MARK: steps
 
-    private func installCLI() throws {
+    private func installCLI() throws -> URL {
         guard let bundled = bundledCLIDir else {
             throw SetupError.noEmbeddedCLI
         }
@@ -91,18 +116,16 @@ final class SetupModel: ObservableObject {
         try script.write(to: wrapper, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wrapper.path)
         append("Wrote ~/.local/bin/agentacct")
+        return installedBinary
     }
 
-    private func runOnboard() async throws {
+    private func runOnboard(executable: URL) async throws {
         phase = .working("Configuring your coding agents…")
         append("Running: agentacct onboard --agent auto --yes")
         // Run from the INSTALLED binary so onboard stamps the stable installed
         // path into every hook/MCP config (verified end-to-end).
-        let stream = try ProcessRunner.run(
-            executable: installedBinary,
-            arguments: ["onboard", "--agent", "auto", "--yes"]
-        )
-        for await line in stream {
+        let stream = processRunner(executable, ["onboard", "--agent", "auto", "--yes"])
+        for try await line in stream {
             append(line)
         }
     }
@@ -129,8 +152,8 @@ final class SetupModel: ObservableObject {
 
 enum ProcessRunner {
     /// Launch a process and yield its merged stdout+stderr line by line. The
-    /// AsyncStream finishes when the process exits.
-    static func run(executable: URL, arguments: [String]) throws -> AsyncStream<String> {
+    /// stream succeeds only when the process exits with status zero.
+    static func run(executable: URL, arguments: [String]) -> AsyncThrowingStream<String, Error> {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
@@ -141,48 +164,113 @@ enum ProcessRunner {
         // (HOME, PATH) so onboard writes to the real ~/.claude, ~/.codex.
         process.environment = ProcessInfo.processInfo.environment
 
-        return AsyncStream<String> { continuation in
+        return AsyncThrowingStream<String, Error> { continuation in
             let handle = pipe.fileHandleForReading
-            var buffer = Data()
-            let drainTail: () -> Void = {
-                if !buffer.isEmpty, let tail = String(data: buffer, encoding: .utf8) {
-                    continuation.yield(tail)
+            let state = ProcessStreamState(continuation: continuation)
+            continuation.onTermination = { @Sendable termination in
+                guard case .cancelled = termination else { return }
+                handle.readabilityHandler = nil
+                if process.isRunning {
+                    process.terminate()
                 }
-                buffer.removeAll()
             }
             handle.readabilityHandler = { fh in
                 let chunk = fh.availableData
+                state.receive(chunk)
                 if chunk.isEmpty {
-                    // EOF: yield any unterminated tail once and STOP — leaving the
-                    // handler installed would busy-spin on repeated empty reads and
-                    // re-yield the same tail every tick.
-                    drainTail()
+                    // Stop after EOF; leaving the handler installed would busy-spin
+                    // on repeated empty reads.
                     fh.readabilityHandler = nil
-                    return
-                }
-                buffer.append(chunk)
-                while let nl = buffer.firstIndex(of: 0x0A) {
-                    let lineData = buffer.subdata(in: buffer.startIndex..<nl)
-                    buffer.removeSubrange(buffer.startIndex...nl)
-                    if let line = String(data: lineData, encoding: .utf8) {
-                        continuation.yield(line)
-                    }
                 }
             }
-            process.terminationHandler = { _ in
-                // Finish the stream. `buffer` is deliberately NOT touched here —
-                // it is owned by the readability queue, and the EOF read above
-                // drains the final tail; racing it from this queue would be a
-                // data race for a log-only line. Post-finish yields are ignored.
-                handle.readabilityHandler = nil
-                continuation.finish()
+            process.terminationHandler = { process in
+                state.didTerminate(status: process.terminationStatus)
             }
             do {
                 try process.run()
+                // The child has its own descriptor after launch. Close the
+                // parent's writer so the reader observes EOF after child exit.
+                pipe.fileHandleForWriting.closeFile()
             } catch {
-                continuation.yield("failed to launch: \(error.localizedDescription)")
-                continuation.finish()
+                handle.readabilityHandler = nil
+                pipe.fileHandleForWriting.closeFile()
+                state.didFailToLaunch(error)
             }
+        }
+    }
+}
+
+private final class ProcessStreamState: @unchecked Sendable {
+    private let continuation: AsyncThrowingStream<String, Error>.Continuation
+    private let lock = NSLock()
+    private var buffer = Data()
+    private var reachedEOF = false
+    private var terminationStatus: Int32?
+    private var finished = false
+
+    init(continuation: AsyncThrowingStream<String, Error>.Continuation) {
+        self.continuation = continuation
+    }
+
+    func receive(_ chunk: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return }
+
+        if chunk.isEmpty {
+            if !buffer.isEmpty, let tail = String(data: buffer, encoding: .utf8) {
+                continuation.yield(tail)
+            }
+            buffer.removeAll()
+            reachedEOF = true
+            finishIfReady()
+            return
+        }
+
+        buffer.append(chunk)
+        while let newline = buffer.firstIndex(of: 0x0A) {
+            let lineData = buffer.subdata(in: buffer.startIndex..<newline)
+            buffer.removeSubrange(buffer.startIndex...newline)
+            if let line = String(data: lineData, encoding: .utf8) {
+                continuation.yield(line)
+            }
+        }
+    }
+
+    func didTerminate(status: Int32) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return }
+        terminationStatus = status
+        finishIfReady()
+    }
+
+    func didFailToLaunch(_ error: Error) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return }
+        finished = true
+        continuation.finish(throwing: error)
+    }
+
+    private func finishIfReady() {
+        guard reachedEOF, let terminationStatus else { return }
+        finished = true
+        if terminationStatus == 0 {
+            continuation.finish()
+        } else {
+            continuation.finish(throwing: ProcessRunnerError.nonzeroExit(terminationStatus))
+        }
+    }
+}
+
+enum ProcessRunnerError: LocalizedError, Equatable {
+    case nonzeroExit(Int32)
+
+    var errorDescription: String? {
+        switch self {
+        case .nonzeroExit(let status):
+            return "Recorder setup exited with status \(status)."
         }
     }
 }

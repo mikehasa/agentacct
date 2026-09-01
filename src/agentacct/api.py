@@ -3,10 +3,10 @@ import hashlib
 import hmac
 import html
 import json
-import threading
 import math
 import os
 import secrets
+import threading
 import time
 # ``field`` is aliased: several helpers below use ``field`` as a loop variable.
 from dataclasses import dataclass, replace
@@ -128,6 +128,7 @@ DASHBOARD_USAGE_LIMIT_SESSIONS = 500
 # history lives on /sessions.
 # The pinned Needs-attention strip shows the newest open findings/blockers; the
 # rest stay one click away so the strip can never bury the recent-activity feed.
+DASHBOARD_RECEIPT_ATTENTION_LIMIT = 2
 MECHANICAL_PROJECTION_LIMIT = 10_000
 # Conflict repair is a safety path for timestamp-only retry variants. Keep its
 # work globally bounded so a conflict-heavy store cannot turn one Work page
@@ -1178,6 +1179,74 @@ def _task_title(task: Mapping[str, Any]) -> str:
     project = str(primary_session.get("project") or "").strip() if isinstance(primary_session, Mapping) else ""
     client_label = _human_client(primary.get("client"))
     return f"{client_label} in {project}" if project else f"Untitled {client_label} chat"
+
+
+def _receipt_attention_priority(summary: Mapping[str, Any]) -> int | None:
+    """Dashboard review priority for one compact Receipt summary.
+
+    Open machine findings and recorded failures come before agent-reported
+    blockers. Human-resolved or superseded findings retain their failed-check
+    history without returning to the attention queue.
+    """
+
+    decision = summary.get("decision_status")
+    evidence = summary.get("evidence_strength")
+    decision_key = str(
+        decision.get("key") if isinstance(decision, Mapping) else ""
+    ).strip()
+    failed_checks = (
+        int(evidence.get("checks_failed") or 0)
+        if isinstance(evidence, Mapping)
+        else 0
+    )
+    settled_finding_keys = {"finding_superseded", "finding_resolved_by_user"}
+    has_finding = (
+        failed_checks > 0 and decision_key not in settled_finding_keys
+    ) or decision_key in {"finding", "failed"}
+    if has_finding:
+        return 0
+    if decision_key == "blocked":
+        return 1
+    return None
+
+
+def _dashboard_receipt_attention(
+    tasks: Sequence[Mapping[str, Any]],
+    *,
+    latest_store_activity_at: float | None,
+) -> dict[str, Any]:
+    """Exact all-store attention count plus a bounded Dashboard preview.
+
+    ``tasks`` is newest-first. Retaining at most two rows per priority class
+    keeps memory bounded while the full scan proves whether the queue is empty.
+    """
+
+    preview_by_priority: tuple[list[dict[str, Any]], list[dict[str, Any]]] = ([], [])
+    total = 0
+    for task in tasks:
+        row = build_receipt_summary(
+            task,
+            public_task_id=str(task.get("public_task_id")),
+            title=_task_title(task),
+            latest_store_activity_at=latest_store_activity_at,
+        )
+        priority = _receipt_attention_priority(row)
+        if priority is None:
+            continue
+        total += 1
+        bucket = preview_by_priority[priority]
+        if len(bucket) < DASHBOARD_RECEIPT_ATTENTION_LIMIT:
+            bucket.append(row)
+
+    preview = (preview_by_priority[0] + preview_by_priority[1])[
+        :DASHBOARD_RECEIPT_ATTENTION_LIMIT
+    ]
+    return {
+        "tasks": preview,
+        "total": total,
+        "limit": DASHBOARD_RECEIPT_ATTENTION_LIMIT,
+        "truncated": len(preview) < total,
+    }
 
 
 def _finding_form_token(secret: str, event: Mapping[str, Any]) -> str | None:
@@ -2604,6 +2673,27 @@ def create_local_api_app(
     install_localhost_guard(app, extra_allowed_hosts=extra_allowed_hosts)
 
     service = SentinelService(store_dir)
+    # One parsed event snapshot + one content fingerprint per durable ledger
+    # revision. The native app refreshes glance, tasks, plan, ingestion, and
+    # usage together; without this boundary every route independently loaded,
+    # decoded, and hashed the complete ledger before its own cache could answer.
+    dashboard_event_snapshot_lock = threading.Lock()
+    dashboard_event_snapshot_cache: dict[str, Any] = {}
+
+    def _dashboard_events() -> tuple[list[dict[str, Any]], int]:
+        snapshot = service.all_events_snapshot()
+        cached = dashboard_event_snapshot_cache.get("value")
+        if cached is not None and cached[0] is snapshot:
+            return list(snapshot.events), cached[1]
+        with dashboard_event_snapshot_lock:
+            cached = dashboard_event_snapshot_cache.get("value")
+            if cached is not None and cached[0] is snapshot:
+                return list(snapshot.events), cached[1]
+            loaded = list(snapshot.events)
+            fingerprint = events_fingerprint(loaded)
+            dashboard_event_snapshot_cache["value"] = (snapshot, fingerprint)
+            return loaded, fingerprint
+
     cost_ledger = CostLedger(store_dir)
     ingestion_health = IngestionHealthStore(store_dir)
     continuation_store = ContinuationTaskStore(store_dir)
@@ -2676,10 +2766,11 @@ def create_local_api_app(
     ) -> dict[str, Any]:
         """The derived ledger, fingerprint + TTL cached (see WorkLedgerCache).
 
-        Every ledger-backed route shares one cache: a poll that finds no event
-        change pays one store read + an O(n) hash, never the multi-second
-        rebuild. ``events``/``fingerprint`` may be passed pre-computed by a
-        route that already loaded them (avoids a second store read/hash).
+        Every ledger-backed route shares one cache. Native app routes pass the
+        revisioned event snapshot and its one precomputed fingerprint, so an
+        unchanged poll skips both ledger decoding and O(n) hashing as well as
+        the multi-second rebuild. Other callers may still pass their own
+        ``events``/``fingerprint`` pair to avoid duplicate work.
         """
 
         if events is None:
@@ -2848,14 +2939,19 @@ def create_local_api_app(
         """The glance snapshot (usage · cost · plan · recent sessions).
 
         Fingerprint + TTL cached: a poll that finds no event change skips the
-        aggregation REBUILD (the expensive part) — each poll still reads the
-        event list once to compute the change key, so per-request cost is one
-        store read + an O(n) hash, never a re-aggregation (see
-        :mod:`agentacct.glance` for the schema contract)."""
+        aggregation rebuild. The fingerprint comes from the native API's
+        revisioned shared snapshot, so unchanged sibling requests do not read,
+        parse, or hash the full ledger again (see :mod:`agentacct.glance` for
+        the schema contract)."""
 
         _require_v1_token(request)
-        events = service.list_all_events()
-        return glance_cache.snapshot(events, store_dir=store_dir, version=_dashboard_importer_version())
+        events, fingerprint = _dashboard_events()
+        return glance_cache.snapshot(
+            events,
+            store_dir=store_dir,
+            version=_dashboard_importer_version(),
+            fingerprint=fingerprint,
+        )
 
     v1_sessions_cache = V1SessionsCache()
 
@@ -2877,8 +2973,7 @@ def create_local_api_app(
         """
 
         _require_v1_token(request)
-        events = service.list_all_events()
-        fingerprint = events_fingerprint(events)
+        events, fingerprint = _dashboard_events()
         view = v1_sessions_cache.view(
             fingerprint,
             lambda: build_v1_sessions_view(
@@ -2901,8 +2996,7 @@ def create_local_api_app(
         never an empty fabrication."""
 
         _require_v1_token(request)
-        events = service.list_all_events()
-        fingerprint = events_fingerprint(events)
+        events, fingerprint = _dashboard_events()
         ledger = _derived_work_ledger(events, fingerprint=fingerprint)
         view = v1_sessions_cache.view(
             fingerprint,
@@ -2929,8 +3023,7 @@ def create_local_api_app(
         — a different quantity, deliberately not duplicated here."""
 
         _require_v1_token(request)
-        events = service.list_all_events()
-        fingerprint = events_fingerprint(events)
+        events, fingerprint = _dashboard_events()
         moment = time.time()
         cached = v1_plan_cache.get(days)
         if cached is not None and cached[0] == fingerprint and (moment - cached[1]) < 30.0:
@@ -2959,8 +3052,7 @@ def create_local_api_app(
         # so those fingerprint-invisible inputs (cost/run-report/mechanical-obs
         # imports) can lag up to ~60s here — the SAME staleness class and the
         # SAME reused-ledger profile the sessions lane already accepts.
-        events = service.list_all_events()
-        fingerprint = events_fingerprint(events)
+        events, fingerprint = _dashboard_events()
         cached = v1_receipt_projection_cache.get("projection")
         if cached is not None and cached[0] == fingerprint and (time.time() - cached[1]) < 30.0:
             return cached[2]
@@ -2986,6 +3078,15 @@ def create_local_api_app(
             # Weekly-plan shares ride the same cached projection: deterministic
             # from the same event log, so the cache key already covers them.
             _stamp_task_plan_shares(projection, events)
+            attention_tasks = _visible_tasks(projection)
+            attention_tasks.sort(
+                key=lambda task: float(task.get("last_activity_at") or 0.0),
+                reverse=True,
+            )
+            projection["_dashboard_receipt_attention"] = _dashboard_receipt_attention(
+                attention_tasks,
+                latest_store_activity_at=latest_store_activity(attention_tasks),
+            )
             v1_receipt_projection_cache["projection"] = (fingerprint, time.time(), projection)
             return projection
 
@@ -3106,7 +3207,8 @@ def create_local_api_app(
         (the two axes + cost + activity), newest first. A Task is the
         convergence of a root session with its continuations and subagents —
         the unit a Receipt is written for. Cheap under polling (cached
-        projection); the per-request work is a summary map + slice."""
+        projection); the complete attention count and bounded preview are built
+        once per cache refresh, while each request maps only its recent slice."""
 
         _require_v1_token(request)
         projection = _v1_task_projection()
@@ -3131,6 +3233,9 @@ def create_local_api_app(
             "offset": offset,
             "limit": limit,
             "truncated": offset + limit < total,
+            # Additive, exact across every visible Task, and preview-bounded.
+            # Unlike ``tasks``, this is never scoped to the recent page.
+            "attention": projection["_dashboard_receipt_attention"],
         }
 
     @app.get("/v1/attention")
@@ -3853,7 +3958,8 @@ def create_local_api_app(
             raise HTTPException(status_code=422, detail=f"unknown days filter: {days}")
         if granularity not in {"auto", *USAGE_CUBE_GRANULARITY_CHOICES}:
             raise HTTPException(status_code=422, detail=f"unknown granularity: {granularity}")
-        usage_view = _build_usage_view([], service.list_all_events())
+        events, _ = _dashboard_events()
+        usage_view = _build_usage_view([], events)
         records = usage_view.saved_records
         cube_records = [*records, *usage_view.excluded_saved_records]
         effective_granularity = resolve_granularity(days, granularity)

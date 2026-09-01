@@ -17,6 +17,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
+import agentacct.api as api_module
 import agentacct.glance as glance_module
 from agentacct.api import create_local_api_app
 from agentacct.cli import app as cli_app
@@ -244,6 +245,38 @@ def test_v1_routes_require_the_exact_bearer_token(tmp_path):
     assert body["glance_schema"] == GLANCE_SCHEMA_VERSION
     assert body["pid"] == os.getpid()
     assert isinstance(body["version"], str) and body["version"]
+
+
+def test_native_refresh_fanout_hashes_one_shared_ledger_snapshot(tmp_path, monkeypatch):
+    service = SentinelService(tmp_path)
+    service.record_event({"event_type": "note", "metadata": {"client": "codex"}})
+
+    fingerprints = 0
+    original = api_module.events_fingerprint
+
+    def counted_fingerprint(events):
+        nonlocal fingerprints
+        fingerprints += 1
+        return original(events)
+
+    monkeypatch.setattr(api_module, "events_fingerprint", counted_fingerprint)
+    client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+
+    assert client.get("/v1/glance", headers=headers).status_code == 200
+    assert client.get("/v1/plan?days=7", headers=headers).status_code == 200
+    assert client.get("/usage/summary?days=7").status_code == 200
+    assert client.get("/v1/glance", headers=headers).status_code == 200
+
+    assert fingerprints == 1
+
+    # A writer in another process moves the durable revision. The next request
+    # must observe that revision and compute exactly one new shared fingerprint.
+    SentinelService(tmp_path).record_event(
+        {"event_type": "note", "metadata": {"client": "claude-code"}}
+    )
+    assert client.get("/v1/glance", headers=headers).status_code == 200
+    assert fingerprints == 2
 
 
 def test_localhost_guard_still_covers_v1(tmp_path):

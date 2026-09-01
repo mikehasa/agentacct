@@ -19,6 +19,8 @@ build/
 .hermes/
 *.local.md
 .gstack/
+# macOS Finder metadata — never useful in the repo, easy to commit by accident.
+.DS_Store
 # Event-store runtime artifacts if a stray run creates a store at the repo root
 # (the real store lives in .agent-sentinel/ or the XDG state dir) — never commit.
 /events.sqlite3*

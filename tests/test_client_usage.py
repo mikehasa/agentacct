@@ -3091,7 +3091,62 @@ def test_claude_workflow_journals_do_not_enter_transcript_selection(
     assert result.events[0].source_parse_complete is True
 
 
-def test_claude_workflow_journal_schema_drift_fails_closed(tmp_path):
+def test_claude_workflow_journal_failed_row_is_ignored(tmp_path):
+    # The Workflow tool records a "failed" lifecycle row when a workflow agent
+    # dies; it carries {agentId, key, type} and no token usage, so it must be
+    # ignored exactly like "started"/"result". Regression: a legitimate
+    # "failed" row tripped claude_workflow_journal_schema_drift, which
+    # fail-closed-aborts the whole home and froze all claude-code usage import.
+    claude_home = _make_claude_home(tmp_path)
+    project = claude_home / "projects" / "-tmp-project"
+    journal = (
+        project
+        / "claude-session"
+        / "subagents"
+        / "workflows"
+        / "wf_failed"
+        / "journal.jsonl"
+    )
+    journal.parent.mkdir(parents=True)
+    journal.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {"agentId": "agent-a", "key": "state", "type": "started"},
+                {
+                    "agentId": "agent-a",
+                    "key": "state",
+                    "result": "ok",
+                    "type": "result",
+                },
+                {"agentId": "agent-b", "key": "state", "type": "failed"},
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = discover_client_usage_with_diagnostics(
+        client="claude-code",
+        claude_home=claude_home,
+        limit_sessions=10,
+    )
+
+    assert [event.client_session_id for event in result.events] == ["claude-session"]
+    diagnostic = result.diagnostics["claude-code"]
+    assert diagnostic["ignored_non_transcript_files"] == 1
+    assert diagnostic["error_count"] == 0
+    assert diagnostic["error_codes"] == []
+
+
+def test_claude_workflow_journal_schema_drift_is_quarantined_not_frozen(tmp_path):
+    # A workflow journal with an unknown row shape is non-transcript metadata.
+    # It is skipped and flagged, but it must NOT freeze the whole home: the real
+    # session's usage still imports. Regression (the #169 recurrence): the
+    # journal validator raised _ClientUsageDiscoveryReadError inside the
+    # candidate loop with no try/except, so a single unknown row type the
+    # Workflow tool began writing zeroed ALL claude-code usage for the home —
+    # violating the very #53 invariant every transcript path already upholds.
     claude_home = _make_claude_home(tmp_path)
     project = claude_home / "projects" / "-tmp-project"
     journal = (
@@ -3124,11 +3179,56 @@ def test_claude_workflow_journal_schema_drift_fails_closed(tmp_path):
         limit_sessions=10,
     )
 
-    assert result.events == []
-    assert result.diagnostics["claude-code"]["discovered"] == 2
-    assert result.diagnostics["claude-code"]["error_codes"] == [
-        "claude_workflow_journal_schema_drift"
+    # The real session imports; the drift journal is quarantined, not fatal.
+    assert [event.client_session_id for event in result.events] == ["claude-session"]
+    diagnostic = result.diagnostics["claude-code"]
+    assert diagnostic["discovered"] == 2
+    # The drift journal never validated, so it is a recorded error rather than a
+    # counted "ignored non-transcript" file.
+    assert diagnostic["ignored_non_transcript_files"] == 0
+    assert diagnostic["error_codes"] == ["claude_workflow_journal_schema_drift"]
+    assert result.events[0].source_parse_complete is True
+
+
+def test_claude_workflow_journal_oversize_is_quarantined_not_frozen(tmp_path):
+    # A perfectly well-formed journal that merely exceeds the scan caps (here:
+    # more than _CLAUDE_WORKFLOW_JOURNAL_MAX_LINES rows) trips the "truncated"
+    # guard. Like schema drift, that must skip only the journal and still import
+    # the real session — size alone must never freeze the whole home.
+    claude_home = _make_claude_home(tmp_path)
+    project = claude_home / "projects" / "-tmp-project"
+    journal = (
+        project
+        / "claude-session"
+        / "subagents"
+        / "workflows"
+        / "wf_big"
+        / "journal.jsonl"
+    )
+    journal.parent.mkdir(parents=True)
+    row_count = client_usage_module._CLAUDE_WORKFLOW_JOURNAL_MAX_LINES + 1
+    journal.write_text(
+        "".join(
+            json.dumps({"agentId": f"agent-{i}", "key": "state", "type": "started"})
+            + "\n"
+            for i in range(row_count)
+        ),
+        encoding="utf-8",
+    )
+
+    result = discover_client_usage_with_diagnostics(
+        client="claude-code",
+        claude_home=claude_home,
+        limit_sessions=10,
+    )
+
+    assert [event.client_session_id for event in result.events] == ["claude-session"]
+    diagnostic = result.diagnostics["claude-code"]
+    assert diagnostic["ignored_non_transcript_files"] == 0
+    assert diagnostic["error_codes"] == [
+        "claude_workflow_journal_validation_truncated"
     ]
+    assert result.events[0].source_parse_complete is True
 
 
 def test_claude_workflow_journal_mutation_after_validation_fails_closed(

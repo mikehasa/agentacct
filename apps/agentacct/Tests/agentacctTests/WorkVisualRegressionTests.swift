@@ -14,6 +14,8 @@ final class WorkVisualRegressionTests: XCTestCase {
         "work-receipt-minimum-dark.png",
         "work-receipt-reference-light.png",
         "work-receipt-reference-dark.png",
+        "work-list-loading-reference-light.png",
+        "work-list-loading-reference-dark.png",
         "work-empty-reference-light.png",
         "work-empty-reference-dark.png",
         "work-list-error-reference-light.png",
@@ -22,6 +24,38 @@ final class WorkVisualRegressionTests: XCTestCase {
         "work-receipt-loading-reference-dark.png",
         "work-receipt-error-reference-light.png",
         "work-receipt-error-reference-dark.png",
+        "work-receipt-stale-reference-light.png",
+        "work-receipt-stale-reference-dark.png",
+        "work-attention-receipt-reference-light.png",
+        "work-attention-receipt-reference-dark.png",
+        "work-table-accessibility-light.png",
+        "work-table-accessibility-dark.png",
+        "work-receipt-accessibility-light.png",
+        "work-receipt-accessibility-dark.png",
+        "work-table-accessibility-maximum-light.png",
+        "work-table-accessibility-maximum-dark.png",
+        "work-receipt-accessibility-maximum-light.png",
+        "work-receipt-accessibility-maximum-dark.png",
+        "work-session-steps-hierarchy-light.png",
+        "work-session-steps-hierarchy-dark.png",
+        "work-session-steps-dense-checks-light.png",
+        "work-session-steps-dense-checks-dark.png",
+        "work-session-steps-expanded-current-light.png",
+        "work-session-steps-expanded-current-dark.png",
+        "work-session-steps-expanded-history-light.png",
+        "work-session-steps-expanded-history-dark.png",
+        "work-session-steps-load-failure-light.png",
+        "work-session-steps-load-failure-dark.png",
+        "work-session-steps-retrying-light.png",
+        "work-session-steps-retrying-dark.png",
+        "work-session-steps-compact-checks-light.png",
+        "work-session-steps-compact-checks-dark.png",
+        "work-session-steps-rtl-stress-light.png",
+        "work-session-steps-rtl-stress-dark.png",
+        "work-session-steps-compact-accessibility-light.png",
+        "work-session-steps-compact-accessibility-dark.png",
+        "work-session-steps-rtl-accessibility-light.png",
+        "work-session-steps-rtl-accessibility-dark.png",
         "work-actions-exact-regular-light.png",
         "work-actions-exact-regular-dark.png",
         "work-actions-exact-compact-light.png",
@@ -34,6 +68,18 @@ final class WorkVisualRegressionTests: XCTestCase {
         "work-actions-layout-stress-dark.png",
         "work-actions-dynamic-type-stress-light.png",
         "work-actions-dynamic-type-stress-dark.png",
+        "work-checks-overview-light.png",
+        "work-checks-overview-dark.png",
+        "work-checks-all-passed-light.png",
+        "work-checks-all-passed-dark.png",
+        "work-checks-expanded-light.png",
+        "work-checks-expanded-dark.png",
+        "work-checks-compact-light.png",
+        "work-checks-compact-dark.png",
+        "work-checks-compact-accessibility-light.png",
+        "work-checks-compact-accessibility-dark.png",
+        "work-checks-accessibility-rtl-light.png",
+        "work-checks-accessibility-rtl-dark.png",
     ]
 
     @MainActor
@@ -64,10 +110,17 @@ final class WorkVisualRegressionTests: XCTestCase {
             fixture: fixture,
             outputDirectory: outputDirectory
         )
+        let sessionStepsRendered = try SessionStepsSnapshotRenderer.render(
+            fixture: fixture,
+            outputDirectory: outputDirectory
+        )
         let actionRendered = try ReceiptActionSnapshotRenderer.render(
             outputDirectory: outputDirectory
         )
-        let rendered = workRendered + actionRendered
+        let checkRendered = try ReceiptCheckSnapshotRenderer.render(
+            outputDirectory: outputDirectory
+        )
+        let rendered = workRendered + sessionStepsRendered + actionRendered + checkRendered
         XCTAssertEqual(rendered.map(\.lastPathComponent), expectedFilenames)
 
         let mode = try VisualSnapshotMode.resolve(environment: environment)

@@ -14,6 +14,7 @@ from agentacct.receipt import (
     RECEIPT_SCHEMA_VERSION,
     build_attention_reason,
     build_receipt,
+    plan_share_headline,
 )
 
 
@@ -242,6 +243,61 @@ def test_passing_hook_check_is_independently_checked() -> None:
     assert evidence["by_tier"]["independently_checked"] == 1
     assert evidence["checks_passed"] == 1
     assert receipt["dimensions"]["evidence"]["checks"][0]["source"] == "hook"
+
+
+def test_superseded_failure_is_not_counted_in_the_check_tally() -> None:
+    # A failing check that a later, distinct passing check superseded stays in
+    # checks_total and stays visible as a (history) row, but must NOT read as a
+    # current failure in the header tally — otherwise "N failed" overstates
+    # failures the frontier already cleared, contradicting the row that is
+    # marked "superseded by a later passing run".
+    superseded_fail = {
+        "event_id": "evt_fail",
+        "result": "failed",
+        "name": "lint",
+        "evidence_type": "lint",
+        "created_at": 100.0,
+        "exit_code": 1,
+        "source_type": "client_hook",
+        "source": "claude-code",
+        "check_identity": "check:lint-old",
+        "check_identity_stable": True,
+        "supersession_state": "superseded",
+        "superseded_by_event_id": "evt_pass",
+    }
+    superseding_pass = {
+        "event_id": "evt_pass",
+        "result": "passed",
+        "name": "lint",
+        "evidence_type": "lint",
+        "created_at": 200.0,
+        "exit_code": 0,
+        "source_type": "client_hook",
+        "source": "claude-code",
+        "check_identity": "check:lint-new",
+        "check_identity_stable": True,
+    }
+    task = _task(
+        [
+            {
+                "work_id": "w",
+                "latest_status": "completed",
+                "updated_at": 100.0,
+                "current_check_events": [superseded_fail, superseding_pass],
+            }
+        ],
+        task_checks=[superseded_fail, superseding_pass],
+    )
+    receipt = _receipt(task)
+    evidence = receipt["axes"]["evidence_strength"]
+    # Both runs are still counted in the total…
+    assert evidence["checks_total"] == 2
+    # …but the superseded failure no longer inflates the failed tally.
+    assert evidence["checks_passed"] == 1
+    assert evidence["checks_failed"] == 0
+    # The superseded failure is still present as a row so the history stays auditable.
+    rows = receipt["dimensions"]["evidence"]["checks"]
+    assert [row for row in rows if row.get("superseded")] != []
 
 
 def test_agent_reported_check_is_self_checked_not_independent() -> None:
@@ -659,3 +715,31 @@ def test_receipt_checks_carry_detail_fields_without_command_text() -> None:
     assert row["command_redacted"] is True
     # The store never records command text; the payload must not invent one.
     assert "command" not in row
+
+
+def test_plan_share_headline_is_calibrated_or_nothing() -> None:
+    # Calibrated: a real percentage, with the <0.1% band and an honest ≈0%.
+    assert (
+        plan_share_headline({"pct": 12.2, "calibration_state": "calibrated"})
+        == "≈12.2% of weekly plan"
+    )
+    assert (
+        plan_share_headline({"pct": 0.05, "calibration_state": "calibrated"})
+        == "≈<0.1% of weekly plan"
+    )
+    assert (
+        plan_share_headline({"pct": 0.0, "calibration_state": "calibrated"})
+        == "≈0% of weekly plan"
+    )
+    # Not calibrated: a NAMED state, never a number — even when a pct is present.
+    assert (
+        plan_share_headline({"pct": 9.9, "calibration_state": "calibrating"})
+        == "calibrating — not enough 7-day history yet"
+    )
+    assert (
+        plan_share_headline({"pct": None, "calibration_state": "never"})
+        == "undefined for this client"
+    )
+    # Absent payload stays a dash, never a fabricated zero.
+    assert plan_share_headline(None) == "—"
+    assert plan_share_headline({}) == "—"
