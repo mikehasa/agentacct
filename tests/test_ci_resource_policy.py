@@ -27,6 +27,14 @@ def _used_actions(path: Path) -> list[str]:
     ]
 
 
+def _named_step(workflow: dict, job_name: str, step_name: str) -> dict:
+    return next(
+        step
+        for step in workflow["jobs"][job_name]["steps"]
+        if step.get("name") == step_name
+    )
+
+
 def test_branch_ci_cancels_superseded_work_and_bounds_jobs() -> None:
     workflow = _workflow(TESTS_WORKFLOW)
     assert workflow["concurrency"] == {
@@ -35,6 +43,19 @@ def test_branch_ci_cancels_superseded_work_and_bounds_jobs() -> None:
     }
     assert workflow["jobs"]["pytest"]["timeout-minutes"] == 20
     assert workflow["jobs"]["macos-app"]["timeout-minutes"] == 20
+
+
+def test_branch_ci_uses_bounded_parallel_python_and_release_swift_tests() -> None:
+    workflow = _workflow(TESTS_WORKFLOW)
+
+    install = _named_step(workflow, "pytest", "Install package")["run"]
+    assert "python -m pip install -e . pytest pytest-xdist" in install
+    assert _named_step(workflow, "pytest", "Run tests")["run"] == (
+        "pytest -q -n 4 --dist loadfile"
+    )
+    assert _named_step(workflow, "macos-app", "Run Swift tests")["run"] == (
+        "swift test -c release"
+    )
 
 
 def test_candidate_generation_is_manual_and_globally_serialized() -> None:
