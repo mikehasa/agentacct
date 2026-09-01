@@ -766,10 +766,18 @@ struct ReceiptEvidence: Decodable {
     /// The honest ledger: where the evidence is, and what the ratio does not cover.
     var ledger: String? {
         var bits: [String] = []
-        if let value = hiddenInSubagents, value > 0 { bits.append("\(value) step(s) ran in subagents") }
-        if let value = notCheckable, value > 0 { bits.append("\(value) non-verifiable (research/docs)") }
-        if let value = unattributedChecks, value > 0 { bits.append("\(value) check(s) attach to no step") }
-        if let value = openOrIncomplete, value > 0 { bits.append("\(value) step(s) still open") }
+        if let value = hiddenInSubagents, value > 0 {
+            bits.append("\(value) step\(value == 1 ? "" : "s") ran in supporting sessions")
+        }
+        if let value = notCheckable, value > 0 {
+            bits.append("\(value) research or documentation step\(value == 1 ? " has" : "s have") no machine-verifiable claim")
+        }
+        if let value = unattributedChecks, value > 0 {
+            bits.append("\(value) check\(value == 1 ? " is" : "s are") not linked to a step")
+        }
+        if let value = openOrIncomplete, value > 0 {
+            bits.append("\(value) step\(value == 1 ? " is" : "s are") still open")
+        }
         return bits.isEmpty ? nil : bits.joined(separator: " · ")
     }
 }
@@ -934,9 +942,9 @@ struct ReceiptPlanShare: Decodable {
             return (Fmt.planPct(pct) ?? "≈0%") + " of weekly plan"
         }
         switch calibrationState {
-        case "calibrating": return "calibrating — not enough 7-day history yet"
-        case "never": return "undefined for this client"
-        default: return "—"
+        case "calibrating": return "Weekly estimate is being prepared; more 7-day history is needed"
+        case "never": return "Weekly estimate unavailable for this client"
+        default: return "Weekly estimate not reported"
         }
     }
 }
@@ -1028,11 +1036,13 @@ struct ReceiptDimensions: Decodable {
 
 struct ReceiptBoundary: Decodable {
     let project: String?
+    let projectIdentityState: String?
     let identityScope: String?
     let sessionCount: Int?
 
     enum CodingKeys: String, CodingKey {
         case project
+        case projectIdentityState = "project_identity_state"
         case identityScope = "identity_scope"
         case sessionCount = "session_count"
     }

@@ -433,19 +433,22 @@ final class DashboardInteractionTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            DashboardIngestionPresentation(snapshot: healthy, error: "source refresh failed"),
             DashboardIngestionPresentation(
-                title: "Source status unavailable",
-                detail: "source refresh failed",
+                snapshot: healthy,
+                failure: .requestFailed("source refresh failed")
+            ),
+            DashboardIngestionPresentation(
+                title: "Source health unavailable",
+                detail: "The latest source health request did not complete. Refresh after agentacct is reachable.",
                 tone: .warning
             )
         )
         XCTAssertEqual(
-            DashboardIngestionPresentation(snapshot: healthy, error: nil).title,
+            DashboardIngestionPresentation(snapshot: healthy, failure: nil).title,
             "Sources healthy"
         )
         XCTAssertEqual(
-            DashboardIngestionPresentation(snapshot: nil, error: nil),
+            DashboardIngestionPresentation(snapshot: nil, failure: nil),
             DashboardIngestionPresentation(
                 title: "Checking source status",
                 detail: "Waiting for the current ingestion record.",
@@ -1887,7 +1890,7 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertTrue(row.accessibilityLabel.contains("handed off"))
         XCTAssertTrue(row.accessibilityLabel.contains("0/1 claims supported"))
         XCTAssertTrue(row.accessibilityLabel.contains("2/3 check runs passed, 1 failed"))
-        XCTAssertTrue(row.accessibilityLabel.contains("codex"))
+        XCTAssertTrue(row.accessibilityLabel.contains("Codex"))
         XCTAssertTrue(row.accessibilityLabel.contains("~$7.66"))
     }
 
@@ -2023,11 +2026,11 @@ final class DashboardInteractionTests: XCTestCase {
         )
         XCTAssertEqual(
             dashboardFreshnessText(Date(timeIntervalSince1970: 880)),
-            "2m ago"
+            "2 min ago"
         )
         XCTAssertEqual(
             dashboardFreshnessText(Date(timeIntervalSince1970: 1_001)),
-            "time unavailable"
+            "just now"
         )
     }
 

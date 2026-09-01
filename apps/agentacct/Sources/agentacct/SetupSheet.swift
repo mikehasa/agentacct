@@ -42,16 +42,16 @@ struct SetupSheet: View {
                 Spacer()
             }
 
-            Text("agentacct records what your coding agents actually do — the work, not just tokens — for this local dashboard. This installs the recorder and configures the agents you have.")
+            Text("Record coding activity locally so this dashboard can show work, checks, and usage. Setup installs the recorder and connects supported coding apps where possible.")
                 .font(Type.body)
                 .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 6) {
-                SetupBullet(text: "Installs a self-contained recorder to ~/.local (no Python needed).")
-                SetupBullet(text: "Registers agentacct with Claude Code, Codex, and other MCP agents.")
-                SetupBullet(text: "Adds the recording hooks and a short \u{201C}record your work\u{201D} instruction. Your own settings are never overwritten.")
-                SetupBullet(text: "Everything stays on this machine. No API keys, no uploads.")
+                SetupBullet(text: "Installs a self-contained local recorder.")
+                SetupBullet(text: "Connects supported coding apps, including Claude Code and Codex.")
+                SetupBullet(text: "Adds recording support where available and preserves unrelated settings.")
+                SetupBullet(text: "Stores recorded dashboard data on this Mac.")
             }
 
             if !setup.log.isEmpty {
@@ -139,9 +139,9 @@ struct SetupSheet: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 7) {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.green)
-                    Text("Recording is configured.").font(Face.sansFont(14, .medium)).foregroundStyle(Theme.ink)
+                    Text("Setup finished.").font(Face.sansFont(14, .medium)).foregroundStyle(Theme.ink)
                 }
-                Text("Open a NEW agent session (in any project) so it picks up the tools and hooks — the session that ran setup can't see them yet.")
+                Text("Review the log for apps that still need attention. Start a new coding session for each configured app, then open Sources to confirm recording.")
                     .font(Type.caption).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack { Spacer(); Button("Done", action: onClose).buttonStyle(.borderedProminent).tint(Theme.accent) }

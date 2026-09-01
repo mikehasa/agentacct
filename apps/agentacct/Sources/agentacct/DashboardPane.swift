@@ -51,6 +51,8 @@ struct DashboardWorkItem: Identifiable {
         agoText(lastActivityAt)
     }
 
+    var costLabel: String { cost == "—" ? "unpriced" : cost }
+
     /// Strongest evidence tier present (drives the row's tier pip).
     var strongestTier: String? {
         gradeable ? (strongestTierKey ?? "unchecked") : nil
@@ -729,6 +731,12 @@ struct DashboardPane: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var presentedError: String? {
+        if dashboard.errorText != nil { return "Usage and provider limits could not be refreshed." }
+        if dashboard.receiptListError != nil { return "Work receipts could not be refreshed." }
+        return nil
+    }
+
+    private var presentedErrorDiagnostic: String? {
         dashboard.errorText ?? dashboard.receiptListError
     }
 
@@ -804,7 +812,7 @@ struct DashboardPane: View {
                             error: dashboard.errorText
                         ),
                         ingestion: dashboard.ingestion,
-                        ingestionError: dashboard.ingestionError
+                        ingestionFailure: dashboard.ingestionFailure
                     ) { destination in
                         selection.open(destination)
                     }
@@ -835,6 +843,7 @@ struct DashboardPane: View {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(Type.caption)
                     .foregroundStyle(Theme.coral)
+                    .help(presentedErrorDiagnostic ?? error)
                     .padding(Space.s)
                     .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
                     .padding(.bottom, 10)
@@ -1232,11 +1241,12 @@ struct DashboardIngestionPresentation: Equatable {
         self.tone = tone
     }
 
-    init(snapshot: V1IngestionSnapshot?, error: String?) {
-        if let error {
+    init(snapshot: V1IngestionSnapshot?, failure: IngestionFailure?) {
+        if let failure {
+            let unavailable = SourcesUnavailablePresentation(failure: failure)
             self.init(
-                title: "Source status unavailable",
-                detail: error,
+                title: unavailable.title,
+                detail: "\(unavailable.detail) \(unavailable.recovery)",
                 tone: .warning
             )
             return
@@ -1280,7 +1290,7 @@ private struct DashboardSignalRail: View {
     let availability: DashboardSignalAvailability
     let usagePulse: DashboardUsagePulse
     let ingestion: V1IngestionSnapshot?
-    let ingestionError: String?
+    let ingestionFailure: IngestionFailure?
     let open: (DashboardDestination) -> Void
 
     private var capacity: DashboardAgentPlanRow? {
@@ -1297,7 +1307,7 @@ private struct DashboardSignalRail: View {
     }
 
     private var ingestionPresentation: DashboardIngestionPresentation {
-        DashboardIngestionPresentation(snapshot: ingestion, error: ingestionError)
+        DashboardIngestionPresentation(snapshot: ingestion, failure: ingestionFailure)
     }
 
     var body: some View {
@@ -1496,7 +1506,7 @@ private struct RecentWorkCard: View {
             VStack(spacing: 0) {
                 DashboardCardHeader("Recent work", count: totalCount) {
                     Button { open(.work) } label: {
-                        Text("View all").font(Type.captionSemibold)
+                        Text("View all work").font(Type.captionSemibold)
                     }
                     .foregroundStyle(Theme.accent)
                     .buttonStyle(QuietButtonStyle())
@@ -1552,7 +1562,7 @@ private struct RecentWorkRow: View {
                         .font(Type.rowLabel)
                         .foregroundStyle(Theme.ink)
                         .lineLimit(2)
-                    Text([item.client, item.recency].compactMap { $0 }.joined(separator: " · "))
+                    Text([Optional(clientDisplayName(item.client)), item.recency].compactMap { $0 }.joined(separator: " · "))
                         .font(Type.caption)
                         .foregroundStyle(Theme.muted)
                         .lineLimit(1)
@@ -1585,7 +1595,7 @@ private struct RecentWorkRow: View {
                 .frame(width: 118, alignment: .leading)
                 .help(item.evidenceQualifier)
 
-                Text(item.cost == "—" ? "unpriced" : item.cost)
+                Text(item.costLabel)
                     .font(Type.dataSmall)
                     .foregroundStyle(Theme.muted)
                     .frame(width: 68, alignment: .trailing)
@@ -1598,7 +1608,10 @@ private struct RecentWorkRow: View {
         }
         .buttonStyle(DashboardRowButtonStyle())
         .accessibilityLabel(
-            "\(item.title), \(item.outcome), \(item.evidence), \(item.cost)"
+            [item.title, clientDisplayName(item.client), item.outcome, item.evidence, item.costLabel,
+             item.recency.map { "Activity \($0)" }]
+                .compactMap { $0 }
+                .joined(separator: ", ")
         )
         .accessibilityHint("Opens this task in Work")
         .accessibilityIdentifier("dashboard.recent-work.task.\(item.id)")
@@ -1658,7 +1671,7 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
             // Short and window-anchored; provenance + reset time remain in the
             // signal detail sentence.
             meterCaption = String(format: "%.0f%% of 7-day limit", used)
-            resetText = Theme.resetsIn(window?.resetsAt).map { "resets in \($0)" }
+            resetText = window?.resetsAt.map { Theme.resetText($0).lowercased() }
         } else if reportedUsed != nil {
             meterCaption = "invalid 7-day value reported"
             resetText = nil

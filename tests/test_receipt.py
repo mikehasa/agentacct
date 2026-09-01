@@ -14,8 +14,24 @@ from agentacct.receipt import (
     RECEIPT_SCHEMA_VERSION,
     build_attention_reason,
     build_receipt,
+    evidence_coverage_ledger,
     plan_share_headline,
 )
+
+
+def test_evidence_coverage_ledger_uses_natural_counts_and_plain_terms() -> None:
+    assert evidence_coverage_ledger(
+        {
+            "hidden_in_subagents": 1,
+            "not_checkable": 1,
+            "unattributed_checks": 2,
+            "open_or_incomplete": 1,
+        }
+    ) == (
+        "1 step ran in supporting sessions · "
+        "1 research or documentation step has no machine-verifiable claim · "
+        "2 checks are not linked to a step · 1 step is still open"
+    )
 
 
 def _check(
@@ -486,7 +502,9 @@ def test_actions_shows_touched_files_and_gaps_missing_categories() -> None:
     actions = _receipt(task)["dimensions"]["actions"]
     assert actions["touched_files"] == ["src/a.py"]
     assert actions["tool_category_counts"] == {}
-    assert any("not instrumented" in reason for reason in actions["gaps"])
+    assert actions["gaps"] == [
+        "Tool details were not captured; only recorded file paths are shown."
+    ]
     # Touched files are MCP-sourced; the missing categories are an honest gap.
     assert "mcp" in actions["provenance"]
 
@@ -595,7 +613,108 @@ def test_identity_is_gapped_only_when_truly_unbound() -> None:
     task["sessions"][0].pop("project_identity_state", None)
     boundary = _receipt(task)["dimensions"]["task"]["boundary"]
     assert boundary["identity_scope"] == "unscoped"
-    assert any("could not be bound" in gap for gap in _receipt(task)["dimensions"]["task"]["gaps"])
+    assert _receipt(task)["dimensions"]["task"]["gaps"] == [
+        "Project scope was not recorded for this Task. Project grouping may be incomplete."
+    ]
+
+
+def test_identity_scope_reduction_is_order_independent_across_mixed_sessions() -> None:
+    task = _task([{"work_id": "w", "title": "do the thing", "latest_status": "completed", "updated_at": 100.0}])
+    unscoped = {
+        "client": "codex",
+        "client_session_id": "unscoped",
+        "project": "agentacct-gui",
+        "project_identity_state": "missing",
+        "identity_scope_state": "unscoped",
+    }
+    explicit = {
+        "client": "claude-code",
+        "client_session_id": "explicit",
+        "project": "agentacct-gui",
+        "project_identity_state": "explicit",
+        "identity_scope_state": "unscoped",
+    }
+
+    for sessions in ([unscoped, explicit], [explicit, unscoped]):
+        task["sessions"] = sessions
+        boundary = _receipt(task)["dimensions"]["task"]["boundary"]
+        assert boundary["identity_scope"] == "project"
+        assert boundary["project_identity_state"] == "explicit"
+
+
+def test_conflicting_project_identity_fails_closed_even_with_explicit_namespace() -> None:
+    task = _task([{"work_id": "w", "title": "do the thing", "latest_status": "completed", "updated_at": 100.0}])
+    task["sessions"] = [
+        {
+            "client": "codex",
+            "client_session_id": "conflict",
+            "project": "agentacct-gui",
+            "project_identity_state": "conflicting",
+            "identity_scope_state": "unscoped",
+        },
+        {
+            "client": "codex",
+            "client_session_id": "namespace",
+            "project": "agentacct-gui",
+            "project_identity_state": "missing",
+            "identity_scope_state": "explicit",
+        },
+    ]
+
+    receipt = _receipt(task)
+    boundary = receipt["dimensions"]["task"]["boundary"]
+    assert boundary["identity_scope"] == "conflicting"
+    assert boundary["project_identity_state"] == "conflicting"
+    assert receipt["dimensions"]["task"]["gaps"] == [
+        "Conflicting project identities were recorded. Project grouping is unavailable."
+    ]
+
+
+def test_unknown_identity_scope_fails_closed() -> None:
+    task = _task([{"work_id": "w", "title": "do the thing", "latest_status": "completed", "updated_at": 100.0}])
+    task["sessions"] = [
+        {
+            "client": "future-client",
+            "client_session_id": "future",
+            "project_identity_state": "missing",
+            "identity_scope_state": "future_state",
+        }
+    ]
+
+    receipt = _receipt(task)
+    assert receipt["dimensions"]["task"]["boundary"]["identity_scope"] == "unknown"
+    assert receipt["dimensions"]["task"]["gaps"] == [
+        "Project scope could not be determined. Project grouping may be incomplete."
+    ]
+
+
+def test_conflicting_project_labels_fail_closed_in_every_session_order() -> None:
+    task = _task([{"work_id": "w", "title": "do the thing", "latest_status": "completed", "updated_at": 100.0}])
+    first = {
+        "client": "codex",
+        "client_session_id": "first",
+        "project": "alpha",
+        "project_identity_state": "explicit",
+        "identity_scope_state": "explicit",
+    }
+    second = {
+        "client": "codex",
+        "client_session_id": "second",
+        "project": "beta",
+        "project_identity_state": "explicit",
+        "identity_scope_state": "explicit",
+    }
+
+    for sessions in ([first, second], [second, first]):
+        task["sessions"] = sessions
+        receipt = _receipt(task)
+        boundary = receipt["dimensions"]["task"]["boundary"]
+        assert boundary["project"] is None
+        assert boundary["project_identity_state"] == "conflicting"
+        assert boundary["identity_scope"] == "conflicting"
+        assert receipt["dimensions"]["task"]["gaps"] == [
+            "Conflicting project identities were recorded. Project grouping is unavailable."
+        ]
 
 
 def test_provenance_rollup_covers_every_dimension_with_a_legend() -> None:
@@ -734,12 +853,12 @@ def test_plan_share_headline_is_calibrated_or_nothing() -> None:
     # Not calibrated: a NAMED state, never a number — even when a pct is present.
     assert (
         plan_share_headline({"pct": 9.9, "calibration_state": "calibrating"})
-        == "calibrating — not enough 7-day history yet"
+        == "Weekly estimate is being prepared; more 7-day history is needed"
     )
     assert (
         plan_share_headline({"pct": None, "calibration_state": "never"})
-        == "undefined for this client"
+        == "Weekly estimate unavailable for this client"
     )
-    # Absent payload stays a dash, never a fabricated zero.
-    assert plan_share_headline(None) == "—"
-    assert plan_share_headline({}) == "—"
+    # Absent payload names the missing estimate, never a fabricated zero.
+    assert plan_share_headline(None) == "Weekly estimate not reported"
+    assert plan_share_headline({}) == "Weekly estimate not reported"

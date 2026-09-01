@@ -4,12 +4,16 @@ import XCTest
 
 final class SetupVisualRegressionTests: XCTestCase {
     private let expectedFilenames = [
+        "setup-idle-light.png",
+        "setup-idle-dark.png",
+        "setup-done-light.png",
+        "setup-done-dark.png",
         "setup-failure-light.png",
         "setup-failure-dark.png",
     ]
 
     @MainActor
-    func testSetupFailureAppearances() throws {
+    func testSetupStateMatrix() throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["AGENTACCT_VERIFY_VISUAL_BASELINES"] == "1" else {
             throw XCTSkip("Run visual baselines through ./Scripts/visual-snapshots verify")

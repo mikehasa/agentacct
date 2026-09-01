@@ -536,16 +536,22 @@ def evidence_coverage_ledger(evidence: Mapping[str, Any]) -> str:
     bits: list[str] = []
     hidden = int(evidence.get("hidden_in_subagents") or 0)
     if hidden:
-        bits.append(f"{hidden} step(s) ran in subagents")
+        bits.append(f"{hidden} step{'s' if hidden != 1 else ''} ran in supporting sessions")
     not_checkable = int(evidence.get("not_checkable") or 0)
     if not_checkable:
-        bits.append(f"{not_checkable} non-verifiable (research/docs)")
+        subject = "step has" if not_checkable == 1 else "steps have"
+        bits.append(
+            f"{not_checkable} research or documentation {subject} "
+            "no machine-verifiable claim"
+        )
     unattributed = int(evidence.get("unattributed_checks") or 0)
     if unattributed:
-        bits.append(f"{unattributed} check(s) attach to no step")
+        predicate = "check is" if unattributed == 1 else "checks are"
+        bits.append(f"{unattributed} {predicate} not linked to a step")
     still_open = int(evidence.get("open_or_incomplete") or 0)
     if still_open:
-        bits.append(f"{still_open} step(s) still open")
+        predicate = "step is" if still_open == 1 else "steps are"
+        bits.append(f"{still_open} {predicate} still open")
     return " · ".join(bits)
 
 
@@ -570,10 +576,10 @@ def plan_share_headline(plan_share: Mapping[str, Any] | None) -> str:
             shown = "≈0%"
         return f"{shown} of weekly plan"
     if state == "calibrating":
-        return "calibrating — not enough 7-day history yet"
+        return "Weekly estimate is being prepared; more 7-day history is needed"
     if state == "never":
-        return "undefined for this client"
-    return "—"
+        return "Weekly estimate unavailable for this client"
+    return "Weekly estimate not reported"
 
 
 # --- Decision axis ------------------------------------------------------------
@@ -676,36 +682,46 @@ def _asserted_by_source(asserted_by: str, checks: list[Mapping[str, Any]]) -> st
 
 def _boundary(task: Mapping[str, Any]) -> dict[str, Any]:
     sessions = task.get("sessions") if isinstance(task.get("sessions"), list) else []
-    project = next(
-        (_text(session.get("project")) for session in sessions if isinstance(session, Mapping) and _text(session.get("project"))),
-        None,
-    )
-    project_identity_state = next(
-        (
-            _text(session.get("project_identity_state"))
-            for session in sessions
-            if isinstance(session, Mapping) and _text(session.get("project_identity_state"))
-        ),
-        None,
-    )
-    namespace_scope = next(
-        (
-            _text(session.get("identity_scope_state"))
-            for session in sessions
-            if isinstance(session, Mapping) and _text(session.get("identity_scope_state"))
-        ),
-        None,
-    )
+    session_rows = [session for session in sessions if isinstance(session, Mapping)]
+    project_labels = {
+        label for session in session_rows if (label := _text(session.get("project")))
+    }
+    project = next(iter(project_labels)) if len(project_labels) == 1 else None
+    project_states = {
+        state
+        for session in session_rows
+        if (state := _text(session.get("project_identity_state")))
+    }
+    if "conflicting" in project_states or len(project_labels) > 1:
+        project_identity_state = "conflicting"
+    elif "explicit" in project_states:
+        project_identity_state = "explicit"
+    elif "serving_project_store" in project_states:
+        project_identity_state = "serving_project_store"
+    elif "missing" in project_states:
+        project_identity_state = "missing"
+    else:
+        project_identity_state = None
+
+    scope_states = {
+        state
+        for session in session_rows
+        if (state := _text(session.get("identity_scope_state")))
+    }
     # An explicitly identified project binds the Task even when it carries no
     # cryptographic org-namespace fingerprint (only codex / org-scoped sessions
     # have one). Report the strongest binding, so a claude-code Task in a known
     # project reads as "project"-scoped rather than "unscoped".
-    if project_identity_state == "explicit":
+    if project_identity_state == "conflicting":
+        identity_scope = "conflicting"
+    elif project_identity_state == "explicit":
         identity_scope = "project"
-    elif namespace_scope:
-        identity_scope = namespace_scope
-    else:
+    elif "explicit" in scope_states:
+        identity_scope = "explicit"
+    elif "unscoped" in scope_states or not scope_states:
         identity_scope = "unscoped"
+    else:
+        identity_scope = "unknown"
     root_keys = task.get("root_keys") if isinstance(task.get("root_keys"), list) else []
     return {
         "primary_root": _mapping(task.get("primary_root")) or None,
@@ -729,9 +745,13 @@ def _task_dimension(task: Mapping[str, Any], title: str) -> dict[str, Any]:
     boundary = _boundary(task)
     gaps: list[str] = []
     if not objectives:
-        gaps.append("No explicit objective was recorded for this Task.")
-    if boundary["identity_scope"] == "unscoped":
-        gaps.append("This Task could not be bound to a project or namespace.")
+        gaps.append("No objective was recorded for this Task.")
+    if boundary["identity_scope"] == "conflicting":
+        gaps.append("Conflicting project identities were recorded. Project grouping is unavailable.")
+    elif boundary["identity_scope"] == "unscoped":
+        gaps.append("Project scope was not recorded for this Task. Project grouping may be incomplete.")
+    elif boundary["identity_scope"] == "unknown":
+        gaps.append("Project scope could not be determined. Project grouping may be incomplete.")
     provenance = [SOURCE_MCP] if objectives else []
     if boundary["session_count"]:
         provenance.append(SOURCE_CLIENT_LOG)
@@ -751,9 +771,9 @@ def _actors_dimension(task: Mapping[str, Any], intelligence: Mapping[str, Any]) 
     supporting = [lane for lane in lanes if isinstance(lane, Mapping) and lane.get("role") == "supporting"]
     gaps: list[str] = []
     if not models:
-        gaps.append("No model was observed for this Task's usage.")
+        gaps.append("Model information was not available in the recorded usage.")
     if supporting and not any(lane.get("session_kinds") for lane in supporting):
-        gaps.append("Subagent roles were not scanned, so supporting sessions show as counts only.")
+        gaps.append("Supporting sessions were recorded without role details.")
     return {
         "primary_agent": _text(primary.get("client")) if isinstance(primary, Mapping) else None,
         "models": models,
@@ -809,7 +829,7 @@ def _actions_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
     if touched:
         provenance.append(SOURCE_MCP)
     else:
-        gaps.append("No touched files were recorded for this Task's steps.")
+        gaps.append("No file paths were recorded for this Task.")
     if counts or name_counts or commands:
         # Tool categories, names, and commands come from a client hook OR from a
         # transcript scan of the client's own store (Codex/OpenCode, whose hooks do
@@ -828,7 +848,7 @@ def _actions_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
         provenance.extend(capture_bases or [SOURCE_HOOK])
     else:
         gaps.append(
-            "Tool categories were not instrumented for this session; Actions shows touched files only."
+            "Tool details were not captured; only recorded file paths are shown."
         )
     # Compute the capped preview + disclosed overflow ONCE, here, so every surface
     # (CLI, TUI, and the macOS app) renders the daemon-provided slice and never
@@ -863,12 +883,12 @@ def _cost_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
     cost_confidence = _text(usage.get("cost_confidence")) or None
     gaps: list[str] = []
     if not cost_complete:
-        gaps.append("Cost is incomplete: some usage rows are unpriced or excluded.")
+        gaps.append("Some usage could not be priced, so this cost is a partial estimate.")
     # A complete pricing-table estimate is not a gap — the estimate is present
     # and its basis rides cost_basis / cost_confidence. Only genuinely missing
     # or partial cost is a gap.
     if estimated is None and int(usage.get("rows") or 0) == 0:
-        gaps.append("No usage was recorded for this Task.")
+        gaps.append("No usage data was recorded for this Task.")
     return {
         "estimated_cost_usd": estimated,
         "cost_basis": cost_basis,
@@ -892,13 +912,14 @@ def _evidence_dimension(checks: list[Mapping[str, Any]], strength: Mapping[str, 
     sources = sorted({_text(check.get("source")) for check in checks if _text(check.get("source"))})
     gaps: list[str] = []
     if not checks:
-        gaps.append("No machine checks were recorded for this Task.")
+        gaps.append("No machine checks were recorded.")
     # Only CHECKABLE steps can owe a check: research/docs steps are declared
     # non-verifiable by the coverage ledger, so demanding evidence for them
     # would inflate the gap count with impossible asks.
     unchecked_steps = int((strength.get("by_tier") or {}).get("unchecked") or 0)
     if unchecked_steps:
-        gaps.append(f"{unchecked_steps} completed step(s) have no linked passing check.")
+        noun = "step" if unchecked_steps == 1 else "steps"
+        gaps.append(f"{unchecked_steps} completed {noun} have no linked passing check.")
     return {
         "checks": list(checks),
         "checks_total": int(strength.get("checks_total") or 0),
@@ -918,7 +939,7 @@ def _outcome_dimension(
     asserted_by = _text(decision.get("asserted_by")) or "none"
     gaps: list[str] = []
     if decision.get("key") in {"in_progress", "observed", "unknown"}:
-        gaps.append("No terminal outcome has been recorded for this Task yet.")
+        gaps.append("This Task has no recorded final outcome yet.")
     return {
         "decision_status": decision.get("key"),
         "statement": decision.get("statement"),
@@ -959,7 +980,11 @@ def _roll_up_gaps(
         items.append(
             {
                 "dimension": "actors",
-                "reason": f"{unlinked} work item(s) could not be tied to an exact session.",
+                "reason": (
+                    f"{unlinked} work item is not linked to a specific session."
+                    if unlinked == 1
+                    else f"{unlinked} work items are not linked to a specific session."
+                ),
             }
         )
     return {"items": items, "count": len(items)}

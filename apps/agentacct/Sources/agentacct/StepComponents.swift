@@ -556,7 +556,7 @@ struct StepCard: View {
         if let status = step.latestStatus {
             parts.append(status.replacingOccurrences(of: "_", with: " "))
         }
-        if let ago = agoText(step.updatedAt) { parts.append("updated \(ago)") }
+        if let ago = agoText(step.updatedAt) { parts.append("Activity \(ago)") }
         if let usage = step.usage, let tokens = usage.totalTokens, tokens > 0 {
             parts.append("\(UsageTotals.compact(tokens)) tok")
             parts.append(usage.costText)

@@ -329,7 +329,7 @@ func receiptActionSynopsis(
         return ReceiptActionSynopsis(
             integrity: counts == nil ? .unavailable : .totalUnavailable,
             metrics: [],
-            headline: counts == nil ? "not instrumented" : "stored total unavailable",
+            headline: counts == nil ? "Tool details not captured" : "stored total unavailable",
             integrityDetail: counts == nil ? nil : "No categorized tool-call counts",
             storedTotal: nil,
             categorizedTotal: 0,
@@ -432,7 +432,7 @@ func receiptActionKPI(_ synopsis: ReceiptActionSynopsis) -> ReceiptActionKPI {
     case .invalid:
         return ReceiptActionKPI(value: nil, qualifier: nil, absent: "tool-call data incomplete")
     case .unavailable:
-        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "not instrumented")
+        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "Tool details not captured")
     }
 }
 
@@ -446,22 +446,29 @@ func receiptActionSourceText(_ sources: [String]?) -> String {
     var seen = Set<String>()
     for source in sources ?? [] {
         let label: String
-        switch source {
-        case "", "none": continue
-        case "mcp": label = "MCP"
-        case "transcript_scan": label = "Transcript scan"
-        case "client_log": label = "Client log"
-        case "agent_report": label = "Agent report"
-        case "pricing_table": label = "Pricing table"
-        case "ci": label = "CI"
-        case "hook": label = "Client hook"
-        default:
-            let words = source.replacingOccurrences(of: "_", with: " ")
-            label = words.prefix(1).uppercased() + words.dropFirst()
-        }
+        if source.isEmpty || source == "none" { continue }
+        label = receiptSourceLabel(source)
         if seen.insert(label).inserted { labels.append(label) }
     }
     return labels.joined(separator: ", ")
+}
+
+func receiptSourceLabel(_ source: String) -> String {
+    switch source {
+    case "mcp": return "Agent recording"
+    case "transcript_scan": return "Local session import"
+    case "client_log": return "Client log"
+    case "agent_report": return "Agent report"
+    case "pricing_table": return "Pricing table"
+    case "ci": return "CI"
+    case "hook", "client_hook": return "Client hook"
+    case "git": return "Git"
+    case "human": return "Human review"
+    case "inferred": return "Inferred state"
+    default:
+        let words = source.replacingOccurrences(of: "_", with: " ")
+        return words.prefix(1).uppercased() + words.dropFirst()
+    }
 }
 
 // MARK: - Record summary strip
@@ -521,9 +528,9 @@ struct RecordSummaryStrip: View {
 
         let elapsedCell: Cell
         if let seconds = receipt.durationSeconds, seconds > 0 {
-            elapsedCell = Cell(id: "elapsed", label: "Elapsed", value: durationText(seconds), qualifier: nil, absent: nil)
+            elapsedCell = Cell(id: "elapsed", label: "Recorded span", value: durationText(seconds), qualifier: nil, absent: nil)
         } else {
-            elapsedCell = Cell(id: "elapsed", label: "Elapsed", value: nil, qualifier: nil, absent: "not recorded")
+            elapsedCell = Cell(id: "elapsed", label: "Recorded span", value: nil, qualifier: nil, absent: "not recorded")
         }
 
         let sessionsCell: Cell
@@ -579,7 +586,7 @@ struct RecordSummaryStrip: View {
     }
 }
 
-// MARK: - Receipt dimensions
+// MARK: - Receipt details
 
 /// The aggregate-only Actions view. It is intentionally static: current
 /// receipts do not contain canonical per-action rows, so no metric, source, or
@@ -589,7 +596,6 @@ struct ReceiptActionsDigest: View {
     let synopsis: ReceiptActionSynopsis
     let relatedPathCount: Int?
     let provenance: [String]?
-    let gaps: [String]?
 
     // The app's fixed type ramp keeps dense dashboard geometry stable. This
     // focused digest still has to honor accessibility text sizes, so its four
@@ -597,7 +603,6 @@ struct ReceiptActionsDigest: View {
     // changing the surrounding receipt ledger.
     @ScaledMetric(relativeTo: .body) private var bodyTypeSize: CGFloat = 14
     @ScaledMetric(relativeTo: .caption) private var captionTypeSize: CGFloat = 12
-    @ScaledMetric(relativeTo: .caption) private var captionIconSize: CGFloat = 10
 
     private var scope: String { receiptActionScope(relatedPathCount: relatedPathCount) }
     private var sourceText: String { receiptActionSourceText(provenance) }
@@ -676,9 +681,6 @@ struct ReceiptActionsDigest: View {
             }
             if let boundary = synopsis.captureBoundary {
                 metadataLine(label: "Detail", value: boundary)
-            }
-            ForEach(Array((gaps ?? []).enumerated()), id: \.offset) { _, gap in
-                noticeLine(prefix: "Evidence gap", text: gap, tone: Theme.amber)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -826,61 +828,39 @@ struct ReceiptActionsDigest: View {
         .accessibilityValue(value)
     }
 
-    private func noticeLine(prefix: String, text: String, tone: Color) -> some View {
-        HStack(alignment: .top, spacing: Space.s) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: captionIconSize, weight: .semibold))
-                .foregroundStyle(tone)
-                .frame(width: captionIconSize + 2, alignment: .center)
-                .padding(.top, 2)
-                .accessibilityHidden(true)
-            Text("\(prefix): \(text)")
-                .font(captionFont)
-                .foregroundStyle(tone)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(prefix)
-        .accessibilityValue(text)
-    }
 }
 
 /// The receipt-dimensions ledger: one row per dimension — name, value,
-/// provenance chips, and the dimension's own gaps inline as named amber facts.
+/// provenance chips. Receipt limitations have one canonical home in the
+/// limitations card instead of being repeated inline.
 struct RecordDimensionsCard: View {
     let receipt: Receipt
 
     var body: some View {
         Card(padding: Space.xl) {
             VStack(alignment: .leading, spacing: 0) {
-                Text("Receipt dimensions").workFont(.titleCard).foregroundStyle(Theme.ink)
+                Text("Receipt details").workFont(.titleCard).foregroundStyle(Theme.ink)
                     .accessibilityAddTraits(.isHeader)
                 Rectangle().fill(Theme.hairline).frame(height: 1).padding(.top, Space.m)
                 dimensionRow("Task", taskSummary,
-                             provenance: receipt.dimensions.task.provenance,
-                             gaps: receipt.dimensions.task.gaps)
+                             provenance: receipt.dimensions.task.provenance)
                 hairline
                 dimensionRow("Actors", actorsSummary,
-                             provenance: receipt.dimensions.actors.provenance,
-                             gaps: receipt.dimensions.actors.gaps)
+                             provenance: receipt.dimensions.actors.provenance)
                 hairline
                 actionsRow
                 hairline
                 dimensionRow("Cost", costSummary,
-                             provenance: receipt.dimensions.cost.provenance,
-                             gaps: receipt.dimensions.cost.gaps)
+                             provenance: receipt.dimensions.cost.provenance)
                 hairline
                 dimensionRow("Weekly plan", weeklyPlanSummary,
-                             provenance: nil,
-                             gaps: nil)
+                             provenance: nil)
                 hairline
                 dimensionRow("Checks", evidenceSummary,
-                             provenance: receipt.dimensions.evidence.provenance,
-                             gaps: receipt.dimensions.evidence.gaps)
+                             provenance: receipt.dimensions.evidence.provenance)
                 hairline
                 dimensionRow("Outcome", outcomeSummary,
                              provenance: receipt.dimensions.outcome.provenance,
-                             gaps: receipt.dimensions.outcome.gaps,
                              verbatimValue: true)
             }
         }
@@ -894,7 +874,6 @@ struct RecordDimensionsCard: View {
         _ name: String,
         _ summary: String,
         provenance: [String]?,
-        gaps: [String]?,
         verbatimValue: Bool = false
     ) -> some View {
         HStack(alignment: .top, spacing: Space.l) {
@@ -912,15 +891,8 @@ struct RecordDimensionsCard: View {
                 if let provenance, !provenance.isEmpty {
                     HStack(spacing: 6) {
                         ForEach(provenance, id: \.self) { source in
-                            ProvenanceChip(text: source)
+                            ProvenanceChip(text: receiptSourceLabel(source))
                         }
-                    }
-                }
-                ForEach(gaps ?? [], id: \.self) { gap in
-                    // A dimension's own blind spot, named where the value lives.
-                    HStack(spacing: 6) {
-                        EvidencePip(shape: .hollow, tint: Theme.amber)
-                        Text(gap).workFont(.caption).foregroundStyle(Theme.amber)
                     }
                 }
             }
@@ -940,8 +912,7 @@ struct RecordDimensionsCard: View {
                 storedTotal: dim.toolCategoryTotal
             ),
             relatedPathCount: dim.touchedFileCount,
-            provenance: dim.provenance,
-            gaps: dim.gaps
+            provenance: dim.provenance
         )
     }
 
@@ -950,7 +921,7 @@ struct RecordDimensionsCard: View {
     private var taskSummary: String {
         let dim = receipt.dimensions.task
         var parts = (dim.objectives ?? []).prefix(2).joined(separator: "; ")
-        if parts.isEmpty { parts = "no objective recorded" }
+        if parts.isEmpty { parts = "Objective not recorded" }
         if let project = dim.boundary?.project { parts += " · project \(project)" }
         return parts
     }
@@ -958,10 +929,12 @@ struct RecordDimensionsCard: View {
     private var actorsSummary: String {
         let dim = receipt.dimensions.actors
         var parts: [String] = []
-        if let agent = dim.primaryAgent { parts.append(agent) }
+        if let agent = dim.primaryAgent { parts.append(clientDisplayName(agent)) }
         if let models = dim.models, !models.isEmpty { parts.append(models.joined(separator: ", ")) }
-        if let subagents = dim.subagentSessionCount, subagents > 0 { parts.append("\(subagents) subagents") }
-        return parts.isEmpty ? "no actor recorded" : parts.joined(separator: " · ")
+        if let count = dim.subagentSessionCount, count > 0 {
+            parts.append("\(count) supporting agent\(count == 1 ? "" : "s")")
+        }
+        return parts.isEmpty ? "Agent and model not recorded" : parts.joined(separator: " · ")
     }
 
     private var costSummary: String {
@@ -1168,11 +1141,10 @@ struct BlockerCallout: View {
                     .workFont(.rowLabel).foregroundStyle(Theme.ink)
                     .lineLimit(2)
                 Spacer(minLength: Space.s)
-                // "last updated": the projection carries the step's last-activity
-                // time, which later non-terminal events can bump past the moment
-                // the blocker itself was recorded.
+                // This is the step's last-activity time. Later non-terminal
+                // events can move it past the moment the blocker was recorded.
                 if let ago = agoText(blocker.updatedAt) {
-                    Text("last updated \(ago)").workFont(.dataSmall).foregroundStyle(Theme.muted)
+                    Text("Step activity \(ago)").workFont(.dataSmall).foregroundStyle(Theme.muted)
                 }
             }
             if let text = blocker.text {
@@ -1772,9 +1744,9 @@ private struct RecordCheckRow: View {
                         .textSelection(.enabled)
                 }
             }
-            if let at = check.at, let ago = agoText(at) {
+            if let at = check.at, let recorded = TemporalText.exactDateTime(epoch: at) {
                 CheckDetailField(label: "Recorded") {
-                    Text(ago).workFont(.dataSmall).foregroundStyle(Theme.muted)
+                    Text(recorded).workFont(.dataSmall).foregroundStyle(Theme.muted)
                 }
             }
             if let files = check.files, !files.isEmpty {
@@ -1856,7 +1828,7 @@ struct RecordGapsCard: View {
         if !items.isEmpty {
             Card(padding: Space.xl) {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("Gaps (\(items.count)) — what could not be proven")
+                    Text("Receipt limitations (\(items.count))")
                         .workFont(.titleCard).foregroundStyle(Theme.ink)
                         .accessibilityAddTraits(.isHeader)
                     Rectangle().fill(Theme.hairline).frame(height: 1).padding(.vertical, Space.m)
@@ -1902,7 +1874,7 @@ struct RecordSourcesCard: View {
                             Rectangle().fill(Theme.hairline).frame(height: 1)
                         }
                         HStack(alignment: .top, spacing: Space.m) {
-                            Text(source).workFont(.rowLabel).foregroundStyle(Theme.ink)
+                            Text(receiptSourceLabel(source)).workFont(.rowLabel).foregroundStyle(Theme.ink)
                                 .frame(width: 96, alignment: .leading)
                             Text(legend[source] ?? "recorded on this receipt")
                                 .workFont(.caption).foregroundStyle(Theme.muted)

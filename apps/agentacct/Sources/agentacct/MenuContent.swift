@@ -32,16 +32,21 @@ struct MenuContent: View {
         VStack(alignment: .leading, spacing: 0) {
             switch state.phase {
             case .connecting:
-                waitingView("Connecting to the agentacct daemon…")
+                waitingView("Connecting to agentacct…")
                     .padding(14)
             case .disconnected(let reason):
                 disconnectedView(reason: reason)
                     .padding(14)
             case .incompatible(let message):
-                Label(message, systemImage: "exclamationmark.triangle.fill")
-                    .font(Type.caption)
-                    .foregroundStyle(Theme.amber)
-                    .padding(14)
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Update required", systemImage: "exclamationmark.triangle.fill")
+                        .font(Type.captionSemibold)
+                    Text("The app and local service use different data versions. Update agentacct, then reopen the app.")
+                        .font(Type.caption)
+                }
+                .foregroundStyle(Theme.amber)
+                .padding(14)
+                .help(message)
             case .connected(let snapshot):
                 menuBody {
                     connectedView(snapshot: snapshot)
@@ -92,20 +97,20 @@ struct MenuContent: View {
 
     private func disconnectedView(reason: String) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            Label("Daemon not reachable", systemImage: "bolt.slash.fill")
+            Label("agentacct is not running", systemImage: "bolt.slash.fill")
                 .font(Type.captionSemibold)
                 .foregroundStyle(Theme.muted)
-            Text(reason)
+            Text("Start the local service, then refresh.")
                 .font(Type.caption)
                 .foregroundStyle(Theme.muted)
-                .lineLimit(2)
-            Text("agentacct start")
+            Text("In Terminal: agentacct start")
                 .font(Type.dataSmall)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(Theme.chipBg, in: RoundedRectangle(cornerRadius: Metrics.radius))
         }
         .padding(.vertical, 6)
+        .help(reason)
     }
 
     // MARK: connected
@@ -139,7 +144,7 @@ struct MenuContent: View {
                         ProgressView().controlSize(.mini)
                             .accessibilityLabel("Refreshing")
                     } else if let updated = state.lastUpdated {
-                        Text("Updated \(lastUpdatedTextOverride ?? dashboardFreshnessText(updated))")
+                        Text("Refreshed \(lastUpdatedTextOverride ?? dashboardFreshnessText(updated))")
                             .font(Type.dataSmall)
                             .foregroundStyle(Theme.muted)
                     }
@@ -163,7 +168,7 @@ struct MenuContent: View {
                         Text(primary.sourceLabel)
                             .lineLimit(1)
                         Spacer(minLength: 8)
-                        Text(primary.resetText.map { "Resets in \($0)" } ?? "Reset not reported")
+                        Text(primary.resetText ?? "Reset time not reported")
                             .layoutPriority(1)
                     }
                     .font(Type.caption)
@@ -179,7 +184,7 @@ struct MenuContent: View {
                             .foregroundStyle(Theme.muted)
                     }
                     MenuLimitMeter(usedPercent: nil)
-                    Text(limits.hasStaleLimits ? "Live 7-day usage is stale" : "No live 7-day limit was reported")
+                    Text(limits.hasStaleLimits ? "Current 7-day limit unavailable; an older reading exists" : "No current 7-day limit was reported")
                         .font(Type.caption)
                         .foregroundStyle(Theme.muted)
                 }
@@ -196,7 +201,7 @@ struct MenuContent: View {
     private func heroAccessibilityLabel(_ primary: MenuLimitItem?) -> String {
         let limit: String
         if let primary {
-            let reset = primary.resetText.map { ", resets in \($0)" } ?? ", reset not reported"
+            let reset = primary.resetText.map { ", \($0.lowercased())" } ?? ", reset time not reported"
             limit = "Weekly limit, \(primary.percentageText) used, \(primary.sourceLabel)\(reset)"
         } else {
             limit = "Weekly limit unavailable"
@@ -205,7 +210,7 @@ struct MenuContent: View {
             return "\(limit), refreshing"
         }
         guard let updated = state.lastUpdated else { return limit }
-        return "\(limit), updated \(lastUpdatedTextOverride ?? dashboardFreshnessText(updated))"
+        return "\(limit), refreshed \(lastUpdatedTextOverride ?? dashboardFreshnessText(updated))"
     }
 
     private func usageLedger(_ usage: MenuUsagePresentation) -> some View {
@@ -214,7 +219,7 @@ struct MenuContent: View {
                 SectionCaption(text: "Tracked usage")
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
-                Text("fresh tokens")
+                Text("non-cached tokens")
                     .font(Type.caption)
                     .foregroundStyle(Theme.muted)
             }
@@ -248,7 +253,7 @@ struct MenuContent: View {
             }
 
             if let legend = usage.legendText {
-                Text("Client-token pricing · \(legend)")
+                Text("Estimated from client token counts · \(legend)")
                     .font(Type.caption)
                     .foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -258,8 +263,8 @@ struct MenuContent: View {
 
     private func usageAccessibilityLabel(_ row: MenuUsageRow) -> String {
         let tokens = row.tokenText == "Not reported"
-            ? "fresh tokens not reported"
-            : "\(row.tokenText) fresh tokens"
+            ? "non-cached tokens not reported"
+            : "\(row.tokenText) non-cached tokens"
         return "\(row.label), \(row.costText), \(tokens)"
     }
 
@@ -299,7 +304,7 @@ struct MenuContent: View {
                         }
                         HStack(spacing: 8) {
                             MenuLimitMeter(usedPercent: item.usedPercent)
-                            Text(item.resetText.map { "Resets in \($0)" } ?? "Reset not reported")
+                            Text(item.resetText ?? "Reset time not reported")
                                 .font(Type.dataSmall)
                                 .foregroundStyle(Theme.muted)
                                 .fixedSize()
@@ -317,7 +322,7 @@ struct MenuContent: View {
     }
 
     private func limitAccessibilityLabel(_ item: MenuLimitItem) -> String {
-        let reset = item.resetText.map { "resets in \($0)" } ?? "reset not reported"
+        let reset = item.resetText?.lowercased() ?? "reset time not reported"
         return "\(item.sourceLabel), \(item.percentageText) used, \(reset)"
     }
 
@@ -331,18 +336,18 @@ struct MenuContent: View {
                 SectionCaption(text: "Recent sessions")
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
-                Text("last 6 hours")
+                Text("Past 6 hours")
                     .font(Type.caption)
                     .foregroundStyle(Theme.muted)
                 if hiddenCount > 0 {
-                    Button("+\(hiddenCount) in Work") {
+                    Button("Open Work") {
                         openMain(selecting: .work)
                     }
                     .buttonStyle(QuietButtonStyle(horizontalPadding: 3, verticalPadding: 0))
                     .font(Type.captionSemibold)
                     .foregroundStyle(Theme.accent)
                     .frame(minHeight: 28)
-                    .accessibilityHint("Opens all recent sessions")
+                    .accessibilityHint("Opens Work receipts")
                     .accessibilityIdentifier("menu.sessions-more")
                 }
             }
@@ -414,7 +419,8 @@ struct MenuContent: View {
     }
 
     private func sessionMetadata(_ session: RecentSession) -> String {
-        [session.shortSessionId, statusLabel(session.status), agoText(session.lastActivityAt)]
+        [statusLabel(session.status),
+         agoText(session.lastActivityAt).map { "Activity \($0)" }]
             .compactMap { $0 }
             .joined(separator: " · ")
     }
@@ -423,9 +429,9 @@ struct MenuContent: View {
         let title = session.title ?? "\(MenuLimitPresentation.clientLabel(session.client)) session"
         return [
             title,
-            session.shortSessionId,
+            MenuLimitPresentation.clientLabel(session.client),
             statusLabel(session.status),
-            agoText(session.lastActivityAt),
+            agoText(session.lastActivityAt).map { "Activity \($0)" },
             session.planPctText.map { "\($0) plan share" },
         ]
             .compactMap { $0 }
@@ -453,7 +459,7 @@ struct MenuContent: View {
             Button {
                 openMain(selecting: nil)
             } label: {
-                Label("Open", systemImage: "macwindow")
+                Label("Open agentacct", systemImage: "macwindow")
                     .font(Type.captionSemibold)
                     .foregroundStyle(Theme.accent)
             }

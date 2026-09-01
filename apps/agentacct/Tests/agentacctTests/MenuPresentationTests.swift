@@ -103,7 +103,7 @@ final class MenuPresentationTests: XCTestCase {
 
         XCTAssertEqual(
             presentation.summary,
-            "Claude Code session share calibrating · 9/24 intervals"
+            "Claude Code weekly estimate is being prepared · 9 of 24 time periods"
         )
         XCTAssertTrue(presentation.detail?.contains("stable intervals") == true)
     }

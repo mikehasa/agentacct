@@ -129,11 +129,11 @@ final class UsageCapacityTests: XCTestCase {
 
         XCTAssertEqual(statuses[0], "0% used")
         XCTAssertEqual(statuses[1], "75% used · at attention threshold")
-        XCTAssertEqual(statuses[2], "90% used · high attention")
+        XCTAssertEqual(statuses[2], "90% used · near limit")
         XCTAssertEqual(statuses[3], "100% used · limit reached")
         XCTAssertEqual(statuses[4], "127% used · limit exceeded")
         XCTAssertEqual(statuses[5], "Invalid provider percentage (-5%)")
-        XCTAssertEqual(statuses[6], "Used percent not reported")
+        XCTAssertEqual(statuses[6], "Usage percent not reported")
     }
 
     func testWindowSpanHandlesZeroAndOutOfRangeValuesWithoutTrapping() throws {
@@ -144,31 +144,29 @@ final class UsageCapacityTests: XCTestCase {
         {"kind":"custom","window_minutes":1.7976931348623157e308}
         """)
 
-        XCTAssertEqual(LimitWindowPresentation(window: zero, stale: false).spanText, "0m span")
-        XCTAssertEqual(LimitWindowPresentation(window: huge, stale: false).spanText, "Invalid span")
+        XCTAssertEqual(LimitWindowPresentation(window: zero, stale: false).spanText, "0 min span")
+        XCTAssertEqual(LimitWindowPresentation(window: huge, stale: false).spanText, "Span unavailable")
     }
 
     @MainActor
-    func testResetCopyDoesNotClaimAReportedPastResetOccurred() throws {
+    func testResetCopyKeepsMissingFuturePastAndExtremeValuesDistinct() throws {
         SnapshotMode.setFixtureDate(Date(timeIntervalSince1970: 2_000))
         defer { SnapshotMode.setFixtureDate(nil) }
-        let window = try decode(LimitWindow.self, from: """
-        {"kind":"7d","used_percent":50,"resets_at":1000}
+        let windows = try decode([LimitWindow].self, from: """
+        [
+          {"kind":"7d","used_percent":50},
+          {"kind":"7d","used_percent":50,"resets_at":2030},
+          {"kind":"7d","used_percent":50,"resets_at":1000},
+          {"kind":"7d","used_percent":50,"resets_at":1.7976931348623157e308}
+        ]
         """)
 
-        let text = LimitWindowPresentation(window: window, stale: false).resetText
+        let texts = windows.map { LimitWindowPresentation(window: $0, stale: false).resetText }
 
-        XCTAssertTrue(text.hasPrefix("Reported reset passed "))
-        XCTAssertFalse(text.contains("Resets today"))
-    }
-
-    func testResetClockUsesAnUnambiguousTwentyFourHourTime() {
-        let date = Date(timeIntervalSince1970: 1_788_184_000)
-
-        XCTAssertEqual(
-            usageResetClockText(date, timeZone: TimeZone(secondsFromGMT: 0)!),
-            "13:46"
-        )
+        XCTAssertEqual(texts[0], "Reset time not reported")
+        XCTAssertEqual(texts[1], "Resets in <1 min")
+        XCTAssertTrue(texts[2].hasPrefix("Reported reset time passed "))
+        XCTAssertEqual(texts[3], "Reset time is invalid")
     }
 
     func testAccessibilitySummaryDistinguishesMissingValuesFromObservedZero() throws {
@@ -185,7 +183,7 @@ final class UsageCapacityTests: XCTestCase {
 
         XCTAssertTrue(try XCTUnwrap(summaries["missing"]).contains("tokens not reported"))
         XCTAssertTrue(try XCTUnwrap(summaries["missing"]).contains("sessions not reported"))
-        XCTAssertTrue(try XCTUnwrap(summaries["zero"]).contains("0 fresh tokens"))
+        XCTAssertTrue(try XCTUnwrap(summaries["zero"]).contains("0 non-cached tokens"))
         XCTAssertTrue(try XCTUnwrap(summaries["zero"]).contains("0 sessions"))
     }
 
@@ -254,7 +252,7 @@ final class UsageCapacityTests: XCTestCase {
 
         let presentation = UsagePlanPresentation(client: client, days: 7)
 
-        XCTAssertTrue(presentation.detailText.contains("0 of 3 clean intervals observed"))
+        XCTAssertTrue(presentation.detailText.contains("0 of 3 usable time periods recorded"))
         XCTAssertFalse(presentation.detailText.contains("44"))
         XCTAssertFalse(presentation.detailText.contains("88"))
         XCTAssertNil(presentation.dailyText)

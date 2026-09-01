@@ -34,10 +34,10 @@ final class MenuSnapshotHarnessTests: XCTestCase {
     }
 
     private let expectedArtifacts = [
-        ExpectedArtifact(filename: "menu-connected-sparse-light.png", pixelsWide: 720, pixelsHigh: 880),
-        ExpectedArtifact(filename: "menu-connected-sparse-dark.png", pixelsWide: 720, pixelsHigh: 880),
-        ExpectedArtifact(filename: "menu-connected-dense-light.png", pixelsWide: 720, pixelsHigh: 928),
-        ExpectedArtifact(filename: "menu-connected-dense-dark.png", pixelsWide: 720, pixelsHigh: 928),
+        ExpectedArtifact(filename: "menu-connected-sparse-light.png", pixelsWide: 720, pixelsHigh: 970),
+        ExpectedArtifact(filename: "menu-connected-sparse-dark.png", pixelsWide: 720, pixelsHigh: 970),
+        ExpectedArtifact(filename: "menu-connected-dense-light.png", pixelsWide: 720, pixelsHigh: 958),
+        ExpectedArtifact(filename: "menu-connected-dense-dark.png", pixelsWide: 720, pixelsHigh: 958),
     ]
 
     @MainActor

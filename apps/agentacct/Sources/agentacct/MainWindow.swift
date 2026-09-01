@@ -179,12 +179,12 @@ struct TopBar: View {
                 let freshness = dashboardFreshnessText(updated)
                 HStack(spacing: 5) {
                     Circle().fill(Theme.green).frame(width: 5, height: 5)
-                    Text("Local data · \(freshness)")
+                    Text("Local data · refreshed \(freshness)")
                 }
                 .workFont(.dataSmall)
                 .foregroundStyle(Theme.muted)
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("Local data updated \(freshness)")
+                .accessibilityLabel("Local data refreshed \(freshness)")
             }
             ZStack {
                 if showsRefreshProgress {
@@ -424,25 +424,13 @@ func joinTint(_ state: String?) -> Color {
 }
 
 func durationText(_ seconds: Double) -> String {
-    let total = Int(seconds)
-    let hours = total / 3600
-    let minutes = (total % 3600) / 60
-    if hours > 0 { return "\(hours)h \(minutes)m" }
-    return "\(minutes)m"
+    TemporalText.recordedSpan(seconds: seconds) ?? "time unavailable"
 }
 
 func agoText(_ epoch: Double?) -> String? {
-    guard let epoch, epoch > 0 else { return nil }
-    let delta = SnapshotMode.currentDate.timeIntervalSince1970 - epoch
-    guard delta >= 0 else { return nil }
-    let total = Int(delta)
-    if total < 60 { return "\(total)s ago" }
-    if total < 3600 { return "\(total / 60)m ago" }
-    if total < 86400 { return "\(total / 3600)h ago" }
-    return "\(total / 86400)d ago"
+    TemporalText.age(epoch: epoch)
 }
 
 func dashboardFreshnessText(_ date: Date) -> String {
-    guard let text = agoText(date.timeIntervalSince1970) else { return "time unavailable" }
-    return text == "0s ago" ? "just now" : text
+    agoText(date.timeIntervalSince1970) ?? "time unavailable"
 }
