@@ -12,6 +12,11 @@ enum SnapshotRunner {
         // wait on the main thread would deadlock the very actor doing the
         // rendering.
         SnapshotMode.enabled = true
+        // These docs screenshots run on whatever machine builds the app, not the
+        // pinned golden toolchain, so draw native button chrome as static
+        // primitives. The fixture renderers (golden path) deliberately do NOT set
+        // this, keeping their references pixel-stable.
+        SnapshotMode.rendersStaticControls = true
         var finished = false
         Task { @MainActor in
             defer { finished = true }
@@ -91,6 +96,30 @@ enum SnapshotRunner {
                         to: out.appendingPathComponent("window-work-table-\(suffix).png")
                     )
                     selection.taskId = recordTaskId
+
+                    // A WIDE Work render: the receipt's adaptive two-column
+                    // layout (record detail + evidence side rail: coverage,
+                    // sources, gaps) only appears past the side-by-side width
+                    // breakpoint. The 1120 all-pane width stacks those columns,
+                    // so render the flagship record once more at a wide window
+                    // for the README hero. Same record, wider canvas.
+                    selection.pane = .work
+                    // The Work pane's body is a GeometryReader, which takes the
+                    // proposed height rather than growing to its content (the
+                    // record detail is a full-height ScrollBox in snapshot mode).
+                    // Propose a tall canvas so the whole record — summary strip,
+                    // the two-column dimensions + evidence rail, and Sessions &
+                    // steps — renders; the docs pipeline trims trailing canvas.
+                    let wideWork = MainWindow()
+                        .environment(glance)
+                        .environment(dashboard)
+                        .environment(selection)
+                        .frame(width: 1520, height: 2600, alignment: .top)
+                        .environment(\.colorScheme, scheme)
+                    try SnapshotImageWriter.render(
+                        wideWork,
+                        to: out.appendingPathComponent("window-work-wide-\(suffix).png")
+                    )
 
                     let menu = MenuContent()
                         .environment(glance)

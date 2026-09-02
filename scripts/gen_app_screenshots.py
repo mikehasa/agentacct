@@ -34,18 +34,32 @@ OUT = REPO_ROOT / "docs" / "assets"
 APP_BIN = REPO_ROOT / "apps" / "agentacct" / ".build" / "agentacct.app" / "Contents" / "MacOS" / "agentacct"
 
 # Curated: the light-mode panes we surface in the README, renamed for the docs.
+# The simple panes are copied 1:1; the Work Receipt hero and the Sessions & steps
+# shot are cropped out of one wide, tall Work render (WIDE_CROPS below).
 CURATE = {
     "window-work-table-light.png": "app-work-table.png",
-    "window-work-light.png": "app-work-receipt.png",
     "window-dashboard-light.png": "app-dashboard.png",
     "window-usage-light.png": "app-usage.png",
-    "window-sources-light.png": "app-sources.png",
 }
 
-# The record page renders its full height (summary strip through the session
-# drill-down — several thousand px). The README wants the record HEADER story
-# (title, strip, dimensions, checks, coverage); crop before framing.
-CROP_TOP_PX = {"app-work-receipt.png": 2906}
+# The Work Receipt is the README hero. SnapshotRunner renders the flagship record
+# once more at a WIDE, tall canvas (window-work-wide-light.png) so the receipt's
+# adaptive two-column layout — record detail on the left, the evidence side rail
+# (coverage · sources · gaps) on the right — is visible, with the full Sessions &
+# steps drill-down below it. We crop two docs assets out of that one render.
+# Regions are (left, top, right, bottom) in device pixels; None means the render's
+# own edge. These pin the deterministic demo layout — if the demo store or the
+# Work pane layout changes materially, re-measure them (the raw render is kept in
+# SHOTS_TMP for exactly that).
+WIDE_SRC = "window-work-wide-light.png"
+WIDE_CROPS = {
+    # Hero: summary strip + the two-column Receipt dimensions / evidence rail,
+    # ending at the dimensions card (before the standalone Checks card).
+    "app-work-receipt.png": (0, 0, None, 2830),
+    # "The work, not just the tokens": the Sessions & steps drill-down, detail
+    # column only (right of the master-list divider at 368 pt · 2 + 1 px).
+    "app-work-sessions-steps.png": (738, 3712, None, 5185),
+}
 
 sys.path.insert(0, str(REPO_ROOT / "src"))
 from agentacct.client_usage import ClientUsageEvent  # noqa: E402
@@ -490,6 +504,10 @@ def main():
             daemon.kill()
 
     OUT.mkdir(parents=True, exist_ok=True)
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from frame_screenshots import frame
+    from PIL import Image
+
     curated = []
     for src_name, dst_name in CURATE.items():
         src = SHOTS_TMP / src_name
@@ -498,20 +516,26 @@ def main():
             continue
         shutil.copyfile(src, OUT / dst_name)
         curated.append(dst_name)
+
+    # Crop the Work Receipt hero and the Sessions & steps shot out of the wide
+    # render (see WIDE_CROPS). Cropping the region, then framing, makes each read
+    # like its own window in the docs.
+    wide_path = SHOTS_TMP / WIDE_SRC
+    if wide_path.exists():
+        wide = Image.open(wide_path)
+        for dst_name, (left, top, right, bottom) in WIDE_CROPS.items():
+            box = (left, top, wide.width if right is None else right,
+                   wide.height if bottom is None else bottom)
+            wide.crop(box).save(OUT / dst_name)
+            curated.append(dst_name)
+    else:
+        print(f"  WARNING: missing {WIDE_SRC} (hero + sessions shots)")
     print(f"curated -> {OUT}: {', '.join(curated)}")
 
-    # Wrap each curated pane in the macOS window chrome (frame_screenshots.py is
+    # Wrap each curated asset in the macOS window chrome (frame_screenshots.py is
     # a sibling in scripts/, on sys.path when this runs as a script).
     print("framing in the macOS window chrome…")
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from frame_screenshots import frame
-    from PIL import Image
     for name in curated:
-        crop_px = CROP_TOP_PX.get(name)
-        if crop_px:
-            img = Image.open(OUT / name)
-            if img.height > crop_px:
-                img.crop((0, 0, img.width, crop_px)).save(OUT / name)
         frame(OUT / name)
 
     print(f"(all raw panes light+dark are in {SHOTS_TMP})")

@@ -1170,6 +1170,17 @@ enum SnapshotMode {
     /// position. Legacy all-pane screenshots retain their existing full-content
     /// behavior until each pane has its own review viewport.
     nonisolated(unsafe) static var boundsScrollContentToViewport = false
+
+    /// Draw the interactive AppKit control chrome (bordered/prominent `Button`,
+    /// SF Symbol labels inside them) as static primitives instead of the real
+    /// controls. SwiftUI's offscreen `ImageRenderer` only paints native button
+    /// chrome on the pinned golden toolchain (macOS 26); on other versions those
+    /// controls collapse to an unrendered fill with dropped labels. The README
+    /// all-pane `--snapshot` path (`SnapshotRunner`) sets this so its docs
+    /// screenshots render faithfully on any host. The live app and the pinned
+    /// fixture renderers leave it `false` and keep the real interactive controls
+    /// — so the golden references are unchanged.
+    nonisolated(unsafe) static var rendersStaticControls = false
 }
 
 struct ScrollBox<Content: View>: View {
