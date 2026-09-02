@@ -179,7 +179,12 @@ def test_ended_open_is_inferred_and_never_claims_completion() -> None:
     assert decision["asserted_by"] == "inferred"
     assert "inferred" in decision["statement"].lower()
     assert "complet" not in decision["statement"].lower() or "not a recorded completion" in decision["statement"].lower()
-    assert receipt["dimensions"]["outcome"]["provenance"] == ["inferred"]
+    outcome_dim = receipt["dimensions"]["outcome"]
+    assert outcome_dim["provenance"] == ["inferred"]
+    # The quiet detail-line timestamps are only for inactive / mostly_done; on any
+    # other key (here ended_open) they are present-but-None, never a stray fact.
+    assert outcome_dim["quiet_since"] is None
+    assert outcome_dim["newer_session_started_at"] is None
 
 
 def test_inactive_is_inferred_and_never_claims_completion() -> None:
@@ -194,9 +199,17 @@ def test_inactive_is_inferred_and_never_claims_completion() -> None:
             {"work_id": "b", "latest_status": "checkpoint", "updated_at": 100.0},
         ]
     )
-    quiet_now = 100.0 + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
+    # The 48h + newer-session rule: a distinct session began at 160.0 (after this
+    # Task's newest event at 100.0) and the store kept working past the buffer.
+    newer_session_start = 160.0
+    session_starts = {"elsewhere": newer_session_start}
+    quiet_now = newer_session_start + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
     receipt = build_receipt(
-        task, public_task_id="task_x", title="t", latest_store_activity_at=quiet_now
+        task,
+        public_task_id="task_x",
+        title="t",
+        latest_store_activity_at=quiet_now,
+        session_starts=session_starts,
     )
     decision = receipt["axes"]["decision_status"]
     assert decision["key"] == "inactive"
@@ -209,8 +222,18 @@ def test_inactive_is_inferred_and_never_claims_completion() -> None:
     outcome_dim = receipt["dimensions"]["outcome"]
     assert outcome_dim["provenance"] == ["inferred"]
     assert any("No terminal outcome" in gap for gap in outcome_dim["gaps"])
+    # The factual detail-line timestamps ride the outcome dimension on inactive:
+    # quiet_since = when this Task fell silent; newer_session_started_at = the
+    # newer session's start. Facts for the app to render, never a completion claim.
+    assert outcome_dim["quiet_since"] == 100.0
+    assert outcome_dim["newer_session_started_at"] == newer_session_start
     # Inactive is a calm downgrade, not an attention item.
-    assert build_attention_reason(task, latest_store_activity_at=quiet_now) is None
+    assert (
+        build_attention_reason(
+            task, latest_store_activity_at=quiet_now, session_starts=session_starts
+        )
+        is None
+    )
 
 
 def test_resumed_task_receipt_shows_no_handoff_marker() -> None:

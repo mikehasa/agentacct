@@ -62,12 +62,18 @@ def test_inactive_outcome_axis_is_not_collapsed_and_carries_its_statement() -> N
             {"work_id": "w2", "latest_status": "checkpoint", "updated_at": 100.0},
         ],
     }
-    quiet_now = 100.0 + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
+    # The new rule needs a genuinely NEWER session (not this Task's own) plus the
+    # store running >= 48h past its start. This Task's newest event is 100.0; a
+    # distinct session began at 160.0 and the store kept working long past it.
+    newer_session_start = 160.0
+    session_starts = {"elsewhere": newer_session_start}
+    quiet_now = newer_session_start + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
     result = build_task_intelligence(
         task,
         public_task_id="task_" + "1" * 32,
         title="Inactive",
         latest_store_activity_at=quiet_now,
+        session_starts=session_starts,
     )
     assert result["states"]["outcome"]["key"] == "inactive"
     statement = result["decision_brief"]["outcome_statement"].lower()

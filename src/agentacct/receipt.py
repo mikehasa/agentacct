@@ -53,6 +53,7 @@ from .task_outcome import (
     step_evidence_grade,
     step_verification_counts,
     task_newest_event_at,
+    task_session_starts,
 )
 
 
@@ -593,10 +594,15 @@ def _decision_status(
     task: Mapping[str, Any],
     *,
     latest_store_activity_at: float | None,
+    session_starts: Mapping[str, float] | None = None,
     canonical: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if canonical is None:
-        canonical = reduce_task_outcome(task, latest_store_activity_at=latest_store_activity_at)
+        canonical = reduce_task_outcome(
+            task,
+            latest_store_activity_at=latest_store_activity_at,
+            session_starts=session_starts,
+        )
     key = _text(canonical.get("key")) or "observed"
 
     # Refine ``failed`` out of ``blocked`` at the Receipt layer without changing
@@ -925,6 +931,7 @@ def _outcome_dimension(
     verification: Mapping[str, Any],
     decision_brief: Mapping[str, Any],
     checks: list[Mapping[str, Any]],
+    canonical: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     asserted_by = _text(decision.get("asserted_by")) or "none"
     gaps: list[str] = []
@@ -933,7 +940,7 @@ def _outcome_dimension(
     # as a gap, never a settled result.
     if decision.get("key") in {"in_progress", "observed", "unknown", "inactive"}:
         gaps.append("No terminal outcome has been recorded for this Task yet.")
-    return {
+    dimension: dict[str, Any] = {
         "decision_status": decision.get("key"),
         "statement": decision.get("statement"),
         "asserted_by": asserted_by,
@@ -947,6 +954,20 @@ def _outcome_dimension(
         "provenance": [_asserted_by_source(asserted_by, checks)],
         "gaps": gaps,
     }
+    # Detail-line facts (#3), surfaced ONLY when the Task went quiet
+    # (inactive / mostly_done): ``quiet_since`` = this Task's newest event (when it
+    # fell silent), ``newer_session_started_at`` = the newer session's start the
+    # went-quiet predicate keyed off. Null on every other outcome. These are
+    # factual timestamps, never a completion claim — the app renders a "quiet since
+    # …" sub-line from them, nothing more.
+    source = canonical if isinstance(canonical, Mapping) else {}
+    if decision.get("key") in {"inactive", "mostly_done"}:
+        dimension["quiet_since"] = source.get("quiet_since")
+        dimension["newer_session_started_at"] = source.get("newer_session_started_at")
+    else:
+        dimension["quiet_since"] = None
+        dimension["newer_session_started_at"] = None
+    return dimension
 
 
 # --- Roll-ups (dimensions 7 & 8) ---------------------------------------------
@@ -1076,6 +1097,7 @@ def build_receipt(
     control: Mapping[str, Any] | None = None,
     timeline_limit: int = 50,
     latest_store_activity_at: float | None = None,
+    session_starts: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     """Project one enriched Task into a canonical ``agentacct.receipt.v1``.
 
@@ -1094,13 +1116,21 @@ def build_receipt(
         control=control,
         timeline_limit=timeline_limit,
         latest_store_activity_at=latest_store_activity_at,
+        session_starts=session_starts,
     )
     verification = step_verification_counts(task)
     checks = _project_checks(task)
     evidence_strength = _evidence_strength(task, checks, verification)
-    canonical = reduce_task_outcome(task, latest_store_activity_at=latest_store_activity_at)
+    canonical = reduce_task_outcome(
+        task,
+        latest_store_activity_at=latest_store_activity_at,
+        session_starts=session_starts,
+    )
     decision = _decision_status(
-        task, latest_store_activity_at=latest_store_activity_at, canonical=canonical
+        task,
+        latest_store_activity_at=latest_store_activity_at,
+        session_starts=session_starts,
+        canonical=canonical,
     )
     handoff = _handoff_marker(canonical)
     decision_brief = _mapping(intelligence.get("decision_brief"))
@@ -1111,7 +1141,9 @@ def build_receipt(
         "actions": _actions_dimension(task),
         "cost": _cost_dimension(task),
         "evidence": _evidence_dimension(checks, evidence_strength),
-        "outcome": _outcome_dimension(decision, verification, decision_brief, checks),
+        "outcome": _outcome_dimension(
+            decision, verification, decision_brief, checks, canonical
+        ),
     }
     coverage = intelligence.get("coverage") if isinstance(intelligence.get("coverage"), list) else []
     # Roll both meta-dimensions up over ONLY the six content dimensions, before
@@ -1162,6 +1194,7 @@ def build_receipt_summary(
     public_task_id: str,
     title: str,
     latest_store_activity_at: float | None = None,
+    session_starts: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     """A compact Receipt row for a task LIST — the two axes plus cost/activity.
 
@@ -1173,9 +1206,16 @@ def build_receipt_summary(
     verification = step_verification_counts(task)
     checks = _project_checks(task)
     evidence_strength = _evidence_strength(task, checks, verification)
-    canonical = reduce_task_outcome(task, latest_store_activity_at=latest_store_activity_at)
+    canonical = reduce_task_outcome(
+        task,
+        latest_store_activity_at=latest_store_activity_at,
+        session_starts=session_starts,
+    )
     decision = _decision_status(
-        task, latest_store_activity_at=latest_store_activity_at, canonical=canonical
+        task,
+        latest_store_activity_at=latest_store_activity_at,
+        session_starts=session_starts,
+        canonical=canonical,
     )
     usage = _mapping(task.get("usage"))
     return {
@@ -1234,6 +1274,7 @@ def build_attention_reason(
     task: Mapping[str, Any],
     *,
     latest_store_activity_at: float | None = None,
+    session_starts: Mapping[str, float] | None = None,
 ) -> tuple[int, dict[str, Any]] | None:
     """Return the operational attention class and its truthful leading reason.
 
@@ -1247,7 +1288,11 @@ def build_attention_reason(
 
     from .finding_disposition import finding_target_digest
 
-    canonical = reduce_task_outcome(task, latest_store_activity_at=latest_store_activity_at)
+    canonical = reduce_task_outcome(
+        task,
+        latest_store_activity_at=latest_store_activity_at,
+        session_starts=session_starts,
+    )
     episodes = task.get("finding_episodes") if isinstance(task.get("finding_episodes"), list) else []
     disposition_by_digest = {
         str(episode.get("target_digest")): _text(episode.get("disposition_state")) or "open"
@@ -1324,6 +1369,7 @@ def build_attention_reason(
     decision = _decision_status(
         task,
         latest_store_activity_at=latest_store_activity_at,
+        session_starts=session_starts,
         canonical=canonical,
     )
     key = _text(decision.get("key"))
@@ -1357,6 +1403,28 @@ def latest_store_activity(tasks: list[Mapping[str, Any]]) -> float | None:
     return newest or None
 
 
+def session_start_index(tasks: list[Mapping[str, Any]]) -> dict[str, float]:
+    """Each session's START (earliest event timestamp) across the whole store.
+
+    The sibling of ``latest_store_activity``: computed once by the caller that
+    already holds every Task and threaded into ``reduce_task_outcome`` /
+    ``build_receipt*`` as ``session_starts``. It maps ``client_session_id`` to the
+    MINIMUM of that session's earliest event timestamp seen in any Task (a session
+    may contribute work items / checks to more than one Task projection). Sessions'
+    ``last_activity_at`` is a latest, not a start, so it is never used — see
+    ``task_session_starts``. The went-quiet predicate uses this to require a
+    genuinely NEWER session before it downgrades a Task."""
+
+    starts: dict[str, float] = {}
+    for task in tasks:
+        if not isinstance(task, Mapping):
+            continue
+        for session_id, start in task_session_starts(task).items():
+            if session_id not in starts or start < starts[session_id]:
+                starts[session_id] = start
+    return starts
+
+
 __all__ = [
     "V1_ATTENTION_SCHEMA_VERSION",
     "RECEIPT_SCHEMA_VERSION",
@@ -1368,4 +1436,5 @@ __all__ = [
     "evidence_coverage_headline",
     "evidence_coverage_ledger",
     "latest_store_activity",
+    "session_start_index",
 ]

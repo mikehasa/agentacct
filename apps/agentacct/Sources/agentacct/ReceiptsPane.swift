@@ -82,6 +82,28 @@ func assertedByLabel(_ raw: String?) -> String? {
     }
 }
 
+/// Builds the verbatim Outcome-row text for the Receipt DETAIL: the daemon's
+/// decision word + who asserted it, the honest statement quoted beneath, and —
+/// only when the daemon attached them (the `inactive`/`mostly_done` keys) — one
+/// factual sub-line naming when the Task went quiet and when a newer session
+/// started. The app is a pure renderer: it never derives the honesty logic, it
+/// only shows the timestamps the daemon already decided to attach. `quietSince`
+/// absent means "no quiet fact", never a completion signal.
+func receiptOutcomeSummary(_ dim: ReceiptOutcomeDim) -> String {
+    var line = "\(dim.decisionStatus ?? "unknown") · \(assertedByLabel(dim.assertedBy) ?? "unattested")"
+    if let statement = dim.statement, !statement.isEmpty {
+        line += "\n“\(statement)”"
+    }
+    if let quietSince = dim.quietSince, let quietAgo = agoText(quietSince) {
+        var sub = "Quiet since \(quietAgo)"
+        if let newer = dim.newerSessionStartedAt, let newerAgo = agoText(newer) {
+            sub += " · a newer session started \(newerAgo)"
+        }
+        line += "\n\(sub)"
+    }
+    return line
+}
+
 /// Renders only check tallies that the receipt actually carries. A missing
 /// total is named explicitly so an older or partial payload never reads as a
 /// measured zero.
@@ -1014,12 +1036,7 @@ struct RecordDimensionsCard: View {
     }
 
     private var outcomeSummary: String {
-        let dim = receipt.dimensions.outcome
-        var line = "\(dim.decisionStatus ?? "unknown") · \(assertedByLabel(dim.assertedBy) ?? "unattested")"
-        if let statement = dim.statement, !statement.isEmpty {
-            line += "\n“\(statement)”"
-        }
-        return line
+        receiptOutcomeSummary(receipt.dimensions.outcome)
     }
 }
 

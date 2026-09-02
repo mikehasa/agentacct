@@ -1381,7 +1381,11 @@ class ReceiptsScreen(Screen):
         app = self.app
         try:
             from .api import build_store_task_projection, _task_title
-            from .receipt import build_receipt_summary, latest_store_activity
+            from .receipt import (
+                build_receipt_summary,
+                latest_store_activity,
+                session_start_index,
+            )
 
             projection = build_store_task_projection(app.store_dir)
             tasks = [
@@ -1390,6 +1394,7 @@ class ReceiptsScreen(Screen):
                 if isinstance(task, dict) and str(task.get("public_task_id") or "")
             ]
             latest = latest_store_activity(tasks)
+            starts = session_start_index(tasks)
             tasks.sort(key=lambda task: float(task.get("last_activity_at") or 0.0), reverse=True)
             rows = [
                 (
@@ -1399,6 +1404,7 @@ class ReceiptsScreen(Screen):
                         public_task_id=str(task.get("public_task_id")),
                         title=_task_title(task),
                         latest_store_activity_at=latest,
+                        session_starts=starts,
                     ),
                 )
                 for task in tasks[:_RECEIPTS_LIMIT]
@@ -1488,13 +1494,18 @@ class ReceiptDetailScreen(Screen):
         with VerticalScroll(id="detail-scroll"):
             try:
                 from .api import _task_title
-                from .receipt import build_receipt, latest_store_activity
+                from .receipt import (
+                    build_receipt,
+                    latest_store_activity,
+                    session_start_index,
+                )
 
                 receipt = build_receipt(
                     self._task_record,
                     public_task_id=str(self._task_record.get("public_task_id")),
                     title=_task_title(self._task_record),
                     latest_store_activity_at=latest_store_activity([self._task_record]),
+                    session_starts=session_start_index([self._task_record]),
                 )
                 markup = _render_receipt_markup(receipt)
             except Exception as exc:  # noqa: BLE001 - surface, never crash the screen.

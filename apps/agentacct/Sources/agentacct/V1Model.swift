@@ -1450,12 +1450,21 @@ struct ReceiptOutcomeDim: Decodable {
     let assertedBy: String?
     let provenance: [String]?
     let gaps: [String]?
+    // Facts the daemon attaches only when the decision is `inactive`/`mostly_done`:
+    // when this Task last recorded an event, and the start of the newer session
+    // the daemon keyed its "went quiet elsewhere" inference off. Epoch seconds,
+    // matching every other timestamp field in the app. Present-but-None on every
+    // other decision key; older payloads omit them entirely (additive, tolerated).
+    let quietSince: Double?
+    let newerSessionStartedAt: Double?
 
     enum CodingKeys: String, CodingKey {
         case decisionStatus = "decision_status"
         case statement
         case assertedBy = "asserted_by"
         case provenance, gaps
+        case quietSince = "quiet_since"
+        case newerSessionStartedAt = "newer_session_started_at"
     }
 }
 

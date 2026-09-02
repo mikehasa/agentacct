@@ -277,6 +277,37 @@ def _multi_task(items: list[dict[str, Any]]) -> dict[str, Any]:
     return {"work_items": items, "task_evidence_events": [], "sessions": [], "usage": {"rows": 0}}
 
 
+# The 48h + newer-session rule needs BOTH a genuinely newer session (one not
+# belonging to this Task, started strictly after it went quiet) AND the store's
+# latest activity to postdate that new session's start by the buffer. These
+# helpers build exactly that trigger so the went-quiet fixtures stay honest.
+_ELSEWHERE_SID = "elsewhere-session"
+
+
+def _newer_session_start(
+    task: dict[str, Any], *, after: float = 60.0, sid: str = _ELSEWHERE_SID
+) -> dict[str, float]:
+    """A distinct, genuinely-newer session that began ``after`` seconds past this
+    Task's newest event — the first-new-session trigger the 48h rule requires."""
+
+    return {sid: task_newest_event_at(task) + after}
+
+
+def _quiet_kwargs(
+    task: dict[str, Any], *, after: float = 60.0, sid: str = _ELSEWHERE_SID
+) -> dict[str, Any]:
+    """Reducer kwargs that put ``task`` past the went-quiet-elsewhere threshold: a
+    genuinely newer session started just after it went quiet, and the store's
+    latest activity is at least the 48h buffer past THAT new session's start."""
+
+    starts = _newer_session_start(task, after=after, sid=sid)
+    newer = min(starts.values())
+    return {
+        "latest_store_activity_at": newer + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0,
+        "session_starts": starts,
+    }
+
+
 def test_handed_off_step_is_a_clean_terminal_not_in_progress_or_verified() -> None:
     # DECISION 1: a handed_off latest status is terminal. Before the fix
     # reduce_task_outcome had no handed_off branch, so an all-handed_off Task
@@ -307,11 +338,9 @@ def test_completed_task_left_behind_by_later_elsewhere_activity_is_mostly_done()
             _step("checkpoint", updated_at=_NOW),
         ]
     )
-    later_elsewhere = (
-        task_newest_event_at(task) + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
-    )
+    quiet = _quiet_kwargs(task)
 
-    outcome = reduce_task_outcome(task, latest_store_activity_at=later_elsewhere)
+    outcome = reduce_task_outcome(task, **quiet)
     assert outcome["key"] == "mostly_done"
     assert outcome["open_step_count"] == 1
     # The open step stays open in the data; the Task is never called finished.
@@ -321,7 +350,7 @@ def test_completed_task_left_behind_by_later_elsewhere_activity_is_mostly_done()
         task,
         public_task_id="task_left_behind",
         title="Left behind",
-        latest_store_activity_at=later_elsewhere,
+        **quiet,
     )
     assert detail["states"]["outcome"]["key"] == "mostly_done"
     assert "not a claim the Task is finished" in detail["decision_brief"]["outcome_statement"]
@@ -347,18 +376,25 @@ def test_old_task_with_no_later_activity_anywhere_stays_in_progress() -> None:
 
 
 def test_elsewhere_activity_within_buffer_stays_in_progress() -> None:
-    # The buffer must be respected: later activity elsewhere only a couple of
-    # hours after this Task froze is a normal pause, not "left behind".
+    # The buffer must be respected: a genuinely newer session began, but the store
+    # kept working only a couple of hours past THAT new session's start — a normal
+    # pause, not "left behind".
     task = _multi_task(
         [
             _step("completed", updated_at=_NOW),
             _step("checkpoint", updated_at=_NOW),
         ]
     )
-    only_two_hours_later = task_newest_event_at(task) + 2 * 60 * 60
-    assert only_two_hours_later < task_newest_event_at(task) + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS
+    starts = _newer_session_start(task, after=60.0)
+    newer = min(starts.values())
+    only_two_hours_later = newer + 2 * 60 * 60
+    assert only_two_hours_later < newer + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS
     assert (
-        reduce_task_outcome(task, latest_store_activity_at=only_two_hours_later)["key"]
+        reduce_task_outcome(
+            task,
+            latest_store_activity_at=only_two_hours_later,
+            session_starts=starts,
+        )["key"]
         == "in_progress"
     )
 
@@ -375,16 +411,20 @@ def test_all_terminal_steps_do_not_read_in_progress_even_with_handoff() -> None:
 
 def test_genuinely_live_task_reads_in_progress() -> None:
     # Guard against over-correction (DECISION 3a): a genuinely live Task (recent,
-    # with no >24h-later activity elsewhere) stays "in progress". Here the store
-    # is actively in use but the latest activity is well within the buffer.
+    # with no newer session that then ran on past the buffer) stays "in progress".
+    # Here a newer session exists but the store's latest activity is only 30 min
+    # past its start — well within the buffer.
     task = _multi_task(
         [
             _step("completed", updated_at=_NOW),
             _step("checkpoint", updated_at=_NOW),
         ]
     )
-    live_store = task_newest_event_at(task) + 30 * 60  # 30 min later, still live
-    outcome = reduce_task_outcome(task, latest_store_activity_at=live_store)
+    starts = _newer_session_start(task, after=60.0)
+    live_store = min(starts.values()) + 30 * 60  # 30 min past the new session
+    outcome = reduce_task_outcome(
+        task, latest_store_activity_at=live_store, session_starts=starts
+    )
     assert outcome["key"] == "in_progress"
 
 
@@ -396,11 +436,8 @@ def test_open_steps_without_any_completed_step_read_inactive_when_quiet() -> Non
     task = _multi_task(
         [_step("started", updated_at=_NOW), _step("checkpoint", updated_at=_NOW)]
     )
-    far_later_elsewhere = (
-        task_newest_event_at(task) + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
-    )
 
-    outcome = reduce_task_outcome(task, latest_store_activity_at=far_later_elsewhere)
+    outcome = reduce_task_outcome(task, **_quiet_kwargs(task))
     assert outcome["key"] == "inactive"
     assert outcome["key"] not in {"mostly_done", "verified", "reported"}
     assert outcome["went_quiet"] is True
@@ -443,14 +480,11 @@ def test_no_task_is_labeled_finished_or_verified_without_evidence() -> None:
     left_behind = _multi_task(
         [_step("completed", updated_at=_NOW), _step("started", updated_at=_NOW)]
     )
-    later_elsewhere = (
-        task_newest_event_at(left_behind) + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
-    )
     completed_no_check = _multi_task([_step("completed"), _step("completed")])
 
     assert reduce_task_outcome(handed_off)["key"] not in {"verified"}
     left_behind_outcome = reduce_task_outcome(
-        left_behind, latest_store_activity_at=later_elsewhere
+        left_behind, **_quiet_kwargs(left_behind)
     )
     assert left_behind_outcome["key"] == "mostly_done"  # the left-behind partial
     assert left_behind_outcome["key"] not in {"verified", "reported_done"}
@@ -751,7 +785,7 @@ def test_inactive_fires_for_open_nothing_finished_and_quiet_elsewhere() -> None:
     # (a) The core case: open steps, nothing recorded finished, and the store
     # demonstrably kept working elsewhere past the threshold -> inactive.
     task = _open_only_task()
-    outcome = reduce_task_outcome(task, latest_store_activity_at=_quiet_after(task))
+    outcome = reduce_task_outcome(task, **_quiet_kwargs(task))
     assert outcome["key"] == "inactive"
     # Never a completion/verification claim.
     assert outcome["key"] not in {"verified", "reported", "mostly_done", "resolved"}
@@ -764,29 +798,37 @@ def test_completed_step_plus_quiet_is_mostly_done_not_inactive() -> None:
     task = _multi_task(
         [_step("completed", updated_at=_NOW), _step("checkpoint", updated_at=_NOW)]
     )
-    outcome = reduce_task_outcome(task, latest_store_activity_at=_quiet_after(task))
+    outcome = reduce_task_outcome(task, **_quiet_kwargs(task))
     assert outcome["key"] == "mostly_done"
     assert outcome["went_quiet"] is True
 
 
 def test_open_only_within_threshold_stays_in_progress() -> None:
-    # (c) Later activity elsewhere but UNDER the threshold is a normal pause, not
-    # abandonment — stays in_progress.
+    # (c) A newer session began, but the store kept working only 2h past its start
+    # — UNDER the 48h buffer — so it is a normal pause, not abandonment.
     task = _open_only_task()
-    within = task_newest_event_at(task) + 2 * 60 * 60
-    assert within < task_newest_event_at(task) + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS
-    outcome = reduce_task_outcome(task, latest_store_activity_at=within)
+    starts = _newer_session_start(task, after=60.0)
+    newer = min(starts.values())
+    within = newer + 2 * 60 * 60
+    assert within < newer + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS
+    outcome = reduce_task_outcome(
+        task, latest_store_activity_at=within, session_starts=starts
+    )
     assert outcome["key"] == "in_progress"
     assert outcome["went_quiet"] is False
 
 
 def test_open_only_that_is_store_latest_never_reads_inactive() -> None:
-    # (d) When this Task IS the store's latest activity (nothing later happened
-    # anywhere), the strict '>' is False, so it can never retire itself — an
-    # abandoned crash with nothing after it honestly stays in_progress.
+    # (d) When this Task IS the store's latest activity (no session began strictly
+    # after it), there is no newer session, so it can never retire itself — an
+    # abandoned crash with nothing after it honestly stays in_progress. A session
+    # that starts at the SAME instant (a tie, not strictly after) does not count.
     task = _open_only_task()
     latest = task_newest_event_at(task)
-    outcome = reduce_task_outcome(task, latest_store_activity_at=latest)
+    starts = {"elsewhere-session": latest}  # tie, not strictly newer
+    outcome = reduce_task_outcome(
+        task, latest_store_activity_at=latest, session_starts=starts
+    )
     assert outcome["key"] == "in_progress"
     assert outcome["went_quiet"] is False
 
@@ -799,28 +841,58 @@ def test_open_only_with_no_store_signal_stays_in_progress() -> None:
     assert reduce_task_outcome(task)["went_quiet"] is False
 
 
+def test_open_only_with_no_session_index_stays_in_progress() -> None:
+    # (e') A store 'now' far past the Task, but NO session-start index supplied:
+    # the new rule cannot prove a newer session began, so it never fires. Silence
+    # (a weekend, an idle stretch) with no new session must keep the Task active.
+    task = _open_only_task()
+    far_now = task_newest_event_at(task) + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
+    outcome = reduce_task_outcome(task, latest_store_activity_at=far_now)
+    assert outcome["key"] == "in_progress"
+    assert outcome["went_quiet"] is False
+    # Even with an index that holds ONLY this Task's own (older) session, there is
+    # no genuinely newer session -> still in_progress.
+    own_only = {"elsewhere-session": task_newest_event_at(task) - 10.0}
+    assert (
+        reduce_task_outcome(
+            task, latest_store_activity_at=far_now, session_starts=own_only
+        )["key"]
+        == "in_progress"
+    )
+
+
 def test_open_only_with_zero_task_timestamps_stays_in_progress() -> None:
     # (f) Missing / zero task timestamps guard the arithmetic off — a Task whose
     # newest event is 0.0 can never be judged left behind, even under a huge
-    # store 'now'.
+    # store 'now' AND a genuinely newer session.
     task = _multi_task(
         [_step("started", updated_at=0.0), _step("checkpoint", updated_at=0.0)]
     )
     assert task_newest_event_at(task) == 0.0
     huge_now = _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS * 100
-    assert reduce_task_outcome(task, latest_store_activity_at=huge_now)["key"] == "in_progress"
+    starts = {"elsewhere-session": 10.0}
+    assert (
+        reduce_task_outcome(
+            task, latest_store_activity_at=huge_now, session_starts=starts
+        )["key"]
+        == "in_progress"
+    )
 
 
 def test_future_dated_task_event_skew_never_retires_the_task() -> None:
-    # (g) Clock skew: a Task event dated FAR in the future means it equals/exceeds
-    # any store 'now', so the strict '>' is False — skew can only KEEP a Task
-    # active, never falsely retire it.
+    # (g) Clock skew: a Task event dated FAR in the future means no session can
+    # start strictly after it, so there is no newer session — skew can only KEEP a
+    # Task active, never falsely retire it.
     future = _NOW + 10 * _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS
     task = _multi_task(
         [_step("started", updated_at=future), _step("checkpoint", updated_at=future)]
     )
-    # A store 'now' that predates the skewed task event.
-    outcome = reduce_task_outcome(task, latest_store_activity_at=_NOW)
+    # A newer-looking session at _NOW is still BEFORE the skewed task event, and a
+    # store 'now' that predates the skewed task event.
+    starts = {"elsewhere-session": _NOW}
+    outcome = reduce_task_outcome(
+        task, latest_store_activity_at=_NOW, session_starts=starts
+    )
     assert outcome["key"] == "in_progress"
     assert outcome["went_quiet"] is False
 
@@ -857,17 +929,135 @@ def test_inactive_is_deterministic_across_identical_reads() -> None:
     # (k) Two reads with the SAME store timestamps give the SAME key — the whole
     # point of comparing against a stored store 'now', never the wall clock.
     task = _open_only_task()
-    now = _quiet_after(task)
-    first = reduce_task_outcome(task, latest_store_activity_at=now)
-    second = reduce_task_outcome(task, latest_store_activity_at=now)
+    quiet = _quiet_kwargs(task)
+    first = reduce_task_outcome(task, **quiet)
+    second = reduce_task_outcome(task, **quiet)
     assert first["key"] == second["key"] == "inactive"
 
 
 def test_task_went_quiet_elsewhere_predicate_edge_cases() -> None:
-    # The shared predicate directly: guards resolve toward NOT firing.
+    # The shared predicate directly, on the new (task, latest, session_starts)
+    # signature: every guard resolves toward NOT firing.
     task = _open_only_task()
-    assert task_went_quiet_elsewhere(task, _quiet_after(task)) is True
-    assert task_went_quiet_elsewhere(task, None) is False
-    assert task_went_quiet_elsewhere(task, task_newest_event_at(task)) is False
+    quiet = _quiet_kwargs(task)
+    starts = quiet["session_starts"]
+    latest = quiet["latest_store_activity_at"]
+    newer = min(starts.values())
+
+    # Fires: a genuinely newer distinct session AND the store ran >= 48h past it.
+    assert task_went_quiet_elsewhere(task, latest, starts) is True
+
+    # No session index at all -> False (single-Task read / not plumbed).
+    assert task_went_quiet_elsewhere(task, latest) is False
+    assert task_went_quiet_elsewhere(task, latest, None) is False
+    assert task_went_quiet_elsewhere(task, latest, {}) is False
+
+    # No store 'now' -> False.
+    assert task_went_quiet_elsewhere(task, None, starts) is False
+
+    # A newer session exists, but the store's latest is only 1s past it (< 48h).
+    just_after = newer + 1.0
+    assert task_went_quiet_elsewhere(task, just_after, starts) is False
+
+    # Exactly 48h past the newer session's start -> the boundary is inclusive.
+    at_boundary = newer + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS
+    assert task_went_quiet_elsewhere(task, at_boundary, starts) is True
+
+    # No qualifying newer session (only a same-instant tie / an older session).
+    tie = {"elsewhere-session": task_newest_event_at(task)}
+    assert task_went_quiet_elsewhere(task, latest, tie) is False
+    older = {"elsewhere-session": task_newest_event_at(task) - 100.0}
+    assert task_went_quiet_elsewhere(task, latest, older) is False
+
+    # This Task's newest event is zero -> False even under a huge 'now'.
     zero = _multi_task([_step("started", updated_at=0.0)])
-    assert task_went_quiet_elsewhere(zero, _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS * 100) is False
+    assert (
+        task_went_quiet_elsewhere(
+            zero,
+            _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS * 100,
+            {"elsewhere-session": 10.0},
+        )
+        is False
+    )
+
+    # A newer session that BELONGS to this Task (same client_session_id) never
+    # counts as "elsewhere".
+    own = _multi_task(
+        [_sitem("started", _NOW, sid="mine"), _sitem("checkpoint", _NOW, sid="mine")]
+    )
+    own_later = {"mine": task_newest_event_at(own) + 60.0}
+    own_latest = min(own_later.values()) + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
+    assert task_went_quiet_elsewhere(own, own_latest, own_later) is False
+
+
+def test_reducer_48h_boundary_for_inactive() -> None:
+    # The reducer honours the exact 48h boundary, measured FROM the newer session's
+    # start: 47h59m past it stays in_progress, exactly 48h flips to inactive.
+    task = _open_only_task()
+    starts = _newer_session_start(task, after=60.0)
+    newer = min(starts.values())
+    just_under = newer + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS - 60.0
+    assert (
+        reduce_task_outcome(
+            task, latest_store_activity_at=just_under, session_starts=starts
+        )["key"]
+        == "in_progress"
+    )
+    at_boundary = newer + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS
+    assert (
+        reduce_task_outcome(
+            task, latest_store_activity_at=at_boundary, session_starts=starts
+        )["key"]
+        == "inactive"
+    )
+
+
+def test_reducer_same_task_later_session_never_reads_inactive() -> None:
+    # A LATER session that is THIS Task's own (same client_session_id) is not a
+    # "newer session elsewhere" — the Task simply continued, so it stays active.
+    task = _multi_task(
+        [_sitem("started", _NOW, sid="mine"), _sitem("checkpoint", _NOW, sid="mine")]
+    )
+    later = {"mine": task_newest_event_at(task) + 60.0}
+    latest = min(later.values()) + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
+    outcome = reduce_task_outcome(
+        task, latest_store_activity_at=latest, session_starts=later
+    )
+    assert outcome["key"] == "in_progress"
+    assert outcome["went_quiet"] is False
+
+
+def test_quiet_timestamps_present_on_inactive_and_mostly_done() -> None:
+    # The two factual detail-line timestamps ride the outcome dict ONLY on the
+    # went-quiet keys. quiet_since = this Task's newest event; newer_session_started_at
+    # = the first newer session's start the predicate keyed off. Never a
+    # completion claim, just facts.
+    inactive_task = _open_only_task()
+    quiet = _quiet_kwargs(inactive_task)
+    inactive = reduce_task_outcome(inactive_task, **quiet)
+    assert inactive["key"] == "inactive"
+    assert inactive["quiet_since"] == task_newest_event_at(inactive_task)
+    assert inactive["newer_session_started_at"] == min(quiet["session_starts"].values())
+
+    mostly_task = _multi_task(
+        [_step("completed", updated_at=_NOW), _step("checkpoint", updated_at=_NOW)]
+    )
+    mquiet = _quiet_kwargs(mostly_task)
+    mostly = reduce_task_outcome(mostly_task, **mquiet)
+    assert mostly["key"] == "mostly_done"
+    assert mostly["quiet_since"] == task_newest_event_at(mostly_task)
+    assert mostly["newer_session_started_at"] == min(mquiet["session_starts"].values())
+
+
+def test_quiet_timestamps_absent_or_none_on_other_keys() -> None:
+    # in_progress and terminal keys carry the fields as None (never a stray
+    # timestamp that a surface could misread as a quiet/abandoned signal).
+    live = reduce_task_outcome(_open_only_task())
+    assert live["key"] == "in_progress"
+    assert live["quiet_since"] is None
+    assert live["newer_session_started_at"] is None
+
+    reported = reduce_task_outcome(_multi_task([_step("completed"), _step("completed")]))
+    assert reported["key"] == "reported"
+    assert reported["quiet_since"] is None
+    assert reported["newer_session_started_at"] is None
