@@ -1176,6 +1176,9 @@ def _receipt_decision_color(key: str) -> str:
         "reported": "yellow",
         "mostly_done": "yellow",
         "in_progress": "yellow",
+        # A quiet, non-alarming, non-green tint: inactive is an inferred downgrade
+        # of "In progress", never a completion — so it must not read green.
+        "inactive": "blue",
         "handed_off": "blue",
         "resolved": "blue",
         "finding_superseded": "blue",

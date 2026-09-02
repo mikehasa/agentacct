@@ -129,6 +129,7 @@ def _state_axes(
             "resolved",
             "handed_off",
             "ended_open",
+            "inactive",
             "mostly_done",
         }
         else "unknown"
@@ -182,6 +183,7 @@ def _decision_brief(
         "reported": "The agent reported completing work; no check verifies the completion claim itself.",
         "handed_off": "The work was cleanly handed off (continued elsewhere or in a new session); this is a deliberate stop, not a completed or verified outcome.",
         "ended_open": "The session ended with a step still open; agentacct inferred a stop from the session-end event — this is not a recorded completion or a deliberate handoff.",
+        "inactive": "This Task has open steps, nothing recorded as finished, and work has since continued elsewhere in the store; agentacct inferred it went quiet — this is not a completion and not a stated stop.",
         "mostly_done": "Recorded steps completed while one or more were left open without a terminal record; this is not a claim the Task is finished.",
         "unknown": "agentacct observed this Task but no outcome was recorded.",
     }[outcome]

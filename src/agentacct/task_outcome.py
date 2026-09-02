@@ -31,6 +31,12 @@ _HANDED_OFF_STATUS = "handed_off"
 # against a DETERMINISTIC store timestamp, never the wall clock, so the state
 # cannot flip between two reads at a time boundary. It only ever downgrades "in
 # progress" to an equally honest partial state; it never infers completion.
+#
+# This is the SINGLE knob for "the store went quiet on this Task": it governs BOTH
+# ``mostly_done`` (open steps + at least one completed step) AND ``inactive`` (open
+# steps + NOTHING finished). Both split on the exact same predicate
+# (``task_went_quiet_elsewhere``), so the two states share one boundary and can
+# never disagree about the middle zone. Owner's 24–48h range is this one line.
 _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS = 24 * 60 * 60
 
 # --- Per-step evidence grade (M2) --------------------------------------------
@@ -432,6 +438,38 @@ def task_newest_event_at(task: Mapping[str, Any]) -> float:
     return max(candidates, default=0.0)
 
 
+def task_went_quiet_elsewhere(
+    task: Mapping[str, Any], latest_store_activity_at: float | None
+) -> bool:
+    """Did the store DEMONSTRABLY keep working elsewhere long after this Task froze?
+
+    The ONE deterministic predicate behind both the ``mostly_done`` split (open
+    steps + a completed step) and the ``inactive`` split (open steps + nothing
+    finished). Keeping it a single named helper is deliberate: it guarantees the
+    two states can never drift onto different boundaries and open an inconsistent
+    middle zone.
+
+    True only when the store's own latest activity postdates this Task's newest
+    event by more than ``_LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS``. It is compared
+    against a DETERMINISTIC store timestamp (``latest_store_activity_at``), never
+    the wall clock, so the answer cannot flip between two reads at a time
+    boundary. Every edge case resolves toward NOT firing, so silence / skew can
+    only ever KEEP a Task active, never falsely retire it:
+
+      * ``latest_store_activity_at is None`` (single-Task read / not plumbed) -> False.
+      * this Task's newest event is missing or zero -> False.
+      * this Task IS the store's latest activity (equal to the global max) -> the
+        strict ``>`` is False, so a live/frontier Task never trips its own rule.
+    """
+
+    if latest_store_activity_at is None:
+        return False
+    newest = task_newest_event_at(task)
+    if newest <= 0.0:
+        return False
+    return latest_store_activity_at > newest + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS
+
+
 def reduce_task_outcome(
     task: Mapping[str, Any], *, latest_store_activity_at: float | None = None
 ) -> dict[str, Any]:
@@ -673,6 +711,11 @@ def reduce_task_outcome(
             "handoff_current": handoff_current,
             **step_counts,
         }
+    # ``went_quiet`` rides the returned dict so surfaces can render a factual
+    # "quiet since <task_newest_event_at>" sub-line without re-deriving it. It is
+    # only meaningful on the open-step branch (mostly_done / inactive); every
+    # other terminal/non-open key leaves it at the honest default of False.
+    went_quiet = False
     if statuses and any(status == _RESOLVED_STATUS for status in statuses) and all(
         status in _SUCCESS_STATUSES or status == _RESOLVED_STATUS
         for status in statuses
@@ -700,27 +743,31 @@ def reduce_task_outcome(
         # receipt). Never fabricates ``completed``.
         key = "ended_open"
     elif open_step_count:
-        # DECISION 3a: one un-closed step must not drag a mostly-finished Task to
-        # plain "in progress" — but silence is NOT evidence of abandonment. The
-        # open step stays open in the DATA; we only summarise the Task honestly.
-        # A frozen open Task flips to "mostly done" ONLY when at least one step
-        # actually completed AND the user demonstrably kept working ELSEWHERE in
-        # the store afterward: the store's latest activity postdates this Task's
-        # newest event by more than ``_LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS``. If
-        # nothing later happened anywhere (the user was merely away), or this Task
-        # IS the store's latest activity, it stays "in progress" no matter how old
-        # — we never infer abandonment from absence. Fully deterministic from
+        # DECISION 3a / inactive: one un-closed step must not drag a Task to plain
+        # "in progress" when the store has DEMONSTRABLY moved on elsewhere — but
+        # silence is NOT evidence of abandonment. The open step stays open in the
+        # DATA; we only summarise the Task honestly. Both downgrades split on the
+        # ONE deterministic ``task_went_quiet_elsewhere`` predicate (the store's
+        # latest activity postdates this Task's newest event by more than
+        # ``_LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS``), so they share one boundary:
+        #   * quiet AND a completed step -> ``mostly_done`` (some work landed).
+        #   * quiet AND nothing finished  -> ``inactive`` (open, nothing proven,
+        #     work continued elsewhere — agentacct INFERRED it went quiet; a
+        #     downgrade of a possibly-misleading "In progress", never a completion
+        #     or verification claim, provenance ``inferred``).
+        #   * otherwise                   -> ``in_progress``.
+        # If nothing later happened anywhere (the user was merely away), or this
+        # Task IS the store's latest activity, it stays "in progress" no matter how
+        # old — we never infer abandonment from absence. Fully deterministic from
         # stored data (no wall clock), so the state cannot flip between reads.
         has_completed_step = any(status in _SUCCESS_STATUSES for status in statuses)
-        this_task_newest_event_at = task_newest_event_at(task)
-        left_behind = (
-            has_completed_step
-            and latest_store_activity_at is not None
-            and this_task_newest_event_at > 0.0
-            and latest_store_activity_at
-            > this_task_newest_event_at + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS
-        )
-        key = "mostly_done" if left_behind else "in_progress"
+        went_quiet = task_went_quiet_elsewhere(task, latest_store_activity_at)
+        if went_quiet and has_completed_step:
+            key = "mostly_done"
+        elif went_quiet:
+            key = "inactive"
+        else:
+            key = "in_progress"
     elif not items:
         key = "observed"
     else:
@@ -832,6 +879,9 @@ def reduce_task_outcome(
         "max_work_updated_at": max_work_updated_at,
         "open_step_count": open_step_count,
         "handoff_current": handoff_current,
+        # True only when this Task went quiet elsewhere (drives inactive /
+        # mostly_done); a factual sub-line signal, never a completion claim.
+        "went_quiet": went_quiet,
         **step_counts,
     }
 
@@ -844,6 +894,7 @@ __all__ = [
     "latest_check_events",
     "latest_task_checks",
     "task_newest_event_at",
+    "task_went_quiet_elsewhere",
     "reduce_task_outcome",
     "EVIDENCE_GRADE_RANK",
     "GRADE_NONE",

@@ -44,6 +44,40 @@ def _task() -> dict[str, object]:
     }
 
 
+def test_inactive_outcome_axis_is_not_collapsed_and_carries_its_statement() -> None:
+    # inactive is in the outcome allowlist (not silently collapsed to 'unknown')
+    # and the decision brief carries the inferred 'went quiet' statement.
+    from agentacct.task_outcome import _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS
+
+    task = {
+        "primary_root": {"client": "claude-code", "client_session_id": "root"},
+        "root_keys": [{"client": "claude-code", "client_session_id": "root"}],
+        "sessions": [
+            {"client": "claude-code", "client_session_id": "root", "last_activity_at": 100.0}
+        ],
+        "usage": {"rows": 0},
+        "models": [],
+        "work_items": [
+            {"work_id": "w1", "latest_status": "started", "updated_at": 100.0},
+            {"work_id": "w2", "latest_status": "checkpoint", "updated_at": 100.0},
+        ],
+    }
+    quiet_now = 100.0 + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
+    result = build_task_intelligence(
+        task,
+        public_task_id="task_" + "1" * 32,
+        title="Inactive",
+        latest_store_activity_at=quiet_now,
+    )
+    assert result["states"]["outcome"]["key"] == "inactive"
+    statement = result["decision_brief"]["outcome_statement"].lower()
+    assert "inferred" in statement
+    assert "went quiet" in statement
+    # Open steps mean execution still reads running; only the outcome axis carries
+    # 'inactive' (the two axes stay decoupled).
+    assert result["states"]["execution"]["key"] == "running"
+
+
 def test_decision_brief_keeps_finding_separate_from_control_failure() -> None:
     result = build_task_intelligence(_task(), public_task_id="task_" + "1" * 32, title="Feature")
 

@@ -115,6 +115,10 @@ _DECISION_ASSERTED_BY: dict[str, str] = {
     # Inferred by agentacct from an ambient SessionEnd event — the weakest
     # provenance, deliberately NOT agent_report (the agent never said this).
     "ended_open": "inferred",
+    # Inferred by agentacct from the store moving on elsewhere while this Task's
+    # open steps recorded nothing finished — the same weakest provenance as
+    # ended_open (agentacct's own inference), never a completion or a stated stop.
+    "inactive": "inferred",
     "in_progress": "agent_report",
     "observed": "none",
     "unknown": "none",
@@ -144,6 +148,10 @@ _DECISION_STATEMENTS: dict[str, str] = {
         "The session ended with this step still open; agentacct inferred a stop from the session-end "
         "event — not a recorded completion or a deliberate handoff."
     ),
+    "inactive": (
+        "This Task has open steps, nothing recorded as finished, and work has since continued elsewhere "
+        "in the store — agentacct inferred it went quiet. Not a completion, and not a stated stop."
+    ),
     "mostly_done": "Recorded steps completed while one or more were left open; not a claim the Task is finished.",
     "in_progress": "This Task is still in progress.",
     "observed": "agentacct observed this Task but no outcome was recorded.",
@@ -154,6 +162,9 @@ _DECISION_STATEMENTS: dict[str, str] = {
 _DECISION_LABELS: dict[str, str] = {
     "finding_resolved_by_user": "Finding resolved",
     "blocker_resolved_by_user": "Blocker resolved",
+    # Mechanical Title Case already yields "Inactive"; pinned so every surface
+    # reads the daemon's one word and the label never drifts.
+    "inactive": "Inactive",
 }
 
 _SUCCESS_STATUSES = {"completed", "passed", "resolved"}
@@ -917,7 +928,10 @@ def _outcome_dimension(
 ) -> dict[str, Any]:
     asserted_by = _text(decision.get("asserted_by")) or "none"
     gaps: list[str] = []
-    if decision.get("key") in {"in_progress", "observed", "unknown"}:
+    # ``inactive`` joins the non-terminal set: agentacct inferred the Task went
+    # quiet, but nothing finished — so it still owes a terminal outcome and reads
+    # as a gap, never a settled result.
+    if decision.get("key") in {"in_progress", "observed", "unknown", "inactive"}:
         gaps.append("No terminal outcome has been recorded for this Task yet.")
     return {
         "decision_status": decision.get("key"),

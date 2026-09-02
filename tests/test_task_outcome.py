@@ -13,6 +13,7 @@ from agentacct.task_outcome import (
     reduce_task_outcome,
     step_verification_counts,
     task_newest_event_at,
+    task_went_quiet_elsewhere,
 )
 
 
@@ -387,10 +388,11 @@ def test_genuinely_live_task_reads_in_progress() -> None:
     assert outcome["key"] == "in_progress"
 
 
-def test_open_steps_without_any_completed_step_stay_in_progress() -> None:
-    # Conservative: "mostly done" requires at least one completed step. A Task
-    # with only open steps and nothing finished is never "mostly done" — even
-    # when the user kept working far elsewhere long afterward.
+def test_open_steps_without_any_completed_step_read_inactive_when_quiet() -> None:
+    # inactive: only open steps, NOTHING finished, and the store demonstrably kept
+    # working far elsewhere long afterward. This is never "mostly done" (that needs
+    # a completed step); it is the honest inferred "went quiet" downgrade of a
+    # possibly-misleading "In progress" — never a completion claim.
     task = _multi_task(
         [_step("started", updated_at=_NOW), _step("checkpoint", updated_at=_NOW)]
     )
@@ -398,10 +400,11 @@ def test_open_steps_without_any_completed_step_stay_in_progress() -> None:
         task_newest_event_at(task) + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
     )
 
-    assert (
-        reduce_task_outcome(task, latest_store_activity_at=far_later_elsewhere)["key"]
-        == "in_progress"
-    )
+    outcome = reduce_task_outcome(task, latest_store_activity_at=far_later_elsewhere)
+    assert outcome["key"] == "inactive"
+    assert outcome["key"] not in {"mostly_done", "verified", "reported"}
+    assert outcome["went_quiet"] is True
+    assert outcome["open_step_count"] == 2
 
 
 def test_partial_verification_counts_are_exposed_and_correct() -> None:
@@ -728,3 +731,143 @@ def test_non_blocked_outcomes_carry_no_blocker_detail() -> None:
         outcome = reduce_task_outcome(_task(status=status))
         assert outcome["key"] != "blocked"
         assert outcome["blocker"] is None
+
+
+# --- inactive: open + nothing finished + the store moved on ELSEWHERE ----------
+
+
+def _open_only_task() -> dict[str, Any]:
+    # Open steps, NOTHING finished — the population the inactive split governs.
+    return _multi_task(
+        [_step("started", updated_at=_NOW), _step("checkpoint", updated_at=_NOW)]
+    )
+
+
+def _quiet_after(task: dict[str, Any]) -> float:
+    return task_newest_event_at(task) + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
+
+
+def test_inactive_fires_for_open_nothing_finished_and_quiet_elsewhere() -> None:
+    # (a) The core case: open steps, nothing recorded finished, and the store
+    # demonstrably kept working elsewhere past the threshold -> inactive.
+    task = _open_only_task()
+    outcome = reduce_task_outcome(task, latest_store_activity_at=_quiet_after(task))
+    assert outcome["key"] == "inactive"
+    # Never a completion/verification claim.
+    assert outcome["key"] not in {"verified", "reported", "mostly_done", "resolved"}
+    assert outcome["went_quiet"] is True
+
+
+def test_completed_step_plus_quiet_is_mostly_done_not_inactive() -> None:
+    # (b) With at least one completed step, the SAME quiet signal reads
+    # mostly_done, not inactive — the split is only on has_completed_step.
+    task = _multi_task(
+        [_step("completed", updated_at=_NOW), _step("checkpoint", updated_at=_NOW)]
+    )
+    outcome = reduce_task_outcome(task, latest_store_activity_at=_quiet_after(task))
+    assert outcome["key"] == "mostly_done"
+    assert outcome["went_quiet"] is True
+
+
+def test_open_only_within_threshold_stays_in_progress() -> None:
+    # (c) Later activity elsewhere but UNDER the threshold is a normal pause, not
+    # abandonment — stays in_progress.
+    task = _open_only_task()
+    within = task_newest_event_at(task) + 2 * 60 * 60
+    assert within < task_newest_event_at(task) + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS
+    outcome = reduce_task_outcome(task, latest_store_activity_at=within)
+    assert outcome["key"] == "in_progress"
+    assert outcome["went_quiet"] is False
+
+
+def test_open_only_that_is_store_latest_never_reads_inactive() -> None:
+    # (d) When this Task IS the store's latest activity (nothing later happened
+    # anywhere), the strict '>' is False, so it can never retire itself — an
+    # abandoned crash with nothing after it honestly stays in_progress.
+    task = _open_only_task()
+    latest = task_newest_event_at(task)
+    outcome = reduce_task_outcome(task, latest_store_activity_at=latest)
+    assert outcome["key"] == "in_progress"
+    assert outcome["went_quiet"] is False
+
+
+def test_open_only_with_no_store_signal_stays_in_progress() -> None:
+    # (e) latest_store_activity_at omitted (single-Task read / not plumbed): the
+    # inference has no store 'now' to compare against and never fires.
+    task = _open_only_task()
+    assert reduce_task_outcome(task)["key"] == "in_progress"
+    assert reduce_task_outcome(task)["went_quiet"] is False
+
+
+def test_open_only_with_zero_task_timestamps_stays_in_progress() -> None:
+    # (f) Missing / zero task timestamps guard the arithmetic off — a Task whose
+    # newest event is 0.0 can never be judged left behind, even under a huge
+    # store 'now'.
+    task = _multi_task(
+        [_step("started", updated_at=0.0), _step("checkpoint", updated_at=0.0)]
+    )
+    assert task_newest_event_at(task) == 0.0
+    huge_now = _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS * 100
+    assert reduce_task_outcome(task, latest_store_activity_at=huge_now)["key"] == "in_progress"
+
+
+def test_future_dated_task_event_skew_never_retires_the_task() -> None:
+    # (g) Clock skew: a Task event dated FAR in the future means it equals/exceeds
+    # any store 'now', so the strict '>' is False — skew can only KEEP a Task
+    # active, never falsely retire it.
+    future = _NOW + 10 * _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS
+    task = _multi_task(
+        [_step("started", updated_at=future), _step("checkpoint", updated_at=future)]
+    )
+    # A store 'now' that predates the skewed task event.
+    outcome = reduce_task_outcome(task, latest_store_activity_at=_NOW)
+    assert outcome["key"] == "in_progress"
+    assert outcome["went_quiet"] is False
+
+
+def test_blocked_and_finding_win_over_would_be_inactive() -> None:
+    # (h) blocked / finding early-return before the open-step branch: a blocked or
+    # failing open Task can never be relabeled inactive — blocked stays blocked.
+    blocked = _multi_task([_step("blocked", updated_at=_NOW), _step("started", updated_at=_NOW)])
+    assert reduce_task_outcome(blocked, latest_store_activity_at=_quiet_after(blocked))["key"] == "blocked"
+
+    finding = _open_only_task()
+    finding["task_evidence_events"] = [_check("failed", created_at=_NOW, event_id="f")]
+    assert reduce_task_outcome(finding, latest_store_activity_at=_quiet_after(finding))["key"] == "finding"
+
+
+def test_ended_open_wins_over_would_be_inactive() -> None:
+    # (i) ended_open is a stronger, more specific stop signal evaluated before the
+    # open-step branch — a session that demonstrably ended stays ended_open even
+    # when the store also moved on elsewhere.
+    task = _multi_task([_sitem("started", _NOW, ended=_NOW + 5)])
+    assert reduce_task_outcome(task, latest_store_activity_at=_quiet_after(task))["key"] == "ended_open"
+
+
+def test_handed_off_frontier_wins_over_would_be_inactive() -> None:
+    # (j) A clean handoff frontier (the agent's own word) outranks the inferred
+    # inactive downgrade.
+    task = _multi_task(
+        [_step("started", updated_at=_NOW), _step("handed_off", updated_at=_NOW + 100)]
+    )
+    assert reduce_task_outcome(task, latest_store_activity_at=_quiet_after(task))["key"] == "handed_off"
+
+
+def test_inactive_is_deterministic_across_identical_reads() -> None:
+    # (k) Two reads with the SAME store timestamps give the SAME key — the whole
+    # point of comparing against a stored store 'now', never the wall clock.
+    task = _open_only_task()
+    now = _quiet_after(task)
+    first = reduce_task_outcome(task, latest_store_activity_at=now)
+    second = reduce_task_outcome(task, latest_store_activity_at=now)
+    assert first["key"] == second["key"] == "inactive"
+
+
+def test_task_went_quiet_elsewhere_predicate_edge_cases() -> None:
+    # The shared predicate directly: guards resolve toward NOT firing.
+    task = _open_only_task()
+    assert task_went_quiet_elsewhere(task, _quiet_after(task)) is True
+    assert task_went_quiet_elsewhere(task, None) is False
+    assert task_went_quiet_elsewhere(task, task_newest_event_at(task)) is False
+    zero = _multi_task([_step("started", updated_at=0.0)])
+    assert task_went_quiet_elsewhere(zero, _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS * 100) is False
