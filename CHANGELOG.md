@@ -6,6 +6,35 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.5] — 2026-09-02
+
+An evidence-first Dashboard shift brief with truth-bounded decision signals, a
+more readable Session and steps ledger, and faster CI.
+
+### Added
+
+- Dashboard: an evidence-first Shift Brief promotes the single highest-priority
+  review item with its recorded reason, next step, and provenance, and a direct
+  path to the underlying evidence; a companion "Copy review brief" action copies
+  those recorded facts without resuming, rerunning, or mutating the task. (#159)
+- A bounded `/v1/attention` projection classifies every visible task before
+  limiting rows, giving a truthful complete review count (failed checks, failed
+  steps, and blockers) without fetching each receipt. (#153)
+
+### Changed
+
+- Dashboard decision signals are truth-bounded: confirmed active work, provider
+  capacity, ingestion health, and completed-period usage change stay separate
+  facts; missing, stale, malformed, future-dated, negative, non-finite, or
+  overflowing values render as unavailable rather than a confident number, and a
+  failed or missing attention refresh can no longer read as "all clear." (#159)
+- Session and steps ledger: current failures and errors lead, ordinary checks
+  fold instead of a wall of repeated pills, superseded history opens separately,
+  and the ledger is bounded to eight rows with exact "Show N more" controls, with
+  added accessibility, compact, and RTL coverage. No daemon or API change. (#171)
+- CI: Python and macOS test runs are shorter — bounded parallel pytest and
+  release-mode Swift tests — at the same coverage. (#181)
+
 ## [0.10.4] — 2026-08-31
 
 Small correctness, privacy, and coverage fixes.
@@ -892,7 +921,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.4...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.5...HEAD
+[0.10.5]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.5
 [0.10.4]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.4
 [0.10.3]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.3
 [0.10.2]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.2
