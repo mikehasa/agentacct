@@ -82,6 +82,16 @@ def _seed(store: Path) -> None:
     )
 
 
+def test_receipt_decision_color_inactive_is_calm_and_never_green() -> None:
+    # inactive is an inferred downgrade of "In progress", never a completion — it
+    # must read as a calm, non-alarming tint, never green.
+    from agentacct.tui import _receipt_decision_color
+
+    color = _receipt_decision_color("inactive")
+    assert color != "green"
+    assert color == "blue"
+
+
 def test_render_receipt_markup_contains_axes_and_dimensions() -> None:
     task = {
         "task_id": "task_x",

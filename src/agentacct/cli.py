@@ -9625,6 +9625,7 @@ def receipts(
         build_receipt_summary,
         evidence_coverage_headline,
         latest_store_activity,
+        session_start_index,
     )
 
     resolved = _resolve_cli_store_dir(store_dir).path
@@ -9635,6 +9636,7 @@ def receipts(
         if isinstance(task, dict) and str(task.get("public_task_id") or "")
     ]
     latest = latest_store_activity(tasks)
+    starts = session_start_index(tasks)
     tasks.sort(key=lambda task: float(task.get("last_activity_at") or 0.0), reverse=True)
     rows = [
         build_receipt_summary(
@@ -9642,6 +9644,7 @@ def receipts(
             public_task_id=str(task.get("public_task_id")),
             title=_task_title(task),
             latest_store_activity_at=latest,
+            session_starts=starts,
         )
         for task in tasks[:limit]
     ]
@@ -9684,7 +9687,7 @@ def receipt(
     axes (decision status × evidence strength), per-field provenance, and gaps."""
 
     from .api import build_store_task_projection, _task_title
-    from .receipt import build_receipt, latest_store_activity
+    from .receipt import build_receipt, latest_store_activity, session_start_index
 
     resolved = _resolve_cli_store_dir(store_dir).path
     projection = build_store_task_projection(resolved)
@@ -9698,6 +9701,7 @@ def receipt(
         public_task_id=str(task.get("public_task_id")),
         title=_task_title(task),
         latest_store_activity_at=latest_store_activity(all_tasks),
+        session_starts=session_start_index(all_tasks),
     )
     if json_output:
         console.print_json(data=receipt_payload)

@@ -106,6 +106,7 @@ from .receipt import (
     build_receipt,
     build_receipt_summary,
     latest_store_activity,
+    session_start_index,
 )
 from .usage_cube import (
     KNOWN_USAGE_CLIENTS,
@@ -1214,6 +1215,7 @@ def _dashboard_receipt_attention(
     tasks: Sequence[Mapping[str, Any]],
     *,
     latest_store_activity_at: float | None,
+    session_starts: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     """Exact all-store attention count plus a bounded Dashboard preview.
 
@@ -1229,6 +1231,7 @@ def _dashboard_receipt_attention(
             public_task_id=str(task.get("public_task_id")),
             title=_task_title(task),
             latest_store_activity_at=latest_store_activity_at,
+            session_starts=session_starts,
         )
         priority = _receipt_attention_priority(row)
         if priority is None:
@@ -3086,6 +3089,7 @@ def create_local_api_app(
             projection["_dashboard_receipt_attention"] = _dashboard_receipt_attention(
                 attention_tasks,
                 latest_store_activity_at=latest_store_activity(attention_tasks),
+                session_starts=session_start_index(attention_tasks),
             )
             v1_receipt_projection_cache["projection"] = (fingerprint, time.time(), projection)
             return projection
@@ -3102,6 +3106,7 @@ def create_local_api_app(
     ) -> tuple[
         list[tuple[int, float, str, Mapping[str, Any], dict[str, Any]]],
         float | None,
+        dict[str, float],
         dict[str, int],
         str,
     ]:
@@ -3135,7 +3140,7 @@ def create_local_api_app(
                 return cached[2]
 
             if cached is not None and cached[1] == attention_fingerprint:
-                cached_candidates, _, cached_counts, _ = cached[2]
+                cached_candidates, _, _, cached_counts, _ = cached[2]
                 tasks_by_id = {
                     str(task.get("public_task_id")): task
                     for task in tasks
@@ -3148,6 +3153,7 @@ def create_local_api_app(
                 result = (
                     candidates,
                     latest_store_activity(tasks),
+                    session_start_index(tasks),
                     cached_counts,
                     attention_fingerprint,
                 )
@@ -3159,6 +3165,7 @@ def create_local_api_app(
                 return result
 
             latest = latest_store_activity(tasks)
+            starts = session_start_index(tasks)
             candidates: list[
                 tuple[int, float, str, Mapping[str, Any], dict[str, Any]]
             ] = []
@@ -3167,6 +3174,7 @@ def create_local_api_app(
                 classified = build_attention_reason(
                     task,
                     latest_store_activity_at=latest,
+                    session_starts=starts,
                 )
                 if classified is None:
                     continue
@@ -3183,7 +3191,7 @@ def create_local_api_app(
                     )
                 )
             candidates.sort(key=lambda candidate: candidate[:3])
-            result = (candidates, latest, counts, attention_fingerprint)
+            result = (candidates, latest, starts, counts, attention_fingerprint)
             # The parent projection is rebuilt on a short TTL even when its
             # attention inputs are unchanged. Preserve the reduced/sorted index
             # across those rebuilds by hashing exactly the task state that can
@@ -3214,6 +3222,7 @@ def create_local_api_app(
         projection = _v1_task_projection()
         tasks = _visible_tasks(projection)
         latest = latest_store_activity(tasks)
+        starts = session_start_index(tasks)
         tasks.sort(key=lambda task: float(task.get("last_activity_at") or 0.0), reverse=True)
         total = len(tasks)
         window = tasks[offset : offset + limit]
@@ -3223,6 +3232,7 @@ def create_local_api_app(
                 public_task_id=str(task.get("public_task_id")),
                 title=_task_title(task),
                 latest_store_activity_at=latest,
+                session_starts=starts,
             )
             for task in window
         ]
@@ -3256,7 +3266,7 @@ def create_local_api_app(
 
         _require_v1_token(request)
         projection = _v1_task_projection()
-        candidates, latest, counts, snapshot = _v1_attention_candidates(projection)
+        candidates, latest, starts, counts, snapshot = _v1_attention_candidates(projection)
         selected = candidates[offset : offset + limit]
         items = []
         for _, _, task_id, task, reason in selected:
@@ -3265,6 +3275,7 @@ def create_local_api_app(
                 public_task_id=task_id,
                 title=_task_title(task),
                 latest_store_activity_at=latest,
+                session_starts=starts,
             )
             row["attention"] = reason
             items.append(row)
@@ -3301,6 +3312,7 @@ def create_local_api_app(
             public_task_id=str(selected.get("public_task_id")),
             title=_task_title(selected),
             latest_store_activity_at=latest_store_activity(tasks),
+            session_starts=session_start_index(tasks),
         )
 
     @app.post("/v1/disposition")

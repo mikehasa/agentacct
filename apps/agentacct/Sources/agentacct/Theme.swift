@@ -654,6 +654,13 @@ enum DecisionTintClass {
              "finding_resolved_by_user", "blocker_resolved_by_user":
             return .claimed
         case "ended_open": return .inferredStop
+        // Inactive is agentacct's own inference (asserted_by='inferred'), weaker
+        // than any claim. It must NOT read done-ish like the claimed family, must
+        // NOT alarm like a finding, and must NOT be green. A quiet neutral badge
+        // carries the honest "not a completion, not a stated stop" meaning the
+        // Inactive label already states — matching the daemon's calm, non-green
+        // treatment. (Explicit, so it never drifts into the unknown default.)
+        case "inactive": return .neutral
         case "verified": return .verified
         default: return .neutral
         }

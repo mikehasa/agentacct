@@ -68,8 +68,9 @@ enum WorkGroup: String, CaseIterable, Identifiable {
 
     /// Buckets never upgrade a claim: "Verified" holds only the machine-
     /// asserted key; agent claims of done-ness group under their own word
-    /// ("Reported"); ambient activity stays "Observed". "Stopped" holds both
-    /// stop shapes — the deliberate handoff and the inferred ended-open —
+    /// ("Reported"); ambient activity stays "Observed". "Stopped" holds the
+    /// stop shapes — the deliberate handoff, the inferred ended-open, and the
+    /// inferred inactive (open, nothing finished, work moved on elsewhere) —
     /// each row still wearing its own decision word.
     static func forKey(_ key: String?) -> WorkGroup {
         switch key {
@@ -80,7 +81,7 @@ enum WorkGroup: String, CaseIterable, Identifiable {
             return .reported
         case "in_progress", "started", "checkpoint": return .inProgress
         case "observed": return .observed
-        case "handed_off", "ended_open": return .stopped
+        case "handed_off", "ended_open", "inactive": return .stopped
         default: return .other
         }
     }
@@ -448,6 +449,8 @@ enum DecisionLegend {
               definition: "A check failed, but a later run of the same check passed."),
         .init(key: "ended_open", label: "Ended open",
               definition: "The session ended with steps still open; the stop is inferred, not stated."),
+        .init(key: "inactive", label: "Inactive",
+              definition: "Open with nothing finished; work has since continued elsewhere — agentacct inferred it went quiet, it never said done."),
         .init(key: "observed", label: "Observed",
               definition: "Activity was recorded; no outcome was ever stated."),
     ]

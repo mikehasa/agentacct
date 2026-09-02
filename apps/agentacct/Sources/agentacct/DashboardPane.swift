@@ -64,6 +64,7 @@ struct DashboardWorkItem: Identifiable {
         case "blocked": return "Blocked"
         case "in_progress": return "In progress"
         case "handed_off": return "Handed off"
+        case "inactive": return "Inactive"
         default: return key.replacingOccurrences(of: "_", with: " ").capitalized
         }
     }

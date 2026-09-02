@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from typing import Any, Mapping
 
 from .finding_disposition import finding_target_digest
@@ -24,14 +25,24 @@ _HANDED_OFF_STATUS = "handed_off"
 # reading silence as abandonment. Absence of activity is not evidence a Task was
 # abandoned — the user may have been asleep, away, or out for the day. The only
 # honest signal that a frozen Task was LEFT BEHIND (not merely paused) is that the
-# user DEMONSTRABLY kept working ELSEWHERE in the store afterward: the store's
-# latest activity postdates this Task's newest event by more than this buffer. 24h
-# comfortably clears an overnight gap and a normal day away, so being absent never
-# looks like moving on; only later activity somewhere else does. This is compared
-# against a DETERMINISTIC store timestamp, never the wall clock, so the state
-# cannot flip between two reads at a time boundary. It only ever downgrades "in
-# progress" to an equally honest partial state; it never infers completion.
-_LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS = 24 * 60 * 60
+# user DEMONSTRABLY moved on to a genuinely NEW SESSION elsewhere and then kept
+# working long enough afterward that this Task can no longer be read as a normal
+# pause. The buffer is counted FROM THAT NEW SESSION'S START (not from this Task's
+# last event, and never from the wall clock): the store's latest activity must
+# postdate the first brand-new session's start by more than this buffer. 48h
+# comfortably clears an overnight gap, a normal day away, and a weekend, so merely
+# being absent never looks like moving on; only a newer session plus sustained
+# later activity does. Because both the newer-session start and the store's latest
+# activity are DETERMINISTIC stored timestamps, the state cannot flip between two
+# reads at a time boundary. It only ever downgrades "in progress" to an equally
+# honest partial state; it never infers completion.
+#
+# This is the SINGLE knob for "the store went quiet on this Task": it governs BOTH
+# ``mostly_done`` (open steps + at least one completed step) AND ``inactive`` (open
+# steps + NOTHING finished). Both split on the exact same predicate
+# (``task_went_quiet_elsewhere``), so the two states share one boundary and can
+# never disagree about the middle zone.
+_LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS = 48 * 60 * 60
 
 # --- Per-step evidence grade (M2) --------------------------------------------
 # ONE vocabulary, shared by the per-step grade and the task-level headline,
@@ -432,8 +443,160 @@ def task_newest_event_at(task: Mapping[str, Any]) -> float:
     return max(candidates, default=0.0)
 
 
+def _finite_positive(value: Any) -> bool:
+    """A usable timestamp: a real, finite, strictly-positive number.
+
+    Guards every arithmetic input so NaN / inf / missing / non-positive values can
+    only ever resolve the went-quiet predicate toward NOT firing.
+    """
+
+    number = _number(value)
+    return math.isfinite(number) and number > 0.0
+
+
+def _task_session_ids(task: Mapping[str, Any]) -> set[str]:
+    """The ``client_session_id`` values belonging to THIS Task's own events.
+
+    Read from the work steps and check/evidence events (the reducer's own event
+    surface). A session in the store-wide start index that appears here is this
+    Task's own session and can never count as the "newer session elsewhere".
+    """
+
+    ids: set[str] = set()
+    for item in _items(task):
+        session_id = _text(item.get("client_session_id"))
+        if session_id:
+            ids.add(session_id)
+    for event in _all_check_events(task):
+        session_id = _text(event.get("client_session_id"))
+        if session_id:
+            ids.add(session_id)
+    return ids
+
+
+def task_session_starts(task: Mapping[str, Any]) -> dict[str, float]:
+    """Earliest recorded event timestamp per ``client_session_id`` in this Task.
+
+    A session's START is the MINIMUM over its work steps (``started_at`` then
+    ``updated_at``) and its check / evidence events (``created_at`` then
+    ``occurred_at`` then ``time``). Session objects' ``last_activity_at`` is a
+    LATEST, never a start, so it is deliberately NOT consulted here. The caller
+    (``receipt.session_start_index``) merges these per-Task maps across the whole
+    store, taking the MIN per session id, to get each session's true first
+    timestamp. Non-finite / non-positive timestamps are dropped.
+    """
+
+    starts: dict[str, float] = {}
+
+    def _consider(session_id: Any, timestamp: Any) -> None:
+        sid = _text(session_id)
+        if not sid or not _finite_positive(timestamp):
+            return
+        value = _number(timestamp)
+        if sid not in starts or value < starts[sid]:
+            starts[sid] = value
+
+    for item in _items(task):
+        _consider(
+            item.get("client_session_id"),
+            item.get("started_at") or item.get("updated_at"),
+        )
+    for event in _all_check_events(task):
+        _consider(
+            event.get("client_session_id"),
+            event.get("created_at") or event.get("occurred_at") or event.get("time"),
+        )
+    return starts
+
+
+def newer_session_start_after(
+    task: Mapping[str, Any],
+    session_starts: Mapping[str, float] | None,
+    *,
+    newest: float | None = None,
+) -> float | None:
+    """The first brand-new session that began AFTER this Task went quiet.
+
+    The MINIMUM session-start, across the whole store, among sessions that do NOT
+    belong to this Task and whose start is STRICTLY AFTER this Task's newest event.
+    ``None`` when no such session exists (or the inputs are missing / skewed),
+    which resolves the went-quiet predicate toward NOT firing.
+    """
+
+    if not session_starts:
+        return None
+    if newest is None:
+        newest = task_newest_event_at(task)
+    if not _finite_positive(newest):
+        return None
+    own = _task_session_ids(task)
+    candidates = [
+        _number(start)
+        for session_id, start in session_starts.items()
+        if _text(session_id) not in own
+        and _finite_positive(start)
+        and _number(start) > newest
+    ]
+    return min(candidates) if candidates else None
+
+
+def task_went_quiet_elsewhere(
+    task: Mapping[str, Any],
+    latest_store_activity_at: float | None,
+    session_starts: Mapping[str, float] | None = None,
+) -> bool:
+    """Did the user DEMONSTRABLY move on to a NEW SESSION and keep working long
+    after this Task froze?
+
+    The ONE deterministic predicate behind both the ``mostly_done`` split (open
+    steps + a completed step) and the ``inactive`` split (open steps + nothing
+    finished). Keeping it a single named helper is deliberate: it guarantees the
+    two states can never drift onto different boundaries and open an inconsistent
+    middle zone.
+
+    True only when there is a genuinely NEWER SESSION — one not belonging to this
+    Task whose start is strictly after this Task's newest event — AND the store's
+    own latest activity postdates THAT new session's start by at least
+    ``_LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS``. Both the newer-session start and
+    ``latest_store_activity_at`` are DETERMINISTIC stored timestamps, never the
+    wall clock, so the answer cannot flip between two reads at a time boundary.
+    Every edge case resolves toward NOT firing, so silence / skew can only ever
+    KEEP a Task active, never falsely retire it:
+
+      * ``latest_store_activity_at is None`` / non-finite -> False.
+      * ``session_starts is None`` (single-Task read / not plumbed) -> False.
+      * this Task's newest event is missing / zero / non-finite -> False.
+      * no qualifying newer session (none outside this Task started strictly after
+        this Task's newest event) -> False.
+      * a newer session exists but the store's latest activity is < 48h past that
+        session's start -> False.
+      * future-dated / skewed timestamps -> the finite/strict-``>`` guards resolve
+        to False. In particular, when this Task IS the store's latest activity, no
+        session's start can be strictly after this Task's newest event, so a
+        live/frontier Task never trips its own rule.
+    """
+
+    if latest_store_activity_at is None or not math.isfinite(latest_store_activity_at):
+        return False
+    newest = task_newest_event_at(task)
+    if not _finite_positive(newest):
+        return False
+    newer_session_start = newer_session_start_after(
+        task, session_starts, newest=newest
+    )
+    if newer_session_start is None:
+        return False
+    return (
+        latest_store_activity_at
+        >= newer_session_start + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS
+    )
+
+
 def reduce_task_outcome(
-    task: Mapping[str, Any], *, latest_store_activity_at: float | None = None
+    task: Mapping[str, Any],
+    *,
+    latest_store_activity_at: float | None = None,
+    session_starts: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     """Reduce work status and checks into one honest current Task outcome.
 
@@ -444,11 +607,17 @@ def reduce_task_outcome(
     ``latest_store_activity_at`` (seconds) is the DECISION 3a cross-session
     signal: the newest activity timestamp anywhere in the store (all
     sessions/tasks, including usage-only activity), computed once by the caller
-    that already holds every Task and passed in. It is compared ONLY against this
-    Task's own newest event — never the wall clock — so the outcome is
-    deterministic and stable across reads. When it is omitted (or the store has
-    no later activity anywhere), a frozen open Task stays ``in_progress``:
-    absence of activity is never read as abandonment. See
+    that already holds every Task and passed in. ``session_starts`` maps every
+    ``client_session_id`` in the store to its earliest event timestamp (see
+    ``task_session_starts`` / ``receipt.session_start_index``), likewise computed
+    once by the caller. Together they drive ``task_went_quiet_elsewhere``: a Task
+    is downgraded only when a genuinely NEWER SESSION began after this Task froze
+    AND the store kept working for at least
+    ``_LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS`` past that new session's start. Both
+    inputs are compared against stored timestamps — never the wall clock — so the
+    outcome is deterministic and stable across reads. When either is omitted (or
+    there is no qualifying newer session), a frozen open Task stays
+    ``in_progress``: absence of activity is never read as abandonment. See
     ``_LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS``.
 
     NOTE (DECISION 3c): the product strip has a fourth "outcome" stage that this
@@ -673,6 +842,18 @@ def reduce_task_outcome(
             "handoff_current": handoff_current,
             **step_counts,
         }
+    # ``went_quiet`` rides the returned dict so surfaces can render a factual
+    # "quiet since <task_newest_event_at>" sub-line without re-deriving it. It is
+    # only meaningful on the open-step branch (mostly_done / inactive); every
+    # other terminal/non-open key leaves it at the honest default of False.
+    # ``quiet_since`` (this Task's newest event — when it went quiet) and
+    # ``newer_session_started_at`` (the first newer session's start) are factual
+    # timestamps for the Receipt detail line, set ONLY when the Task went quiet
+    # (i.e. inactive / mostly_done); they stay None on every other key. Neither is
+    # ever a completion claim.
+    went_quiet = False
+    quiet_since: float | None = None
+    newer_session_started_at: float | None = None
     if statuses and any(status == _RESOLVED_STATUS for status in statuses) and all(
         status in _SUCCESS_STATUSES or status == _RESOLVED_STATUS
         for status in statuses
@@ -700,27 +881,45 @@ def reduce_task_outcome(
         # receipt). Never fabricates ``completed``.
         key = "ended_open"
     elif open_step_count:
-        # DECISION 3a: one un-closed step must not drag a mostly-finished Task to
-        # plain "in progress" — but silence is NOT evidence of abandonment. The
-        # open step stays open in the DATA; we only summarise the Task honestly.
-        # A frozen open Task flips to "mostly done" ONLY when at least one step
-        # actually completed AND the user demonstrably kept working ELSEWHERE in
-        # the store afterward: the store's latest activity postdates this Task's
-        # newest event by more than ``_LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS``. If
-        # nothing later happened anywhere (the user was merely away), or this Task
-        # IS the store's latest activity, it stays "in progress" no matter how old
-        # — we never infer abandonment from absence. Fully deterministic from
+        # DECISION 3a / inactive: one un-closed step must not drag a Task to plain
+        # "in progress" when the store has DEMONSTRABLY moved on elsewhere — but
+        # silence is NOT evidence of abandonment. The open step stays open in the
+        # DATA; we only summarise the Task honestly. Both downgrades split on the
+        # ONE deterministic ``task_went_quiet_elsewhere`` predicate (the store's
+        # latest activity postdates this Task's newest event by more than
+        # ``_LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS``), so they share one boundary:
+        #   * quiet AND a completed step -> ``mostly_done`` (some work landed).
+        #   * quiet AND nothing finished  -> ``inactive`` (open, nothing proven,
+        #     work continued elsewhere — agentacct INFERRED it went quiet; a
+        #     downgrade of a possibly-misleading "In progress", never a completion
+        #     or verification claim, provenance ``inferred``).
+        #   * otherwise                   -> ``in_progress``.
+        # If nothing later happened anywhere (the user was merely away), or this
+        # Task IS the store's latest activity, it stays "in progress" no matter how
+        # old — we never infer abandonment from absence. Fully deterministic from
         # stored data (no wall clock), so the state cannot flip between reads.
         has_completed_step = any(status in _SUCCESS_STATUSES for status in statuses)
-        this_task_newest_event_at = task_newest_event_at(task)
-        left_behind = (
-            has_completed_step
-            and latest_store_activity_at is not None
-            and this_task_newest_event_at > 0.0
-            and latest_store_activity_at
-            > this_task_newest_event_at + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS
+        went_quiet = task_went_quiet_elsewhere(
+            task, latest_store_activity_at, session_starts
         )
-        key = "mostly_done" if left_behind else "in_progress"
+        if went_quiet:
+            # Factual timestamps for the Receipt detail line (#3), populated only
+            # when the went-quiet predicate actually fired — so they land exactly
+            # on ``inactive`` / ``mostly_done`` and nowhere else. ``quiet_since``
+            # is this Task's newest event (when it fell silent);
+            # ``newer_session_started_at`` is the newer session's start the
+            # predicate keyed off. Never a completion claim.
+            newest_at = task_newest_event_at(task)
+            quiet_since = newest_at or None
+            newer_session_started_at = newer_session_start_after(
+                task, session_starts, newest=newest_at
+            )
+        if went_quiet and has_completed_step:
+            key = "mostly_done"
+        elif went_quiet:
+            key = "inactive"
+        else:
+            key = "in_progress"
     elif not items:
         key = "observed"
     else:
@@ -832,6 +1031,15 @@ def reduce_task_outcome(
         "max_work_updated_at": max_work_updated_at,
         "open_step_count": open_step_count,
         "handoff_current": handoff_current,
+        # True only when this Task went quiet elsewhere (drives inactive /
+        # mostly_done); a factual sub-line signal, never a completion claim.
+        "went_quiet": went_quiet,
+        # Factual timestamps for the Receipt detail line, present (non-None) ONLY
+        # on inactive / mostly_done. ``quiet_since`` = this Task's newest event
+        # (when it went quiet); ``newer_session_started_at`` = the newer session's
+        # start the predicate keyed off. Facts, never a completion claim.
+        "quiet_since": quiet_since,
+        "newer_session_started_at": newer_session_started_at,
         **step_counts,
     }
 
@@ -844,6 +1052,9 @@ __all__ = [
     "latest_check_events",
     "latest_task_checks",
     "task_newest_event_at",
+    "task_session_starts",
+    "newer_session_start_after",
+    "task_went_quiet_elsewhere",
     "reduce_task_outcome",
     "EVIDENCE_GRADE_RANK",
     "GRADE_NONE",
