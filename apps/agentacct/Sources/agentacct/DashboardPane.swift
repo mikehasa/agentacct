@@ -1068,6 +1068,9 @@ private struct DashboardAttentionBriefCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
 
+            if SnapshotMode.rendersStaticControls {
+                DashboardStaticBriefActions(copyTitle: brief.buttonTitle)
+            } else {
             HStack(spacing: Space.s) {
                 Button {
                     open(.attentionTask(focus.id))
@@ -1117,8 +1120,41 @@ private struct DashboardAttentionBriefCard: View {
                 .accessibilityHint("Copies recorded facts only; it does not resume or rerun an agent")
                 .accessibilityIdentifier("dashboard.shift-brief.copy-action-brief")
             }
+            }
         }
         .accessibilityElement(children: .contain)
+    }
+}
+
+/// Snapshot-only stand-ins for the two Shift-Brief action buttons.
+///
+/// SwiftUI's offscreen `ImageRenderer` only paints native `.borderedProminent`
+/// / `.bordered` `Button` chrome (and the SF Symbols inside them) on the pinned
+/// golden toolchain; on other macOS versions those controls collapse to an
+/// unrendered fill with dropped labels. The README `--snapshot` path sets
+/// `SnapshotMode.rendersStaticControls`, so its docs renders draw these faithful
+/// primitives — matching the live app's real buttons — while the live app and
+/// the pinned fixture renderers keep the interactive controls untouched.
+private struct DashboardStaticBriefActions: View {
+    let copyTitle: String
+
+    var body: some View {
+        HStack(spacing: Space.s) {
+            pill("Review evidence", systemImage: "doc.text.magnifyingglass",
+                 foreground: .white, fill: Theme.accent)
+            pill(copyTitle, systemImage: "doc.on.doc",
+                 foreground: Theme.accent, fill: Theme.tintAccent)
+        }
+        .accessibilityHidden(true)
+    }
+
+    private func pill(_ title: String, systemImage: String, foreground: Color, fill: Color) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(Type.captionSemibold)
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 13)
+            .padding(.vertical, 6)
+            .background(fill, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }
 
