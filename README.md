@@ -95,11 +95,15 @@ pipx uninstall agentacct
 
 Then remove what onboarding added. For a global install (the default): delete the global store (`~/.local/state/agentacct/state` — keep it if you want the history) and the agentacct entries in your user config (`~/.claude.json`, the merged blocks in `~/.claude/settings.json`, the `~/.claude/hooks/` wrapper, and `~/.codex/config.toml`). For a `--scope project` install: delete that repo's `.agent-sentinel/` directory (that project's local ledger) and the agentacct entries onboarding added to `.mcp.json` / `.claude/settings.local.json` / `~/.codex/config.toml`. If you installed the standing instruction block, remove it first with `agentacct setup instructions --agent <client> --user --remove`.
 
-## The terminal dashboard
+## The terminal app
 
-Prefer the terminal? `agentacct tui` is the full dashboard in your shell — usage windows, provider rate-limit bars with reset countdowns, and your recent sessions across every agent. Press `s` to drill into the sessions, `u` for the usage screen, `t` for a task's Work Receipt, `p` to save a shareable snapshot of the current view (an SVG that renders anywhere), `q` to quit.
+Prefer the terminal? `agentacct tui` is the full app in your shell — the same work receipts, evidence, and capacity the macOS app shows, keyboard-native. Tabs `1`–`4` switch between the **Dashboard** (what needs you), **Work** (receipts, each carrying a decision × evidence verdict and its full Work Receipt), **Usage** (provider capacity + recorded usage), and **Sources** (what feeds the store). `↑↓` move, `↵` opens a receipt, `/` filters, `?` lists every key, `T` toggles light/dark, `p` saves a shareable snapshot (an SVG that renders anywhere), `q` quits.
 
-![agentacct tui — live usage, cost, provider rate-limit bars, and recent sessions with per-session weekly-plan-cost estimates](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-home.png)
+![agentacct tui — the Dashboard: what needs attention, live provider capacity, recent work receipts with decision × evidence, and a usage sparkline](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-dashboard.png)
+
+Open a receipt and press `↵` again to drill into its **sessions & steps** — the checks timeline behind the verdict, with a currently-failing check kept in view under *Needs attention* instead of averaged away:
+
+![agentacct tui — a receipt's sessions & steps: the checks timeline, with the failing check surfaced under Needs attention, the passing checks below, and the files it touched](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-steps.png)
 
 ## What it is honest about
 

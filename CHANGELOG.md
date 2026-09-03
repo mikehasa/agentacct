@@ -6,6 +6,30 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- `agentacct tui` is rebuilt to mirror the macOS app's design language: a
+  four-tab, keyboard-native shell — Dashboard (the shift brief: attention, a
+  signal rail, recent work, and a usage sparkline), Work (a receipts list with a
+  master–detail Work Receipt), Usage (provider-capacity meters plus recorded
+  usage), and Sources (ingestion health from the local store) — with light and
+  dark themes. One shared vocabulary now backs every surface: a pip's shape
+  carries the evidence tier (`◉ ● ◐ ○`), decision badges form a separate family,
+  and the cost grammar (`$` / `≈$` / `~$` / `unpriced`) is preserved. The data
+  layer, screen set, and honest vocabulary are unchanged — this is a
+  presentation-layer rewrite over the same local event log the CLI and app read,
+  so the surfaces cannot disagree.
+
+### Added
+
+- The TUI gains a `?` help overlay, a `/` filter and status tabs on Work, an
+  Evidence Sources pane, and a `T` light/dark theme toggle.
+
+### Fixed
+
+- Pin `textual` to `>=8,<9` so a future Textual major release cannot break the
+  installed TUI.
+
 ## [0.10.5] — 2026-09-02
 
 An evidence-first Dashboard shift brief with truth-bounded decision signals, a

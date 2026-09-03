@@ -9245,7 +9245,7 @@ def tui(
     store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
     window: Annotated[
         str,
-        typer.Option(help="Initial breakdown window: today, 7d, 30d, or all (cycle with 'w')."),
+        typer.Option(help="Initial breakdown window: today, 7d, 30d, or all (cycle in the Usage tab with 'd')."),
     ] = "7d",
     client: Annotated[
         Optional[str],
@@ -9256,14 +9256,15 @@ def tui(
         typer.Option(help="Seconds between event-log polls (minimum 1)."),
     ] = 5.0,
 ) -> None:
-    """Live terminal dashboard — usage, cost, and provider rate limits, in place.
+    """Live terminal dashboard — Work Receipts, evidence, capacity, and sources, in place.
 
     A full-screen view over the same authoritative local event log as
-    ``agentacct now`` / ``agentacct limits`` (no credentials, no API calls). Keys:
-    ``r`` refresh now, ``w`` cycle the breakdown window, ``s`` open the sessions
-    drill-down (a session's steps and their check results), ``u`` open the usage
-    screen (a per-day/-week token & cost time series with by-model detail), ``q``
-    quit. Needs an interactive terminal.
+    ``agentacct now`` / ``agentacct limits`` (no credentials, no API calls). Tabs
+    ``1``–``4`` switch panes (Dashboard / Work / Usage / Sources); ``↑↓`` move,
+    ``↵`` opens a receipt and again drills into its sessions & steps, ``/``
+    filters and ``[`` ``]`` cycle the status filter and ``s`` sorts (Work),
+    ``d`` cycles the range (Usage), ``T`` toggles light/dark, ``r`` refreshes,
+    ``?`` lists every key, ``q`` quits. Needs an interactive terminal.
     """
     if window not in NOW_WINDOW_ALIASES:
         raise typer.BadParameter("--window must be one of: today, 7d, 30d, all")

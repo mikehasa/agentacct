@@ -46,7 +46,9 @@ dependencies = [
   "httpx>=0.27",
   "PyYAML>=6.0",
   "uvicorn>=0.30",
-  "textual>=0.60",
+  # The TUI is built and tested against Textual 8.x; cap the major so a future
+  # Textual release with breaking API changes can't silently break a PyPI install.
+  "textual>=8,<9",
 ]
 
 [project.urls]
