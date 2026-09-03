@@ -6,6 +6,27 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.6] — 2026-09-03
+
+A keyboard-native `agentacct tui` rebuilt to mirror the macOS app — now with a
+receipt → sessions & steps drill-down — an honest "Inactive" task state that
+never overstates completion, and a receipt-first README refresh.
+
+### Added
+
+- The TUI gains a `?` help overlay, a `/` filter and status tabs on Work, a
+  receipt → sessions & steps drill-down (the checks timeline behind a verdict,
+  with a currently-failing check kept visible under Needs attention), an Evidence
+  Sources pane, and a `T` light/dark theme toggle. (#185)
+- An honest **Inactive** task state: a task shown "in progress" is downgraded to
+  an evidence-bounded Inactive — never a completion claim — only when it has open
+  steps, nothing recorded as finished, and a genuinely newer session kept the
+  store working elsewhere for 48h past that session's start. Computed from stored
+  timestamps, never the wall clock, so silence or clock skew can only keep a task
+  active, never falsely retire it; provenance is `inferred` (weakest, never
+  green) and it stays out of the review queue. The Work Receipt detail shows a
+  factual "Quiet since X · a newer session started Y" sub-line. (#184)
+
 ### Changed
 
 - `agentacct tui` is rebuilt to mirror the macOS app's design language: a
@@ -18,17 +39,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and the cost grammar (`$` / `≈$` / `~$` / `unpriced`) is preserved. The data
   layer, screen set, and honest vocabulary are unchanged — this is a
   presentation-layer rewrite over the same local event log the CLI and app read,
-  so the surfaces cannot disagree.
-
-### Added
-
-- The TUI gains a `?` help overlay, a `/` filter and status tabs on Work, an
-  Evidence Sources pane, and a `T` light/dark theme toggle.
+  so the surfaces cannot disagree. (#185)
+- Refresh both READMEs for the shipped UI: lead with the Work Receipt in its wide
+  two-column layout, add a sessions & steps shot, regenerate the dashboard, work,
+  and usage panes, fold the Sources pane into prose, and correct the step
+  lifecycle vocabulary (`completed`). (#183)
 
 ### Fixed
 
 - Pin `textual` to `>=8,<9` so a future Textual major release cannot break the
-  installed TUI.
+  installed TUI. (#185)
 
 ## [0.10.5] — 2026-09-02
 
@@ -945,7 +965,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.5...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.6...HEAD
+[0.10.6]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.6
 [0.10.5]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.5
 [0.10.4]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.4
 [0.10.3]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.3
