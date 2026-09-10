@@ -45,18 +45,60 @@ def _activation_failure_block() -> str:
     return textwrap.dedent(script[start:end])
 
 
-def _existing_app_ownership_guard() -> str:
+def _existing_app_ownership_guard(plist_reader: str = "/usr/bin/plutil") -> str:
     script = BUILD_APP.read_text(encoding="utf-8")
     start = script.index("    verify_existing_app_bundle() {")
     end = script.index("    # Stage on the destination filesystem", start)
-    return textwrap.dedent(script[start:end])
+    return textwrap.dedent(script[start:end]).replace("/usr/bin/plutil", plist_reader)
 
 
-def _existing_app_verifier_function() -> str:
+def _existing_app_verifier_function(plist_reader: str = "/usr/bin/plutil") -> str:
     script = BUILD_APP.read_text(encoding="utf-8")
     start = script.index("    verify_existing_app_bundle() {")
     end = script.index('    if [[ -L "$INSTALL_TARGET"', start)
-    return textwrap.dedent(script[start:end])
+    return textwrap.dedent(script[start:end]).replace("/usr/bin/plutil", plist_reader)
+
+
+@pytest.fixture(
+    params=[
+        "portable",
+        pytest.param(
+            "native",
+            marks=pytest.mark.skipif(sys.platform != "darwin", reason="Apple plutil is macOS-only"),
+        ),
+    ]
+)
+def app_plist_reader(request: pytest.FixtureRequest, tmp_path: Path) -> str:
+    """Exercise the unchanged shell gate with real plist data on every OS.
+
+    Linux has no Apple plutil. Its substitute implements only the string-key
+    extraction contract used by the gate; macOS also runs with the real tool.
+    """
+    if request.param == "native":
+        return "/usr/bin/plutil"
+    extractor = tmp_path / "extract-plist.py"
+    extractor.write_text(
+        textwrap.dedent(
+            """\
+            import plistlib
+            import sys
+
+            args = sys.argv[1:]
+            if len(args) != 6 or args[0] != "-extract" or args[2:5] != ["raw", "-o", "-"]:
+                raise SystemExit(2)
+            try:
+                with open(args[5], "rb") as handle:
+                    value = plistlib.load(handle)[args[1]]
+                if not isinstance(value, str):
+                    raise TypeError("expected a string plist value")
+            except (OSError, ValueError, TypeError, KeyError, plistlib.InvalidFileException):
+                raise SystemExit(1)
+            print(value)
+            """
+        ),
+        encoding="utf-8",
+    )
+    return f"{shlex.quote(sys.executable)} {shlex.quote(str(extractor))}"
 
 
 @pytest.mark.parametrize(
@@ -374,7 +416,7 @@ def test_app_installer_stages_then_replaces_instead_of_merging_bundles() -> None
     assert 'mv "$INSTALL_STAGE" "$INSTALL_TARGET"' not in script
 
 
-def test_app_installer_preserves_arbitrary_existing_directory(tmp_path: Path) -> None:
+def test_app_installer_preserves_arbitrary_existing_directory(tmp_path: Path, app_plist_reader: str) -> None:
     target = tmp_path / "agentacct.app"
     target.mkdir()
     marker = target / "user-owned.txt"
@@ -386,7 +428,7 @@ def test_app_installer_preserves_arbitrary_existing_directory(tmp_path: Path) ->
             "-c",
             f"""
             INSTALL_TARGET={shlex.quote(str(target))}
-            {_existing_app_ownership_guard()}
+            {_existing_app_ownership_guard(app_plist_reader)}
             """,
         ],
         capture_output=True,
@@ -399,7 +441,7 @@ def test_app_installer_preserves_arbitrary_existing_directory(tmp_path: Path) ->
     assert "refusing to replace an unowned directory" in completed.stderr
 
 
-def test_app_installer_preserves_foreign_app_bundle(tmp_path: Path) -> None:
+def test_app_installer_preserves_foreign_app_bundle(tmp_path: Path, app_plist_reader: str) -> None:
     target = tmp_path / "agentacct.app"
     contents = target / "Contents"
     contents.mkdir(parents=True)
@@ -420,7 +462,7 @@ def test_app_installer_preserves_foreign_app_bundle(tmp_path: Path) -> None:
             "-c",
             f"""
             INSTALL_TARGET={shlex.quote(str(target))}
-            {_existing_app_ownership_guard()}
+            {_existing_app_ownership_guard(app_plist_reader)}
             """,
         ],
         capture_output=True,
@@ -433,7 +475,7 @@ def test_app_installer_preserves_foreign_app_bundle(tmp_path: Path) -> None:
     assert "not the app-owned agentacct bundle" in completed.stderr
 
 
-def test_app_installer_accepts_exact_app_owned_bundle_identity(tmp_path: Path) -> None:
+def test_app_installer_accepts_exact_app_owned_bundle_identity(tmp_path: Path, app_plist_reader: str) -> None:
     target = tmp_path / "agentacct.app"
     contents = target / "Contents"
     contents.mkdir(parents=True)
@@ -453,7 +495,7 @@ def test_app_installer_accepts_exact_app_owned_bundle_identity(tmp_path: Path) -
             "-c",
             f"""
             INSTALL_TARGET={shlex.quote(str(target))}
-            {_existing_app_ownership_guard()}
+            {_existing_app_ownership_guard(app_plist_reader)}
             """,
         ],
         capture_output=True,
@@ -465,7 +507,7 @@ def test_app_installer_accepts_exact_app_owned_bundle_identity(tmp_path: Path) -
 
 
 def test_app_installer_revalidation_rejects_symlink_to_owned_bundle(
-    tmp_path: Path,
+    tmp_path: Path, app_plist_reader: str,
 ) -> None:
     owned = tmp_path / "owned.app"
     contents = owned / "Contents"
@@ -488,7 +530,7 @@ def test_app_installer_revalidation_rejects_symlink_to_owned_bundle(
             "-c",
             f"""
             INSTALL_TARGET={shlex.quote(str(target))}
-            {_existing_app_verifier_function()}
+            {_existing_app_verifier_function(app_plist_reader)}
             verify_existing_app_bundle "$INSTALL_TARGET"
             """,
         ],

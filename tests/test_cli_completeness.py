@@ -2,6 +2,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from agentacct import cli as cli_module
@@ -91,17 +93,23 @@ def test_init_can_add_agent_instructions_idempotently(tmp_path):
     assert agents.read_text().count("## agentacct") == 1
 
 
-def test_help_surfaces_current_handoff_and_refresh_contracts():
-    work_help = CliRunner().invoke(app, ["evidence", "work-event", "--help"])
-    import_help = CliRunner().invoke(app, ["usage", "import-local", "--help"])
-    watch_help = CliRunner().invoke(app, ["usage", "watch", "--help"])
+@pytest.mark.parametrize("color", [False, True])
+def test_help_surfaces_current_handoff_and_refresh_contracts(color):
+    environment = {"FORCE_COLOR": "1" if color else None, "NO_COLOR": None if color else "1"}
+    runner = CliRunner()
+    work_help = runner.invoke(app, ["evidence", "work-event", "--help"], color=color, env=environment)
+    import_help = runner.invoke(app, ["usage", "import-local", "--help"], color=color, env=environment)
+    watch_help = runner.invoke(app, ["usage", "watch", "--help"], color=color, env=environment)
 
     assert work_help.exit_code == 0, work_help.output
-    assert "handed_off" in work_help.output
+    assert "handed_off" in unstyle(work_help.output)
     for result in (import_help, watch_help):
         assert result.exit_code == 0, result.output
-        assert "--refresh" in result.output
-        assert "Refresh & save usage" not in result.output
+        # Rich may style the two hyphens separately when CI forces color.
+        # Test the rendered help text, not its ANSI segment boundaries.
+        output = unstyle(result.output)
+        assert "--refresh" in output
+        assert "Refresh & save usage" not in output
 
 
 def test_init_claude_code_respects_legacy_pre_rename_section(tmp_path):
