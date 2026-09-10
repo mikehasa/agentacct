@@ -2608,6 +2608,7 @@ final class SetupModel: ObservableObject {
         guard installedCLIMatches(install), autostartMatches(expected), readSmallText(managedAutostartFile) == contents else {
             throw SetupError.unsafeAutostart
         }
+        guard let desiredArguments = autostartArguments(in: contents) else { throw SetupError.unsafeAutostart }
         try await runRecoveryCommand(executable: launchctl, arguments: ["bootstrap", launchdDomain, managedAutostartFile.path])
         // launchd accepting a job does not mean its supervisor or local API
         // started. Retain the journal until status proves both API health and
@@ -2616,6 +2617,11 @@ final class SetupModel: ObservableObject {
             guard installedCLIMatches(install), autostartMatches(expected) else { throw SetupError.unsafeAutostart }
             let job = try await verifiedLaunchdJob(expected)
             guard installedCLIMatches(install), autostartMatches(expected) else { throw SetupError.unsafeAutostart }
+            // Stop/recovery may recognize either journaled descriptor, but
+            // readiness must prove the descriptor selected for this start.
+            // A concurrently reloaded old direct target is not a successful
+            // activation of the newly selected recorder.
+            if let job, job.arguments != desiredArguments { throw SetupError.unsafeAutostart }
             if job?.isRunning == true {
                 let output = try await runCommand(executable: installedBinary, arguments: runtimeArguments(command: "status", store: store))
                 guard installedCLIMatches(install), autostartMatches(expected) else { throw SetupError.unsafeAutostart }
@@ -2630,6 +2636,14 @@ final class SetupModel: ObservableObject {
 
     private struct LaunchdJob {
         let isRunning: Bool
+        let arguments: [String]
+    }
+
+    private func autostartArguments(in contents: String) -> [String]? {
+        guard let data = contents.data(using: .utf8),
+              let document = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        else { return nil }
+        return document["ProgramArguments"] as? [String]
     }
 
     /// `launchctl print` is intentionally parsed conservatively: its output
@@ -2698,20 +2712,14 @@ final class SetupModel: ObservableObject {
             }
             index += 1
         }
-        func expectedArguments(_ contents: String) -> [String]? {
-            guard let data = contents.data(using: .utf8),
-                  let document = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
-            else { return nil }
-            return document["ProgramArguments"] as? [String]
-        }
         guard fields["path"] == managedAutostartFile.path, fields["type"] == "LaunchAgent",
               let arguments, !arguments.isEmpty,
               fields["program"] == arguments.first,
-              arguments == expectedArguments(expected.originalContents)
-                || arguments == expectedArguments(expected.updatedContents),
+              arguments == autostartArguments(in: expected.originalContents)
+                || arguments == autostartArguments(in: expected.updatedContents),
               let state = fields["state"]
         else { throw SetupError.unsafeAutostart }
-        return LaunchdJob(isRunning: state == "running" && (Int(fields["pid"] ?? "") ?? 0) > 0)
+        return LaunchdJob(isRunning: state == "running" && (Int(fields["pid"] ?? "") ?? 0) > 0, arguments: arguments)
     }
 
     private struct RuntimeStatus: Decodable {

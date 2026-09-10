@@ -468,6 +468,31 @@ final class SetupModelTests: XCTestCase {
     }
 
     @MainActor
+    func testManagedAutostartReadinessRejectsConcurrentlyReloadedOriginalDirectTarget() async throws {
+        let fixture = try UpgradeFixture(bundleCommit: newCommit, installedCommit: oldCommit, installedAsVersioned: true)
+        defer { fixture.remove() }
+        let oldTarget = try XCTUnwrap(fixture.selectedTarget)
+        try fixture.installManagedAutostartFile(executable: oldTarget.appendingPathComponent("agentacct"))
+        let originalArguments = try fixture.autostartArguments()
+        let model = fixture.model { _, arguments in
+            if arguments[0] == "status" { return Self.stream(lines: ["{\"processes\":[]}"]) }
+            if arguments[0] == "bootstrap", fixture.installedCommit() == self.newCommit {
+                // Simulate another client loading the old descriptor while
+                // our plist on disk already names the updated stable launcher.
+                fixture.simulateLoadedLaunchdArguments(originalArguments)
+            }
+            return Self.stream(lines: [])
+        }
+
+        guard case .failed = await model.upgradeInstalledCLIIfNeeded() else { return XCTFail("expected old supervisor refusal") }
+
+        XCTAssertEqual(fixture.selectedTarget, oldTarget)
+        XCTAssertEqual(try fixture.autostartArguments(), originalArguments)
+        XCTAssertEqual(fixture.autostartReadinessChecks, 1, "only restored old runtime may reach readiness check")
+        XCTAssertFalse(fixture.runtimeTransactionExists)
+    }
+
+    @MainActor
     func testManagedAutostartRequiresRunningSupervisorAndHealthyRuntimeBeforeClearingJournal() async throws {
         for failure in ["supervisor", "api", "watcher", "store"] {
             let fixture = try UpgradeFixture(bundleCommit: newCommit, installedCommit: oldCommit, installedAsVersioned: true)
@@ -2052,6 +2077,10 @@ private final class UpgradeFixture {
 
     var readyRuntimeStatus: String {
         "{\"state\":\"running\",\"store_dir\":\"\(store.path)\",\"dashboard_health\":\"healthy\",\"watcher\":\"external\",\"processes\":[{\"role\":\"dashboard\",\"state\":\"running\"}]}"
+    }
+
+    func simulateLoadedLaunchdArguments(_ arguments: [String]) {
+        simulatedLaunchdArguments = arguments
     }
 
     func launchdPrintOutput(arguments: [String], running: Bool = true) -> String {
