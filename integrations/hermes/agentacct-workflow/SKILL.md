@@ -57,11 +57,10 @@ run_id: stable task/session id if known
 
 - major decisions
 - scope changes
-- handoffs between agents
 - repeated errors
 - blockers
 
-Sections are the work contract. Use `section_status=started`, `checkpoint`, `completed`, or `blocked`, and include client/session/turn identifiers when known.
+Sections are the work contract. Use `section_status=started`, `checkpoint`, `completed`, `blocked`, or `handed_off`, and include client/session/turn identifiers when known. `started` and `checkpoint` are in-progress states; `completed`, `blocked`, and `handed_off` are terminal.
 
 4. If visible token/cost usage is available, call `agentacct_record_agent_usage_debug`:
 
@@ -96,7 +95,17 @@ blocker: concrete blocker
 next_step: what would unblock it
 ```
 
-7. In the final response, report:
+8. If handing work to another agent/session, or stopping cleanly so the user can
+continue elsewhere, close the section with `section_status=handed_off`:
+
+```text
+section_id: same section id
+section_status: handed_off
+summary: what is complete and what remains
+next_step: the concrete continuation point
+```
+
+9. In the final response, report:
 
 - what was changed or tested
 - exact validation command/result
@@ -146,6 +155,6 @@ Use agentacct MCP to record a section with agentacct_record_section (section_sta
 - [ ] `agentacct_attach_client_context` was used when local ids were available.
 - [ ] `agentacct_record_agent_usage_debug` was called with visible usage or `reporting_basis=unavailable`.
 - [ ] Meaningful checkpoints or machine checks were recorded when applicable.
-- [ ] Completion or blocker was recorded.
+- [ ] Completion, blocker, or clean handoff was recorded.
 - [ ] Final response separates MCP evidence from token/cost/billing evidence.
 - [ ] No secrets or raw provider bodies were printed.

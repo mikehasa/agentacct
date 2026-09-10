@@ -25,11 +25,25 @@ func setupPhaseKey(for phase: SetupModel.Phase) -> SetupPhaseKey {
 struct SetupSheet: View {
     @ObservedObject var setup: SetupModel
     var onClose: () -> Void
+    private let runSetup: () async -> Void
     @State private var setupTask: Task<Void, Never>?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var phaseKey: SetupPhaseKey {
         setupPhaseKey(for: setup.phase)
+    }
+
+    init(
+        setup: SetupModel,
+        onClose: @escaping () -> Void,
+        runSetup: (() async -> Void)? = nil
+    ) {
+        self.setup = setup
+        self.onClose = onClose
+        self.runSetup = runSetup ?? {
+            if case .failed = setup.phase { setup.reset() }
+            await setup.setUp()
+        }
     }
 
     var body: some View {
@@ -165,7 +179,6 @@ struct SetupSheet: View {
                         .foregroundStyle(Theme.muted)
                     Spacer()
                     Button("Try again") {
-                        setup.reset()
                         startSetup()
                     }
                     .buttonStyle(.borderedProminent).tint(Theme.accent)
@@ -176,7 +189,7 @@ struct SetupSheet: View {
 
     private func startSetup() {
         setupTask?.cancel()
-        setupTask = Task { await setup.setUp() }
+        setupTask = Task { await runSetup() }
     }
 }
 

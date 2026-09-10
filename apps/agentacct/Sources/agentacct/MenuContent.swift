@@ -15,17 +15,20 @@ struct MenuContent: View {
     private let lastUpdatedTextOverride: String?
     private let launchAtLoginInitialState: Bool?
     private let snapshotBodyMaxHeight: CGFloat?
+    private let awaitRecorderSynchronization: () async -> SetupModel.AutomaticUpgradeOutcome
 
     init(
         buildIdentity: AppBuildIdentity = .current,
         lastUpdatedTextOverride: String? = nil,
         launchAtLoginInitialState: Bool? = nil,
-        snapshotBodyMaxHeight: CGFloat? = nil
+        snapshotBodyMaxHeight: CGFloat? = nil,
+        awaitRecorderSynchronization: @escaping () async -> SetupModel.AutomaticUpgradeOutcome = { .notNeeded }
     ) {
         self.buildIdentity = buildIdentity
         self.lastUpdatedTextOverride = lastUpdatedTextOverride
         self.launchAtLoginInitialState = launchAtLoginInitialState
         self.snapshotBodyMaxHeight = snapshotBodyMaxHeight
+        self.awaitRecorderSynchronization = awaitRecorderSynchronization
     }
 
     var body: some View {
@@ -477,7 +480,12 @@ struct MenuContent: View {
                         help: "Refresh now",
                         identifier: "menu.refresh"
                     ) {
-                        state.refreshNow()
+                        Task {
+                            await performAfterRecorderSynchronization(
+                                awaitReady: awaitRecorderSynchronization,
+                                operation: { state.refreshNow() }
+                            )
+                        }
                     }
                     .disabled(state.isRefreshing)
                     .keyboardShortcut("r", modifiers: .command)
@@ -541,12 +549,21 @@ struct MenuContent: View {
     }
 
     private func openMain(selecting destination: DashboardDestination?) {
-        if let destination {
-            selection.open(destination)
+        Task {
+            await presentWindowThenRefreshAfterRecorderSynchronization(
+                awaitReady: awaitRecorderSynchronization,
+                presentWindow: {
+                    if let destination {
+                        selection.open(destination)
+                    }
+                    openWindow(id: "main")
+                    NSApp.activate(ignoringOtherApps: true)
+                },
+                refresh: {
+                    await dashboard.refresh()
+                }
+            )
         }
-        openWindow(id: "main")
-        NSApp.activate(ignoringOtherApps: true)
-        Task { await dashboard.refresh() }
     }
 }
 

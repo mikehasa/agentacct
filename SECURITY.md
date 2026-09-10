@@ -28,10 +28,13 @@ agentacct is local-first:
 - It does not include telemetry.
 - It does not store provider API keys in ledgers, reports, or config.
 - API keys must be supplied through environment variables for commands that explicitly need them.
-- The dashboard/API bind to localhost by default.
+- The local API binds to localhost by default.
+- Native-shell `/v1/*` routes require a per-boot bearer token stored in the
+  owner-only `<store>/local-api.json` discovery file.
 - Provider forwarding is disabled by default.
 - Real provider forwarding requires an explicit provider allowlist and local `--max-total-usd` budget cap.
-- MCP tools intentionally expose safe local report/event/value primitives and do not expose paid judge calls.
+- MCP tools intentionally expose safe local report, event, and workflow-evidence
+  primitives; they do not expose paid provider calls.
 
 ## Process-control boundary
 
@@ -56,8 +59,23 @@ Do not put these values in event metadata, reports, issue comments, screenshots,
 
 ## Localhost services
 
-The local dashboard/API are unauthenticated and intended for trusted localhost clients. Do not expose them on `0.0.0.0`, a public interface, or a tunnel without adding authentication and reviewing the data being served.
+The API has two compatibility lanes with different controls:
+
+- Native-shell `/v1/*` routes are bearer-gated. The daemon writes the actual
+  port and per-boot token to `<store>/local-api.json` with owner-only permissions;
+  a missing configured token fails closed, and a missing or invalid bearer is
+  rejected.
+- Legacy JSON routes remain available to trusted localhost clients without
+  bearer authentication. They are still protected by loopback binding, a
+  localhost-only `Host` guard, and `Origin` checks for browser mutations.
+
+Do not bind the service to `0.0.0.0`, expose it through a public interface, or
+put it behind a tunnel without adding an appropriate authentication boundary
+and reviewing the data being served.
 
 ## Supported versions
 
-agentacct is currently early alpha. Security fixes target the latest `main` branch until versioned releases exist.
+agentacct publishes versioned releases. Security fixes are developed on the
+current `main` branch and shipped in a new release; users should reproduce and
+report against the latest published version and upgrade from older early-alpha
+releases.

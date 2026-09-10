@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
 
+from . import version as version_info
 from .hooks import (
     _CONSUMER_ANCESTOR_MAX_DEPTH,
     CLAUDE_CODE_HOOK_CONTEXT_RELATIVE_PATH,
@@ -154,7 +155,7 @@ TOOLS: list[dict[str, Any]] = [
 
     {
         "name": "agentacct_record_event",
-        "description": "Record a redacted local integration event for the agentacct dashboard/event hub. Does not call paid APIs.",
+        "description": "Record a redacted local integration event in agentacct's local work ledger. Does not call paid APIs.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -294,7 +295,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "agentacct_list_events",
-        "description": "List recent local integration events recorded for the dashboard/event hub.",
+        "description": "List recent local integration events recorded in the work ledger.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1910,7 +1911,7 @@ def build_initialize_result(params: Any) -> dict[str, Any]:
         # Pre-rename registrations still launch this server under the old
         # config key; pairing accepts both (log_evidence), so the
         # serverInfo name can advertise the new brand unconditionally.
-        "serverInfo": {"name": "agentacct", "version": "0.1.0"},
+        "serverInfo": {"name": "agentacct", "version": version_info.package_version()},
         "capabilities": {"tools": {}},
         # Directive, tool-aware guidance delivered at the tool
         # layer, where Claude Code's tool-deferral barrier lives:

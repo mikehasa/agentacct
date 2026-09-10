@@ -1,5 +1,11 @@
 # Usage & limits review synthesis input
 
+> Historical pre-implementation artifact. This corpus and its unchecked gates
+> record the state of the design review before implementation; they are not the
+> current product backlog. The merged Usage & limits pane is implemented in the
+> 0.10.6 app; current shipped status lives in `apps/agentacct/README.md` and
+> `CHANGELOG.md`.
+
 ## Corpus validation
 
 - Matrix: exactly 100 numbered scenarios, 001-100.

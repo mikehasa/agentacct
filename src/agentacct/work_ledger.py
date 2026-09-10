@@ -3126,7 +3126,14 @@ def _session_join_summary(
 
 
 def _session_work_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
-    counts = {"total": len(items), "completed": 0, "resolved": 0, "active": 0, "blocked": 0}
+    counts = {
+        "total": len(items),
+        "completed": 0,
+        "resolved": 0,
+        "active": 0,
+        "blocked": 0,
+        "handed_off": 0,
+    }
     evidence = {"strong": 0, "weak": 0, "failed": 0, "none": 0}
     listed: list[dict[str, Any]] = []
     for item in items:
@@ -3137,6 +3144,8 @@ def _session_work_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
             counts["resolved"] += 1
         elif status == "blocked":
             counts["blocked"] += 1
+        elif status == "handed_off":
+            counts["handed_off"] += 1
         else:
             counts["active"] += 1
         evidence_status = str(item.get("evidence_status") or "none")
@@ -4546,7 +4555,14 @@ def _confidence_breakdown(usage_events: list[dict[str, Any]], key: str) -> list[
 
 
 def _work_status_counts(work_items: list[dict[str, Any]]) -> dict[str, int]:
-    counts = {"active": 0, "completed": 0, "resolved": 0, "blocked": 0, "checkpoint": 0}
+    counts = {
+        "active": 0,
+        "completed": 0,
+        "resolved": 0,
+        "blocked": 0,
+        "handed_off": 0,
+        "checkpoint": 0,
+    }
     for item in work_items:
         status = item.get("latest_status")
         if status == "completed":
@@ -4555,6 +4571,8 @@ def _work_status_counts(work_items: list[dict[str, Any]]) -> dict[str, int]:
             counts["resolved"] += 1
         elif status == "blocked":
             counts["blocked"] += 1
+        elif status == "handed_off":
+            counts["handed_off"] += 1
         elif status == "checkpoint":
             counts["checkpoint"] += 1
             counts["active"] += 1

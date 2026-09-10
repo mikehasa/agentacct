@@ -6,7 +6,9 @@ once in ``agentacct.install_guide`` (also used by ``setup prompt``); this
 suite fails CI whenever the document drifts from the module.
 """
 
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 from typer.testing import CliRunner
@@ -74,14 +76,17 @@ def test_install_md_embeds_the_global_install_section(install_md_text: str) -> N
         assert f"- {note}" in install_md_text
 
 
-def test_global_install_block_never_relies_on_env_or_legacy_store() -> None:
+def test_global_install_block_delegates_store_choice_and_binds_it_explicitly() -> None:
     block = install_guide.GLOBAL_INSTALL_BLOCK
-    # Explicit absolute store binding on every store-touching command: GUI
-    # clients do not inherit shell env vars, so env selection cannot appear.
+    # Store selection comes from the executable onboarding resolver; every
+    # registration then embeds the resulting absolute path because GUI clients
+    # do not inherit shell env vars.
     assert "AGENT_CHRONICLE_STORE_DIR" not in block
+    assert '"$AGENTACCT_BIN" setup global-store-path' in block
+    assert "XDG_STATE_HOME" not in block
     for line in block.splitlines():
-        if "mcp serve" in line or line.startswith("agentacct serve") or "hooks claude-code install" in line:
-            assert '--store-dir "$HOME/.agent-sentinel-global/state"' in line, line
+        if "mcp serve" in line or " serve " in line or "hooks claude-code install" in line:
+            assert '--store-dir "$AGENTACCT_GLOBAL_STORE"' in line, line
     # The legacy silent-fallback path must never be recommended as the store.
     assert "$HOME/.agent-sentinel/state" not in block
     assert "~/.agent-sentinel/state" not in block
@@ -94,8 +99,9 @@ def test_global_block_guards_non_path_installs_and_asks_first() -> None:
     command (silently dead user-scope server), and the user/global config
     mutations carry the ask-first step the document's own ground rule demands."""
     block = install_guide.GLOBAL_INSTALL_BLOCK
-    assert 'AGENTACCT_BIN="$(command -v agentacct)"' in block
-    assert '[ -n "$AGENTACCT_BIN" ] || AGENTACCT_BIN=' in block
+    assert 'AGENTACCT_BIN="$(command -v agentacct 2>/dev/null || true)"' in block
+    assert 'case "$AGENTACCT_BIN" in' in block
+    assert '[ -x "$AGENTACCT_BIN" ] ||' in block
     # The bare inline substitution (empty-arg hazard) must not return.
     assert '"$(command -v agentacct)" mcp serve' not in block
     assert "show them to the user and ask first" in block
@@ -103,6 +109,61 @@ def test_global_block_guards_non_path_installs_and_asks_first() -> None:
     for line in block.splitlines():
         if "mcp add" in line and not line.lstrip().startswith("#"):
             assert '"$AGENTACCT_BIN"' in line, line
+
+
+def _global_cli_resolver_fragment() -> str:
+    return install_guide.GLOBAL_INSTALL_BLOCK.split("AGENTACCT_GLOBAL_STORE=", 1)[0]
+
+
+def test_global_block_rejects_relative_path_resolution(tmp_path: Path) -> None:
+    relative_bin = tmp_path / "relative-bin"
+    relative_bin.mkdir()
+    executable = relative_bin / "agentacct"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update({"HOME": str(tmp_path / "home"), "PATH": "relative-bin"})
+    result = subprocess.run(
+        ["/bin/bash", "-c", _global_cli_resolver_fragment()],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Could not resolve an absolute executable agentacct path" in result.stderr
+
+
+def test_global_block_replaces_relative_path_with_absolute_fallback(tmp_path: Path) -> None:
+    relative_bin = tmp_path / "relative-bin"
+    relative_bin.mkdir()
+    relative_executable = relative_bin / "agentacct"
+    relative_executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    relative_executable.chmod(0o755)
+
+    home = tmp_path / "home"
+    fallback = home / ".agentacct" / "bin" / "agentacct"
+    fallback.parent.mkdir(parents=True)
+    fallback.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fallback.chmod(0o755)
+
+    script = _global_cli_resolver_fragment() + "printf '%s\\n' \"$AGENTACCT_BIN\"\n"
+    env = os.environ.copy()
+    env.update({"HOME": str(home), "PATH": "relative-bin"})
+    result = subprocess.run(
+        ["/bin/bash", "-c", script],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(fallback)
 
 
 def test_ground_rule_scopes_state_to_this_machine_not_one_repo() -> None:
@@ -161,6 +222,9 @@ def test_one_liner_is_a_single_public_install_line() -> None:
     # The public paste line installs agentacct from PyPI and stays ONE line.
     assert "pipx install agentacct" in install_guide.ONE_LINE_PROMPT
     assert "\n" not in install_guide.ONE_LINE_PROMPT, "the paste prompt must stay a single line"
+    assert "agentacct tui" in install_guide.ONE_LINE_PROMPT
+    assert "local JSON API" in install_guide.ONE_LINE_PROMPT
+    assert "dashboard URL" not in install_guide.ONE_LINE_PROMPT
 
 
 def test_public_install_surfaces_do_not_reference_the_deleted_repository() -> None:
@@ -190,11 +254,11 @@ def test_global_install_recipe_installs_standing_instructions() -> None:
     instruction; the recipe must now include `setup instructions` for both
     write-mcp clients, and the mirror must land in INSTALL.md."""
     block = install_guide.GLOBAL_INSTALL_BLOCK
-    assert "agentacct setup instructions --agent claude-code --user" in block
-    assert "agentacct setup instructions --agent codex --user" in block
+    assert "setup instructions --agent claude-code --user" in block
+    assert "setup instructions --agent codex --user" in block
     md = INSTALL_MD.read_text(encoding="utf-8")
-    assert "agentacct setup instructions --agent claude-code --user" in md
-    assert "agentacct setup instructions --agent codex --user" in md
+    assert "setup instructions --agent claude-code --user" in md
+    assert "setup instructions --agent codex --user" in md
     # The note explaining WHY this is what fills the dashboard must ship too.
     assert any("fill the work views (TUI / JSON API) with work context" in note for note in install_guide.GLOBAL_INSTALL_NOTES)
 
@@ -207,13 +271,91 @@ def test_global_install_instructions_bind_the_marker_store_explicitly() -> None:
     block = install_guide.GLOBAL_INSTALL_BLOCK
     for line in block.splitlines():
         if "setup instructions" in line and not line.lstrip().startswith("#"):
-            assert '--store-dir "$HOME/.agent-sentinel-global/state"' in line, line
+            assert '--store-dir "$AGENTACCT_GLOBAL_STORE"' in line, line
     md = INSTALL_MD.read_text(encoding="utf-8")
     for agent in ("claude-code", "codex"):
         assert (
-            f'agentacct setup instructions --agent {agent} --user --store-dir "$HOME/.agent-sentinel-global/state"'
+            f'setup instructions --agent {agent} --user --store-dir "$AGENTACCT_GLOBAL_STORE"'
             in md
         )
+
+
+def test_global_install_recipe_uses_the_onboard_store_resolver_and_absolute_cli() -> None:
+    block = install_guide.GLOBAL_INSTALL_BLOCK
+    assert '$HOME/.agentacct/bin/agentacct' in block
+    assert ".agentacct-cli" not in block
+    assert '"$("$AGENTACCT_BIN" setup global-store-path)"' in block
+    assert 'printf \'BIN=%s\\nSTORE=%s\\n\'' in block
+    runtime_lines = [line for line in block.splitlines() if line.startswith('"$AGENTACCT_BIN"')]
+    assert any(" hooks " in line for line in runtime_lines)
+    assert sum(" setup instructions " in line for line in runtime_lines) == 2
+    assert any(" serve " in line for line in runtime_lines)
+    assert "AGENTACCT_STATE_ROOT" not in block
+
+
+def test_setup_global_store_path_delegates_to_onboarding_resolver(tmp_path, monkeypatch) -> None:
+    expected = tmp_path / "existing-global" / "state"
+    monkeypatch.setattr("agentacct.cli.onboard_global_store_dir", lambda: (expected, True))
+
+    human = runner.invoke(app, ["setup", "global-store-path"])
+    machine = runner.invoke(app, ["setup", "global-store-path", "--json"])
+
+    assert human.exit_code == 0, human.output
+    assert human.output.strip() == str(expected)
+    assert machine.exit_code == 0, machine.output
+    assert f'"store_dir": "{expected}"' in machine.output
+    assert '"pre_existing": true' in machine.output
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["setup", "global-store-path"],
+        ["onboard", "--no-start", "--no-mcp", "--yes"],
+        ["hooks", "codex", "install"],
+        ["hooks", "hermes", "install"],
+        ["hooks", "opencode", "install"],
+    ],
+)
+def test_global_store_conflicts_are_actionable_cli_errors(
+    arguments: list[str], monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENTACCT_GLOBAL_STORE_DIR", "/tmp/agentacct-new-store")
+    monkeypatch.setenv("AGENT_CHRONICLE_GLOBAL_STORE_DIR", "/tmp/agentacct-old-store")
+    monkeypatch.delenv("AGENT_SENTINEL_GLOBAL_STORE_DIR", raising=False)
+
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 2
+    assert "Conflicting global-store environment variables" in result.output
+    assert "AGENTACCT_GLOBAL_STORE_DIR" in result.output
+    assert "AGENT_CHRONICLE_GLOBAL_STORE_DIR" in result.output
+    assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["setup", "global-store-path"],
+        ["onboard", "--no-start", "--no-mcp", "--yes"],
+        ["hooks", "codex", "install"],
+        ["hooks", "hermes", "install"],
+        ["hooks", "opencode", "install"],
+    ],
+)
+def test_relative_global_store_override_is_an_actionable_cli_error(
+    arguments: list[str], monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENTACCT_GLOBAL_STORE_DIR", "relative/state")
+    monkeypatch.delenv("AGENT_CHRONICLE_GLOBAL_STORE_DIR", raising=False)
+    monkeypatch.delenv("AGENT_SENTINEL_GLOBAL_STORE_DIR", raising=False)
+
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 2
+    assert "must use an absolute path" in result.output
+    assert "AGENTACCT_GLOBAL_STORE_DIR" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_global_install_notes_reference_the_merge_tool() -> None:
@@ -267,9 +409,9 @@ def test_mcp_server_instructions_are_directive_honest_and_deferral_aware() -> No
     text = install_guide.MCP_SERVER_INSTRUCTIONS
     assert text == install_guide.mcp_server_instructions()
     assert text.strip()
-    # States plainly WHY: it records what the session did for the local dashboard.
+    # States plainly WHY: it records what the session did for local work views.
     assert "records what this session actually did" in text
-    assert "dashboard" in text
+    assert "local work views" in text
     # Directs the two recording tools.
     assert "agentacct_record_section" in text
     assert "section_status=started" in text
@@ -351,8 +493,8 @@ def test_session_start_additional_context_is_directive_honest_and_concise() -> N
     text = install_guide.SESSION_START_ADDITIONAL_CONTEXT
     assert text == install_guide.session_start_additional_context()
     assert text.strip()
-    # Says WHY (dashboard, work-not-tokens) and directs the recording tools.
-    assert "dashboard" in text
+    # Says WHY (local work views, work-not-tokens) and directs the recording tools.
+    assert "local work views" in text
     assert "agentacct_record_section" in text
     assert "agentacct_record_machine_check" in text
     # Deferral-aware: the tools may need loading first.

@@ -23,7 +23,7 @@ from agentacct.autostart import (
     render_systemd_unit,
     uninstall_autostart,
 )
-from agentacct.cli import _supervise_foreground, app
+from agentacct.cli import _autostart_executable, _supervise_foreground, app
 
 ABS_EXE = "/opt/venv/bin/agentacct"
 ABS_STORE = "/home/dev/.agent-sentinel/state"
@@ -44,6 +44,47 @@ class RecordingRunner:
                 self.returncode = rc
 
         return _Completed(self.returncode)
+
+
+def _app_owned_cli_layout(tmp_path: Path) -> dict[str, Path]:
+    home = tmp_path / "home"
+    stable_dir = home / ".local" / "share" / "agentacct" / "cli"
+    versions_root = home / ".local" / "share" / "agentacct" / "cli-versions"
+    target = versions_root / "v0.10.6-a1b2c3d4e5f6-test"
+    stable_launcher = stable_dir / "agentacct"
+    target_marker = stable_dir / ".agentacct-app-target"
+    versions_marker = versions_root / ".agentacct-app-managed"
+    target_binary = target / "agentacct"
+
+    stable_dir.mkdir(parents=True)
+    target.mkdir(parents=True)
+    versions_marker.write_text("agentacct-macos-app-cli-versions-v1\n", encoding="utf-8")
+    versions_marker.chmod(0o600)
+    target_marker.write_text(f"{target}\n", encoding="utf-8")
+    target_marker.chmod(0o600)
+    # Frozen App CLIs are much larger than marker files; executable validation
+    # must not accidentally apply the small-text read limit.
+    target_binary.write_bytes(b"#!/bin/sh\n" + (b"#" * 9_000))
+    target_binary.chmod(0o755)
+    stable_launcher.write_text(
+        "#!/bin/sh\n"
+        f"PATH='{home / '.local' / 'bin'}':\"${{PATH:-/usr/bin:/bin:/usr/sbin:/sbin}}\"\n"
+        "export PATH\n"
+        f"target_file='{target_marker}'\n"
+        'IFS= read -r target < "$target_file" || exit 1\n'
+        '[ -n "$target" ] || exit 1\n'
+        'exec "$target/agentacct" "$@"\n',
+        encoding="utf-8",
+    )
+    stable_launcher.chmod(0o755)
+    return {
+        "home": home,
+        "stable_launcher": stable_launcher,
+        "target": target,
+        "target_binary": target_binary,
+        "target_marker": target_marker,
+        "versions_marker": versions_marker,
+    }
 
 
 # --- program arguments -------------------------------------------------------
@@ -319,6 +360,109 @@ def test_uninstall_dry_run_changes_nothing(tmp_path: Path) -> None:
     assert runner.calls == []
 
 
+# --- App-owned executable selection -----------------------------------------
+
+
+def test_autostart_uses_stable_launcher_for_verified_app_owned_cli(tmp_path: Path) -> None:
+    layout = _app_owned_cli_layout(tmp_path)
+
+    selected = _autostart_executable(
+        str(layout["target_binary"]),
+        home=layout["home"],
+    )
+
+    assert selected == str(layout["stable_launcher"])
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "versions_marker_contents",
+        "versions_marker_permissions",
+        "versions_marker_symlink",
+        "target_marker_format",
+        "target_marker_permissions",
+        "target_marker_symlink",
+        "stable_directory_permissions",
+        "versions_directory_permissions",
+        "target_directory_permissions",
+        "target_directory_symlink",
+        "stable_launcher_contents",
+        "stable_launcher_permissions",
+        "stable_launcher_symlink",
+        "target_binary_permissions",
+        "target_binary_symlink",
+        "different_current_executable",
+    ],
+)
+def test_autostart_preserves_current_executable_when_app_ownership_is_not_exact(
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    layout = _app_owned_cli_layout(tmp_path)
+    current = layout["target_binary"]
+
+    if damage == "versions_marker_contents":
+        layout["versions_marker"].write_text("unknown-owner\n", encoding="utf-8")
+    elif damage == "versions_marker_permissions":
+        layout["versions_marker"].chmod(0o644)
+    elif damage == "versions_marker_symlink":
+        replacement = layout["versions_marker"].with_name("versions-marker-replacement")
+        layout["versions_marker"].rename(replacement)
+        layout["versions_marker"].symlink_to(replacement)
+    elif damage == "target_marker_format":
+        layout["target_marker"].write_text(f"{layout['target']}\nextra\n", encoding="utf-8")
+    elif damage == "target_marker_permissions":
+        layout["target_marker"].chmod(0o644)
+    elif damage == "target_marker_symlink":
+        replacement = layout["target_marker"].with_name("target-marker-replacement")
+        layout["target_marker"].rename(replacement)
+        layout["target_marker"].symlink_to(replacement)
+    elif damage == "stable_directory_permissions":
+        layout["stable_launcher"].parent.chmod(0o777)
+    elif damage == "versions_directory_permissions":
+        layout["versions_marker"].parent.chmod(0o777)
+    elif damage == "target_directory_permissions":
+        layout["target"].chmod(0o777)
+    elif damage == "target_directory_symlink":
+        replacement = tmp_path / "target-directory-replacement"
+        layout["target"].rename(replacement)
+        layout["target"].symlink_to(replacement, target_is_directory=True)
+        current = replacement / "agentacct"
+    elif damage == "stable_launcher_contents":
+        layout["stable_launcher"].write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    elif damage == "stable_launcher_permissions":
+        layout["stable_launcher"].chmod(0o775)
+    elif damage == "stable_launcher_symlink":
+        layout["stable_launcher"].unlink()
+        layout["stable_launcher"].symlink_to(layout["target_binary"])
+    elif damage == "target_binary_permissions":
+        layout["target_binary"].chmod(0o775)
+    elif damage == "target_binary_symlink":
+        replacement = layout["target_binary"].with_name("agentacct-real")
+        layout["target_binary"].rename(replacement)
+        layout["target_binary"].symlink_to(replacement)
+    elif damage == "different_current_executable":
+        current = tmp_path / "other-agentacct"
+        current.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        current.chmod(0o755)
+    else:  # pragma: no cover - keeps future parametrization edits explicit
+        raise AssertionError(f"unknown damage case: {damage}")
+
+    assert _autostart_executable(str(current), home=layout["home"]) == str(current)
+
+
+def test_autostart_preserves_current_executable_when_files_are_not_owned_by_current_uid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _app_owned_cli_layout(tmp_path)
+    current = str(layout["target_binary"])
+    monkeypatch.setattr("agentacct.cli.os.geteuid", lambda: -1)
+
+    assert _autostart_executable(current, home=layout["home"]) == current
+
+
 # --- CLI wiring --------------------------------------------------------------
 
 
@@ -372,6 +516,38 @@ def test_cli_install_autostart_dry_run_writes_and_loads_nothing(
     assert not expected.exists()
     assert called == []
     assert "start --foreground" in " ".join(result.output.split())
+
+
+def test_cli_install_autostart_uses_verified_app_stable_launcher(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _app_owned_cli_layout(tmp_path)
+    store = tmp_path / "store"
+    store.mkdir()
+
+    monkeypatch.setattr("agentacct.cli.sys.platform", "linux")
+    monkeypatch.setattr(
+        "agentacct.cli.Path.home",
+        classmethod(lambda cls: layout["home"]),
+    )
+    monkeypatch.setattr("agentacct.cli.os.getuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(
+        "agentacct.cli._managed_runtime",
+        lambda resolved, host="127.0.0.1", port=8765: type(
+            "M", (), {"executable": str(layout["target_binary"])}
+        )(),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["install-autostart", "--store-dir", str(store), "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    unwrapped_output = "".join(result.output.splitlines())
+    assert str(layout["stable_launcher"]) in unwrapped_output
+    assert str(layout["target_binary"]) not in unwrapped_output
 
 
 # --- foreground supervisor loop ---------------------------------------------

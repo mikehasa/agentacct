@@ -193,7 +193,7 @@ def test_onboard_global_warns_when_hook_wrapper_lives_outside_claude_hooks(
     assert "outside ~/.claude/hooks/" in result.output
 
 
-def test_onboard_global_agent_opencode_writes_mcp_and_global_rules(
+def test_onboard_global_agent_opencode_writes_mcp_rules_and_plugin(
     tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = tmp_path / "repo"
@@ -215,6 +215,11 @@ def test_onboard_global_agent_opencode_writes_mcp_and_global_rules(
     rules = isolated_home / ".config" / "opencode" / "AGENTS.md"
     assert rules.exists()
     assert "agentacct" in rules.read_text()
+    # Client-specific observe-only v1 bridge, distinct from the render-only
+    # generic Evidence-v2 capture manifests.
+    plugin = isolated_home / ".config" / "opencode" / "plugins" / "agentacct.js"
+    assert plugin.exists()
+    assert str(store) in plugin.read_text()
     # Zero files leaked into the repo.
     for leaked in ("AGENTS.md", ".mcp.json", ".agent-sentinel"):
         assert not (repo / leaked).exists()

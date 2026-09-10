@@ -18,6 +18,10 @@ build/
 *.pyc
 .hermes/
 *.local.md
+# Machine-local operator helpers (for example private demo launchers). Keep
+# them next to the public scripts they exercise without publishing them.
+scripts/*.local.py
+scripts/*.local.sh
 .gstack/
 # macOS Finder metadata — never useful in the repo, easy to commit by accident.
 .DS_Store

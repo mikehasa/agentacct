@@ -7,14 +7,18 @@ import SwiftUI
 // Python daemon; this process only renders what the API vouches for.
 
 struct AgentacctApp: App {
-    @State private var glance = GlanceState()
+    @NSApplicationDelegateAdaptor(AgentacctAppDelegate.self) private var appDelegate
     @State private var dashboard = DashboardStore()
     @State private var selection = AppSelection()
 
+    private var lifecycle: AppLifecycleCoordinator { appDelegate.lifecycle }
+
     var body: some Scene {
         MenuBarExtra {
-            MenuContent()
-                .environment(glance)
+            MenuContent(awaitRecorderSynchronization: {
+                await lifecycle.waitUntilReady()
+            })
+                .environment(lifecycle.glance)
                 .environment(dashboard)
                 .environment(selection)
         } label: {
@@ -28,8 +32,8 @@ struct AgentacctApp: App {
         .menuBarExtraStyle(.window)
 
         Window("agentacct", id: "main") {
-            MainWindow()
-                .environment(glance)
+            MainWindow(setup: lifecycle.setup, lifecycle: lifecycle)
+                .environment(lifecycle.glance)
                 .environment(dashboard)
                 .environment(selection)
         }

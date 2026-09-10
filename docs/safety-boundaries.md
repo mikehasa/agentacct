@@ -54,11 +54,17 @@ Review or redact these artifacts before sharing them outside your trusted local 
 
 ## MCP safety
 
-The MCP server currently exposes safe local tools only:
+The MCP server currently exposes these nine safe local tools only:
 
-- list runs
-- get reports
-- record machine-check evidence
+- `agentacct_list_runs`
+- `agentacct_get_report`
+- `agentacct_record_machine_check`
+- `agentacct_record_event`
+- `agentacct_attach_client_context`
+- `agentacct_record_section`
+- `agentacct_record_agent_usage_debug`
+- `agentacct_list_events`
+- `agentacct_get_event_summary`
 
 MCP tool arguments are validated before dispatch. Invalid limits, missing required fields, and malformed run IDs return MCP invalid-params errors instead of generic server crashes.
 
@@ -89,6 +95,10 @@ The wrapper fails open: if no `agentacct` executable can be started, or the CLI 
 ## Capture and control safety
 
 - `/capture/*` is protected by the existing localhost guard.
+- Native-shell `/v1/*` routes require the per-boot bearer token read from the
+  owner-only `<store>/local-api.json` discovery file. Legacy JSON routes remain
+  available to trusted localhost clients without bearer auth, but still require
+  loopback binding plus the localhost Host/Origin guard.
 - Capture payloads are bounded to 1 MiB.
 - Control signals are advisory evaluations. The API and CLI always report
   `external_action_dispatched=false`.

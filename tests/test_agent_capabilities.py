@@ -67,8 +67,8 @@ def test_manifest_has_stable_independent_lanes_and_no_supported_badge() -> None:
     assert "supported" not in json.dumps(manifest).lower()
 
 
-def test_manifest_matches_usage_and_capture_registries_without_promoting_cursor() -> None:
-    """Clients with usage/capture must match the usage + capture registries exactly."""
+def test_manifest_matches_usage_and_distinguishes_generic_from_installed_capture() -> None:
+    """Usage stays registry-exact; mechanical also includes installed v1 bridges outside the generic-v2 registry."""
     rows = _client_rows()
     usage_clients = {
         client
@@ -83,8 +83,35 @@ def test_manifest_matches_usage_and_capture_registries_without_promoting_cursor(
 
     assert usage_clients == set(USAGE_EVENT_CLIENTS) == set(KNOWN_USAGE_CLIENTS)
     assert set(SUPPORTED_CLIENTS) == {*USAGE_EVENT_CLIENTS, "cursor"}
-    assert capture_clients == set(DEFAULT_CAPTURE_REGISTRY.vendors())
+    generic_v2_manifest_clients = set(DEFAULT_CAPTURE_REGISTRY.vendors())
+    assert generic_v2_manifest_clients == {"claude-code", "codex", "cursor"}
+    assert capture_clients == {*generic_v2_manifest_clients, "hermes", "opencode"}
     assert rows["cursor"]["capabilities"]["usage_import"]["state"] == "unavailable"
+
+
+def test_global_onboard_capture_and_install_capabilities_match_current_writers() -> None:
+    """Codex/Hermes/OpenCode expose their installed v1 surfaces without claiming generic-v2 activation."""
+    rows = _client_rows()
+
+    for client in ("codex", "hermes", "opencode"):
+        capture = rows[client]["capabilities"]["mechanical_capture"]
+        install = rows[client]["capabilities"]["automatic_install"]
+        assert capture["state"] == "experimental"
+        assert capture["activation"] == "one_command_global"
+        assert "v1" in capture["scope"]
+        assert capture["verification"]["level"] == "synthetic_fixture"
+        assert install["state"] == "experimental"
+        assert install["activation"] == "one_command_global"
+        assert "onboard --scope global" in install["scope"]
+        assert install["verification"]["level"] == "synthetic_fixture"
+
+    assert "generic Evidence v2 capture manifest" in " ".join(
+        rows["codex"]["capabilities"]["mechanical_capture"]["limitations"]
+    )
+    for client in ("hermes", "opencode"):
+        limitations = " ".join(rows[client]["capabilities"]["mechanical_capture"]["limitations"])
+        assert "generic Evidence v2 manifest system" in limitations
+        assert "no " + ("Hermes" if client == "hermes" else "OpenCode") + " generic manifest adapter" in limitations
 
 
 # ---------------------------------------------------------------------------
@@ -146,8 +173,6 @@ def test_claude_one_command_install_is_scoped_to_onboard_and_fixture_only() -> N
     ]
     assert any("init --write-mcp" in value for value in capability["limitations"])
     for client in (
-        "hermes",
-        "opencode",
         "openclaw",
         "cursor",
         "gemini-cli",

@@ -43,8 +43,8 @@ Call agentacct_record_section with:
 
 During work:
 
-- Record checkpoints after important decisions, handoffs, or scope changes: call `agentacct_record_section` again with the same `section_id` and `section_status=checkpoint`.
-- Sections are the work contract: use `section_status=started`, `checkpoint`, `completed`, or `blocked`, and include the same client/session/turn identifiers when known.
+- Record checkpoints after important decisions or scope changes: call `agentacct_record_section` again with the same `section_id` and `section_status=checkpoint`.
+- Sections are the work contract: use `section_status=started`, `checkpoint`, `completed`, `blocked`, or `handed_off`, and include the same client/session/turn identifiers when known. `started` and `checkpoint` keep a section in progress; `completed`, `blocked`, and `handed_off` are terminal.
 - If the client exposes visible token/cost usage during the session, call `agentacct_record_agent_usage_debug` with `reporting_basis=visible_client_usage` and the same client/session/turn identifiers. If the client does not expose usage, call it with `reporting_basis=unavailable`; do not invent token or cost numbers.
 - Record failures/blockers instead of hiding them.
 - After tests, builds, lint, smoke tests, or browser checks, record machine-check evidence with `agentacct_record_machine_check` when available; otherwise use `agentacct_record_event` with a compact result summary.
@@ -70,6 +70,19 @@ Call agentacct_record_section with:
   run_id: <same task/session id>
   blocker: concrete blocker
   next_step: what would unblock it
+```
+
+If handing the work to another agent/session, or stopping cleanly so the user can
+continue elsewhere, close the section instead of leaving a checkpoint active:
+
+```text
+Call agentacct_record_section with:
+  section_id: <same section id>
+  section_status: handed_off
+  source: <client-or-agent-name>
+  run_id: <same task/session id>
+  summary: what is complete and what remains
+  next_step: the concrete continuation point
 ```
 
 ## Claim boundaries

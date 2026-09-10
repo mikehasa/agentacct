@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 // Finds and talks to the local agentacct daemon.
 //
@@ -50,6 +51,23 @@ extension GlanceClientError: LocalizedError {
     var errorDescription: String? { description }
 }
 
+enum GlanceStoreResolutionError: LocalizedError, Equatable {
+    case conflictingStoreEnvironment([String])
+    case relativeStoreEnvironment(name: String, value: String)
+    case invalidGlobalLedger(path: String, detail: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .conflictingStoreEnvironment(let assignments):
+            return "Conflicting store-directory environment variables (\(assignments.joined(separator: ", "))). Unset all but one or make them equal."
+        case .relativeStoreEnvironment(let name, let value):
+            return "\(name) must be an absolute path, not \(value)."
+        case .invalidGlobalLedger(let path, let detail):
+            return "Could not inspect the global event ledger at \(path): \(detail). Repair or move that file before selecting another global store."
+        }
+    }
+}
+
 struct GlanceSnapshot {
     let glance: Glance
     let daemonVersion: String
@@ -70,21 +88,199 @@ final class GlanceClient {
         session = URLSession(configuration: config)
     }
 
-    static func storeDir() -> URL {
-        let env = ProcessInfo.processInfo.environment
-        if let override = env["AGENTACCT_STORE_DIR"], !override.isEmpty {
-            return URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
-        }
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent(".local/state/agentacct/state")
+    static func storeDir() throws -> URL {
+        try storeDir(
+            environment: ProcessInfo.processInfo.environment,
+            home: FileManager.default.homeDirectoryForCurrentUser
+        )
     }
 
-    static func discoveryPath() -> URL {
-        storeDir().appendingPathComponent("local-api.json")
+    static func globalStoreDir() throws -> URL {
+        try globalStoreDir(
+            environment: ProcessInfo.processInfo.environment,
+            home: FileManager.default.homeDirectoryForCurrentUser
+        )
+    }
+
+    /// Resolve the App's display store. Ordinary STORE aliases intentionally
+    /// override the global ledger shown in the UI; without one, display and
+    /// managed-runtime selection share `globalStoreDir`.
+    static func storeDir(
+        environment: [String: String],
+        home: URL,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        let storeAliases = [
+            "AGENTACCT_STORE_DIR",
+            "AGENT_CHRONICLE_STORE_DIR",
+            "AGENT_SENTINEL_STORE_DIR",
+        ]
+        let explicit = storeAliases.compactMap { name -> (String, String)? in
+            guard let value = nonBlank(environment[name]) else { return nil }
+            return (name, value)
+        }
+        if Set(explicit.map(\.1)).count > 1 {
+            throw GlanceStoreResolutionError.conflictingStoreEnvironment(
+                explicit.map { "\($0.0)=\($0.1)" }
+            )
+        }
+        if let (name, raw) = explicit.first {
+            let expanded = (raw as NSString).expandingTildeInPath
+            guard (expanded as NSString).isAbsolutePath else {
+                throw GlanceStoreResolutionError.relativeStoreEnvironment(name: name, value: raw)
+            }
+            return URL(fileURLWithPath: expanded, isDirectory: true)
+        }
+
+        return try globalStoreDir(
+            environment: environment,
+            home: home,
+            fileManager: fileManager
+        )
+    }
+
+    /// Mirror `agentacct setup global-store-path`, which is also the exact
+    /// target used by global onboarding. Ordinary STORE aliases are ignored so
+    /// a display-only override cannot redirect stop/swap/start away from the
+    /// App-owned managed runtime. Existing ledger records win in recognized
+    /// order; otherwise an absolute GLOBAL override is the creation target,
+    /// falling back to the canonical XDG-shaped store.
+    static func globalStoreDir(
+        environment: [String: String],
+        home: URL,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        let canonicalBase: URL
+        if let rawXDG = nonBlank(environment["XDG_STATE_HOME"]),
+           ((rawXDG as NSString).expandingTildeInPath as NSString).isAbsolutePath {
+            canonicalBase = URL(
+                fileURLWithPath: (rawXDG as NSString).expandingTildeInPath,
+                isDirectory: true
+            )
+        } else {
+            canonicalBase = home.appendingPathComponent(".local/state", isDirectory: true)
+        }
+        let canonical = canonicalBase.appendingPathComponent("agentacct/state", isDirectory: true)
+        let legacy = home.appendingPathComponent(".agent-sentinel-global/state", isDirectory: true)
+
+        let globalAliases = [
+            "AGENTACCT_GLOBAL_STORE_DIR",
+            "AGENT_CHRONICLE_GLOBAL_STORE_DIR",
+            "AGENT_SENTINEL_GLOBAL_STORE_DIR",
+        ]
+        let globalOverrides = globalAliases.compactMap { name -> (String, String)? in
+            guard let value = nonBlank(environment[name]) else { return nil }
+            return (name, value)
+        }
+        if Set(globalOverrides.map(\.1)).count > 1 {
+            throw GlanceStoreResolutionError.conflictingStoreEnvironment(
+                globalOverrides.map { "\($0.0)=\($0.1)" }
+            )
+        }
+
+        var candidates: [URL] = []
+        var operatorOverride: URL?
+        if let (name, raw) = globalOverrides.first {
+            let expanded = (raw as NSString).expandingTildeInPath
+            guard (expanded as NSString).isAbsolutePath else {
+                throw GlanceStoreResolutionError.relativeStoreEnvironment(
+                    name: name,
+                    value: raw
+                )
+            }
+            let override = URL(fileURLWithPath: expanded, isDirectory: true)
+            operatorOverride = override
+            candidates.append(override)
+        }
+        candidates.append(canonical)
+        candidates.append(legacy)
+
+        var seen = Set<String>()
+        candidates = candidates.filter { seen.insert($0.path).inserted }
+        if let populated = try candidates.first(where: {
+            try storeHasRecords($0, fileManager: fileManager)
+        }) {
+            return populated
+        }
+        return operatorOverride ?? canonical
+    }
+
+    private static func nonBlank(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func storeHasRecords(
+        _ store: URL,
+        fileManager: FileManager
+    ) throws -> Bool {
+        // Match Python Path.is_file(): ledger artifacts may be symlinks even
+        // when the selected store directory itself must retain its spelling.
+        let flatFile = store.appendingPathComponent("events.jsonl").resolvingSymlinksInPath()
+        if let attributes = try? fileManager.attributesOfItem(atPath: flatFile.path),
+           attributes[.type] as? FileAttributeType == .typeRegular,
+           let size = attributes[.size] as? NSNumber,
+           size.int64Value > 0 {
+            return true
+        }
+
+        let sqliteFile = store.appendingPathComponent("events.sqlite3").resolvingSymlinksInPath()
+        guard let attributes = try? fileManager.attributesOfItem(atPath: sqliteFile.path),
+              attributes[.type] as? FileAttributeType == .typeRegular
+        else { return false }
+
+        var database: OpaquePointer?
+        let openStatus = sqlite3_open_v2(
+            sqliteFile.path,
+            &database,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
+            nil
+        )
+        guard openStatus == SQLITE_OK, let database else {
+            let detail = database.map { String(cString: sqlite3_errmsg($0)) }
+                ?? "SQLite open failed with status \(openStatus)"
+            if let database { sqlite3_close(database) }
+            throw GlanceStoreResolutionError.invalidGlobalLedger(
+                path: sqliteFile.path,
+                detail: detail
+            )
+        }
+        defer { sqlite3_close(database) }
+
+        var statement: OpaquePointer?
+        let prepareStatus = sqlite3_prepare_v2(
+            database,
+            "SELECT 1 FROM event_lines LIMIT 1",
+            -1,
+            &statement,
+            nil
+        )
+        guard prepareStatus == SQLITE_OK, let statement else {
+            throw GlanceStoreResolutionError.invalidGlobalLedger(
+                path: sqliteFile.path,
+                detail: String(cString: sqlite3_errmsg(database))
+            )
+        }
+        defer { sqlite3_finalize(statement) }
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return true
+        case SQLITE_DONE:
+            return false
+        default:
+            throw GlanceStoreResolutionError.invalidGlobalLedger(
+                path: sqliteFile.path,
+                detail: String(cString: sqlite3_errmsg(database))
+            )
+        }
+    }
+
+    static func discoveryPath() throws -> URL {
+        try storeDir().appendingPathComponent("local-api.json")
     }
 
     func loadDiscovery() throws -> Discovery {
-        let path = Self.discoveryPath()
+        let path = try Self.discoveryPath()
         guard let data = try? Data(contentsOf: path) else {
             throw GlanceClientError.noDiscovery(path.path)
         }

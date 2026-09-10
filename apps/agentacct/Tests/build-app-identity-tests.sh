@@ -96,7 +96,7 @@ build_app "$missing_cli"
 
 frozen_cli="$temp_root/frozen-cli"
 mkdir -p "$frozen_cli"
-printf '%s\n' '#!/bin/bash' 'exit 0' >"$frozen_cli/agentacct"
+printf '%s\n' '#!/bin/bash' "echo 'agentacct 0.0.0'" >"$frozen_cli/agentacct"
 chmod +x "$frozen_cli/agentacct"
 printf '%s\n' "$expected_commit" >"$frozen_cli/.agentacct-source-commit"
 printf '%s\n' "$untracked_description" >"$frozen_cli/.agentacct-source-description"
@@ -123,6 +123,13 @@ expect_build_rejection \
 
 printf '%s\n' "$expected_commit" >"$frozen_cli/.agentacct-source-commit"
 printf '%s\n' "$expected_description" >"$frozen_cli/.agentacct-source-description"
+expect_build_rejection \
+    "a frozen CLI with a different release version" \
+    "$frozen_cli" \
+    "does not match app/project version $release_version"
+
+printf '%s\n' '#!/bin/bash' "echo 'agentacct $release_version'" >"$frozen_cli/agentacct"
+chmod +x "$frozen_cli/agentacct"
 if ! build_app "$frozen_cli"; then
     record_failure "a matching clean frozen CLI was rejected"
 elif ! cmp -s "$frozen_cli/agentacct" "$APP_ROOT/.build/agentacct.app/Contents/Resources/cli/agentacct"; then

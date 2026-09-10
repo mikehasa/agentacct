@@ -34,4 +34,5 @@ def test_architecture_keeps_mcp_first_class_but_non_mandatory() -> None:
 
     assert "MCP remains a first-class, high-value semantic source" in architecture
     assert "MCP absence never means that work or usage did not exist" in architecture
-    assert "v1 `events.jsonl` remains unchanged" in architecture
+    assert "the main event ledger is `events.sqlite3` by default" in architecture
+    assert "legacy flat-ledger authority" in architecture

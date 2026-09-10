@@ -13,11 +13,23 @@ struct MainWindow: View {
     @Environment(GlanceState.self) var glance
     @Environment(AppSelection.self) var selection
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @StateObject private var setup = SetupModel()
+    @StateObject private var setup: SetupModel
     @State private var showSetup = false
+    @State private var recorderSynchronizationFinished = false
     /// Design-review renders cannot infer whether the executable was packaged
     /// with the recorder. Live windows leave this nil and use SetupModel.
-    var canSetUpOverride: Bool? = nil
+    var canSetUpOverride: Bool?
+    private let lifecycle: AppLifecycleCoordinator?
+
+    init(
+        setup: SetupModel? = nil,
+        lifecycle: AppLifecycleCoordinator? = nil,
+        canSetUpOverride: Bool? = nil
+    ) {
+        _setup = StateObject(wrappedValue: setup ?? SetupModel())
+        self.lifecycle = lifecycle
+        self.canSetUpOverride = canSetUpOverride
+    }
 
     private var canSetUp: Bool {
         canSetUpOverride ?? (setup.bundledCLIDir != nil)
@@ -25,7 +37,12 @@ struct MainWindow: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TopBar(canSetUp: canSetUp) { showSetup = true }
+            TopBar(
+                canSetUp: canSetUp,
+                awaitRecorderSynchronization: {
+                    await waitForRecorderSynchronization()
+                }
+            ) { showSetup = true }
                 .fixedSize(horizontal: false, vertical: true)
             Rectangle().fill(Theme.rule).frame(height: 1)
             // Keep the window's content slot stable while old and new panes
@@ -33,16 +50,28 @@ struct MainWindow: View {
             // both heavy pane trees participate in parent layout mid-flight,
             // which reads as a vertical shove instead of a crossfade.
             ZStack(alignment: .top) {
-                Group {
-                    switch selection.pane {
-                    case .dashboard: DashboardPane()
-                    case .work: WorkPane()
-                    case .usage: UsagePane()
-                    case .sources: SourcesPane()
+                if localDataPaneCanMount(
+                    selection.pane,
+                    recorderSynchronizationFinished: recorderSynchronizationFinished,
+                    snapshotMode: SnapshotMode.enabled
+                ) {
+                    Group {
+                        switch selection.pane {
+                        case .dashboard: DashboardPane()
+                        case .work: WorkPane()
+                        case .usage: UsagePane()
+                        case .sources: SourcesPane()
+                        }
                     }
+                    .id(selection.pane)
+                    .transition(.opacity)
+                } else {
+                    ProgressView("Preparing the local recorder…")
+                        .controlSize(.small)
+                        .foregroundStyle(Theme.muted)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityIdentifier("dashboard.recorder-synchronization")
                 }
-                .id(selection.pane)
-                .transition(.opacity)
             }
             .animation(
                 reduceMotion ? Motion.reducedCrossfade : Motion.paneCrossfade,
@@ -55,27 +84,41 @@ struct MainWindow: View {
         .background(WindowSurfaceBackground(role: .canvas))
         .frame(minWidth: 960, minHeight: 560)
         .sheet(isPresented: $showSetup) {
-            SetupSheet(setup: setup) { showSetup = false }
+            SetupSheet(
+                setup: setup,
+                onClose: { showSetup = false },
+                runSetup: { await retrySetupAndRecorderSynchronization() }
+            )
         }
         .task {
             // Fixture-backed design review must stay deterministic and must
             // never consult the developer's live daemon/account data.
             guard !SnapshotMode.enabled else { return }
+            // A packaged App owns the stable CLI it installed. Before the
+            // first local data request, update that CLI transactionally when
+            // the new bundle carries different, matching source provenance.
+            // If safe recovery still reports a failure, surface the existing
+            // setup sheet with its log instead of silently hiding the issue.
+            let upgrade = await waitForRecorderSynchronization()
+            if case .failed = upgrade {
+                showSetup = true
+                return
+            }
+            recorderSynchronizationFinished = true
             // First-run: a packaged build whose recorder isn't installed yet
             // offers setup once, automatically. A dev build (no embedded CLI)
             // never prompts.
-            if setup.shouldOfferSetup { showSetup = true }
-            await refreshDashboardAndSelectedWork(
-                dashboardRefresh: { await dashboard.refresh() },
-                selectedTaskId: { selection.taskId },
-                receiptRefresh: { await dashboard.fetchReceipt(taskId: $0) }
-            )
+            if setup.shouldOfferSetup {
+                showSetup = true
+            }
+        }
+        .task(id: recorderSynchronizationFinished) {
             // The window is a live instrument: refresh while it stays open
-            // (the daemon caches by fingerprint, so a quiet minute is one
-            // store read + a hash for it, not a rebuild).
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(60))
-                guard !Task.isCancelled else { break }
+            // and restart this loop after a successful synchronization retry.
+            await refreshLocalDataWhileReady(
+                ready: recorderSynchronizationFinished,
+                snapshotMode: SnapshotMode.enabled
+            ) {
                 await refreshDashboardAndSelectedWork(
                     dashboardRefresh: { await dashboard.refresh() },
                     selectedTaskId: { selection.taskId },
@@ -97,6 +140,72 @@ struct MainWindow: View {
             app.setActivationPolicy(.accessory)
         }
     }
+
+    private func waitForRecorderSynchronization() async -> SetupModel.AutomaticUpgradeOutcome {
+        if let lifecycle {
+            return await lifecycle.waitUntilReady()
+        }
+        return await setup.upgradeInstalledCLIIfNeeded()
+    }
+
+    private func retrySetupAndRecorderSynchronization() async {
+        let outcome: SetupModel.AutomaticUpgradeOutcome
+        if let lifecycle,
+           let latestOutcome = lifecycle.latestOutcome,
+           case .failed = latestOutcome {
+            outcome = await lifecycle.retrySynchronization()
+        } else {
+            if case .failed = setup.phase { setup.reset() }
+            await setup.setUp()
+            switch setup.phase {
+            case .done:
+                outcome = .upgraded
+            case .failed(let message):
+                outcome = .failed(message)
+            case .idle, .working:
+                outcome = .failed("Recorder synchronization did not finish.")
+            }
+        }
+        guard case .failed = outcome else {
+            let alreadyReady = recorderSynchronizationFinished
+            recorderSynchronizationFinished = true
+            if alreadyReady {
+                await refreshDashboardAndSelectedWork(
+                    dashboardRefresh: { await dashboard.refresh() },
+                    selectedTaskId: { selection.taskId },
+                    receiptRefresh: { await dashboard.fetchReceipt(taskId: $0) }
+                )
+            }
+            return
+        }
+    }
+}
+
+@MainActor
+func refreshLocalDataWhileReady(
+    ready: Bool,
+    snapshotMode: Bool,
+    waitForNextRefresh: () async throws -> Void = { try await Task.sleep(for: .seconds(60)) },
+    refresh: () async -> Void
+) async {
+    guard ready, !snapshotMode else { return }
+    while !Task.isCancelled {
+        await refresh()
+        do {
+            try await waitForNextRefresh()
+        } catch {
+            return
+        }
+    }
+}
+
+func localDataPaneCanMount(
+    _ pane: MainPane,
+    recorderSynchronizationFinished: Bool,
+    snapshotMode: Bool
+) -> Bool {
+    _ = pane
+    return snapshotMode || recorderSynchronizationFinished
 }
 
 // MARK: - Top bar
@@ -111,6 +220,7 @@ struct TopBar: View {
     @Environment(AppSelection.self) var selection
     /// Packaged build → show the "Set up recording" entry point.
     var canSetUp: Bool = false
+    var awaitRecorderSynchronization: () async -> SetupModel.AutomaticUpgradeOutcome = { .notNeeded }
     var onSetUp: () -> Void = {}
     @Namespace private var paneSelection
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -195,12 +305,17 @@ struct TopBar: View {
                         .transition(.opacity)
                 } else {
                     Button {
-                        glance.refreshNow()
                         Task {
-                            await refreshDashboardAndSelectedWork(
-                                dashboardRefresh: { await dashboard.refresh() },
-                                selectedTaskId: { selection.taskId },
-                                receiptRefresh: { await dashboard.fetchReceipt(taskId: $0) }
+                            await performAfterRecorderSynchronization(
+                                awaitReady: awaitRecorderSynchronization,
+                                operation: {
+                                    glance.refreshNow()
+                                    await refreshDashboardAndSelectedWork(
+                                        dashboardRefresh: { await dashboard.refresh() },
+                                        selectedTaskId: { selection.taskId },
+                                        receiptRefresh: { await dashboard.fetchReceipt(taskId: $0) }
+                                    )
+                                }
                             )
                         }
                     } label: {

@@ -70,6 +70,7 @@ def test_init_can_add_agent_instructions_idempotently(tmp_path):
     assert "section_status=started" in claude.read_text()
     assert "section_status=completed" in claude.read_text()
     assert "section_status=blocked" in claude.read_text()
+    assert "section_status=handed_off" in claude.read_text()
     assert "agentacct" in agents.read_text()
     assert "agentacct run" in agents.read_text()
     assert "agentacct_record_event" in agents.read_text()
@@ -80,6 +81,7 @@ def test_init_can_add_agent_instructions_idempotently(tmp_path):
     assert "task_blocked" not in agents.read_text()
     assert "section_status=started" in agents.read_text()
     assert "section_status=completed" in agents.read_text()
+    assert "section_status=handed_off" in agents.read_text()
     assert "client-reported token" in agents.read_text()
 
     second = runner.invoke(app, ["init", "--project-dir", str(tmp_path), "--agent", "claude-code", "--agent", "codex", "--agent", "hermes", "--agent", "opencode", "--agent", "openclaw"])
@@ -87,6 +89,19 @@ def test_init_can_add_agent_instructions_idempotently(tmp_path):
     assert second.exit_code == 0
     assert claude.read_text().count("# agentacct") == 1
     assert agents.read_text().count("## agentacct") == 1
+
+
+def test_help_surfaces_current_handoff_and_refresh_contracts():
+    work_help = CliRunner().invoke(app, ["evidence", "work-event", "--help"])
+    import_help = CliRunner().invoke(app, ["usage", "import-local", "--help"])
+    watch_help = CliRunner().invoke(app, ["usage", "watch", "--help"])
+
+    assert work_help.exit_code == 0, work_help.output
+    assert "handed_off" in work_help.output
+    for result in (import_help, watch_help):
+        assert result.exit_code == 0, result.output
+        assert "--refresh" in result.output
+        assert "Refresh & save usage" not in result.output
 
 
 def test_init_claude_code_respects_legacy_pre_rename_section(tmp_path):
@@ -429,7 +444,7 @@ def test_doctor_reports_project_readiness_without_printing_secrets(tmp_path, mon
     assert "OpenRouter key" in result.output
     assert "Next steps:" in result.output
     assert "Try a safe local run: agentacct run -- python --version" in result.output
-    assert "Open the local dashboard: agentacct serve" in result.output
+    assert "Start the local JSON API: agentacct serve" in result.output
     assert "Initialize project-local config" not in result.output
     assert "sk-or" not in result.output
     assert "secret-value" not in result.output

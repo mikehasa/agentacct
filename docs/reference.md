@@ -9,13 +9,13 @@ The deep reference for agentacct: the daily workflow, confidence labels, MCP too
      in INSTALL.md. tests/test_install_guide.py fails if this list drifts. -->
 
 - Claude Code: automatic high-confidence joins between usage and recorded work via the installed hook bridge (SessionStart and PreToolUse capture real session/transcript ids). Exact attribution still requires ids authored explicitly on the recording call; hook-derived ids are not bound to that MCP request. Recorded work context needs all three levers: the merged hooks settings entry including SessionStart (delivery — the SessionStart hook is the only path proven to make un-primed sessions record work, and it adds session-start/resume id capture; PreToolUse still captures the session/transcript ids on every tool call), `ENABLE_TOOL_SEARCH=auto` in the settings `env` block (discoverability — without it the agentacct tools stay deferred and un-primed sessions record nothing), and the hook bridge itself (join keys — without it recorded sections fall back to project-level context, never session-linked).
-- Codex: session-linked work context via client-log evidence (high) — at usage import, agentacct pairs each agentacct-recorded event with the Codex session log that created it (creation responses only, never read-tool echoes). Sections still never earn `exact` (the link is evidenced from the log at import time, not client-authored in-session), a section evidenced by more than one session links to none, and sessions whose rollouts have not been imported fall back to project-level context only.
-- Hermes: local `state.db` usage import plus a manual MCP registration preview; agentacct does not yet install Hermes mechanical hooks.
-- OpenCode: native `opencode.db` SQLite `session`-rollup usage import (per-session token/cost totals, cost recomputed from tokens when the store records none), with the exported/captured JSON path as a fallback, plus a manual MCP registration preview; per-message granularity and a realtime plugin are not implemented yet.
+- Codex: `agentacct onboard --scope global --agent codex` writes user-scope MCP config and standing instructions and installs an observe-only v1 PreToolUse/SessionEnd hook; start a new session and grant the one-time hook trust before it fires. Project-scope onboarding writes MCP config and instructions but not that hook. Semantic sections still join to usage by client-log evidence (high, never `exact`). The separate generic Evidence v2 Codex manifest remains render-only/manual and is not enabled by onboarding.
+- Hermes: `agentacct onboard --scope global --agent hermes` writes the user-scope MCP registration and an observe-only v1 shell-hook bridge for tool activity, recognized check exit codes, per-turn liveness, and the first-turn record-your-work nudge. One-time hook consent and a running-gateway restart are still required; unsafe hooks YAML is preserved and leaves tools-only setup. Project-scope setup only previews the profile command. Hermes has no generic Evidence v2 manifest adapter.
+- OpenCode: `agentacct onboard --scope global --agent opencode` writes user-scope MCP config, global rules, and an observe-only v1 plugin for tool activity and recognized check exit codes; a new session auto-loads the plugin. Project-scope setup only previews the user-config command. Native `opencode.db` session totals remain the usage path (JSON export fallback; per-message granularity pending). OpenCode has no generic Evidence v2 manifest adapter.
 - OpenClaw: local JSONL usage import plus a manual MCP registration preview; agentacct does not yet join `sessions.json` routing metadata or install typed plugin hooks.
 - Cursor: the primary `User/globalStorage/state.vscdb` can produce observation-only composer sessions through an explicit local import/refresh. It never emits usage or cost, never scans backups or ai-tracking stores, and onboarding does not install or activate it. Metadata-only hook payload normalization remains a separate manual primitive.
 - Generic MCP clients: recorded work context only unless a separate trusted usage importer exists; join confidence depends on ids the client actually exposes.
-- Mechanical Claude Code/Codex/Cursor capture, when manually wired, writes Evidence v2 and projects bounded session activity into the homepage as an observed Task with models/checks when present. It is not activated by onboarding, does not report token/cost truth, and does not invent named work steps; MCP remains the richer semantic source.
+- Generic Evidence v2 capture is a separate render-only/manual path for Claude Code, Codex, and Cursor: `capture manifest` does not edit host settings, and onboarding does not enable those manifests. The installed Codex/Hermes/OpenCode v1 bridges above may feed activity/check evidence through their own spool/import paths, but neither capture family reports token/cost truth or invents named work steps; MCP remains the richer semantic source.
 - All clients: imported tokens are client_reported (read from the client's own local session files); costs are estimates from a local pricing table — never provider invoices.
 - Always: local-first, observe-only, no telemetry, no provider API keys stored or requested.
 
@@ -48,11 +48,11 @@ agentacct usage health
 
 The product surfaces are **`agentacct tui`** (the live terminal dashboard: work, usage, limits, plan) and the local JSON API. The HTML browser dashboard was retired in favor of them; the same derived views stay available as JSON — `/overview`, `/timeline`, `/sessions`, `/attention`, `/work-items`, `/usage/summary`, and the evidence projections under `/evidence/*`. Explicit blockers remain user-action items; unresolved failed checks remain non-actionable open findings until the agent resolves them, rather than being assigned to the user. Completed work is labeled `Verified` when a current passing machine check is linked and `Agent reported` otherwise.
 
-Evidence **Source coverage** is historical evidence, not a connection monitor: “Evidence received” means agentacct saved records from that source, and the connection remains `not_verified` without an independent live check. **Activity sync** is separate operational state. It comes from durable per-source scan receipts plus the watcher's lease/heartbeat, so the Work page can distinguish a successful manual refresh, a live watcher, and a degraded or stale synchronizer. Full source, attribution, and evidence explanations stay inspectable in Sessions and Advanced.
+Evidence **Source coverage** is historical evidence, not a connection monitor: “Evidence received” means agentacct saved records from that source, and the connection remains `not_verified` without an independent live check. **Activity sync** is separate operational state. It comes from durable per-source scan receipts plus the watcher's lease/heartbeat, so product views can distinguish a successful manual import, a live watcher, and a degraded or stale synchronizer. Full source, attribution, and evidence explanations stay inspectable in the TUI and JSON evidence endpoints.
 
-Preview any import with `--dry-run`, and add `--estimate-costs` to attach pricing-table cost estimates. A dry run returns source diagnostics but writes neither usage nor health state. A real import or dashboard refresh atomically records per-source attempt/success timestamps, parsed/skipped/error counts, watermark, and scan-limit diagnostics under the selected store. Inspect them with `agentacct usage health --json` or `GET /ingestion/health`; `GET /health` keeps service liveness (`ok`) separate from `ingestion_status`.
+Preview any import with `--dry-run`, and add `--estimate-costs` to attach pricing-table cost estimates. A dry run returns source diagnostics but writes neither usage nor health state. A persisted import atomically records per-source attempt/success timestamps, parsed/skipped/error counts, watermark, and scan-limit diagnostics under the selected store. Inspect them with `agentacct usage health --json` or `GET /ingestion/health`; `GET /health` keeps service liveness (`ok`) separate from `ingestion_status`.
 
-The watcher does not wrap or launch your coding agents; it periodically imports sessions from implemented local usage paths that clients have already written to disk. By default the CLI and watcher record each session once, at first observation, and never update it — a session that keeps growing stays at its first-seen totals until the dashboard's **Refresh** action replaces re-observed rows with fresh totals, or you pass `--refresh` to `usage import-local` / `usage watch`. One live watcher owns a store through a lease; a second is rejected, a lost lease stops the old process, and a stale heartbeat is reported with a restart action. Long-running Python processes do not hot-reload upgraded agentacct code: after every package/source upgrade, stop the existing watcher through the terminal or process supervisor that launched it, start `usage watch` again, and confirm its `importer_version` and fresh heartbeat with `usage health --json`.
+The watcher does not wrap or launch your coding agents; it periodically imports sessions from implemented local usage paths that clients have already written to disk. By default the CLI and watcher record each session once, at first observation, and never update it — a session that keeps growing stays at its first-seen totals until you pass `--refresh` to `usage import-local` / `usage watch`. One live watcher owns a store through a lease; a second is rejected, a lost lease stops the old process, and a stale heartbeat is reported with a restart action. Long-running Python processes do not hot-reload upgraded agentacct code: after every package/source upgrade, stop the existing watcher through the terminal or process supervisor that launched it, start `usage watch` again, and confirm its `importer_version` and fresh heartbeat with `usage health --json`.
 
 For Codex, `--limit-sessions` counts recent **root conversation groups**, not flat thread rows. agentacct resolves Codex-recorded parent edges before applying the limit, then returns the selected root and all discovered descendants so internal reviews cannot crowd their root chat out of the scan. An internal workflow label such as `codex-auto-review` is not a billable model: it inherits a model only from its exact recorded parent, with provenance; otherwise the model stays unknown and unpriced. agentacct never borrows a scan-wide model from another task.
 
@@ -141,7 +141,7 @@ agentacct event summary
 agentacct event list
 ```
 
-Run the local dashboard/API:
+Run the local JSON API:
 
 ```bash
 agentacct serve
@@ -155,7 +155,7 @@ curl http://127.0.0.1:8765/events/summary
 
 `/events/summary?limit=N` keeps its recent-event aggregates bounded, but join-health counters and coverage ratios are computed over every matching event in the store. Machine consumers must inspect `result_scope.partial` and the bridge's `detail_scope.partial`: `links`, `attributions`, and `unlinked_contexts` may be capped even when the canonical full-store ratios are complete. A degraded response includes stable `degraded_reasons` instead of treating one successful join as healthy.
 
-Evidence v2 is additive and enabled by default. It shadows existing v1 writes; it does not replace `events.jsonl` or rename any public `agentacct_*` MCP tool. Inspect or replay it with:
+Evidence v2 is additive and enabled by default. It shadows event-ledger writes; it does not rename any public `agentacct_*` MCP tool. The authoritative event ledger is `events.sqlite3` by default; an adopted `events.jsonl` store remains available as a transition backup, and `AGENTACCT_EVENT_LOG_AUTHORITATIVE=0` explicitly selects the legacy flat-ledger mode. Inspect or replay Evidence v2 with:
 
 ```bash
 agentacct evidence status --store-dir .agent-sentinel/state
@@ -163,7 +163,7 @@ agentacct evidence replay-v1 --store-dir .agent-sentinel/state
 agentacct evidence product --store-dir .agent-sentinel/state --json
 ```
 
-Mechanical capture is opt-in. These commands disclose capabilities and render a fragment, but do not edit active host configuration:
+The generic Evidence v2 manifest path is opt-in. These commands disclose its Claude Code/Codex/Cursor adapters and render a fragment, but do not edit active host configuration. This is separate from the client-specific v1 Codex/Hermes/OpenCode hooks/plugins installed by global onboarding:
 
 ```bash
 agentacct capabilities agents
@@ -174,7 +174,7 @@ agentacct capture manifest --vendor codex
 agentacct capture manifest --vendor cursor
 ```
 
-`capabilities agents` is the canonical per-agent manifest. It deliberately has no whole-client support badge: local session discovery, usage import, mechanical capture, MCP semantics, model attribution, cache read/write, installation mode, and verification evidence remain independent. The Dashboard renders the same truth under **Advanced → Agent capability coverage**; `/usage/sources` and `/ingestion/health` continue to describe this machine's current runtime state instead.
+`capabilities agents` is the canonical per-agent manifest. It deliberately has no whole-client support badge: local session discovery, usage import, mechanical capture, MCP semantics, model attribution, cache read/write, installation mode, and verification evidence remain independent. The CLI and `/capabilities/agents` expose that manifest; `/usage/sources` and `/ingestion/health` continue to describe this machine's current runtime state instead.
 
 The evidence projections are JSON endpoints: `/evidence/status`, `/evidence/events`, `/evidence/work-graph`, `/evidence/matrix`, `/evidence/discrepancies`, and `/evidence/cost-outcome-basis`. `GET /evidence/events` uses bounded arrival-order cursor pages (`limit`, then `cursor=next_cursor`). Set `AGENTACCT_EVIDENCE_V2=0` for a v1-only rollback; existing v2 evidence remains untouched.
 
@@ -188,17 +188,17 @@ Current MCP tools include:
 
 - `agentacct_list_runs`
 - `agentacct_get_report`
+- `agentacct_record_machine_check`
 - `agentacct_record_event`
 - `agentacct_attach_client_context`
 - `agentacct_record_section`
 - `agentacct_record_agent_usage_debug`
 - `agentacct_list_events`
 - `agentacct_get_event_summary`
-- `agentacct_record_machine_check`
 
 Use local usage import for token/cost truth, and use MCP tools for workflow context. `agentacct_attach_client_context` stores local session/turn/message identifiers, while `agentacct_record_section` stores human-readable task chapters that can later be joined to imported usage. `agentacct_record_agent_usage_debug` stores agent-visible usage snapshots for comparison only; it does not add to agentacct's usage or cost totals.
 
-How agents learn to record: the MCP server returns record-your-work instructions in its initialize result, and for Claude Code the SessionStart hook injects the same directive into every new session. `agentacct setup instructions --agent <client> --user` writes a standing instruction block into user-level `~/.claude/CLAUDE.md` / `~/.codex/AGENTS.md` (idempotent markers; `--remove` strips it, `--dry-run` previews). For one machine-wide store and dashboard instead of per-repo installs, follow the "Global install" section of [INSTALL.md](../INSTALL.md); fold older per-project stores in with `agentacct usage merge-store`.
+How agents learn to record: the MCP server returns record-your-work instructions in its initialize result, and for Claude Code the SessionStart hook injects the same directive into every new session. `agentacct setup instructions --agent <client> --user` writes a standing instruction block into user-level `~/.claude/CLAUDE.md` / `~/.codex/AGENTS.md` (idempotent markers; `--remove` strips it, `--dry-run` previews). For one machine-wide store and product view instead of per-repo installs, follow the "Global install" section of [INSTALL.md](../INSTALL.md); `agentacct setup global-store-path` prints the exact store the onboarding resolver would choose, and older per-project stores can be folded in with `agentacct usage merge-store`.
 
 Verify the local MCP event workflow without paid APIs:
 
@@ -255,7 +255,7 @@ It is not the same thing as MCP. MCP is an agent-to-tool protocol and is especia
 
 ## Verification and evidence
 
-The onboarding helpers configure project-local recording. They do not mean agentacct automatically monitors every Claude Code/Codex/OpenCode/Hermes/OpenClaw session you start elsewhere.
+Default onboarding configures one global store and the supported user-scope client surfaces; `--scope project` configures only that repository. Neither scope adopts or controls an agent process, and a written hook/plugin is not evidence that it fired: Codex and Hermes require trust/consent, running clients must be restarted as documented, and runtime source/ingestion status remains separate.
 
 agentacct has been smoke-tested as an MCP tool inside real interactive Claude Code and Codex sessions, and Hermes/OpenCode/OpenClaw MCP setup commands have been maintainer-probed on the VPS.
 

@@ -36,6 +36,7 @@ from rich.console import Console
 from rich.markup import escape as _rich_escape
 from rich.table import Table
 
+from . import version as version_info
 from .activation import ActivationStateError, ActivationStateStore, RuntimeManager, RuntimeManagerError
 from . import autostart as autostart_mod
 from .autostart import AutostartError
@@ -189,20 +190,9 @@ app = typer.Typer(
 
 
 def _package_version() -> str:
-    """The installed agentacct version, or ``0.0.0+source`` for a bare checkout.
+    """Compatibility wrapper for callers/tests that patch this private helper."""
 
-    An editable install freezes this at install time, so a version bump is
-    observable only after ``uv tool install --force``/reinstall — which is exactly
-    when the integration re-sync should refresh the client configs.
-    """
-
-    from importlib.metadata import PackageNotFoundError
-    from importlib.metadata import version as _dist_version
-
-    try:
-        return _dist_version("agentacct")
-    except PackageNotFoundError:  # source checkout without installed dist metadata
-        return "0.0.0+source"
+    return version_info.package_version()
 
 
 def _version_callback(value: bool) -> None:
@@ -630,7 +620,7 @@ Use agentacct in observe-only mode.
   - open a section with `agentacct_record_section` (`section_status=started`) before meaningful work; use `section_status=checkpoint` while it progresses;
   - call `agentacct_record_agent_usage_debug` when the client exposes visible token/cost usage, or with `reporting_basis=unavailable` when it does not;
   - record machine-check evidence after tests/builds with `agentacct_record_machine_check` or `agentacct_record_event`;
-  - finish the section with `section_status=completed` or `section_status=blocked` and include objective evidence.
+  - finish the section with `section_status=completed` or `section_status=blocked` and include objective evidence; when the user explicitly hands work to another session, use `section_status=handed_off` instead.
 - Keep MCP/event claims separate from usage/cost claims. MCP events prove that the agent recorded work and semantic context; agent usage debug events are comparison evidence only. A client-reported token usage claim requires a supported local usage importer or explicit client JSON output.
 - After meaningful work, show the run/report path or event summary and summarize objective evidence: tests, build result, changed files, tool calls, token/cost data if actually observed, and repeated errors.
 """
@@ -655,8 +645,8 @@ _STORE_DIR_HELP = (
 )
 
 _DASHBOARD_STORE_DIR_HELP = (
-    "State directory for the dashboard. With no override, an installed machine-wide "
-    "~/.agent-sentinel-global/state store opens as the All projects product view; otherwise agentacct uses the "
+    "State directory for the local API and product views. With no override, an installed machine-wide "
+    "~/.agent-sentinel-global/state store opens as the All projects view; otherwise agentacct uses the "
     "current project store. Pass a project .agent-sentinel/state path for an explicit workspace view. "
     "AGENTACCT_STORE_DIR (or its pre-rename aliases) overrides both defaults."
 )
@@ -705,7 +695,7 @@ def _resolve_read_cli_store_dir(store_dir: Path | str | None) -> StoreResolution
 
 
 def _resolve_dashboard_cli_store_dir(store_dir: Path | str | None) -> StoreResolution:
-    """Resolve the product dashboard, preserving the CLI's friendly errors."""
+    """Resolve the product store, preserving the CLI's friendly errors."""
 
     try:
         resolution = resolve_dashboard_store_dir(store_dir)
@@ -715,6 +705,16 @@ def _resolve_dashboard_cli_store_dir(store_dir: Path | str | None) -> StoreResol
     if resolution.worktree_remapped:
         print(f"Claude worktree detected; using the owning project store: {resolution.path}", file=sys.stderr)
     return resolution
+
+
+def _resolve_onboard_global_store_dir() -> tuple[Path, bool]:
+    """Resolve onboarding's global store or exit with one actionable message."""
+
+    try:
+        return onboard_global_store_dir()
+    except StoreResolutionError as exc:
+        print(str(exc), file=sys.stderr)
+        raise typer.Exit(2) from exc
 
 
 def _resolve_scratch_store_dir(store_dir: Path | str | None, *, label: str) -> tuple[Path, bool]:
@@ -822,6 +822,161 @@ def _current_agentacct_executable() -> str | None:
     except OSError:
         return None
     return str(resolved) if resolved.exists() else None
+
+
+_APP_MANAGED_CLI_VERSIONS_MARKER = b"agentacct-macos-app-cli-versions-v1\n"
+_APP_MANAGED_CLI_MAX_MARKER_BYTES = 8_192
+
+
+def _read_regular_file_bytes(
+    path: Path,
+    *,
+    executable: bool = False,
+    owner_only: bool = False,
+) -> bytes | None:
+    """Read one small regular file without following a final symlink."""
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode):
+            return None
+        if executable:
+            if (details.st_mode & 0o111) == 0:
+                return None
+            if details.st_uid != os.geteuid() or (details.st_mode & 0o022) != 0:
+                return None
+        if owner_only and (
+            details.st_uid != os.geteuid() or stat.S_IMODE(details.st_mode) != 0o600
+        ):
+            return None
+        if details.st_size > _APP_MANAGED_CLI_MAX_MARKER_BYTES:
+            return None
+        chunks: list[bytes] = []
+        remaining = _APP_MANAGED_CLI_MAX_MARKER_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(4_096, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        contents = b"".join(chunks)
+        return contents if len(contents) <= _APP_MANAGED_CLI_MAX_MARKER_BYTES else None
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+
+
+def _is_owned_nonsymlink_directory(path: Path) -> bool:
+    try:
+        details = path.lstat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(details.st_mode)
+        and details.st_uid == os.geteuid()
+        and (details.st_mode & 0o022) == 0
+    )
+
+
+def _is_owned_nonsymlink_executable(path: Path) -> bool:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return False
+    try:
+        details = os.fstat(descriptor)
+        return (
+            stat.S_ISREG(details.st_mode)
+            and (details.st_mode & 0o111) != 0
+            and details.st_uid == os.geteuid()
+            and (details.st_mode & 0o022) == 0
+        )
+    except OSError:
+        return False
+    finally:
+        os.close(descriptor)
+
+
+def _app_managed_stable_launcher_contents(home: Path) -> bytes:
+    def quote(value: str) -> str:
+        return "'" + value.replace("'", "'\"'\"'") + "'"
+
+    stable_dir = home / ".local" / "share" / "agentacct" / "cli"
+    target_marker = stable_dir / ".agentacct-app-target"
+    bin_dir = home / ".local" / "bin"
+    return (
+        "#!/bin/sh\n"
+        f"PATH={quote(str(bin_dir))}:\"${{PATH:-/usr/bin:/bin:/usr/sbin:/sbin}}\"\n"
+        "export PATH\n"
+        f"target_file={quote(str(target_marker))}\n"
+        'IFS= read -r target < "$target_file" || exit 1\n'
+        '[ -n "$target" ] || exit 1\n'
+        'exec "$target/agentacct" "$@"\n'
+    ).encode("utf-8")
+
+
+def _autostart_executable(executable: str, *, home: Path) -> str:
+    """Use the App's stable launcher only for its fully verified CLI layout.
+
+    The process reached this command through the selected immutable target, so
+    pinning that resolved target in launchd/systemd would strand autostart on
+    every later App upgrade.  The stable path is trusted only when all App
+    ownership and selection evidence matches exactly; otherwise the already
+    resolved executable is preserved without taking over an unknown layout.
+    """
+
+    stable_dir = home / ".local" / "share" / "agentacct" / "cli"
+    stable_launcher = stable_dir / "agentacct"
+    target_marker = stable_dir / ".agentacct-app-target"
+    versions_root = home / ".local" / "share" / "agentacct" / "cli-versions"
+    versions_marker = versions_root / ".agentacct-app-managed"
+
+    if not (
+        _is_owned_nonsymlink_directory(stable_dir)
+        and _is_owned_nonsymlink_directory(versions_root)
+    ):
+        return executable
+    if (
+        _read_regular_file_bytes(versions_marker, owner_only=True)
+        != _APP_MANAGED_CLI_VERSIONS_MARKER
+    ):
+        return executable
+    raw_target = _read_regular_file_bytes(target_marker, owner_only=True)
+    if raw_target is None or not raw_target.endswith(b"\n") or raw_target.count(b"\n") != 1:
+        return executable
+    try:
+        target_text = raw_target[:-1].decode("utf-8")
+    except UnicodeDecodeError:
+        return executable
+    if not target_text or target_text.strip() != target_text:
+        return executable
+
+    target = Path(target_text)
+    if not target.is_absolute() or target.parent != versions_root:
+        return executable
+    target_binary = target / "agentacct"
+    if not _is_owned_nonsymlink_directory(target):
+        return executable
+    if not _is_owned_nonsymlink_executable(target_binary):
+        return executable
+    if (
+        _read_regular_file_bytes(stable_launcher, executable=True)
+        != _app_managed_stable_launcher_contents(home)
+    ):
+        return executable
+    try:
+        if Path(executable).expanduser().resolve(strict=True) != target_binary.resolve(strict=True):
+            return executable
+    except OSError:
+        return executable
+    return str(stable_launcher)
 
 
 def _managed_runtime(
@@ -2461,7 +2616,7 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
     # (e.g. the pre-rename ~/.agent-sentinel-global). Keep using it instead of
     # silently repointing every client at a new, empty store — that strands the
     # history and splits clients across two ledgers.
-    store_dir, store_pre_existing = onboard_global_store_dir()
+    store_dir, store_pre_existing = _resolve_onboard_global_store_dir()
     store_dir.mkdir(parents=True, exist_ok=True)
     # Absolute path: GUI clients do not inherit the shell PATH (see helper).
     command = _resolve_absolute_mcp_command()
@@ -2588,10 +2743,10 @@ def onboard(
             "'project' configures only this repo (legacy per-repo install)."
         ),
     ] = "global",
-    port: Annotated[int, typer.Option(help="Managed localhost dashboard port.")] = 8765,
+    port: Annotated[int, typer.Option(help="Managed localhost API port.")] = 8765,
     start_runtime: Annotated[
         bool,
-        typer.Option("--start/--no-start", help="Start continuous usage sync and the dashboard."),
+        typer.Option("--start/--no-start", help="Start continuous usage sync and the local API."),
     ] = True,
     mcp: Annotated[
         bool,
@@ -2967,8 +3122,8 @@ def sync_integration(
 @app.command("start")
 def runtime_start(
     store_dir: Annotated[Optional[Path], typer.Option(help=_DASHBOARD_STORE_DIR_HELP)] = None,
-    host: Annotated[str, typer.Option(help="Managed dashboard host (localhost only).")] = "127.0.0.1",
-    port: Annotated[int, typer.Option(help="Managed dashboard port.")] = 8765,
+    host: Annotated[str, typer.Option(help="Managed API host (localhost only).")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Managed API port.")] = 8765,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
     foreground: Annotated[
         bool,
@@ -2976,13 +3131,13 @@ def runtime_start(
             "--foreground",
             help=(
                 "Block as the managed-runtime supervisor: idempotently keep the watcher + "
-                "dashboard alive until SIGTERM/SIGINT, then stop them cleanly. This is the "
+                "local API alive until SIGTERM/SIGINT, then stop them cleanly. This is the "
                 "process launchd KeepAlive / systemd Restart supervises."
             ),
         ),
     ] = False,
 ) -> None:
-    """Idempotently start continuous local sync and the dashboard."""
+    """Idempotently start continuous local sync and the local JSON API."""
 
     if foreground:
         _runtime_start_foreground(store_dir, host=host, port=port, json_output=json_output)
@@ -3047,11 +3202,11 @@ def _runtime_start_foreground(
 @app.command("status")
 def runtime_status(
     store_dir: Annotated[Optional[Path], typer.Option(help=_DASHBOARD_STORE_DIR_HELP)] = None,
-    host: Annotated[str, typer.Option(help="Managed dashboard host.")] = "127.0.0.1",
-    port: Annotated[int, typer.Option(help="Managed dashboard port.")] = 8765,
+    host: Annotated[str, typer.Option(help="Managed API host.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Managed API port.")] = 8765,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
-    """Show managed process, dashboard, and sync readiness."""
+    """Show managed process, local API, and sync readiness."""
 
     resolved = _resolve_dashboard_cli_store_dir(store_dir).path
     health, external_watcher_running = _runtime_ingestion_health(resolved)
@@ -3077,8 +3232,8 @@ def runtime_status(
 @app.command("stop")
 def runtime_stop(
     store_dir: Annotated[Optional[Path], typer.Option(help=_DASHBOARD_STORE_DIR_HELP)] = None,
-    host: Annotated[str, typer.Option(help="Managed dashboard host.")] = "127.0.0.1",
-    port: Annotated[int, typer.Option(help="Managed dashboard port.")] = 8765,
+    host: Annotated[str, typer.Option(help="Managed API host.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Managed API port.")] = 8765,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
     """Stop only processes whose complete agentacct ownership proof matches."""
@@ -3098,8 +3253,8 @@ def runtime_stop(
 @app.command("repair")
 def runtime_repair(
     store_dir: Annotated[Optional[Path], typer.Option(help=_DASHBOARD_STORE_DIR_HELP)] = None,
-    host: Annotated[str, typer.Option(help="Managed dashboard host.")] = "127.0.0.1",
-    port: Annotated[int, typer.Option(help="Managed dashboard port.")] = 8765,
+    host: Annotated[str, typer.Option(help="Managed API host.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Managed API port.")] = 8765,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
     """Archive corrupt state or clear dead owned leases without killing unknown processes."""
@@ -3119,8 +3274,8 @@ def runtime_repair(
 @app.command("install-autostart")
 def runtime_install_autostart(
     store_dir: Annotated[Optional[Path], typer.Option(help=_DASHBOARD_STORE_DIR_HELP)] = None,
-    host: Annotated[str, typer.Option(help="Managed dashboard host (localhost only).")] = "127.0.0.1",
-    port: Annotated[int, typer.Option(help="Managed dashboard port.")] = 8765,
+    host: Annotated[str, typer.Option(help="Managed API host (localhost only).")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Managed API port.")] = 8765,
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", help="Print the managed file path, its full content, and the loader command; write and load nothing."),
@@ -3133,12 +3288,14 @@ def runtime_install_autostart(
     """Install the OS launcher that keeps `agentacct start --foreground` alive (macOS launchd / Linux systemd user unit)."""
 
     _exit_if_unsupported_platform(sys.platform)
+    home = Path.home()
     resolved = _resolve_dashboard_cli_store_dir(store_dir).path
-    executable = _managed_runtime(resolved, host=host, port=port).executable
+    current_executable = _managed_runtime(resolved, host=host, port=port).executable
+    executable = _autostart_executable(current_executable, home=home)
     try:
         plan = autostart_mod.plan_install(
             platform=sys.platform,
-            home=Path.home(),
+            home=home,
             uid=os.getuid(),
             executable=executable,
             store_dir=str(resolved),
@@ -3267,7 +3424,7 @@ def doctor(
             "the default observe-only workflow requires no API key."
         )
     next_steps.append("Try a safe local run: agentacct run -- python --version")
-    next_steps.append("Open the local dashboard: agentacct serve")
+    next_steps.append("Start the local JSON API: agentacct serve")
 
     if json_output:
         payload = {
@@ -3788,7 +3945,7 @@ def codex_hooks_install(
 ) -> None:
     """Install the Codex observe-only hooks: the wrapper + ~/.codex/hooks.json
     entries (PreToolUse tool-activity, SessionEnd) pointing at it."""
-    resolved_store = store_dir if store_dir is not None else onboard_global_store_dir()[0]
+    resolved_store = store_dir if store_dir is not None else _resolve_onboard_global_store_dir()[0]
     command = _resolve_absolute_mcp_command()
     action, wrapper_path = _install_codex_hook(Path(home), Path(resolved_store), command, force=force)
     console.print(f"Codex hook wrapper: {wrapper_path}")
@@ -4279,7 +4436,7 @@ def hermes_hooks_install(
     """Install the Hermes hooks: the wrapper + config.yaml ``hooks:`` entries
     (pre_tool_call tool-activity, post_tool_call exit-code, on_session_end
     turn-boundary, pre_llm_call record-your-work nudge) pointing at it."""
-    resolved_store = store_dir if store_dir is not None else onboard_global_store_dir()[0]
+    resolved_store = store_dir if store_dir is not None else _resolve_onboard_global_store_dir()[0]
     command = _resolve_absolute_mcp_command()
     try:
         action, wrapper_path = _install_hermes_hook(Path(home), Path(resolved_store), command, force=force)
@@ -4391,7 +4548,7 @@ def opencode_hooks_install(
     force: Annotated[bool, typer.Option(help="Rewrite the plugin even if it already matches.")] = False,
 ) -> None:
     """Install the OpenCode tool-activity plugin into <config>/plugins/agentacct.js."""
-    resolved_store = store_dir if store_dir is not None else onboard_global_store_dir()[0]
+    resolved_store = store_dir if store_dir is not None else _resolve_onboard_global_store_dir()[0]
     command = _resolve_absolute_mcp_command()
     config_dir = _opencode_config_dir(Path(home) if home is not None else None)
     try:
@@ -4742,6 +4899,30 @@ def cost_subscription_estimate(
         console.print(f"{allocation['method']}: {cost_text} ({allocation['confidence']})")
         console.print(f"  {allocation['reason']}")
     console.print(payload["note"])
+
+
+@setup_app.command("global-store-path")
+def setup_global_store_path(
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Print the exact machine-wide store that onboarding would use.
+
+    This is intentionally backed by the onboarding resolver itself so manual
+    setup recipes cannot drift from XDG, operator-override, or populated legacy
+    store selection.
+    """
+
+    store_dir, pre_existing = _resolve_onboard_global_store_dir()
+    if json_output:
+        print(
+            json.dumps(
+                {"store_dir": str(store_dir), "pre_existing": pre_existing},
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+    print(store_dir)
 
 
 @setup_app.command("prompt")
@@ -5390,7 +5571,7 @@ def _warn_dashboard_mcp_store_shadow(global_store: Path) -> None:
         return
     console.print(
         "[yellow]Warning:[/yellow] project MCP config can shadow the user-level global MCP server, so new work may "
-        "be recorded outside this All projects dashboard."
+        "be recorded outside the All projects ledger."
     )
     for check in mismatches:
         console.print(f"- {check['details']}")
@@ -5706,7 +5887,7 @@ def event_record(
     metadata_json: Annotated[Optional[str], typer.Option(help="Optional JSON object with event metadata. Secrets are redacted before storage.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
-    """Record a local integration event for the dashboard/event hub without paid API calls."""
+    """Record a local integration event in the work ledger without paid API calls."""
     source = _limited_text(source, field="source", max_length=80) or ""
     event_type = _limited_text(event_type, field="event_type", max_length=80) or ""
     if not source.strip() or not event_type.strip():
@@ -5961,7 +6142,7 @@ def event_list(
     run_id: Annotated[Optional[str], typer.Option(help="Optional run ID filter.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
-    """List recent local integration events recorded for the dashboard/event hub."""
+    """List recent local integration events recorded in the work ledger."""
     if limit < 1 or limit > 200:
         raise typer.BadParameter("--limit must be between 1 and 200")
     run_id = _validated_optional_run_id(run_id)
@@ -6127,7 +6308,7 @@ def evidence_work_event(
     source: Annotated[str, typer.Option(help="Claiming integration or agent source.")],
     kind: Annotated[str, typer.Option(help="Work Event kind: task, section, machine_check, client_context, usage_debug, note, or event.")],
     store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
-    status: Annotated[str, typer.Option(help="started, checkpoint, completed, blocked, passed, failed, or unknown.")] = "unknown",
+    status: Annotated[str, typer.Option(help="started, checkpoint, completed, blocked, handed_off, passed, failed, or unknown.")] = "unknown",
     occurred_at: Annotated[Optional[float], typer.Option(help="Optional source occurrence time as Unix seconds; distinct from local receipt time.")] = None,
     source_event_id: Annotated[Optional[str], typer.Option(help="Stable source event identifier used to make retries idempotent.")] = None,
     run_id: Annotated[Optional[str], typer.Option(help="Optional agentacct run identifier.")] = None,
@@ -7389,7 +7570,7 @@ def control_reconcile(
                 },
                 "persistent_monitoring": False,
                 "next_step_for_live": (
-                    "Keep the dashboard control runtime running for persistent supervision."
+                    "Keep the agentacct control runtime running for persistent supervision."
                     if result["live"]
                     else None
                 ),
@@ -8442,7 +8623,7 @@ def usage_import_local(
     limit_sessions: Annotated[int, typer.Option(help="Recent sessions to inspect per client.")] = 20,
     dry_run: Annotated[bool, typer.Option(help="Preview importable usage without writing agentacct events.")] = False,
     estimate_costs: Annotated[bool, typer.Option(help="Estimate equivalent cost from local token counts using agentacct's pricing table when the model is known. Not provider billing.")] = False,
-    refresh: Annotated[bool, typer.Option("--refresh", help="Also update already-imported sessions: replace each re-observed row whose totals CHANGED with fresh totals (like the dashboard's 'Refresh & save usage' button, except the dashboard always recomputes pricing estimates while the CLI only does so with --estimate-costs). Unchanged rows are left untouched. Default: each session is imported once at first observation and never updated.")] = False,
+    refresh: Annotated[bool, typer.Option("--refresh", help="Also update already-imported sessions: replace each re-observed row whose totals CHANGED with fresh totals. Pricing estimates are recomputed only with --estimate-costs. Unchanged rows are left untouched. Default: each session is imported once at first observation and never updated.")] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
     """Import local usage or observation-only session facts from client stores.
@@ -8510,7 +8691,7 @@ def usage_watch(
     interval_seconds: Annotated[float, typer.Option(help="Seconds between import scans when running continuously.")] = 60.0,
     limit_sessions: Annotated[int, typer.Option(help="Recent sessions to inspect per client per scan.")] = 20,
     estimate_costs: Annotated[bool, typer.Option(help="Estimate equivalent cost from known model pricing rows. Not provider billing.")] = False,
-    refresh: Annotated[bool, typer.Option("--refresh", help="Also update already-imported sessions on every scan: replace each re-observed row whose totals CHANGED with fresh totals (like the dashboard's 'Refresh & save usage' button, except the dashboard always recomputes pricing estimates while the CLI only does so with --estimate-costs). Unchanged rows are left untouched, so idle sessions never churn the ledger. Default: each session is imported once at first observation and never updated.")] = False,
+    refresh: Annotated[bool, typer.Option("--refresh", help="Also update already-imported sessions on every scan: replace each re-observed row whose totals CHANGED with fresh totals. Pricing estimates are recomputed only with --estimate-costs. Unchanged rows are left untouched, so idle sessions never churn the ledger. Default: each session is imported once at first observation and never updated.")] = False,
     once: Annotated[bool, typer.Option(help="Run one scan and exit. Useful for cron, launchd, and smoke tests.")] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit one JSON payload per scan.")] = False,
 ) -> None:
@@ -8950,7 +9131,7 @@ def usage_truth_table_command(
 
 
 _SERVE_PORT_FALLBACK_SPAN = 20
-"""How many ports past the default the dashboard probes before giving up."""
+"""How many ports past the default the local API probes before giving up."""
 
 
 def _probe_port_free(host: str, port: int) -> bool:
@@ -8958,7 +9139,7 @@ def _probe_port_free(host: str, port: int) -> bool:
 
     Mirrors uvicorn's own socket setup (``SO_REUSEADDR``) so the probe reflects
     what the server will attempt a moment later. There is an unavoidable TOCTOU
-    window between this check and uvicorn's bind, but for a localhost dashboard
+    window between this check and uvicorn's bind, but for a localhost API
     the practical risk is negligible.
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -8977,7 +9158,7 @@ def _select_serve_port(
     allow_fallback: bool,
     max_offset: int = _SERVE_PORT_FALLBACK_SPAN,
 ) -> int:
-    """Pick a bindable port for the local dashboard.
+    """Pick a bindable port for the local API.
 
     When ``allow_fallback`` is False (the user passed an explicit ``--port``) the
     requested port must be free or an ``OSError`` is raised so the caller can
@@ -9300,8 +9481,8 @@ def tui(
 @app.command("serve")
 def serve(
     ctx: typer.Context,
-    host: Annotated[str, typer.Option(help="Bind host. Default is 127.0.0.1 for local dashboard safety.")] = "127.0.0.1",
-    port: Annotated[int, typer.Option(help="Bind port for the local dashboard and event API.")] = 8765,
+    host: Annotated[str, typer.Option(help="Bind host. Default is 127.0.0.1 for local API safety.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Bind port for the local JSON API.")] = 8765,
     store_dir: Annotated[
         Optional[Path],
         typer.Option(help=_DASHBOARD_STORE_DIR_HELP),
@@ -9311,14 +9492,14 @@ def serve(
     """Serve the local JSON API on localhost with local usage discovery enabled.
 
     The default port (8765) auto-advances to the next free port when it is busy,
-    so the dashboard never fails to start just because a port is taken. An
+    so the API never fails to start just because a port is taken. An
     explicit ``--port`` is honored strictly: if that exact port is occupied the
     command fails rather than silently moving.
     """
     import uvicorn
 
     if host not in {"127.0.0.1", "localhost"}:
-        console.print("Refusing non-local bind by default. Do not expose the dashboard without authentication.")
+        console.print("Refusing non-local bind by default. Do not expose the local API without authentication.")
         raise typer.Exit(1)
     # Resolve BEFORE uvicorn.run so a missing store is an actionable exit(2),
     # not a server crash mid-startup.
@@ -9345,19 +9526,20 @@ def serve(
             )
         raise typer.Exit(1)
     if bound_port != port:
-        console.print(f"Port {port} was busy; dashboard on http://{host}:{bound_port}")
+        console.print(f"Port {port} was busy; local API on http://{host}:{bound_port}")
     console.print(f"Starting the agentacct local API (JSON): http://{host}:{bound_port}")
     if resolution.source == "global":
-        console.print("Dashboard scope: All projects (machine-wide store).")
+        console.print("API store: All projects (machine-wide store).")
         _warn_dashboard_mcp_store_shadow(effective_store_dir)
     elif resolution.source == "project":
-        console.print("Dashboard scope: current workspace.")
+        console.print("API store: current workspace.")
     else:
-        console.print("Dashboard scope: explicit store override.")
+        console.print("API store: explicit store override.")
     console.print(
-        "Local usage scan: enabled for this localhost dashboard; agentacct reads implemented local agent usage paths "
-        "and imports only summarized usage rows. Use `agentacct api serve` for an API server with local usage discovery disabled."
+        "Local usage scan: enabled; agentacct reads implemented local agent usage paths "
+        "and imports only summarized usage rows."
     )
+    console.print("For a local API without usage discovery, run: agentacct api serve")
     # Native-shell handshake: a per-boot bearer token published through the
     # 0600 discovery file next to the store. Claimed AFTER the bind port is
     # chosen so readers always see the real port; first-alive-writer-wins (a

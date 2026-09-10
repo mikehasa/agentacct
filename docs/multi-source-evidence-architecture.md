@@ -1,8 +1,18 @@
 # Multi-source evidence architecture
 
-Status: implementation RFC
+Status: historical pre-implementation RFC (not a current operations or route reference)
 Version: 2
 Last updated: 2026-07-23
+
+This document preserves the design and migration rationale that preceded the
+current implementation. For current behavior, use `README.md`, `INSTALL.md`, and
+`docs/reference.md`: the event ledger is SQLite-backed by default, the HTML
+dashboard and `/raw` route are retired, and interactive product surfaces are the
+macOS app and `agentacct tui` over the local JSON API/store.
+
+In particular, the RFC's original JSONL-only migration premise is superseded:
+fresh and adopted stores use `events.sqlite3` as the authoritative ledger
+unless legacy flat-ledger mode is selected explicitly.
 
 ## Decision
 
@@ -177,7 +187,7 @@ Hook execution follows a local-first hot-path contract:
 2. allowlist and redact metadata;
 3. compute deterministic source identity;
 4. append to the local durable spool;
-5. return without rebuilding the dashboard or making a network request.
+5. return without rebuilding product projections or making a network request.
 
 Capture is fail-open for the host. A broken agentacct adapter must not block the
 developer's agent. The failure is recorded locally when possible and exposed by
@@ -204,7 +214,7 @@ HTTP imports.
 A Work Event may express:
 
 - objective and work-item identity;
-- section start, checkpoint, completion, or blocker;
+- section start, checkpoint, completion, blocker, or clean handoff;
 - decision, rationale, and next step;
 - asserted artifact or outcome meaning;
 - exact client/session/turn/message join keys when the host exposes them.
@@ -215,9 +225,10 @@ mint trusted local-usage, hook-observed, CI, or provider-billed provenance.
 
 ## Storage and projection
 
-Evidence v2 is a shadow layer during migration:
+Evidence v2 began as a shadow layer during migration. In the current build:
 
-- v1 `events.jsonl` remains unchanged and continues serving current features;
+- the main event ledger is `events.sqlite3` by default; `events.jsonl` is a
+  legacy flat-ledger authority or an adopted-store transition backup only;
 - v2 raw envelopes use a dedicated append-only spool;
 - trusted refreshable usage transitions use a second append-only spool,
   `evidence-v2/refreshable-usage.jsonl`;
@@ -228,14 +239,14 @@ Evidence v2 is a shadow layer during migration:
 - derived views can be deleted and rebuilt from the spool;
 - disabling v2 stops shadow writes without modifying v1 behavior.
 
-High-volume hook events must never be appended directly to the current
-v1 ledger. Retention and future downsampling apply to raw activity, never to
+High-volume hook events must never be appended directly to the main event
+ledger. Retention and future downsampling apply to raw activity, never to
 provider billing or machine-outcome evidence without an explicit policy.
 
 ### Trusted refreshable usage is a current-fact lane
 
-Local usage importers periodically replace cumulative facts in `events.jsonl`.
-The v1 event id and server write time are transport details of that replacement,
+Local usage importers periodically replace cumulative facts in the authoritative
+event ledger. The event id and server write time are transport details of that replacement,
 not logical usage identity. Treating either as `source_event_id` for every
 refresh turns an unchanged cumulative fact into unbounded raw Evidence versions.
 
@@ -272,13 +283,13 @@ Each candidate also has a normalized **truth digest**. It includes the usage
 field-presence map and values, provider/model truth, usage confidence,
 client-reported cost and its basis, normalization/additivity state,
 hold/precedence state, and the exact supporting evidence references.
-It excludes the reminted v1 event id, server-created/poll/ingest timestamps,
+It excludes the reminted event-ledger id, server-created/poll/ingest timestamps,
 raw location, scan order, and price-derived estimated cost. Repricing therefore
 does not manufacture a new client-usage fact, while changed client-reported
 cost or changed evidence lineage does.
 
 Transitions are ordered only by a source-native revision/update watermark,
-never by the random v1 event id, agentacct scan time, or server write time. A
+never by the random event-ledger id, agentacct scan time, or server write time. A
 different revision with no comparable source order is retained as a conflict
 rather than guessed into sequence:
 
@@ -295,12 +306,12 @@ rather than guessed into sequence:
 Slot comparison, transition append, and head projection occur under the same
 store lock, so concurrent identical refreshes create at most one transition
 and a delayed older refresh cannot win. A tombstone may be inferred only from
-a complete, successful, authoritative snapshot of the current trusted v1
+a complete, successful, authoritative snapshot of the current trusted event
 ledger. A partial, limited, failed, or corrupt scan may project observed rows,
 but absence in that scan is never deletion evidence.
 
 After every successful persisted watcher tick, agentacct reconciles the full
-current trusted usage slice in `events.jsonl`, not only rows rewritten during
+current trusted usage slice in the authoritative event ledger, not only rows rewritten during
 that tick. This makes a prior fail-open Evidence shadow error self-healing on
 the next good tick. Broken ticks retain the previous head and cannot create
 tombstones.
@@ -315,7 +326,7 @@ same-identity/different-content conflicts, and it does not use refreshable-slot
 coalescing.
 
 For a clean rebuild, original Codex, Claude, and Hermes logs plus the trusted
-`events.jsonl` ledger are the usage recovery inputs. Retained raw
+event ledger are the usage recovery inputs. Retained raw
 mechanical-capture inputs remain the recovery basis for their own evidence.
 Neither the inflated refresh history nor the SQLite projection is promoted to
 source truth merely because it is large; both old spools remain immutable
@@ -336,8 +347,9 @@ dashboards:
    reported, estimated, provider reported, provider billed, and objective
    machine evidence.
 
-The v1 dashboard remains available during the shadow period. The v2 views read
-the indexed projection and do not rebuild the entire event history per request.
+The HTML dashboard described by the original shadow-period plan is retired. The
+evidence views remain available as bounded JSON projections and do not rebuild
+the entire event history per request.
 
 ### Primary product projection
 
@@ -346,13 +358,13 @@ The normal user journey is deliberately smaller than the evidence model:
 1. **Work** leads with actionable reconciliation gaps, named work, recent agent
    activity, historical source coverage, and a compact usage snapshot.
 2. **Usage** provides the complete saved usage explorer.
-3. **Advanced** owns live local-log preview, normalized evidence projections,
-   and JSON/record inspectors.
+3. **Sources and evidence inspection** remain available through the TUI, CLI,
+   and bounded JSON projections.
 
-`/sessions` remains a stable Work explorer. `/raw`, `/work-graph`,
-`/evidence-matrix`, `/discrepancies`, and `/cost-outcome-basis` remain stable
-Advanced routes; compatibility does not require promoting them into primary
-navigation.
+`/sessions` remains a stable JSON Work explorer. The current evidence routes are
+namespaced under `/evidence/*`, including `/evidence/work-graph`,
+`/evidence/matrix`, `/evidence/discrepancies`, and
+`/evidence/cost-outcome-basis`. The former HTML `/raw` route is retired.
 
 The primary projection follows additional honesty rules:
 
@@ -363,8 +375,8 @@ The primary projection follows additional honesty rules:
 - a trusted mechanical session observation may create an activity-only Task
   without MCP, but it carries no invented work title, token total, or cost;
 - ambiguous usage is never allocated to make a work card look complete;
-- opaque ids and normalized record metadata stay behind closed evidence drawers
-  or Advanced inspectors;
+- opaque ids and normalized record metadata stay behind bounded evidence
+  inspectors;
 - large record APIs use bounded cursor pages rather than unbounded default
   responses.
 
@@ -415,8 +427,9 @@ only the existing MCP/API path.
 
 ### Phase 5: evidence product
 
-Deliver the four API/UI projections. A feature flag returns to the v1 dashboard;
-derived views can be rebuilt from immutable evidence.
+The original phase delivered the four API/UI projections. Its feature flag
+formerly returned to the then-current v1 HTML dashboard; that fallback is now
+retired. Derived views can still be rebuilt from immutable evidence.
 
 ### Phase 6: advisory control and verification
 
@@ -426,15 +439,15 @@ authorization and product decision.
 
 ### Phase 7: product projection and progressive disclosure
 
-Deliver the Work-first dashboard, actionable attention cards, human-readable
-work summaries with closed evidence explainers, honest historical source
-coverage, the Advanced inspection hub, and bounded evidence-event pagination.
-Rollback is presentation-only: all stable legacy routes and immutable evidence
-remain available, and no upstream host configuration is changed.
+The original phase delivered the Work-first HTML dashboard, actionable attention
+cards, human-readable work summaries with closed evidence explainers, historical
+source coverage, an Advanced inspection hub, and bounded evidence-event
+pagination. The HTML surface and its legacy routes were later retired; immutable
+evidence and the bounded JSON projections remain available.
 
 ### Phase 7.1: product home and action ownership
 
-Replace the dashboard-style collection of attention, work, session, source,
+The original phase replaced the dashboard-style collection of attention, work, session, source,
 and usage panels with one deduplicated Work feed. The product projection maps
 work into `In progress`, `Blocked`, `Open finding`, `Verified`, `Agent
 reported`, or `Activity observed`. Only an explicit blocker or recorded
@@ -442,7 +455,7 @@ user-owned next action is a user-facing action; a failed machine check remains
 an open finding until the agent resolves it and is not assigned to the user.
 Missing semantic context, join keys, usage
 attribution, and source-health proof are integration or diagnostic states; they
-remain in Sessions and Advanced and never masquerade as a user task.
+remain in diagnostic TUI/JSON views and never masquerade as a user task.
 
 For project-scoped stores, Work excludes activity carrying an explicit other-
 project label while retaining older events whose project label is absent.

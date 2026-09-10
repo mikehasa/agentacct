@@ -1,8 +1,13 @@
 # Merge usage and limits into one decision-first pane
 
+> Historical implementation-decision artifact. The direction below has been
+> implemented in the current app; risk notes, verification bullets, and future-
+> tense wording preserve the pre-implementation decision record rather than a
+> current backlog or release checklist.
+
 Written against: `7a0dc7e`
 
-Status: final implementation decision after the 100-scenario review.
+Status: implemented historical decision after the 100-scenario review.
 
 ## Evidence chain
 

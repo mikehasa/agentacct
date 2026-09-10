@@ -1053,7 +1053,13 @@ def _legacy_dimensions(event: Mapping[str, Any], metadata: Mapping[str, Any]) ->
         dimensions.add("session_identity")
     if event_type.startswith("run_") or "tool" in event_type:
         dimensions.add("activity")
-    if "outcome" in event_type or event_type in {"task_completed", "task_blocked"}:
+    if "outcome" in event_type or event_type in {
+        "task_completed",
+        "task_blocked",
+        "task_handed_off",
+        "task_failed",
+        "task_passed",
+    }:
         dimensions.add("outcome")
     return tuple(sorted(dimensions or {"activity"}))
 

@@ -49,6 +49,52 @@ def test_work_event_http_transport_writes_v1_and_v2(tmp_path) -> None:
     assert evidence[0]["envelope"]["assertion"] == "claimed"
 
 
+def test_work_event_http_accepts_handed_off_as_a_clean_terminal_status(tmp_path) -> None:
+    client = TestClient(create_local_api_app(store_dir=tmp_path / "state"))
+
+    response = client.post(
+        "/work-events",
+        json={
+            "source": "codex",
+            "event_kind": "section",
+            "status": "handed_off",
+            "source_event_id": "handoff-1",
+            "section_id": "handoff",
+            "client_session_id": "session-1",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["work_event"]["status"] == "handed_off"
+    assert payload["v1_event"]["event_type"] == "section_handed_off"
+    assert payload["v1_event"]["metadata"]["status"] == "handed_off"
+
+
+def test_work_event_http_preserves_handed_off_task_kind(tmp_path) -> None:
+    client = TestClient(create_local_api_app(store_dir=tmp_path / "state"))
+
+    response = client.post(
+        "/work-events",
+        json={
+            "source": "codex",
+            "event_kind": "task",
+            "status": "handed_off",
+            "source_event_id": "task-handoff-1",
+            "work_id": "task-handoff",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["work_event"]["event_kind"] == "task"
+    assert payload["work_event"]["status"] == "handed_off"
+    assert payload["v1_event"]["event_type"] == "task_handed_off"
+    dimensions = client.get("/evidence/events").json()["evidence"][0]["envelope"]["dimensions"]
+    assert "outcome" in dimensions
+    assert "task_semantics" in dimensions
+
+
 def test_evidence_json_surfaces_have_projection_parity(tmp_path) -> None:
     client = TestClient(create_local_api_app(store_dir=tmp_path / "state"))
     client.post(

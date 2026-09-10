@@ -17,6 +17,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from . import version as version_info
 from .activation import ActivationStateStore
 from .agent_capabilities import agent_capability_manifest
 from .client_usage import (
@@ -2642,7 +2643,7 @@ def create_local_api_app(
     discovery file (see :mod:`agentacct.glance`). Without a token the /v1 routes
     fail closed (503) — they never open an unauthenticated lane by accident.
     """
-    app = FastAPI(title="agentacct local api", version="0.1.0")
+    app = FastAPI(title="agentacct local api", version=version_info.package_version())
     app_pricing_catalog_path = pricing_catalog_path_for_store(store_dir)
     usage_discovery = usage_discovery or UsageDiscoveryConfig()
 

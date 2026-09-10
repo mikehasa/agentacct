@@ -13,13 +13,13 @@ agentacct usage truth-table --json
 
 | Integration path | What agentacct can observe | Update timing / freshness | Usage confidence | Cost confidence | Hard budget basis |
 | --- | --- | --- | --- | --- | --- |
-| Codex local usage import | Local Codex sessions, exact recorded parent lineage, model when present, non-cached input, cached input, output, reasoning tokens, turn count, timestamps | Repeated rollout `token_count` events during a thread; `--limit-sessions` selects complete recent root groups, and later token growth reaches agentacct only via dashboard refresh or an importer run with `--refresh` | `client_reported` | `unknown`; optional `estimated_from_tokens` with `--estimate-costs` | Advisory only from import; use token/runtime limits for hard dollar stops |
+| Codex local usage import | Local Codex sessions, exact recorded parent lineage, model when present, non-cached input, cached input, output, reasoning tokens, turn count, timestamps | Repeated rollout `token_count` events during a thread; `--limit-sessions` selects complete recent root groups, and later token growth reaches agentacct only through an importer run with `--refresh` | `client_reported` | `unknown`; optional `estimated_from_tokens` with `--estimate-costs` | Advisory only from import; use token/runtime limits for hard dollar stops |
 | Claude Code local usage import | Local Claude Code project JSONL usage, model when present, input, cache creation/read, output tokens, turn count | Assistant message rows carry `message.usage` as transcript files are written; local `journal/result` rows are not the usage source in observed samples | `client_reported` | `unknown`; optional `estimated_from_tokens` with `--estimate-costs` | Advisory only from import; use token/runtime limits for hard dollar stops |
 | OpenCode JSON event stream import | OpenCode JSON/JSONL `step-finish` token fields and client-reported cost when present | Usage/cost appear on captured `step-finish` events | `client_reported` | `client_reported` | Useful for dashboards/advisory budgets, not provider invoice truth |
 | Hermes local state import | Hermes `state.db` session rows, provider/model, input/cache/output/reasoning tokens, message count, client-reported cost fields | Session-level fields are read from Hermes' local SQLite state database | `client_reported` | `client_reported` when Hermes stores cost fields | Useful for dashboards/advisory budgets, not provider invoice truth |
 | OpenClaw JSONL local usage import | OpenClaw JSONL assistant usage rows, provider/model, input/cache/output tokens, optional client-reported cost fields | Usage appears on assistant message rows when OpenClaw writes JSONL session logs | `client_reported` | `client_reported` when `usage.cost.total` is present; otherwise `unknown` | Useful for dashboards/advisory budgets, not provider invoice truth |
-| Cursor primary state observation | Composer identity, client timestamps, explicit `modelConfig.modelName`, and exact child links from primary `User/globalStorage/state.vscdb` only | On explicit import, Dashboard refresh, or watcher scan; active WAL and source/schema races fail closed | `unknown`; no token fields are selected | `unknown`; no cost fields are selected | No token/dollar enforcement; proves bounded session presence only |
-| Agent MCP workflow events | Section `started`/`checkpoint`/`completed`/`blocked` events, machine checks, and blocker context reported by an MCP-capable agent | Only when the configured agent calls agentacct MCP tools | `unknown` unless the agent supplies usage metadata | `unknown` unless the agent supplies cost metadata | Not a billing source by itself |
+| Cursor primary state observation | Composer identity, client timestamps, explicit `modelConfig.modelName`, and exact child links from primary `User/globalStorage/state.vscdb` only | On explicit import or watcher scan; active WAL and source/schema races fail closed | `unknown`; no token fields are selected | `unknown`; no cost fields are selected | No token/dollar enforcement; proves bounded session presence only |
+| Agent MCP workflow events | Section `started`/`checkpoint`/`completed`/`blocked`/`handed_off` events, machine checks, and blocker context reported by an MCP-capable agent | Only when the configured agent calls agentacct MCP tools | `unknown` unless the agent supplies usage metadata | `unknown` unless the agent supplies cost metadata | Not a billing source by itself |
 | Agent MCP usage debug snapshots | Agent-visible token/cost numbers or an explicit unavailable marker, plus client/session/turn join keys | Only when the configured agent calls `agentacct_record_agent_usage_debug`; stored as metadata for comparison | `unknown` in agentacct totals; debug values live under `metadata.agent_reported_*` | `unknown` in agentacct totals; debug cost lives under `metadata.agent_reported_cost_usd` when provided | Comparison evidence only; never a hard budget basis |
 | Native coding-agent hook capture | Host-emitted lifecycle/session/turn/tool ids, relative file metadata, subagent links, and recognized machine-check exit codes | On each explicitly activated Claude Code, Codex, or Cursor hook | `unknown`; hooks do not capture tokens | `unknown`; hooks do not capture cost | No token/dollar enforcement; objective exit codes may be machine evidence |
 | agentacct-owned process wrapper | Runtime, exit code, stdout/stderr logs, pause/resume/kill ownership metadata | Process state while agentacct owns the command; token/cost freshness needs import or MCP events | `unknown` | `unknown` | Useful for process/runtime control, not token or billing truth by itself |
@@ -41,15 +41,23 @@ agentacct usage truth-table --json
 
 Older agentacct local usage import rows may have `metadata.usage_source=local_client_session_store` but no `metadata.usage_provenance`. Those rows are preserved as historical or diagnostic events, but they are no longer counted as usage truth totals.
 
-To regenerate trusted usage rows, re-run:
+To regenerate a clean trusted ledger without mutating the historical store,
+import the client logs into a new store:
 
 ```bash
-agentacct usage import-local --client all
+agentacct usage import-local --client all --store-dir /path/to/new/state
 ```
 
-or use the dashboard refresh action. The CLI importer recognizes legacy local-import-shaped rows for dedupe so an upgrade does not duplicate the same `client_session_id`; dashboard refresh can replace legacy rows for the same client/session with trusted rows. If you want a clean dogfood ledger, archive the old `events.jsonl`, clear the active event ledger, and then re-import local usage. Do not delete the source client logs under Codex, Claude Code, Hermes, OpenCode, or OpenClaw.
+On an existing store, the CLI recognizes legacy local-import-shaped rows for
+dedupe and does not duplicate the same `client_session_id`; `--refresh`
+replaces a row only when re-observed totals changed. The authoritative ledger is
+`events.sqlite3` by default; `events.jsonl` may instead be an adopted transition
+backup or the explicitly selected legacy flat ledger. Point `--store-dir` at a
+new empty directory rather than moving individual files out of an existing
+store. Preserve the old store as a unit, and do not delete the source client
+logs under Codex, Claude Code, Hermes, OpenCode, or OpenClaw.
 
-Old MCP semantic events from pre-MCP-v1 dogfooding can also be noisy. They can be archived with the old event ledger and left out of the active ledger when starting a clean local MCP v1 dogfood run.
+Old MCP semantic events from pre-MCP-v1 dogfooding can also be noisy. Keep them in the preserved old store and use the new isolated store for a clean local MCP dogfood run.
 
 ## Observed local timing
 
@@ -57,7 +65,7 @@ Codex local sessions write repeated rollout `token_count` events with `last_toke
 
 Claude Code local project files write usage on assistant message rows. On the observed local subscription sample, `journal.jsonl` `started`/`result` rows did not carry token or cost usage; they describe task orchestration results rather than billing truth.
 
-For dashboard UX, treat every local import as a snapshot. The CLI importer and `usage watch` record each session once at first observation and never update it by default — a background watcher does NOT keep an already-imported session's totals live. Only the dashboard's "Refresh & save usage" button, or an importer run with `--refresh`, replaces re-observed rows with fresh totals. Show both `last imported at` and source `last updated at` before implying that a number is live.
+For product UX, treat every local import as a snapshot. The CLI importer and `usage watch` record each session once at first observation and never update it by default — a background watcher does NOT keep an already-imported session's totals live. Only an importer run with `--refresh` replaces re-observed rows with fresh totals. Show both `last imported at` and source `last updated at` before implying that a number is live.
 
 Local imports also preserve parent/child session metadata when the client exposes it. Claude Code subagent transcript files are linked back to their parent `sessionId`, and Codex child threads use `thread_spawn_edges` or the rollout's own `session_meta.parent_thread_id`. If Codex marks a thread as a subagent without exposing a parent edge, agentacct records it as a child with an unknown parent instead of guessing a root from timestamps or working directory.
 
@@ -67,7 +75,7 @@ Codex internal workflow labels such as `codex-auto-review` are not model names. 
 
 ## Ingestion receipts and sync health
 
-A persisted import or dashboard refresh records owner-only, atomic per-source receipts at `<store-dir>/ingestion-health/state.json`. Receipts include `last_attempt_at`, `last_success_at`, parsed/skipped/error counts, a bounded error code, source watermark, scan limit, and source-specific limit diagnostics. `--dry-run --json` returns the same discovery diagnostics without writing usage rows or health state.
+A persisted import records owner-only, atomic per-source receipts at `<store-dir>/ingestion-health/state.json`. Receipts include `last_attempt_at`, `last_success_at`, parsed/skipped/error counts, a bounded error code, source watermark, scan limit, and source-specific limit diagnostics. `--dry-run --json` returns the same discovery diagnostics without writing usage rows or health state.
 
 Inspect operational state through either interface:
 
@@ -94,8 +102,8 @@ agentacct usage import-local --client all --estimate-costs
 
 The built-in pricing catalog is intentionally small. To extend coverage without
 changing code, agentacct keeps a local LiteLLM
-`model_prices_and_context_window.json` snapshot in agentacct state. Dashboard
-and `usage import-local --estimate-costs` automatically use that state-local
+`model_prices_and_context_window.json` snapshot in agentacct state. Pricing-aware
+local imports automatically use that state-local
 snapshot when it exists:
 
 ```bash
@@ -105,8 +113,8 @@ agentacct usage import-local --client all --estimate-costs
 ```
 
 **Auto-refresh (TTL).** Every pricing path — `usage import-local
---estimate-costs`, each `usage watch --estimate-costs` tick, and the
-dashboard's "Refresh & save usage" button — refreshes the store-local snapshot
+--estimate-costs`, each `usage watch --estimate-costs` tick, and the TUI's
+best-effort background import — refreshes the store-local snapshot
 automatically when its `fetched_at` sidecar timestamp is older than 7 days,
 the snapshot is missing, or the snapshot no longer parses (a torn/corrupted
 file counts as stale and is repaired; the sidecar records
@@ -120,7 +128,7 @@ skipped entirely (reason `throttled`), so in the steady state an unreachable
 or slow network costs at most one download attempt per hour per store —
 never one per tick — and every import proceeds immediately on the existing
 snapshot. Snapshot writes are atomic (per-write unique temp file + rename),
-so a concurrently-serving dashboard never reads a torn file. Disable the
+so a concurrent local reader never reads a torn file. Disable the
 auto-refresh with `AGENTACCT_PRICING_AUTO_REFRESH=0`; `cost
 pricing-catalog --refresh` stays available as the force-now path. No
 telemetry: the download is a plain GET of LiteLLM's public open-source
@@ -146,8 +154,8 @@ remain unpriced until a trusted catalog entry exists.
 
 **Stored-row stability vs. the unknown→priced transition.** Once a stored row
 is priced, later catalog price drift never rewrites it. The ONE exception is
-the unknown→priced transition: on a `--refresh --estimate-costs` scan (or the
-dashboard refresh, which always prices), a re-observed row whose stored
+the unknown→priced transition: on a `--refresh --estimate-costs` scan, a
+re-observed row whose stored
 `cost_confidence` is `unknown` and whose `(provider, model)` NOW resolves in
 the catalog is replaced with a priced row — `pricing_source` provenance
 stamped, event id reissued once — after which it is priced and stable like any
@@ -165,4 +173,4 @@ agentacct usage truth-table
 agentacct serve --store-dir .agent-sentinel/state
 ```
 
-For normal subscription-based coding-agent workflows, treat local import and MCP events as a local activity ledger. Use the confidence labels on reports and dashboards before making budget or ROI claims.
+For normal subscription-based coding-agent workflows, treat local import and MCP events as a local activity ledger. Use the confidence labels on reports and product surfaces before making budget or ROI claims.

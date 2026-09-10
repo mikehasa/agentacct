@@ -1,5 +1,7 @@
 import io
 import json
+import re
+from pathlib import Path
 
 from typer.testing import CliRunner
 
@@ -7,6 +9,7 @@ from agentacct.cli import app
 from agentacct.mcp import SentinelMCPServer, read_mcp_message, run_mcp_event_workflow_smoke, serve_stdio, write_mcp_message
 from agentacct.runner import RunOptions, start_guarded_run
 from agentacct.storage import json_utf8_size
+from agentacct.version import package_version
 from agentacct.work_ledger import build_work_ledger
 
 
@@ -82,7 +85,7 @@ def test_mcp_initialize_returns_directive_instructions(tmp_path):
     assert "task_completed" not in instructions
 
     # Pre-existing fields are unchanged by adding instructions.
-    assert result["serverInfo"] == {"name": "agentacct", "version": "0.1.0"}
+    assert result["serverInfo"] == {"name": "agentacct", "version": package_version()}
     assert result["capabilities"] == {"tools": {}}
     assert result["protocolVersion"] == "2025-06-18"
 
@@ -983,6 +986,27 @@ def test_mcp_workflow_smoke_is_documented() -> None:
     assert "agentacct_record_event" in reference
     assert "agentacct_get_event_summary" in reference
     assert "does not call Claude, Codex, or provider APIs" in reference
+
+
+def test_public_mcp_tool_lists_match_the_live_server(tmp_path) -> None:
+    response = SentinelMCPServer(store_dir=tmp_path / "state").handle_message(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+    )
+    live = {
+        tool["name"]
+        for tool in response["result"]["tools"]
+    }
+    documents = (
+        Path("docs/architecture.md"),
+        Path("docs/reference.md"),
+        Path("docs/coding-agent-integrations.md"),
+        Path("docs/safety-boundaries.md"),
+        Path("docs/full-demo.md"),
+    )
+
+    for path in documents:
+        documented = set(re.findall(r"`(agentacct_[a-z0-9_]+)`", path.read_text(encoding="utf-8")))
+        assert documented == live, f"{path} MCP tool list drifted from tools/list"
 
 
 def test_mcp_content_length_framing_roundtrip():

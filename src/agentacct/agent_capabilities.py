@@ -54,7 +54,8 @@ Verification level -- what proves the state:
   live_smoke         observed on a live machine on a dated day
 
 Activation -- how a user turns a lane on:
-  none | manual_manifest | manual_profile | opt_in_project | one_command_project
+  none | manual_manifest | manual_profile | opt_in_project |
+  one_command_project | one_command_global
 
 The honesty rule: a "verified*" state requires real, dated evidence, and a
 synthetic fixture can never prove a verified state.  The validator enforces the
@@ -85,7 +86,14 @@ CAPABILITY_NAMES = (
 )
 CAPABILITY_STATES = frozenset({"unavailable", "experimental", "verified_partial", "verified"})
 ACTIVATION_MODES = frozenset(
-    {"none", "manual_manifest", "manual_profile", "opt_in_project", "one_command_project"}
+    {
+        "none",
+        "manual_manifest",
+        "manual_profile",
+        "opt_in_project",
+        "one_command_project",
+        "one_command_global",
+    }
 )
 VERIFICATION_LEVELS = frozenset({"none", "synthetic_fixture", "real_fixture", "live_smoke"})
 REAL_VERIFICATION_LEVELS = frozenset({"real_fixture", "live_smoke"})
@@ -233,6 +241,13 @@ _CODEX_CACHE_WRITE_FIXTURE = _verification_record(
         "tests/test_client_usage.py::test_discover_codex_usage_uses_row_level_cache_write_capability",
     ),
 )
+_CODEX_GLOBAL_ONBOARD_FIXTURE = _verification_record(
+    "synthetic_fixture",
+    verified_at="2026-08-13",
+    evidence_refs=(
+        "tests/test_onboard_global.py::test_onboard_global_agent_codex_installs_tool_activity_hooks",
+    ),
+)
 _HERMES_USAGE_FIXTURE = _verification_record(
     "synthetic_fixture",
     verified_at="2026-07-17",
@@ -246,6 +261,13 @@ _HERMES_SESSION_FIXTURE = _verification_record(
     evidence_refs=(
         "tests/test_client_usage.py::test_hermes_diagnostics_count_prelimit_rows_and_observe_zero_usage",
         "tests/test_client_usage.py::test_hermes_multiple_env_homes_fail_closed_until_explicit_selection",
+    ),
+)
+_HERMES_GLOBAL_ONBOARD_FIXTURE = _verification_record(
+    "synthetic_fixture",
+    verified_at="2026-08-16",
+    evidence_refs=(
+        "tests/test_onboard_global.py::test_onboard_global_agent_hermes_installs_record_your_work_hook",
     ),
 )
 _OPENCODE_USAGE_FIXTURE = _verification_record(
@@ -262,6 +284,13 @@ _OPENCODE_DB_FIXTURE = _verification_record(
         "tests/test_client_usage.py::test_discover_opencode_usage_reads_native_session_db",
         "tests/test_client_usage.py::test_discover_opencode_usage_recomputes_cost_from_tokens_when_stored_zero",
         "tests/test_client_usage.py::test_discover_opencode_usage_presence_flags_track_schema_columns",
+    ),
+)
+_OPENCODE_GLOBAL_ONBOARD_FIXTURE = _verification_record(
+    "synthetic_fixture",
+    verified_at="2026-08-13",
+    evidence_refs=(
+        "tests/test_onboard_global.py::test_onboard_global_agent_opencode_writes_mcp_rules_and_plugin",
     ),
 )
 _OPENCLAW_USAGE_FIXTURE = _verification_record(
@@ -395,17 +424,24 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
             ),
             "mechanical_capture": _capability_record(
                 "experimental",
-                "Metadata-only Evidence v2 normalizer for lifecycle, tool, and check payloads.",
-                activation="manual_manifest",
-                verification=_CAPTURE_FIXTURE,
-                limitations=("No native hook is installed by onboarding.",),
+                "Global onboarding installs a user-scope PreToolUse + SessionEnd wrapper that feeds the v1 activity/lifecycle bridge; rollout import remains the tool/check fallback and superset.",
+                activation="one_command_global",
+                verification=_CODEX_GLOBAL_ONBOARD_FIXTURE,
+                limitations=(
+                    "A new Codex session and one-time hook trust are required before the installed hook can fire.",
+                    "Project-scope onboarding writes MCP config and instructions but does not install this hook.",
+                    "The separate generic Evidence v2 capture manifest remains render-only/manual and is not enabled by onboarding.",
+                ),
             ),
             "mcp_semantics": _capability_record(
                 "verified",
-                "Project MCP config and client-log-evidenced semantic reporting.",
-                activation="one_command_project",
+                "Global or project MCP config and client-log-evidenced semantic reporting.",
+                activation="one_command_global",
                 verification=_CORE_MCP_LIVE,
-                limitations=("Client-log joins are high confidence, never exact.",),
+                limitations=(
+                    "Client-log joins are high confidence, never exact.",
+                    "Project-scope onboarding remains available when a repo-specific store is required.",
+                ),
             ),
             "model_attribution": _capability_record(
                 "experimental",
@@ -430,11 +466,14 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
                 usage_basis="client_reported",
             ),
             "automatic_install": _capability_record(
-                "verified_partial",
-                "agentacct can write project MCP config and workflow instructions.",
-                activation="one_command_project",
-                verification=_CORE_MCP_LIVE,
-                limitations=("The generic mechanical hook remains manual and some Codex builds ignore project-local config.",),
+                "experimental",
+                "`agentacct onboard --scope global --agent codex` writes user-scope MCP config, standing instructions, and the observe-only v1 hook wrapper/config.",
+                activation="one_command_global",
+                verification=_CODEX_GLOBAL_ONBOARD_FIXTURE,
+                limitations=(
+                    "The hook still requires one-time Codex trust; an unmergeable hooks.json is preserved and leaves MCP semantics available without hook capture.",
+                    "No live end-to-end one-command onboarding smoke is recorded.",
+                ),
             ),
         },
         "limitations": ["Usage and semantic work remain separate unless client-log evidence proves the join."],
@@ -469,13 +508,25 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
                 limitations=("Optional model/cache/cost fields have synthetic evidence only; schema drift can collapse to an empty result.",),
                 usage_basis="client_reported",
             ),
-            "mechanical_capture": _unavailable_capability("No Hermes mechanical hook or plugin adapter is implemented."),
+            "mechanical_capture": _capability_record(
+                "experimental",
+                "Global onboarding installs an observe-only v1 shell-hook bridge for tool activity, recognized check exit codes, and per-turn liveness.",
+                activation="one_command_global",
+                verification=_HERMES_GLOBAL_ONBOARD_FIXTURE,
+                limitations=(
+                    "Hermes must approve the hook allowlist once and restart a running gateway before capture fires.",
+                    "Unsafe or uneditable hooks YAML is preserved, leaving MCP tools only and no automatic recording.",
+                    "This client-specific v1 bridge is separate from the generic Evidence v2 manifest system; no Hermes generic manifest adapter exists.",
+                ),
+            ),
             "mcp_semantics": _capability_record(
                 "verified_partial",
-                "Manual Hermes profile registration can expose agentacct semantic tools.",
-                activation="manual_profile",
+                "Global onboarding writes the Hermes profile registration; project setup can still preview the equivalent manual command.",
+                activation="one_command_global",
                 verification=_SMALL_CLIENT_MCP_LIVE,
-                limitations=("The dated smoke proves MCP calls, not usage import stability.",),
+                limitations=(
+                    "The dated smoke proves MCP calls, not the newer global config writer or usage import stability.",
+                ),
             ),
             "model_attribution": _capability_record(
                 "experimental",
@@ -500,8 +551,16 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
                 limitations=("Field-level evidence is synthetic; the live store did not provide positive cache-write proof.",),
                 usage_basis="client_reported",
             ),
-            "automatic_install": _unavailable_capability(
-                "agentacct can render the setup command but does not write the active Hermes profile."
+            "automatic_install": _capability_record(
+                "experimental",
+                "`agentacct onboard --scope global --agent hermes` writes user-scope MCP config and the v1 shell-hook wrapper/config, including the first-turn record-your-work nudge.",
+                activation="one_command_global",
+                verification=_HERMES_GLOBAL_ONBOARD_FIXTURE,
+                limitations=(
+                    "One-time hook consent and a running-gateway restart remain explicit user steps.",
+                    "Project-scope setup only previews the client-managed registration.",
+                    "No live end-to-end one-command onboarding smoke is recorded.",
+                ),
             ),
         },
         "limitations": ["Remain provisional until schema-drift recovery and zero-token observation have live evidence."],
@@ -541,13 +600,25 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
                 usage_basis="client_reported",
                 cost_basis="estimated_from_tokens",
             ),
-            "mechanical_capture": _unavailable_capability("No realtime OpenCode plugin adapter is implemented."),
+            "mechanical_capture": _capability_record(
+                "experimental",
+                "Global onboarding installs an observe-only v1 plugin for tool activity and recognized check exit codes.",
+                activation="one_command_global",
+                verification=_OPENCODE_GLOBAL_ONBOARD_FIXTURE,
+                limitations=(
+                    "The plugin is auto-loaded only by a new OpenCode session.",
+                    "Transcript/database import can supersede overlapping hook activity so actions are not double-counted.",
+                    "This client-specific v1 plugin is separate from the generic Evidence v2 manifest system; no OpenCode generic manifest adapter exists.",
+                ),
+            ),
             "mcp_semantics": _capability_record(
                 "verified_partial",
-                "Manual OpenCode user-config registration can expose agentacct semantic tools.",
-                activation="manual_profile",
+                "Global onboarding writes OpenCode user config and rules; project setup can still preview the equivalent manual command.",
+                activation="one_command_global",
                 verification=_SMALL_CLIENT_MCP_LIVE,
-                limitations=("The dated DeepSeek smoke does not verify OpenAI or Anthropic paths or usage import.",),
+                limitations=(
+                    "The dated DeepSeek smoke does not verify the newer global config writer, OpenAI or Anthropic paths, or usage import.",
+                ),
             ),
             "model_attribution": _capability_record(
                 "experimental",
@@ -572,8 +643,16 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
                 limitations=("Synthetic fixture only; missing remains unknown.",),
                 usage_basis="client_reported",
             ),
-            "automatic_install": _unavailable_capability(
-                "agentacct renders the setup command but does not write OpenCode user config or install a plugin."
+            "automatic_install": _capability_record(
+                "experimental",
+                "`agentacct onboard --scope global --agent opencode` writes user-scope MCP config, global rules, and the observe-only v1 plugin.",
+                activation="one_command_global",
+                verification=_OPENCODE_GLOBAL_ONBOARD_FIXTURE,
+                limitations=(
+                    "An unparseable JSON/JSONC MCP config is preserved and requires manual registration; plugin installation is attempted independently.",
+                    "Project-scope setup only previews the client-managed registration and does not install the plugin.",
+                    "No live end-to-end one-command onboarding smoke is recorded.",
+                ),
             ),
         },
         "limitations": ["Remain experimental until real-client fixtures, namespace hardening, and per-message SQLite granularity exist."],
@@ -858,6 +937,7 @@ def validate_agent_capability_manifest(manifest: Mapping[str, Any]) -> None:
             if name == "automatic_install" and state != "unavailable" and activation not in {
                 "opt_in_project",
                 "one_command_project",
+                "one_command_global",
             }:
                 raise ValueError(f"{client}.{name} cannot label a manual path automatic")
 

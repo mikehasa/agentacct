@@ -20,7 +20,16 @@ WORK_EVENT_KINDS = {
     "usage_debug",
 }
 WORK_EVENT_TRANSPORTS = {"cli", "http", "internal", "mcp", "orchestrator", "unknown"}
-WORK_EVENT_STATUSES = {"blocked", "checkpoint", "completed", "failed", "passed", "started", "unknown"}
+WORK_EVENT_STATUSES = {
+    "blocked",
+    "checkpoint",
+    "completed",
+    "failed",
+    "handed_off",
+    "passed",
+    "started",
+    "unknown",
+}
 
 _SAFE_ID = re.compile(r"^[^\r\n\x00]{1,240}$")
 _MAX_SUMMARY = 1_200
@@ -93,15 +102,20 @@ def _relative_files(value: Any) -> tuple[str, ...]:
 
 
 def _event_kind(event_type: str, semantic_kind: str | None) -> str:
-    if semantic_kind == "client_context" or event_type == "client_context_attached":
+    # WorkEvent.to_v1_event writes the transport-neutral kind itself. Preserve
+    # every current kind first, then accept older semantic aliases and
+    # event-type-only legacy shapes below.
+    if semantic_kind in WORK_EVENT_KINDS:
+        return semantic_kind
+    if event_type == "client_context_attached":
         return "client_context"
-    if semantic_kind == "section" or event_type.startswith("section_"):
+    if event_type.startswith("section_"):
         return "section"
     if semantic_kind == "evidence" or event_type == "machine_check":
         return "machine_check"
     if semantic_kind == "agent_usage_debug" or event_type == "agent_usage_debug_reported":
         return "usage_debug"
-    if event_type in {"task_started", "task_completed", "task_blocked"}:
+    if event_type.startswith("task_") and event_type.removeprefix("task_") in WORK_EVENT_STATUSES:
         return "task"
     if event_type == "note":
         return "note"
@@ -112,6 +126,7 @@ def _event_status(event_type: str, metadata: Mapping[str, Any]) -> str:
     for candidate in (
         metadata.get("section_status"),
         metadata.get("result"),
+        metadata.get("status"),
         event_type.removeprefix("section_") if event_type.startswith("section_") else None,
         event_type.removeprefix("task_") if event_type.startswith("task_") else None,
     ):

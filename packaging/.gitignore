@@ -4,3 +4,5 @@ build/
 dist/
 *.spec
 release/
+local-build/
+.dmg-build.*/

@@ -25,8 +25,10 @@ In the early alpha, agentacct does not scan or attach to arbitrary existing agen
                                   |
         Work Graph | Evidence Matrix | Discrepancies | Cost/Outcome Basis
 
-Existing v1 events.jsonl, usage ledger, reports, and run-control paths remain
-active beside this additive evidence plane.
+The current event ledger, usage ledger, reports, and run-control paths remain
+active beside this additive evidence plane. The event ledger is SQLite-backed
+by default (`events.sqlite3`); `events.jsonl` is retained only for adopted
+legacy stores or an explicit flat-ledger compatibility mode.
 ```
 
 Observed sessions and planned work project into stable Tasks. A separate
@@ -43,7 +45,7 @@ The CLI is the primary development and debugging interface.
 It can:
 
 - run a command under agentacct ownership
-- onboard a known local usage source and manage the dashboard/sync runtime
+- onboard a known local usage source and manage the local API/sync runtime
 - inspect a Task decision brief and its evidence timeline
 - create and govern agentacct-owned local Task attempts
 - initialize and validate project-local policy
@@ -52,14 +54,15 @@ It can:
 - serve the local API
 - serve MCP tools over stdio
 - render metadata-only Claude Code, Codex, and Cursor hook fragments without activating them
-- inspect/replay Evidence v2 through the Work-first dashboard, Advanced hub,
-  and four stable evidence projections
+- inspect/replay Evidence v2 through the CLI, local JSON API, and four stable
+  evidence projections
 
 The default Work projection is deliberately narrower than the ledger. It
 deduplicates named work and session-only activity, scopes explicit project
 labels to the current project store, and turns only blockers or failed checks
 into user actions. Reconciliation gaps and source coverage remain available in
-Sessions and Advanced; they are system diagnostics, not assumed user work.
+the TUI and evidence JSON endpoints; they are system diagnostics, not assumed
+user work.
 
 ### Local run store
 
@@ -131,7 +134,7 @@ The cost ledger records local estimates, exact token usage when a provider retur
 
 ### Local API
 
-The local API is for sidecar dashboards and local integrations.
+The local API is for scripts, native shells, and local integrations.
 
 It binds to localhost by default:
 
@@ -139,8 +142,12 @@ It binds to localhost by default:
 agentacct api serve --host 127.0.0.1 --port 8789
 ```
 
-It exposes report/outcome primitives, Evidence v2 inspection, and bounded
-local capture. It does not call paid APIs.
+It exposes report/outcome primitives, derived Task/attention/work/usage views,
+Evidence v2 inspection, and bounded local capture. The managed `agentacct
+serve` entrypoint also publishes native-shell `/v1/*` routes through the
+per-boot bearer token in its owner-only discovery file; legacy routes retain
+the localhost Host/Origin boundary. Read-only API requests do not call paid
+APIs.
 
 The API validates basic local inputs such as run IDs and list limits. Invalid client inputs return 422 responses.
 
@@ -156,12 +163,13 @@ Current MCP tools are safe/local:
 
 - `agentacct_list_runs`
 - `agentacct_get_report`
+- `agentacct_record_machine_check`
 - `agentacct_record_event`
 - `agentacct_attach_client_context`
 - `agentacct_record_section`
 - `agentacct_record_agent_usage_debug`
 - `agentacct_list_events`
-- `agentacct_record_machine_check`
+- `agentacct_get_event_summary`
 
 The event tools read and write the v1 event ledger — by default the SQLite event
 log (`events.sqlite3`); set `AGENTACCT_EVENT_LOG_AUTHORITATIVE=0` for the legacy
@@ -183,7 +191,7 @@ current build, accepted Evidence v2 hook observations also feed a bounded,
 read-only session-observation projection into the v1-derived Work ledger, so a
 mechanical-only session can appear as an activity Task. The projection carries
 observed models and recognized checks but never fabricates named work, usage, or
-cost; Advanced remains the raw evidence inspector.
+cost; the CLI and evidence JSON endpoints remain the raw evidence inspectors.
 
 ## Intended product layers
 

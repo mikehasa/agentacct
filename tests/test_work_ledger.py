@@ -249,9 +249,15 @@ def test_handed_off_section_status_survives_ingestion_as_a_terminal() -> None:
         created_at=40,
     )
 
-    item = build_work_ledger([event])["work_items"][0]
+    ledger = build_work_ledger([event])
+    item = ledger["work_items"][0]
 
     assert item["latest_status"] == "handed_off"
+    assert ledger["overview"]["active_work_items"] == 0
+    assert ledger["overview"]["work_status_counts"]["handed_off"] == 1
+    session_counts = ledger["session_rollup"]["sessions"][0]["work"]["counts"]
+    assert session_counts["active"] == 0
+    assert session_counts["handed_off"] == 1
 
 
 def test_nonterminal_snapshots_without_copying_text_keep_last_blocker() -> None:

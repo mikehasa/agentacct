@@ -29,6 +29,34 @@ labeled disconnected state with the start command; a schema mismatch renders
 as a labeled incompatible state (never a parse error); a 401 re-reads the
 discovery file (the daemon restarted with a fresh token).
 
+## Embedded CLI lifecycle
+
+On every packaged-app launch, before the first local data request, the app
+checks the embedded CLI's source provenance and the installed CLI's App
+ownership/identity. First setup validates the embedded release version and
+stages a complete frozen CLI under
+`~/.local/share/agentacct/cli-versions/`, installs the stable
+`~/.local/share/agentacct/cli/agentacct` launcher, and onboards through that
+launcher. When a later launch finds different provenance or payload, it validates
+the installed and staged release versions; a newer verified embedded CLI is staged
+as another immutable version directory, then the app atomically switches the launcher's
+`.agentacct-app-target`, and restarts the app-managed runtime if it was running.
+The prior target remains available to already-running MCP and hook processes;
+the app never overwrites their onedir files in place. Unsafe ownership,
+identity, or version states fail closed, and activation/start failures recover
+the verified prior target when safe. Same-version provenance or payload drift
+can be repaired without allowing a downgrade.
+
+Verified agentacct-managed LaunchAgents participate in the same transaction:
+the app checks the loaded supervisor, unloads it before replacement, migrates
+its executable to the stable launcher, and verifies recorder readiness after
+reloading. Unknown or modified configurations are preserved and require manual
+recovery. A persistent owner-only journal supports recovery on the next app
+launch if the process exits during the transaction.
+
+This launch-time App/CLI synchronization is implemented and tested. It is not
+an App updater: Sparkle download/install support remains a roadmap item.
+
 ## Build & run
 
 Requires Xcode (macOS 14+):
@@ -77,10 +105,14 @@ checklist.
 - [ ] adaptive poll cadence (menu-open recency / Low Power Mode — CodexBar's
       2–30 min policy)
 - [x] usage window picker (7d/30d/90d)
-- [ ] per-session plan share in the window
+- [x] calibrated plan share: per-session in the dropdown and per-Task in the
+      window's Work Receipts
+- [x] app-owned embedded CLI validation + transactional launch-time sync
 - [ ] notifications on limit thresholds
-- [ ] Sparkle updates, Developer ID signing + notarization, brew cask
-- [ ] app icon + proper menu bar iconography (text-only today)
+- [ ] Sparkle updates
+- [x] Developer ID signing + notarization
+- [ ] Homebrew cask
+- [x] Stamped Tile app icon + template menu-bar mark
 
 A `contrib/swiftbar/agentacct.30s.sh` plugin covers the same glance for
 SwiftBar/xbar users (and doubles as a reference client for the API).

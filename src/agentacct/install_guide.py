@@ -32,11 +32,12 @@ REPO_URL = "https://github.com/mikehasa/agentacct"
 # agentacct is published on PyPI; the git+https form installs the latest source
 # straight from the public repository.
 ONE_LINE_PROMPT = (
-    "Install and set up agentacct — a local-first dashboard that reads my coding-agent "
-    "logs read-only and shows honest token usage and cost. Run `pipx install agentacct` "
+    "Install and set up agentacct — a local-first agent work ledger that reads my coding-agent "
+    "logs read-only and shows honest token usage, cost, and recorded work. Run `pipx install agentacct` "
     "(or `pipx install git+https://github.com/mikehasa/agentacct`), then `agentacct onboard` "
-    "(installs once per machine, global by default, zero files written into the repo), then tell me the "
-    "dashboard URL. Observe-only: never store, request, or echo any API key; all state stays local on this "
+    "(installs once per machine, global by default, zero files written into the repo), then tell me how to "
+    f"open `agentacct tui` and the local JSON API at {DASHBOARD_URL}. Observe-only: never store, request, "
+    "or echo any API key; all state stays local on this "
     "machine. Don't modify my global client config without showing the exact command first."
 )
 
@@ -128,10 +129,11 @@ agentacct serve"""
 
 CODEX_NOTES = (
     "`init --write-mcp` writes the project `.codex/config.toml` MCP block with an absolute store path.",
+    "Project-scope onboarding does not install the Codex hook. Default global onboarding does: it writes the user-scope MCP block and standing instructions plus the client-specific v1 PreToolUse/SessionEnd hook, which starts only after a new Codex session grants one-time hook trust. This installed v1 bridge is separate from the generic Evidence v2 Codex manifest, which remains render-only/manual.",
     "REQUIRED final step: start a NEW Codex session in this repo after install — Codex binds MCP servers at session start, so the agentacct tools never appear in the session that performed the install, and nothing is recorded until the first fresh session.",
-    "This project's recorded work context appears on THIS project's dashboard (`agentacct serve` run here); other projects' dashboards will show these sessions as usage-only, labeled with this project's name.",
+    "This project's recorded work context appears when `agentacct tui` or `agentacct serve` uses THIS project's store; views backed by other project stores show these sessions as usage-only, labeled with this project's name.",
     "Codex cannot pass its own session id in-session; at usage import, agentacct pairs each agentacct-recorded event with the Codex session log that created it (client-log evidence), so recorded work earns high-confidence session links once the session's rollout is imported — never `exact`, and a section evidenced by more than one session links to none. The client name is implied the same way, so codex agents need not pass `client` explicitly (a wrong explicit name is conflict-vetoed, never trusted).",
-    "Register the server as `agentacct` (every agentacct setup path writes that name). Pre-rename `agent-sentinel` registrations are equally recognized forever — existing installs do not need to re-register. Any OTHER custom registration name loses session links — skipped-but-counted in the dashboard insights, never guessed.",
+    "Register the server as `agentacct` (every agentacct setup path writes that name). Pre-rename `agent-sentinel` registrations are equally recognized forever — existing installs do not need to re-register. Any OTHER custom registration name loses session links — skipped-but-counted in work insights, never guessed.",
 )
 
 MCP_PREVIEW_BLOCK_TEMPLATE = """agentacct init --agent {agent}
@@ -148,7 +150,7 @@ def mcp_preview_block(agent: str) -> str:
 
 
 MCP_PREVIEW_NOTES = (
-    "These clients keep MCP config in profile/global or client-specific locations, so `setup mcp` PREVIEWS the exact registration command instead of writing it.",
+    "This section is the legacy project-scope path. These clients keep MCP config in profile/global or client-specific locations, so project `setup mcp` PREVIEWS the exact registration command instead of writing it. Default global onboarding is different: `onboard --agent hermes` writes the Hermes MCP profile plus its observe-only v1 shell hooks (one-time consent and gateway restart still required), while `onboard --agent opencode` writes OpenCode MCP config, global rules, and its observe-only v1 plugin. Neither client has a generic Evidence v2 manifest adapter.",
     "First remove any stale pre-rename server, e.g. `opencode mcp remove agent-sentinel` (also `agent-chronicle`): only `agentacct` ships now, so a leftover old-name entry launches a command that no longer exists (ENOENT), which the client reports as a crashed MCP server.",
     "Show the previewed command to the user and ask before modifying global agent configuration, then paste it into that client's own MCP setup flow.",
     "For an unlisted MCP-capable client, use `--agent generic` to get a portable stdio server definition.",
@@ -193,43 +195,64 @@ SERVE_NOTE = (
 GLOBAL_INSTALL_SECTION_TITLE = "## Global install by hand (single-user machine)"
 
 GLOBAL_INSTALL_INTRO = (
-    "This is what `agentacct onboard` does for you by default: it installs agentacct ONCE per machine — one user-scope MCP server, hook, and dashboard against ONE global store — "
-    "so machine-wide usage AND machine-wide work context land on a single dashboard, with ZERO files written into any repo. "
+    "This is what `agentacct onboard` does for you by default: it installs agentacct ONCE per machine — one user-scope MCP server, hook, local API runtime, and ONE global store — "
+    "so machine-wide usage AND machine-wide work context land in one ledger viewed through the macOS app, `agentacct tui`, or the JSON API, with ZERO files written into any repo. "
     "The default onboard store is the XDG state dir (`~/.local/state/agentacct/state`); older global stores (`~/.agent-sentinel-global/state`) are still recognized. "
     "The runbook below is the do-it-by-hand equivalent — use it when you want to wire the registrations yourself or point them at an explicit store. "
-    "The per-agent sections above are the other path: `--scope project` installs per repository, giving each repo its own store, dashboard, and MCP registration."
+    "The per-agent sections above are the other path: `--scope project` installs per repository, giving each repo its own store and MCP registration."
 )
 
-# Store dir choice: NOT ~/.agent-sentinel — that path was older versions'
-# silent fallback store, and reusing it would silently mix legacy data in.
-# The "$HOME/.agent-sentinel-global" name itself is frozen (pre-rename):
-# existing global installs live there, and store names are plumbing, not brand.
-# AGENTACCT_BIN is captured up front WITH a non-empty guard: for a non-PATH
-# install, a bare "$(command -v agentacct)" would expand to an EMPTY
-# argument and register a silently dead user-scope server.
-GLOBAL_INSTALL_BLOCK = """mkdir -p "$HOME/.agent-sentinel-global/state"
-AGENTACCT_BIN="$(command -v agentacct)"
-[ -n "$AGENTACCT_BIN" ] || AGENTACCT_BIN="$HOME/.agentacct-cli/.venv/bin/agentacct"  # non-PATH install: substitute YOUR absolute path from Step 1 — an empty command would register a dead server
+# Store-dir choice delegates to the same resolver as ``agentacct onboard``.
+# That keeps XDG, operator-override, and populated legacy-store precedence in
+# one executable source of truth instead of reimplementing it in shell prose.
+# AGENTACCT_BIN is captured up front and must be an absolute executable path:
+# GUI registrations cannot safely preserve a relative PATH result, while a
+# missing command would otherwise register a silently dead user-scope server.
+GLOBAL_INSTALL_BLOCK = """AGENTACCT_BIN="$(command -v agentacct 2>/dev/null || true)"
+case "$AGENTACCT_BIN" in
+  /*) ;;
+  *)
+    if [ -x "$HOME/.local/bin/agentacct" ]; then
+      AGENTACCT_BIN="$HOME/.local/bin/agentacct"
+    elif [ -x "$HOME/.agentacct/bin/agentacct" ]; then
+      AGENTACCT_BIN="$HOME/.agentacct/bin/agentacct"
+    else
+      echo "Could not resolve an absolute executable agentacct path; install with the steps above or substitute one manually." >&2
+      exit 1
+    fi
+    ;;
+esac
+case "$AGENTACCT_BIN" in
+  /*) ;;
+  *) echo "Resolved agentacct path is not absolute: $AGENTACCT_BIN" >&2; exit 1 ;;
+esac
+[ -x "$AGENTACCT_BIN" ] || { echo "agentacct is not executable: $AGENTACCT_BIN" >&2; exit 1; }
+AGENTACCT_GLOBAL_STORE="$("$AGENTACCT_BIN" setup global-store-path)"  # exact onboard resolver: override/XDG/populated legacy store
+[ -n "$AGENTACCT_GLOBAL_STORE" ] || { echo "agentacct did not resolve a global store" >&2; exit 1; }
+mkdir -p "$AGENTACCT_GLOBAL_STORE"
+printf 'BIN=%s\\nSTORE=%s\\n' "$AGENTACCT_BIN" "$AGENTACCT_GLOBAL_STORE"  # save these concrete absolute values for later commands
 # the two `mcp add` lines below rewrite USER-LEVEL client config (~/.claude.json, ~/.codex/config.toml): show them to the user and ask first (ground rule)
 # NO `claude`/`codex` CLI on PATH? (common: the Claude Code desktop app and ChatGPT.app's Codex ship none) — skip the two `mcp add` lines and hand-write the same registration per the "no CLI" note below.
-claude mcp add --scope user agentacct -- "$AGENTACCT_BIN" mcp serve --store-dir "$HOME/.agent-sentinel-global/state"
-codex mcp add agentacct -- "$AGENTACCT_BIN" mcp serve --store-dir "$HOME/.agent-sentinel-global/state"
-agentacct hooks claude-code install --project-dir "$HOME" --store-dir "$HOME/.agent-sentinel-global/state" --user-settings-example  # wrapper homes in ~/.claude/hooks/ (NOT the store dir): a store move must never vanish the hook and brick sessions
+claude mcp add --scope user agentacct -- "$AGENTACCT_BIN" mcp serve --store-dir "$AGENTACCT_GLOBAL_STORE"
+codex mcp add agentacct -- "$AGENTACCT_BIN" mcp serve --store-dir "$AGENTACCT_GLOBAL_STORE"
+"$AGENTACCT_BIN" hooks claude-code install --project-dir "$HOME" --store-dir "$AGENTACCT_GLOBAL_STORE" --user-settings-example  # wrapper homes in ~/.claude/hooks/ (NOT the store dir): a store move must never vanish the hook and brick sessions
 # merge the printed "hooks" AND "env" blocks into ~/.claude/settings.json (user-level; ask the user first; merge, never overwrite existing keys)
-# standing "record your work" instructions — this is what fills the dashboard with work context (writes ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md; ask the user first, --dry-run to preview)
-agentacct setup instructions --agent claude-code --user --store-dir "$HOME/.agent-sentinel-global/state"
-agentacct setup instructions --agent codex --user --store-dir "$HOME/.agent-sentinel-global/state"
-agentacct serve --store-dir "$HOME/.agent-sentinel-global/state\""""
+"$AGENTACCT_BIN" hooks codex install --store-dir "$AGENTACCT_GLOBAL_STORE"  # installs the client-specific v1 PreToolUse + SessionEnd bridge; approve Codex's one-time hook trust prompt in a NEW session
+# standing "record your work" instructions — this is what fills the work ledger with context (writes ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md; ask the user first, --dry-run to preview)
+"$AGENTACCT_BIN" setup instructions --agent claude-code --user --store-dir "$AGENTACCT_GLOBAL_STORE"
+"$AGENTACCT_BIN" setup instructions --agent codex --user --store-dir "$AGENTACCT_GLOBAL_STORE"
+"$AGENTACCT_BIN" serve --store-dir "$AGENTACCT_GLOBAL_STORE\""""
 
 GLOBAL_INSTALL_NOTES = (
-    "No CLI? The `claude mcp add` / `codex mcp add` lines need the `claude` and `codex` CLIs on PATH — but the Claude Code desktop app and ChatGPT.app's Codex read their config files directly and often ship NO such CLI, so those two lines fail with `command not found`. Register by hand instead, using the absolute path from `command -v agentacct` (call it BIN): (1) Codex — add to `~/.codex/config.toml` a table `[mcp_servers.agentacct]` with `command = \"BIN\"` and `args = [\"mcp\", \"serve\", \"--store-dir\", \"$HOME/.agent-sentinel-global/state\"]`; (2) Claude Code — add to `~/.claude.json`, under the top-level `mcpServers` object, `\"agentacct\": {\"type\": \"stdio\", \"command\": \"BIN\", \"args\": [\"mcp\", \"serve\", \"--store-dir\", \"<the same absolute store path>\"]}` (edit this JSON while no Claude Code session is running, or a live session may overwrite your change). Then start NEW client sessions.",
-    "The store is `$HOME/.agent-sentinel-global/state` — deliberately NOT the legacy `~/.agent-sentinel` directory, which older versions used as a silent fallback store; reusing it would mix that stray data into global mode. The directory keeps its pre-rename `agent-sentinel` name for compatibility with existing global stores.",
+    "No CLI? The `claude mcp add` / `codex mcp add` lines need the `claude` and `codex` CLIs on PATH — but the Claude Code desktop app and ChatGPT.app's Codex read their config files directly and often ship NO such CLI, so those two lines fail with `command not found`. Register by hand instead, using the concrete absolute `BIN` and `STORE` values printed by the block: (1) Codex — add to `~/.codex/config.toml` a table `[mcp_servers.agentacct]` with `command = \"BIN\"` and `args = [\"mcp\", \"serve\", \"--store-dir\", \"STORE\"]`; (2) Claude Code — add to `~/.claude.json`, under the top-level `mcpServers` object, `\"agentacct\": {\"type\": \"stdio\", \"command\": \"BIN\", \"args\": [\"mcp\", \"serve\", \"--store-dir\", \"STORE\"]}` (edit this JSON while no Claude Code session is running, or a live session may overwrite your change). Then start NEW client sessions.",
+    "`setup global-store-path` calls the exact `agentacct onboard` resolver: existing records win in order (operator override, XDG-shaped canonical store, pre-rename global store); with no records, a valid absolute operator override is the creation target, otherwise the canonical store is. The override aliases `AGENTACCT_GLOBAL_STORE_DIR`, `AGENT_CHRONICLE_GLOBAL_STORE_DIR`, and `AGENT_SENTINEL_GLOBAL_STORE_DIR` may be set to the same non-empty value for compatibility; different non-empty values fail closed in this command, onboarding, and the App so clients cannot split one ledger. This prevents a copy-paste install from ignoring an override or silently splitting history. Never reuse the older silent-fallback path `~/.agent-sentinel`.",
     "Every registration embeds an explicit absolute `--store-dir` on purpose: GUI-launched clients (Claude Code desktop, Codex.app) do not inherit shell environment variables, so `AGENTACCT_STORE_DIR` (or its pre-rename aliases `AGENT_CHRONICLE_STORE_DIR` / `AGENT_SENTINEL_STORE_DIR`) is shell convenience only — never the mechanism.",
     "The printed settings example includes `\"env\": {\"ENABLE_TOOL_SEARCH\": \"auto\"}` alongside the hooks — merge that block too (never overwriting env keys the user already has): without it the agentacct MCP tools stay deferred in Claude Code and un-primed sessions record nothing, however well the hooks are wired.",
+    "The Codex hook command installs agentacct's client-specific v1 activity/lifecycle bridge in `~/.codex/hooks.json`; it is separate from the render-only generic Evidence v2 manifest. Codex will not fire it until a new session approves the one-time hook trust prompt.",
     "REQUIRED cleanup in every repo you switch to global mode: remove the `agentacct` (or pre-rename `agent-chronicle`/`agent-sentinel`) entry from that repo's `.mcp.json` and the `[mcp_servers.agentacct]` (or pre-rename `[mcp_servers.agent-chronicle]` / `[mcp_servers.agent-sentinel]`) block from its `.codex/config.toml` (and stop merging its per-project hooks block) — a project-scope entry silently shadows the user-scope server and pins that repo's MCP context to its old per-project store.",
-    "Point any `usage watch` / `usage import-local` daemons at the same store, ONE watch daemon per store: `agentacct usage watch --store-dir \"$HOME/.agent-sentinel-global/state\"`. By default each session is imported once at first observation and never updated; add `--refresh` if the daemon should keep growing sessions' totals current (replace semantics).",
-    "REQUIRED to fill the work views (TUI / JSON API) with work context: `setup instructions` writes a short, idempotent 'record your work as sections' block into `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` (merged inside `<!-- agentacct:begin -->`/`<!-- agentacct:end -->` markers, so your own content is never touched; re-run to update — pre-rename `agent-chronicle:begin` and `agent-sentinel:begin` blocks are recognized and replaced — add `--remove` to strip it, `--dry-run` to preview). Without it, global mode records tokens but almost no work context, because global installs no standing instruction the way a per-project setup does.",
-    "What you get and what stays behind: one store with machine-wide usage and all NEW work context; MCP context already recorded in per-project stores can be folded in with `agentacct usage merge-store --from <repo>/.agent-sentinel/state --into \"$HOME/.agent-sentinel-global/state\"` (dedup-safe, additive-only, `--dry-run` first) — or inspect an old store in place with `agentacct tui --store-dir <repo>/.agent-sentinel/state` (or `agentacct serve --store-dir … --port 8790` for the JSON API).",
+    "Point any `usage watch` / `usage import-local` daemons at the concrete `STORE` printed by the block, ONE watch daemon per store: `BIN usage watch --store-dir \"STORE\"` (replace `BIN` and `STORE` with those printed absolute values). By default each session is imported once at first observation and never updated; add `--refresh` if the daemon should keep growing sessions' totals current (replace semantics).",
+    "REQUIRED in this manual runbook to fill the work views (TUI / JSON API) with work context: `setup instructions` writes a short, idempotent 'record your work as sections' block into `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` (merged inside `<!-- agentacct:begin -->`/`<!-- agentacct:end -->` markers, so your own content is never touched; re-run to update — pre-rename `agent-chronicle:begin` and `agent-sentinel:begin` blocks are recognized and replaced — add `--remove` to strip it, `--dry-run` to preview). Default global onboarding already installs these standing instructions for supported clients; manual MCP registration alone does not.",
+    "What you get and what stays behind: one store with machine-wide usage and all NEW work context; MCP context already recorded in per-project stores can be folded in with `BIN usage merge-store --from <repo>/.agent-sentinel/state --into \"STORE\"` (replace the placeholders with the printed absolute values; dedup-safe, additive-only, `--dry-run` first) — or inspect an old store in place with `BIN tui --store-dir <repo>/.agent-sentinel/state` (or `BIN serve --store-dir … --port 8790` for the JSON API).",
     "As with every section: start NEW client sessions after registering — running sessions never see newly added MCP servers or hooks.",
 )
 
@@ -262,7 +285,7 @@ _RECORDING_CONTRACT_LINES = (
     # outright ("unexpected argument(s): title"), so the instruction shipped a
     # call that could not succeed. mcp.py now also accepts `title` as an alias,
     # which is what keeps already-rendered CLAUDE.md/AGENTS.md files working.
-    "- Open a section with `agentacct_record_section` BEFORE your first other tool call, and again before each meaningful task. REQUIRED args: `source` (your client name, e.g. \"codex\" or \"claude-code\"), a stable `section_id` (reuse the SAME id across this section's started/checkpoint/completed calls), and `section_status`; also set `section_title` to a short human goal. Start with `section_status=started`; finish with `completed` (or `blocked`). Example: agentacct_record_section(source=\"codex\", section_id=\"add-rate-limit\", section_status=\"started\", section_title=\"add rate-limit to login\").",
+    "- Open a section with `agentacct_record_section` BEFORE your first other tool call, and again before each meaningful task. REQUIRED args: `source` (your client name, e.g. \"codex\" or \"claude-code\"), a stable `section_id` (reuse the SAME id across this section's started/checkpoint/terminal calls), and `section_status`; also set `section_title` to a short human goal. Start with `section_status=started`; normally finish with `completed` or `blocked`. Example: agentacct_record_section(source=\"codex\", section_id=\"add-rate-limit\", section_status=\"started\", section_title=\"add rate-limit to login\").",
     "- For a long task, send `section_status=checkpoint` updates rather than one giant section.",
     "- When the user hands the work off or says they are continuing in a new session, record the section as `section_status=handed_off` (a clean stop) — do not leave it `started`/`checkpoint`.",
     "- After running tests or a build, record the objective result with `agentacct_record_machine_check`.",
@@ -296,7 +319,7 @@ _LOW_FRICTION_LINE = (
 # concise: it costs context tokens on every session.
 MCP_SERVER_INSTRUCTIONS = "\n".join(
     (
-        "agentacct records what this session actually did — the work, not just tokens — so the local dashboard can show it. Record your work as you go:",
+        "agentacct records what this session actually did — the work, not just tokens — so the local work views can show it. Record your work as you go:",
         _LOAD_IF_DEFERRED_LINE,
         *_RECORDING_CONTRACT_LINES,
         _LOW_FRICTION_LINE,
@@ -323,7 +346,7 @@ def mcp_server_instructions() -> str:
 # the agent to act, which is exactly what this text directs.
 SESSION_START_ADDITIONAL_CONTEXT = "\n".join(
     (
-        "agentacct is installed on this machine: it records what each session actually did — the work, not just tokens — for a local dashboard. Record your work in this session:",
+        "agentacct is installed on this machine: it records what each session actually did — the work, not just tokens — for the local work views. Record your work in this session:",
         _LOAD_IF_DEFERRED_LINE,
         *_RECORDING_CONTRACT_LINES,
         _LOW_FRICTION_LINE,
@@ -361,11 +384,10 @@ def session_resume_additional_context() -> str:
 
 
 # --- Standing workflow instructions (per-session, user or project level) -------
-# In global mode agentacct installs the MCP server, hooks, and store but NOT any
-# standing "record your work" instruction, so agents never open sections and the
-# global dashboard shows tokens with almost no work context. These blocks are the
-# fix: a short instruction merged into a user- or project-level agent
-# instructions file so every session records sections.
+# Global onboarding installs these standing instructions for supported clients.
+# Manual MCP registration does not, so its runbook also calls setup instructions.
+# The short block is merged into a user- or project-level instructions file to
+# tell each session to record its sections.
 
 # Idempotent merge markers. Re-running `setup instructions` replaces ONLY the
 # text between these markers; `--remove` strips it; content outside is untouched.
@@ -402,7 +424,7 @@ INSTRUCTIONS_END_MARKERS = (
 # cannot drift on the contract; adds the load-if-deferred hint (Claude Code defers
 # MCP tools) and a narrow low-friction note without inviting a blanket skip.
 WORKFLOW_INSTRUCTION_LINES = (
-    "Record what this session does so the dashboard can show it, not just tokens:",
+    "Record what this session does so the local work views can show it, not just tokens:",
     _LOAD_IF_DEFERRED_LINE,
     *_RECORDING_CONTRACT_LINES,
     _LOW_FRICTION_LINE,
@@ -587,20 +609,20 @@ CAPABILITY_MATRIX_TITLE = "What this setup can and cannot claim"
 
 CAPABILITY_MATRIX = (
     "Claude Code: automatic high-confidence joins between usage and recorded work via the installed hook bridge (SessionStart and PreToolUse capture real session/transcript ids). Exact attribution still requires ids authored explicitly on the recording call; hook-derived ids are not bound to that MCP request. Recorded work context needs all three levers: the merged hooks settings entry including SessionStart (delivery — the SessionStart hook is the only path proven to make un-primed sessions record work, and it adds session-start/resume id capture; PreToolUse still captures the session/transcript ids on every tool call), `ENABLE_TOOL_SEARCH=auto` in the settings `env` block (discoverability — without it the agentacct tools stay deferred and un-primed sessions record nothing), and the hook bridge itself (join keys — without it recorded sections fall back to project-level context, never session-linked).",
-    "Codex: session-linked work context via client-log evidence (high) — at usage import, agentacct pairs each agentacct-recorded event with the Codex session log that created it (creation responses only, never read-tool echoes). Sections still never earn `exact` (the link is evidenced from the log at import time, not client-authored in-session), a section evidenced by more than one session links to none, and sessions whose rollouts have not been imported fall back to project-level context only.",
-    "Hermes: local `state.db` usage import plus a manual MCP registration preview; agentacct does not yet install Hermes mechanical hooks.",
-    "OpenCode: native `opencode.db` SQLite `session`-rollup usage import (per-session token/cost totals, cost recomputed from tokens when the store records none), with the exported/captured JSON path as a fallback, plus a manual MCP registration preview; per-message granularity and a realtime plugin are not implemented yet.",
+    "Codex: `agentacct onboard --scope global --agent codex` writes user-scope MCP config and standing instructions and installs an observe-only v1 PreToolUse/SessionEnd hook; start a new session and grant the one-time hook trust before it fires. Project-scope onboarding writes MCP config and instructions but not that hook. Semantic sections still join to usage by client-log evidence (high, never `exact`). The separate generic Evidence v2 Codex manifest remains render-only/manual and is not enabled by onboarding.",
+    "Hermes: `agentacct onboard --scope global --agent hermes` writes the user-scope MCP registration and an observe-only v1 shell-hook bridge for tool activity, recognized check exit codes, per-turn liveness, and the first-turn record-your-work nudge. One-time hook consent and a running-gateway restart are still required; unsafe hooks YAML is preserved and leaves tools-only setup. Project-scope setup only previews the profile command. Hermes has no generic Evidence v2 manifest adapter.",
+    "OpenCode: `agentacct onboard --scope global --agent opencode` writes user-scope MCP config, global rules, and an observe-only v1 plugin for tool activity and recognized check exit codes; a new session auto-loads the plugin. Project-scope setup only previews the user-config command. Native `opencode.db` session totals remain the usage path (JSON export fallback; per-message granularity pending). OpenCode has no generic Evidence v2 manifest adapter.",
     "OpenClaw: local JSONL usage import plus a manual MCP registration preview; agentacct does not yet join `sessions.json` routing metadata or install typed plugin hooks.",
     "Cursor: the primary `User/globalStorage/state.vscdb` can produce observation-only composer sessions through an explicit local import/refresh. It never emits usage or cost, never scans backups or ai-tracking stores, and onboarding does not install or activate it. Metadata-only hook payload normalization remains a separate manual primitive.",
     "Generic MCP clients: recorded work context only unless a separate trusted usage importer exists; join confidence depends on ids the client actually exposes.",
-    "Mechanical Claude Code/Codex/Cursor capture, when manually wired, writes Evidence v2 and projects bounded session activity into the homepage as an observed Task with models/checks when present. It is not activated by onboarding, does not report token/cost truth, and does not invent named work steps; MCP remains the richer semantic source.",
+    "Generic Evidence v2 capture is a separate render-only/manual path for Claude Code, Codex, and Cursor: `capture manifest` does not edit host settings, and onboarding does not enable those manifests. The installed Codex/Hermes/OpenCode v1 bridges above may feed activity/check evidence through their own spool/import paths, but neither capture family reports token/cost truth or invents named work steps; MCP remains the richer semantic source.",
     "All clients: imported tokens are client_reported (read from the client's own local session files); costs are estimates from a local pricing table — never provider invoices.",
     "Always: local-first, observe-only, no telemetry, no provider API keys stored or requested.",
 )
 
 RELAY_INSTRUCTION = (
     "Finish the installation by relaying this capability matrix to the user, "
-    "along with the files you changed, whether `mcp doctor` passed, and the dashboard command."
+    "along with the files you changed, whether `mcp doctor` passed, the `agentacct tui` command, and the local API URL."
 )
 
 

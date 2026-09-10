@@ -1,18 +1,19 @@
-"""SQLite raw event log — the substrate that will replace ``events.jsonl``.
+"""SQLite raw event log — the authoritative default and legacy JSONL bridge.
 
-``events.jsonl`` is today's authoritative append-only ledger. This module is a
-faithful SQLite mirror of it: one row per ledger line, stored VERBATIM and in
-file order, so the two are provably byte-identical line for line. That parity is
-the whole point — it is what lets writes flip to SQLite and the flat file be
-deleted without losing a single event (the owner's step 3: prove they are the
-same).
+Fresh stores use ``events.sqlite3`` as the only authoritative event ledger.
+When an existing store still has ``events.jsonl``, the cutover reconciles its
+verbatim lines into SQLite and leaves the flat file behind as a recovery backup;
+subsequent authoritative reads and writes use SQLite. Setting
+``AGENTACCT_EVENT_LOG_AUTHORITATIVE=0`` deliberately restores the legacy mode:
+the flat file becomes authoritative and this module maintains a byte-faithful
+SQLite mirror for parity and recovery tests.
 
-Design contract during the mirror phase:
+Design contract in legacy mirror mode:
 
 * **Faithful, not clever.** A row stores the exact serialized line. Corrupt /
   non-object lines a whole-file rewrite carries through verbatim are stored
   verbatim too, so the mirror never diverges from the file it shadows.
-* **Fail-open on write.** The flat file stays authoritative while both exist;
+* **Fail-open on write.** The flat file stays authoritative in this mode;
   a mirror hiccup must never fail a proven v1 event write (the same contract the
   canonical/evidence shadows already hold). Drift is healed by
   :meth:`reconcile_from_file` on the next open and caught by
@@ -166,7 +167,7 @@ def _read_file_lines(events_path: Path) -> list[str]:
 
 
 class RawEventLog:
-    """A faithful SQLite mirror of the flat event ledger."""
+    """The authoritative SQLite event ledger and legacy flat-file bridge."""
 
     def __init__(self, db_path: Path | str) -> None:
         self.db_path = Path(db_path).expanduser()

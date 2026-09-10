@@ -510,12 +510,13 @@ def test_frozen_metadata_keys_wire_vocab_and_store_dirs() -> None:
     assert "agent-sentinel-local-api" in _src("activation.py")  # legacy still accepted
     assert '"agent_sentinel_pricing_catalog"' in _src("client_usage.py")
     assert '"agent_sentinel_builtin"' in _src("pricing_catalog.py")
-    # Store dirs: fresh init keeps writing the pre-rename names forever.
+    # Project stores keep the frozen pre-rename directory, while fresh global
+    # installs use the XDG-shaped path and continue recognizing legacy stores.
     from agentacct.policy import DEFAULT_POLICY_FILE
 
     assert DEFAULT_POLICY_FILE == Path(".agent-sentinel/policy.yaml")
     assert '".agent-sentinel" / "state"' in _src("store_resolution.py")
-    assert '"$HOME/.agent-sentinel-global/state"' in install_guide.GLOBAL_INSTALL_BLOCK
+    assert '"$AGENTACCT_BIN" setup global-store-path' in install_guide.GLOBAL_INSTALL_BLOCK
     from agentacct.hooks import (
         CLAUDE_HOOK_RELATIVE_PATH,
         CLAUDE_SETTINGS_RELATIVE_PATH,

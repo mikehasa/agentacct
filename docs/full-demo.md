@@ -6,7 +6,7 @@ For the shortest no-key demo, run:
 agentacct demo
 ```
 
-That command creates a local agentacct-owned run, writes report/evidence artifacts, and prints follow-up report/dashboard commands. Without `--store-dir` (or `AGENTACCT_STORE_DIR`), the demo always runs in a throwaway temporary store and says so — even from inside an initialized project. Pass `--store-dir .agent-sentinel/state` after `init` to keep demo runs. The longer walkthrough below shows the individual primitives behind that flow.
+That command creates a local agentacct-owned run, writes report/evidence artifacts, and prints follow-up report/TUI commands. Without `--store-dir` (or `AGENTACCT_STORE_DIR`), the demo always runs in a throwaway temporary store and says so — even from inside an initialized project. Pass `--store-dir .agent-sentinel/state` after `init` to keep demo runs. The longer walkthrough below shows the individual primitives behind that flow.
 
 This demo validates agentacct's current product loop without touching real
 Hermes, Claude Code, Codex, or other existing agent processes.
@@ -103,11 +103,13 @@ Current tools:
 
 - `agentacct_list_runs`
 - `agentacct_get_report`
+- `agentacct_record_machine_check`
 - `agentacct_record_event`
+- `agentacct_attach_client_context`
 - `agentacct_record_section`
+- `agentacct_record_agent_usage_debug`
 - `agentacct_list_events`
 - `agentacct_get_event_summary`
-- `agentacct_record_machine_check`
 
 ## 6. Longer 10-minute-style run
 

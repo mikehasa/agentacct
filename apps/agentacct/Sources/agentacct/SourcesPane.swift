@@ -399,7 +399,7 @@ struct SourcesPane: View {
                     Text("Local only — nothing leaves this machine")
                         .font(Type.rowLabel).foregroundStyle(Theme.ink)
                     Spacer()
-                    Text("store: \(GlanceClient.storeDir().path)")
+                    Text("store: \((try? GlanceClient.storeDir())?.path ?? "invalid configuration")")
                         .font(Type.dataSmall).foregroundStyle(Theme.muted)
                         .lineLimit(1).truncationMode(.middle)
                         .frame(maxWidth: 420, alignment: .trailing)

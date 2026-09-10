@@ -10,7 +10,7 @@ Good contribution areas:
 
 - CLI usability
 - local run/report evidence
-- dashboard/API clarity
+- TUI, macOS app, and local API clarity
 - MCP and project-local onboarding helpers
 - safe provider-cost estimation and budget gates
 - docs that make install, first run, and safety boundaries clearer
@@ -27,17 +27,18 @@ Changes should preserve these defaults:
 - No stored API keys: provider keys should come from environment variables for commands that explicitly need them.
 - Observe-only by default: basic setup should not require provider keys or paid API calls.
 - Process ownership: agentacct should only control processes it starts and records as agentacct-owned.
-- Localhost by default: dashboard/API services should not bind to public interfaces by default.
+- Localhost by default: local API services should not bind to public interfaces by default.
 - Provider forwarding is opt-in and budget-gated.
 
 If your change weakens any of these, call it out clearly in the PR and explain the mitigation.
 
 ## Development setup
 
-The repository is currently private and unpublished. Obtain an authorized checkout from the owner; do not redistribute its location as a public install path.
+Clone the public repository, then install an editable development environment:
 
 ```bash
-cd /absolute/path/to/authorized/agentacct-checkout
+git clone https://github.com/mikehasa/agentacct.git
+cd agentacct
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e . pytest
@@ -96,7 +97,12 @@ For MCP tools, update all of these together:
 
 - tool schema in `src/agentacct/mcp.py`
 - handler in `SentinelMCPServer.call_tool`
-- README MCP tool list
+- exhaustive public MCP tool lists in the five contract-tested documents:
+  - `docs/architecture.md`
+  - `docs/reference.md`
+  - `docs/coding-agent-integrations.md`
+  - `docs/safety-boundaries.md`
+  - `docs/full-demo.md`
 - tests in `tests/test_mcp.py`
 
 For CLI behavior, preserve machine-readable `--json` output where it exists.

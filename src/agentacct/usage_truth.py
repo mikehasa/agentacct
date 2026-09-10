@@ -195,7 +195,7 @@ USAGE_TRUTH_TABLE: tuple[UsageTruthRow, ...] = (
         evidence_source="agentacct MCP tools called by Claude Code, Codex, Hermes, OpenCode, OpenClaw, or another MCP-capable agent",
         update_timing="Updates arrive only when the configured agent calls agentacct MCP tools.",
         observable_fields=[
-            "section started/checkpoint/completed/blocked events",
+            "section started/checkpoint/completed/blocked/handed_off events",
             "source agent label",
             "run id when supplied",
             "machine-check evidence when supplied",

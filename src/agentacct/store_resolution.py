@@ -17,16 +17,20 @@ There is deliberately no silent ``~/.agent-sentinel`` fallback: half the
 commands defaulting to a home store and half to a project store silently split
 the ledger. The resolver is PURE — it never creates directories or files.
 
-The end-user ``serve`` surface is the one deliberate exception to project-first
-selection: when the documented machine-wide store already exists, the product
-dashboard opens that all-projects store. This behavior lives in the separate
-``resolve_dashboard_store_dir`` helper so MCP writers, API servers, automation,
-and project workflows retain the strict resolver above.
+The end-user managed ``agentacct serve`` surface is the one deliberate exception
+to project-first selection. It chooses the machine-wide target when there is a
+global signal: ledger records in a recognized store, a valid absolute global
+override, or any existing recognized global directory (the latter converges on
+the canonical target when all candidates are empty). This behavior lives in the
+separate ``resolve_dashboard_store_dir`` helper. MCP writers, the explicit
+``agentacct api serve`` integration surface, automation, and project workflows
+retain the strict resolver above.
 """
 
 from __future__ import annotations
 
 import os
+import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,6 +102,41 @@ def store_env_dir_value(environment: Mapping[str, str]) -> str | None:
             f"Unset all but one — keep {ENV_STORE_DIR} — or make them equal."
         )
     return present[0][1] if present else None
+
+
+def global_store_env_dir_value(environment: Mapping[str, str]) -> str | None:
+    """Return an absolute global-store override, refusing unsafe aliases.
+
+    A new client may read ``AGENTACCT_GLOBAL_STORE_DIR`` while an older client
+    still reads one of the pre-rename names. Silently preferring the new name
+    when those values differ would send the two clients to different ledgers.
+    Equal values remain compatible; blank values are ignored.
+    """
+
+    present: list[tuple[str, str]] = []
+    for name in env_alias_names(ENV_GLOBAL_STORE_DIR):
+        value = (environment.get(name) or "").strip()
+        if value:
+            present.append((name, value))
+    if len({value for _, value in present}) > 1:
+        joined = ", ".join(f"{name}={value}" for name, value in present)
+        raise StoreResolutionError(
+            f"Conflicting global-store environment variables ({joined}). Two "
+            "global-store variables pointing at two stores would silently split "
+            f"the ledger. Unset all but one — keep {ENV_GLOBAL_STORE_DIR} — or "
+            "make them equal."
+        )
+    if not present:
+        return None
+    selected = present[0][1]
+    if not Path(selected).expanduser().is_absolute():
+        names = ", ".join(name for name, _ in present)
+        raise StoreResolutionError(
+            f"Global-store environment variable {names} must use an absolute "
+            f"path, not {selected!r}. Unset it or set {ENV_GLOBAL_STORE_DIR} "
+            "to an absolute path."
+        )
+    return selected
 
 
 def worktree_owner_root(candidate: Path) -> Path | None:
@@ -289,11 +328,9 @@ def recognized_global_store_dirs(
     home_dir = (Path.home() if home is None else Path(home)).expanduser()
 
     ordered: list[Path] = []
-    override = read_env_alias(ENV_GLOBAL_STORE_DIR, environment)
-    if override and override.strip():
-        candidate = Path(override).expanduser()
-        if candidate.is_absolute():
-            ordered.append(candidate)
+    override = global_store_env_dir_value(environment)
+    if override:
+        ordered.append(Path(override).expanduser())
     ordered.append(canonical_global_store_dir(env=environment, home=home_dir))
     ordered.append(home_dir / GLOBAL_STORE_DIRNAME / "state")
 
@@ -308,7 +345,7 @@ def recognized_global_store_dirs(
 
 
 def _store_has_records(path: Path) -> bool:
-    """Whether a store dir already holds data. A light stat, not a content read.
+    """Whether a store holds records, without writing ledger content.
 
     Lets an existing populated legacy store win over a freshly-created (empty)
     canonical store during migration, so an upgrading user's dashboard does not
@@ -319,12 +356,26 @@ def _store_has_records(path: Path) -> bool:
         events = path / "events.jsonl"
         if events.is_file() and events.stat().st_size > 0:
             return True
-        # A store cut over to the SQLite event log has no events.jsonl; its
-        # ledger is events.sqlite3. Treat that as data so an upgrade does not
-        # point the user at a different, empty store.
+        # A store cut over to the SQLite event log has no events.jsonl. SQLite
+        # schema pages alone are not records: inspect the authoritative table
+        # read-only so a fresh canonical DB cannot hide populated legacy data.
         sqlite_log = path / "events.sqlite3"
-        if sqlite_log.is_file() and sqlite_log.stat().st_size > 0:
-            return True
+        if sqlite_log.is_file():
+            connection: sqlite3.Connection | None = None
+            try:
+                uri = sqlite_log.resolve(strict=False).as_uri() + "?mode=ro"
+                connection = sqlite3.connect(uri, uri=True)
+                return connection.execute(
+                    "SELECT 1 FROM event_lines LIMIT 1"
+                ).fetchone() is not None
+            except sqlite3.Error as exc:
+                raise StoreResolutionError(
+                    f"Could not inspect the global event ledger at {sqlite_log}: {exc}. "
+                    "Repair or move that file before selecting another global store."
+                ) from exc
+            finally:
+                if connection is not None:
+                    connection.close()
     except OSError:
         return False
     return False
@@ -339,24 +390,52 @@ def _same_store_path(left: Path, right: Path) -> bool:
         return False
 
 
+def _global_store_target_and_signal(
+    *, env: Mapping[str, str] | None = None, home: Path | None = None
+) -> tuple[Path, bool]:
+    """Return onboarding's target and whether global mode is actually present.
+
+    Records win in recognized order. With no records, an absolute operator
+    override is an explicit global signal; otherwise any existing recognized
+    global directory is a signal to use the canonical fresh target. With no
+    signal at all, the canonical path is returned only as a prospective target
+    so callers such as project-first readers may retain their normal fallback.
+    """
+
+    environment: Mapping[str, str] = os.environ if env is None else env
+    home_dir = (Path.home() if home is None else Path(home)).expanduser()
+    candidates = recognized_global_store_dirs(env=environment, home=home_dir)
+    for candidate in candidates:
+        if candidate.is_dir() and _store_has_records(candidate):
+            return candidate, True
+
+    override = global_store_env_dir_value(environment)
+    if override:
+        return Path(override).expanduser(), True
+
+    canonical = canonical_global_store_dir(env=environment, home=home_dir)
+    if any(candidate.is_dir() for candidate in candidates):
+        return canonical, True
+    return canonical, False
+
+
 def onboard_global_store_dir(
     *, env: Mapping[str, str] | None = None, home: Path | None = None
 ) -> tuple[Path, bool]:
-    """The global store a global install should USE, plus whether it pre-existed.
+    """The global store a global install should use, plus whether it has records.
 
-    Fresh machine -> the new canonical (XDG) store. But when a recognized global
-    store ALREADY holds records (an upgrading user whose ledger lives in the
-    pre-rename ``~/.agent-sentinel-global``), keep using THAT one: silently
-    pointing an upgrade at a different, empty store strands the user's history
-    and splits their clients across two ledgers.
+    Existing records win in recognized preference order (operator override,
+    canonical XDG store, legacy store), so an upgrade never strands history.
+    With no records, a valid absolute operator override is the creation target;
+    otherwise a fresh machine uses the canonical XDG store.
 
-    Returns ``(store_dir, pre_existing)``. Pure: never creates anything.
+    Returns ``(store_dir, pre_existing)`` where the compatibility-named boolean
+    means the selected store already holds a non-empty ledger artifact. Pure:
+    never creates anything.
     """
 
-    for candidate in recognized_global_store_dirs(env=env, home=home):
-        if candidate.is_dir() and _store_has_records(candidate):
-            return candidate, True
-    return canonical_global_store_dir(env=env, home=home), False
+    target, _has_global_signal = _global_store_target_and_signal(env=env, home=home)
+    return target, target.is_dir() and _store_has_records(target)
 
 
 def is_recognized_global_store(
@@ -376,7 +455,20 @@ def is_recognized_global_store(
     path = Path(store_dir).expanduser()
     if path.name == "state" and path.parent.name in LEGACY_GLOBAL_STORE_DIRNAMES:
         return True
-    for candidate in recognized_global_store_dirs(env=env, home=home):
+
+    # This helper is a label/classification predicate for a store path that has
+    # already been selected. Conflicting GLOBAL aliases must still fail closed
+    # in the resolvers that choose a store, but they are unrelated to an
+    # explicit ``--store-dir`` and must not make API construction crash. When
+    # the aliases are ambiguous, retain only the unambiguous canonical path;
+    # neither conflicting override is safe to call "All projects".
+    environment: Mapping[str, str] = os.environ if env is None else env
+    home_dir = (Path.home() if home is None else Path(home)).expanduser()
+    try:
+        candidates = recognized_global_store_dirs(env=environment, home=home_dir)
+    except StoreResolutionError:
+        candidates = (canonical_global_store_dir(env=environment, home=home_dir),)
+    for candidate in candidates:
         if _same_store_path(candidate, path):
             return True
     return False
@@ -392,13 +484,13 @@ def resolve_dashboard_store_dir(
     """Resolve the human-facing dashboard store.
 
     Explicit flags and environment variables retain the shared resolver's
-    precedence and validation. With neither override, an already-installed
-    machine-wide store becomes the product home: the recognized global stores
-    are tried in preference order (operator override, new canonical, legacy),
-    and a store that already holds records wins over an empty one so an upgrade
-    that creates the new store does not blank out a populated legacy ledger.
-    Otherwise the normal project walk-up/failure behavior remains unchanged.
-    Pure: never creates state.
+    precedence and validation. With neither ordinary store override, recognized
+    global stores are tried in preference order (operator override, canonical,
+    legacy) and a store holding records wins. With no records, an absolute
+    global override wins; any existing recognized global directory otherwise
+    converges on the canonical fresh target. Only when there is no global signal
+    does the normal project walk-up/failure behavior remain. Pure: never creates
+    state.
     """
 
     environment: Mapping[str, str] = os.environ if env is None else env
@@ -407,11 +499,11 @@ def resolve_dashboard_store_dir(
     if store_env_dir_value(environment):
         return resolve_store_dir(None, cwd=cwd, env=environment)
 
-    candidates = recognized_global_store_dirs(env=environment, home=home)
-    existing = [path for path in candidates if path.is_dir()]
-    if existing:
-        with_records = [path for path in existing if _store_has_records(path)]
-        chosen = with_records[0] if with_records else existing[0]
+    chosen, has_global_signal = _global_store_target_and_signal(
+        env=environment,
+        home=home,
+    )
+    if has_global_signal:
         return StoreResolution(
             path=chosen,
             source="global",
@@ -437,6 +529,8 @@ def resolve_read_store_dir(
     default install run from an arbitrary directory — does it fall back to the machine-
     wide store (preferring one that already holds records) so ``agentacct tui`` just
     works from anywhere instead of erroring with "No agentacct store found".
+    Global selection uses the same records/override/canonical rule as onboarding,
+    so an empty legacy directory cannot split the CLI from the packaged App.
 
     This is deliberately narrower than :func:`resolve_dashboard_store_dir`, which
     prefers the global store even when a project store exists: a project install that
@@ -461,11 +555,11 @@ def resolve_read_store_dir(
         # No override and no project store on the walk-up: for a global install that
         # is exactly when the machine-wide store is the intended target, so fall back
         # to it rather than force a --store-dir on every read command.
-        candidates = recognized_global_store_dirs(env=environment, home=home)
-        existing = [path for path in candidates if path.is_dir()]
-        if existing:
-            with_records = [path for path in existing if _store_has_records(path)]
-            chosen = with_records[0] if with_records else existing[0]
+        chosen, has_global_signal = _global_store_target_and_signal(
+            env=environment,
+            home=home,
+        )
+        if has_global_signal:
             return StoreResolution(
                 path=chosen,
                 source="global",

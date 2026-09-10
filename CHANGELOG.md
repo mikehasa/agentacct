@@ -6,6 +6,64 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+A safer packaged-macOS lifecycle: the App and its embedded recorder now share
+verified release identity, and App-owned CLI upgrades use immutable targets and
+an atomic activation boundary instead of replacing a live onedir in place.
+
+### Added
+
+- The packaged macOS App installs a stable CLI launcher backed by immutable
+  `cli-versions` targets. Before the first local data request on each later
+  launch, it checks bundle provenance and App ownership/identity; when an
+  upgrade is needed, it also validates the installed and staged CLI versions.
+  A newer verified embedded CLI is fully staged before the selected target
+  changes, with cross-instance serialization, managed-runtime stop/start, safe
+  rollback, and fail-closed ownership checks. Existing target directories and
+  legacy side files remain available to already-running MCP and hook processes.
+- One installed-distribution version source now supplies `agentacct --version`,
+  FastAPI/OpenAPI metadata, and MCP `serverInfo`; bare source checkouts report an
+  explicit `0.0.0+source` sentinel. `agentacct setup global-store-path` exposes
+  the same resolved machine-wide store used by onboarding for manual recipes.
+
+### Changed
+
+- Release packaging now validates the project, App, and embedded CLI versions;
+  `build-dmg.sh --release` validates the signing identity and notary credentials
+  before building, rechecks pinned source identity, and verifies the mounted
+  DMG before publication. Local unsigned builds are isolated from release-ready
+  output, and the release runbook binds its tag, App, embedded CLI, and marker to
+  the immutable squash-merge SHA. App installation and release publication use
+  atomic no-replace activation and preserve the previous result until success,
+  rather than merging or partially overwriting it.
+- Signed DMG verification now requires an explicit trusted Apple Team ID and
+  checks the Developer ID Application requirement before running any embedded
+  executable. Signing identity selection must match one keychain identity
+  exactly rather than by substring.
+- Manual global setup and the macOS App now use the same global-store resolver
+  as onboarding: populated recognized stores retain priority, a valid absolute
+  operator override is honored when no records exist, equal rename-alias values
+  remain compatible, conflicting non-empty rename aliases fail closed, and a
+  relative `AGENTACCT_STORE_DIR` and global overrides are rejected instead of
+  risking a split ledger. Empty SQLite schema pages do not count as records.
+- Public documentation now matches the shipped SQLite-first event ledger,
+  bearer-gated `/v1` API and localhost-only legacy lane, nine-tool MCP surface,
+  `handed_off` lifecycle, private contribution boundary, current App UI, and
+  release/install workflow. Public contribution setup now points at the real
+  repository, and pre-implementation design artifacts are labeled historical
+  instead of presented as current behavior.
+
+### Fixed
+
+- Preserve `handed_off` as a clean terminal status and preserve task/section
+  semantic kind through v1 Work Event normalization and HTTP ingestion.
+- Packaged App startup no longer risks silently reading a different empty store
+  from the CLI, taking over a user-managed launcher, or exposing a running
+  recorder to partially replaced side files during an upgrade.
+- App-owned CLI targets now carry a persisted recursive SHA-256 payload identity
+  covering the executable and `_internal` side files. Startup remains gated on
+  synchronization failure. Verified App-owned autostart supervisors participate
+  in the upgrade transaction; unknown or modified LaunchAgents fail closed.
+
 ## [0.10.6] — 2026-09-03
 
 A keyboard-native `agentacct tui` rebuilt to mirror the macOS app — now with a

@@ -1220,12 +1220,23 @@ def test_top_level_serve_prints_local_usage_scan_notice(tmp_path, monkeypatch):
     assert calls[0]["port"] == 8765
 
 
-def test_top_level_serve_help_describes_local_dashboard():
+def test_top_level_serve_help_describes_local_json_api():
     result = CliRunner().invoke(app, ["serve", "--help"])
 
     assert result.exit_code == 0
-    assert "dashboard" in result.output.lower()
+    assert "local json api" in result.output.lower()
     assert "127.0.0.1" in result.output
+
+
+def test_explicit_api_store_ignores_unrelated_conflicting_global_aliases(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AGENTACCT_GLOBAL_STORE_DIR", str(tmp_path / "global-a"))
+    monkeypatch.setenv("AGENT_CHRONICLE_GLOBAL_STORE_DIR", str(tmp_path / "global-b"))
+
+    api = create_local_api_app(store_dir=tmp_path / "custom" / "state")
+
+    assert api.title == "agentacct local api"
 
 
 def test_top_level_serve_falls_back_when_default_port_busy(tmp_path, monkeypatch):

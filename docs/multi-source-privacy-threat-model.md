@@ -115,7 +115,7 @@ dedupe, or rollback.
 Release tests must prove:
 
 1. canary prompt/response/thought/tool-body strings never appear in spool,
-   SQLite projection, API JSON, or rendered HTML;
+   SQLite projection, API JSON, the native App/TUI, or shareable SVG output;
 2. auth-like attribute names and multiline/oversized identifiers are rejected or
    redacted;
 3. a duplicate payload is idempotent;

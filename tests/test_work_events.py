@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from agentacct.work_events import WORK_EVENT_SCHEMA_VERSION, WorkEvent
+import pytest
+
+from agentacct.work_events import (
+    WORK_EVENT_KINDS,
+    WORK_EVENT_SCHEMA_VERSION,
+    WORK_EVENT_STATUSES,
+    WorkEvent,
+)
 
 
 def test_mcp_section_normalizes_to_transport_neutral_work_event() -> None:
@@ -29,6 +36,67 @@ def test_mcp_section_normalizes_to_transport_neutral_work_event() -> None:
     assert normalized.client_session_id == "session-1"
     assert normalized.files == ("src/agentacct/evidence.py",)
     assert normalized.to_dict()["schema_version"] == WORK_EVENT_SCHEMA_VERSION
+
+
+def test_handed_off_section_round_trips_without_losing_its_terminal_status() -> None:
+    normalized = WorkEvent.from_v1_event(
+        {
+            "event_id": "evt_handoff",
+            "created_at": 456.0,
+            "source": "codex",
+            "event_type": "section_handed_off",
+            "metadata": {
+                "sentinel_semantic_kind": "section",
+                "section_id": "handoff",
+                "section_status": "handed_off",
+            },
+        },
+        transport="mcp",
+    )
+
+    assert normalized.status == "handed_off"
+    restored = WorkEvent.from_v1_event(normalized.to_v1_event(), transport="http")
+    assert restored.status == "handed_off"
+    assert restored.to_v1_event()["event_type"] == "section_handed_off"
+
+
+def test_handed_off_task_round_trips_without_losing_its_semantic_kind() -> None:
+    normalized = WorkEvent.from_v1_event(
+        {
+            "event_id": "evt_task_handoff",
+            "created_at": 457.0,
+            "source": "codex",
+            "event_type": "task_handed_off",
+            "metadata": {"sentinel_semantic_kind": "task", "status": "handed_off"},
+        },
+        transport="http",
+    )
+
+    assert normalized.event_kind == "task"
+    assert normalized.status == "handed_off"
+    restored = WorkEvent.from_v1_event(normalized.to_v1_event(), transport="http")
+    assert restored.event_kind == "task"
+    assert restored.status == "handed_off"
+
+
+@pytest.mark.parametrize("event_kind", sorted(WORK_EVENT_KINDS))
+@pytest.mark.parametrize("status", sorted(WORK_EVENT_STATUSES))
+def test_every_work_event_kind_and_status_round_trips_through_v1(
+    event_kind: str,
+    status: str,
+) -> None:
+    original = WorkEvent(
+        event_kind=event_kind,
+        source="round-trip-test",
+        transport="internal",
+        status=status,
+        occurred_at=458.0,
+    )
+
+    restored = WorkEvent.from_v1_event(original.to_v1_event(), transport="internal")
+
+    assert restored.event_kind == event_kind
+    assert restored.status == status
 
 
 def test_work_event_drops_content_and_unsafe_paths_from_v1_metadata() -> None:

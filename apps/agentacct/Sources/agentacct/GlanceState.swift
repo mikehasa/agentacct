@@ -23,10 +23,11 @@ final class GlanceState {
 
     @ObservationIgnored private let client = GlanceClient()
     @ObservationIgnored private var pollTask: Task<Void, Never>?
+    @ObservationIgnored private var pollingEnabled = false
     private let pollIntervalSeconds: UInt64 = 30
 
-    init() {
-        start()
+    init(startImmediately: Bool = true) {
+        if startImmediately { start() }
     }
 
     /// Snapshot/tooling: a fixed state, no polling.
@@ -42,6 +43,7 @@ final class GlanceState {
     }
 
     func start() {
+        pollingEnabled = true
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while let self, !Task.isCancelled {
@@ -52,6 +54,7 @@ final class GlanceState {
     }
 
     func refreshNow() {
+        guard pollingEnabled else { return }
         Task { await poll() }
     }
 

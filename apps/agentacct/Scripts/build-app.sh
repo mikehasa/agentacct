@@ -14,19 +14,7 @@ source "$REPO_ROOT/packaging/source-provenance.sh"
 
 # pyproject.toml is the release source of truth used by the CLI and publish
 # workflow. Git names the exact source tree behind this particular app bundle.
-APP_VERSION="$(
-    awk '
-        /^\[project\]$/ { in_project = 1; next }
-        /^\[/ { in_project = 0 }
-        in_project && /^version[[:space:]]*=/ {
-            value = $0
-            sub(/^[^=]*=[[:space:]]*"/, "", value)
-            sub(/"[[:space:]]*$/, "", value)
-            print value
-            exit
-        }
-    ' "$REPO_ROOT/pyproject.toml"
-)"
+APP_VERSION="$(agentacct_project_version "$REPO_ROOT")"
 APP_BUILD_NUMBER="$APP_VERSION"
 APP_GIT_COMMIT="$(agentacct_source_commit "$REPO_ROOT")"
 APP_BUILD_DESCRIPTION="$(agentacct_source_description "$REPO_ROOT")"
@@ -47,6 +35,11 @@ FROZEN_CLI="${AGENTACCT_FROZEN_CLI_DIR:-$REPO_ROOT/packaging/dist/agentacct}"
 EMBED_FROZEN_CLI=false
 if [[ -d "$FROZEN_CLI" ]]; then
     agentacct_verify_source_provenance "$REPO_ROOT" "$FROZEN_CLI"
+    FROZEN_CLI_VERSION="$(agentacct_cli_version "$FROZEN_CLI/agentacct")"
+    if [[ "$FROZEN_CLI_VERSION" != "$APP_VERSION" ]]; then
+        echo "ERROR: frozen CLI version $FROZEN_CLI_VERSION does not match app/project version $APP_VERSION; rebuild the frozen CLI" >&2
+        exit 1
+    fi
     EMBED_FROZEN_CLI=true
 fi
 
@@ -93,16 +86,156 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+# Refuse a mixed-source bundle if the worktree changed while Swift compiled or
+# while the frozen CLI was copied. The Info.plist identity and embedded CLI
+# must still describe the exact clean tree captured before the build.
+agentacct_assert_source_identity "$REPO_ROOT" "$APP_GIT_COMMIT" "$APP_BUILD_DESCRIPTION"
+if $EMBED_FROZEN_CLI; then
+    agentacct_verify_source_provenance "$REPO_ROOT" "$APP/Contents/Resources/cli"
+    FINAL_EMBEDDED_CLI_VERSION="$(agentacct_cli_version "$APP/Contents/Resources/cli/agentacct")"
+    if [[ "$FINAL_EMBEDDED_CLI_VERSION" != "$APP_VERSION" ]]; then
+        echo "ERROR: embedded CLI version changed during app assembly" >&2
+        exit 1
+    fi
+fi
+
 echo "built: $PWD/$APP"
 echo "build: $APP_VERSION ($APP_BUILD_DESCRIPTION)"
 echo "run:   open $PWD/$APP"
 
 if $INSTALL; then
-    # The Swift app only (the python daemon is a separate process and is
-    # never touched here). ditto preserves the bundle; relaunch so the menu
-    # bar runs the newest build.
-    killall agentacct 2>/dev/null || true
-    ditto --rsrc "$APP" /Applications/agentacct.app
-    open /Applications/agentacct.app
-    echo "installed: /Applications/agentacct.app (relaunched)"
+    # Quit by bundle id, never by the shared process name: both the Swift app
+    # and the Python daemon are named "agentacct". If the app does not exit in
+    # the bounded wait, stop instead of overwriting a live bundle.
+    osascript -e 'tell application id "dev.agentacct.app" to quit' 2>/dev/null || true
+    APP_PROCESS_PATTERN='^/Applications/agentacct\.app/Contents/MacOS/agentacct($| )'
+    for _ in $(seq 1 30); do
+        if ! pgrep -f "$APP_PROCESS_PATTERN" >/dev/null; then
+            break
+        fi
+        sleep 0.1
+    done
+    if pgrep -f "$APP_PROCESS_PATTERN" >/dev/null; then
+        echo "ERROR: installed agentacct app is still running; quit it before --install" >&2
+        exit 1
+    fi
+    INSTALL_TARGET="/Applications/agentacct.app"
+
+    verify_existing_app_bundle() {
+        local app_path="$1"
+        local info_plist="$app_path/Contents/Info.plist"
+        local bundle_identifier
+        local package_type
+        local bundle_executable
+
+        if [[ ! -d "$app_path" || -L "$app_path" ]]; then
+            echo "ERROR: $app_path is not a regular app directory; refusing to replace it" >&2
+            return 1
+        fi
+        if [[ ! -f "$info_plist" || -L "$info_plist" ]]; then
+            echo "ERROR: $app_path has no regular Info.plist; refusing to replace an unowned directory" >&2
+            return 1
+        fi
+        if ! bundle_identifier="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$info_plist" 2>/dev/null)" \
+            || ! package_type="$(/usr/bin/plutil -extract CFBundlePackageType raw -o - "$info_plist" 2>/dev/null)" \
+            || ! bundle_executable="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$info_plist" 2>/dev/null)"; then
+            echo "ERROR: $app_path has an unreadable or incomplete Info.plist; refusing to replace it" >&2
+            return 1
+        fi
+        if [[ "$bundle_identifier" != "dev.agentacct.app" \
+            || "$package_type" != "APPL" \
+            || "$bundle_executable" != "agentacct" ]]; then
+            echo "ERROR: $app_path is not the app-owned agentacct bundle; refusing to replace it" >&2
+            return 1
+        fi
+    }
+
+    if [[ -L "$INSTALL_TARGET" || ( -e "$INSTALL_TARGET" && ! -d "$INSTALL_TARGET" ) ]]; then
+        echo "ERROR: $INSTALL_TARGET is not a regular app directory; refusing to replace it" >&2
+        exit 1
+    fi
+    if [[ -d "$INSTALL_TARGET" ]] && ! verify_existing_app_bundle "$INSTALL_TARGET"; then
+        exit 1
+    fi
+
+    # Stage on the destination filesystem, then rename the complete bundle into
+    # place. A direct ditto onto an old bundle merges directory contents and can
+    # leave removed resources behind. Keep the previous app inside the private
+    # transaction directory until the new bundle is activated.
+    INSTALL_TRANSACTION_DIR="$(mktemp -d /Applications/.agentacct-install.XXXXXX)"
+    INSTALL_STAGE="$INSTALL_TRANSACTION_DIR/agentacct.app"
+    INSTALL_BACKUP="$INSTALL_TRANSACTION_DIR/previous.app"
+    INSTALL_RENAME_NO_REPLACE="$INSTALL_TRANSACTION_DIR/rename-no-replace"
+
+    # The old bundle and staged bundle share a destination-filesystem
+    # transaction directory. If EXIT/INT/TERM lands after the old app was moved
+    # but before the staged app is activated, restore only into a truly absent
+    # target. Never delete the sole backup when restoration cannot be proven.
+    restore_previous_app_on_abort() {
+        local install_status=$?
+        trap - EXIT INT TERM
+        if [[ -d "${INSTALL_BACKUP:-}" ]]; then
+            if [[ ! -e "${INSTALL_TARGET:-}" && ! -L "${INSTALL_TARGET:-}" ]]; then
+                if "$INSTALL_RENAME_NO_REPLACE" "$INSTALL_BACKUP" "$INSTALL_TARGET"; then
+                    echo "restored previous app after interrupted install" >&2
+                    rm -rf "$INSTALL_TRANSACTION_DIR"
+                else
+                    echo "ERROR: interrupted install could not restore the previous app; backup preserved at $INSTALL_BACKUP" >&2
+                fi
+            else
+                echo "ERROR: interrupted install found an occupied target; previous app backup preserved at $INSTALL_BACKUP" >&2
+            fi
+        elif [[ -d "${INSTALL_TRANSACTION_DIR:-}" ]]; then
+            rm -rf "$INSTALL_TRANSACTION_DIR"
+        fi
+        return "$install_status"
+    }
+    trap restore_previous_app_on_abort EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    # Plain `mv stage existing-directory` succeeds by nesting the App one level
+    # down. Compile the platform no-replace primitive before moving the current
+    # install so a concurrently-created target always fails closed.
+    xcrun clang -std=c11 -Wall -Wextra -Werror \
+        "$REPO_ROOT/packaging/rename-no-replace.c" -o "$INSTALL_RENAME_NO_REPLACE"
+    ditto --rsrc "$APP" "$INSTALL_STAGE"
+    if [[ -d "$INSTALL_TARGET" ]]; then
+        # Revalidate immediately before the move, then validate the private
+        # backup again. If the path changed in either window, EXIT recovery
+        # restores or preserves what was moved instead of deleting it.
+        if ! verify_existing_app_bundle "$INSTALL_TARGET"; then
+            exit 1
+        fi
+        if ! "$INSTALL_RENAME_NO_REPLACE" "$INSTALL_TARGET" "$INSTALL_BACKUP"; then
+            echo "ERROR: could not preserve the installed app; refusing to activate the staged app" >&2
+            exit 1
+        fi
+        if ! verify_existing_app_bundle "$INSTALL_BACKUP"; then
+            echo "ERROR: installed app identity changed while moving it; recovery will preserve the backup" >&2
+            exit 1
+        fi
+    fi
+    if ! "$INSTALL_RENAME_NO_REPLACE" "$INSTALL_STAGE" "$INSTALL_TARGET"; then
+        if [[ -d "$INSTALL_BACKUP" ]]; then
+            if [[ ! -e "$INSTALL_TARGET" && ! -L "$INSTALL_TARGET" ]]; then
+                if ! "$INSTALL_RENAME_NO_REPLACE" "$INSTALL_BACKUP" "$INSTALL_TARGET"; then
+                    echo "ERROR: could not activate the staged app or restore the previous app; backup preserved at $INSTALL_BACKUP" >&2
+                    exit 1
+                fi
+            else
+                echo "ERROR: could not activate the staged app because the target became occupied; backup preserved at $INSTALL_BACKUP" >&2
+                exit 1
+            fi
+        fi
+        rm -rf "$INSTALL_TRANSACTION_DIR"
+        echo "ERROR: could not activate the staged app; the previous app was restored when possible" >&2
+        exit 1
+    fi
+    # The complete new app is now live at the stable path. From here cleanup
+    # cannot strand the target, so disarm recovery before removing the backup.
+    trap - EXIT INT TERM
+    rm -rf "$INSTALL_TRANSACTION_DIR"
+    open "$INSTALL_TARGET"
+    echo "installed: $INSTALL_TARGET (replaced cleanly and relaunched)"
 fi

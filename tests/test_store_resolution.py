@@ -7,6 +7,7 @@ suite's own working directory or the conftest env isolation.
 from __future__ import annotations
 
 import os
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,9 @@ from agentacct.store_resolution import (
     StoreResolutionError,
     canonical_global_store_dir,
     claude_worktree_owner_dir,
+    global_store_env_dir_value,
     is_recognized_global_store,
+    onboard_global_store_dir,
     recognized_global_store_dirs,
     resolve_dashboard_store_dir,
     resolve_read_store_dir,
@@ -257,13 +260,71 @@ def test_recognized_global_store_dirs_order_and_dedup(tmp_path: Path) -> None:
     )
 
 
-def test_recognized_global_store_dirs_skips_relative_override(tmp_path: Path) -> None:
+def test_recognized_global_store_dirs_rejects_relative_override(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    dirs = recognized_global_store_dirs(env={ENV_GLOBAL_STORE_DIR: "rel/state"}, home=home)
-    assert dirs == (
-        home / ".local" / "state" / "agentacct" / "state",
-        home / ".agent-sentinel-global" / "state",
+    with pytest.raises(StoreResolutionError, match="must use an absolute path") as exc:
+        recognized_global_store_dirs(env={ENV_GLOBAL_STORE_DIR: "rel/state"}, home=home)
+
+    assert ENV_GLOBAL_STORE_DIR in str(exc.value)
+    assert "rel/state" in str(exc.value)
+
+
+def test_global_store_override_accepts_equal_rename_aliases(tmp_path: Path) -> None:
+    override = str(tmp_path / "global" / "state")
+
+    selected = global_store_env_dir_value(
+        {
+            "AGENTACCT_GLOBAL_STORE_DIR": override,
+            "AGENT_CHRONICLE_GLOBAL_STORE_DIR": override,
+            "AGENT_SENTINEL_GLOBAL_STORE_DIR": "  ",
+        }
     )
+
+    assert selected == override
+
+
+def test_global_store_override_refuses_conflicting_rename_aliases(tmp_path: Path) -> None:
+    absolute = str(tmp_path / "new" / "state")
+
+    with pytest.raises(StoreResolutionError, match="Conflicting global-store environment variables") as exc:
+        recognized_global_store_dirs(
+            env={
+                "AGENTACCT_GLOBAL_STORE_DIR": absolute,
+                # Check conflicts before relative-path filtering: an older
+                # client may still interpret this value differently.
+                "AGENT_CHRONICLE_GLOBAL_STORE_DIR": "legacy/relative/state",
+            },
+            home=tmp_path / "home",
+        )
+
+    assert "AGENTACCT_GLOBAL_STORE_DIR" in str(exc.value)
+    assert "AGENT_CHRONICLE_GLOBAL_STORE_DIR" in str(exc.value)
+
+
+def test_onboard_fresh_operator_override_is_the_creation_target(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    override = tmp_path / "operator" / "state"
+
+    chosen, pre_existing = onboard_global_store_dir(
+        env={ENV_GLOBAL_STORE_DIR: str(override)}, home=home
+    )
+
+    assert chosen == override
+    assert pre_existing is False
+
+
+def test_onboard_existing_records_beat_an_empty_operator_override(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    override = tmp_path / "operator" / "state"
+    override.mkdir(parents=True)
+    legacy = _make_store(home / ".agent-sentinel-global" / "state", data=True)
+
+    chosen, pre_existing = onboard_global_store_dir(
+        env={ENV_GLOBAL_STORE_DIR: str(override)}, home=home
+    )
+
+    assert chosen == legacy
+    assert pre_existing is True
 
 
 def test_dashboard_new_user_uses_canonical_store(tmp_path: Path) -> None:
@@ -276,9 +337,19 @@ def test_dashboard_new_user_uses_canonical_store(tmp_path: Path) -> None:
 
 def test_dashboard_existing_user_uses_legacy_store(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    legacy = _make_store(home / ".agent-sentinel-global" / "state")
+    legacy = _make_store(home / ".agent-sentinel-global" / "state", data=True)
     resolution = resolve_dashboard_store_dir(None, cwd=tmp_path, env={}, home=home)
     assert resolution.path == legacy
+    assert resolution.source == "global"
+
+
+def test_dashboard_empty_legacy_store_converges_on_fresh_canonical(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _make_store(home / ".agent-sentinel-global" / "state", data=False)
+
+    resolution = resolve_dashboard_store_dir(None, cwd=tmp_path, env={}, home=home)
+
+    assert resolution.path == home / ".local" / "state" / "agentacct" / "state"
     assert resolution.source == "global"
 
 
@@ -291,6 +362,85 @@ def test_dashboard_migrating_user_prefers_populated_legacy_over_empty_canonical(
     resolution = resolve_dashboard_store_dir(None, cwd=tmp_path, env={}, home=home)
     # data-first: do not blank the dashboard just because a fresh store dir exists
     assert resolution.path == legacy
+
+
+def test_dashboard_empty_canonical_sqlite_does_not_hide_populated_legacy(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    canonical = _make_store(
+        home / ".local" / "state" / "agentacct" / "state",
+        data=False,
+    )
+    with sqlite3.connect(canonical / "events.sqlite3") as connection:
+        connection.execute(
+            "CREATE TABLE event_lines (seq INTEGER PRIMARY KEY, line TEXT NOT NULL)"
+        )
+    legacy = _make_store(home / ".agent-sentinel-global" / "state", data=True)
+
+    resolution = resolve_dashboard_store_dir(None, cwd=tmp_path, env={}, home=home)
+
+    assert resolution.path == legacy
+
+
+def test_dashboard_counts_committed_records_in_live_sqlite_wal(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    canonical = _make_store(home / ".local/state/agentacct/state", data=False)
+    _make_store(home / ".agent-sentinel-global/state", data=True)
+    connection = sqlite3.connect(canonical / "events.sqlite3")
+    try:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA wal_autocheckpoint=0")
+        connection.execute(
+            "CREATE TABLE event_lines (seq INTEGER PRIMARY KEY, line TEXT NOT NULL)"
+        )
+        connection.commit()
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        connection.execute("INSERT INTO event_lines (line) VALUES ('record')")
+        connection.commit()
+        assert (canonical / "events.sqlite3-wal").stat().st_size > 0
+
+        resolution = resolve_dashboard_store_dir(None, cwd=tmp_path, env={}, home=home)
+        assert resolution.path == canonical
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("filename", ["events.jsonl", "events.sqlite3"])
+def test_dashboard_symlinked_ledger_artifacts_preserve_store_selection(
+    tmp_path: Path, filename: str
+) -> None:
+    home = tmp_path / "home"
+    canonical = _make_store(home / ".local/state/agentacct/state", data=False)
+    _make_store(home / ".agent-sentinel-global/state", data=True)
+    external = tmp_path / filename
+    if filename == "events.jsonl":
+        external.write_text("record\n", encoding="utf-8")
+    else:
+        with sqlite3.connect(external) as connection:
+            connection.execute(
+                "CREATE TABLE event_lines (seq INTEGER PRIMARY KEY, line TEXT NOT NULL)"
+            )
+            connection.execute("INSERT INTO event_lines (line) VALUES ('record')")
+    (canonical / filename).symlink_to(external)
+
+    resolution = resolve_dashboard_store_dir(None, cwd=tmp_path, env={}, home=home)
+    assert resolution.path == canonical
+
+
+def test_dashboard_refuses_unreadable_or_invalid_canonical_sqlite(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    canonical = _make_store(
+        home / ".local" / "state" / "agentacct" / "state",
+        data=False,
+    )
+    (canonical / "events.sqlite3").write_text("not sqlite", encoding="utf-8")
+    _make_store(home / ".agent-sentinel-global" / "state", data=True)
+
+    with pytest.raises(StoreResolutionError, match="Could not inspect the global event ledger"):
+        resolve_dashboard_store_dir(None, cwd=tmp_path, env={}, home=home)
 
 
 def test_dashboard_prefers_canonical_when_both_have_data(tmp_path: Path) -> None:
@@ -312,6 +462,23 @@ def test_dashboard_operator_override_wins(tmp_path: Path) -> None:
     assert resolution.source == "global"
 
 
+def test_dashboard_nonexistent_operator_override_beats_project_fallback(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    override = tmp_path / "ops" / "future-state"
+    project = _make_project(tmp_path / "project", state=True)
+    (project / ".git").mkdir()
+
+    resolution = resolve_dashboard_store_dir(
+        None,
+        cwd=project,
+        env={ENV_GLOBAL_STORE_DIR: str(override)},
+        home=home,
+    )
+
+    assert resolution.path == override
+    assert resolution.source == "global"
+
+
 def test_dashboard_explicit_store_env_still_wins_over_global(tmp_path: Path) -> None:
     home = tmp_path / "home"
     _make_store(home / ".local" / "state" / "agentacct" / "state", data=True)
@@ -329,6 +496,17 @@ def test_dashboard_falls_through_to_strict_resolver_when_no_global(tmp_path: Pat
     bare.mkdir()
     with pytest.raises(StoreResolutionError):
         resolve_dashboard_store_dir(None, cwd=bare, env={}, home=home)
+
+
+def test_dashboard_no_global_signal_preserves_project_fallback(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    project = _make_project(tmp_path / "project", state=True)
+    (project / ".git").mkdir()
+
+    resolution = resolve_dashboard_store_dir(None, cwd=project, env={}, home=home)
+
+    assert resolution.source == "project"
+    assert resolution.path == project / ".agent-sentinel" / "state"
 
 
 # --- read-command resolver (tui / now / limits): project-first, then global ---
@@ -366,6 +544,37 @@ def test_read_resolver_prefers_global_with_records(tmp_path: Path) -> None:
     bare.mkdir()
     resolution = resolve_read_store_dir(None, cwd=bare, env={}, home=home)
     assert resolution.path == legacy
+
+
+def test_read_resolver_empty_legacy_store_converges_on_fresh_canonical(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _make_store(home / ".agent-sentinel-global" / "state", data=False)
+    bare = tmp_path / "bare"
+    bare.mkdir()
+
+    resolution = resolve_read_store_dir(None, cwd=bare, env={}, home=home)
+
+    assert resolution.source == "global"
+    assert resolution.path == home / ".local" / "state" / "agentacct" / "state"
+
+
+def test_read_resolver_uses_nonexistent_absolute_global_override_without_project(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    override = tmp_path / "operator" / "future-state"
+
+    resolution = resolve_read_store_dir(
+        None,
+        cwd=bare,
+        env={ENV_GLOBAL_STORE_DIR: str(override)},
+        home=home,
+    )
+
+    assert resolution.source == "global"
+    assert resolution.path == override
 
 
 def test_read_resolver_explicit_flag_wins(tmp_path: Path) -> None:

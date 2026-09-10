@@ -6820,6 +6820,7 @@ def test_product_dashboard_prefers_global_store_and_warns_about_project_mcp_shad
     fake_home = tmp_path / "home"
     global_store = fake_home / ".agent-sentinel-global" / "state"
     global_store.mkdir(parents=True)
+    (global_store / "events.jsonl").write_text('{"event_id":"existing"}\n', encoding="utf-8")
     monkeypatch.setenv("HOME", str(fake_home))
 
     project = tmp_path / "project"

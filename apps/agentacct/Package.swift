@@ -7,7 +7,8 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "agentacct",
-            path: "Sources/agentacct"
+            path: "Sources/agentacct",
+            linkerSettings: [.linkedLibrary("sqlite3")]
         ),
         .testTarget(
             name: "agentacctTests",

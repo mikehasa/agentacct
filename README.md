@@ -45,7 +45,17 @@ The Work Receipt above is the whole product — the same Task-primary view lives
 
 ### The macOS app — no Python required
 
-The signed, notarized **macOS app** bundles everything. Download the `.dmg` from the [latest release](https://github.com/mikehasa/agentacct/releases/latest), drag agentacct to Applications, and open it — on first launch it installs the bundled CLI, instruments the coding agents it finds, and shows your Work Receipts in a native window. Requires macOS 14+.
+The signed, notarized **macOS app** bundles everything. Download the `.dmg` from the [latest release](https://github.com/mikehasa/agentacct/releases/latest), drag agentacct to Applications, and open it — first launch offers one-click setup of the bundled CLI and the coding agents it finds, then shows your Work Receipts in a native window. Requires macOS 14+.
+
+Before its first local data request on each packaged-app launch, agentacct
+validates the embedded CLI and any App-owned installed copy. When the bundle
+contains a newer verified CLI, the App stages it as a complete immutable
+version, atomically retargets the stable launcher, and preserves the previous
+files for already-running MCP and hook processes; it never overwrites their CLI
+directory in place or takes over a user-managed/pipx install. This App/CLI sync
+is implemented and tested. In-App downloads and installation through Sparkle
+are still planned, not shipped; see the [packaging notes](packaging/README.md)
+for the exact layout and recovery boundary.
 
 ### The CLI
 
@@ -66,13 +76,14 @@ No `pipx` yet? Install it first with `brew install pipx` (macOS) or `python3 -m 
 Paste this into your coding agent:
 
 ```text
-Install and set up agentacct — a local-first tool that reads my
-coding-agent logs read-only and shows honest token usage and cost.
+Install and set up agentacct — a local-first agent work ledger that reads my
+coding-agent logs read-only and shows honest token usage, cost, and recorded work.
 
 Run `pipx install agentacct`
 (or `pipx install git+https://github.com/mikehasa/agentacct`),
 then `agentacct onboard` (installs once per machine, global by default, zero
-files written into the repo), then tell me to run `agentacct tui`.
+files written into the repo), then tell me how to open `agentacct tui` and the
+local JSON API at http://127.0.0.1:8765.
 
 Observe-only: never store, request, or echo any API key; all state stays local
 on this machine. Don't modify my global client config without showing the exact
