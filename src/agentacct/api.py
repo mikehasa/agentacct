@@ -346,6 +346,13 @@ def _fmt_time(value: Any) -> str:
         return ""
     if not math.isfinite(timestamp) or timestamp <= 0:
         return ""
+    # Out-of-range guard on the RAW epoch, before any local-timezone
+    # conversion: 253_402_300_800 is the Unix epoch for 10000-01-01 UTC, one
+    # second past datetime's max year. Converting first would map this to a
+    # valid year-9999 local datetime in any UTC-negative zone and render it,
+    # so the guard must be TZ-independent.
+    if timestamp >= 253_402_300_800:
+        return ""
     try:
         return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
     except (OSError, OverflowError, ValueError):
