@@ -561,6 +561,30 @@ def evidence_coverage_ledger(evidence: Mapping[str, Any]) -> str:
     return " · ".join(bits)
 
 
+def receipt_cost_text(cost: Mapping[str, Any]) -> str:
+    """The Cost line — one dollar grammar shared by every surface. ``—`` when no
+    estimate exists; otherwise ``$X.XX · <basis>`` with a ``(partial)`` suffix
+    when the cost is incomplete. The basis (e.g. ``pricing_table``) is always
+    named, so an estimate can never read as a billed figure."""
+
+    amount = cost.get("estimated_cost_usd")
+    if amount is None:
+        return "—"
+    basis = cost.get("cost_basis") or "unknown basis"
+    suffix = "" if cost.get("cost_complete") else " (partial)"
+    return f"${float(amount):.2f} · {basis}{suffix}"
+
+
+def receipt_category_text(counts: Mapping[str, Any]) -> str:
+    """The tool-category summary — ``category×N`` pairs, or ``not instrumented``
+    when no hook/transcript categories were captured. Shared by every surface so
+    the Actions line reads identically."""
+
+    if not counts:
+        return "not instrumented"
+    return " ".join(f"{name}×{value}" for name, value in sorted(counts.items()))
+
+
 def plan_share_headline(plan_share: Mapping[str, Any] | None) -> str:
     """One honest line for a Task's share of its client's weekly plan.
 
@@ -1435,6 +1459,9 @@ __all__ = [
     "build_attention_reason",
     "evidence_coverage_headline",
     "evidence_coverage_ledger",
+    "receipt_cost_text",
+    "receipt_category_text",
+    "plan_share_headline",
     "latest_store_activity",
     "session_start_index",
 ]

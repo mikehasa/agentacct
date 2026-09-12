@@ -6,6 +6,28 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Two worked examples, generated from the real receipt engine and shown as macOS
+  app screenshots: comparing Claude Code and Codex on one task by outcome,
+  evidence and cost, and a "when an agent says done" trajectory where a re-run and
+  a later edit leave a passing check outdated. Linked from the README, with a
+  drift-guard test that regenerates and compares them.
+- A per-agent coverage matrix (`docs/coverage-matrix.md`), generated from the
+  capability manifest, showing each lane's state without flattening `verified`,
+  `verified_partial`, and `experimental` into one badge.
+- `agentacct receipt <task> --markdown` renders a receipt, including its event
+  timeline, as Markdown to paste into a PR or doc (a shared renderer the docs
+  generators reuse).
+
+### Changed
+
+- README: surface the worked examples and coverage matrix; state what agentacct
+  records and what it does not; scope the cost-sigil grammar to the compact
+  surfaces (the receipt names its basis instead); stop grouping OpenCode with
+  Claude Code and Codex as a verified usage/cost peer; link the previously
+  unlinked adapter capability evidence doc.
+
 ## [0.10.7] — 2026-09-10
 
 A safer packaged-macOS lifecycle: the App and its embedded recorder now share

@@ -9634,18 +9634,15 @@ def api_serve(
 
 
 def _receipt_cost_text(cost: dict[str, Any]) -> str:
-    amount = cost.get("estimated_cost_usd")
-    if amount is None:
-        return "—"
-    basis = cost.get("cost_basis") or "unknown basis"
-    suffix = "" if cost.get("cost_complete") else " (partial)"
-    return f"${float(amount):.2f} · {basis}{suffix}"
+    from .receipt import receipt_cost_text
+
+    return receipt_cost_text(cost)
 
 
 def _receipt_category_text(counts: dict[str, Any]) -> str:
-    if not counts:
-        return "not instrumented"
-    return " ".join(f"{name}×{value}" for name, value in sorted(counts.items()))
+    from .receipt import receipt_category_text
+
+    return receipt_category_text(counts)
 
 
 def _find_receipt_task(projection: dict[str, Any], task_id: str) -> dict[str, Any] | None:
@@ -9865,9 +9862,17 @@ def receipt(
     task_id: Annotated[str, typer.Argument(help="Public Task id (task_…); an unambiguous prefix works.")],
     store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit the full agentacct.receipt.v1 JSON.")] = False,
+    markdown: Annotated[
+        bool,
+        typer.Option("--markdown", help="Render the Receipt as Markdown (with the timeline) to paste into a PR or doc."),
+    ] = False,
 ) -> None:
     """Print one Task's full Work Receipt: the 8 questions, the two orthogonal
     axes (decision status × evidence strength), per-field provenance, and gaps."""
+
+    if json_output and markdown:
+        console.print("Choose one of --json or --markdown, not both.")
+        raise typer.Exit(2)
 
     from .api import build_store_task_projection, _task_title
     from .receipt import build_receipt, latest_store_activity, session_start_index
@@ -9888,6 +9893,14 @@ def receipt(
     )
     if json_output:
         console.print_json(data=receipt_payload)
+        return
+    if markdown:
+        from .receipt_markdown import render_receipt_markdown
+
+        # print(), not console.print(): Rich would interpret the Markdown's
+        # brackets/backticks as markup and reflow it. This is meant to be copied
+        # verbatim.
+        print(render_receipt_markdown(receipt_payload))
         return
     _render_receipt_text(receipt_payload)
 
