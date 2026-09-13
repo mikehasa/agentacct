@@ -3727,29 +3727,50 @@ def outcome_record_machine_check(
 
 
 @app.command()
-def pause(run_id: str, store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None) -> None:
+def pause(
+    run_id: str,
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
     with _friendly_run_lookup_errors(run_id):
         store = RunStore(_resolve_cli_store_dir(store_dir).path, create=False)
         metadata = store.assert_owned(run_id)
         os.killpg(int(metadata["process_group_id"]), signal.SIGSTOP)
+        if json_output:
+            print(json.dumps({"run_id": run_id, "action": "paused"}, indent=2, sort_keys=True))
+            return
         console.print(f"Paused {run_id}")
 
 
 @app.command()
-def resume(run_id: str, store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None) -> None:
+def resume(
+    run_id: str,
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
     with _friendly_run_lookup_errors(run_id):
         store = RunStore(_resolve_cli_store_dir(store_dir).path, create=False)
         metadata = store.assert_owned(run_id)
         os.killpg(int(metadata["process_group_id"]), signal.SIGCONT)
+        if json_output:
+            print(json.dumps({"run_id": run_id, "action": "resumed"}, indent=2, sort_keys=True))
+            return
         console.print(f"Resumed {run_id}")
 
 
 @app.command(name="kill")
-def kill_run(run_id: str, store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None) -> None:
+def kill_run(
+    run_id: str,
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
     with _friendly_run_lookup_errors(run_id):
         store = RunStore(_resolve_cli_store_dir(store_dir).path, create=False)
         metadata = store.assert_owned(run_id)
         os.killpg(int(metadata["process_group_id"]), signal.SIGKILL)
+        if json_output:
+            print(json.dumps({"run_id": run_id, "action": "killed"}, indent=2, sort_keys=True))
+            return
         console.print(f"Killed {run_id}")
 
 
