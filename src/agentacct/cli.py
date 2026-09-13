@@ -209,7 +209,7 @@ def _app_main(
         Optional[bool],
         typer.Option(
             "--version",
-            "-V",
+            "-v",
             callback=_version_callback,
             is_eager=True,
             help="Show the installed agentacct version and exit.",
