@@ -79,24 +79,6 @@ enum SnapshotRunner {
                         )
                     }
 
-                    // The Work surface has a second state: the receipts TABLE
-                    // (no Task selected). Render it too, then restore the
-                    // record selection for the other scheme's pass.
-                    let recordTaskId = selection.taskId
-                    selection.pane = .work
-                    selection.taskId = nil
-                    let tableWindow = MainWindow()
-                        .environment(glance)
-                        .environment(dashboard)
-                        .environment(selection)
-                        .frame(width: 1120, alignment: .top)
-                        .environment(\.colorScheme, scheme)
-                    try SnapshotImageWriter.render(
-                        tableWindow,
-                        to: out.appendingPathComponent("window-work-table-\(suffix).png")
-                    )
-                    selection.taskId = recordTaskId
-
                     // A WIDE Work render: the receipt's adaptive two-column
                     // layout (record detail + evidence side rail: coverage,
                     // sources, gaps) only appears past the side-by-side width

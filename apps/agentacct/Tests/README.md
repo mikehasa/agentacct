@@ -317,18 +317,17 @@ open /tmp/agentacct-usage-review
 
 The Work renderer drives the real `MainWindow` through the browse and selected-
 receipt paths. Its versioned fixture includes representative action counts, six checks,
-missing CI evidence, two root-session groups, and a subagent. The two primary
-states render at both supported window sizes, the first and maximum accessibility
-text sizes, and both appearances; transient states render at the standard viewport.
+missing CI evidence, two root-session groups, and a subagent. The primary
+receipt state renders at both supported window sizes, the first and maximum
+accessibility text sizes, and both appearances; transient states render at the
+standard viewport.
 
 | State | Viewport coverage | Source-tree artifacts |
 | --- | --- | --- |
-| populated table | 960 × 560 pt and 1120 × 800 pt, light/dark | `work-table-*.png` |
 | populated receipt | 960 × 560 pt and 1120 × 800 pt, light/dark | `work-receipt-{minimum,reference}-*.png` |
-| accessibility table | 1120 × 800 pt at accessibility1 and 1120 × 1000 pt at accessibility5, light/dark | `work-table-accessibility*.png` |
 | accessibility receipt | 1120 × 800 pt at accessibility1 and 1120 × 1000 pt at accessibility5, light/dark | `work-receipt-accessibility*.png` |
 | initial list loading | 1120 × 800 pt, light/dark | `work-list-loading-reference-*.png` |
-| empty table | 1120 × 800 pt, light/dark | `work-empty-reference-*.png` |
+| empty list | 1120 × 800 pt, light/dark | `work-empty-reference-*.png` |
 | list error | 1120 × 800 pt, light/dark | `work-list-error-reference-*.png` |
 | receipt loading | 1120 × 800 pt, light/dark | `work-receipt-loading-reference-*.png` |
 | receipt error | 1120 × 800 pt, light/dark | `work-receipt-error-reference-*.png` |

@@ -1443,9 +1443,20 @@ final class DashboardInteractionTests: XCTestCase {
             workLayoutMode(for: 1600, dynamicTypeSize: .accessibility1, hasSelection: true),
             .pushDetail
         )
+        // With nothing selected, a compact window shows the task list full-width
+        // and a wide window shows the same list with an empty record beside it —
+        // the deprecated full-width table is gone.
         XCTAssertEqual(
             workLayoutMode(for: 960, dynamicTypeSize: .medium, hasSelection: false),
-            .table
+            .list
+        )
+        XCTAssertEqual(
+            workLayoutMode(for: 1120, dynamicTypeSize: .medium, hasSelection: false),
+            .split
+        )
+        XCTAssertEqual(
+            workLayoutMode(for: 1600, dynamicTypeSize: .accessibility1, hasSelection: false),
+            .list
         )
     }
 

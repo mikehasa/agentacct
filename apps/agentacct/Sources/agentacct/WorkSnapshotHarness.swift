@@ -1,7 +1,6 @@
 import SwiftUI
 
 enum WorkSnapshotState: String {
-    case table
     case receipt
     case attentionReceipt = "attention-receipt"
     case listLoading = "list-loading"
@@ -13,7 +12,7 @@ enum WorkSnapshotState: String {
 
     var storeState: SnapshotWorkStoreState {
         switch self {
-        case .table, .receipt: return .populated
+        case .receipt: return .populated
         case .attentionReceipt: return .attentionReceipt
         case .listLoading: return .listLoading
         case .empty: return .empty
@@ -27,7 +26,7 @@ enum WorkSnapshotState: String {
     var selectsReceipt: Bool {
         switch self {
         case .receipt, .attentionReceipt, .receiptLoading, .receiptError, .receiptStale: return true
-        case .table, .listLoading, .empty, .listError: return false
+        case .listLoading, .empty, .listError: return false
         }
     }
 }
@@ -53,7 +52,7 @@ struct WorkSnapshotConfiguration {
     }
 
     static let reviewConfigurations: [Self] = {
-        let core = [WorkSnapshotState.table, .receipt].flatMap { state in
+        let core = [WorkSnapshotState.receipt].flatMap { state in
             [
                 Self(state: state, viewport: "minimum", width: 960, height: 560, colorScheme: .light),
                 Self(state: state, viewport: "minimum", width: 960, height: 560, colorScheme: .dark),
@@ -75,13 +74,13 @@ struct WorkSnapshotConfiguration {
                 Self(state: state, viewport: "reference", width: 1120, height: 800, colorScheme: .dark),
             ]
         }
-        let accessibility = [WorkSnapshotState.table, .receipt].flatMap { state in
+        let accessibility = [WorkSnapshotState.receipt].flatMap { state in
             [
                 Self(state: state, viewport: "accessibility", width: 1120, height: 800, colorScheme: .light),
                 Self(state: state, viewport: "accessibility", width: 1120, height: 800, colorScheme: .dark),
             ]
         }
-        let accessibilityMaximum = [WorkSnapshotState.table, .receipt].flatMap { state in
+        let accessibilityMaximum = [WorkSnapshotState.receipt].flatMap { state in
             [
                 Self(state: state, viewport: "accessibility-maximum", width: 1120, height: 1000, colorScheme: .light),
                 Self(state: state, viewport: "accessibility-maximum", width: 1120, height: 1000, colorScheme: .dark),
