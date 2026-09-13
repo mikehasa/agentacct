@@ -9866,12 +9866,19 @@ def receipt(
         bool,
         typer.Option("--markdown", help="Render the Receipt as Markdown (with the timeline) to paste into a PR or doc."),
     ] = False,
+    output: Annotated[
+        Optional[Path],
+        typer.Option("--output", help="Write the rendered Markdown to this file (--markdown only)."),
+    ] = None,
 ) -> None:
     """Print one Task's full Work Receipt: the 8 questions, the two orthogonal
     axes (decision status × evidence strength), per-field provenance, and gaps."""
 
     if json_output and markdown:
         console.print("Choose one of --json or --markdown, not both.")
+        raise typer.Exit(2)
+    if output is not None and not markdown:
+        console.print("--output requires --markdown.")
         raise typer.Exit(2)
 
     from .api import build_store_task_projection, _task_title
@@ -9897,10 +9904,15 @@ def receipt(
     if markdown:
         from .receipt_markdown import render_receipt_markdown
 
+        rendered = render_receipt_markdown(receipt_payload)
+        if output is not None:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(rendered, encoding="utf-8")
+            return
         # print(), not console.print(): Rich would interpret the Markdown's
         # brackets/backticks as markup and reflow it. This is meant to be copied
         # verbatim.
-        print(render_receipt_markdown(receipt_payload))
+        print(rendered)
         return
     _render_receipt_text(receipt_payload)
 
