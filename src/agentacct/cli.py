@@ -158,6 +158,7 @@ from .source_discovery import discover_usage_sources
 from . import store_merge
 from .env_compat import read_env_alias
 from .evidence_runtime import EvidenceRuntime
+from .registration_stores import project_store_create_warning, read_store_shadow_notice
 from .store_resolution import (
     ENV_STORE_DIR,
     StoreResolution,
@@ -675,7 +676,9 @@ def _resolve_cli_store_dir(store_dir: Path | str | None) -> StoreResolution:
     return resolution
 
 
-def _resolve_read_cli_store_dir(store_dir: Path | str | None) -> StoreResolution:
+def _resolve_read_cli_store_dir(
+    store_dir: Path | str | None, *, command: str = "tui"
+) -> tuple[StoreResolution, str | None]:
     """Resolve the store for a read-only display command (tui / now / limits).
 
     Like :func:`_resolve_cli_store_dir` but project-first-then-global: with no
@@ -683,6 +686,9 @@ def _resolve_read_cli_store_dir(store_dir: Path | str | None) -> StoreResolution
     to the machine-wide store so a global-by-default install's ``agentacct tui`` just
     works from any directory instead of exiting 2. The friendly worktree notice and
     the actionable no-store error (when there is no global store either) are kept.
+
+    Returns ``(resolution, notice)``: the notice names the store sessions write
+    to when the walk-up picked a project store they do not; stderr + returned.
     """
     try:
         resolution = resolve_read_store_dir(store_dir)
@@ -691,7 +697,10 @@ def _resolve_read_cli_store_dir(store_dir: Path | str | None) -> StoreResolution
         raise typer.Exit(2) from exc
     if resolution.worktree_remapped:
         print(f"Claude worktree detected; using the owning project store: {resolution.path}", file=sys.stderr)
-    return resolution
+    notice = read_store_shadow_notice(resolution, command=command)
+    if notice is not None:
+        print(notice, file=sys.stderr)
+    return resolution, notice
 
 
 def _resolve_dashboard_cli_store_dir(store_dir: Path | str | None) -> StoreResolution:
@@ -2184,6 +2193,11 @@ def init_project(
         write_default_policy(project_dir, force=force)
         policy_created = True
     state_dir = project_dir / ".agent-sentinel" / "state"
+    # A project store shadows the global ledger for cwd-relative reads; warn
+    # before creating it (loud, not blocking: init is the scripted bootstrap).
+    if not state_dir.is_dir():
+        for line in project_store_create_warning(state_dir):
+            console.print(f"[yellow]Warning:[/yellow] {line}")
     state_dir.mkdir(parents=True, exist_ok=True)
     gitignore_entries = _append_missing_gitignore_entries(project_dir)
     instruction_paths = [_install_agent_instructions(project_dir, name) for name in requested_agents]
@@ -2837,6 +2851,20 @@ def onboard(
         raise typer.Exit(1)
 
     store_dir = project_dir / ".agent-sentinel" / "state"
+    # A per-repo install beside a global one splits view from ledger: warn,
+    # and let a human back out first. Non-interactive runs proceed (no hang).
+    if not store_dir.is_dir():
+        conflict_lines = project_store_create_warning(store_dir)
+        if conflict_lines:
+            for line in conflict_lines:
+                console.print(f"[yellow]Warning:[/yellow] {line}")
+            if not yes and sys.stdin.isatty() and not typer.confirm(
+                "Continue with a per-repo install anyway?", default=True
+            ):
+                console.print("Onboarding stopped; nothing was written.")
+                raise typer.Exit(1)
+            # Create the store now so init_project does not repeat the warning.
+            store_dir.mkdir(parents=True, exist_ok=True)
     console.print("agentacct will make project-local changes only:")
     console.print(f"- state: {store_dir}")
     console.print(f"- clients: {', '.join(requested_agents)}")
@@ -9248,7 +9276,7 @@ def now(
     # 'all' / omitted → no client filter (matches `limits` and the dashboard).
     effective_client = None if client in (None, "all") else client
 
-    resolved_store_dir = _resolve_read_cli_store_dir(store_dir).path
+    resolved_store_dir = _resolve_read_cli_store_dir(store_dir, command="now")[0].path
     service = SentinelService(resolved_store_dir, create=False)
     events = service.list_all_events()
 
@@ -9392,7 +9420,7 @@ def limits(
     else:
         raise typer.BadParameter("--client must be one of: all, codex, claude-code")
 
-    resolved_store_dir = _resolve_read_cli_store_dir(store_dir).path
+    resolved_store_dir = _resolve_read_cli_store_dir(store_dir, command="limits")[0].path
     service = SentinelService(resolved_store_dir, create=False)
     snapshots = latest_limit_events(service.list_all_events(), client=effective_client)
 
@@ -9506,7 +9534,8 @@ def tui(
         )
         raise typer.Exit(1)
     effective_client = None if client in (None, "all") else client
-    resolved_store_dir = _resolve_read_cli_store_dir(store_dir).path
+    resolution, shadow_notice = _resolve_read_cli_store_dir(store_dir, command="tui")
+    resolved_store_dir = resolution.path
 
     try:
         from .tui import AgentAcctTUI
@@ -9522,6 +9551,7 @@ def tui(
         client=effective_client,
         window_token=window,
         refresh_seconds=refresh,
+        notice=shadow_notice,
     ).run()
 
 

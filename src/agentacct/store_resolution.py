@@ -381,7 +381,8 @@ def _store_has_records(path: Path) -> bool:
     return False
 
 
-def _same_store_path(left: Path, right: Path) -> bool:
+def same_store_path(left: Path, right: Path) -> bool:
+    """True when both paths name the same store dir (symlink-insensitive)."""
     if left == right:
         return True
     try:
@@ -469,7 +470,7 @@ def is_recognized_global_store(
     except StoreResolutionError:
         candidates = (canonical_global_store_dir(env=environment, home=home_dir),)
     for candidate in candidates:
-        if _same_store_path(candidate, path):
+        if same_store_path(candidate, path):
             return True
     return False
 

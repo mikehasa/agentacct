@@ -405,6 +405,14 @@ def _auto_import_enabled() -> bool:
     return value.strip().lower() not in ("0", "false", "no", "off")
 
 
+def _notice_headline(notice: str) -> str:
+    """Top-bar form of a store notice (full text already went to stderr)."""
+    head = notice.split(". ", 1)[0]
+    if head.startswith("Reading project store"):
+        return "project store · sessions record elsewhere (--store-dir)"
+    return head[:60]
+
+
 def _humanize_ago(ts: Any, now: float) -> str:
     if isinstance(ts, (int, float)) and not isinstance(ts, bool) and ts > 0 and ts <= now:
         return f"{humanize_seconds(now - ts)} ago"
@@ -588,6 +596,7 @@ class AgentAcctTUI(App):
         window_token: str = "7d",
         refresh_seconds: float = 5.0,
         subagent_projects_root: Path | str | None = None,
+        notice: str | None = None,
     ) -> None:
         super().__init__()
         self.store_dir = Path(store_dir)
@@ -595,6 +604,9 @@ class AgentAcctTUI(App):
         self.window_token = window_token
         self.refresh_seconds = max(1.0, float(refresh_seconds))
         self.subagent_projects_root = subagent_projects_root
+        # Standing caveat about the store shown, kept in the top bar all run:
+        # a one-off stderr line vanishes behind the alternate screen.
+        self.notice = notice
 
         # Active palette (mirrors the active theme) — the source of every content
         # colour. Swapped in _apply_palette() on a theme change.
@@ -821,7 +833,10 @@ class AgentAcctTUI(App):
         ago = _humanize_ago(self._last_refresh_at, time.time())
         dot = f"[{pal['green']}]●[/]"
         label = "just now" if ago == "0s ago" else ago
-        return f"{dot} Local data · {label}"
+        fresh = f"{dot} Local data · {label}"
+        if self.notice:
+            return f"[{pal['amber']}]⚠ {_escape(_notice_headline(self.notice))}[/]  {fresh}"
+        return fresh
 
     def _render_statusbar(self) -> None:
         pal = self.pal
