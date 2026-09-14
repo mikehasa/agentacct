@@ -93,7 +93,7 @@ VoiceOver certification is claimed.
 | Native input | `WorkTimeCanvasInput.swift` and tests | Wheel input resizes the visible span over cards, canvas and overview; dragging pans; reserved OS modifiers pass through; input remains scoped to the canvas. |
 | Timeline presentation and export | `WorkTimeCanvas.swift`, `WorkTimelineView.swift`, `WorkTimelineExport.swift` | Details appear below the timeline at selection; clusters stay inspectable in the same region; no inferred causality or execution duration; export retains identities and qualifications. |
 | Information hierarchy | `ContextHelp.swift`, `ReadingSize.swift`, `Theme.swift`, `UsagePane.swift`, `UsageCapacity.swift` | Optional explanation is available by hover and keyboard; failures, cost basis, incomplete capture and install scope stay visible. |
-| Distributable recorder | `packaging/materialize-cli.py`, `freeze-cli.sh`, `build-app.sh` | Framework aliases become independent files only after all targets are proven inside the frozen output. External or cyclic aliases fail; the installer's no-link contract is preserved. |
+| Distributable recorder | `packaging/validate-cli-payload.py`, `freeze-cli.sh`, `build-app.sh` | Framework aliases are validated in place — every symlink relative, resolving inside the frozen output, non-cyclic — and left intact so the framework stays a codesignable bundle. External, absolute, or cyclic aliases fail the build; the app's install-time payload validator binds each safe alias into the identity. |
 
 The backend and native application are separate commits. Synthetic review
 fixtures are included; frozen reviewer source copies and large image corpora
@@ -195,12 +195,15 @@ including a 960×640 content window. A separate
 
 Packaging requires a clean source commit and an embedded CLI carrying the same
 provenance. Source edits alone do not update an installed app or recorder.
-The installed-app smoke check caught an output mismatch that unit tests alone
-missed: [PyInstaller preserves framework aliases](https://www.pyinstaller.org/en/v6.0.0/CHANGES.html),
-while the recorder installer deliberately rejects symlinks. The freeze now
-materializes bounded internal aliases before smoke testing and stamping output;
-the app build also rejects any remaining links. Regression fixtures include
-framework chains, outside targets, cycles, broken links and special files.
+[PyInstaller preserves framework aliases](https://www.pyinstaller.org/en/v6.0.0/CHANGES.html),
+and codesign needs a framework's canonical symlinks to treat it as a signable
+bundle, so the installer accepts symlinks that are safe — relative and resolving
+inside the payload — and binds each into the payload identity, rather than
+rejecting all links. The freeze validates the aliases in place (relative,
+in-payload, non-cyclic, not world-writable) and fails closed before signing; it
+never dereferences them, because a symlink-free framework is not a valid signable
+bundle. Regression fixtures include framework chains, outside targets, absolute
+targets, cycles, broken links and special files.
 
 ## Shared timeline integration
 
