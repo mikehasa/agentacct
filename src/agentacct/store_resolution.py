@@ -361,24 +361,62 @@ def _store_has_records(path: Path) -> bool:
         # read-only so a fresh canonical DB cannot hide populated legacy data.
         sqlite_log = path / "events.sqlite3"
         if sqlite_log.is_file():
-            connection: sqlite3.Connection | None = None
+            resolved_log = sqlite_log.resolve(strict=False)
+            base_uri = resolved_log.as_uri()
             try:
-                uri = sqlite_log.resolve(strict=False).as_uri() + "?mode=ro"
-                connection = sqlite3.connect(uri, uri=True)
-                return connection.execute(
-                    "SELECT 1 FROM event_lines LIMIT 1"
-                ).fetchone() is not None
+                return _sqlite_ledger_has_rows(base_uri + "?mode=ro")
             except sqlite3.Error as exc:
-                raise StoreResolutionError(
-                    f"Could not inspect the global event ledger at {sqlite_log}: {exc}. "
-                    "Repair or move that file before selecting another global store."
-                ) from exc
-            finally:
-                if connection is not None:
-                    connection.close()
+                # The ledger is a WAL database. A read-only open needs the -shm
+                # shared-memory sidecar, which the recorder checkpoints away
+                # between writes; when it is absent the open fails ("unable to
+                # open database file"). On ANY read-only failure, read the file
+                # directly with immutable=1 — which bypasses the -shm/-wal
+                # machinery — rather than keying on one platform-specific error.
+                try:
+                    immutable_has_rows = _sqlite_ledger_has_rows(
+                        base_uri + "?mode=ro&immutable=1"
+                    )
+                except sqlite3.Error as immutable_exc:
+                    # Reading the file directly failed too: genuinely unreadable
+                    # or not a database. Fail closed.
+                    raise StoreResolutionError(
+                        f"Could not inspect the global event ledger at {sqlite_log}: "
+                        f"{immutable_exc}. Repair or move that file before selecting "
+                        "another global store."
+                    ) from immutable_exc
+                if immutable_has_rows:
+                    return True
+                # immutable=1 ignores the -wal, so "no rows" is only trustworthy
+                # when no write-ahead frames remain. If a non-empty -wal sidecar
+                # is present the records may be uncheckpointed — fail closed
+                # rather than silently treat a populated store as empty. SQLite
+                # keeps the -wal next to the resolved database file.
+                wal = resolved_log.parent / f"{resolved_log.name}-wal"
+                if wal.is_file() and wal.stat().st_size > 0:
+                    raise StoreResolutionError(
+                        f"Could not inspect the global event ledger at {sqlite_log}: "
+                        "records may be present in an uncheckpointed write-ahead log. "
+                        "Repair or move that file before selecting another global store."
+                    ) from exc
+                return False
     except OSError:
         return False
     return False
+
+
+def _sqlite_ledger_has_rows(uri: str) -> bool:
+    """Whether the SQLite ledger at ``uri`` holds at least one event row."""
+
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(uri, uri=True)
+        return (
+            connection.execute("SELECT 1 FROM event_lines LIMIT 1").fetchone()
+            is not None
+        )
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def _same_store_path(left: Path, right: Path) -> bool:

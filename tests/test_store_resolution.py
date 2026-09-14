@@ -406,6 +406,153 @@ def test_dashboard_counts_committed_records_in_live_sqlite_wal(tmp_path: Path) -
         connection.close()
 
 
+def test_dashboard_reads_wal_ledger_after_sidecars_checkpointed_away(
+    tmp_path: Path,
+) -> None:
+    # A committed WAL ledger whose -shm/-wal sidecars were checkpointed away is
+    # opened read-only during store resolution. On a libsqlite where the plain
+    # ?mode=ro open of such a file fails ("unable to open database file"), the
+    # resolver falls back to immutable=1 instead of failing closed; whether the
+    # local libsqlite reproduces that failure is platform-dependent, so this
+    # test asserts the end state (resolution succeeds) and separately proves the
+    # immutable open reads the records on a real file. The platform-independent
+    # guard for the fallback dispatch is
+    # test_store_has_records_retries_immutable_when_wal_shm_is_missing.
+    from agentacct import store_resolution
+
+    home = tmp_path / "home"
+    canonical = _make_store(home / ".local/state/agentacct/state", data=False)
+    _make_store(home / ".agent-sentinel-global/state", data=True)
+
+    scratch = tmp_path / "wal-scratch"
+    scratch.mkdir()
+    connection = sqlite3.connect(scratch / "events.sqlite3")
+    try:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute(
+            "CREATE TABLE event_lines (seq INTEGER PRIMARY KEY, line TEXT NOT NULL)"
+        )
+        connection.execute("INSERT INTO event_lines (line) VALUES ('record')")
+        connection.commit()
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        connection.close()
+
+    # Copy ONLY the main database file — no -shm/-wal — so a read-only open must
+    # map a shared-memory file that is not there.
+    (canonical / "events.sqlite3").write_bytes(
+        (scratch / "events.sqlite3").read_bytes()
+    )
+    assert not (canonical / "events.sqlite3-shm").exists()
+    assert not (canonical / "events.sqlite3-wal").exists()
+
+    # The immutable open reads the committed record on a real file, on any
+    # libsqlite — this is exactly what the fallback relies on.
+    base_uri = (canonical / "events.sqlite3").resolve().as_uri()
+    assert (
+        store_resolution._sqlite_ledger_has_rows(base_uri + "?mode=ro&immutable=1")
+        is True
+    )
+
+    resolution = resolve_dashboard_store_dir(None, cwd=tmp_path, env={}, home=home)
+    assert resolution.path == canonical
+
+
+def test_store_has_records_retries_immutable_when_wal_shm_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Deterministic guard for the fallback branch (independent of the local
+    # libsqlite build): the plain ?mode=ro probe fails with "unable to open
+    # database file" when a WAL ledger's -shm sidecar is absent, and
+    # _store_has_records must retry the immutable open before giving up.
+    from agentacct import store_resolution
+
+    store = tmp_path / "state"
+    store.mkdir()
+    (store / "events.sqlite3").write_bytes(b"")  # presence only; opens are stubbed
+
+    attempted: list[str] = []
+
+    def fake_open(uri: str) -> bool:
+        attempted.append(uri)
+        if "immutable=1" not in uri:
+            raise sqlite3.OperationalError("unable to open database file")
+        return True
+
+    monkeypatch.setattr(store_resolution, "_sqlite_ledger_has_rows", fake_open)
+
+    assert store_resolution._store_has_records(store) is True
+    assert any("mode=ro" in uri and "immutable=1" not in uri for uri in attempted)
+    assert any("immutable=1" in uri for uri in attempted)
+
+
+def test_store_has_records_fails_closed_when_immutable_open_also_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A genuinely broken ledger fails BOTH the plain and the immutable open, so
+    # the retry cannot mask it — resolution still fails closed.
+    from agentacct import store_resolution
+
+    store = tmp_path / "state"
+    store.mkdir()
+    (store / "events.sqlite3").write_bytes(b"")
+
+    def fake_open(uri: str) -> bool:
+        raise sqlite3.DatabaseError("file is not a database")
+
+    monkeypatch.setattr(store_resolution, "_sqlite_ledger_has_rows", fake_open)
+
+    with pytest.raises(
+        StoreResolutionError, match="Could not inspect the global event ledger"
+    ):
+        store_resolution._store_has_records(store)
+
+
+def test_store_has_records_fails_closed_when_immutable_empty_but_wal_has_frames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # immutable=1 ignores the -wal. If the plain open fails and the immutable
+    # open reports no rows while a non-empty -wal sidecar remains, records may be
+    # uncheckpointed — resolution must fail closed, not report the store empty.
+    from agentacct import store_resolution
+
+    store = tmp_path / "state"
+    store.mkdir()
+    (store / "events.sqlite3").write_bytes(b"")
+    (store / "events.sqlite3-wal").write_bytes(b"\x00" * 32)
+
+    def fake_open(uri: str) -> bool:
+        if "immutable=1" not in uri:
+            raise sqlite3.OperationalError("unable to open database file")
+        return False
+
+    monkeypatch.setattr(store_resolution, "_sqlite_ledger_has_rows", fake_open)
+
+    with pytest.raises(StoreResolutionError, match="uncheckpointed write-ahead log"):
+        store_resolution._store_has_records(store)
+
+
+def test_store_has_records_reports_empty_when_immutable_empty_and_no_wal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Same path with no -wal frames left: an immutable "no rows" answer is
+    # authoritative, so the store is correctly reported empty (not failed closed).
+    from agentacct import store_resolution
+
+    store = tmp_path / "state"
+    store.mkdir()
+    (store / "events.sqlite3").write_bytes(b"")
+
+    def fake_open(uri: str) -> bool:
+        if "immutable=1" not in uri:
+            raise sqlite3.OperationalError("unable to open database file")
+        return False
+
+    monkeypatch.setattr(store_resolution, "_sqlite_ledger_has_rows", fake_open)
+
+    assert store_resolution._store_has_records(store) is False
+
+
 @pytest.mark.parametrize("filename", ["events.jsonl", "events.sqlite3"])
 def test_dashboard_symlinked_ledger_artifacts_preserve_store_selection(
     tmp_path: Path, filename: str
