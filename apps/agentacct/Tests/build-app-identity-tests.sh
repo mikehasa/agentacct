@@ -130,11 +130,19 @@ expect_build_rejection \
 
 printf '%s\n' '#!/bin/bash' "echo 'agentacct $release_version'" >"$frozen_cli/agentacct"
 chmod +x "$frozen_cli/agentacct"
+# A safe in-payload alias (relative, no "..") is accepted: the framework keeps
+# its canonical symlinks so it stays a codesignable bundle.
 ln -s agentacct "$frozen_cli/linked-runtime"
+if ! build_app "$frozen_cli"; then
+    record_failure "a frozen CLI with a safe in-payload alias was rejected"
+fi
+rm "$frozen_cli/linked-runtime"
+# An alias that escapes the payload is rejected by the shared validator.
+ln -s /etc/hosts "$frozen_cli/linked-runtime"
 expect_build_rejection \
-    "a frozen CLI with a linked runtime" \
+    "a frozen CLI with an escaping alias" \
     "$frozen_cli" \
-    "frozen CLI contains symbolic links"
+    "frozen CLI payload failed the symlink-safety check"
 rm "$frozen_cli/linked-runtime"
 if ! build_app "$frozen_cli"; then
     record_failure "a matching clean frozen CLI was rejected"
