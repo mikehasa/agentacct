@@ -54,6 +54,13 @@ def validate_payload(root: Path) -> None:
 
 
 if __name__ == "__main__":
+    import sys
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("payload", type=Path)
-    validate_payload(parser.parse_args().payload)
+    try:
+        validate_payload(parser.parse_args().payload)
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        sys.exit(1)
+
