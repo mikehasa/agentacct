@@ -48,56 +48,6 @@ jobs:
   # here yet (26.6, 26.3 and 16.4 all build that revision); the leg is
   # defense-in-depth until the release machine's exact error is captured.
   # Move the pinned versions when the release machine updates.
-  probe-swift-snapshot:
-    name: probe Swift main snapshot
-    runs-on: macos-15
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-      - uses: swift-actions/setup-swift@v3
-        with:
-          swift-version: "main-snapshot"
-      - name: Toolchain
-        run: swift --version
-      - name: Typecheck the pre-fix histogram expression
-        run: |
-          cat > /tmp/repro.swift <<'SWIFT'
-          import SwiftUI
-          import CoreGraphics
-
-          func drawBins(context: GraphicsContext, size: CGSize, bins: [Int], index: Int, value: Int, peak: Int) {
-              let h = max(3, Double(value) / Double(peak) * 20)
-              context.fill(Path(CGRect(x: Double(index) * size.width / Double(bins.count),
-                                       y: size.height - h - 3,
-                                       width: max(size.width / Double(bins.count) - 1, 1),
-                                       height: h)), with: .color(.red))
-          }
-          SWIFT
-          swiftc -typecheck -sdk "$(xcrun --show-sdk-path)" /tmp/repro.swift
-
-  probe-old-xcodes:
-    name: probe Xcode ${{ matrix.xcode }}
-    runs-on: macos-15
-    timeout-minutes: 20
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_${{ matrix.xcode }}.app/Contents/Developer
-      LANG: en_US.UTF-8
-      LC_ALL: en_US.UTF-8
-      TZ: UTC
-    strategy:
-      fail-fast: false
-      matrix:
-        xcode: ["26.2", "26.1.1", "26.0.1"]
-    defaults:
-      run:
-        working-directory: apps/agentacct
-    steps:
-      - uses: actions/checkout@v7
-      - name: Report toolchain
-        run: xcodebuild -version && swift --version
-      - name: Build release
-        run: swift build -c release
-
   macos-release-build:
     name: macOS release build (release toolchain, Xcode 26.3)
     runs-on: macos-15
