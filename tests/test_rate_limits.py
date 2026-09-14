@@ -211,6 +211,31 @@ def test_read_claude_plan_usage_latest_per_org(tmp_path):
     assert a_five == 40.0  # the later sample won
 
 
+def test_read_claude_plan_usage_skips_unhashable_org(tmp_path):
+    # A malformed sample whose "org" is a list/dict is unhashable and can't key
+    # the per-org grouping; it must be skipped rather than aborting the whole
+    # loop and dropping every other org's snapshot (fail-soft contract).
+    path = tmp_path / "plan-usage-history.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "samples": [
+                    {"t": 100, "org": ["not", "hashable"], "u": {"fh": 1, "sd": 2}},
+                    {"t": 150, "org": {"nested": "dict"}, "u": {"fh": 3, "sd": 4}},
+                    {"t": 200, "org": "good", "u": {"fh": 40, "sd": 20}},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    snaps = rl.read_claude_plan_usage_latest(path)
+    by_org = {s.org: s for s in snaps}
+    assert set(by_org) == {"good"}  # valid org survives, no TypeError raised
+    good_five = {w.kind: w.used_percent for w in by_org["good"].windows}["5h"]
+    assert good_five == 40.0
+
+
 def test_read_claude_plan_usage_missing_and_malformed(tmp_path):
     assert rl.read_claude_plan_usage_latest(tmp_path / "nope.json") == []
     bad = tmp_path / "bad.json"

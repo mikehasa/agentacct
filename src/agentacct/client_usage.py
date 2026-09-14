@@ -9270,9 +9270,12 @@ def _optional_int(value: Any) -> int | None:
 
 def _optional_float(value: Any) -> float | None:
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError, OverflowError):
         return None
+    if not math.isfinite(number):
+        return None
+    return number
 
 
 def _timestamp_seconds(value: Any) -> int | None:
@@ -9287,7 +9290,7 @@ def _timestamp_seconds(value: Any) -> int | None:
             return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
         except ValueError:
             return None
-    if number <= 0:
+    if not math.isfinite(number) or number <= 0:
         return None
     if number > 1_000_000_000_000:
         number = number / 1000

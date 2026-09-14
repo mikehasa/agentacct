@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -134,6 +135,28 @@ class ParityResult:
     detail: str
 
 
+def _coerce_created_at(value: Any) -> float | None:
+    """Coerce a JSON ``created_at`` to a finite float for the indexed column.
+
+    Faithful to the mirror contract: a poison value must never abort the
+    whole-file reconcile. In particular an int too large to fit a float raises
+    ``OverflowError`` — which is NOT a ``ValueError`` and so escapes the
+    ``json.loads`` guard above — and a non-finite float (``inf``/``nan`` from a
+    huge JSON literal) is not a usable timestamp. In every such case the raw
+    line is still stored verbatim; only the indexed column is left empty.
+    Mirrors the OverflowError+isfinite idiom used across the codebase
+    (usage_view, task_timeline).
+    """
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _extract_columns(line: str) -> tuple[str | None, str | None, str | None, float | None]:
     try:
         event = json.loads(line)
@@ -149,7 +172,7 @@ def _extract_columns(line: str) -> tuple[str | None, str | None, str | None, flo
         event_id if isinstance(event_id, str) else None,
         run_id if isinstance(run_id, str) else None,
         event_type if isinstance(event_type, str) else None,
-        float(created_at) if isinstance(created_at, (int, float)) else None,
+        _coerce_created_at(created_at),
     )
 
 

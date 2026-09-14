@@ -454,56 +454,82 @@ def _finite_positive(value: Any) -> bool:
     return math.isfinite(number) and number > 0.0
 
 
-def _task_session_ids(task: Mapping[str, Any]) -> set[str]:
-    """The ``client_session_id`` values belonging to THIS Task's own events.
+def _item_session_key(item: Mapping[str, Any]) -> tuple[str, str]:
+    """Canonical session identity for a work step: ``(client, client_session_id)``.
+
+    The store keys every session on the (client, id) PAIR — see
+    ``task_timeline`` / ``task_projection`` — because the raw ``client_session_id``
+    string is NOT globally unique: two different clients can each mint a session
+    named ``"shared-1"``. Work steps carry the client under ``client`` (with
+    ``reporting_source`` as its alias). Keying on the raw id alone would let one
+    client's session masquerade as another's.
+    """
+
+    return (
+        _text(item.get("client") or item.get("reporting_source")),
+        _text(item.get("client_session_id")),
+    )
+
+
+def _event_session_key(event: Mapping[str, Any]) -> tuple[str, str]:
+    """Canonical session identity for a check / evidence event: the same
+    ``(client, client_session_id)`` pair the store keys sessions on."""
+
+    return (_text(event.get("client")), _text(event.get("client_session_id")))
+
+
+def _task_session_ids(task: Mapping[str, Any]) -> set[tuple[str, str]]:
+    """The ``(client, client_session_id)`` pairs belonging to THIS Task's own events.
 
     Read from the work steps and check/evidence events (the reducer's own event
     surface). A session in the store-wide start index that appears here is this
     Task's own session and can never count as the "newer session elsewhere".
+    Keyed on the (client, id) PAIR, never the raw id — see ``_item_session_key``.
     """
 
-    ids: set[str] = set()
+    ids: set[tuple[str, str]] = set()
     for item in _items(task):
-        session_id = _text(item.get("client_session_id"))
-        if session_id:
-            ids.add(session_id)
+        key = _item_session_key(item)
+        if key[1]:
+            ids.add(key)
     for event in _all_check_events(task):
-        session_id = _text(event.get("client_session_id"))
-        if session_id:
-            ids.add(session_id)
+        key = _event_session_key(event)
+        if key[1]:
+            ids.add(key)
     return ids
 
 
-def task_session_starts(task: Mapping[str, Any]) -> dict[str, float]:
-    """Earliest recorded event timestamp per ``client_session_id`` in this Task.
+def task_session_starts(task: Mapping[str, Any]) -> dict[tuple[str, str], float]:
+    """Earliest recorded event timestamp per ``(client, client_session_id)`` in this Task.
 
     A session's START is the MINIMUM over its work steps (``started_at`` then
     ``updated_at``) and its check / evidence events (``created_at`` then
     ``occurred_at`` then ``time``). Session objects' ``last_activity_at`` is a
     LATEST, never a start, so it is deliberately NOT consulted here. The caller
     (``receipt.session_start_index``) merges these per-Task maps across the whole
-    store, taking the MIN per session id, to get each session's true first
-    timestamp. Non-finite / non-positive timestamps are dropped.
+    store, taking the MIN per session key, to get each session's true first
+    timestamp. Keyed on the (client, id) PAIR, never the raw id, so two clients
+    reusing one id string stay distinct sessions. Non-finite / non-positive
+    timestamps are dropped.
     """
 
-    starts: dict[str, float] = {}
+    starts: dict[tuple[str, str], float] = {}
 
-    def _consider(session_id: Any, timestamp: Any) -> None:
-        sid = _text(session_id)
-        if not sid or not _finite_positive(timestamp):
+    def _consider(session_key: tuple[str, str], timestamp: Any) -> None:
+        if not session_key[1] or not _finite_positive(timestamp):
             return
         value = _number(timestamp)
-        if sid not in starts or value < starts[sid]:
-            starts[sid] = value
+        if session_key not in starts or value < starts[session_key]:
+            starts[session_key] = value
 
     for item in _items(task):
         _consider(
-            item.get("client_session_id"),
+            _item_session_key(item),
             item.get("started_at") or item.get("updated_at"),
         )
     for event in _all_check_events(task):
         _consider(
-            event.get("client_session_id"),
+            _event_session_key(event),
             event.get("created_at") or event.get("occurred_at") or event.get("time"),
         )
     return starts
@@ -511,7 +537,7 @@ def task_session_starts(task: Mapping[str, Any]) -> dict[str, float]:
 
 def newer_session_start_after(
     task: Mapping[str, Any],
-    session_starts: Mapping[str, float] | None,
+    session_starts: Mapping[tuple[str, str], float] | None,
     *,
     newest: float | None = None,
 ) -> float | None:
@@ -519,8 +545,11 @@ def newer_session_start_after(
 
     The MINIMUM session-start, across the whole store, among sessions that do NOT
     belong to this Task and whose start is STRICTLY AFTER this Task's newest event.
-    ``None`` when no such session exists (or the inputs are missing / skewed),
-    which resolves the went-quiet predicate toward NOT firing.
+    Sessions are compared on the ``(client, client_session_id)`` PAIR the store
+    keys them by, so a different client reusing this Task's raw session-id string
+    still counts as a genuinely other session. ``None`` when no such session
+    exists (or the inputs are missing / skewed), which resolves the went-quiet
+    predicate toward NOT firing.
     """
 
     if not session_starts:
@@ -532,8 +561,8 @@ def newer_session_start_after(
     own = _task_session_ids(task)
     candidates = [
         _number(start)
-        for session_id, start in session_starts.items()
-        if _text(session_id) not in own
+        for session_key, start in session_starts.items()
+        if session_key not in own
         and _finite_positive(start)
         and _number(start) > newest
     ]
@@ -543,7 +572,7 @@ def newer_session_start_after(
 def task_went_quiet_elsewhere(
     task: Mapping[str, Any],
     latest_store_activity_at: float | None,
-    session_starts: Mapping[str, float] | None = None,
+    session_starts: Mapping[tuple[str, str], float] | None = None,
 ) -> bool:
     """Did the user DEMONSTRABLY move on to a NEW SESSION and keep working long
     after this Task froze?
@@ -596,7 +625,7 @@ def reduce_task_outcome(
     task: Mapping[str, Any],
     *,
     latest_store_activity_at: float | None = None,
-    session_starts: Mapping[str, float] | None = None,
+    session_starts: Mapping[tuple[str, str], float] | None = None,
 ) -> dict[str, Any]:
     """Reduce work status and checks into one honest current Task outcome.
 
@@ -608,7 +637,7 @@ def reduce_task_outcome(
     signal: the newest activity timestamp anywhere in the store (all
     sessions/tasks, including usage-only activity), computed once by the caller
     that already holds every Task and passed in. ``session_starts`` maps every
-    ``client_session_id`` in the store to its earliest event timestamp (see
+    ``(client, client_session_id)`` in the store to its earliest event timestamp (see
     ``task_session_starts`` / ``receipt.session_start_index``), likewise computed
     once by the caller. Together they drive ``task_went_quiet_elsewhere``: a Task
     is downgraded only when a genuinely NEWER SESSION began after this Task froze

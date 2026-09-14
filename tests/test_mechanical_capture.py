@@ -240,3 +240,37 @@ def test_link_leaves_a_pre_step_check_unattached() -> None:
     }
     _link_mechanical_checks_by_session_time({"tasks": [task]})
     assert task["work_items"][0]["current_check_events"] == []  # honest: stays unattributed
+
+
+def test_link_does_not_cross_clients_on_a_shared_raw_session_id() -> None:
+    # #224: two clients inside one explicitly-merged cross-client Task reuse the
+    # same self-reported raw session id (e.g. an MCP "default"/"local"). A passing
+    # hook check from one client must credit ONLY that client's step — never lift
+    # the other client's step to independently_checked. The codex step is started
+    # LATER, so a raw-session-id-only lookup (the old behavior) would have wrongly
+    # credited it as the most-recent active step.
+    task = {
+        "task_id": "t1",
+        "work_items": [
+            {"work_id": "w-cc", "client": "claude-code", "client_session_id": "default",
+             "kind": "implementation", "latest_status": "completed", "started_at": 200.0,
+             "current_check_events": []},
+            {"work_id": "w-cx", "client": "codex", "client_session_id": "default",
+             "kind": "implementation", "latest_status": "completed", "started_at": 210.0,
+             "current_check_events": []},
+        ],
+        "current_check_events": [
+            {"event_id": "evidence:cc", "source_type": "client_hook", "source": "claude-code",
+             "client": "claude-code", "result": "passed", "client_session_id": "default",
+             "created_at": 250.0, "evidence_type": "test",
+             "check_identity": "client-hook:cc", "check_identity_stable": True},
+        ],
+    }
+    _link_mechanical_checks_by_session_time({"tasks": [task]})
+    cc_step, cx_step = task["work_items"]
+    # The claude-code hook lands on the claude-code step ...
+    assert len(cc_step["current_check_events"]) == 1
+    assert step_evidence_grade(cc_step)["grade"] == "independently_checked"
+    # ... and the codex step is left untouched — no cross-client credit.
+    assert not cx_step.get("current_check_events")
+    assert step_evidence_grade(cx_step)["grade"] != "independently_checked"
