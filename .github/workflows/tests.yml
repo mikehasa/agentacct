@@ -48,6 +48,29 @@ jobs:
   # here yet (26.6, 26.3 and 16.4 all build that revision); the leg is
   # defense-in-depth until the release machine's exact error is captured.
   # Move the pinned versions when the release machine updates.
+  probe-old-xcodes:
+    name: probe Xcode ${{ matrix.xcode }}
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_${{ matrix.xcode }}.app/Contents/Developer
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      TZ: UTC
+    strategy:
+      fail-fast: false
+      matrix:
+        xcode: ["26.2", "26.1.1", "26.0.1"]
+    defaults:
+      run:
+        working-directory: apps/agentacct
+    steps:
+      - uses: actions/checkout@v7
+      - name: Report toolchain
+        run: xcodebuild -version && swift --version
+      - name: Build release
+        run: swift build -c release
+
   macos-release-build:
     name: macOS release build (release toolchain, Xcode 26.3)
     runs-on: macos-15
