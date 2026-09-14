@@ -344,8 +344,9 @@ private struct WorkTimeWindowScroller: View {
                     let peak = max(bins.max() ?? 0, 1)
                     for (index, value) in bins.enumerated() where value > 0 {
                         let h = max(3, Double(value) / Double(peak) * 20)
-                        context.fill(Path(CGRect(x: Double(index) * size.width / Double(bins.count), y: size.height - h - 3,
-                            width: max(size.width / Double(bins.count) - 1, 1), height: h)), with: .color(Theme.muted.opacity(0.4)))
+                        let w = Double(size.width)
+                        context.fill(Path(CGRect(x: Double(index) * w / Double(bins.count), y: Double(size.height) - h - 3,
+                            width: max(w / Double(bins.count) - 1, 1), height: h)), with: .color(Theme.muted.opacity(0.4)))
                     }
                 }.allowsHitTesting(false)
                 Button { onWindow(window) } label: {
