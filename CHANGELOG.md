@@ -6,6 +6,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.9] — 2026-09-14
+
+Fixes a regression where the macOS app could report the recorder unreachable
+even though the daemon was healthy.
+
+### Fixed
+
+- The macOS app no longer reports the recorder unreachable when the local
+  event ledger's write-ahead cache has been checkpointed away: it now reads the
+  ledger read-only with an immutable fallback instead of failing on the missing
+  shared-memory sidecar. (#229)
+- When the app cannot carry its recorder to a newer version on launch, it now
+  records why the upgrade was skipped instead of skipping silently. (#228)
+
 ## [0.10.8] — 2026-09-14
 
 Recording moves inside the macOS app and Work becomes a time-anchored activity
@@ -1100,7 +1114,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.8...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.9...HEAD
+[0.10.9]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.9
 [0.10.8]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.8
 [0.10.7]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.7
 [0.10.6]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.6
