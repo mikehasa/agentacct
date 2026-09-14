@@ -30,8 +30,15 @@ def validate_payload(root: Path) -> None:
     root = root.resolve()
 
     def check(path: Path, ancestors: frozenset[Path]) -> None:
-        if path.is_symlink() and os.path.isabs(os.readlink(path)):
-            raise ValueError(f"Payload alias target is absolute: {path}")
+        if path.is_symlink():
+            link_target = os.readlink(path)
+            if os.path.isabs(link_target):
+                raise ValueError(f"Payload alias target is absolute: {path}")
+            if ".." in link_target.split("/"):
+                # ".." after a symlinked component escapes the payload, so forbid
+                # it outright, matching the installer's confinement rule. A
+                # forward-only relative target stays inside the tree.
+                raise ValueError(f"Payload alias target uses '..': {path}")
         try:
             target = path.resolve(strict=True)
         except (OSError, RuntimeError) as error:

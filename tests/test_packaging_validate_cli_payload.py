@@ -59,6 +59,8 @@ def test_valid_framework_aliases_are_preserved(tmp_path):
         "external_file",
         "external_directory",
         "absolute_internal",
+        "relative_dotdot",
+        "symlink_through_symlink",
         "broken",
         "link_cycle",
         "directory_cycle",
@@ -83,6 +85,16 @@ def test_invalid_payload_is_rejected(tmp_path, kind):
         # An absolute target, even one inside the payload, is rejected: an
         # installed/relocated payload must not depend on the build machine path.
         alias.symlink_to(sentinel.resolve())
+    elif kind == "relative_dotdot":
+        # A relative target that climbs out of the payload with "..".
+        alias.symlink_to("../outside")
+    elif kind == "symlink_through_symlink":
+        # "escape" is lexically in-root (pivot/../..) but "pivot/.." resolves
+        # against pivot's physical target, so it would climb out. The ".." is
+        # rejected outright.
+        (root / "sub").mkdir()
+        (root / "pivot").symlink_to("sub", target_is_directory=True)
+        alias.symlink_to("pivot/../../outside")
     elif kind == "broken":
         alias.symlink_to("absent")
     elif kind == "link_cycle":

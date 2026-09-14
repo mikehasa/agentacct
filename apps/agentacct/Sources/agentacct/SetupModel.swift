@@ -72,11 +72,12 @@ enum CLIPayloadInspector {
                     // and the top-level binary/Resources) to stay a codesignable
                     // bundle. Bind the link's path and target into the identity so
                     // a changed target changes the fingerprint, but never follow it:
-                    // the target must be relative and resolve inside the payload so
-                    // no stable path can alias bytes outside the tree.
+                    // the target must be relative with no ".." component, which
+                    // confines it to the tree even through symlinked intermediates
+                    // so no stable path can alias bytes outside the payload.
                     guard let target = try? fm.destinationOfSymbolicLink(atPath: child.path),
                           !target.hasPrefix("/"),
-                          symlinkTargetStaysWithinRoot(linkRelativePath: relative, target: target)
+                          symlinkTargetIsConfined(target)
                     else { return false }
                     records.append(record(
                         kind: 0x4C,
@@ -140,27 +141,16 @@ enum CLIPayloadInspector {
         return values.isDirectory == true && values.isSymbolicLink != true
     }
 
-    /// A payload symlink is safe only if its target, resolved lexically against
-    /// the link's own directory, stays inside the payload root — never climbing
-    /// above it. Pure lexical resolution keeps the identity deterministic and
-    /// independent of what currently exists on disk. Absolute targets are
-    /// rejected by the caller before this is reached.
-    private static func symlinkTargetStaysWithinRoot(linkRelativePath: String, target: String) -> Bool {
-        var stack = linkRelativePath.split(separator: "/").map(String.init)
-        guard !stack.isEmpty else { return false }
-        stack.removeLast() // resolve the target from the link's parent directory
-        for component in target.split(separator: "/", omittingEmptySubsequences: false) {
-            switch component {
-            case "", ".":
-                continue
-            case "..":
-                if stack.isEmpty { return false }
-                stack.removeLast()
-            default:
-                stack.append(String(component))
-            }
-        }
-        return true
+    /// A relative symlink target is confined to the payload iff it contains no
+    /// ".." component. A forward-only relative target can only descend from the
+    /// link's own (in-payload) directory, so following it — even through other
+    /// forward-only symlinks — can never climb out of the tree. ".." must be
+    /// rejected rather than resolved lexically: after a symlinked component, the
+    /// OS resolves ".." against that component's physical target, not the
+    /// lexical path, so a ".." target that looks in-root can physically escape.
+    /// Absolute targets are rejected by the caller before this is reached.
+    private static func symlinkTargetIsConfined(_ target: String) -> Bool {
+        !target.split(separator: "/", omittingEmptySubsequences: false).contains("..")
     }
 
     private static func currentUserOwns(_ attributes: [FileAttributeKey: Any]) -> Bool {

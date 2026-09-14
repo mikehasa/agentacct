@@ -63,6 +63,18 @@ final class CLIPayloadSymlinkIdentityTests: XCTestCase {
         XCTAssertNil(CLIPayloadInspector.identity(at: root))
     }
 
+    func testSymlinkThroughSymlinkEscapeIsRejected() throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: root.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        // `pivot` is a harmless forward alias; `escape` looks in-root lexically
+        // (pivot/../x) but "pivot/.." resolves against pivot's physical target,
+        // so it would climb above the payload. The ".." makes it rejected.
+        try fm.createSymbolicLink(atPath: root.appendingPathComponent("pivot").path, withDestinationPath: "sub")
+        try fm.createSymbolicLink(atPath: root.appendingPathComponent("escape").path,
+                                  withDestinationPath: "pivot/../../outside")
+        XCTAssertNil(CLIPayloadInspector.identity(at: root))
+    }
+
     func testIdentityIsTamperEvidentToSymlinkTarget() throws {
         let fm = FileManager.default
         try Data("one".utf8).write(to: root.appendingPathComponent("a"))
