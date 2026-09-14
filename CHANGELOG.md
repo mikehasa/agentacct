@@ -6,27 +6,80 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.8] — 2026-09-14
+
+Recording moves inside the macOS app and Work becomes a time-anchored activity
+timeline, with each task shown as an inline receipt document.
+
 ### Added
 
+- Recording setup now runs inside the macOS app: pick a coding client (Claude
+  Code, Codex, OpenCode, Hermes), review a read-only plan of the exact config
+  files that will change, run setup, and watch a fresh event confirm capture,
+  with a jump straight to the recorded task. (#190)
+- A recording-health notice stack that names connection, endpoint, and ingestion
+  problems and offers recovery, plus a saved-work view so retained work stays
+  readable while the recorder is offline. (#190)
+- Plain-text export of the current work review — records, filters, coverage, and
+  source identities — with an explicit note that no token or cost total is
+  computed. (#190)
+- A "Launch at login" toggle in the menu, registered through macOS Login
+  Items. (#190)
+- `agentacct setup preview --agent <codex|claude-code|opencode|hermes> --user`
+  prints the proposed managed setup (MCP registration, hooks, instructions) for a
+  client without writing files or opening a store. (#190)
+- `GET /v1/task-timeline`: a token-guarded, cursor-paged, immutable per-task
+  timeline snapshot that backs the native activity canvas, with a `client` filter
+  on `GET /v1/sessions` and a `latest_event_id` on each step projection. (#190)
 - Two worked examples, generated from the real receipt engine and shown as macOS
   app screenshots: comparing Claude Code and Codex on one task by outcome,
   evidence and cost, and a "when an agent says done" trajectory where a re-run and
   a later edit leave a passing check outdated. Linked from the README, with a
-  drift-guard test that regenerates and compares them.
+  drift-guard test that regenerates and compares them. (#192)
 - A per-agent coverage matrix (`docs/coverage-matrix.md`), generated from the
   capability manifest, showing each lane's state without flattening `verified`,
-  `verified_partial`, and `experimental` into one badge.
+  `verified_partial`, and `experimental` into one badge. (#192)
 - `agentacct receipt <task> --markdown` renders a receipt, including its event
   timeline, as Markdown to paste into a PR or doc (a shared renderer the docs
-  generators reuse).
+  generators reuse). (#192)
 
 ### Changed
 
+- Work is rebuilt around a single time-anchored activity timeline in place of
+  per-task rows: dragging the canvas or overview pans through time, the scroll
+  wheel and pinch zoom the visible span around the pointer, and selecting an
+  event opens its details in an inline panel below the timeline instead of a
+  floating popover. (#190)
+- Task details now read as a visible receipt document — a totals strip (Checks,
+  Tool calls, Cost, Sessions, Coverage) above always-shown Usage, Sessions, and
+  Recording sections, with a single counted fold only for genuinely long lists —
+  replacing the nested disclosures. (#190)
+- Tool-call usage is shown as one 100% stacked bar with a wrapping legend and
+  per-segment tooltips, falling back to exact counts rather than a proportional
+  bar when the total cannot be reconciled. (#190)
+- Record comparison — the A/B "compare in slot" feature, its drag targets, and
+  saved slots — was removed from the Work timeline. (#190)
 - README: surface the worked examples and coverage matrix; state what agentacct
   records and what it does not; scope the cost-sigil grammar to the compact
   surfaces (the receipt names its basis instead); stop grouping OpenCode with
   Claude Code and Codex as a verified usage/cost peer; link the previously
-  unlinked adapter capability evidence doc.
+  unlinked adapter capability evidence doc. (#192)
+
+### Fixed
+
+- `_fmt_time` now rejects out-of-range (year-10000 and beyond) timestamps before
+  local-timezone conversion, so a boundary epoch no longer renders as a bogus
+  9999 date in UTC-negative timezones. (#191)
+- Retained older important events in the receipt and text timelines are kept in
+  source-time order instead of a reversed prefix. (#190)
+- The weekly-plan absence now reads "not applicable for this client" instead of a
+  leaked "undefined for this client" across the receipt and plan-cost
+  surfaces. (#190)
+- The packaged macOS app builds and codesigns correctly on the release
+  toolchain: the embedded Python framework keeps the canonical symlinks a
+  signable framework requires (validated in place as relative and in-payload),
+  and the new activity-timeline view compiles under the release compiler. (#212,
+  #216)
 
 ## [0.10.7] — 2026-09-10
 
@@ -1047,7 +1100,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.7...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.8...HEAD
+[0.10.8]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.8
 [0.10.7]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.7
 [0.10.6]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.6
 [0.10.5]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.5
