@@ -41,18 +41,19 @@ jobs:
       - name: Run tests
         run: pytest -q -n 4 --dist loadfile
 
-  # The release DMG is cut on the oldest supported Xcode (currently 26.3),
-  # while macos-app pins the newest (26.6). Toolchain skew once let a
-  # CGFloat/Double ambiguity in WorkTimeCanvas.swift pass PR CI and fail only
-  # on the release machine. This leg mirrors build-app.sh's exact compile
-  # command under the release toolchain so that class of break fails at PR
-  # time. Move the pinned version when the release machine updates.
+  # The release DMG is cut on macOS 15 with Xcode 26.3, while macos-app pins
+  # the newest Xcode (26.6). This leg mirrors build-app.sh's compile command
+  # under the documented release toolchain so toolchain-floor breaks fail at
+  # PR time. Known limit: PR #212's release-only failure does not reproduce
+  # here yet (26.6, 26.3 and 16.4 all build that revision); the leg is
+  # defense-in-depth until the release machine's exact error is captured.
+  # Move the pinned versions when the release machine updates.
   macos-release-build:
-    name: macOS release build (Xcode 16.4 probe)
+    name: macOS release build (release toolchain, Xcode 26.3)
     runs-on: macos-15
     timeout-minutes: 15
     env:
-      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
       LANG: en_US.UTF-8
       LC_ALL: en_US.UTF-8
       TZ: UTC
