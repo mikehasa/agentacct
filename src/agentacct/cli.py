@@ -375,8 +375,12 @@ def task_rename(
 def finding_list(
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
     store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    limit: Annotated[Optional[int], typer.Option(help="Optional maximum number of findings to show (positive).")] = None,
 ) -> None:
     """Surfaced finding episodes (the scope-quarantined index) with digests."""
+
+    if limit is not None and limit < 1:
+        raise typer.BadParameter("--limit must be a positive integer")
 
     from .api import build_store_task_projection, surfaced_finding_episodes
     from .finding_disposition import finding_target_digest
@@ -396,6 +400,8 @@ def finding_list(
             "attention_open": bool(episode.get("attention_open")),
             "summary": str((event or {}).get("summary") or (event or {}).get("name") or "")[:120],
         })
+    if limit is not None:
+        rows = rows[:limit]
     if json_output:
         print(json.dumps({"findings": rows}, indent=2, sort_keys=True))
         return
