@@ -48,6 +48,33 @@ jobs:
   # here yet (26.6, 26.3 and 16.4 all build that revision); the leg is
   # defense-in-depth until the release machine's exact error is captured.
   # Move the pinned versions when the release machine updates.
+  probe-swift-snapshot:
+    name: probe Swift main snapshot
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: swift-actions/setup-swift@v3
+        with:
+          swift-version: "main-snapshot"
+      - name: Toolchain
+        run: swift --version
+      - name: Typecheck the pre-fix histogram expression
+        run: |
+          cat > /tmp/repro.swift <<'SWIFT'
+          import SwiftUI
+          import CoreGraphics
+
+          func drawBins(context: GraphicsContext, size: CGSize, bins: [Int], index: Int, value: Int, peak: Int) {
+              let h = max(3, Double(value) / Double(peak) * 20)
+              context.fill(Path(CGRect(x: Double(index) * size.width / Double(bins.count),
+                                       y: size.height - h - 3,
+                                       width: max(size.width / Double(bins.count) - 1, 1),
+                                       height: h)), with: .color(.red))
+          }
+          SWIFT
+          swiftc -typecheck -sdk "$(xcrun --show-sdk-path)" /tmp/repro.swift
+
   probe-old-xcodes:
     name: probe Xcode ${{ matrix.xcode }}
     runs-on: macos-15
