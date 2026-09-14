@@ -305,6 +305,7 @@ def task_link(
     to_session: Annotated[str, typer.Option(help="Client session id of the continuation session.")],
     title: Annotated[Optional[str], typer.Option(help="Optional title when a new task is created.")] = None,
     store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
     """Link two root sessions into one Task (creates/extends/merges as needed)."""
 
@@ -320,6 +321,9 @@ def task_link(
     except ValueError as exc:  # ContinuationTaskError subclasses ValueError
         console.print(f"Link failed: {exc}")
         raise typer.Exit(1) from exc
+    if json_output:
+        print(json.dumps({"task_id": result.task_id, "changed": result.changed}, indent=2, sort_keys=True))
+        return
     state = "linked" if result.changed else "already linked"
     console.print(f"Task {result.task_id}: {state}.")
 
@@ -330,6 +334,7 @@ def task_unlink(
     client: Annotated[str, typer.Option(help="Client of the session to unlink.")],
     session: Annotated[str, typer.Option(help="Client session id to unlink.")],
     store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
     """Remove one session from a Task."""
 
@@ -345,6 +350,9 @@ def task_unlink(
     except ValueError as exc:  # ContinuationTaskError subclasses ValueError
         console.print(f"Unlink failed: {exc}")
         raise typer.Exit(1) from exc
+    if json_output:
+        print(json.dumps({"task_id": result.task_id, "changed": result.changed}, indent=2, sort_keys=True))
+        return
     state = "unlinked" if result.changed else "was not linked"
     console.print(f"Task {result.task_id}: session {state}.")
 
@@ -354,6 +362,7 @@ def task_rename(
     task_id: Annotated[str, typer.Option("--task", help="Task id (internal, or public task_… id).")],
     title: Annotated[Optional[str], typer.Option(help="New title; omit to clear the override.")] = None,
     store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
     """Set or clear a Task's title override."""
 
@@ -367,6 +376,9 @@ def task_rename(
     except ValueError as exc:  # ContinuationTaskError subclasses ValueError
         console.print(f"Rename failed: {exc}")
         raise typer.Exit(1) from exc
+    if json_output:
+        print(json.dumps({"task_id": result.task_id, "changed": result.changed, "title": title}, indent=2, sort_keys=True))
+        return
     state = "renamed" if result.changed else "unchanged"
     console.print(f"Task {result.task_id}: {state}.")
 
