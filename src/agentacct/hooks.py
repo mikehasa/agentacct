@@ -1123,7 +1123,7 @@ _CLAUDE_HOOK_WRAPPER_TEMPLATE = '''#!/usr/bin/env python3
 
 One wrapper serves all three hook events (dispatch on the event's own
 `hook_event_name`, so a single settings command line covers them):
-- PreToolUse: writes a agentacct allow/checkpoint/block decision JSON and
+- PreToolUse: writes an agentacct allow/checkpoint/block decision JSON and
   captures per-session client context (session/transcript ids) for joins.
 - SessionStart: captures the same client context at session start and returns
   additionalContext directing the agent to record its work as sections.
