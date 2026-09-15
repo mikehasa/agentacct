@@ -6,6 +6,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A passing check in an unrelated, unlinked session that merely reused the same
+  project, section, and command no longer retroactively marks an earlier
+  session's finding as superseded: inferred supersession is now scoped to the
+  session that raised the finding, while an explicitly declared resolution still
+  applies across a linked continuation. (#218)
+- A passing check whose transcript conflicts with the task's own (same session,
+  different `client_transcript_id`) no longer marks the Task verified or credits
+  a checked step — the transcript-compatibility veto now applies on the direct
+  session-key attribution path, not only the explicit section reference. (#219)
+
 ## [0.10.10] — 2026-09-14
 
 Fixes source-recording faults that surfaced once 0.10.9 made the Sources panel

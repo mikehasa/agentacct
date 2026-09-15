@@ -4422,6 +4422,8 @@ def _evidence_candidate_work_ids(
     References match either the composite work_id or the raw section_id.
     When the evidence carries client/session context, items with conflicting
     context are dropped, and an exact session match narrows the candidates.
+    A conflicting client_transcript_id is dropped too: a matching session with
+    a different transcript is a transcript conflict, not a match (#219).
 
     ``work_ids_by_section``/``grouped_position`` (built once by the caller) turn
     the reference match from a full scan of ``grouped`` into direct lookups; the
@@ -4468,6 +4470,18 @@ def _evidence_candidate_work_ids(
         exact = [work_id for work_id in candidates if grouped[work_id].get("client_session_id") == session]
         if exact:
             candidates = exact
+    transcript = _optional_str(evidence.get("client_transcript_id"))
+    if transcript:
+        # A transcript the item never asserted cannot veto (mirrors the lenient
+        # client/session drops above), but an item asserting a DIFFERENT
+        # transcript for the same session is a conflict — the weaker raw ref
+        # must not credit it (#219).
+        candidates = [
+            work_id
+            for work_id in candidates
+            if not grouped[work_id].get("client_transcript_id")
+            or grouped[work_id].get("client_transcript_id") == transcript
+        ]
     return candidates
 
 

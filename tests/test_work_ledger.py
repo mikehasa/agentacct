@@ -1037,6 +1037,55 @@ def test_evidence_links_only_unique_namespaced_candidate() -> None:
     assert items_by_work_id["codex::session-b::shared-section"]["evidence_events"] == []
 
 
+def test_evidence_conflicting_transcript_does_not_link_matching_session() -> None:
+    # #219: the section asserts transcript-a for session-a; a check on that same
+    # session but naming transcript-b is a transcript conflict, not a match. The
+    # raw section ref must not link it (which would credit unproven evidence).
+    section = _section_event(
+        session="session-a", transcript="transcript-a", section_id="shared-section"
+    )
+    evidence = _evidence_event(section_id="shared-section")
+    evidence["metadata"]["client_session_id"] = "session-a"
+    evidence["metadata"]["client_transcript_id"] = "transcript-b"
+
+    ledger = build_work_ledger([section, evidence])
+
+    items_by_work_id = {item["work_id"]: item for item in ledger["work_items"]}
+    assert items_by_work_id["codex::session-a::shared-section"]["evidence_events"] == []
+
+
+def test_evidence_matching_transcript_links_matching_session() -> None:
+    # The legitimate case the veto preserves: matching session AND matching
+    # transcript still links.
+    section = _section_event(
+        session="session-a", transcript="transcript-a", section_id="shared-section"
+    )
+    evidence = _evidence_event(section_id="shared-section")
+    evidence["metadata"]["client_session_id"] = "session-a"
+    evidence["metadata"]["client_transcript_id"] = "transcript-a"
+
+    ledger = build_work_ledger([section, evidence])
+
+    items_by_work_id = {item["work_id"]: item for item in ledger["work_items"]}
+    assert len(items_by_work_id["codex::session-a::shared-section"]["evidence_events"]) == 1
+
+
+def test_evidence_without_transcript_still_links_transcripted_section() -> None:
+    # An asserted transcript on the section is not a veto against a check that
+    # names none — the veto fires only on a genuine conflict, mirroring the
+    # existing lenient client/session drops.
+    section = _section_event(
+        session="session-a", transcript="transcript-a", section_id="shared-section"
+    )
+    evidence = _evidence_event(section_id="shared-section")
+    evidence["metadata"]["client_session_id"] = "session-a"
+
+    ledger = build_work_ledger([section, evidence])
+
+    items_by_work_id = {item["work_id"]: item for item in ledger["work_items"]}
+    assert len(items_by_work_id["codex::session-a::shared-section"]["evidence_events"]) == 1
+
+
 def test_task_events_are_not_work_items_but_stay_listed(tmp_path) -> None:
     from agentacct.service import SentinelService
 

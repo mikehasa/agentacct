@@ -421,6 +421,90 @@ def test_run_hint_cannot_override_explicit_session_identity_conflict() -> None:
     assert resolved["unassigned_findings"][0]["assignment_state"] == "namespace_mismatch"
 
 
+def _transcript_conflict_projection() -> dict[str, object]:
+    """A task owning session-a whose only fact asserts transcript-a, and whose
+    step already carries a passing check of the same series (so a same-series
+    pass credits the step). Used by both the conflict and match tests below."""
+
+    prior = _scoped_check(
+        event_id="prior",
+        result="passed",
+        session_id="session-a",
+        created_at=50.0,
+    )
+    prior["client_transcript_id"] = "transcript-a"
+    return {
+        "tasks": [
+            {
+                "task_id": "task-one",
+                "session_keys": [{"client": "codex", "client_session_id": "session-a"}],
+                "sessions": [{"client": "codex", "client_session_id": "session-a"}],
+                "work_items": [
+                    {
+                        "work_id": "shared",
+                        "section_id": "shared",
+                        "client": "codex",
+                        "reporting_source": "codex",
+                        "client_session_id": "session-a",
+                        "client_transcript_id": "transcript-a",
+                        "project_identity": "project:repo:abc123",
+                        "evidence_events": [prior],
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def test_session_key_path_vetoes_conflicting_transcript_passing_check() -> None:
+    """#219: a PASSING check whose client_session_id matches the task but whose
+    client_transcript_id CONFLICTS must not be credited. The explicit section-ref
+    path already vetoes this; the direct (client, session) path used to leak,
+    marking the task verified and crediting the step off a transcript conflict."""
+
+    projection = _transcript_conflict_projection()
+    event = _scoped_check(
+        event_id="pass",
+        result="passed",
+        session_id="session-a",
+    )
+    event["work_id"] = "shared"
+    event["section_id"] = "shared"
+    event["client_transcript_id"] = "transcript-b"
+
+    resolved = _attach_evidence_to_task_projection(projection, [event])
+
+    # Neither the task nor its step may claim this pass as current evidence.
+    assert resolved["tasks"][0]["current_check_events"] == []
+    assert resolved["tasks"][0]["work_items"][0]["current_check_events"] == []
+
+
+def test_session_key_path_credits_matching_transcript_passing_check() -> None:
+    """The legitimate case the veto must preserve: a PASSING check with a
+    matching client_session_id AND matching client_transcript_id still verifies
+    the task and credits the same-series step."""
+
+    projection = _transcript_conflict_projection()
+    event = _scoped_check(
+        event_id="pass",
+        result="passed",
+        session_id="session-a",
+    )
+    event["work_id"] = "shared"
+    event["section_id"] = "shared"
+    event["client_transcript_id"] = "transcript-a"
+
+    resolved = _attach_evidence_to_task_projection(projection, [event])
+
+    assert [
+        check["event_id"] for check in resolved["tasks"][0]["current_check_events"]
+    ] == ["pass"]
+    assert [
+        check["event_id"]
+        for check in resolved["tasks"][0]["work_items"][0]["current_check_events"]
+    ] == ["pass"]
+
+
 def test_raw_ref_cannot_rescue_unknown_session_against_log_evidenced_work() -> None:
     projection = {
         "tasks": [
