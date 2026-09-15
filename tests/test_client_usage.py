@@ -6441,6 +6441,67 @@ def test_usage_watch_refresh_skips_unchanged_rows_without_reissuing_event_id(tmp
     assert after_ids == before_ids
 
 
+def test_local_usage_candidate_adopts_missing_source_revision_watermark_once():
+    # A legacy stored row written before this lane emitted source_revision_at
+    # keeps a whole-second source_order forever, so same-second refreshable-usage
+    # snapshots stay tied and park a permanent reconcile conflict. When the
+    # stored row has NO watermark but the candidate now carries one (same usage),
+    # the gate must report a change so the refresh adopts it ONCE. After that the
+    # stored row carries a watermark and an advancing mtime must NOT churn it.
+    base = {"estimated_input_tokens": 100, "estimated_output_tokens": 5}
+    stored_legacy = {**base, "metadata": {"cached_input_tokens": 0}}
+    candidate_wm = {
+        **base,
+        "metadata": {
+            "cached_input_tokens": 0,
+            "source_revision_at": 1_700_000_000_123_456_789,
+            "source_revision_basis": "file_mtime_ns",
+        },
+    }
+    # migrate once: legacy row (no watermark) vs watermarked candidate → change
+    assert (
+        client_usage_module._local_usage_candidate_matches_stored_row(
+            candidate_wm, stored_legacy
+        )
+        is False
+    )
+    # after migration the stored row carries a watermark; a later, advanced
+    # mtime on an otherwise-unchanged session must be treated as unchanged (no
+    # perpetual churn — the property the gate exists to protect).
+    stored_migrated = dict(candidate_wm)
+    advanced = {
+        **base,
+        "metadata": {
+            "cached_input_tokens": 0,
+            "source_revision_at": 1_700_000_009_999_999_999,
+            "source_revision_basis": "file_mtime_ns",
+        },
+    }
+    assert (
+        client_usage_module._local_usage_candidate_matches_stored_row(
+            advanced, stored_migrated
+        )
+        is True
+    )
+    # two legacy rows with no watermark on either side still match — a fix that
+    # only migrates when the candidate actually has a watermark, never spuriously.
+    assert (
+        client_usage_module._local_usage_candidate_matches_stored_row(
+            stored_legacy, dict(stored_legacy)
+        )
+        is True
+    )
+    # a candidate that regressed to no watermark must NOT churn a stored row that
+    # already carries one — keep the stored watermark, report unchanged.
+    candidate_no_wm = {**base, "metadata": {"cached_input_tokens": 0}}
+    assert (
+        client_usage_module._local_usage_candidate_matches_stored_row(
+            candidate_no_wm, stored_migrated
+        )
+        is True
+    )
+
+
 def test_usage_reconcile_failure_is_fail_open_degraded_then_noop_self_heals(
     tmp_path,
     monkeypatch,
@@ -6965,8 +7026,12 @@ def test_usage_row_compare_ignores_revision_watermark_but_not_usage_changes(
         is True
     )
 
-    # Pre-watermark stored rows lack both fields entirely; the candidate's
-    # new watermark alone is still not a content change.
+    # A pre-watermark stored row lacks both fields entirely. Adopting the
+    # candidate's watermark ONCE (a bounded, one-time refresh) is what lets
+    # refreshable-usage source_order stop tying legacy same-second snapshots into
+    # a permanent reconcile conflict, so this MUST report a change. After that
+    # write the stored row carries a watermark and an advancing mtime no longer
+    # churns it (asserted above).
     watermark_missing = json.loads(json.dumps(candidate))
     del watermark_missing["metadata"]["source_revision_at"]
     del watermark_missing["metadata"]["source_revision_basis"]
@@ -6974,7 +7039,7 @@ def test_usage_row_compare_ignores_revision_watermark_but_not_usage_changes(
         client_usage_module._local_usage_candidate_matches_stored_row(
             candidate, watermark_missing
         )
-        is True
+        is False
     )
 
     # A real metadata difference still forces the refresh.

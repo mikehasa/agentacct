@@ -4985,12 +4985,23 @@ def _local_usage_candidate_matches_stored_row(candidate_event: dict[str, Any], s
             continue
         # The revision watermark is ordering provenance, not usage content.
         # A transcript file's mtime advances whenever the session appends —
-        # including turns that leave THIS lane's usage untouched — so
-        # comparing it would rewrite unchanged rows on every scan of an
-        # active session, which is exactly the churn this gate exists to
-        # prevent. Rows adopt the current watermark when real content changes.
+        # including turns that leave THIS lane's usage untouched — so once a row
+        # already carries a watermark, comparing it would rewrite unchanged rows
+        # on every scan of an active session, which is exactly the churn this
+        # gate exists to prevent. But a stored row with NO watermark at all must
+        # adopt one ONCE: a legacy row written before this lane emitted
+        # source_revision_at otherwise keeps a whole-second source_order forever,
+        # so two same-second refreshable-usage snapshots stay tied and park a
+        # permanent reconcile conflict. Treat "stored has no watermark, candidate
+        # has one" as a real (one-time) change so the refresh adopts it; after
+        # that write the stored row carries a watermark and this branch is inert
+        # again — no perpetual churn.
         if key in {"source_revision_at", "source_revision_basis"}:
-            continue
+            if stored_md.get("source_revision_at") is not None:
+                continue
+            if candidate_md.get("source_revision_at") is None:
+                continue
+            return False
         if stored_md.get(key) != value:
             return False
     return True
