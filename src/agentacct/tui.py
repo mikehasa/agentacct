@@ -876,9 +876,12 @@ class AgentAcctTUI(App):
         self._last_fingerprint = fingerprint
         self._snapshot = snapshot
         self._last_refresh_at = time.time()
+        self._work_built = False
         self._render_all()
         if self.current_pane == "dashboard":
             self._start_dashboard()
+        elif self.current_pane == "work":
+            self._start_work(force=True)
 
     def _render_all(self) -> None:
         try:

@@ -468,6 +468,40 @@ def test_work_list_populates_and_detail_follows(tmp_path):
     _run(scenario())
 
 
+def test_work_refreshes_after_poll_without_manual_refresh(tmp_path):
+    _record_usage(_svc := SentinelService(tmp_path), client="claude-code", model="synthetic-model",
+                  session_id="first", tokens=100, updated_at=int(time.time() - 20), cost=1, title="first")
+    _record_section(_svc, session="first", section_id="first", title="first", status="completed",
+                    at=time.time() - 20)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.press("2")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            before = len(app._work_summaries)
+
+            _record_usage(_svc, client="claude-code", model="synthetic-model", session_id="second",
+                          tokens=100, updated_at=int(time.time() - 10), cost=1, title="second")
+            _record_section(_svc, session="second", section_id="second", title="second",
+                            status="completed", at=time.time() - 10)
+            app.refresh_data()
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            after_poll = len(app._work_summaries)
+
+            assert before == 1
+            assert after_poll == 2
+
+    _run(scenario())
+
+
 def test_work_status_tab_filters(tmp_path):
     _seed(tmp_path)
 

@@ -1067,6 +1067,48 @@ def test_codex_impossible_last_counter_is_schema_drift_not_amplified_or_fallback
     assert plan.incomplete_source_candidates == events
 
 
+def test_codex_usage_event_carries_rollout_revision_watermark(tmp_path):
+    # Regression: the codex usage event never set source_revision_at, so its
+    # refreshable-usage source_order fell back to whole-second updated_at while
+    # the sibling observation used the rollout file's mtime_ns. Two cumulative
+    # snapshots recorded in the same second then tied on source_order and parked
+    # a permanent existing_conflict (errors=0 conflicts=0 existing_conflicts>0,
+    # degrading every source). The usage event must carry the SAME
+    # high-resolution watermark as the observation.
+    codex_home = _make_codex_home(tmp_path)
+    rollout = (
+        codex_home
+        / "sessions"
+        / "2026"
+        / "06"
+        / "27"
+        / "rollout-2026-06-27T00-00-00-session-abc.jsonl"
+    )
+    revision_ns = 1_700_000_000_123_456_789  # distinct from the DB updated_at=200
+    os.utime(rollout, ns=(revision_ns, revision_ns))
+
+    stats: dict[str, object] = {}
+    observations = []
+    events = client_usage_module._discover_codex_usage_from_home(
+        codex_home=codex_home,
+        limit_sessions=10,
+        _discovery_stats=stats,
+        _session_observations=observations,
+    )
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.source_revision_at == revision_ns
+    assert event.source_revision_basis == "file_mtime_ns"
+    # It now matches the sibling observation's watermark (the collision fix):
+    assert observations[0].source_revision_at == revision_ns
+    assert event.source_revision_at == observations[0].source_revision_at
+    # And it propagates onto the stored sentinel event that reconcile orders by.
+    metadata = event.to_sentinel_event()["metadata"]
+    assert metadata["source_revision_at"] == revision_ns
+    assert metadata["source_revision_basis"] == "file_mtime_ns"
+
+
 def test_codex_dedupe_signature_distinguishes_missing_from_explicit_zero(tmp_path):
     codex_home = _make_codex_home(tmp_path)
     missing = {"input_tokens": 0, "total_tokens": 0}
@@ -3137,6 +3179,138 @@ def test_claude_workflow_journal_failed_row_is_ignored(tmp_path):
     assert diagnostic["ignored_non_transcript_files"] == 1
     assert diagnostic["error_count"] == 0
     assert diagnostic["error_codes"] == []
+
+
+def test_claude_workflow_journal_launched_and_labeled_rows_are_ignored(tmp_path):
+    # The Workflow tool also writes a bare {"type": "launched"} marker and
+    # attaches human-readable "label"/"phase" bookkeeping to lifecycle rows.
+    # These carry no token usage, so the validator must ignore them like the
+    # base shapes. Regression: the exact-keyset check rejected
+    # {agentId,key,label,phase,type} and {type:"launched"} as
+    # claude_workflow_journal_schema_drift, surfacing a false "source adapter
+    # incompatible" and freezing recognition of the journal.
+    claude_home = _make_claude_home(tmp_path)
+    project = claude_home / "projects" / "-tmp-project"
+    journal = (
+        project
+        / "claude-session"
+        / "subagents"
+        / "workflows"
+        / "wf_labeled"
+        / "journal.jsonl"
+    )
+    journal.parent.mkdir(parents=True)
+    journal.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {"type": "launched"},
+                {
+                    "agentId": "agent-a",
+                    "key": "state",
+                    "label": "verify:#218",
+                    "phase": "Verify",
+                    "type": "started",
+                },
+                {"agentId": "agent-a", "key": "state", "type": "failed"},
+                {
+                    "agentId": "agent-b",
+                    "key": "state",
+                    "result": {"ok": True},
+                    "type": "result",
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = discover_client_usage_with_diagnostics(
+        client="claude-code",
+        claude_home=claude_home,
+        limit_sessions=10,
+    )
+
+    assert [event.client_session_id for event in result.events] == ["claude-session"]
+    diagnostic = result.diagnostics["claude-code"]
+    assert diagnostic["ignored_non_transcript_files"] == 1
+    assert diagnostic["error_count"] == 0
+    assert diagnostic["error_codes"] == []
+
+
+def test_claude_workflow_journal_known_type_with_usage_key_still_fails_closed(
+    tmp_path,
+):
+    # Safety: widening the allowlist for label/phase must NOT let a usage-bearing
+    # key ride in on a known lifecycle type. A "started" row carrying a "usage"
+    # key is outside required ∪ {label, phase}, so it must still fail closed as
+    # schema drift rather than be silently ignored.
+    claude_home = _make_claude_home(tmp_path)
+    project = claude_home / "projects" / "-tmp-project"
+    journal = (
+        project
+        / "claude-session"
+        / "subagents"
+        / "workflows"
+        / "wf_sneaky"
+        / "journal.jsonl"
+    )
+    journal.parent.mkdir(parents=True)
+    journal.write_text(
+        json.dumps(
+            {
+                "agentId": "agent-a",
+                "key": "state",
+                "type": "started",
+                "usage": {"input_tokens": 999, "output_tokens": 99},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = discover_client_usage_with_diagnostics(
+        client="claude-code",
+        claude_home=claude_home,
+        limit_sessions=10,
+    )
+
+    # The real session still imports; the sneaky row is quarantined as drift.
+    assert [event.client_session_id for event in result.events] == ["claude-session"]
+    diagnostic = result.diagnostics["claude-code"]
+    assert diagnostic["error_codes"] == ["claude_workflow_journal_schema_drift"]
+
+
+def test_claude_workflow_journal_non_string_type_is_quarantined_not_crash(tmp_path):
+    # Safety: `type` is untrusted JSON. A non-string (unhashable) value such as
+    # a list must fail closed as drift and be quarantined per-file, NOT raise a
+    # TypeError from the row-spec dict lookup that would escape the quarantine
+    # and abort usage import for the whole home.
+    claude_home = _make_claude_home(tmp_path)
+    project = claude_home / "projects" / "-tmp-project"
+    journal = (
+        project
+        / "claude-session"
+        / "subagents"
+        / "workflows"
+        / "wf_weird"
+        / "journal.jsonl"
+    )
+    journal.parent.mkdir(parents=True)
+    journal.write_text(
+        json.dumps({"type": [], "agentId": "agent-a", "key": "state"}) + "\n",
+        encoding="utf-8",
+    )
+
+    result = discover_client_usage_with_diagnostics(
+        client="claude-code",
+        claude_home=claude_home,
+        limit_sessions=10,
+    )
+
+    assert [event.client_session_id for event in result.events] == ["claude-session"]
+    diagnostic = result.diagnostics["claude-code"]
+    assert diagnostic["error_codes"] == ["claude_workflow_journal_schema_drift"]
 
 
 def test_claude_workflow_journal_schema_drift_is_quarantined_not_frozen(tmp_path):

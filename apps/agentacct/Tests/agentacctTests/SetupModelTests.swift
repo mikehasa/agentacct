@@ -1853,6 +1853,142 @@ final class SetupModelTests: XCTestCase {
         )
     }
 
+    /// Give a frozen-onedir fixture the four canonical, relative, in-payload
+    /// Python.framework aliases a real recorder carries — the exact shape the
+    /// real machine showed. This is what pre-#216 could not recognize.
+    static func installPythonFramework(in cliDir: URL) throws {
+        let fm = FileManager.default
+        let internalDir = cliDir.appendingPathComponent("_internal", isDirectory: true)
+        let versioned = internalDir
+            .appendingPathComponent("Python.framework/Versions/3.14", isDirectory: true)
+        try fm.createDirectory(
+            at: versioned.appendingPathComponent("Resources", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data("synthetic python".utf8).write(to: versioned.appendingPathComponent("Python"))
+        try Data("fixture info".utf8).write(to: versioned.appendingPathComponent("Resources/Info.plist"))
+        let framework = internalDir.appendingPathComponent("Python.framework", isDirectory: true)
+        try fm.createSymbolicLink(
+            atPath: framework.appendingPathComponent("Versions/Current").path,
+            withDestinationPath: "3.14"
+        )
+        try fm.createSymbolicLink(
+            atPath: framework.appendingPathComponent("Python").path,
+            withDestinationPath: "Versions/Current/Python"
+        )
+        try fm.createSymbolicLink(
+            atPath: framework.appendingPathComponent("Resources").path,
+            withDestinationPath: "Versions/Current/Resources"
+        )
+        try fm.createSymbolicLink(
+            atPath: internalDir.appendingPathComponent("Python").path,
+            withDestinationPath: "Python.framework/Versions/3.14/Python"
+        )
+    }
+
+    /// Regression guard for #188: a legacy recorder whose Python.framework keeps
+    /// its symlinks (a 0.10.4-style install) must be auto-upgraded on launch by a
+    /// newer app — not silently left behind. The symlinked twin of
+    /// `testStoppedLegacyUpgradeUsesVersionedTargetWithoutMovingLegacySideFilesOrScanningProcesses`.
+    @MainActor
+    func testAutomaticUpgradeOfLegacyInstallWithFrameworkSymlinks() async throws {
+        let fixture = try UpgradeFixture(bundleCommit: newCommit, installedCommit: oldCommit)
+        defer { fixture.remove() }
+
+        let packagedCLIDir = fixture.resources.appendingPathComponent("cli", isDirectory: true)
+        try Self.installPythonFramework(in: fixture.installedDirectory)
+        try Self.installPythonFramework(in: packagedCLIDir)
+
+        let model = fixture.model { _, _ in Self.stream(lines: ["{\"processes\":[]}"]) }
+        XCTAssertTrue(
+            model.shouldAutomaticallyUpgradeCLI,
+            "automaticUpgradeContext must be non-nil for a symlinked legacy install"
+        )
+
+        let outcome = await model.upgradeInstalledCLIIfNeeded()
+
+        XCTAssertEqual(outcome, .upgraded, "log: \(model.log)")
+        XCTAssertEqual(fixture.installedCommit(), newCommit)
+        XCTAssertEqual(fixture.versionTargets.count, 1)
+        XCTAssertEqual(try fixture.legacySideFile(), "old-side-files")
+        XCTAssertTrue(fixture.hasLegacyBinaryBackup)
+        // A successful upgrade leaves no blocked-reason behind (no false alarm).
+        XCTAssertNil(model.recorderUpgradeDiagnostic)
+        let target = try XCTUnwrap(fixture.selectedTarget)
+        let current = target.appendingPathComponent("_internal/Python.framework/Versions/Current")
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: current.path),
+            "3.14"
+        )
+    }
+
+    /// When the installed recorder's payload cannot be recognized (the exact
+    /// chain that made pre-#216 fail: legacyPayloadIdentity nil → installedCLIState
+    /// nil → automaticUpgradeContext nil → early `.notNeeded`), the launch upgrade
+    /// must no longer be SILENT: it records why. Tripped here with an
+    /// inspector-rejected (absolute) alias, isolating the installed side.
+    @MainActor
+    func testLegacyUpgradeReportsWhyWhenInstalledRecorderIsUnrecognized() async throws {
+        let fixture = try UpgradeFixture(bundleCommit: newCommit, installedCommit: oldCommit)
+        defer { fixture.remove() }
+
+        try Self.installPythonFramework(in: fixture.resources.appendingPathComponent("cli", isDirectory: true))
+        try FileManager.default.createSymbolicLink(
+            atPath: fixture.installedDirectory.appendingPathComponent("_internal/absolute-alias").path,
+            withDestinationPath: "/etc/hosts"
+        )
+
+        var launchedCommands = false
+        let model = fixture.model { _, _ in
+            launchedCommands = true
+            return Self.stream(lines: ["{\"processes\":[]}"])
+        }
+        XCTAssertFalse(model.shouldAutomaticallyUpgradeCLI)
+
+        let outcome = await model.upgradeInstalledCLIIfNeeded()
+
+        XCTAssertEqual(outcome, .notNeeded, "log: \(model.log)")
+        XCTAssertEqual(fixture.installedCommit(), oldCommit)
+        XCTAssertEqual(fixture.versionTargets.count, 0)
+        XCTAssertFalse(launchedCommands)
+        let diagnostic = try XCTUnwrap(
+            model.recorderUpgradeDiagnostic,
+            "an unrecognized installed recorder must be reported, not silently skipped"
+        )
+        XCTAssertTrue(diagnostic.contains("could not be recognized"), "diagnostic: \(diagnostic)")
+        XCTAssertTrue(model.log.contains { $0.contains("Recorder update skipped") }, "log: \(model.log)")
+    }
+
+    /// When the app cannot verify its OWN bundled recorder, the launch upgrade
+    /// also names that instead of skipping silently — the one branch a real
+    /// signed bundle could trip that is invisible from outside the app.
+    @MainActor
+    func testLaunchUpgradeReportsWhenBundledRecorderCannotBeVerified() async throws {
+        let fixture = try UpgradeFixture(bundleCommit: newCommit, installedCommit: oldCommit)
+        defer { fixture.remove() }
+
+        try Self.installPythonFramework(in: fixture.installedDirectory)
+        let packagedCLIDir = fixture.resources.appendingPathComponent("cli", isDirectory: true)
+        try Self.installPythonFramework(in: packagedCLIDir)
+        // Make the BUNDLED payload unverifiable (inspector-rejected alias).
+        try FileManager.default.createSymbolicLink(
+            atPath: packagedCLIDir.appendingPathComponent("_internal/absolute-alias").path,
+            withDestinationPath: "/etc/hosts"
+        )
+
+        let model = fixture.model { _, _ in Self.stream(lines: ["{\"processes\":[]}"]) }
+        XCTAssertFalse(model.shouldAutomaticallyUpgradeCLI)
+
+        let outcome = await model.upgradeInstalledCLIIfNeeded()
+
+        XCTAssertEqual(outcome, .notNeeded, "log: \(model.log)")
+        let diagnostic = try XCTUnwrap(
+            model.recorderUpgradeDiagnostic,
+            "an unverifiable bundled recorder must be reported, not silently skipped"
+        )
+        XCTAssertTrue(diagnostic.contains("bundled with this app"), "diagnostic: \(diagnostic)")
+    }
+
     fileprivate static func stream(
         lines: [String],
         failure: Error? = nil

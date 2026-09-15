@@ -351,6 +351,82 @@ final class GlanceClientStoreResolutionTests: XCTestCase {
             XCTAssertEqual(try fixture.resolveGlobal(), fixture.canonical, filename)
         }
     }
+
+    func testCheckpointedWALLedgerWithoutSidecarsStillCountsAsRecords() throws {
+        // Regression (#188 shipped in 0.10.8): a committed WAL ledger whose
+        // -shm/-wal sidecars were checkpointed away — the recorder's steady
+        // state between writes — must not fail store resolution. A bare
+        // read-only open of such a file returns SQLITE_CANTOPEN ("unable to
+        // open database file") because it cannot map the absent -shm; the
+        // resolver retries immutable and still sees the records. Before the fix
+        // this threw, and because every daemon call resolves the store through
+        // here, the whole app reported the recorder unreachable.
+        let fixture = try StoreFixture()
+        defer { fixture.remove() }
+        try fixture.writeCheckpointedWALLedgerWithoutSidecars(to: fixture.canonical)
+        try fixture.writeRecords(to: fixture.legacy)
+
+        let sqlite = fixture.canonical.appendingPathComponent("events.sqlite3")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sqlite.path))
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: sqlite.path + "-shm"),
+            "precondition: the -shm sidecar must be absent"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: sqlite.path + "-wal"),
+            "precondition: the -wal sidecar must be absent"
+        )
+
+        // The fallback is only exercised on a libsqlite where a bare read-only
+        // open of this file actually fails. If the linked SQLite reads it
+        // anyway, skip rather than pass as a false guard — never let the sole
+        // Swift guard silently degrade to the non-immutable path.
+        try XCTSkipUnless(
+            bareReadOnlyProbeFails(sqlite.path),
+            "linked libsqlite reads a checkpointed WAL file read-only without the "
+                + "-shm sidecar; the immutable fallback is not exercised here"
+        )
+
+        XCTAssertEqual(try fixture.resolve(), fixture.canonical)
+        XCTAssertEqual(try fixture.resolveGlobal(), fixture.canonical)
+    }
+
+    // The complementary "immutable sees no rows but a non-empty -wal remains →
+    // fail closed" branch is only reachable on a read-only directory (a
+    // writable dir lets a bare read-only open recreate the -shm and read the
+    // pending frames), which a temp-dir fixture cannot reproduce. Its logic is
+    // covered deterministically on the Python side
+    // (test_store_has_records_fails_closed_when_immutable_empty_but_wal_has_frames).
+
+    /// Whether a bare `SQLITE_OPEN_READONLY` probe of `event_lines` at `path`
+    /// fails to complete — the precondition the immutable fallback recovers
+    /// from (regardless of which error code the missing shm produces). On a
+    /// libsqlite that reads the file anyway, the probe completes and the
+    /// fallback is not exercised, so the caller skips rather than passing as a
+    /// false guard.
+    private func bareReadOnlyProbeFails(_ path: String) -> Bool {
+        var database: OpaquePointer?
+        defer { if database != nil { sqlite3_close(database) } }
+        if sqlite3_open_v2(
+            path, &database, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil
+        ) != SQLITE_OK {
+            return true
+        }
+        guard let database else { return true }
+        var statement: OpaquePointer?
+        defer { if statement != nil { sqlite3_finalize(statement) } }
+        if sqlite3_prepare_v2(
+            database, "SELECT 1 FROM event_lines LIMIT 1", -1, &statement, nil
+        ) != SQLITE_OK {
+            return true
+        }
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW, SQLITE_DONE:
+            return false
+        default:
+            return true
+        }
+    }
 }
 
 private final class StoreFixture {
@@ -408,6 +484,43 @@ private final class StoreFixture {
         ) == SQLITE_OK else {
             throw CocoaError(.fileWriteUnknown)
         }
+    }
+
+    /// Build a committed WAL ledger in a scratch directory, then copy ONLY the
+    /// main database file into `store` — no -shm/-wal sidecars. The copied file
+    /// keeps its WAL header, so a later bare read-only open must map a -shm that
+    /// is not there (SQLITE_CANTOPEN), reproducing a recorder ledger whose
+    /// sidecars were checkpointed away.
+    func writeCheckpointedWALLedgerWithoutSidecars(to store: URL) throws {
+        try makeDirectory(store)
+        let scratch = root.appendingPathComponent(
+            "wal-scratch-\(UUID().uuidString)", isDirectory: true
+        )
+        try makeDirectory(scratch)
+        let source = scratch.appendingPathComponent("events.sqlite3")
+        var database: OpaquePointer?
+        guard sqlite3_open(source.path, &database) == SQLITE_OK, let database else {
+            if let database { sqlite3_close(database) }
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let created = sqlite3_exec(
+            database,
+            """
+            PRAGMA journal_mode=WAL;
+            CREATE TABLE event_lines (seq INTEGER PRIMARY KEY, line TEXT NOT NULL);
+            INSERT INTO event_lines (line) VALUES ('record');
+            PRAGMA wal_checkpoint(TRUNCATE);
+            """,
+            nil,
+            nil,
+            nil
+        )
+        sqlite3_close(database)
+        guard created == SQLITE_OK else { throw CocoaError(.fileWriteUnknown) }
+        try fm.copyItem(
+            at: source,
+            to: store.appendingPathComponent("events.sqlite3")
+        )
     }
 
     func remove() {
