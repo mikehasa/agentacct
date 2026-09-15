@@ -124,6 +124,18 @@ from .usage_cube import (
 from .usage_truth import CODEX_REPLAY_QUARANTINE_STATE
 from .work_ledger import WorkLedgerCache, _project_identity, _safe_project_label, build_work_ledger
 from .work_events import WORK_EVENT_KINDS, WORK_EVENT_STATUSES, WorkEvent
+from .worksets import (
+    WorksetConflict,
+    WorksetError,
+    WorksetNotFound,
+    reduce_worksets,
+    summarize_members,
+    workset_candidates,
+    workset_member_entries,
+    workset_session_lane,
+)
+
+WORKSET_SCHEMA_VERSION = "agentacct.workset.v1"
 
 DASHBOARD_USAGE_LIMIT_SESSIONS = 500
 # Recent-activity feed on the overview shows a newest-first slice; the full
@@ -2942,6 +2954,7 @@ def create_local_api_app(
             "receipt_schema": RECEIPT_SCHEMA_VERSION,
             "attention_schema": V1_ATTENTION_SCHEMA_VERSION,
             "ingestion_schema": V1_INGESTION_SCHEMA_VERSION,
+            "workset_schema": WORKSET_SCHEMA_VERSION,
             "pid": os.getpid(),
             "store_dir": str(store_dir),
             "store_scope": store_scope,
@@ -3479,6 +3492,162 @@ def create_local_api_app(
             "action": action,
             "state": metadata.get("next_state"),
             "revision": metadata.get("revision"),
+            "event_id": recorded.get("event_id"),
+        }
+
+    _WORKSET_LANE_PREVIEW = 24
+
+    def _workset_rollup() -> Any:
+        events, fingerprint = _dashboard_events()
+        ledger = _derived_work_ledger(events, fingerprint=fingerprint)
+        return events, ledger.get("session_rollup")
+
+    def _workset_lanes(rollup: Any, project_identity: str) -> list[dict[str, Any]]:
+        lanes = [workset_session_lane(entry) for entry in workset_member_entries(rollup, project_identity)]
+        lanes.sort(
+            key=lambda lane: (
+                lane.get("first_activity_at") is None,
+                lane.get("first_activity_at") or 0.0,
+                str(lane.get("session_key") or ""),
+            )
+        )
+        return lanes
+
+    def _workset_card(state: Any, rollup: Any, *, include_all: bool) -> dict[str, Any]:
+        members = workset_member_entries(rollup, state.project_identity)
+        summary = summarize_members(members)
+        lanes = _workset_lanes(rollup, state.project_identity)
+        card = {
+            **state.to_dict(),
+            "summary": summary,
+            "sessions_total": len(lanes),
+        }
+        if include_all:
+            card["sessions"] = lanes
+        else:
+            card["sessions"] = lanes[:_WORKSET_LANE_PREVIEW]
+            card["sessions_truncated"] = len(lanes) > _WORKSET_LANE_PREVIEW
+        return card
+
+    @app.get("/v1/workset-candidates")
+    def v1_workset_candidates(request: Request) -> dict[str, Any]:
+        """The folders agentacct has seen, for the "point at a folder" picker.
+
+        Each candidate is one cross-source ``project_identity`` (a CC session and
+        a Codex session in the same repo share it) with its friendly leaf label,
+        root-session count, and the sources present — never a raw absolute path.
+        Sessions that wandered directories mid-run have no single folder and are
+        omitted; the honest gap is theirs to surface, not to hide.
+        """
+
+        _require_v1_token(request)
+        _events, rollup = _workset_rollup()
+        return {
+            "schema": WORKSET_SCHEMA_VERSION,
+            "candidates": workset_candidates(rollup),
+        }
+
+    @app.get("/v1/worksets")
+    def v1_worksets(request: Request) -> dict[str, Any]:
+        """The user's folder-anchored Work groupings, newest activity first.
+
+        Each is a live overlay: its member sessions are re-queried by folder
+        identity every read, so a new session in the folder joins on its own.
+        The summary is a labeled SUM of independently-attributed sessions, never
+        a combined verdict; each card carries a bounded session preview.
+        """
+
+        _require_v1_token(request)
+        events, rollup = _workset_rollup()
+        projection = reduce_worksets(events)
+        worksets = [
+            _workset_card(state, rollup, include_all=False) for state in projection.active()
+        ]
+        return {"schema": WORKSET_SCHEMA_VERSION, "worksets": worksets, "total": len(worksets)}
+
+    @app.get("/v1/workset")
+    def v1_workset_detail(
+        request: Request, id: str = Query(..., min_length=1, max_length=120)
+    ) -> dict[str, Any]:
+        """One workset with its full member-session timeline lanes. 404 when the
+        id is unknown or the grouping was deleted — never an empty fabrication."""
+
+        _require_v1_token(request)
+        events, rollup = _workset_rollup()
+        projection = reduce_worksets(events)
+        workset_id = id.strip()
+        state = projection.states.get(workset_id)
+        # A poisoned chain is hidden exactly like the list hides it (the list
+        # builds from active(), which excludes invalid ids) — never serve a
+        # detail the list won't show.
+        if state is None or state.deleted or workset_id in projection.invalid:
+            raise HTTPException(status_code=404, detail="unknown workset for this store")
+        return {"schema": WORKSET_SCHEMA_VERSION, **_workset_card(state, rollup, include_all=True)}
+
+    @app.post("/v1/worksets")
+    def v1_worksets_write(
+        request: Request, payload: dict[str, Any] = Body(...)
+    ) -> dict[str, Any]:
+        """Create, rename, redirect, or delete one folder-anchored Work grouping.
+
+        The second user-originated write on the /v1 lane, modeled on
+        ``/v1/disposition``: bearer-gated, optimistic ``expected_revision`` (a
+        concurrent change is a 409, never a silent overwrite), server-stamped so
+        a raw caller cannot forge a grouping. The write never rewrites any
+        session's Task identity, receipt, or evidence — it is a human overlay.
+        The ``directory`` is a ``project_identity`` from /v1/workset-candidates,
+        not a raw path.
+        """
+
+        _require_v1_token(request)
+        action = str(payload.get("action") or "").strip()
+        workset_id = str(payload.get("workset_id") or "").strip()
+        raw_name = payload.get("name")
+        name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else None
+        raw_directory = payload.get("directory")
+        directory = raw_directory.strip() if isinstance(raw_directory, str) and raw_directory.strip() else None
+        expected_revision = payload.get("expected_revision")
+        if (
+            isinstance(expected_revision, bool)
+            or not isinstance(expected_revision, int)
+            or expected_revision < 0
+        ):
+            raise HTTPException(
+                status_code=400, detail="expected_revision must be a non-negative integer"
+            )
+        if not workset_id:
+            raise HTTPException(status_code=400, detail="workset_id is required")
+        idempotency_key = str(payload.get("idempotency_key") or "").strip()
+        if idempotency_key.startswith("v1:"):
+            raise HTTPException(
+                status_code=400, detail="idempotency_key may not use the reserved v1: prefix"
+            )
+        if not idempotency_key:
+            idempotency_key = f"v1:workset:{workset_id}:{action}:{expected_revision}"
+        try:
+            recorded = service.record_workset_action(
+                action=action,
+                workset_id=workset_id,
+                name=name,
+                project_identity=directory,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
+            )
+        except WorksetNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except WorksetConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except WorksetError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        metadata = recorded.get("metadata") if isinstance(recorded.get("metadata"), Mapping) else {}
+        return {
+            "ok": True,
+            "workset_id": metadata.get("workset_id"),
+            "action": metadata.get("action"),
+            "revision": metadata.get("revision"),
+            "name": metadata.get("name"),
+            "project_identity": metadata.get("project_identity"),
+            "deleted": metadata.get("action") == "delete",
             "event_id": recorded.get("event_id"),
         }
 

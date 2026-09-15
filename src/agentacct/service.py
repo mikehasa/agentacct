@@ -48,6 +48,22 @@ from .finding_disposition import (
 from .outcome import build_machine_check_outcome, read_outcome, write_outcome
 from .reports import build_run_report_payload
 from .storage import RunStore
+from .worksets import (
+    WORKSET_ACTIONS,
+    WORKSET_CONTRACT_KEY,
+    WorksetConflict,
+    WorksetError,
+    WorksetNotFound,
+    is_trusted_workset_event,
+    mark_trusted_workset,
+    normalize_identity,
+    normalize_name,
+    normalize_workset_id,
+    reduce_worksets,
+    valid_idempotency_key,
+    workset_operation_digest,
+    workset_transition,
+)
 from .usage_truth import (
     is_local_usage_import_event,
     is_local_session_observation_event,
@@ -180,6 +196,27 @@ def mark_trusted_finding_disposition(event: dict[str, Any]) -> dict[str, Any]:
     metadata = dict(event.get("metadata") or {})
     metadata[FINDING_DISPOSITION_CONTRACT_KEY] = FINDING_DISPOSITION_CONTRACT_VERSION
     recorded["metadata"] = metadata
+    return recorded
+
+
+def strip_workset_provenance(event: dict[str, Any]) -> dict[str, Any]:
+    """Neutralize a workset stamp on the generic/merge ingestion path.
+
+    Worksets have the same forgery surface as finding dispositions: the reserved
+    contract key is what ``is_trusted_workset_event`` gates on, so a raw
+    ``record_event`` / ``POST /events`` caller could otherwise mint a fully
+    trusted grouping. Only ``record_workset_action`` (via ``mark_trusted_workset``,
+    under the ledger lock) may stamp it; every generic caller is stripped here.
+    """
+
+    metadata = event.get("metadata")
+    if not isinstance(metadata, dict) or WORKSET_CONTRACT_KEY not in metadata:
+        return event
+    sanitized = dict(metadata)
+    sanitized.pop(WORKSET_CONTRACT_KEY, None)
+    sanitized["reserved_workset_provenance_stripped"] = True
+    recorded = dict(event)
+    recorded["metadata"] = sanitized
     return recorded
 
 
@@ -1377,6 +1414,9 @@ class SentinelService:
         # than generic events. Only record_finding_disposition may stamp the
         # reserved contract; generic callers are always stripped.
         event = strip_finding_disposition_provenance(event)
+        # Worksets share the same forgery surface: only record_workset_action
+        # may stamp the reserved contract, so strip any generic caller's stamp.
+        event = strip_workset_provenance(event)
         metadata = event.get("metadata")
         idempotency_key = metadata.get("idempotency_key") if isinstance(metadata, dict) else None
         with self._events_write_lock():
@@ -1407,6 +1447,7 @@ class SentinelService:
         candidate = strip_client_context_provenance(candidate)
         candidate = strip_blocker_resolution_provenance(candidate)
         candidate = strip_finding_disposition_provenance(candidate)
+        candidate = strip_workset_provenance(candidate)
         candidate = mark_trusted_local_session_observation_event(candidate)
         if not is_local_session_observation_event(candidate):
             raise SessionObservationConflict(
@@ -2125,6 +2166,128 @@ class SentinelService:
         self.evidence.shadow_v1_event(recorded, transport=transport)
         return recorded
 
+    def record_workset_action(
+        self,
+        *,
+        action: str,
+        workset_id: str,
+        name: str | None = None,
+        project_identity: str | None = None,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Atomically append one user-authored folder-grouping transition.
+
+        Like the finding disposition lane this deliberately does not call
+        ``record_event``: the target-state replay, optimistic revision,
+        idempotent replay, and append all happen under one ledger lock. The
+        event is server-stamped so a raw caller cannot forge a grouping, and it
+        never rewrites any session's Task identity, receipt, or evidence — a
+        workset is a human assertion (``authoritative_for_check_result: False``).
+        There is no v2 shadow: a workset is a pure /v1 dashboard overlay.
+        """
+
+        if action not in WORKSET_ACTIONS:
+            raise WorksetError("unsupported workset action")
+        normalized_id = normalize_workset_id(workset_id)
+        if normalized_id is None:
+            raise WorksetError("workset id is invalid")
+        if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 0:
+            raise WorksetError("workset revision must be a non-negative integer")
+        if not valid_idempotency_key(idempotency_key):
+            raise WorksetError("workset idempotency key is invalid")
+        normalized_name = normalize_name(name) if name is not None else None
+        normalized_identity = normalize_identity(project_identity) if project_identity is not None else None
+        if name is not None and normalized_name is None:
+            raise WorksetError("workset name is invalid")
+        if project_identity is not None and normalized_identity is None:
+            raise WorksetError("workset directory is invalid")
+        if action == "create" and (normalized_name is None or normalized_identity is None):
+            raise WorksetError("create requires a name and a directory")
+        if action == "rename" and normalized_name is None:
+            raise WorksetError("rename requires a name")
+        if action == "redirect" and normalized_identity is None:
+            raise WorksetError("redirect requires a directory")
+
+        operation_digest = workset_operation_digest(
+            workset_id=normalized_id,
+            action=action,
+            name=normalized_name,
+            project_identity=normalized_identity,
+            expected_revision=expected_revision,
+        )
+
+        with self._events_write_lock():
+            existing_events, unparseable_lines = self._partition_existing_for_rewrite()
+            if unparseable_lines:
+                raise WorksetConflict(
+                    "workset state is unavailable while the event ledger contains unreadable lines"
+                )
+            projection = reduce_worksets(existing_events)
+            for existing in existing_events:
+                if not is_trusted_workset_event(existing):
+                    continue
+                metadata = existing.get("metadata")
+                if not isinstance(metadata, dict) or metadata.get("idempotency_key") != idempotency_key:
+                    continue
+                # A replay is only honest if the chain it belongs to is still
+                # internally consistent — never hand back a stale success for a
+                # workset the reducer has since poisoned (mirrors the disposition
+                # lane's in-loop invalid check).
+                if normalized_id in projection.invalid:
+                    raise WorksetConflict("workset history is conflicting or corrupt")
+                if metadata.get("operation_digest") == operation_digest:
+                    return existing
+                raise WorksetConflict("workset idempotency key belongs to a different operation")
+
+            if normalized_id in projection.invalid:
+                raise WorksetConflict("workset history is conflicting or corrupt")
+            current = projection.states.get(normalized_id)
+            current_revision = current.revision if current is not None else 0
+            if current_revision != expected_revision:
+                raise WorksetConflict("workset changed since it was read")
+            transition = workset_transition(
+                current, action=action, name=normalized_name, project_identity=normalized_identity
+            )
+            if transition is None:
+                if action == "create":
+                    raise WorksetConflict("a workset with that id already exists")
+                raise WorksetNotFound("no such workset (it may have been deleted)")
+
+            event = mark_trusted_workset(
+                {
+                    "run_id": None,
+                    "metadata": {
+                        "workset_id": normalized_id,
+                        "action": action,
+                        "name": normalized_name,
+                        "project_identity": normalized_identity,
+                        "expected_revision": expected_revision,
+                        "revision": expected_revision + 1,
+                        "idempotency_key": idempotency_key,
+                        "operation_digest": operation_digest,
+                    },
+                }
+            )
+            recorded = self._prepare_recorded_event(event)
+            recorded_metadata = (
+                recorded.get("metadata") if isinstance(recorded.get("metadata"), dict) else {}
+            )
+            if (
+                recorded_metadata.get("workset_id") != normalized_id
+                or recorded_metadata.get("name") != normalized_name
+                or recorded_metadata.get("project_identity") != normalized_identity
+                or recorded_metadata.get("operation_digest") != operation_digest
+                or recorded_metadata.get("idempotency_key") != idempotency_key
+            ):
+                # Redaction touched a digest-covered field (e.g. a secret-shaped
+                # name); fail closed rather than persist an unreplayable chain.
+                raise WorksetConflict("workset name or directory contained a redacted value")
+            self._ensure_trailing_newline()
+            self._append_ledger_events([recorded], fsync=True)
+
+        return recorded
+
     def _partition_existing_for_rewrite(self) -> tuple[list[dict[str, Any]], list[str]]:
         """Return (parsed events, unparseable raw lines) preserving both.
 
@@ -2519,6 +2682,7 @@ class SentinelService:
                 # No replace_events caller writes instrumentation markers, so
                 # marker provenance is unconditionally stripped here too.
                 prepared_events = [
+                    strip_workset_provenance(
                     strip_finding_disposition_provenance(
                         strip_blocker_resolution_provenance(
                             strip_client_context_provenance(
@@ -2535,6 +2699,7 @@ class SentinelService:
                                 )
                             )
                         )
+                    )
                     )
                     for event in chosen
                 ]
@@ -2630,7 +2795,7 @@ class SentinelService:
             for raw_event in plan["events_to_add"]:
                 if not isinstance(raw_event, dict):
                     continue
-                event = strip_finding_disposition_provenance(raw_event)
+                event = strip_workset_provenance(strip_finding_disposition_provenance(raw_event))
                 event_id = event.get("event_id")
                 if not isinstance(event_id, str) or not event_id:
                     continue
@@ -2667,8 +2832,9 @@ class SentinelService:
                 # A dashboard user's attention decision is local-store
                 # authority. Cross-store event merges preserve the audit
                 # row but strip that authority unless a future explicit
-                # migration contract is introduced.
-                event = strip_finding_disposition_provenance(event)
+                # migration contract is introduced. Worksets follow the same
+                # rule: a merged grouping keeps its audit row but not its trust.
+                event = strip_workset_provenance(strip_finding_disposition_provenance(event))
                 event_id = event.get("event_id")
                 if not isinstance(event_id, str) or not event_id:
                     continue
