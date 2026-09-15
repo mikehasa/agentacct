@@ -1905,11 +1905,44 @@ struct WorksetZoomWindow: Equatable {
         return !(l < start || first > end)
     }
 
+    /// Whether a lane should STAY VISIBLE in a zoomed window. A timed lane must
+    /// overlap the window; a TIMELESS lane (no usable first) has no position at
+    /// all, so it is always kept — shown faded at the start and flagged by its
+    /// own note — never culled and reclassified as "outside this range".
+    static func laneVisible(first: Double?, last: Double?, start: Double, end: Double) -> Bool {
+        guard let first, first.isFinite, first > 0 else { return true }
+        return laneOverlaps(first: first, last: last, start: start, end: end)
+    }
+
     /// The fraction of the full range this window covers (1 = everything).
     func coverage(lo: Double, hi: Double) -> Double {
         let full = max(0.0, hi - lo)
         guard full > 0 else { return 1.0 }
         return min(1.0, max(0.0, (end - start) / full))
+    }
+
+    /// Apply a scroll/pinch zoom `factor` (>1 zooms in, <1 out) anchored at
+    /// `anchor` — a 0…1 fraction across the CURRENTLY VISIBLE window — and
+    /// return the new `(zoom, panCenter)` so the time under the anchor stays
+    /// put. Pure and clamped so the scroll-wheel math is unit-tested without a
+    /// UI; the caller re-clamps panCenter to its own half-window bounds.
+    static func applyZoom(currentZoom: Double, panCenter: Double, factor: Double,
+                          anchor: Double, lo: Double, hi: Double) -> (zoom: Double, panCenter: Double) {
+        let full = max(0.0, hi - lo)
+        let z0 = min(maxZoom, max(1.0, currentZoom.isFinite ? currentZoom : 1.0))
+        let center0 = min(1.0, max(0.0, panCenter.isFinite ? panCenter : 0.5))
+        guard full > 0, factor.isFinite, factor > 0 else { return (z0, center0) }
+        let win = WorksetZoomWindow(lo: lo, hi: hi, zoom: z0, panCenter: center0)
+        let a = min(1.0, max(0.0, anchor.isFinite ? anchor : 0.5))
+        // Absolute time sitting under the anchor right now.
+        let anchorTime = win.start + a * (win.end - win.start)
+        let z1 = min(maxZoom, max(1.0, z0 * factor))
+        let newWidth = full / z1
+        // Keep that time at the same fraction of the new (narrower/wider) window.
+        let newStart = anchorTime - a * newWidth
+        let newCenter = newStart + newWidth / 2
+        let centerFrac = (newCenter - lo) / full
+        return (z1, min(1.0, max(0.0, centerFrac)))
     }
 }
 

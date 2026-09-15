@@ -468,12 +468,22 @@ private struct WorksetTimeline: View {
     @State private var hoverPoint: CGPoint = .zero
     @State private var zoom: Double = 1
     @State private var panCenter: Double = 0.5
-    @State private var baseZoom: Double = 1
-    @State private var lastDragX: CGFloat = 0
+    // Frames of each session row inside the canvas, so the native input layer
+    // lets clicks/hover through to the rows while it keeps scroll + drag.
+    @State private var rowFrames: [CGRect] = []
+    // panCenter captured when a scrubber drag begins, so the drag is relative.
+    @State private var scrubStartCenter: Double?
 
     private static let rowUnit: CGFloat = 22
     private static let labelWidth: CGFloat = 176
     private static let hoverCardWidth: CGFloat = 240
+    private static let scrubberHeight: CGFloat = 26
+    // The detail canvas traps the scroll wheel for zoom, so it must fit the
+    // viewport; bound it to this many rows and disclose the rest.
+    private static let maxDetailRows = 16
+    // The per-row button's horizontal inset (QuietButtonStyle horizontalPadding),
+    // so the bar track the input math uses matches where the bars actually draw.
+    private static let barInset: CGFloat = 4
 
     static func pipColor(_ status: String?) -> Color {
         switch status {
@@ -500,28 +510,49 @@ private struct WorksetTimeline: View {
 
     // When zoomed in, only sessions that overlap the visible window are drawn —
     // a session entirely outside it must not be clamped to the edge and shown
-    // as if it were active inside the window.
+    // as if it were active inside the window. Timeless sessions have NO position,
+    // so they're kept regardless of the window (shown faded at the start and
+    // flagged by their own note) rather than reclassified as "outside".
     private var visibleLanes: [WorksetLane] {
         guard zoomable, let win = window, let lo = fullLo, let hi = fullHi,
               (win.end - win.start) < (hi - lo) - 0.0001 else { return lanes }
         return lanes.filter {
-            WorksetZoomWindow.laneOverlaps(first: $0.firstActivityAt, last: $0.lastActivityAt, start: win.start, end: win.end)
+            WorksetZoomWindow.laneVisible(first: $0.firstActivityAt, last: $0.lastActivityAt, start: win.start, end: win.end)
         }
     }
 
+    // Only TIMED sessions are ever culled by the window, so this counts what the
+    // "outside this range" note honestly refers to (timeless lanes stay in view).
     private var hiddenByZoom: Int { max(0, lanes.count - visibleLanes.count) }
 
     private var layout: WorksetTimelineLayout {
         WorksetTimelineLayout(lanes: visibleLanes, windowStart: window?.start, windowEnd: window?.end)
     }
 
-    // The detail shows every row (the page scrolls); the list collapses to a
-    // handful and scrolls in place. Only the list scrolls internally, so a
-    // horizontal pan-drag in the detail never fights a vertical scroll.
-    private var visibleRows: Int { zoomable ? 40 : 8 }
+    // The list collapses to a handful and scrolls in place. The detail is a
+    // native scroll-to-zoom canvas that traps the wheel, so it must fit the
+    // viewport (a taller canvas would trap the page scroll): it's bounded to
+    // maxDetailRows and discloses any sessions beyond the cap, which zooming
+    // into a time range brings into view.
+    private var visibleRows: Int { zoomable ? Self.maxDetailRows : 8 }
     private var scrollsInternally: Bool { !zoomable && layout.bars.count > visibleRows }
+
+    // The bars actually drawn. In the bounded detail we keep every timeless bar
+    // (its note points at it) plus the most recent timed bars up to the cap.
+    private var renderedBars: [WorksetTimelineLayout.Bar] {
+        guard zoomable, layout.bars.count > Self.maxDetailRows else { return layout.bars }
+        let timeless = layout.bars.filter { $0.timeUnknown }
+        let timed = layout.bars.filter { !$0.timeUnknown }
+        let keepTimed = max(0, Self.maxDetailRows - timeless.count)
+        return Array(timed.suffix(keepTimed)) + timeless
+    }
+
+    // Timed sessions inside the window but past the row cap (disjoint from
+    // hiddenByZoom, which is sessions outside the window entirely).
+    private var cappedOverflow: Int { max(0, layout.bars.count - renderedBars.count) }
+
     private var rowsHeight: CGFloat {
-        let shown = scrollsInternally ? visibleRows : max(1, layout.bars.count)
+        let shown = scrollsInternally ? visibleRows : max(1, renderedBars.count)
         return CGFloat(shown) * Self.rowUnit
     }
 
@@ -533,6 +564,7 @@ private struct WorksetTimeline: View {
                 if zoomable { zoomControls }
             }
             timelineArea
+            if zoomable { scrubber }
             axisLabels
             notes
         }
@@ -554,7 +586,7 @@ private struct WorksetTimeline: View {
             Text(zoomCoverageLabel).workFont(.dataSmall).foregroundStyle(Theme.muted).padding(.trailing, 4)
             Button { setZoom(zoom / 1.6) } label: { Image(systemName: "minus.magnifyingglass") }
                 .buttonStyle(QuietButtonStyle(horizontalPadding: 6)).disabled(zoom <= 1.001)
-            Button { zoom = 1; panCenter = 0.5; baseZoom = 1 } label: { Image(systemName: "arrow.counterclockwise") }
+            Button { zoom = 1; panCenter = 0.5 } label: { Image(systemName: "arrow.counterclockwise") }
                 .buttonStyle(QuietButtonStyle(horizontalPadding: 6)).disabled(zoom <= 1.001)
             Button { setZoom(zoom * 1.6) } label: { Image(systemName: "plus.magnifyingglass") }
                 .buttonStyle(QuietButtonStyle(horizontalPadding: 6)).disabled(zoom >= WorksetZoomWindow.maxZoom - 0.001)
@@ -571,7 +603,6 @@ private struct WorksetTimeline: View {
 
     private func setZoom(_ z: Double) {
         zoom = min(WorksetZoomWindow.maxZoom, max(1, z))
-        baseZoom = zoom
         clampPan()
     }
 
@@ -579,37 +610,69 @@ private struct WorksetTimeline: View {
     // [half, 1-half]; clamping panCenter to that avoids a dead zone where an
     // edge-ward drag (or a zoom change) produces no movement.
     private func panHalf() -> Double { 0.5 / max(1, zoom) }
-    private func clampPan() {
+    private func clampPanValue(_ value: Double) -> Double {
         let half = panHalf()
-        panCenter = min(1 - half, max(half, panCenter))
+        return min(1 - half, max(half, value.isFinite ? value : 0.5))
     }
+    private func clampPan() { panCenter = clampPanValue(panCenter) }
 
+    // In the detail (zoomable), a native input layer catches scroll/pinch → zoom
+    // (the same one the session detail uses), while the session rows stay
+    // clickable/hoverable via `interactiveRegions`. Left/right panning is the
+    // bottom scrubber's job; because the rows tile the whole canvas the native
+    // drag-pan only fires on the rare blank area, so the scrubber is primary.
+    // The list just shows the rows (scrolling in place when there are many).
     private var timelineArea: some View {
         GeometryReader { geo in
-            let trackWidth = max(1, geo.size.width - Self.labelWidth - Space.m)
-            ZStack(alignment: .topLeading) {
-                rowsContent
-                if let hovered {
-                    WorksetHoverCard(lane: hovered)
-                        .frame(width: Self.hoverCardWidth)
-                        .offset(
-                            x: min(max(8, hoverPoint.x + 14), max(8, geo.size.width - Self.hoverCardWidth - 8)),
-                            y: min(max(0, hoverPoint.y + 12), max(0, geo.size.height - 176))
-                        )
-                        .allowsHitTesting(false)
+            let canvasW = geo.size.width
+            let trackWidth = max(1, canvasW - Self.labelWidth - Space.m - Self.barInset * 2)
+            Group {
+                if zoomable {
+                    WorkTimeCanvasInput(
+                        interactiveRegions: rowFrames,
+                        onPan: { pixels in panBy(pixels: pixels, trackWidth: trackWidth) },
+                        onZoom: { factor, anchor in
+                            applyScrollZoom(factor: factor,
+                                            anchor: remapAnchor(anchor, canvasW: canvasW, trackWidth: trackWidth))
+                        },
+                        accessibilityValue: zoomCoverageLabel,
+                        accessibilityIdentifier: "worksets.timeline.navigation"
+                    ) {
+                        rowsWithHover(canvasSize: geo.size)
+                    }
+                    .renderingSurface
+                } else {
+                    rowsWithHover(canvasSize: geo.size)
                 }
             }
-            .coordinateSpace(name: "wsTimeline")
-            .contentShape(Rectangle())
-            .simultaneousGesture(panGesture(trackWidth: trackWidth))
-            .simultaneousGesture(magnifyGesture())
         }
         .frame(height: rowsHeight)
     }
 
+    // Rows plus the hover card, sized to fill the canvas exactly so bar
+    // positions and measured row frames share one top-left coordinate space.
+    private func rowsWithHover(canvasSize: CGSize) -> some View {
+        ZStack(alignment: .topLeading) {
+            rowsContent
+            if let hovered {
+                WorksetHoverCard(lane: hovered)
+                    .frame(width: Self.hoverCardWidth)
+                    .offset(
+                        x: min(max(8, hoverPoint.x + 14), max(8, canvasSize.width - Self.hoverCardWidth - 8)),
+                        y: min(max(0, hoverPoint.y + 12), max(0, canvasSize.height - 176))
+                    )
+                    .allowsHitTesting(false)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .coordinateSpace(name: "wsTimeline")
+        .contentShape(Rectangle())
+        .onPreferenceChange(WorksetRowFrameKey.self) { rowFrames = $0 }
+    }
+
     @ViewBuilder
     private var rowsContent: some View {
-        let rows = VStack(spacing: 4) { ForEach(layout.bars) { bar in laneRow(bar) } }
+        let rows = VStack(spacing: 0) { ForEach(renderedBars) { bar in laneRow(bar) } }
         if scrollsInternally {
             ScrollView { rows }.frame(height: rowsHeight)
         } else {
@@ -644,10 +707,18 @@ private struct WorksetTimeline: View {
                 }
                 .frame(height: 16)
             }
-            .frame(height: 18)
+            // A fixed row height so N rows measure exactly N × rowUnit — the axis
+            // and notes below then sit clear of the rows instead of overlapping.
+            .frame(height: Self.rowUnit)
             .contentShape(Rectangle())
         }
-        .buttonStyle(QuietButtonStyle(horizontalPadding: 4, verticalPadding: 1))
+        .buttonStyle(QuietButtonStyle(horizontalPadding: 4, verticalPadding: 0))
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: WorksetRowFrameKey.self,
+                                       value: [proxy.frame(in: .named("wsTimeline"))])
+            }
+        )
         .onContinuousHover(coordinateSpace: .named("wsTimeline")) { phase in
             switch phase {
             case .active(let point):
@@ -676,27 +747,95 @@ private struct WorksetTimeline: View {
         return parts.joined(separator: ", ")
     }
 
-    private func panGesture(trackWidth: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 6)
-            .onChanged { value in
-                guard zoomable else { return }
-                let dx = value.translation.width - lastDragX
-                lastDragX = value.translation.width
-                let visibleFraction = 1.0 / max(1.0, zoom)
-                let half = panHalf()
-                panCenter = min(1 - half, max(half, panCenter - Double(dx / trackWidth) * visibleFraction))
-            }
-            .onEnded { _ in lastDragX = 0 }
+    // Native drag (blank canvas areas) pans by content-motion pixels: dragging
+    // right reveals earlier time, so the visible window's center moves left.
+    private func panBy(pixels: Double, trackWidth: CGFloat) {
+        guard zoomable, trackWidth > 0, pixels.isFinite else { return }
+        let visibleFraction = 1.0 / max(1.0, zoom)
+        panCenter = clampPanValue(panCenter - pixels / Double(trackWidth) * visibleFraction)
     }
 
-    private func magnifyGesture() -> some Gesture {
-        MagnificationGesture()
-            .onChanged { scale in
-                guard zoomable else { return }
-                zoom = min(WorksetZoomWindow.maxZoom, max(1, baseZoom * scale))
-                clampPan()
+    // Scroll wheel / pinch: zoom around the point under the pointer so the time
+    // there stays fixed, matching the session detail's feel.
+    private func applyScrollZoom(factor: Double, anchor: Double) {
+        guard let lo = fullLo, let hi = fullHi, hi > lo else { return }
+        let result = WorksetZoomWindow.applyZoom(currentZoom: zoom, panCenter: panCenter,
+                                                 factor: factor, anchor: anchor, lo: lo, hi: hi)
+        zoom = result.zoom
+        panCenter = clampPanValue(result.panCenter)
+    }
+
+    // The onZoom anchor is a fraction across the whole canvas (label + inset +
+    // track); remap it to a fraction across just the bar track it zooms. The bar
+    // track starts at labelWidth + Space.m + barInset (the button's own inset).
+    private func remapAnchor(_ anchor: Double, canvasW: CGFloat, trackWidth: CGFloat) -> Double {
+        guard trackWidth > 0 else { return 0.5 }
+        let x = anchor * Double(canvasW) - Double(Self.labelWidth + Space.m + Self.barInset)
+        return min(1.0, max(0.0, x / Double(trackWidth)))
+    }
+
+    // MARK: bottom scrubber (drag left/right to pan, like the session detail)
+
+    @ViewBuilder
+    private var scrubber: some View {
+        if let lo = fullLo, let hi = fullHi, hi > lo {
+            GeometryReader { geo in
+                let w = geo.size.width
+                let full = hi - lo
+                let win = WorksetZoomWindow(lo: lo, hi: hi, zoom: zoom, panCenter: panCenter)
+                let rawLeft = CGFloat((win.start - lo) / full) * w
+                let rawWidth = CGFloat((win.end - win.start) / full) * w
+                let windowWidth = min(w, max(10, rawWidth))
+                let windowLeft = min(max(0, rawLeft), w - windowWidth)
+                ZStack(alignment: .topLeading) {
+                    RoundedRectangle(cornerRadius: 5).fill(Theme.chrome)
+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Theme.hairline, lineWidth: Metrics.borderW))
+                    ForEach(Array(scrubberTicks.enumerated()), id: \.offset) { _, frac in
+                        Rectangle().fill(Theme.muted.opacity(0.4))
+                            .frame(width: 1.5, height: 9)
+                            .offset(x: CGFloat(frac) * (w - 1.5), y: (Self.scrubberHeight - 9) / 2)
+                    }
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Theme.accent.opacity(0.16))
+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Theme.accent, lineWidth: 1.5))
+                        .frame(width: windowWidth, height: Self.scrubberHeight)
+                        .offset(x: windowLeft)
+                        .allowsHitTesting(false)
+                }
+                .frame(height: Self.scrubberHeight)
+                .contentShape(Rectangle())
+                .gesture(scrubberDrag(trackWidth: w))
+                .accessibilityElement()
+                .accessibilityLabel("Visible time window")
+                .accessibilityValue(zoomCoverageLabel)
             }
-            .onEnded { _ in baseZoom = zoom }
+            .frame(height: Self.scrubberHeight)
+            .padding(.leading, Self.labelWidth + Space.m + Self.barInset)
+            .padding(.trailing, Self.barInset)
+        }
+    }
+
+    // A tick per session start (deduped) so the scrubber shows where the work
+    // actually sits inside the full range, not just an empty rail.
+    private var scrubberTicks: [Double] {
+        guard let lo = fullLo, let hi = fullHi, hi > lo else { return [] }
+        let full = hi - lo
+        let fractions = lanes.compactMap { lane -> Double? in
+            guard let t = lane.firstActivityAt, t > 0 else { return nil }
+            return min(1.0, max(0.0, (t - lo) / full))
+        }
+        return Array(Set(fractions.map { ($0 * 200).rounded() / 200 })).sorted()
+    }
+
+    private func scrubberDrag(trackWidth: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                guard trackWidth > 0 else { return }
+                if scrubStartCenter == nil { scrubStartCenter = panCenter }
+                let delta = Double(value.translation.width / trackWidth)
+                panCenter = clampPanValue((scrubStartCenter ?? panCenter) + delta)
+            }
+            .onEnded { _ in scrubStartCenter = nil }
     }
 
     @ViewBuilder
@@ -707,7 +846,8 @@ private struct WorksetTimeline: View {
                 Spacer()
                 Text(WorksetFormat.axisDate(end)).workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
-            .padding(.leading, Self.labelWidth + Space.m + 4)
+            .padding(.leading, Self.labelWidth + Space.m + Self.barInset)
+            .padding(.trailing, Self.barInset)
         }
     }
 
@@ -715,8 +855,13 @@ private struct WorksetTimeline: View {
     private var notes: some View {
         let timeless = layout.timelessCount
         let hidden = hiddenByZoom
-        if truncated || timeless > 0 || hidden > 0 {
+        let capped = cappedOverflow
+        if truncated || timeless > 0 || hidden > 0 || capped > 0 {
             VStack(alignment: .leading, spacing: 2) {
+                if capped > 0 {
+                    Text("Showing \(renderedBars.count) of \(layout.bars.count) sessions in view — zoom into a time range to see the rest.")
+                        .workFont(.caption).foregroundStyle(Theme.muted)
+                }
                 if hidden > 0 {
                     Text("\(hidden) session\(hidden == 1 ? "" : "s") outside this range — zoom out to see \(hidden == 1 ? "it" : "them").")
                         .workFont(.caption).foregroundStyle(Theme.muted)
@@ -732,6 +877,16 @@ private struct WorksetTimeline: View {
             }
             .padding(.top, 2)
         }
+    }
+}
+
+/// Collects each session row's frame (in the canvas's top-left space) so the
+/// native input layer can pass clicks and hover through to the rows while it
+/// keeps scroll-to-zoom and blank-area drag-to-pan.
+private struct WorksetRowFrameKey: PreferenceKey {
+    static var defaultValue: [CGRect] = []
+    static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) {
+        value.append(contentsOf: nextValue())
     }
 }
 
@@ -826,7 +981,7 @@ private struct WorksetDetailView: View {
                 truncated: workset.sessionsTruncated ?? false,
                 zoomable: true
             )
-            Text("Drag to pan · pinch or the ± buttons to zoom · click a session to open it")
+            Text("Scroll or pinch to zoom · drag the bar below to move left/right · click a session to open it")
                 .workFont(.caption).foregroundStyle(Theme.muted)
 
             WorksetHonestyNote(summary: workset.summary)

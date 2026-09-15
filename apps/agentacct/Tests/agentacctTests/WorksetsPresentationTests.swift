@@ -111,6 +111,55 @@ final class WorksetsPresentationTests: XCTestCase {
         XCTAssertLessThanOrEqual(nan.end, 100)
     }
 
+    func testTimelessLaneStaysVisibleWhenZoomedSoItsHonestyNoteIsKept() {
+        // A timed lane outside the window is culled…
+        XCTAssertFalse(WorksetZoomWindow.laneVisible(first: 100, last: 200, start: 750, end: 1000))
+        XCTAssertTrue(WorksetZoomWindow.laneVisible(first: 900, last: 1000, start: 750, end: 1000))
+        // …but a timeless lane has no usable time (nil or ≤0), so it is NEVER
+        // culled: it must stay in view (faded at the start) and keep its "no
+        // recorded time" flag rather than being recounted as "outside this range".
+        XCTAssertTrue(WorksetZoomWindow.laneVisible(first: nil, last: 900, start: 750, end: 1000))
+        XCTAssertTrue(WorksetZoomWindow.laneVisible(first: 0, last: nil, start: 750, end: 1000))
+    }
+
+    func testScrollZoomKeepsTheAnchoredTimeUnderThePointer() {
+        // Zoom in 2× anchored at the right edge (anchor = 1): the time that was
+        // at the right edge of the full range must still sit at the right edge.
+        let r = WorksetZoomWindow.applyZoom(currentZoom: 1, panCenter: 0.5,
+                                            factor: 2, anchor: 1, lo: 0, hi: 1000)
+        XCTAssertEqual(r.zoom, 2, accuracy: 0.001)
+        let win = WorksetZoomWindow(lo: 0, hi: 1000, zoom: r.zoom, panCenter: r.panCenter)
+        XCTAssertEqual(win.end, 1000, accuracy: 0.001)   // 1000 stayed under the anchor
+        XCTAssertEqual(win.start, 500, accuracy: 0.001)
+
+        // Anchored at the left edge (anchor = 0): time 0 stays pinned left.
+        let l = WorksetZoomWindow.applyZoom(currentZoom: 1, panCenter: 0.5,
+                                            factor: 2, anchor: 0, lo: 0, hi: 1000)
+        let lwin = WorksetZoomWindow(lo: 0, hi: 1000, zoom: l.zoom, panCenter: l.panCenter)
+        XCTAssertEqual(lwin.start, 0, accuracy: 0.001)
+        XCTAssertEqual(lwin.end, 500, accuracy: 0.001)
+    }
+
+    func testScrollZoomClampsAndSurvivesBadInput() {
+        // Zoom never exceeds the cap however many notches scroll in.
+        let capped = WorksetZoomWindow.applyZoom(currentZoom: 60, panCenter: 0.5,
+                                                 factor: 4, anchor: 0.5, lo: 0, hi: 1000)
+        XCTAssertLessThanOrEqual(capped.zoom, WorksetZoomWindow.maxZoom)
+        // Zooming all the way back out lands at 1× (full range).
+        let out = WorksetZoomWindow.applyZoom(currentZoom: 1, panCenter: 0.5,
+                                              factor: 0.1, anchor: 0.5, lo: 0, hi: 1000)
+        XCTAssertEqual(out.zoom, 1, accuracy: 0.001)
+        // Non-finite factor / degenerate range never crash or invert.
+        let nan = WorksetZoomWindow.applyZoom(currentZoom: 2, panCenter: 0.5,
+                                              factor: .nan, anchor: .nan, lo: 0, hi: 1000)
+        XCTAssertGreaterThanOrEqual(nan.zoom, 1)
+        XCTAssertTrue(nan.panCenter.isFinite)
+        let flat = WorksetZoomWindow.applyZoom(currentZoom: 1, panCenter: 0.5,
+                                               factor: 2, anchor: 0.5, lo: 500, hi: 500)
+        XCTAssertGreaterThanOrEqual(flat.zoom, 1)
+        XCTAssertTrue(flat.panCenter.isFinite)
+    }
+
     func testZeroDurationSessionStillGetsAMinimumBar() {
         let lanes = [
             lane(#"{"session_key":"a","client":"claude-code","first_activity_at":100,"last_activity_at":300}"#),
