@@ -1067,6 +1067,48 @@ def test_codex_impossible_last_counter_is_schema_drift_not_amplified_or_fallback
     assert plan.incomplete_source_candidates == events
 
 
+def test_codex_usage_event_carries_rollout_revision_watermark(tmp_path):
+    # Regression: the codex usage event never set source_revision_at, so its
+    # refreshable-usage source_order fell back to whole-second updated_at while
+    # the sibling observation used the rollout file's mtime_ns. Two cumulative
+    # snapshots recorded in the same second then tied on source_order and parked
+    # a permanent existing_conflict (errors=0 conflicts=0 existing_conflicts>0,
+    # degrading every source). The usage event must carry the SAME
+    # high-resolution watermark as the observation.
+    codex_home = _make_codex_home(tmp_path)
+    rollout = (
+        codex_home
+        / "sessions"
+        / "2026"
+        / "06"
+        / "27"
+        / "rollout-2026-06-27T00-00-00-session-abc.jsonl"
+    )
+    revision_ns = 1_700_000_000_123_456_789  # distinct from the DB updated_at=200
+    os.utime(rollout, ns=(revision_ns, revision_ns))
+
+    stats: dict[str, object] = {}
+    observations = []
+    events = client_usage_module._discover_codex_usage_from_home(
+        codex_home=codex_home,
+        limit_sessions=10,
+        _discovery_stats=stats,
+        _session_observations=observations,
+    )
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.source_revision_at == revision_ns
+    assert event.source_revision_basis == "file_mtime_ns"
+    # It now matches the sibling observation's watermark (the collision fix):
+    assert observations[0].source_revision_at == revision_ns
+    assert event.source_revision_at == observations[0].source_revision_at
+    # And it propagates onto the stored sentinel event that reconcile orders by.
+    metadata = event.to_sentinel_event()["metadata"]
+    assert metadata["source_revision_at"] == revision_ns
+    assert metadata["source_revision_basis"] == "file_mtime_ns"
+
+
 def test_codex_dedupe_signature_distinguishes_missing_from_explicit_zero(tmp_path):
     codex_home = _make_codex_home(tmp_path)
     missing = {"input_tokens": 0, "total_tokens": 0}

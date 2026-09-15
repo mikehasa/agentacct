@@ -1252,15 +1252,29 @@ def _discover_codex_usage_from_home(
                 model_inherited_from_session_id = parent_session_id
 
         evidence_source = usage or observation_metadata
+        # The rollout/db file mtime_ns is the high-resolution source watermark
+        # that lets two revisions recorded in the same displayed second still be
+        # ordered (client_usage.py source_revision_at design note). Compute it
+        # once here so BOTH the observation and the usage event below carry it.
+        # Previously only the observation set it, so a codex usage snapshot fell
+        # back to whole-second source_order; two cumulative-total updates within
+        # one recorded second then collided on source_order and parked a
+        # permanent refreshable-usage existing_conflict that never self-healed.
+        rollout_revision_at = (
+            rollout_source.mtime_ns
+            if rollout_source is not None
+            else db_source.mtime_ns
+            if db_source is not None
+            else row.get("_source_revision_at")
+            or _optional_int(row.get("updated_at"))
+        )
+        source_revision_basis = (
+            "file_mtime_ns"
+            if row.get("_source_revision_at")
+            or rollout_revision_at != _optional_int(row.get("updated_at"))
+            else "client_metadata"
+        )
         if _session_observations is not None:
-            rollout_revision_at = (
-                rollout_source.mtime_ns
-                if rollout_source is not None
-                else db_source.mtime_ns
-                if db_source is not None
-                else row.get("_source_revision_at")
-                or _optional_int(row.get("updated_at"))
-            )
             _session_observations.append(
                 ClientSessionObservation(
                     client="codex",
@@ -1281,13 +1295,7 @@ def _discover_codex_usage_from_home(
                         or _optional_int(observation_metadata.get("last_activity_at"))
                     ),
                     source_revision_at=rollout_revision_at,
-                    source_revision_basis=(
-                        "file_mtime_ns"
-                        if row.get("_source_revision_at")
-                        or rollout_revision_at
-                        != _optional_int(row.get("updated_at"))
-                        else "client_metadata"
-                    ),
+                    source_revision_basis=source_revision_basis,
                     client_session_kind=session_kind,
                     # Task-grouping parent only: a bare fork/resume/compaction
                     # lineage edge is dropped here so it becomes its own root
@@ -1483,6 +1491,11 @@ def _discover_codex_usage_from_home(
                 usage_precedence_role=usage_precedence_role,
                 token_lineage_session_kind=lineage_session_kind,
                 token_lineage_parent_client_session_id=parent_session_id,
+                # Same high-resolution source watermark as the observation
+                # above, so refreshable-usage source_order can order two
+                # same-second cumulative-total snapshots instead of colliding.
+                source_revision_at=rollout_revision_at,
+                source_revision_basis=source_revision_basis,
             )
         )
     if _discovery_stats is not None:
