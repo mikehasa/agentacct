@@ -6,6 +6,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.11] — 2026-09-15
+
+Drains the codex reconcile conflicts left over from before 0.10.10, so sources
+recover from Degraded instead of staying stuck.
+
+### Fixed
+
+- Legacy usage rows written before their lane emitted a revision watermark now
+  adopt one on the next refresh, so refreshable-usage `source_order` can order
+  same-second codex snapshots instead of parking a permanent `existing_conflict`
+  that kept every source Degraded. One-time and additivity-safe; already-
+  watermarked rows are untouched. (#254)
+
 ## [0.10.10] — 2026-09-14
 
 Fixes source-recording faults that surfaced once 0.10.9 made the Sources panel
@@ -1133,7 +1146,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.10...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.11...HEAD
+[0.10.11]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.11
 [0.10.10]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.10
 [0.10.9]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.9
 [0.10.8]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.8
