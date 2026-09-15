@@ -22,6 +22,8 @@ struct WorksetsPane: View {
     // Minted once when the form opens and reused across retries, so a create
     // whose response was lost replays idempotently instead of duplicating.
     @State private var pendingWorksetId = ""
+    // The group whose detail (zoomable timeline) is open, if any.
+    @State private var openWorksetId: String?
 
     private var stacksRows: Bool { dynamicTypeSize.isAccessibilitySize }
 
@@ -53,7 +55,7 @@ struct WorksetsPane: View {
                     .workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
             Spacer(minLength: Space.m)
-            if !dashboard.worksets.isEmpty || isCreating {
+            if openWorksetId == nil && (!dashboard.worksets.isEmpty || isCreating) {
                 Button {
                     beginCreating()
                 } label: {
@@ -72,6 +74,8 @@ struct WorksetsPane: View {
             offlineNotice
         } else if let error = dashboard.worksetsError, dashboard.worksets.isEmpty {
             unavailableNotice(error)
+        } else if let id = openWorksetId, let card = dashboard.worksets.first(where: { $0.worksetId == id }) {
+            WorksetDetailView(workset: card, onBack: { openWorksetId = nil })
         } else {
             if isCreating {
                 WorksetCreateForm(
@@ -93,7 +97,7 @@ struct WorksetsPane: View {
             } else {
                 VStack(alignment: .leading, spacing: Space.xl) {
                     ForEach(dashboard.worksets) { workset in
-                        WorksetCardView(workset: workset)
+                        WorksetCardView(workset: workset, onOpen: { openWorksetId = workset.worksetId })
                     }
                 }
             }
@@ -168,6 +172,7 @@ struct WorksetsPane: View {
         newName = ""
         selectedCandidate = nil
         pendingWorksetId = DashboardStore.newWorksetId()
+        openWorksetId = nil  // leave any open detail so the form is what shows
         isCreating = true
     }
 
@@ -330,6 +335,7 @@ private struct WorksetCreateForm: View {
 
 private struct WorksetCardView: View {
     let workset: WorksetCard
+    var onOpen: () -> Void = {}
     @Environment(DashboardStore.self) private var dashboard
     @State private var isRenaming = false
     @State private var renameText = ""
@@ -342,17 +348,14 @@ private struct WorksetCardView: View {
             if confirmingDelete {
                 deleteConfirm
             }
-            summaryRow
-            WorksetTimelineStrip(
+            WorksetSummaryRow(summary: workset.summary)
+            WorksetTimeline(
                 lanes: workset.sessions,
                 sources: workset.summary.sources,
                 sessionsTotal: workset.sessionsTotal ?? workset.summary.sessionCount,
                 truncated: workset.sessionsTruncated ?? false
             )
-            if (workset.summary.unpricedSessions ?? 0) > 0 {
-                footnote("Some sessions here carry no imported cost, so the total above is a partial sum.")
-            }
-            footnote("Grouped because you pointed this at a folder. Each session keeps its own receipt and evidence; the total is a sum of \(workset.summary.sessionCount) session\(workset.summary.sessionCount == 1 ? "" : "s"), not a combined verdict.")
+            WorksetHonestyNote(summary: workset.summary)
             if let actionError {
                 Text(actionError).workFont(.caption).foregroundStyle(Theme.coral)
             }
@@ -377,7 +380,16 @@ private struct WorksetCardView: View {
                 Button("Cancel") { isRenaming = false }
                     .buttonStyle(QuietButtonStyle(horizontalPadding: 8)).foregroundStyle(Theme.muted)
             } else {
-                Text(workset.name).workFont(.titleCard).foregroundStyle(Theme.ink)
+                Button(action: onOpen) {
+                    HStack(spacing: 4) {
+                        Text(workset.name).workFont(.titleCard).foregroundStyle(Theme.ink)
+                        Image(systemName: "chevron.right").workFont(.caption).foregroundStyle(Theme.muted)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(QuietButtonStyle(horizontalPadding: 4, verticalPadding: 2))
+                .accessibilityIdentifier("worksets.open")
+                .help("Open this work group")
                 WorksetChip(text: "grouped by folder")
                 Spacer()
                 if !dashboard.isOfflineSnapshot {
@@ -405,37 +417,6 @@ private struct WorksetCardView: View {
         .padding(Space.s)
         .background(Theme.chrome, in: RoundedRectangle(cornerRadius: Metrics.radius))
         .overlay(RoundedRectangle(cornerRadius: Metrics.radius).strokeBorder(Theme.hairline, lineWidth: Metrics.borderW))
-    }
-
-    private var summaryRow: some View {
-        HStack(alignment: .top, spacing: Space.xl) {
-            metric(label: "sessions", value: "\(workset.summary.sessionCount)")
-            metric(label: "sources", value: "\(workset.summary.sources.count)")
-            metric(label: "span", value: WorksetFormat.span(from: workset.summary.firstActivityAt, to: workset.summary.lastActivityAt))
-            if let cost = worksetCostLabel(workset.summary) {
-                metric(label: costLabel, value: cost)
-            }
-            Spacer()
-        }
-    }
-
-    private var costLabel: String {
-        (workset.summary.costComplete == true) ? "cost, sum of receipts" : "cost, partial sum"
-    }
-
-    private func metric(label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label).workFont(.caption).foregroundStyle(Theme.muted)
-            Text(value).workFont(.kpi).foregroundStyle(Theme.ink)
-        }
-    }
-
-    private func footnote(_ text: String) -> some View {
-        HStack(alignment: .top, spacing: 6) {
-            Image(systemName: "info.circle").workFont(.caption).foregroundStyle(Theme.muted)
-            Text(text).workFont(.caption).foregroundStyle(Theme.muted)
-                .fixedSize(horizontal: false, vertical: true)
-        }
     }
 
     private func beginRename() {
@@ -473,27 +454,85 @@ private struct WorksetCardView: View {
 
 // MARK: - The shared-axis timeline (bars = sessions, colored by source)
 
-private struct WorksetTimelineStrip: View {
+private struct WorksetTimeline: View {
     let lanes: [WorksetLane]
     /// From the summary (ALL members), so the legend covers every source.
     let sources: [WorksetSource]
     let sessionsTotal: Int
     let truncated: Bool
+    /// The detail page turns on pan (drag) and zoom (pinch / the ± buttons).
+    var zoomable = false
 
     @Environment(AppSelection.self) private var appSelection
+    @State private var hovered: WorksetLane?
+    @State private var hoverPoint: CGPoint = .zero
+    @State private var zoom: Double = 1
+    @State private var panCenter: Double = 0.5
+    @State private var baseZoom: Double = 1
+    @State private var lastDragX: CGFloat = 0
 
-    // The axis is the shown sessions' own first→last, so the timeline ends at
-    // the last session — no empty tail.
-    private var layout: WorksetTimelineLayout { WorksetTimelineLayout(lanes: lanes) }
-
-    private static let rowHeight: CGFloat = 24
-    private static let visibleRows = 8
+    private static let rowUnit: CGFloat = 22
     private static let labelWidth: CGFloat = 176
+    private static let hoverCardWidth: CGFloat = 240
+
+    static func pipColor(_ status: String?) -> Color {
+        switch status {
+        case "blocked": return Theme.coral
+        case "active", "handed_off": return Theme.accent
+        case "completed": return Theme.ink
+        default: return Theme.muted
+        }
+    }
+
+    private var fullLo: Double? { lanes.compactMap { $0.firstActivityAt }.filter { $0 > 0 }.min() }
+    private var fullHi: Double? {
+        (lanes.compactMap { $0.firstActivityAt } + lanes.compactMap { $0.lastActivityAt })
+            .filter { $0 > 0 }.max()
+    }
+
+    // Full range in the list; a zoom/pan sub-window in the detail.
+    private var window: (start: Double, end: Double)? {
+        guard let lo = fullLo, let hi = fullHi, hi > lo else { return nil }
+        guard zoomable else { return (lo, hi) }
+        let w = WorksetZoomWindow(lo: lo, hi: hi, zoom: zoom, panCenter: panCenter)
+        return (w.start, w.end)
+    }
+
+    // When zoomed in, only sessions that overlap the visible window are drawn —
+    // a session entirely outside it must not be clamped to the edge and shown
+    // as if it were active inside the window.
+    private var visibleLanes: [WorksetLane] {
+        guard zoomable, let win = window, let lo = fullLo, let hi = fullHi,
+              (win.end - win.start) < (hi - lo) - 0.0001 else { return lanes }
+        return lanes.filter {
+            WorksetZoomWindow.laneOverlaps(first: $0.firstActivityAt, last: $0.lastActivityAt, start: win.start, end: win.end)
+        }
+    }
+
+    private var hiddenByZoom: Int { max(0, lanes.count - visibleLanes.count) }
+
+    private var layout: WorksetTimelineLayout {
+        WorksetTimelineLayout(lanes: visibleLanes, windowStart: window?.start, windowEnd: window?.end)
+    }
+
+    // The detail shows every row (the page scrolls); the list collapses to a
+    // handful and scrolls in place. Only the list scrolls internally, so a
+    // horizontal pan-drag in the detail never fights a vertical scroll.
+    private var visibleRows: Int { zoomable ? 40 : 8 }
+    private var scrollsInternally: Bool { !zoomable && layout.bars.count > visibleRows }
+    private var rowsHeight: CGFloat {
+        let shown = scrollsInternally ? visibleRows : max(1, layout.bars.count)
+        return CGFloat(shown) * Self.rowUnit
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
-            legend
-            timelineRows
+            HStack(alignment: .center) {
+                legend
+                Spacer()
+                if zoomable { zoomControls }
+            }
+            timelineArea
             axisLabels
             notes
         }
@@ -510,17 +549,71 @@ private struct WorksetTimelineStrip: View {
         }
     }
 
-    @ViewBuilder
-    private var timelineRows: some View {
-        let rows = VStack(spacing: 4) {
-            ForEach(layout.bars) { bar in laneRow(bar) }
+    private var zoomControls: some View {
+        HStack(spacing: 2) {
+            Text(zoomCoverageLabel).workFont(.dataSmall).foregroundStyle(Theme.muted).padding(.trailing, 4)
+            Button { setZoom(zoom / 1.6) } label: { Image(systemName: "minus.magnifyingglass") }
+                .buttonStyle(QuietButtonStyle(horizontalPadding: 6)).disabled(zoom <= 1.001)
+            Button { zoom = 1; panCenter = 0.5; baseZoom = 1 } label: { Image(systemName: "arrow.counterclockwise") }
+                .buttonStyle(QuietButtonStyle(horizontalPadding: 6)).disabled(zoom <= 1.001)
+            Button { setZoom(zoom * 1.6) } label: { Image(systemName: "plus.magnifyingglass") }
+                .buttonStyle(QuietButtonStyle(horizontalPadding: 6)).disabled(zoom >= WorksetZoomWindow.maxZoom - 0.001)
         }
-        // Collapsed to a handful of rows by default; a big group scrolls in
-        // place rather than stretching the card open.
-        if layout.bars.count > Self.visibleRows {
-            ScrollView { rows }.frame(height: CGFloat(Self.visibleRows) * Self.rowHeight)
+    }
+
+    private var zoomCoverageLabel: String {
+        guard let lo = fullLo, let hi = fullHi, hi > lo, let win = window else { return "" }
+        let pct = Int((WorksetZoomWindow(lo: lo, hi: hi, zoom: zoom, panCenter: panCenter)
+            .coverage(lo: lo, hi: hi) * 100).rounded())
+        _ = win
+        return zoom <= 1.001 ? "full range" : "~\(max(1, pct))% of range"
+    }
+
+    private func setZoom(_ z: Double) {
+        zoom = min(WorksetZoomWindow.maxZoom, max(1, z))
+        baseZoom = zoom
+        clampPan()
+    }
+
+    // The window only actually moves while the center sits inside
+    // [half, 1-half]; clamping panCenter to that avoids a dead zone where an
+    // edge-ward drag (or a zoom change) produces no movement.
+    private func panHalf() -> Double { 0.5 / max(1, zoom) }
+    private func clampPan() {
+        let half = panHalf()
+        panCenter = min(1 - half, max(half, panCenter))
+    }
+
+    private var timelineArea: some View {
+        GeometryReader { geo in
+            let trackWidth = max(1, geo.size.width - Self.labelWidth - Space.m)
+            ZStack(alignment: .topLeading) {
+                rowsContent
+                if let hovered {
+                    WorksetHoverCard(lane: hovered)
+                        .frame(width: Self.hoverCardWidth)
+                        .offset(
+                            x: min(max(8, hoverPoint.x + 14), max(8, geo.size.width - Self.hoverCardWidth - 8)),
+                            y: min(max(0, hoverPoint.y + 12), max(0, geo.size.height - 176))
+                        )
+                        .allowsHitTesting(false)
+                }
+            }
+            .coordinateSpace(name: "wsTimeline")
+            .contentShape(Rectangle())
+            .simultaneousGesture(panGesture(trackWidth: trackWidth))
+            .simultaneousGesture(magnifyGesture())
+        }
+        .frame(height: rowsHeight)
+    }
+
+    @ViewBuilder
+    private var rowsContent: some View {
+        let rows = VStack(spacing: 4) { ForEach(layout.bars) { bar in laneRow(bar) } }
+        if scrollsInternally {
+            ScrollView { rows }.frame(height: rowsHeight)
         } else {
-            rows
+            rows.frame(height: rowsHeight, alignment: .top)
         }
     }
 
@@ -555,38 +648,55 @@ private struct WorksetTimelineStrip: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(QuietButtonStyle(horizontalPadding: 4, verticalPadding: 1))
-        .help(tooltip(bar.lane))
-        .accessibilityLabel(tooltip(bar.lane))
-    }
-
-    private static func pipColor(_ status: String?) -> Color {
-        switch status {
-        case "blocked": return Theme.coral
-        case "active", "handed_off": return Theme.accent
-        case "completed": return Theme.ink
-        default: return Theme.muted
+        .onContinuousHover(coordinateSpace: .named("wsTimeline")) { phase in
+            switch phase {
+            case .active(let point):
+                hovered = bar.lane
+                hoverPoint = point
+            case .ended:
+                if hovered?.id == bar.lane.id { hovered = nil }
+            }
         }
+        .accessibilityLabel(Self.accessibleLabel(bar.lane))
     }
 
-    private func tooltip(_ lane: WorksetLane) -> String {
-        var lines: [String] = [lane.displayTitle]
-        var meta = WorksetFormat.sourceLabel(lane.client ?? "")
-        if let status = lane.status, !status.isEmpty { meta += " · \(status)" }
-        lines.append(meta)
-        var facts: [String] = []
-        if let dur = WorksetFormat.duration(lane.durationSeconds) { facts.append(dur) }
-        if let cost = lane.estimatedCostUsd { facts.append(Fmt.dollars(cost, prefix: "≈$")) }
-        if let tokens = lane.totalTokens, tokens > 0 { facts.append("\(tokens) tokens") }
-        if !facts.isEmpty { lines.append(facts.joined(separator: " · ")) }
-        var work: [String] = []
-        if let calls = lane.toolCalls, calls > 0 { work.append("\(calls) tool calls") }
-        if let steps = lane.steps, steps > 0 { work.append("\(steps) steps") }
+    // Parity with the hover card so VoiceOver hears the same facts.
+    static func accessibleLabel(_ lane: WorksetLane) -> String {
+        var parts = [lane.displayTitle, WorksetFormat.sourceLabel(lane.client ?? "")]
+        if let status = lane.status, !status.isEmpty { parts.append(status) }
+        if let dur = WorksetFormat.duration(lane.durationSeconds) { parts.append(dur) }
+        if let cost = WorksetFormat.laneCost(lane) { parts.append(cost) }
+        if let tokens = lane.totalTokens, tokens > 0 { parts.append("\(tokens) tokens") }
+        if let calls = lane.toolCalls, calls > 0 { parts.append("\(calls) tool calls") }
+        if let steps = lane.steps, steps > 0 { parts.append("\(steps) steps") }
         if let checks = lane.checks, checks > 0 {
             let failed = lane.checksFailed ?? 0
-            work.append(failed > 0 ? "\(checks) checks (\(failed) failed)" : "\(checks) checks")
+            parts.append(failed > 0 ? "\(checks) checks, \(failed) failed" : "\(checks) checks")
         }
-        if !work.isEmpty { lines.append(work.joined(separator: " · ")) }
-        return lines.joined(separator: "\n")
+        return parts.joined(separator: ", ")
+    }
+
+    private func panGesture(trackWidth: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 6)
+            .onChanged { value in
+                guard zoomable else { return }
+                let dx = value.translation.width - lastDragX
+                lastDragX = value.translation.width
+                let visibleFraction = 1.0 / max(1.0, zoom)
+                let half = panHalf()
+                panCenter = min(1 - half, max(half, panCenter - Double(dx / trackWidth) * visibleFraction))
+            }
+            .onEnded { _ in lastDragX = 0 }
+    }
+
+    private func magnifyGesture() -> some Gesture {
+        MagnificationGesture()
+            .onChanged { scale in
+                guard zoomable else { return }
+                zoom = min(WorksetZoomWindow.maxZoom, max(1, baseZoom * scale))
+                clampPan()
+            }
+            .onEnded { _ in baseZoom = zoom }
     }
 
     @ViewBuilder
@@ -604,8 +714,13 @@ private struct WorksetTimelineStrip: View {
     @ViewBuilder
     private var notes: some View {
         let timeless = layout.timelessCount
-        if truncated || timeless > 0 {
+        let hidden = hiddenByZoom
+        if truncated || timeless > 0 || hidden > 0 {
             VStack(alignment: .leading, spacing: 2) {
+                if hidden > 0 {
+                    Text("\(hidden) session\(hidden == 1 ? "" : "s") outside this range — zoom out to see \(hidden == 1 ? "it" : "them").")
+                        .workFont(.caption).foregroundStyle(Theme.muted)
+                }
                 if truncated {
                     Text("Showing \(lanes.count) of \(sessionsTotal) sessions.")
                         .workFont(.caption).foregroundStyle(Theme.muted)
@@ -616,6 +731,155 @@ private struct WorksetTimelineStrip: View {
                 }
             }
             .padding(.top, 2)
+        }
+    }
+}
+
+// MARK: - Hover card (a dedicated info panel, not the native tooltip)
+
+private struct WorksetHoverCard: View {
+    let lane: WorksetLane
+
+    // A compact two-column fact grid keeps the panel short so it doesn't
+    // overflow a small card's timeline strip.
+    private var facts: [(String, String)] {
+        var out: [(String, String)] = []
+        if let d = WorksetFormat.duration(lane.durationSeconds) { out.append(("Duration", d)) }
+        if let cost = WorksetFormat.laneCost(lane) { out.append(("Cost", cost)) }
+        if let tokens = lane.totalTokens, tokens > 0 { out.append(("Tokens", tokens.formatted())) }
+        if let calls = lane.toolCalls, calls > 0 { out.append(("Tool calls", "\(calls)")) }
+        if let steps = lane.steps, steps > 0 { out.append(("Steps", "\(steps)")) }
+        if let checks = lane.checks, checks > 0 { out.append(("Checks", checksValue(checks))) }
+        return out
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 6) {
+                Circle().fill(WorksetTimeline.pipColor(lane.status)).frame(width: 7, height: 7).padding(.top, 4)
+                Text(lane.displayTitle).workFont(.rowLabel).foregroundStyle(Theme.ink)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 6) {
+                Text(WorksetFormat.sourceLabel(lane.client ?? "")).workFont(.captionSemibold)
+                    .foregroundStyle(Theme.sourceColor(lane.client))
+                if let status = lane.status, !status.isEmpty {
+                    Text("·").workFont(.caption).foregroundStyle(Theme.muted)
+                    Text(status).workFont(.caption).foregroundStyle(Theme.muted)
+                }
+            }
+            if !facts.isEmpty {
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+                let columns = [GridItem(.flexible(), spacing: Space.m), GridItem(.flexible(), spacing: Space.m)]
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 4) {
+                    ForEach(facts, id: \.0) { fact in
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(fact.0).workFont(.caption).foregroundStyle(Theme.muted)
+                            Text(fact.1).workFont(.dataSmall).foregroundStyle(Theme.ink)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(Space.m)
+        .frame(width: 240, alignment: .leading)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
+        .overlay(RoundedRectangle(cornerRadius: Metrics.radius).strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW))
+    }
+
+    private func checksValue(_ checks: Int) -> String {
+        let failed = lane.checksFailed ?? 0
+        return failed > 0 ? "\(checks) · \(failed) failed" : "\(checks)"
+    }
+}
+
+// MARK: - Detail view (one group, session-level zoomable timeline)
+
+private struct WorksetDetailView: View {
+    let workset: WorksetCard
+    let onBack: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.l) {
+            Button(action: onBack) {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left")
+                    Text("All work groups")
+                }
+            }
+            .buttonStyle(QuietButtonStyle(horizontalPadding: 4))
+            .foregroundStyle(Theme.accent)
+            .accessibilityIdentifier("worksets.back")
+
+            HStack(spacing: Space.s) {
+                Image(systemName: "folder").foregroundStyle(Theme.muted)
+                Text(workset.name).workFont(.titleSection).foregroundStyle(Theme.ink)
+                WorksetChip(text: "grouped by folder")
+            }
+
+            WorksetSummaryRow(summary: workset.summary)
+
+            WorksetTimeline(
+                lanes: workset.sessions,
+                sources: workset.summary.sources,
+                sessionsTotal: workset.sessionsTotal ?? workset.summary.sessionCount,
+                truncated: workset.sessionsTruncated ?? false,
+                zoomable: true
+            )
+            Text("Drag to pan · pinch or the ± buttons to zoom · click a session to open it")
+                .workFont(.caption).foregroundStyle(Theme.muted)
+
+            WorksetHonestyNote(summary: workset.summary)
+        }
+        .padding(Space.cardPad)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
+        .overlay(RoundedRectangle(cornerRadius: Metrics.radius).strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW))
+    }
+}
+
+// MARK: - Shared summary + honesty note (used by the card and the detail)
+
+private struct WorksetSummaryRow: View {
+    let summary: WorksetSummary
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Space.xl) {
+            metric("sessions", "\(summary.sessionCount)")
+            metric("sources", "\(summary.sources.count)")
+            metric("span", WorksetFormat.span(from: summary.firstActivityAt, to: summary.lastActivityAt))
+            if let cost = worksetCostLabel(summary) {
+                metric(summary.costComplete == true ? "cost, sum of receipts" : "cost, partial sum", cost)
+            }
+            Spacer()
+        }
+    }
+
+    private func metric(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).workFont(.caption).foregroundStyle(Theme.muted)
+            Text(value).workFont(.kpi).foregroundStyle(Theme.ink)
+        }
+    }
+}
+
+private struct WorksetHonestyNote: View {
+    let summary: WorksetSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if (summary.unpricedSessions ?? 0) > 0 {
+                note("Some sessions here carry no imported cost, so the total above is a partial sum.")
+            }
+            note("Grouped because you pointed this at a folder. Each session keeps its own receipt and evidence; the total is a sum of \(summary.sessionCount) session\(summary.sessionCount == 1 ? "" : "s"), not a combined verdict.")
+        }
+    }
+
+    private func note(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "info.circle").workFont(.caption).foregroundStyle(Theme.muted)
+            Text(text).workFont(.caption).foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -643,6 +907,13 @@ enum WorksetFormat {
         case "hermes": return "Hermes"
         default: return client.isEmpty ? "unknown" : client
         }
+    }
+
+    /// One session's own cost in the app-wide grammar: a bare `$` for a
+    /// billed/reported figure, `≈$` for a pricing estimate, nothing when
+    /// unpriced — never a fabricated $0.
+    static func laneCost(_ lane: WorksetLane) -> String? {
+        Fmt.costDisplay(usd: lane.estimatedCostUsd, complete: lane.estimatedCostUsd != nil, confidence: lane.costConfidence)
     }
 
     /// A short human duration for a single session (its own begin→end span).

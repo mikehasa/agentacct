@@ -1873,6 +1873,46 @@ struct WorksetTimelineLayout {
     }
 }
 
+/// The visible time window of a zoomable timeline: a sub-range of the full
+/// [lo, hi], `zoom`× narrower, centered at `panCenter` (0…1) and clamped so it
+/// never leaves the data. Pure so the pan/zoom math is unit-tested without a UI.
+struct WorksetZoomWindow: Equatable {
+    let start: Double
+    let end: Double
+
+    init(lo: Double, hi: Double, zoom: Double, panCenter: Double) {
+        let full = max(0.0, hi - lo)
+        let z = min(WorksetZoomWindow.maxZoom, max(1.0, zoom.isFinite ? zoom : 1.0))
+        let width = z > 0 ? full / z : full
+        let centerFrac = min(1.0, max(0.0, panCenter.isFinite ? panCenter : 0.5))
+        let center = lo + centerFrac * full
+        var s = center - width / 2
+        var e = center + width / 2
+        if s < lo { e = min(hi, e + (lo - s)); s = lo }
+        if e > hi { s = max(lo, s - (e - hi)); e = hi }
+        start = s
+        end = e
+    }
+
+    static let maxZoom = 64.0
+
+    /// Whether a session's own [first, last] overlaps a visible window at all —
+    /// used to cull sessions entirely outside a zoomed window instead of
+    /// clamping them to the edge and drawing them as if they were active there.
+    static func laneOverlaps(first: Double?, last: Double?, start: Double, end: Double) -> Bool {
+        guard let first, first.isFinite, first > 0 else { return false }
+        let l = (last ?? first)
+        return !(l < start || first > end)
+    }
+
+    /// The fraction of the full range this window covers (1 = everything).
+    func coverage(lo: Double, hi: Double) -> Double {
+        let full = max(0.0, hi - lo)
+        guard full > 0 else { return 1.0 }
+        return min(1.0, max(0.0, (end - start) / full))
+    }
+}
+
 /// The honest cost grammar for a workset summary: a bare/≈ prefix only when the
 /// sum is complete, `~$` while any member is unpriced (a visibly partial sum),
 /// and nothing when no member is priced — never a fabricated $0.

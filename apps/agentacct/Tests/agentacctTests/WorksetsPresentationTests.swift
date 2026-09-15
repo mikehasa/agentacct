@@ -66,6 +66,51 @@ final class WorksetsPresentationTests: XCTestCase {
         XCTAssertLessThan(layout.bars[1].leftFraction + layout.bars[1].widthFraction, 0.5)
     }
 
+    func testZoomWindowFullAtZoomOneAndNarrowsCentered() {
+        let full = WorksetZoomWindow(lo: 0, hi: 1000, zoom: 1, panCenter: 0.5)
+        XCTAssertEqual(full.start, 0, accuracy: 0.001)
+        XCTAssertEqual(full.end, 1000, accuracy: 0.001)
+        XCTAssertEqual(full.coverage(lo: 0, hi: 1000), 1, accuracy: 0.001)
+
+        // Zoom 2 centered → half the range around the middle: [250, 750].
+        let mid = WorksetZoomWindow(lo: 0, hi: 1000, zoom: 2, panCenter: 0.5)
+        XCTAssertEqual(mid.start, 250, accuracy: 0.001)
+        XCTAssertEqual(mid.end, 750, accuracy: 0.001)
+        XCTAssertEqual(mid.coverage(lo: 0, hi: 1000), 0.5, accuracy: 0.001)
+    }
+
+    func testZoomWindowPanClampsInsideTheData() {
+        // Pan hard left at zoom 4 → window sits at the start, never before lo.
+        let left = WorksetZoomWindow(lo: 0, hi: 1000, zoom: 4, panCenter: 0)
+        XCTAssertEqual(left.start, 0, accuracy: 0.001)
+        XCTAssertEqual(left.end, 250, accuracy: 0.001)
+        // Pan hard right → window sits at the end, never past hi.
+        let right = WorksetZoomWindow(lo: 0, hi: 1000, zoom: 4, panCenter: 1)
+        XCTAssertEqual(right.start, 750, accuracy: 0.001)
+        XCTAssertEqual(right.end, 1000, accuracy: 0.001)
+    }
+
+    func testLaneOverlapCullsSessionsOutsideTheWindow() {
+        // Window [750, 1000] (a right-panned zoom of a [0,1000] range).
+        XCTAssertFalse(WorksetZoomWindow.laneOverlaps(first: 0, last: 100, start: 750, end: 1000))   // entirely before
+        XCTAssertFalse(WorksetZoomWindow.laneOverlaps(first: 1200, last: 1300, start: 750, end: 1000)) // entirely after
+        XCTAssertTrue(WorksetZoomWindow.laneOverlaps(first: 900, last: 1000, start: 750, end: 1000))  // inside
+        XCTAssertTrue(WorksetZoomWindow.laneOverlaps(first: 700, last: 800, start: 750, end: 1000))   // straddles start
+        XCTAssertTrue(WorksetZoomWindow.laneOverlaps(first: 800, last: nil, start: 750, end: 1000))   // point inside
+        XCTAssertFalse(WorksetZoomWindow.laneOverlaps(first: nil, last: 900, start: 750, end: 1000))  // timeless culled
+    }
+
+    func testZoomWindowIsRobustToBadInput() {
+        // Degenerate range and non-finite inputs never crash or invert.
+        let degenerate = WorksetZoomWindow(lo: 500, hi: 500, zoom: 8, panCenter: 0.5)
+        XCTAssertEqual(degenerate.start, 500, accuracy: 0.001)
+        XCTAssertEqual(degenerate.end, 500, accuracy: 0.001)
+        let nan = WorksetZoomWindow(lo: 0, hi: 100, zoom: .nan, panCenter: .nan)
+        XCTAssertLessThanOrEqual(nan.start, nan.end)
+        XCTAssertGreaterThanOrEqual(nan.start, 0)
+        XCTAssertLessThanOrEqual(nan.end, 100)
+    }
+
     func testZeroDurationSessionStillGetsAMinimumBar() {
         let lanes = [
             lane(#"{"session_key":"a","client":"claude-code","first_activity_at":100,"last_activity_at":300}"#),

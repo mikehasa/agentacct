@@ -695,11 +695,6 @@ final class DashboardStore {
         }
     }
 
-    /// One workset's full member timeline (all lanes, not the bounded preview).
-    func loadWorkset(id: String) async throws -> WorksetCard {
-        try await client.getAuthed("/v1/workset?id=\(Self.queryValue(id))")
-    }
-
     /// The caller supplies a STABLE `worksetId` (minted once per create intent)
     /// so a retry after a lost response replays idempotently on the server —
     /// the operation is keyed by this id, never a fresh one per call — instead
