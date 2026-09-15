@@ -3139,6 +3139,138 @@ def test_claude_workflow_journal_failed_row_is_ignored(tmp_path):
     assert diagnostic["error_codes"] == []
 
 
+def test_claude_workflow_journal_launched_and_labeled_rows_are_ignored(tmp_path):
+    # The Workflow tool also writes a bare {"type": "launched"} marker and
+    # attaches human-readable "label"/"phase" bookkeeping to lifecycle rows.
+    # These carry no token usage, so the validator must ignore them like the
+    # base shapes. Regression: the exact-keyset check rejected
+    # {agentId,key,label,phase,type} and {type:"launched"} as
+    # claude_workflow_journal_schema_drift, surfacing a false "source adapter
+    # incompatible" and freezing recognition of the journal.
+    claude_home = _make_claude_home(tmp_path)
+    project = claude_home / "projects" / "-tmp-project"
+    journal = (
+        project
+        / "claude-session"
+        / "subagents"
+        / "workflows"
+        / "wf_labeled"
+        / "journal.jsonl"
+    )
+    journal.parent.mkdir(parents=True)
+    journal.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {"type": "launched"},
+                {
+                    "agentId": "agent-a",
+                    "key": "state",
+                    "label": "verify:#218",
+                    "phase": "Verify",
+                    "type": "started",
+                },
+                {"agentId": "agent-a", "key": "state", "type": "failed"},
+                {
+                    "agentId": "agent-b",
+                    "key": "state",
+                    "result": {"ok": True},
+                    "type": "result",
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = discover_client_usage_with_diagnostics(
+        client="claude-code",
+        claude_home=claude_home,
+        limit_sessions=10,
+    )
+
+    assert [event.client_session_id for event in result.events] == ["claude-session"]
+    diagnostic = result.diagnostics["claude-code"]
+    assert diagnostic["ignored_non_transcript_files"] == 1
+    assert diagnostic["error_count"] == 0
+    assert diagnostic["error_codes"] == []
+
+
+def test_claude_workflow_journal_known_type_with_usage_key_still_fails_closed(
+    tmp_path,
+):
+    # Safety: widening the allowlist for label/phase must NOT let a usage-bearing
+    # key ride in on a known lifecycle type. A "started" row carrying a "usage"
+    # key is outside required ∪ {label, phase}, so it must still fail closed as
+    # schema drift rather than be silently ignored.
+    claude_home = _make_claude_home(tmp_path)
+    project = claude_home / "projects" / "-tmp-project"
+    journal = (
+        project
+        / "claude-session"
+        / "subagents"
+        / "workflows"
+        / "wf_sneaky"
+        / "journal.jsonl"
+    )
+    journal.parent.mkdir(parents=True)
+    journal.write_text(
+        json.dumps(
+            {
+                "agentId": "agent-a",
+                "key": "state",
+                "type": "started",
+                "usage": {"input_tokens": 999, "output_tokens": 99},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = discover_client_usage_with_diagnostics(
+        client="claude-code",
+        claude_home=claude_home,
+        limit_sessions=10,
+    )
+
+    # The real session still imports; the sneaky row is quarantined as drift.
+    assert [event.client_session_id for event in result.events] == ["claude-session"]
+    diagnostic = result.diagnostics["claude-code"]
+    assert diagnostic["error_codes"] == ["claude_workflow_journal_schema_drift"]
+
+
+def test_claude_workflow_journal_non_string_type_is_quarantined_not_crash(tmp_path):
+    # Safety: `type` is untrusted JSON. A non-string (unhashable) value such as
+    # a list must fail closed as drift and be quarantined per-file, NOT raise a
+    # TypeError from the row-spec dict lookup that would escape the quarantine
+    # and abort usage import for the whole home.
+    claude_home = _make_claude_home(tmp_path)
+    project = claude_home / "projects" / "-tmp-project"
+    journal = (
+        project
+        / "claude-session"
+        / "subagents"
+        / "workflows"
+        / "wf_weird"
+        / "journal.jsonl"
+    )
+    journal.parent.mkdir(parents=True)
+    journal.write_text(
+        json.dumps({"type": [], "agentId": "agent-a", "key": "state"}) + "\n",
+        encoding="utf-8",
+    )
+
+    result = discover_client_usage_with_diagnostics(
+        client="claude-code",
+        claude_home=claude_home,
+        limit_sessions=10,
+    )
+
+    assert [event.client_session_id for event in result.events] == ["claude-session"]
+    diagnostic = result.diagnostics["claude-code"]
+    assert diagnostic["error_codes"] == ["claude_workflow_journal_schema_drift"]
+
+
 def test_claude_workflow_journal_schema_drift_is_quarantined_not_frozen(tmp_path):
     # A workflow journal with an unknown row shape is non-transcript metadata.
     # It is skipped and flagged, but it must NOT freeze the whole home: the real

@@ -93,6 +93,21 @@ _CLAUDE_IDENTITY_SCAN_MAX_BYTES = 256 * 1024
 _CLAUDE_IDENTITY_SCAN_MAX_LINES = 256
 _CLAUDE_WORKFLOW_JOURNAL_MAX_BYTES = 8 * 1024 * 1024
 _CLAUDE_WORKFLOW_JOURNAL_MAX_LINES = 8_192
+# The Workflow tool writes one metadata row per agent lifecycle transition.
+# Each known row type declares its REQUIRED keys; a small closed allowlist of
+# OPTIONAL bookkeeping keys (a human-readable task label and phase name) may
+# additionally appear on any row. None of these carry token usage or assistant
+# transcript content, so they are safe to ignore. This is deliberately an
+# allowlist, NOT "ignore any unknown journal": a row whose type is unknown, or
+# that carries any key outside required ∪ optional, still fails closed below
+# (e.g. a real assistant/usage row that must never be silently dropped).
+_CLAUDE_WORKFLOW_JOURNAL_ROW_SPECS: dict[str, frozenset[str]] = {
+    "launched": frozenset({"type"}),
+    "started": frozenset({"agentId", "key", "type"}),
+    "failed": frozenset({"agentId", "key", "type"}),
+    "result": frozenset({"agentId", "key", "result", "type"}),
+}
+_CLAUDE_WORKFLOW_JOURNAL_OPTIONAL_KEYS = frozenset({"label", "phase"})
 
 
 class _ClientUsageDiscoveryReadError(RuntimeError):
@@ -2049,22 +2064,26 @@ def _validate_claude_workflow_journal(
                 )
             keys = set(obj)
             row_type = obj.get("type")
-            # The Workflow tool writes one metadata row per agent lifecycle
-            # transition: "started" and "failed" carry {agentId, key, type};
-            # "result" adds the agent's return value. None of them carry token
-            # usage, so every one is safe to ignore. Any other shape still
-            # fails closed below (e.g. a real assistant/usage row that must not
-            # be silently dropped) -- this is the fail-closed guard, not a
-            # blanket "ignore unknown journals".
-            if not (
-                (
-                    row_type in ("started", "failed")
-                    and keys == {"agentId", "key", "type"}
-                )
-                or (
-                    row_type == "result"
-                    and keys == {"agentId", "key", "result", "type"}
-                )
+            # Fail closed unless this is a known lifecycle row whose keys are
+            # exactly its required set plus (optionally) the bookkeeping
+            # allowlist. A real assistant/usage transcript row is rejected on
+            # both counts: its type ("assistant"/"user") is unknown, and its
+            # keys (message, usage, sessionId, timestamp, uuid, requestId, ...)
+            # fall outside the allowed set -- so no usage row can be silently
+            # dropped. Extend the specs/allowlist only with proven-bookkeeping
+            # fields.
+            # `row_type` is untrusted JSON: a non-string (e.g. list/dict) is
+            # unhashable, so guard the dict lookup — an unhashable key would
+            # raise TypeError, which is NOT a _ClientUsageDiscoveryReadError and
+            # would escape the per-file quarantine and abort the whole import.
+            required = (
+                _CLAUDE_WORKFLOW_JOURNAL_ROW_SPECS.get(row_type)
+                if isinstance(row_type, str)
+                else None
+            )
+            if required is None or not (
+                required <= keys
+                and keys <= (required | _CLAUDE_WORKFLOW_JOURNAL_OPTIONAL_KEYS)
             ):
                 raise _ClientUsageDiscoveryReadError(
                     "claude_workflow_journal_schema_drift"
