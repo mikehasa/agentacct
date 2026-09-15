@@ -218,17 +218,25 @@ private struct WorksetCreateForm: View {
                     Text("No folders recorded yet. Run a session in a project, then come back.")
                         .workFont(.caption).foregroundStyle(Theme.muted)
                 } else {
-                    VStack(spacing: 0) {
-                        ForEach(candidates) { candidate in
-                            candidateRow(candidate)
-                            if candidate.id != candidates.last?.id {
-                                Rectangle().fill(Theme.hairline).frame(height: 1)
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(candidates) { candidate in
+                                candidateRow(candidate)
+                                if candidate.id != candidates.last?.id {
+                                    Rectangle().fill(Theme.hairline).frame(height: 1)
+                                }
                             }
                         }
                     }
+                    // Snug to the row count, but capped so a long folder list
+                    // scrolls inside its box instead of pushing the form open.
+                    .frame(height: min(CGFloat(candidates.count) * 54 + 2, 260))
                     .background(Theme.chrome, in: RoundedRectangle(cornerRadius: Metrics.radius))
                     .overlay(RoundedRectangle(cornerRadius: Metrics.radius).strokeBorder(Theme.hairline, lineWidth: Metrics.borderW))
-                    .frame(maxHeight: 240)
+                    Text(candidates.count > 4
+                         ? "\(candidates.count) folders · scroll for more"
+                         : "\(candidates.count) folder\(candidates.count == 1 ? "" : "s")")
+                        .workFont(.caption).foregroundStyle(Theme.muted)
                 }
             }
 
