@@ -49,7 +49,7 @@ struct WorksetsPane: View {
                 Text("Work")
                     .workFont(.titlePage).tracking(Type.titlePageTracking)
                     .foregroundStyle(Theme.ink)
-                Text("Group a folder's sessions across Claude Code and Codex")
+                Text("Group a folder's sessions across every agent you run")
                     .workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
             Spacer(minLength: Space.m)
@@ -86,7 +86,9 @@ struct WorksetsPane: View {
                 )
                 .padding(.bottom, Space.xl)
             }
-            if dashboard.worksets.isEmpty && !isCreating {
+            if dashboard.worksets.isEmpty && dashboard.isLoadingWorksets && !isCreating {
+                loadingState
+            } else if dashboard.worksets.isEmpty && !isCreating {
                 emptyState
             } else {
                 VStack(alignment: .leading, spacing: Space.xl) {
@@ -98,13 +100,24 @@ struct WorksetsPane: View {
         }
     }
 
+    private var loadingState: some View {
+        HStack(spacing: Space.s) {
+            ProgressView().controlSize(.small)
+            Text("Loading your work groups…").workFont(.body).foregroundStyle(Theme.muted)
+        }
+        .padding(Space.cardPad)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
+        .overlay(RoundedRectangle(cornerRadius: Metrics.radius).strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW))
+    }
+
     // MARK: states
 
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: Space.m) {
             Text("Point Work at a folder")
                 .workFont(.titleCard).foregroundStyle(Theme.ink)
-            Text("Pick a project folder and agentacct gathers every session that ran there — Claude Code and Codex together — onto one timeline. It never changes a session's own receipt; the group is your view of the work.")
+            Text("Pick a project folder and agentacct gathers every session that ran there — across all your agents — onto one timeline. It never changes a session's own receipt; the group is your view of the work.")
                 .workFont(.body).foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
             Button {
@@ -204,6 +217,17 @@ private struct WorksetCreateForm: View {
     let onCreate: () -> Void
     let onCancel: () -> Void
 
+    /// Only folders that don't already have a group — one group per folder.
+    private var available: [WorksetCandidate] { candidates.filter { !$0.alreadyGrouped } }
+    private var groupedCount: Int { candidates.count - available.count }
+
+    private var folderNote: String {
+        var parts: [String] = ["\(available.count) folder\(available.count == 1 ? "" : "s")"]
+        if available.count > 4 { parts[0] += " · scroll for more" }
+        if groupedCount > 0 { parts.append("\(groupedCount) already grouped") }
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Space.l) {
             Text("New work group")
@@ -217,12 +241,15 @@ private struct WorksetCreateForm: View {
                 } else if candidates.isEmpty {
                     Text("No folders recorded yet. Run a session in a project, then come back.")
                         .workFont(.caption).foregroundStyle(Theme.muted)
+                } else if available.isEmpty {
+                    Text("Every folder agentacct has seen already has a work group.")
+                        .workFont(.caption).foregroundStyle(Theme.muted)
                 } else {
                     ScrollView {
                         VStack(spacing: 0) {
-                            ForEach(candidates) { candidate in
+                            ForEach(available) { candidate in
                                 candidateRow(candidate)
-                                if candidate.id != candidates.last?.id {
+                                if candidate.id != available.last?.id {
                                     Rectangle().fill(Theme.hairline).frame(height: 1)
                                 }
                             }
@@ -230,13 +257,10 @@ private struct WorksetCreateForm: View {
                     }
                     // Snug to the row count, but capped so a long folder list
                     // scrolls inside its box instead of pushing the form open.
-                    .frame(height: min(CGFloat(candidates.count) * 54 + 2, 260))
+                    .frame(height: min(CGFloat(available.count) * 54 + 2, 260))
                     .background(Theme.chrome, in: RoundedRectangle(cornerRadius: Metrics.radius))
                     .overlay(RoundedRectangle(cornerRadius: Metrics.radius).strokeBorder(Theme.hairline, lineWidth: Metrics.borderW))
-                    Text(candidates.count > 4
-                         ? "\(candidates.count) folders · scroll for more"
-                         : "\(candidates.count) folder\(candidates.count == 1 ? "" : "s")")
-                        .workFont(.caption).foregroundStyle(Theme.muted)
+                    Text(folderNote).workFont(.caption).foregroundStyle(Theme.muted)
                 }
             }
 
@@ -322,8 +346,6 @@ private struct WorksetCardView: View {
             WorksetTimelineStrip(
                 lanes: workset.sessions,
                 sources: workset.summary.sources,
-                windowStart: workset.summary.firstActivityAt,
-                windowEnd: workset.summary.lastActivityAt,
                 sessionsTotal: workset.sessionsTotal ?? workset.summary.sessionCount,
                 truncated: workset.sessionsTruncated ?? false
             )
@@ -453,28 +475,25 @@ private struct WorksetCardView: View {
 
 private struct WorksetTimelineStrip: View {
     let lanes: [WorksetLane]
-    /// From the summary (ALL members), so the legend can't disagree with the
-    /// card's "sources" count when the bar set below is a bounded preview.
+    /// From the summary (ALL members), so the legend covers every source.
     let sources: [WorksetSource]
-    /// The group's TRUE span (from the summary), so the axis matches the "span"
-    /// metric even when only the first N sessions are drawn.
-    let windowStart: Double?
-    let windowEnd: Double?
     let sessionsTotal: Int
     let truncated: Bool
 
-    private var layout: WorksetTimelineLayout {
-        WorksetTimelineLayout(lanes: lanes, windowStart: windowStart, windowEnd: windowEnd)
-    }
+    @Environment(AppSelection.self) private var appSelection
+
+    // The axis is the shown sessions' own first→last, so the timeline ends at
+    // the last session — no empty tail.
+    private var layout: WorksetTimelineLayout { WorksetTimelineLayout(lanes: lanes) }
+
+    private static let rowHeight: CGFloat = 24
+    private static let visibleRows = 8
+    private static let labelWidth: CGFloat = 176
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             legend
-            VStack(spacing: 6) {
-                ForEach(layout.bars) { bar in
-                    laneRow(bar)
-                }
-            }
+            timelineRows
             axisLabels
             notes
         }
@@ -492,47 +511,82 @@ private struct WorksetTimelineStrip: View {
     }
 
     @ViewBuilder
-    private var notes: some View {
-        let timeless = layout.timelessCount
-        if truncated || timeless > 0 {
-            VStack(alignment: .leading, spacing: 2) {
-                if truncated {
-                    Text("Showing the first \(lanes.count) of \(sessionsTotal) sessions on the timeline.")
-                        .workFont(.caption).foregroundStyle(Theme.muted)
-                }
-                if timeless > 0 {
-                    Text("\(timeless) session\(timeless == 1 ? "" : "s") with no recorded time — shown faded at the start, not a real position.")
-                        .workFont(.caption).foregroundStyle(Theme.muted)
-                }
-            }
-            .padding(.top, 2)
+    private var timelineRows: some View {
+        let rows = VStack(spacing: 4) {
+            ForEach(layout.bars) { bar in laneRow(bar) }
+        }
+        // Collapsed to a handful of rows by default; a big group scrolls in
+        // place rather than stretching the card open.
+        if layout.bars.count > Self.visibleRows {
+            ScrollView { rows }.frame(height: CGFloat(Self.visibleRows) * Self.rowHeight)
+        } else {
+            rows
         }
     }
 
     private func laneRow(_ bar: WorksetTimelineLayout.Bar) -> some View {
-        HStack(spacing: Space.m) {
-            Text(bar.lane.displayTitle)
-                .workFont(.caption).foregroundStyle(Theme.ink)
-                .lineLimit(1).truncationMode(.tail)
-                .frame(width: 168, alignment: .leading)
-            GeometryReader { geo in
-                let width = geo.size.width
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 2).fill(Theme.hairline).frame(height: 2)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(bar.timeUnknown ? Theme.muted : Theme.sourceColor(bar.lane.client))
-                        .frame(width: max(6, width * bar.widthFraction), height: 12)
-                        .offset(x: width * bar.leftFraction)
-                        .opacity(bar.timeUnknown ? 0.5 : 1)
+        Button {
+            if let key = bar.lane.sessionKey, !key.isEmpty { appSelection.open(.session(key)) }
+        } label: {
+            HStack(spacing: Space.m) {
+                HStack(spacing: 6) {
+                    Circle().fill(Self.pipColor(bar.lane.status)).frame(width: 6, height: 6)
+                    Text(bar.lane.displayTitle)
+                        .workFont(.caption).foregroundStyle(Theme.ink)
+                        .lineLimit(1).truncationMode(.tail)
                 }
-                .frame(height: 18)
+                .frame(width: Self.labelWidth, alignment: .leading)
+                GeometryReader { geo in
+                    let width = geo.size.width
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 2).fill(Theme.hairline).frame(height: 2)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(bar.timeUnknown ? Theme.muted : Theme.sourceColor(bar.lane.client))
+                            .frame(width: max(6, width * bar.widthFraction), height: 12)
+                            .offset(x: width * bar.leftFraction)
+                            .opacity(bar.timeUnknown ? 0.5 : 1)
+                    }
+                    .frame(height: 16)
+                }
+                .frame(height: 16)
             }
             .frame(height: 18)
+            .contentShape(Rectangle())
         }
-        .frame(height: 20)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(bar.lane.displayTitle), \(WorksetFormat.sourceLabel(bar.lane.client ?? ""))")
+        .buttonStyle(QuietButtonStyle(horizontalPadding: 4, verticalPadding: 1))
+        .help(tooltip(bar.lane))
+        .accessibilityLabel(tooltip(bar.lane))
+    }
+
+    private static func pipColor(_ status: String?) -> Color {
+        switch status {
+        case "blocked": return Theme.coral
+        case "active", "handed_off": return Theme.accent
+        case "completed": return Theme.ink
+        default: return Theme.muted
+        }
+    }
+
+    private func tooltip(_ lane: WorksetLane) -> String {
+        var lines: [String] = [lane.displayTitle]
+        var meta = WorksetFormat.sourceLabel(lane.client ?? "")
+        if let status = lane.status, !status.isEmpty { meta += " · \(status)" }
+        lines.append(meta)
+        var facts: [String] = []
+        if let dur = WorksetFormat.duration(lane.durationSeconds) { facts.append(dur) }
+        if let cost = lane.estimatedCostUsd { facts.append(Fmt.dollars(cost, prefix: "≈$")) }
+        if let tokens = lane.totalTokens, tokens > 0 { facts.append("\(tokens) tokens") }
+        if !facts.isEmpty { lines.append(facts.joined(separator: " · ")) }
+        var work: [String] = []
+        if let calls = lane.toolCalls, calls > 0 { work.append("\(calls) tool calls") }
+        if let steps = lane.steps, steps > 0 { work.append("\(steps) steps") }
+        if let checks = lane.checks, checks > 0 {
+            let failed = lane.checksFailed ?? 0
+            work.append(failed > 0 ? "\(checks) checks (\(failed) failed)" : "\(checks) checks")
+        }
+        if !work.isEmpty { lines.append(work.joined(separator: " · ")) }
+        return lines.joined(separator: "\n")
     }
 
     @ViewBuilder
@@ -543,7 +597,25 @@ private struct WorksetTimelineStrip: View {
                 Spacer()
                 Text(WorksetFormat.axisDate(end)).workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
-            .padding(.leading, 168 + Space.m)
+            .padding(.leading, Self.labelWidth + Space.m + 4)
+        }
+    }
+
+    @ViewBuilder
+    private var notes: some View {
+        let timeless = layout.timelessCount
+        if truncated || timeless > 0 {
+            VStack(alignment: .leading, spacing: 2) {
+                if truncated {
+                    Text("Showing \(lanes.count) of \(sessionsTotal) sessions.")
+                        .workFont(.caption).foregroundStyle(Theme.muted)
+                }
+                if timeless > 0 {
+                    Text("\(timeless) session\(timeless == 1 ? "" : "s") with no recorded time — shown faded at the start, not a real position.")
+                        .workFont(.caption).foregroundStyle(Theme.muted)
+                }
+            }
+            .padding(.top, 2)
         }
     }
 }
@@ -567,9 +639,24 @@ enum WorksetFormat {
         switch client.lowercased() {
         case "claude-code", "claude", "claude code": return "Claude Code"
         case "codex", "openai-codex", "codex-cli": return "Codex"
-        case "opencode": return "OpenCode"
+        case "opencode", "open-code": return "OpenCode"
+        case "hermes": return "Hermes"
         default: return client.isEmpty ? "unknown" : client
         }
+    }
+
+    /// A short human duration for a single session (its own begin→end span).
+    static func duration(_ seconds: Double?) -> String? {
+        guard let seconds, seconds.isFinite, seconds > 0 else { return nil }
+        let hour = 3_600.0, minute = 60.0
+        if seconds >= hour {
+            let hours = seconds / hour
+            return hours >= 10 ? "\(Int(hours.rounded()))h" : String(format: "%.1fh", hours)
+        }
+        if seconds >= minute {
+            return "\(Int((seconds / minute).rounded()))m"
+        }
+        return "\(Int(seconds.rounded()))s"
     }
 
     private static let axisFormatter: DateFormatter = {

@@ -309,6 +309,52 @@ def test_create_list_detail_roundtrip_groups_cross_source(tmp_path: Path) -> Non
     assert times == sorted(times)
 
 
+def test_one_group_per_folder_second_create_conflicts(tmp_path: Path) -> None:
+    identity = _seed_two_source_folder(tmp_path)
+    client = _app(tmp_path)
+    first = client.post(
+        "/v1/worksets", headers=_auth(),
+        json={"action": "create", "workset_id": "ws_a", "name": "web",
+              "directory": identity, "expected_revision": 0},
+    )
+    assert first.status_code == 200
+    # A DIFFERENT id onto the same folder is refused.
+    dup = client.post(
+        "/v1/worksets", headers=_auth(),
+        json={"action": "create", "workset_id": "ws_b", "name": "web again",
+              "directory": identity, "expected_revision": 0},
+    )
+    assert dup.status_code == 409
+    # The candidate for that folder now points at the existing group.
+    cands = {c["project_identity"]: c for c in
+             client.get("/v1/workset-candidates", headers=_auth()).json()["candidates"]}
+    assert cands[identity]["existing_workset_id"] == "ws_a"
+    # A retry of the SAME group's create (same id, name, revision -> same
+    # derived idempotency key) replays idempotently rather than 409-ing on the
+    # duplicate-folder guard.
+    retry = client.post(
+        "/v1/worksets", headers=_auth(),
+        json={"action": "create", "workset_id": "ws_a", "name": "web",
+              "directory": identity, "expected_revision": 0},
+    )
+    assert retry.status_code == 200
+
+
+def test_lanes_carry_hover_fields(tmp_path: Path) -> None:
+    identity = _seed_two_source_folder(tmp_path)
+    client = _app(tmp_path)
+    client.post(
+        "/v1/worksets", headers=_auth(),
+        json={"action": "create", "workset_id": "ws_web", "name": "web",
+              "directory": identity, "expected_revision": 0},
+    )
+    detail = client.get("/v1/workset", headers=_auth(), params={"id": "ws_web"}).json()
+    for lane in detail["sessions"]:
+        for key in ("tool_calls", "steps", "checks", "checks_failed", "status", "session_key"):
+            assert key in lane, key
+        assert isinstance(lane["status"], str) and lane["status"]
+
+
 def test_membership_is_live_new_session_joins_without_a_write(tmp_path: Path) -> None:
     identity = _seed_two_source_folder(tmp_path)
     client = _app(tmp_path)

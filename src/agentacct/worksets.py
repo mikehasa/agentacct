@@ -470,16 +470,52 @@ def workset_member_entries(session_rollup: Any, project_identity: str) -> list[M
     ]
 
 
+_ACTIVE_STATUSES = ("blocked", "active", "handed_off", "completed", "resolved")
+
+
+def _lane_status(work: Mapping[str, Any]) -> str:
+    """A single honest status for a session from its own work-item counts.
+
+    Attention-first, exactly like the receipts lane: a blocked step wins, then
+    still-active work, then a clean terminal. Never a re-graded verdict — just
+    which of the session's OWN recorded steps stand out.
+    """
+
+    counts = work.get("counts") if isinstance(work.get("counts"), Mapping) else {}
+    for key in ("blocked", "active", "handed_off"):
+        if int(counts.get(key) or 0) > 0:
+            return key
+    if int(counts.get("completed") or 0) > 0 or int(counts.get("resolved") or 0) > 0:
+        return "completed"
+    return "observed"
+
+
 def workset_session_lane(entry: Mapping[str, Any]) -> dict[str, Any]:
     """One member session shaped as a timeline lane (a bar on the shared axis).
 
-    Carries only what the folder overview needs; drilling into a session's own
-    event history stays in the Sessions tab. Cost is this session's own figure,
-    verbatim from its rollup entry — never re-graded here.
+    Carries what a hover needs (title, span, cost, tool calls, steps, checks)
+    plus its session_key so a click can drill into the session's own detail.
+    Every figure is this session's own, verbatim from its rollup entry — never
+    re-graded or rolled up here.
     """
 
     usage = entry.get("usage") if isinstance(entry.get("usage"), Mapping) else {}
     cost = usage.get("estimated_cost_usd")
+    work = entry.get("work") if isinstance(entry.get("work"), Mapping) else {}
+    counts = work.get("counts") if isinstance(work.get("counts"), Mapping) else {}
+    evidence = work.get("evidence") if isinstance(work.get("evidence"), Mapping) else {}
+    tool_categories = (
+        entry.get("tool_category_counts")
+        if isinstance(entry.get("tool_category_counts"), Mapping)
+        else {}
+    )
+    tool_calls = 0
+    for value in tool_categories.values():
+        try:
+            tool_calls += int(value or 0)
+        except (TypeError, ValueError):
+            pass
+    checks_graded = sum(int(evidence.get(tier) or 0) for tier in ("strong", "weak", "failed"))
     return {
         "session_key": entry.get("session_key"),
         "client": entry.get("client"),
@@ -488,12 +524,17 @@ def workset_session_lane(entry: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(entry.get("client_session_title"), str)
         else None,
         "session_kind": entry.get("session_kind"),
+        "status": _lane_status(work),
         "first_activity_at": _safe_time(entry.get("first_activity_at")),
         "last_activity_at": _safe_time(entry.get("last_activity_at")),
         "duration_seconds": entry.get("duration_seconds"),
         "total_tokens": _entry_tokens(entry),
         "estimated_cost_usd": float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
         "cost_confidence": usage.get("cost_confidence") if isinstance(usage.get("cost_confidence"), str) else None,
+        "tool_calls": tool_calls,
+        "steps": int(counts.get("total") or 0),
+        "checks": checks_graded,
+        "checks_failed": int(evidence.get("failed") or 0),
     }
 
 

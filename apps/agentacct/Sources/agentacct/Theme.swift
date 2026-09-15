@@ -156,11 +156,14 @@ enum Theme {
         static let chartBar = AdaptiveColor(lightHex: 0x245BDB, darkHex: 0x5B82E0)
         static let chartBarDim = AdaptiveColor(lightHex: 0xB9CBF2, darkHex: 0x31456F)
 
-        // Source identity on the Work timeline ONLY: a scoped two-hue encoding
-        // (the accent cobalt for Claude Code, this indigo for Codex) so a
-        // cross-source folder reads at a glance. Distinct from the rationed
-        // semantic palette — it never means good/bad, only "which tool".
+        // Source identity on the Work timeline ONLY: a scoped categorical
+        // encoding (accent cobalt for Claude Code, plus these) so a cross-source
+        // folder reads at a glance. Every agent agentacct supports gets a hue;
+        // distinct from the rationed semantic palette — it never means good/bad,
+        // only "which tool".
         static let sourceCodex = AdaptiveColor(lightHex: 0x6A4BC0, darkHex: 0xB6A2F0)
+        static let sourceOpencode = AdaptiveColor(lightHex: 0x0E8494, darkHex: 0x53C6D6)
+        static let sourceHermes = AdaptiveColor(lightHex: 0xA5457F, darkHex: 0xE39AC8)
 
         // Copy that sits ON a filled accent (primary buttons): white in light,
         // near-black on the lighter dark-mode cobalt.
@@ -211,13 +214,18 @@ enum Theme {
     // MARK: source identity (Work timeline only)
 
     static let sourceCodex = Palette.sourceCodex.color
+    static let sourceOpencode = Palette.sourceOpencode.color
+    static let sourceHermes = Palette.sourceHermes.color
 
     /// Which agent a session came from → its bar color on the Work timeline.
-    /// A scoped encoding for "which tool", never a semantic (good/bad) claim.
+    /// A scoped categorical encoding for "which tool", never a semantic claim.
+    /// Every agent agentacct captures gets a hue; an unknown source stays muted.
     static func sourceColor(_ client: String?) -> Color {
         switch (client ?? "").lowercased() {
         case "claude-code", "claude", "claude code": return accent
         case "codex", "openai-codex", "codex-cli": return sourceCodex
+        case "opencode", "open-code": return sourceOpencode
+        case "hermes": return sourceHermes
         default: return muted
         }
     }

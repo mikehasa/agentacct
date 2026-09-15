@@ -1672,12 +1672,17 @@ struct WorksetLane: Decodable, Identifiable {
     let clientSessionId: String?
     let title: String?
     let sessionKind: String?
+    let status: String?
     let firstActivityAt: Double?
     let lastActivityAt: Double?
     let durationSeconds: Double?
     let totalTokens: Int?
     let estimatedCostUsd: Double?
     let costConfidence: String?
+    let toolCalls: Int?
+    let steps: Int?
+    let checks: Int?
+    let checksFailed: Int?
 
     var id: String { sessionKey ?? "\(client ?? "")::\(clientSessionId ?? "")" }
 
@@ -1688,7 +1693,7 @@ struct WorksetLane: Decodable, Identifiable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case client, title
+        case client, title, status, steps, checks
         case sessionKey = "session_key"
         case clientSessionId = "client_session_id"
         case sessionKind = "session_kind"
@@ -1698,6 +1703,8 @@ struct WorksetLane: Decodable, Identifiable {
         case totalTokens = "total_tokens"
         case estimatedCostUsd = "estimated_cost_usd"
         case costConfidence = "cost_confidence"
+        case toolCalls = "tool_calls"
+        case checksFailed = "checks_failed"
     }
 }
 
@@ -1742,8 +1749,12 @@ struct WorksetCandidate: Decodable, Identifiable {
     let sources: [String]
     let firstActivityAt: Double?
     let lastActivityAt: Double?
+    /// The id of a live group already anchored at this folder, if any — the
+    /// picker uses it to avoid offering a duplicate.
+    let existingWorksetId: String?
 
     var id: String { projectIdentity }
+    var alreadyGrouped: Bool { existingWorksetId != nil }
 
     enum CodingKeys: String, CodingKey {
         case label, sources
@@ -1751,6 +1762,7 @@ struct WorksetCandidate: Decodable, Identifiable {
         case sessionCount = "session_count"
         case firstActivityAt = "first_activity_at"
         case lastActivityAt = "last_activity_at"
+        case existingWorksetId = "existing_workset_id"
     }
 }
 

@@ -136,10 +136,20 @@ final class WorksetsPresentationTests: XCTestCase {
         XCTAssertEqual(WorksetFormat.span(from: 100, to: nil), "—")
     }
 
-    func testSourceLabelMapsKnownClients() {
+    func testSourceLabelMapsEveryAgentAndPassesUnknownThrough() {
         XCTAssertEqual(WorksetFormat.sourceLabel("claude-code"), "Claude Code")
         XCTAssertEqual(WorksetFormat.sourceLabel("codex"), "Codex")
         XCTAssertEqual(WorksetFormat.sourceLabel("opencode"), "OpenCode")
-        XCTAssertEqual(WorksetFormat.sourceLabel("hermes"), "hermes")  // unknown passes through
+        XCTAssertEqual(WorksetFormat.sourceLabel("hermes"), "Hermes")
+        XCTAssertEqual(WorksetFormat.sourceLabel("some-new-agent"), "some-new-agent")  // unknown passes through
+    }
+
+    func testDurationIsHumanAndAbsentWhenMissing() {
+        XCTAssertNil(WorksetFormat.duration(nil))
+        XCTAssertNil(WorksetFormat.duration(0))
+        XCTAssertEqual(WorksetFormat.duration(45), "45s")
+        XCTAssertEqual(WorksetFormat.duration(120), "2m")
+        XCTAssertEqual(WorksetFormat.duration(3 * 3600), "3.0h")
+        XCTAssertEqual(WorksetFormat.duration(12 * 3600), "12h")
     }
 }

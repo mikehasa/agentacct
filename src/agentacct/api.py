@@ -3495,7 +3495,10 @@ def create_local_api_app(
             "event_id": recorded.get("event_id"),
         }
 
-    _WORKSET_LANE_PREVIEW = 24
+    # A generous safety cap on lanes per card so one enormous folder cannot
+    # balloon a response; every real curated group is far below it, and the
+    # summary count stays exact regardless.
+    _WORKSET_LANE_CAP = 200
 
     def _workset_rollup() -> Any:
         events, fingerprint = _dashboard_events()
@@ -3513,21 +3516,24 @@ def create_local_api_app(
         )
         return lanes
 
-    def _workset_card(state: Any, rollup: Any, *, include_all: bool) -> dict[str, Any]:
-        members = workset_member_entries(rollup, state.project_identity)
-        summary = summarize_members(members)
+    def _workset_card(state: Any, rollup: Any) -> dict[str, Any]:
+        summary = summarize_members(workset_member_entries(rollup, state.project_identity))
         lanes = _workset_lanes(rollup, state.project_identity)
-        card = {
+        return {
             **state.to_dict(),
             "summary": summary,
             "sessions_total": len(lanes),
+            "sessions": lanes[:_WORKSET_LANE_CAP],
+            "sessions_truncated": len(lanes) > _WORKSET_LANE_CAP,
         }
-        if include_all:
-            card["sessions"] = lanes
-        else:
-            card["sessions"] = lanes[:_WORKSET_LANE_PREVIEW]
-            card["sessions_truncated"] = len(lanes) > _WORKSET_LANE_PREVIEW
-        return card
+
+    def _grouped_identities(events: list[dict[str, Any]]) -> dict[str, str]:
+        """project_identity -> workset_id for every live (non-deleted) grouping,
+        so the picker can hide an already-grouped folder and a duplicate create
+        can be refused."""
+
+        projection = reduce_worksets(events)
+        return {state.project_identity: state.workset_id for state in projection.active()}
 
     @app.get("/v1/workset-candidates")
     def v1_workset_candidates(request: Request) -> dict[str, Any]:
@@ -3536,15 +3542,20 @@ def create_local_api_app(
         Each candidate is one cross-source ``project_identity`` (a CC session and
         a Codex session in the same repo share it) with its friendly leaf label,
         root-session count, and the sources present — never a raw absolute path.
-        Sessions that wandered directories mid-run have no single folder and are
-        omitted; the honest gap is theirs to surface, not to hide.
+        ``existing_workset_id`` marks a folder that already has a group, so the
+        picker never offers a duplicate. Sessions that wandered directories
+        mid-run have no single folder and are omitted.
         """
 
         _require_v1_token(request)
-        _events, rollup = _workset_rollup()
+        events, rollup = _workset_rollup()
+        grouped = _grouped_identities(events)
+        candidates = workset_candidates(rollup)
+        for candidate in candidates:
+            candidate["existing_workset_id"] = grouped.get(candidate.get("project_identity"))
         return {
             "schema": WORKSET_SCHEMA_VERSION,
-            "candidates": workset_candidates(rollup),
+            "candidates": candidates,
         }
 
     @app.get("/v1/worksets")
@@ -3560,9 +3571,7 @@ def create_local_api_app(
         _require_v1_token(request)
         events, rollup = _workset_rollup()
         projection = reduce_worksets(events)
-        worksets = [
-            _workset_card(state, rollup, include_all=False) for state in projection.active()
-        ]
+        worksets = [_workset_card(state, rollup) for state in projection.active()]
         return {"schema": WORKSET_SCHEMA_VERSION, "worksets": worksets, "total": len(worksets)}
 
     @app.get("/v1/workset")
@@ -3582,7 +3591,7 @@ def create_local_api_app(
         # detail the list won't show.
         if state is None or state.deleted or workset_id in projection.invalid:
             raise HTTPException(status_code=404, detail="unknown workset for this store")
-        return {"schema": WORKSET_SCHEMA_VERSION, **_workset_card(state, rollup, include_all=True)}
+        return {"schema": WORKSET_SCHEMA_VERSION, **_workset_card(state, rollup)}
 
     @app.post("/v1/worksets")
     def v1_worksets_write(
@@ -3624,6 +3633,17 @@ def create_local_api_app(
             )
         if not idempotency_key:
             idempotency_key = f"v1:workset:{workset_id}:{action}:{expected_revision}"
+        # One group per folder: refuse a create/redirect onto a folder another
+        # live group already owns (a retry of THIS same group's create still
+        # replays idempotently below). Best-effort read; the store stays the
+        # integrity authority.
+        if action in {"create", "redirect"} and directory:
+            existing_id = _grouped_identities(service.list_all_events()).get(directory)
+            if existing_id is not None and existing_id != workset_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="a work group for this folder already exists",
+                )
         try:
             recorded = service.record_workset_action(
                 action=action,
