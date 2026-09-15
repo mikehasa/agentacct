@@ -6,6 +6,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.10] — 2026-09-14
+
+Fixes source-recording faults that surfaced once 0.10.9 made the Sources panel
+reachable: claude-code falsely reporting an incompatible adapter, and every
+source showing Degraded from a single codex reconcile conflict.
+
+### Fixed
+
+- claude-code no longer reports "source adapter incompatible" for the Workflow
+  tool's current journal shapes: the metadata-journal validator recognizes the
+  `launched` marker and the `label`/`phase` bookkeeping keys, while still
+  failing closed on any real usage row. (#239)
+- codex usage snapshots recorded within the same second no longer collide into
+  a permanent reconcile conflict that degraded every source — the usage event
+  now carries the same high-resolution rollout revision watermark as the
+  session observation, so `source_order` can order them. (#250)
+- Work pane no longer shows stale receipts after a background event-log poll:
+  the Work cache is invalidated on every successful rebuild. (#238)
+
 ## [0.10.9] — 2026-09-14
 
 Fixes a regression where the macOS app could report the recorder unreachable
@@ -1114,7 +1133,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.9...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.10...HEAD
+[0.10.10]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.10
 [0.10.9]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.9
 [0.10.8]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.8
 [0.10.7]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.7
