@@ -453,6 +453,9 @@ def test_produced_check_attaches_to_check_relevant_step_via_session_time():
                     "task_id": "t1",
                     "work_items": [
                         {
+                            # A real opencode projection stamps the step's client;
+                            # the check now attaches only within the same client.
+                            "client": "opencode",
                             "client_session_id": "ses_a",
                             "kind": kind,
                             "latest_status": "completed",

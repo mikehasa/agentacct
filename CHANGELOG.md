@@ -6,6 +6,24 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Reading the Claude desktop plan-usage history no longer aborts (dropping every
+  org's snapshot) when a sample carries a non-string, unhashable `org`; such
+  samples are skipped. (#222)
+- A `NaN` or `Infinity` timestamp or cost in a Codex or Claude Code log line no
+  longer crashes and aborts the entire local usage refresh; non-finite values are
+  treated as absent, matching the existing cursor-usage guard. (#223)
+- A passing hook check is no longer credited across clients when two clients in
+  one merged Task reuse the same raw session id, so a step is not falsely marked
+  independently checked. (#224)
+- Task "left-behind" inference now keys session identity on the `(client, session
+  id)` pair, so two clients reusing the same session-id string no longer suppress
+  the inactive / mostly-done downgrade. (#225)
+- An `events.jsonl` line carrying an out-of-range integer `created_at` no longer
+  aborts store open / event-log reconcile — the line is mirrored verbatim with
+  its indexed timestamp left empty. (#226)
+
 ## [0.10.10] — 2026-09-14
 
 Fixes source-recording faults that surfaced once 0.10.9 made the Sources panel

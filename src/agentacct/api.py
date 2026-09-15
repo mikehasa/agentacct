@@ -1353,7 +1353,7 @@ def _link_mechanical_checks_by_session_time(projection: dict[str, Any]) -> dict[
         items = [item for item in (task.get("work_items") or []) if isinstance(item, dict)]
         if not items:
             continue
-        by_session: dict[str, list[dict[str, Any]]] = {}
+        by_session: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for item in items:
             # A test/build/lint only exercises check-relevant work — a docs or
             # planning step is never a candidate (crediting it would also make the
@@ -1363,7 +1363,13 @@ def _link_mechanical_checks_by_session_time(projection: dict[str, Any]) -> dict[
                 continue
             session_id = str(item.get("client_session_id") or "")
             if session_id:
-                by_session.setdefault(session_id, []).append(item)
+                # Key by (client, session id), not the raw session id alone. Two
+                # clients inside one explicitly-merged cross-client Task can reuse
+                # the same self-reported raw id (e.g. an MCP "default"/"local"), so
+                # a passing hook check from one client must never be credited to the
+                # other client's step and falsely lift it to independently_checked.
+                client = str(item.get("client") or item.get("reporting_source") or "")
+                by_session.setdefault((client, session_id), []).append(item)
         for group in by_session.values():
             group.sort(key=lambda item: float(item.get("started_at") or item.get("updated_at") or 0.0))
         # Gather the task-level hook checks from BOTH pools _attach populates
@@ -1385,7 +1391,10 @@ def _link_mechanical_checks_by_session_time(projection: dict[str, Any]) -> dict[
             if str(check.get("result") or "").lower() != "passed":
                 continue
             session_id = str(check.get("client_session_id") or "")
-            group = by_session.get(session_id)
+            # Look up by the same (client, session id) key the item side is built
+            # on: a hook check is credited only to steps from its own client.
+            client = str(check.get("client") or check.get("source") or "")
+            group = by_session.get((client, session_id))
             if not group:
                 continue
             at = float(check.get("created_at") or check.get("occurred_at") or check.get("time") or 0.0)

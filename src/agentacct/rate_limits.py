@@ -975,6 +975,8 @@ def read_claude_plan_usage_latest(
         if not isinstance(sample, Mapping):
             continue
         org = sample.get("org")
+        if isinstance(org, (list, dict, set)):
+            continue  # an unhashable org can't key the group; skip this sample
         millis = sample.get("t")
         current = latest_by_org.get(org)
         if current is None:
