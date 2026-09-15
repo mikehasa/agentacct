@@ -104,6 +104,8 @@ def _record_section(
         "section_id": resolved_section,
         "section_status": status,
         "section_title": title,
+        "summary": "Recorded outcome for this fixture section." if status in {"completed", "handed_off"} else None,
+        "blocker": "The staging migration needs an owner role this account does not have." if status == "blocked" else None,
     }
     if kind is not None:
         metadata["kind"] = kind

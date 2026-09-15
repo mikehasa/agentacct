@@ -71,6 +71,7 @@ def _record_check(
         "name": name,
         "result": result,
         "summary": summary or f"{name}: {result}",
+        "exit_code": 0,
     }
     if session_id is not None:
         metadata["client_session_id"] = session_id
@@ -383,6 +384,7 @@ def test_unresolved_work_finding_controls_round_trip(tmp_path: Path) -> None:
                 "section_id": "unresolved-review",
                 "section_status": "completed",
                 "section_title": "Review unresolved namespace work",
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )

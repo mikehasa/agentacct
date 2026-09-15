@@ -5,6 +5,7 @@ own viewport/selection state; they do not infer event identity or relationships.
 """
 from __future__ import annotations
 
+from .display_budget import display_label_from_text
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
@@ -85,7 +86,7 @@ def session_display_titles(task: Mapping[str, Any]) -> dict[tuple[str, str], str
     titles: dict[tuple[str, str], str] = {}
     for item in _rows(task.get("work_items")):
         key = (_text(item.get("client") or item.get("reporting_source")), _text(item.get("client_session_id")))
-        title = _text(item.get("title") or item.get("objective") or item.get("summary"))
+        title = _text(item.get("title") or item.get("objective")) or display_label_from_text(item.get("summary"))
         if all(key) and title:
             titles.setdefault(key, title)
     for session in _rows(task.get("sessions")):
@@ -131,7 +132,15 @@ def build_timeline_events(task: Mapping[str, Any], checks: Sequence[Mapping[str,
                  "started_at": first or last, "updated_at": end,
                  "time_note": "Source time unavailable" if not (first or last) else "Recorded section start → latest update; not execution duration" if end else "Recorded section point; duration unavailable",
                  "time_warning": warning, "lane": "primary" if key == primary_key else "supporting",
-                 "title": _text(item.get("title") or item.get("summary")) or "Recorded work",
+                 # A card title is a LABEL, not a paragraph. Falling back to the
+                 # summary handed a 1,200-character paragraph to a card that
+                 # renders two lines of 14 pt text in a 200x80 pt box, so the
+                 # reader saw an arbitrary middle slice of a sentence. The fallback
+                 # now reduces the prose to a statement at the label budget; the
+                 # full summary still travels in its own field.
+                 "title": _text(item.get("title"))
+                 or display_label_from_text(item.get("summary"))
+                 or "Recorded work",
                  "status": _text(item.get("latest_status")) or "recorded", "source": source,
                  "source_label": _source_label(source, "work"), "confidence": _text(item.get("join_confidence")) or "claimed",
                  "important": bool(item.get("blocker")), "scope": stable or None,

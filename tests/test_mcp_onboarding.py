@@ -777,7 +777,7 @@ def test_mcp_doctor_warns_when_client_context_is_not_joinable(tmp_path: Path) ->
     )
     server.call_tool(
         "agentacct_record_section",
-        {"source": "codex", "section_id": "weak-section", "section_status": "started"},
+        {"source": "codex", "section_id": "weak-section", "section_status": "started", "section_title": "Fixture section title"},
     )
 
     result = runner.invoke(app, ["mcp", "doctor", "--store-dir", str(tmp_path)])
@@ -800,7 +800,7 @@ def test_mcp_doctor_reports_joinable_context_without_warnings(tmp_path: Path) ->
     )
     server.call_tool(
         "agentacct_record_section",
-        {"source": "claude-code", "section_id": "joined-section", "section_status": "started"},
+        {"source": "claude-code", "section_id": "joined-section", "section_status": "started", "section_title": "Fixture section title"},
     )
 
     result = runner.invoke(app, ["mcp", "doctor", "--store-dir", str(tmp_path)])

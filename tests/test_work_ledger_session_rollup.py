@@ -117,6 +117,8 @@ def _section(
             "section_title": f"Section {section_id}",
             "kind": "implementation",
             "files": list(files or []),
+            "summary": "Recorded outcome for this fixture section." if status in {"completed", "handed_off"} else None,
+            "blocker": "The staging migration needs an owner role this account does not have." if status == "blocked" else None,
         },
     }
 

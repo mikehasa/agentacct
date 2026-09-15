@@ -17,6 +17,8 @@ commit a stable, regenerable example.
 
 from __future__ import annotations
 
+from .display_budget import MARKDOWN_CELL_CHARACTERS, truncate_for_display
+
 from collections.abc import Mapping
 from typing import Any
 
@@ -72,7 +74,13 @@ def _dimension_rows(receipt: Mapping[str, Any]) -> list[tuple[str, str, str]]:
     task = dims.get("task", {}) if isinstance(dims.get("task"), Mapping) else {}
     objectives = task.get("objectives") or []
     boundary = task.get("boundary", {}) if isinstance(task.get("boundary"), Mapping) else {}
-    task_summary = "; ".join(str(o) for o in objectives[:2]) or "no objective recorded"
+    # A table cell is read beside other columns, so it is a phrase rather than a
+    # sentence. Objectives arrive as full prose, and two of them joined here can
+    # exceed the cell budget several times over (see display_budget.py).
+    task_summary = truncate_for_display(
+        "; ".join(str(o) for o in objectives[:2]) or "no objective recorded",
+        limit=MARKDOWN_CELL_CHARACTERS,
+    )
     if boundary.get("project"):
         task_summary += f" · project {boundary['project']}"
 

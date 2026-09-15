@@ -294,7 +294,7 @@ def test_onboard_global_agent_codex_installs_tool_activity_hooks(
     assert wrapper.exists()
     assert str(store) in wrapper.read_text()  # store bound on the command line
     hooks = json.loads((isolated_home / ".codex" / "hooks.json").read_text())
-    assert set(hooks["hooks"].keys()) == {"PreToolUse", "SessionEnd"}
+    assert set(hooks["hooks"].keys()) == {"SessionStart", "PreToolUse", "SessionEnd"}
     assert "agentacct_codex_hook.py" in hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
     # The one-time trust step is surfaced.
     assert "trust" in result.output.lower()

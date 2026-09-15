@@ -11,15 +11,23 @@ from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
 
 from . import version as version_info
+from .display_budget import CARD_TITLE_CHARACTERS, INSPECTOR_SUMMARY_CHARACTERS
 from .hooks import (
     _CONSUMER_ANCESTOR_MAX_DEPTH,
     CLAUDE_CODE_HOOK_CONTEXT_RELATIVE_PATH,
+    HOOK_CONTEXT_CLIENTS,
     HookContextSelection,
     process_ancestor_pids,
     select_claude_code_hook_context,
 )
 from .install_guide import MCP_SERVER_INSTRUCTIONS
 from .service import RESERVED_CLIENT_CONTEXT_PROVENANCE_KEYS, SentinelService
+from .semantic_rules import (
+    SemanticRecordError,
+    collapse_display_text,
+    collapse_narrative_text,
+    validate_semantic_record,
+)
 from .storage import METADATA_MAX_BYTES, json_utf8_size, validate_run_id
 
 
@@ -155,7 +163,14 @@ TOOLS: list[dict[str, Any]] = [
 
     {
         "name": "agentacct_record_event",
-        "description": "Record a redacted local integration event in agentacct's local work ledger. Does not call paid APIs.",
+        "description": (
+            "Record a redacted local integration event (a note or observation) in the work ledger. "
+            "Use this for a manual observation that is NOT a machine check -- anything you ran and "
+            "whose result you know belongs on agentacct_record_machine_check instead, because only a "
+            "check can support a completion claim. Numbers you put here are recorded as your report "
+            "and are deliberately EXCLUDED from token and cost totals: the totals come from imported "
+            "client usage. Never invent usage figures. Does not call paid APIs."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -226,7 +241,13 @@ TOOLS: list[dict[str, Any]] = [
                 "section_title": {
                     "type": ["string", "null"],
                     "maxLength": 160,
-                    "description": "Short human goal for this section. `title` is accepted as an alias; if both are supplied, `section_title` wins.",
+                    "description": (
+                        "Short human name for this unit of work. A timeline card renders about "
+                        f"{CARD_TITLE_CHARACTERS} characters on one line, so put the distinguishing words "
+                        "first: 'Add rate-limit to login', not 'Implementation of the login rate limiting "
+                        "work'. The cap is higher than the card so the inspector can show the full title. "
+                        "`title` is accepted as an alias; if both are supplied, `section_title` wins."
+                    ),
                 },
                 "title": {
                     "type": ["string", "null"],
@@ -235,20 +256,86 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "phase": {"type": ["string", "null"], "maxLength": 80},
                 "kind": {"type": ["string", "null"], "enum": ["planning", "implementation", "debugging", "testing", "review", "docs", "refactor", "research", "other", "unknown", None]},
-                "summary": {"type": ["string", "null"], "maxLength": 1200},
-                "client": {"type": ["string", "null"], "maxLength": 80},
-                "client_session_id": {"type": ["string", "null"], "maxLength": 240},
-                "client_transcript_id": {"type": ["string", "null"], "maxLength": 240},
-                "parent_client_session_id": {"type": ["string", "null"], "maxLength": 240},
-                "project_dir": {"type": ["string", "null"], "maxLength": 1000},
-                "turn_id": {"type": ["string", "null"], "maxLength": 240},
+                "summary": {
+                    "type": ["string", "null"],
+                    "maxLength": 1200,
+                    "description": (
+                        "One sentence stating the OUTCOME, then optional short lines for what changed and "
+                        "what was verified. Required on a terminal status. This is the only prose a reader "
+                        "sees, so lead with the result, not the process: 'Fixed the login redirect and "
+                        "covered it with two tests', not 'Reviewed the login flow and inspected the "
+                        "redirects'. The inspector renders about "
+                        f"{INSPECTOR_SUMMARY_CHARACTERS} characters before it stops being a summary and "
+                        "becomes a report; the cap is higher so nothing is lost, but past that length a "
+                        "reader skims rather than reads."
+                    ),
+                },
+                "client": {
+                    "type": ["string", "null"],
+                    "maxLength": 80,
+                    "description": "Which agent this is: codex, claude-code, opencode, hermes or openclaw.",
+                },
+                "client_session_id": {
+                    "type": ["string", "null"],
+                    "maxLength": 240,
+                    "description": (
+                        "Your client's session id, when you know it. This is the ONLY key that links "
+                        "this work to the token and cost usage recorded for the same session; without "
+                        "it the work shows as unjoined and its cost cannot be attributed. Never guess "
+                        "it -- an installed hook bridge supplies it automatically, and a wrong id is "
+                        "worse than a missing one."
+                    ),
+                },
+                "client_transcript_id": {
+                    "type": ["string", "null"],
+                    "maxLength": 240,
+                    "description": "The transcript file stem for this session, when your client exposes one. A second, independent join key.",
+                },
+                "parent_client_session_id": {
+                    "type": ["string", "null"],
+                    "maxLength": 240,
+                    "description": "The session that spawned this one, when this is a child agent. Keeps a subagent's work under its parent's Task.",
+                },
+                "project_dir": {
+                    "type": ["string", "null"],
+                    "maxLength": 1000,
+                    "description": (
+                        "Absolute path of the repository this work belongs to. Relativizes `files` and "
+                        "groups work by project. It never attributes usage on its own."
+                    ),
+                },
+                "turn_id": {
+                    "type": ["string", "null"],
+                    "maxLength": 240,
+                    "description": (
+                        "The current turn's id, when your client exposes one. Turn ids are what make "
+                        "per-turn usage attributable instead of session-wide."
+                    ),
+                },
                 "turn_index": {"type": ["integer", "null"], "minimum": 0},
                 "message_id": {"type": ["string", "null"], "maxLength": 240},
                 "request_id": {"type": ["string", "null"], "maxLength": 240},
                 "client_event_timestamp": {"type": ["string", "null"], "maxLength": 80},
                 "files": {"type": "array", "items": {"type": "string", "maxLength": 240}, "maxItems": 50, "default": [], "description": FILES_DESCRIPTION},
-                "blocker": {"type": ["string", "null"], "maxLength": 1200},
-                "next_step": {"type": ["string", "null"], "maxLength": 1200},
+                "blocker": {
+                    "type": ["string", "null"],
+                    "maxLength": 1200,
+                    "description": (
+                        "Required when section_status=blocked: the concrete thing that stopped the work, "
+                        "not a restatement of the goal. One or two sentences; a reader sees roughly the "
+                        f"first {INSPECTOR_SUMMARY_CHARACTERS} characters."
+                    ),
+                },
+                "next_step": {
+                    "type": ["string", "null"],
+                    "maxLength": 1200,
+                    "description": (
+                        "The concrete continuation point, so the next session (or the user) can resume "
+                        "without re-reading everything. Especially valuable with handed_off or blocked. "
+                        f"A reader sees roughly the first {INSPECTOR_SUMMARY_CHARACTERS} characters, so "
+                        "state the action, not the background."
+                    ),
+                },
                 "idempotency_key": {"type": ["string", "null"], "maxLength": 240},
                 "metadata": {"type": "object", "default": {}},
             },
@@ -258,7 +345,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "agentacct_record_agent_usage_debug",
-        "description": "Record a debug-only usage snapshot that the agent can see about itself. This is join evidence, not billing truth, and does not add to agentacct cost totals.",
+        "description": "Record a debug-only comparison evidence. Do not use it to report work or to make a cost claim: these numbers never enter usage or cost totals. Use it to state what you can actually see about your own token usage, or call it with reporting_basis=unavailable when you cannot see any usage snapshot that the agent can see about itself. This is join evidence, not billing truth, and does not add to agentacct cost totals.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -313,6 +400,28 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 200},
                 "run_id": {"type": ["string", "null"], "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "agentacct_work_status",
+        "description": (
+            "Read back YOUR OWN recorded work for this session: sections still open, any blocker and "
+            "next step you recorded, and whether the work you finished carries machine-check evidence. "
+            "Call it before you finish a task, and when resuming after a handoff. Use it to close a "
+            "section you left open, to recover the next step a previous session recorded, or to notice "
+            "that completed work has no check behind it. Read-only: it never writes to the ledger."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "client_session_id": {
+                    "type": ["string", "null"],
+                    "maxLength": 240,
+                    "description": "Scope the answer to one session. Omit to use this server's inherited hook context.",
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
             },
             "additionalProperties": False,
         },
@@ -384,7 +493,6 @@ def _optional_nullable_str(args: dict[str, Any], key: str) -> str | None:
     return value
 
 
-
 def _optional_nonnegative_int(args: dict[str, Any], key: str) -> int | None:
     value = args.get(key)
     if value is None:
@@ -438,6 +546,106 @@ def _optional_run_id(args: dict[str, Any], key: str, default: str | None = None)
         validate_run_id(value)
     except ValueError as exc:
         raise InvalidParams(str(exc)) from exc
+    return value
+
+
+# --- Display-quality rules (see design-plans/data-quality/RULES.md) ----------
+# Every field below is rendered in the canvas, the inspector, the TUI and the
+# receipt. A value that cannot be rendered degrades the whole surface, so the
+# rules here are enforced at record time rather than repaired at display time.
+#
+# Measured basis for the strictness (real ledger, 8,369 events): 0 titles are
+# empty or whitespace-only, 0 exceed the field caps, and 5 of 536 terminal
+# sections (0.9%) carry no summary. Refusing the incomplete cases therefore
+# costs at most a handful of corrective retries while removing the whole class
+# of unrenderable records.
+
+# Control characters that must never reach a single-line display field. Tab,
+# newline and carriage return become a space; the rest are dropped outright,
+# because they have no visual meaning at all.
+_DISPLAY_LINE_BREAKS = str.maketrans({"\t": " ", "\n": " ", "\r": " ", "\v": " ", "\f": " "})
+
+
+# Whitespace that carries display meaning and therefore survives the category
+# sweep below. Tab, newline, vertical tab, form feed and carriage return are all
+# category Cc, exactly like the C1 controls the sweep exists to remove -- so the
+# exception has to be explicit. (Getting this wrong twice is why the fuzz suite
+# asserts both directions: "control characters are gone" AND "line structure
+# survives".)
+_DISPLAY_MEANINGFUL_WHITESPACE = frozenset("\t\n\v\f\r")
+
+
+def _validate_context(context: dict[str, Any], status: str) -> None:
+    """Apply the shared semantic rules to a record this lane is about to store.
+
+    The MCP lane builds an event dict rather than a WorkEvent, so the shared
+    validator is called with the ledger's own discriminator
+    (``sentinel_semantic_kind``) and the extracted meaning. Keeping the rules in
+    ``semantic_rules`` is what lets the HTTP and CLI lanes enforce the same ones
+    at ``SentinelService.record_event`` instead of each surface inventing its own.
+    """
+    try:
+        validate_semantic_record(
+            semantic_kind=context.get("sentinel_semantic_kind"),
+            status=status,
+            fields=context,
+        )
+    except SemanticRecordError as exc:
+        raise InvalidParams(str(exc)) from exc
+    # Stamp the context the caller will store, so the service-level gate knows
+    # this record was already assessed with the full argument set.
+    context[SEMANTIC_RULES_VALIDATED_KEY] = True
+
+
+# The MCP lane's names for the shared normalizers. Tests reach the exact function
+# this lane uses through these; the implementation and rationale live in
+# agentacct.semantic_rules.
+_collapse_display_text = collapse_display_text
+
+
+_collapse_narrative_text = collapse_narrative_text
+
+
+def _display_title(args: dict[str, Any], key: str, *, max_length: int) -> str | None:
+    """A single-line title that is guaranteed to render.
+
+    Collapses before measuring, so a title that only exceeded the cap because of
+    stray whitespace is accepted rather than refused for a cosmetic reason.
+
+    Interior whitespace runs are collapsed, but leading and trailing whitespace
+    is preserved: a trailing space is part of the value the caller supplied, and
+    silently trimming it would change an identity that other records key on.
+    """
+    value = args.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise InvalidParams(f"{key} must be a string or null")
+    collapsed = _collapse_display_text(value)
+    if not collapsed.strip():
+        raise InvalidParams(
+            f"{key} must contain readable text, not only whitespace (received {len(value)} characters)"
+        )
+    if sum(character.isalnum() for character in collapsed) < 2:
+        raise InvalidParams(f"{key} must contain at least 2 letters or digits")
+    return _limit_display_value(key, collapsed, max_length=max_length)
+
+
+def _narrative_text(args: dict[str, Any], key: str, *, max_length: int) -> str | None:
+    value = args.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise InvalidParams(f"{key} must be a string or null")
+    collapsed = _collapse_narrative_text(value)
+    if not collapsed:
+        return None
+    return _limit_display_value(key, collapsed, max_length=max_length)
+
+
+def _limit_display_value(key: str, value: str, *, max_length: int) -> str:
+    if len(value) > max_length:
+        raise _limit_error(key, limit=max_length, received=len(value))
     return value
 
 
@@ -498,6 +706,14 @@ def _validate_metadata_size(value: dict[str, Any]) -> None:
 # three times in one session, twice AFTER the agent had already diagnosed it.
 # agentacct warns and records the suspicion; it never rejects and never
 # repairs, because repairing would fabricate fields the agent never wrote.
+
+# Server-authored marker. The MCP handlers run the shared semantic rules with
+# the full argument set (where a check's `name` and `exit_code` are visible);
+# the service-level gate then skips a record already validated here, because
+# re-running the identity rule against metadata alone would see no name and
+# refuse a record that already passed. Listed in RESERVED_CONTEXT_STRIP_KEYS, so
+# a caller cannot stamp its own records as validated.
+SEMANTIC_RULES_VALIDATED_KEY = "semantic_rules_validated"
 
 # Server-authored marker (listed in RESERVED_CONTEXT_STRIP_KEYS, so a caller
 # cannot stamp its own events with it).
@@ -609,6 +825,7 @@ def _mangled_tool_call_warnings(fields: Sequence[str]) -> list[str]:
 RESERVED_CONTEXT_STRIP_KEYS = frozenset(
     {
         "sentinel_semantic_kind",
+        SEMANTIC_RULES_VALIDATED_KEY,
         "usage_join_strategy",
         "client",
         "client_session_id",
@@ -1011,6 +1228,9 @@ class SentinelMCPServer:
             self.service.store.root,
             env_session_id=self._hook_env_session_id,
             consumer_ancestor_pids=self._consumer_ancestor_pids,
+            # Every client whose bridge captures a context file. Reading only
+            # claude-code's slot is what left Codex sections with no session id.
+            clients=HOOK_CONTEXT_CLIENTS,
         )
 
     def _inherit_hook_client_context(
@@ -1034,9 +1254,11 @@ class SentinelMCPServer:
         """
         effective_client = context.get("client") or self._attached_client_context.get("client")
         if effective_client is not None:
-            if effective_client != "claude-code":
+            if effective_client not in HOOK_CONTEXT_CLIENTS:
                 return [], None
-        elif not str(source or "").lower().replace("_", "-").startswith("claude"):
+        elif not str(source or "").lower().replace("_", "-").startswith(("claude", "codex")):
+            # The source names neither a client with a hook bridge nor a
+            # claude/codex alias, so there is no context to inherit from.
             return [], None
         selection = self._select_hook_client_context()
         if selection.status == "none":
@@ -1046,7 +1268,7 @@ class SentinelMCPServer:
                 # Server-authored refusal record; only stamped when
                 # inheritance would actually have been attempted (a caller
                 # that passed its own id never needed the hook context).
-                context["client_context_inheritance_refused"] = "concurrent_claude_code_hook_contexts"
+                context["client_context_inheritance_refused"] = "concurrent_hook_contexts"
                 context["hook_context_fresh_count"] = selection.fresh_count
             return [], selection
         hook_context = selection.context or {}
@@ -1259,6 +1481,20 @@ class SentinelMCPServer:
                             "a blocker resolution requires exit_code=0 or an artifact_ref/artifact_path/artifact_url"
                         )
                 evidence_project_dir = _optional_limited_str(arguments, "project_dir", None, max_length=1000)
+                # Quality gates (RULES.md R5/R6): a check must name what it ran
+                # or what it produced, and its name must identify it. Both are
+                # measured on what will actually be STORED, which is why the
+                # files list is filtered first: a caller whose only entry names
+                # the project root ends up with no files at all, and that record
+                # is exactly as un-auditable as one that supplied none.
+                evidence_command = _optional_limited_str(arguments, "command", None, max_length=500)
+                evidence_files = _optional_project_relative_files(arguments, project_dir=evidence_project_dir)
+                evidence_artifact_ref = _optional_limited_str(arguments, "artifact_ref", None, max_length=240)
+                evidence_artifact_path = _optional_limited_str(arguments, "artifact_path", None, max_length=500)
+                evidence_artifact_url = _optional_limited_str(arguments, "artifact_url", None, max_length=500)
+                # A generic name is refused only when it is the check's ONLY
+                # identifier; a command, file list or artifact identifies it,
+                # and so does a specific name.
                 mangled_fields = _detect_mangled_tool_call_fields(
                     "agentacct_record_machine_check", arguments, MACHINE_CHECK_NARRATIVE_KEYS
                 )
@@ -1267,15 +1503,19 @@ class SentinelMCPServer:
                     "evidence_type": _optional_choice(arguments, "evidence_type", EVIDENCE_TYPES, "other"),
                     "result": result,
                     "summary": evidence_summary,
-                    "name": check_name,
+                    # `name` identifies the check and keys supersession, so it is
+                    # collapsed for display (R2); the schema's own 240-character
+                    # cap is measured on the raw value, so measure the collapsed
+                    # one here rather than re-checking a limit already enforced.
+                    "name": _collapse_display_text(check_name),
                     "section_id": _optional_limited_str(arguments, "section_id", None, max_length=120),
                     "work_id": _optional_limited_str(arguments, "work_id", None, max_length=120),
-                    "command": _optional_limited_str(arguments, "command", None, max_length=500),
+                    "command": evidence_command,
                     "exit_code": evidence_exit_code,
-                    "artifact_ref": _optional_limited_str(arguments, "artifact_ref", None, max_length=240),
-                    "artifact_path": _optional_limited_str(arguments, "artifact_path", None, max_length=500),
-                    "artifact_url": _optional_limited_str(arguments, "artifact_url", None, max_length=500),
-                    "files": _optional_project_relative_files(arguments, project_dir=evidence_project_dir),
+                    "artifact_ref": evidence_artifact_ref,
+                    "artifact_path": evidence_artifact_path,
+                    "artifact_url": evidence_artifact_url,
+                    "files": evidence_files,
                     "idempotency_key": _optional_limited_str(arguments, "idempotency_key", None, max_length=240),
                     "client": _optional_limited_str(arguments, "client", None, max_length=80),
                     "client_session_id": _optional_limited_str(arguments, "client_session_id", None, max_length=240),
@@ -1293,6 +1533,23 @@ class SentinelMCPServer:
                     # stamp the marker through free-form metadata.
                     MANGLED_TOOL_CALL_METADATA_KEY: mangled_fields or None,
                 }
+                # The before/after lane records its exit codes as the evidence,
+                # so pass that shape through to the shared rule.
+                # Validate the record as it will be assessed (including the
+                # before/after lane, which proves reproducibility with arguments
+                # that never enter metadata), then stamp the marker on the
+                # context that is actually stored. Stamping a temporary copy was
+                # the bug that made the service gate re-check and refuse this.
+                _validate_context(
+                    {
+                        **evidence_context,
+                        "before_summary": before_summary,
+                        "after_summary": after_summary,
+                        "exit_code": evidence_exit_code,
+                    },
+                    str(result),
+                )
+                evidence_context[SEMANTIC_RULES_VALIDATED_KEY] = True
                 payload["event"] = self.service.record_event(
                     {
                         # frozen source string (pre-rename): stored in events forever.
@@ -1441,9 +1698,15 @@ class SentinelMCPServer:
             section_status = _required_choice(arguments, "section_status", {"started", "checkpoint", "completed", "blocked", "handed_off"})
             # Both spellings are validated even when only one is used, so a
             # malformed alias is never silently ignored. section_title wins.
-            section_title = _optional_limited_str(arguments, "section_title", None, max_length=160)
-            section_title_alias = _optional_limited_str(arguments, "title", None, max_length=160)
+            # Display rules (RULES.md R1/R2): the title is collapsed before it
+            # is measured, and a title that cannot render is refused.
+            section_title = _display_title(arguments, "section_title", max_length=160)
+            section_title_alias = _display_title(arguments, "title", max_length=160)
             section_project_dir = _optional_limited_str(arguments, "project_dir", None, max_length=1000)
+            resolved_title = section_title if section_title is not None else section_title_alias
+            section_summary = _narrative_text(arguments, "summary", max_length=1200)
+            section_blocker = _narrative_text(arguments, "blocker", max_length=1200)
+            section_next_step = _narrative_text(arguments, "next_step", max_length=1200)
             mangled_fields = _detect_mangled_tool_call_fields(
                 "agentacct_record_section", arguments, SECTION_NARRATIVE_KEYS
             )
@@ -1452,18 +1715,19 @@ class SentinelMCPServer:
                 "usage_join_strategy": "agent_reported_section_context",
                 "section_id": _required_limited_str(arguments, "section_id", max_length=120),
                 "section_status": section_status,
-                "section_title": section_title if section_title is not None else section_title_alias,
+                "section_title": resolved_title,
                 "phase": _optional_limited_str(arguments, "phase", None, max_length=80),
                 "kind": _optional_choice(arguments, "kind", WORK_KINDS, "unknown"),
-                "summary": _optional_limited_str(arguments, "summary", None, max_length=1200),
+                "summary": section_summary,
                 "files": _optional_project_relative_files(arguments, project_dir=section_project_dir),
-                "blocker": _optional_limited_str(arguments, "blocker", None, max_length=1200),
-                "next_step": _optional_limited_str(arguments, "next_step", None, max_length=1200),
+                "blocker": section_blocker,
+                "next_step": section_next_step,
                 # Server-authored; listed even when empty so a caller cannot
                 # stamp the marker through free-form metadata.
                 MANGLED_TOOL_CALL_METADATA_KEY: mangled_fields or None,
                 **_client_context_metadata(arguments, require_client=False, require_session=False),
             }
+            _validate_context(context, section_status)
             section_source = _required_limited_str(arguments, "source", max_length=80)
             # Inheritance rules: ids are never inherited when the caller
             # supplied either id (the pair must not mix sources), the pair
@@ -1679,6 +1943,11 @@ class SentinelMCPServer:
             limit = _optional_int(arguments, "limit", 20, minimum=1, maximum=200)
             run_id = _optional_run_id(arguments, "run_id")
             payload = {"events": self.service.list_events(limit=limit, run_id=run_id)}
+        elif name == "agentacct_work_status":
+            _reject_unknown_keys(arguments, {"client_session_id", "limit"})
+            limit = _optional_int(arguments, "limit", 10, minimum=1, maximum=50)
+            requested_session = _optional_limited_str(arguments, "client_session_id", None, max_length=240)
+            payload = self._work_status(requested_session=requested_session, limit=limit)
         elif name == "agentacct_get_event_summary":
             _reject_unknown_keys(arguments, {"limit", "run_id"})
             limit = _optional_int(arguments, "limit", 200, minimum=1, maximum=200)
@@ -1687,6 +1956,86 @@ class SentinelMCPServer:
         else:
             raise ValueError(f"Unknown tool: {name}")
         return {"content": [{"type": "text", "text": json.dumps(payload, indent=2, sort_keys=True)}]}
+
+    def _work_status(self, *, requested_session: str | None, limit: int) -> dict[str, Any]:
+        """What this session has recorded, and what it still owes the ledger.
+
+        Built from the same projection the app renders, so an agent sees what the
+        user sees. Read-only by construction: it reads the ledger and never
+        writes, so calling it can never change recorded work.
+        """
+        from .work_ledger import build_work_ledger
+
+        events = self.service.list_all_events()
+        ledger = build_work_ledger(events)
+        items = [item for item in ledger.get("work_items", []) if isinstance(item, dict)]
+
+        session = requested_session
+        if session is None:
+            selection = self._select_hook_client_context()
+            if selection.context:
+                session = selection.context.get("client_session_id")
+        if session:
+            items = [item for item in items if str(item.get("client_session_id") or "") == session]
+
+        open_items = [
+            item for item in items if str(item.get("latest_status")) in {"started", "checkpoint"}
+        ]
+        blocked = [item for item in items if str(item.get("latest_status")) == "blocked"]
+        completed_without_evidence = [
+            item
+            for item in items
+            if str(item.get("latest_status")) == "completed" and not item.get("evidence_events")
+        ]
+
+        def brief(item: dict[str, Any]) -> dict[str, Any]:
+            return {
+                key: value
+                for key, value in {
+                    "section_id": item.get("section_id"),
+                    "title": item.get("title"),
+                    "status": item.get("latest_status"),
+                    "blocker": item.get("blocker"),
+                    "next_step": item.get("next_step"),
+                    "checks": len(item.get("evidence_events") or []),
+                    "joined_to_usage": item.get("join_confidence"),
+                }.items()
+                if value not in (None, "", [])
+            }
+
+        status: dict[str, Any] = {
+            "client_session_id": session,
+            "sections_recorded": len(items),
+            "counts": {
+                "open": len(open_items),
+                "blocked": len(blocked),
+                "completed_without_evidence": len(completed_without_evidence),
+            },
+            "open_sections": [brief(item) for item in open_items[:limit]],
+            "blocked_sections": [brief(item) for item in blocked[:limit]],
+            "completed_without_evidence": [brief(item) for item in completed_without_evidence[:limit]],
+        }
+        instructions: list[str] = []
+        if open_items:
+            instructions.append(
+                "Close each open section with section_status=completed (plus a summary) or "
+                "handed_off (plus a summary and next_step)."
+            )
+        if completed_without_evidence:
+            instructions.append(
+                "These are recorded as completed with no machine check behind them: record one with "
+                "agentacct_record_machine_check (command or files, plus exit_code) or the claim stays "
+                "unverified."
+            )
+        if session is None:
+            instructions.append(
+                "No session id is in scope, so this lists work across sessions. Pass "
+                "client_session_id, or install the client hook bridge, to scope it to this session."
+            )
+        if not items:
+            instructions.append("Nothing is recorded for this session yet.")
+        status["what_to_do_next"] = instructions
+        return status
 
     @staticmethod
     def _response(msg_id: Any, result: dict[str, Any]) -> dict[str, Any]:

@@ -195,6 +195,7 @@ Current MCP tools include:
 - `agentacct_record_agent_usage_debug`
 - `agentacct_list_events`
 - `agentacct_get_event_summary`
+- `agentacct_work_status`
 
 Use local usage import for token/cost truth, and use MCP tools for workflow context. `agentacct_attach_client_context` stores local session/turn/message identifiers, while `agentacct_record_section` stores human-readable task chapters that can later be joined to imported usage. `agentacct_record_agent_usage_debug` stores agent-visible usage snapshots for comparison only; it does not add to agentacct's usage or cost totals.
 

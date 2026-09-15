@@ -89,8 +89,16 @@ USAGE_EVENT_CLIENTS: tuple[str, ...] = (
     "openclaw",
 )
 _MAX_SESSION_TITLE_LENGTH = 240
-_CLAUDE_IDENTITY_SCAN_MAX_BYTES = 256 * 1024
-_CLAUDE_IDENTITY_SCAN_MAX_LINES = 256
+# Identity scan budget. Measured over the 6,595 transcripts in
+# ~/.claude/projects: a normal transcript carries `sessionId` at roughly byte
+# 4,000 on its FIRST line, so 256 KiB resolved 94.87% of files and the 41 that
+# failed were the genuinely large ones. Raising the budget to 2 MiB resolves 17
+# of those 41 and costs no measurable time (0.8s for the whole corpus either
+# way, because the scan stops at the first match). The remainder are files that
+# contain no `sessionId` at all -- workflow journals, not transcripts -- which
+# this cannot fix and must not guess at.
+_CLAUDE_IDENTITY_SCAN_MAX_BYTES = 2 * 1024 * 1024
+_CLAUDE_IDENTITY_SCAN_MAX_LINES = 512
 _CLAUDE_WORKFLOW_JOURNAL_MAX_BYTES = 8 * 1024 * 1024
 _CLAUDE_WORKFLOW_JOURNAL_MAX_LINES = 8_192
 # The Workflow tool writes one metadata row per agent lifecycle transition.
@@ -1442,6 +1450,19 @@ def _discover_codex_usage_from_home(
                 ),
                 started_at=_optional_int(row.get("created_at")),
                 updated_at=_optional_int(row.get("updated_at")),
+                # Per-session revision watermark. Codex's threads.updated_at is a
+                # WHOLE SECOND, and the refreshable lane orders revisions by
+                # source_order: two real revisions inside one displayed second
+                # compare equal, and equal order plus a different content hash is
+                # not provenance-only drift, so it parks as a conflict that can
+                # never clear -- there is no reconcile path for refreshable usage
+                # (evidence_store only ever appends). Measured before this change:
+                # 0 of 372 codex usage rows carried a watermark, against 2005 of
+                # 2005 for claude and 21 of 21 for opencode. The rollout file's
+                # microsecond mtime orders revisions inside a second exactly as
+                # claude's transcript mtime already does.
+                source_revision_at=_codex_session_revision_at(source_path, row),
+                source_revision_basis="rollout_file_mtime_us",
                 turn_count=_safe_nonnegative_int(usage.get("turn_count")),
                 client_session_kind=session_kind,
                 # Task-grouping parent, mirroring the observation above: the
@@ -6774,6 +6795,37 @@ def _codex_counter_presence(value: object) -> tuple[bool, bool, bool, bool, bool
         _codex_counter_source_present(value, field_name)
         for field_name in (*_CODEX_TOKEN_COUNTER_FIELDS, "total_tokens")
     )  # type: ignore[return-value]
+
+
+def _codex_session_revision_at(source_path: Path, row: Mapping[str, Any]) -> int | None:
+    """A per-session revision watermark for one codex usage row, in microseconds.
+
+    Preference order, highest resolution first:
+
+    1. the rollout file's mtime in microseconds -- the same signal claude uses
+       (``transcript_file_mtime_us``), and the only one that can order two real
+       revisions inside one displayed second;
+    2. the row's own update stamp, scaled to microseconds.
+
+    Returns None when neither is available. None is honest: the refreshable lane
+    then falls back to ``updated_at`` exactly as it did before, so a session with
+    no readable file behaves no worse than today.
+    """
+    candidates = [source_path, row.get("rollout_path"), row.get("source_file")]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            stat_result = Path(str(candidate)).stat()
+        except (OSError, ValueError):
+            continue
+        stamp = getattr(stat_result, "st_mtime_ns", None)
+        if isinstance(stamp, int) and stamp > 0:
+            return stamp // 1000
+    fallback = row.get("updated_at")
+    if isinstance(fallback, int) and fallback > 0:
+        return fallback * 1_000_000
+    return None
 
 
 def _codex_counter_reported(usage: dict[str, Any], field_name: str) -> bool:

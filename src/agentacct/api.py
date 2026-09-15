@@ -1189,7 +1189,34 @@ def _task_title(task: Mapping[str, Any]) -> str:
     )
     project = str(primary_session.get("project") or "").strip() if isinstance(primary_session, Mapping) else ""
     client_label = _human_client(primary.get("client"))
-    return f"{client_label} in {project}" if project else f"Untitled {client_label} chat"
+    if project:
+        return f"{client_label} in {project}"
+    # Nothing names this Task: no client session title, no work title, no project.
+    # Four such rows used to read identically as "Untitled OpenClaw chat", which
+    # is a placeholder a reader cannot act on (measured: 4 of 55 Tasks in the
+    # installed store). Prefer something that distinguishes one row from the next
+    # -- the observation's own start time -- over a label that cannot.
+    started = primary_session.get("started_at") if isinstance(primary_session, Mapping) else None
+    if started is None:
+        started = task.get("last_activity_at")
+    try:
+        day = _short_date(float(started)) if started is not None else ""
+    except (TypeError, ValueError):
+        day = ""
+    return f"{client_label} session · {day}" if day else f"{client_label} session (unnamed)"
+
+
+def _short_date(timestamp: float) -> str:
+    """A local calendar day for a title, or "" when the stamp is unusable."""
+    import datetime as _datetime
+
+    if timestamp <= 0 or timestamp != timestamp:  # noqa: PLR0124 - NaN check
+        return ""
+    try:
+        moment = _datetime.datetime.fromtimestamp(timestamp)
+    except (OverflowError, OSError, ValueError):
+        return ""
+    return moment.strftime("%d %b")
 
 
 def _receipt_attention_priority(summary: Mapping[str, Any]) -> int | None:

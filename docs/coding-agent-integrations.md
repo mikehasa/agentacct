@@ -45,6 +45,7 @@ MCP setup gives a coding agent access to these nine local agentacct tools:
 - `agentacct_record_agent_usage_debug`
 - `agentacct_list_events`
 - `agentacct_get_event_summary`
+- `agentacct_work_status`
 
 This lets the agent record checkpoints, notes, machine-check evidence, semantic work sections, local client join keys such as session id, parent session id, turn id, request id, and message id, plus debug-only snapshots of usage that the agent can see about itself. It does not automatically parse that agent's private session logs, and it does not give agentacct provider-billed cost control.
 
