@@ -594,6 +594,142 @@ def test_work_cursor_follows_selection(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# #220: attention/search over the FULL store, not the truncated recent slice   #
+# --------------------------------------------------------------------------- #
+
+def _seed_stale_blocker(tmp: Path, *, now: float, n_completed: int) -> str:
+    """A store with ONE blocked task OLDER than `n_completed` newer completed
+    tasks (#220 fixture). The blocker's `last_activity_at` is the oldest, so it
+    falls outside the newest-`_RECEIPTS_LIMIT` display slice: the pre-fix
+    Dashboard classified attention over that slice (reporting "All clear") and
+    the pre-fix Work pane never built a row for it (unsearchable). Returns the
+    blocker's title."""
+
+    svc = SentinelService(tmp)
+    blocker_title = "Rotate the leaked deploy key"
+    old = now - 12 * 3600
+    _record_usage(svc, client="claude-code", model="claude-opus-4-8", session_id="s-stale-blocked",
+                  tokens=50_000_000, updated_at=int(old), cost=40.0, title=blocker_title)
+    _record_section(svc, session="s-stale-blocked", section_id="s-stale-blocked-1", title=blocker_title,
+                    status="blocked", at=old, summary="hit a blocker", blocker="prod vault unreachable")
+    # `n_completed` completed tasks, every one NEWER than the blocker so the
+    # blocker sorts last (oldest) in the newest-first list.
+    for i in range(n_completed):
+        at = old + 60 + i * 30
+        sid = f"s-done-{i:04d}"
+        _record_usage(svc, client="claude-code", model="claude-opus-4-8", session_id=sid,
+                      tokens=1_000_000, updated_at=int(at), cost=0.5, title=f"Completed task {i:04d}")
+        _record_section(svc, session=sid, section_id=f"{sid}-1", title=f"Completed task {i:04d}",
+                        status="completed", at=at)
+    return blocker_title
+
+
+def test_dashboard_attention_scans_full_store_not_recent_slice(tmp_path):
+    """#220 BUG: a blocker older than the newest `_RECEIPTS_LIMIT` completed
+    tasks must still drive the Dashboard. Pre-fix, attention was classified over
+    the truncated recent slice, so this store falsely read "All clear". (Slow —
+    it seeds `_RECEIPTS_LIMIT` + 1 tasks; that is expected.)"""
+
+    now = time.time()
+    blocker_title = _seed_stale_blocker(tmp_path, now=now, n_completed=tui._RECEIPTS_LIMIT)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            plain = Text.from_markup(app._dashboard_text).plain
+            assert "All clear" not in plain          # the whole queue is NOT empty
+            assert blocker_title in plain             # the stale blocker surfaces
+            assert "PRIMARY ATTENTION" in plain
+            # exactly one task needs the user, counted over the FULL store
+            assert "1 review item" in plain
+            assert "1 OF 1" in plain
+
+    _run(scenario())
+
+
+def test_work_search_reaches_stale_blocker_and_discloses_total(tmp_path):
+    """#220 BUG: with more than `_RECEIPTS_LIMIT` tasks the older blocker is
+    outside the capped display list, yet text search must still find it and the
+    head must disclose the true total. Pre-fix only the newest `_RECEIPTS_LIMIT`
+    rows were built, so the blocker was unsearchable and the total undisclosed."""
+
+    now = time.time()
+    cap = tui._RECEIPTS_LIMIT
+    blocker_title = _seed_stale_blocker(tmp_path, now=now, n_completed=cap)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.press("2")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            # a row is built for EVERY task; the true total is cap + 1
+            assert len(app._work_summaries) == cap + 1
+            blocker_id = next(str(s.get("task_id")) for s in app._work_summaries
+                              if str(s.get("title")) == blocker_title)
+            # Sort by recency so the OLDEST row (the blocker) falls past the
+            # display cap — under the default attention sort it would be pinned to
+            # the top instead, which would not exercise the hidden-row case.
+            app._work_sort = "latest"
+            app._render_work_head()
+            app._render_work_list()
+            await pilot.pause()
+            # the DISPLAY is still capped, so the older blocker is now hidden
+            assert len(app._work_visible_ids) == cap
+            assert blocker_id not in app._work_visible_ids
+            # the head discloses the cap so the hidden row is never silent
+            head = Text.from_markup(app._work_head_text).plain
+            assert f"showing {cap} of {cap + 1}" in head
+            # ...and text search still reaches the hidden blocker
+            app.query_one("#work-filter", Input).value = "leaked deploy key"
+            await pilot.pause()
+            matches = app._filtered_work()
+            assert [str(s.get("title")) for s in matches] == [blocker_title]
+            assert blocker_id in app._work_visible_ids
+
+    _run(scenario())
+
+
+def test_work_under_cap_surfaces_blocker_with_no_truncation_disclosure(tmp_path):
+    """#220 LEGIT (preserve): when the whole store fits under `_RECEIPTS_LIMIT`,
+    the blocker still surfaces on the Dashboard and in the Work list, and the head
+    shows NO truncation disclosure."""
+
+    now = time.time()
+    blocker_title = _seed_stale_blocker(tmp_path, now=now, n_completed=3)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            dash = Text.from_markup(app._dashboard_text).plain
+            assert "All clear" not in dash
+            assert blocker_title in dash
+            await pilot.press("2")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert len(app._work_summaries) == 4
+            blocker_id = next(str(s.get("task_id")) for s in app._work_summaries
+                              if str(s.get("title")) == blocker_title)
+            # within the cap → shown in the list, and no "showing N of M" disclosure
+            assert blocker_id in app._work_visible_ids
+            head = Text.from_markup(app._work_head_text).plain
+            assert "showing" not in head
+
+    _run(scenario())
+
+
+# --------------------------------------------------------------------------- #
 # Usage                                                                        #
 # --------------------------------------------------------------------------- #
 

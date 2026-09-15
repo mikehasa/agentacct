@@ -6,6 +6,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The TUI Dashboard could report "All clear" and the Work pane could hide (and
+  make unsearchable) a blocked task older than the 300 most recent, because both
+  sliced to the newest 300 before classifying attention or filtering. Attention
+  is now classified over the whole store, Work builds a row for every task so
+  search reaches an older blocker, and the Work head discloses "showing 300 of
+  N" when its list is truncated. (#220)
+
 ## [0.10.10] — 2026-09-14
 
 Fixes source-recording faults that surfaced once 0.10.9 made the Sources panel
