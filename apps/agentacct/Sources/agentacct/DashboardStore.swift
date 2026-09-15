@@ -115,6 +115,16 @@ final class DashboardStore {
     private(set) var isRefreshing = false
     private(set) var isLoadingReceipts = false
     private(set) var lastUpdated: Date?
+
+    /// Folder-anchored Work groupings (the Work tab). Membership is re-queried
+    /// live on every fetch, so a new session in a folder joins on its own.
+    private(set) var worksets: [WorksetCard] = []
+    private(set) var worksetsError: String?
+    private(set) var isLoadingWorksets = false
+    private(set) var worksetsLastUpdated: Date?
+    /// Folders the recorder has seen, for the "point at a folder" picker.
+    private(set) var worksetCandidates: [WorksetCandidate] = []
+    private(set) var worksetCandidatesError: String?
     /// Freshness of the independently published receipt collection.
     /// A Work-only retry must not relabel the other dashboard panes as fresh.
     private(set) var receiptListLastUpdated: Date?
@@ -651,6 +661,95 @@ final class DashboardStore {
         await fetchAttention()
     }
 
+    // MARK: - Worksets (folder-anchored Work groupings)
+
+    func fetchWorksets() async {
+        guard !isOfflineSnapshot else { return }
+        isLoadingWorksets = true
+        defer { isLoadingWorksets = false }
+        do {
+            let payload: WorksetsPayload = try await client.getAuthed("/v1/worksets")
+            worksets = payload.worksets
+            worksetsError = nil
+            worksetsLastUpdated = SnapshotMode.enabled ? nil : Date()
+        } catch GlanceClientError.noDiscovery(_) {
+            worksetsError = "daemon not running (no discovery file) — start it with `agentacct start`"
+        } catch GlanceClientError.http(404) {
+            worksets = []
+            worksetsError = nil
+        } catch {
+            worksetsError = "work groups fetch failed: \(error.localizedDescription)"
+        }
+    }
+
+    func fetchWorksetCandidates() async {
+        guard !isOfflineSnapshot else { return }
+        do {
+            let payload: WorksetCandidatesPayload = try await client.getAuthed("/v1/workset-candidates")
+            worksetCandidates = payload.candidates
+            worksetCandidatesError = nil
+        } catch GlanceClientError.noDiscovery(_) {
+            worksetCandidatesError = "daemon not running"
+        } catch {
+            worksetCandidatesError = "folders fetch failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// One workset's full member timeline (all lanes, not the bounded preview).
+    func loadWorkset(id: String) async throws -> WorksetCard {
+        try await client.getAuthed("/v1/workset?id=\(Self.queryValue(id))")
+    }
+
+    /// The caller supplies a STABLE `worksetId` (minted once per create intent)
+    /// so a retry after a lost response replays idempotently on the server —
+    /// the operation is keyed by this id, never a fresh one per call — instead
+    /// of forking a second grouping for the same folder.
+    @discardableResult
+    func createWorkset(name: String, directory: String, worksetId: String) async throws -> WorksetWriteResponse {
+        guard !isOfflineSnapshot else { throw SavedWorkError.readOnly }
+        let body: [String: Any] = [
+            "action": "create",
+            "workset_id": worksetId,
+            "name": name,
+            "directory": directory,
+            "expected_revision": 0,
+        ]
+        let response: WorksetWriteResponse = try await client.postAuthed("/v1/worksets", body: body)
+        await fetchWorksets()
+        return response
+    }
+
+    /// A fresh workset id for one create intent, reused across retries by the UI.
+    static func newWorksetId() -> String { "ws_" + UUID().uuidString }
+
+    func renameWorkset(id: String, name: String, expectedRevision: Int) async throws {
+        guard !isOfflineSnapshot else { throw SavedWorkError.readOnly }
+        do {
+            let _: WorksetWriteResponse = try await client.postAuthed("/v1/worksets", body: [
+                "action": "rename", "workset_id": id, "name": name, "expected_revision": expectedRevision,
+            ])
+        } catch {
+            // A 409 means it moved under us — re-read so the next attempt uses
+            // the current revision instead of re-offering the stale one.
+            await fetchWorksets()
+            throw error
+        }
+        await fetchWorksets()
+    }
+
+    func deleteWorkset(id: String, expectedRevision: Int) async throws {
+        guard !isOfflineSnapshot else { throw SavedWorkError.readOnly }
+        do {
+            let _: WorksetWriteResponse = try await client.postAuthed("/v1/worksets", body: [
+                "action": "delete", "workset_id": id, "expected_revision": expectedRevision,
+            ])
+        } catch {
+            await fetchWorksets()
+            throw error
+        }
+        await fetchWorksets()
+    }
+
     /// Preload one session's deep view into `preloadedSessions` (snapshot support).
     func preloadSession(client clientName: String, sessionId: String) async {
         if let detail = try? await loadSession(client: clientName, sessionId: sessionId) {
@@ -775,7 +874,12 @@ enum DashboardDestination: Equatable {
 
 enum MainPane: String, CaseIterable, Identifiable {
     case dashboard = "Dashboard"
-    case work = "Work"
+    // Folder-anchored Work groupings across Claude Code and Codex. The internal
+    // case is `worksets`; its user-facing tab is "Work". The `work` case below
+    // (the receipts collection) keeps its name for its many call sites but now
+    // shows as "Sessions" — the granular runs a Work groups the higher level.
+    case worksets = "Work"
+    case work = "Sessions"
     case usage = "Usage"
     case sources = "Sources"
     var id: String { rawValue }

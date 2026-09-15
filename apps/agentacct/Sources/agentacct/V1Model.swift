@@ -1619,3 +1619,256 @@ struct RecordSummaryPresentation: Equatable {
                                   qualifier: "of checkable claims", absent: nil, isWarning: false)
     }
 }
+
+// MARK: - /v1 worksets (folder-anchored Work groupings)
+//
+// A workset is the user's own overlay: the sessions under one folder are one
+// piece of work, gathered live across Claude Code and Codex. Every aggregate is
+// a labeled SUM of independently-attributed sessions, never a re-graded verdict
+// — the honesty rides the payload, as everywhere else on this lane.
+
+struct WorksetSource: Decodable, Identifiable {
+    let client: String
+    let sessionCount: Int
+    var id: String { client }
+    enum CodingKeys: String, CodingKey {
+        case client
+        case sessionCount = "session_count"
+    }
+}
+
+struct WorksetSummary: Decodable {
+    let sessionCount: Int
+    let sources: [WorksetSource]
+    let firstActivityAt: Double?
+    let lastActivityAt: Double?
+    let totalTokens: Int?
+    let estimatedCostUsd: Double?
+    /// True only when every member session is priced; a partial sum otherwise.
+    let costComplete: Bool?
+    let pricedSessions: Int?
+    let unpricedSessions: Int?
+    let costConfidence: String?
+    let costBasis: String?
+
+    enum CodingKeys: String, CodingKey {
+        case sources
+        case sessionCount = "session_count"
+        case firstActivityAt = "first_activity_at"
+        case lastActivityAt = "last_activity_at"
+        case totalTokens = "total_tokens"
+        case estimatedCostUsd = "estimated_cost_usd"
+        case costComplete = "cost_complete"
+        case pricedSessions = "priced_sessions"
+        case unpricedSessions = "unpriced_sessions"
+        case costConfidence = "cost_confidence"
+        case costBasis = "cost_basis"
+    }
+}
+
+struct WorksetLane: Decodable, Identifiable {
+    let sessionKey: String?
+    let client: String?
+    let clientSessionId: String?
+    let title: String?
+    let sessionKind: String?
+    let firstActivityAt: Double?
+    let lastActivityAt: Double?
+    let durationSeconds: Double?
+    let totalTokens: Int?
+    let estimatedCostUsd: Double?
+    let costConfidence: String?
+
+    var id: String { sessionKey ?? "\(client ?? "")::\(clientSessionId ?? "")" }
+
+    var displayTitle: String {
+        if let title, !title.isEmpty { return title }
+        let short = clientSessionId.map { String($0.prefix(8)) } ?? "session"
+        return "\(client ?? "session") · \(short)"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case client, title
+        case sessionKey = "session_key"
+        case clientSessionId = "client_session_id"
+        case sessionKind = "session_kind"
+        case firstActivityAt = "first_activity_at"
+        case lastActivityAt = "last_activity_at"
+        case durationSeconds = "duration_seconds"
+        case totalTokens = "total_tokens"
+        case estimatedCostUsd = "estimated_cost_usd"
+        case costConfidence = "cost_confidence"
+    }
+}
+
+/// GET /v1/workset returns the card fields at the top level (with a `schema`
+/// key alongside), so the detail response decodes as a `WorksetCard` directly.
+struct WorksetCard: Decodable, Identifiable {
+    let worksetId: String
+    let name: String
+    let projectIdentity: String
+    let revision: Int
+    let deleted: Bool?
+    let createdAt: Double?
+    let updatedAt: Double?
+    let summary: WorksetSummary
+    let sessions: [WorksetLane]
+    let sessionsTotal: Int?
+    let sessionsTruncated: Bool?
+
+    var id: String { worksetId }
+
+    enum CodingKeys: String, CodingKey {
+        case name, revision, deleted, summary, sessions
+        case worksetId = "workset_id"
+        case projectIdentity = "project_identity"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case sessionsTotal = "sessions_total"
+        case sessionsTruncated = "sessions_truncated"
+    }
+}
+
+struct WorksetsPayload: Decodable {
+    let schema: String
+    let worksets: [WorksetCard]
+    let total: Int?
+}
+
+struct WorksetCandidate: Decodable, Identifiable {
+    let projectIdentity: String
+    let label: String
+    let sessionCount: Int
+    let sources: [String]
+    let firstActivityAt: Double?
+    let lastActivityAt: Double?
+
+    var id: String { projectIdentity }
+
+    enum CodingKeys: String, CodingKey {
+        case label, sources
+        case projectIdentity = "project_identity"
+        case sessionCount = "session_count"
+        case firstActivityAt = "first_activity_at"
+        case lastActivityAt = "last_activity_at"
+    }
+}
+
+struct WorksetCandidatesPayload: Decodable {
+    let schema: String
+    let candidates: [WorksetCandidate]
+}
+
+struct WorksetWriteResponse: Decodable {
+    let ok: Bool
+    let worksetId: String?
+    let action: String?
+    let revision: Int?
+    let name: String?
+    let projectIdentity: String?
+    let deleted: Bool?
+    let eventId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, action, revision, name, deleted
+        case worksetId = "workset_id"
+        case projectIdentity = "project_identity"
+        case eventId = "event_id"
+    }
+}
+
+/// Places member sessions as bars on ONE shared time axis (the tryairis-style
+/// timeline): each bar's left offset and width are fractions of the group's
+/// total span, so a Claude Code session and a Codex session read against the
+/// same clock instead of two separate orderings. Pure and deterministic so the
+/// geometry can be unit-tested without rendering.
+struct WorksetTimelineLayout {
+    struct Bar: Identifiable {
+        let lane: WorksetLane
+        /// 0…1 offset from the window start; 0 when the session has no time.
+        let leftFraction: Double
+        /// 0…1 width; at least `minWidth` so a zero-duration point still shows.
+        let widthFraction: Double
+        /// The session carries no usable start/end — placed at the start, flagged.
+        let timeUnknown: Bool
+        var id: String { lane.id }
+    }
+
+    /// Bars in start-time order; timeless sessions sort last.
+    let bars: [Bar]
+    let windowStart: Double?
+    let windowEnd: Double?
+    /// Members with no single clean time (rendered but flagged), for honesty.
+    let timelessCount: Int
+
+    static let minWidth = 0.015
+
+    /// `windowStart`/`windowEnd` override the axis with the group's TRUE span
+    /// (from the summary) so a bounded preview of bars still reads against the
+    /// whole window — the bars fill the left, and the empty right honestly
+    /// shows there is more time than the shown sessions cover.
+    init(lanes: [WorksetLane], windowStart windowOverrideStart: Double? = nil, windowEnd windowOverrideEnd: Double? = nil) {
+        let starts = lanes.compactMap { Self.time($0.firstActivityAt) }
+        let ends = lanes.compactMap { Self.time($0.lastActivityAt) }
+        let allTimes = starts + ends
+        let overrideLo = Self.time(windowOverrideStart)
+        let overrideHi = Self.time(windowOverrideEnd)
+        let useOverride = overrideLo != nil && overrideHi != nil && overrideHi! > overrideLo!
+        let lo = useOverride ? overrideLo : allTimes.min()
+        let hi = useOverride ? overrideHi : allTimes.max()
+        windowStart = lo
+        windowEnd = hi
+        let span = (lo != nil && hi != nil) ? max(0.0, hi! - lo!) : 0.0
+
+        let ordered = lanes.sorted { a, b in
+            let ta = Self.time(a.firstActivityAt)
+            let tb = Self.time(b.firstActivityAt)
+            switch (ta, tb) {
+            case let (x?, y?): return x == y ? a.id < b.id : x < y
+            case (nil, _?): return false
+            case (_?, nil): return true
+            case (nil, nil): return a.id < b.id
+            }
+        }
+
+        var built: [Bar] = []
+        var timeless = 0
+        for lane in ordered {
+            let first = Self.time(lane.firstActivityAt)
+            let last = Self.time(lane.lastActivityAt)
+            guard let lo, span > 0, let first else {
+                // No usable clock, or every session shares one instant.
+                if first == nil { timeless += 1 }
+                built.append(Bar(lane: lane, leftFraction: 0, widthFraction: Self.minWidth,
+                                 timeUnknown: first == nil))
+                continue
+            }
+            let left = min(1.0, max(0.0, (first - lo) / span))
+            let rawWidth = (last != nil && last! > first) ? (last! - first) / span : 0.0
+            // Size the bar to at least the minimum, THEN pull its left in so it
+            // stays fully on the axis — a session at the very end still shows.
+            let width = min(1.0, max(Self.minWidth, rawWidth))
+            let clampedLeft = min(max(0.0, left), 1.0 - width)
+            built.append(Bar(lane: lane, leftFraction: clampedLeft, widthFraction: width, timeUnknown: false))
+        }
+        bars = built
+        timelessCount = timeless
+    }
+
+    private static func time(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, value > 0 else { return nil }
+        return value
+    }
+}
+
+/// The honest cost grammar for a workset summary: a bare/≈ prefix only when the
+/// sum is complete, `~$` while any member is unpriced (a visibly partial sum),
+/// and nothing when no member is priced — never a fabricated $0.
+func worksetCostLabel(_ summary: WorksetSummary) -> String? {
+    Fmt.costDisplay(
+        usd: summary.estimatedCostUsd,
+        knownAdditive: (summary.costComplete == true) ? nil : summary.estimatedCostUsd,
+        complete: summary.costComplete,
+        confidence: summary.costConfidence
+    )
+}

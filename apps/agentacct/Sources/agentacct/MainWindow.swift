@@ -137,6 +137,7 @@ struct MainWindow: View {
                     Group {
                         switch selection.pane {
                         case .dashboard: DashboardPane()
+                        case .worksets: WorksetsPane()
                         case .work: WorkPane()
                         case .usage: UsagePane()
                         case .sources: SourcesPane(onSetup: { openRecordingSetup() })
@@ -469,10 +470,11 @@ struct TopBar: View {
                     iconOnly: iconOnly,
                     selectionNamespace: paneSelection
                 ) {
-                    // The Work tab always lands on the receipts table: without
-                    // clearing, a stale taskId makes the tab a no-op while a
-                    // record is open and resurrects the last record on the next
-                    // visit. Row/deep links still open records via open(.task).
+                    // The Sessions tab (case `.work`) always lands on the
+                    // receipts table: without clearing, a stale taskId makes the
+                    // tab a no-op while a record is open and resurrects the last
+                    // record on the next visit. Row/deep links still open records
+                    // via open(.task).
                     if pane == .work {
                         selection.open(.work)
                     } else {
@@ -769,6 +771,7 @@ extension MainPane {
     func icon(selected: Bool) -> String {
         switch self {
         case .dashboard: return selected ? "square.grid.2x2.fill" : "square.grid.2x2"
+        case .worksets: return selected ? "folder.fill" : "folder"
         case .work: return "checklist"
         case .usage: return "chart.bar.xaxis"
         case .sources: return "point.3.connected.trianglepath.dotted"
