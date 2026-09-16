@@ -9,7 +9,7 @@
 
 Your coding agent says it is done. agentacct shows you what it actually did, what it cost, and how much of that is proven: one Work Receipt per task, built from the session logs your coding agents (Claude Code, Codex, OpenCode, Hermes, and others) already write on your machine. No account, no cloud, nothing leaves your computer.
 
-![The Sessions view: on the left, the task list with one verdict per row (Verified, In Progress, Reported, Observed); on the right, the open receipt for "Add a token-bucket rate limiter to the login API", marked Verified, with two bars (5 steps: 4 self-checked, 1 claimed; 5 checks: 5 passed), the numbered step spine with the latest step expanded to its agent-reported check, exit code, and touched file, and below it the activity timeline where the check cards run from 12 failed to 12 passed, 12 passed, and 38 passed.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/app-work-receipt.png)
+![The Sessions view: on the left, the task list with one verdict per row (Verified, In Progress, Reported, Observed); on the right, the open receipt for "Add a token-bucket rate limiter to the login API", marked Verified, with two bars (5 steps: 4 self-checked, 1 claimed; 5 checks: 5 passed), the numbered step spine with the latest step expanded to its agent-reported check, exit code, and touched file, and below it the activity timeline where the check cards run from 12 failed to 12 passed, 12 passed, and 38 passed.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-work-receipt.png)
 
 <sub>Screenshots show a synthetic demo workspace; your install renders your own local data.</sub>
 
@@ -37,25 +37,25 @@ The timeline under the steps keeps the red run. The first test run failed 12; th
 
 ## A day's work, across every agent you run
 
-![The Work tab: a "billing-svc" group of 8 sessions from 4 agents over about 9 hours (≈$72.71 as a sum of receipts) on one timeline from 09:05 to 18:20. Two long Claude Code runs anchor the morning and afternoon; shorter Codex and Hermes runs sit inside them; OpenCode runs overlap the edges; the last run, the one that needs attention, carries a red pip.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/app-work.png)
+![The Work tab: a "billing-svc" group of 8 sessions from 4 agents over about 9 hours (≈$72.71 as a sum of receipts) on one timeline from 09:05 to 18:20. Two long Claude Code runs anchor the morning and afternoon; shorter Codex and Hermes runs sit inside them; OpenCode runs overlap the edges; the last run, the one that needs attention, carries a red pip.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-work.png)
 
 Point a work group at a project folder and every session that ran there lands on one timeline, whichever agent ran it. Each session keeps its own receipt and evidence; the group's total is a sum of 8 receipts, never a combined verdict on the work.
 
 ## Start the day with what needs you
 
-![The Dashboard: a Shift Brief leading with "Fix the flaky payment test" (billing-svc, claude-code, 1 failed and 7 passed, recorded reason Failed check, provenance MCP record) with Review evidence and Copy review brief buttons; a Signal rail with Working now, Capacity, Usage change, and Evidence trust; a Recent work table; and a seven-day usage chart.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/app-dashboard.png)
+![The Dashboard: a Shift Brief leading with "Fix the flaky payment test" (billing-svc, claude-code, 1 failed and 7 passed, recorded reason Failed check, provenance MCP record) with Review evidence and Copy review brief buttons; a Signal rail with Working now, Capacity, Usage change, and Evidence trust; a Recent work table; and a seven-day usage chart.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-dashboard.png)
 
 The Shift Brief names the one task that most needs a human, its recorded reason, and where that claim came from: here a failed check on "Fix the flaky payment test", recorded over MCP. **Copy review brief** copies only recorded facts and never reruns anything.
 
 ## Know your limits before the agent hits them
 
-![Usage & limits: per-client provider windows (codex 5-hour 12% used and weekly 63% used with reset times; claude-code 34% and 59%; opencode and hermes report no provider limit) beside each client's seven-day recorded use, all marked pricing estimate.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/app-usage.png)
+![Usage & limits: per-client provider windows (codex 5-hour 12% used and weekly 63% used with reset times; claude-code 34% and 59%; opencode and hermes report no provider limit) beside each client's seven-day recorded use, all marked pricing estimate.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-usage.png)
 
 Provider-reported quota windows sit beside what each agent actually used. Tokens are client-reported and costs are pricing-table estimates marked `≈`, never an invoice.
 
 ## Also in the terminal
 
-![agentacct tui: a Shift Brief whose primary attention item is a blocked claude-code task with its recorded reason, next step, and MCP-record provenance; a Signal rail with Working now, Capacity, Usage change, and Evidence trust; a Recent work table with outcome, evidence, and estimated cost; and a usage history sparkline.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/tui-dashboard.png)
+![agentacct tui: a Shift Brief whose primary attention item is a blocked claude-code task with its recorded reason, next step, and MCP-record provenance; a Signal rail with Working now, Capacity, Usage change, and Evidence trust; a Recent work table with outcome, evidence, and estimated cost; and a usage history sparkline.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-dashboard.png)
 
 `agentacct tui` shows the same Shift Brief, receipts, and capacity in your shell; press `?` for the keys. The terminal app has no folder-grouping tab.
 
