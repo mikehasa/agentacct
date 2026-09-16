@@ -17,6 +17,8 @@ import threading
 import time
 import tomllib
 import uuid
+
+import yaml
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -582,9 +584,12 @@ AGENT_INSTRUCTION_TARGETS = {
     "hermes": "AGENTS.md",
     "opencode": "AGENTS.md",
     "openclaw": "AGENTS.md",
+    # dsh reads $DSH_HOME/AGENTS.md and project AGENTS.md/CLAUDE.md (verified
+    # against deepseek-ai/deepseek-harness packages/context/agent-instructions).
+    "dsh": "AGENTS.md",
 }
 
-MCP_SETUP_AGENTS = {"claude-code", "codex", "generic", "hermes", "opencode", "openclaw"}
+MCP_SETUP_AGENTS = {"claude-code", "codex", "generic", "hermes", "opencode", "openclaw", "dsh"}
 
 
 def _append_missing_gitignore_entries(project_dir: Path) -> list[str]:
@@ -2055,7 +2060,58 @@ def _print_agent_mcp_preview(agent: str, config_store_dir: Path | str, *, comman
             f"--command {quoted_command} --arg mcp --arg serve --arg --store-dir --arg {quoted_store_dir}"
         )
         return
+    if agent == "dsh":
+        console.print("DeepSeek Harness (dsh)")
+        # dsh registers MCP servers through the @deepseek-ai/dsh-mcp-client plugin
+        # in a cordis.patch.yml patch file, not a CLI command; the HOME-level patch
+        # ($DSH_HOME/cordis.patch.yml) applies to every profile the CLI boots (the
+        # plain `dsh` command has no default profile), so it is the reliable target.
+        console.print(
+            "dsh registers MCP servers via the @deepseek-ai/dsh-mcp-client plugin in a cordis.patch.yml "
+            "patch file (not a CLI command). Add this entry to dsh's HOME patch file "
+            "$DSH_HOME/cordis.patch.yml (default ~/.dsh/cordis.patch.yml) — it applies to every profile the "
+            "dsh CLI boots — or a specific profile's ~/.dsh/profiles/<name>/cordis.patch.yml. dsh hot-reloads "
+            "it and exposes the tools as mcp__agentacct__*:"
+        )
+        print(_dsh_mcp_patch_block(config_store_dir, command=command).rstrip())
+        console.print(
+            "If dsh reports the @deepseek-ai/dsh-mcp-client plugin is missing for your profile, install it once "
+            "with `dsh plugin --profile <name> add @deepseek-ai/dsh-mcp-client`. Remove any pre-rename "
+            "(agent-sentinel/agent-chronicle) entry from that patch file first."
+        )
+        return
     raise ValueError(f"unsupported MCP agent target: {agent}")
+
+
+def _dsh_yaml_double_quote(value: str) -> str:
+    """Render a YAML double-quoted scalar so an arbitrary path/command is safe."""
+
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _dsh_mcp_patch_block(config_store_dir: Path | str, *, command: str = "agentacct") -> str:
+    """The dsh cordis.patch.yml entry registering agentacct as a stdio MCP server.
+
+    Uses the @deepseek-ai/dsh-mcp-client plugin (dsh's own MCP mechanism); the
+    command and store path are YAML-double-quoted so a path with spaces or
+    special characters stays valid.
+    """
+
+    return (
+        "- insert:\n"
+        "    - id: mcp-agentacct\n"
+        "      name: '@deepseek-ai/dsh-mcp-client'\n"
+        "      config:\n"
+        "        serverName: agentacct\n"
+        "        transport: stdio\n"
+        f"        command: {_dsh_yaml_double_quote(command)}\n"
+        "        args:\n"
+        "          - mcp\n"
+        "          - serve\n"
+        "          - --store-dir\n"
+        f"          - {_dsh_yaml_double_quote(str(config_store_dir))}\n"
+    )
 
 
 def _upsert_toml_block(
@@ -2133,7 +2189,7 @@ def init_project(
     force: Annotated[bool, typer.Option(help="Overwrite an existing policy file.")] = False,
     agent: Annotated[
         list[str] | None,
-        typer.Option(help="Install observe-only instructions for an agent: claude-code, codex, generic, hermes, opencode, or openclaw. Repeatable."),
+        typer.Option(help="Install observe-only instructions for an agent: claude-code, codex, generic, hermes, opencode, openclaw, or dsh. Repeatable."),
     ] = None,
     mcp: Annotated[bool, typer.Option("--mcp/--no-mcp", help="Preview MCP setup for requested agents.")] = True,
     write_mcp: Annotated[
@@ -2435,6 +2491,147 @@ def _onboard_global_hermes(store_dir: Path, command: str) -> str | bool:
     return "recording"
 
 
+def _dsh_patch_tolerant_load(text: str):
+    """Parse a dsh cordis.patch.yml tolerantly.
+
+    Standard YAML resolves normally, but custom ``!!js`` / ``!`` tags (which
+    ``safe_load`` rejects, and which dsh patch files may carry) construct as
+    ``None`` — the empty-prefix multi-constructor is the lowest-priority
+    catch-all, so exact standard-tag constructors still win and only unknown tags
+    fall through. Nothing in the document is executed.
+    """
+
+    class _Loader(yaml.SafeLoader):
+        pass
+
+    _Loader.add_multi_constructor("", lambda loader, tag_suffix, node: None)
+    return yaml.load(text, Loader=_Loader)
+
+
+def _dsh_patch_rows(text: str) -> list | None:
+    """The top-level patch-op list if ``text`` is a valid dsh patch file, else None.
+
+    An empty/whitespace file is a valid empty list ([]); a file that does not
+    parse, or whose root is not a sequence, returns None.
+    """
+
+    try:
+        parsed = _dsh_patch_tolerant_load(text)
+    except yaml.YAMLError:
+        return None
+    if parsed is None:
+        return []
+    return parsed if isinstance(parsed, list) else None
+
+
+def _dsh_patch_has_agentacct(text: str) -> bool:
+    """True iff a real ``insert`` op registers a row with id ``mcp-agentacct``.
+
+    A structural check, not a substring match, so a comment or a ``remove`` op
+    that merely mentions the id never reads as an active registration.
+    """
+
+    for op in _dsh_patch_rows(text) or []:
+        if not isinstance(op, Mapping):
+            continue
+        inserted = op.get("insert")
+        if not isinstance(inserted, list):
+            continue
+        for row in inserted:
+            if isinstance(row, Mapping) and row.get("id") == "mcp-agentacct":
+                return True
+    return False
+
+
+def _write_dsh_home_patch_mcp(store_dir: Path, command: str) -> tuple[Path, str]:
+    """Register agentacct as an MCP server in dsh's home patch ($DSH_HOME/cordis.patch.yml).
+
+    Safe and non-destructive: CREATE when absent; if our ``insert`` op is already
+    registered leave it (``kept``); otherwise APPEND one ``- insert:`` op ONLY
+    when the appended result still parses as a top-level patch list. The file may
+    carry custom ``!!js`` tags and comments, so it is never parsed-and-rewritten;
+    the append is validated with a tolerant loader and, if the existing file's
+    shape (flow root, indented sequence, mapping root, or already-broken) would
+    make a column-0 append invalid YAML, the file is left untouched and ``manual``
+    is returned so the caller previews the block instead of claiming a write.
+    Returns the path and one of ``wrote`` / ``appended`` / ``kept`` / ``manual``.
+    """
+
+    path = _dsh_home_dir() / "cordis.patch.yml"
+    block = _dsh_mcp_patch_block(store_dir, command=command)
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(block, encoding="utf-8")
+        return path, "wrote"
+    existing = path.read_text(encoding="utf-8")
+    if _dsh_patch_has_agentacct(existing):
+        return path, "kept"
+    separator = "" if not existing or existing.endswith("\n") else "\n"
+    candidate = existing + separator + block
+    if _dsh_patch_rows(existing) is not None and _dsh_patch_rows(candidate) is not None:
+        path.write_text(candidate, encoding="utf-8")
+        return path, "appended"
+    return path, "manual"
+
+
+def _onboard_global_dsh(store_dir: Path, command: str) -> str:
+    """Configure dsh (DeepSeek Harness) at USER scope (zero repo files).
+
+    dsh has no default profile (the plain CLI requires ``--profile``), so BOTH
+    legs are installed at the HOME level, which every profile the CLI boots
+    layers on top of: the standing 'record your work' directive goes to
+    ``$DSH_HOME/AGENTS.md`` (loaded by dsh-base's agent-instructions on every
+    base-backed session), and the agentacct MCP server goes to
+    ``$DSH_HOME/cordis.patch.yml`` (the home patch applied over every profile).
+
+    Returns ``wired`` when both legs are written (dsh should record like Codex/
+    OpenCode, subject to the plugin resolving), or ``tools-pending`` when the
+    instruction was written but the MCP patch must be pasted by hand (an existing
+    patch file agentacct cannot safely extend, or a write error). Never claims a
+    write it did not make.
+    """
+
+    # 1. standing "record your work" instructions -> $DSH_HOME/AGENTS.md (always safe:
+    #    a managed block that leaves any existing content untouched).
+    setup_instructions(
+        agent="dsh", user=True, path=None, remove=False, dry_run=False, store_dir=store_dir
+    )
+    # 2. all-profiles MCP registration -> $DSH_HOME/cordis.patch.yml
+    try:
+        patch_path, action = _write_dsh_home_patch_mcp(store_dir, command)
+    except (OSError, UnicodeError) as exc:
+        console.print(f"dsh instructions written, but the MCP patch could not be written ({exc}).")
+        return "tools-pending"
+    if action == "manual":
+        console.print(
+            f"Left {patch_path} unchanged — its structure is not a plain patch list agentacct can safely "
+            "extend without risking your other patches. Add this entry to it yourself so dsh loads the server:"
+        )
+        print(_dsh_mcp_patch_block(store_dir, command=command).rstrip())
+        console.print(
+            "Then start a NEW dsh session ($DSH_HOME/AGENTS.md instructions are already installed)."
+        )
+        return "tools-pending"
+    if action == "kept":
+        console.print(
+            f"Left {patch_path} unchanged: an agentacct MCP insert (id: mcp-agentacct) is already registered."
+        )
+    else:
+        verb = "Wrote" if action == "wrote" else "Appended"
+        console.print(
+            f"{verb} the agentacct MCP server in {patch_path} (dsh home patch — applies to every profile)."
+        )
+    console.print(
+        "Start a NEW dsh session so it loads the server + $DSH_HOME/AGENTS.md instructions "
+        "(tools appear as mcp__agentacct__*)."
+    )
+    console.print(
+        "If dsh reports @deepseek-ai/dsh-mcp-client is missing for your profile, install it once: "
+        "dsh plugin --profile <name> add @deepseek-ai/dsh-mcp-client"
+    )
+    return "wired"
+
+
 def _warn_global_store_mismatches(store_dir: Path, command: str) -> None:
     """Warn when a surface agentacct does NOT rewrite still points elsewhere.
 
@@ -2547,6 +2744,12 @@ def _resync_integration(
                 resynced.append("hermes")
         except Exception:  # noqa: BLE001
             errored.append("hermes")
+    if "dsh" in client_set:
+        try:
+            if _onboard_global_dsh(store_dir, command):
+                resynced.append("dsh")
+        except Exception:  # noqa: BLE001
+            errored.append("dsh")
     return resynced, errored
 
 
@@ -2628,14 +2831,14 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
     # has no always-on global instruction slot, so its hook adapter injects the same
     # standing 'record your work' directive on each session's first turn (pre_llm_call)
     # — so hermes records too, once its one-time hook consent is granted.
-    configurable = ("claude-code", "codex", "opencode", "hermes")
+    configurable = ("claude-code", "codex", "opencode", "hermes", "dsh")
     if agent in {"auto", "all"}:
         targets = [client for client in configurable if client in found] or ["claude-code", "codex"]
     elif agent in configurable:
         targets = [agent]
     else:
         raise typer.BadParameter(
-            "global scope configures claude-code, codex, opencode, or hermes. "
+            "global scope configures claude-code, codex, opencode, hermes, or dsh. "
             "Use --scope project for other clients."
         )
 
@@ -2648,6 +2851,7 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
 
     recording_clients: list[str] = []
     tools_only_clients: list[str] = []
+    configured_experimental_clients: list[str] = []
     if mcp and "claude-code" in targets:
         if _onboard_global_claude(store_dir, command, assume_yes=assume_yes):
             recording_clients.append("claude-code")
@@ -2668,6 +2872,16 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
             recording_clients.append("hermes")
         elif hermes_status == "tools-only":
             tools_only_clients.append("hermes")
+    if mcp and "dsh" in targets:
+        # dsh reads $DSH_HOME/AGENTS.md on every base-backed session AND loads the
+        # home-patch MCP server, so once both are written it should record like
+        # codex/opencode. But whether dsh resolves the bundled
+        # @deepseek-ai/dsh-mcp-client plugin in-box for every profile is unproven
+        # (no live smoke), so a configured dsh is tracked for resync but reported
+        # as EXPERIMENTAL — it is never folded into the unqualified 'recording is
+        # machine-wide now' claim.
+        if _onboard_global_dsh(store_dir, command) in {"wired", "tools-pending"}:
+            configured_experimental_clients.append("dsh")
 
     imported = _local_usage_import_payload(
         store_dir=store_dir,
@@ -2689,10 +2903,11 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
         f"refreshed={int(imported.get('refreshed_events', 0) or 0)}"
     )
 
-    if recording_clients:
+    tracked_clients = recording_clients + configured_experimental_clients
+    if tracked_clients:
         try:
             ActivationStateStore(store_dir).mark_configured(
-                project_dir=Path.home(), clients=recording_clients,
+                project_dir=Path.home(), clients=tracked_clients,
                 agentacct_version=_package_version(),
             )
         except ActivationStateError as exc:
@@ -2723,9 +2938,15 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
             f"{', '.join(tools_only_clients)}: agentacct MCP tools registered. Semantic recording needs the "
             "client's hook adapter (installed separately)."
         )
+    if configured_experimental_clients:
+        console.print(
+            f"{', '.join(configured_experimental_clients)}: agentacct MCP server + $DSH_HOME/AGENTS.md written "
+            "(experimental). Start a NEW dsh session and confirm the @deepseek-ai/dsh-mcp-client plugin loads "
+            "for your profile — recording is not yet verified end-to-end."
+        )
     if recording_clients:
         console.print("Ready. Open a NEW agent session (in ANY repo) — recording is machine-wide now.")
-    elif not tools_only_clients:
+    elif not tools_only_clients and not configured_experimental_clients:
         console.print("Local usage capture is ready; no semantic recording client was configured.")
 
 
@@ -2734,7 +2955,7 @@ def onboard(
     project_dir: Annotated[Path, typer.Option(help="Project directory to connect (project scope only).")] = Path("."),
     agent: Annotated[
         str,
-        typer.Option(help="Client to configure: auto, all, codex, claude-code, hermes, opencode, or openclaw."),
+        typer.Option(help="Client to configure: auto, all, codex, claude-code, hermes, opencode, dsh, or openclaw."),
     ] = "auto",
     scope: Annotated[
         str,
@@ -4939,7 +5160,7 @@ def setup_global_store_path(
 
 @setup_app.command("prompt")
 def setup_prompt(
-    agent: Annotated[str, typer.Option(help="Agent client for the install prompt: claude-code, codex, generic, hermes, opencode, or openclaw.")],
+    agent: Annotated[str, typer.Option(help="Agent client for the install prompt: claude-code, codex, generic, hermes, opencode, openclaw, or dsh.")],
     full: Annotated[
         bool,
         typer.Option(
@@ -4958,7 +5179,7 @@ def setup_prompt(
     from the same install_guide content, so the two cannot drift.
     """
     if agent not in MCP_SETUP_AGENTS:
-        raise typer.BadParameter("agent must be one of: claude-code, codex, generic, hermes, opencode, openclaw")
+        raise typer.BadParameter("agent must be one of: claude-code, codex, generic, hermes, opencode, openclaw, dsh")
     if full:
         print(install_guide_full_prompt(agent).rstrip())
     else:
@@ -5198,6 +5419,21 @@ def setup_mark_instrumented(
         print("An earlier marker for this client+surface already existed; the original (earliest) install time is kept.")
 
 
+def _dsh_home_dir() -> Path:
+    """Resolve dsh's home ($DSH_HOME, then DSH_DIR, else ~/.dsh).
+
+    Matches the dsh usage importer's env handling so the instruction file and any
+    profile config land under the same home dsh actually reads.
+    """
+
+    env = os.environ.get("DSH_HOME") or os.environ.get("DSH_DIR")
+    if env:
+        first = next((value.strip() for value in env.split(",") if value.strip()), "")
+        if first:
+            return Path(first).expanduser()
+    return Path.home() / ".dsh"
+
+
 def _instruction_target_path(agent: str, *, user: bool, path: Path | None) -> Path:
     """Resolve the instruction file for `setup instructions`.
 
@@ -5216,6 +5452,10 @@ def _instruction_target_path(agent: str, *, user: bool, path: Path | None) -> Pa
         # in the ONE directory OpenCode actually reads.
         if agent == "opencode":
             return _opencode_config_dir() / "AGENTS.md"
+        # dsh reads $DSH_HOME/AGENTS.md (default ~/.dsh); honor the env override so
+        # the directive lands in the ONE home dsh actually reads.
+        if agent == "dsh":
+            return _dsh_home_dir() / "AGENTS.md"
         return Path.home() / install_guide.INSTRUCTION_USER_FILES[agent]
     return Path.cwd() / install_guide.INSTRUCTION_PROJECT_FILES[agent]
 
@@ -5257,12 +5497,12 @@ def setup_preview(
 
 @setup_app.command("instructions")
 def setup_instructions(
-    agent: Annotated[str, typer.Option(help="Agent whose instruction file to edit: claude-code, codex, or opencode.")],
+    agent: Annotated[str, typer.Option(help="Agent whose instruction file to edit: claude-code, codex, opencode, or dsh.")],
     user: Annotated[
         bool,
         typer.Option(
             "--user",
-            help="Target the user-level instruction file (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, or ~/.config/opencode/AGENTS.md) instead of the project-level file in the current directory.",
+            help="Target the user-level instruction file (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, ~/.config/opencode/AGENTS.md, or $DSH_HOME/AGENTS.md) instead of the project-level file in the current directory.",
         ),
     ] = False,
     path: Annotated[
@@ -5361,7 +5601,7 @@ def setup_instructions(
 
 @setup_app.command("mcp")
 def setup_mcp(
-    agent: Annotated[str, typer.Option(help="Agent client to configure: claude-code, codex, generic, hermes, opencode, or openclaw.")],
+    agent: Annotated[str, typer.Option(help="Agent client to configure: claude-code, codex, generic, hermes, opencode, openclaw, or dsh.")],
     project_dir: Annotated[Path, typer.Option(help="Project directory that should own local agentacct state.")] = Path("."),
     store_dir: Annotated[Optional[Path], typer.Option(help="Override agentacct state directory for the MCP server.")] = None,
     mcp_command: Annotated[
@@ -5392,7 +5632,7 @@ def setup_mcp(
     # (now safe-ish: `mcp serve` resolves it against the project root).
     config_store_dir: Path | str = ".agent-sentinel/state" if relative_store_path else effective_store_dir
     if agent not in MCP_SETUP_AGENTS:
-        raise typer.BadParameter("agent must be one of: claude-code, codex, generic, hermes, opencode, openclaw")
+        raise typer.BadParameter("agent must be one of: claude-code, codex, generic, hermes, opencode, openclaw, dsh")
 
     console.print("agentacct MCP setup")
     console.print("Source: PyPI (pipx install agentacct)")
@@ -5413,7 +5653,7 @@ def setup_mcp(
             # owner store for committed config.
             _print_claude_worktree_store_hint(project_dir, command=mcp_command)
 
-    if agent in {"generic", "hermes", "opencode", "openclaw"}:
+    if agent in {"generic", "hermes", "opencode", "openclaw", "dsh"}:
         _print_agent_mcp_preview(agent, config_store_dir, command=mcp_command)
         if write:
             console.print("--write is not available for this agent because its MCP config is profile/global or client-specific.")
@@ -7719,6 +7959,7 @@ def _local_usage_import_payload(
     opencode_home: Path | None = None,
     hermes_home: Path | None = None,
     openclaw_home: Path | None = None,
+    dsh_home: Path | None = None,
     cursor_home: Path | None = None,
     limit_sessions: int = 20,
     dry_run: bool = False,
@@ -7761,6 +8002,7 @@ def _local_usage_import_payload(
                 opencode_home=opencode_home,
                 hermes_home=hermes_home,
                 openclaw_home=openclaw_home,
+                dsh_home=dsh_home,
                 cursor_home=cursor_home,
                 limit_sessions=limit_sessions,
             )
@@ -8345,6 +8587,7 @@ def _local_usage_import_payload(
                 opencode_home=opencode_home,
                 hermes_home=hermes_home,
                 openclaw_home=openclaw_home,
+                dsh_home=dsh_home,
                 cursor_home=cursor_home,
             ),
             "scanned_sessions": len(observed_session_keys),
@@ -8660,12 +8903,13 @@ def usage_import_local(
         Optional[Path],
         typer.Option(help=_STORE_DIR_HELP),
     ] = None,
-    client: Annotated[str, typer.Option(help="Client to import: all, codex, claude-code, opencode, hermes, openclaw, or observation-only cursor.")] = "all",
+    client: Annotated[str, typer.Option(help="Client to import: all, codex, claude-code, opencode, hermes, openclaw, dsh, or observation-only cursor.")] = "all",
     codex_home: Annotated[Optional[Path], typer.Option(help="Codex home directory. Defaults to CODEX_HOME or ~/.codex.")] = None,
     claude_home: Annotated[Optional[Path], typer.Option(help="Claude Code home directory. Defaults to CLAUDE_CONFIG_DIR, then XDG and ~/.claude homes.")] = None,
     opencode_home: Annotated[Optional[Path], typer.Option(help="OpenCode home/export directory. Defaults to ~/.local/share/opencode.")] = None,
     hermes_home: Annotated[Optional[Path], typer.Option(help="Hermes home directory. Defaults to ~/.hermes.")] = None,
     openclaw_home: Annotated[Optional[Path], typer.Option(help="OpenClaw home directory. Defaults to ~/.openclaw and related roots.")] = None,
+    dsh_home: Annotated[Optional[Path], typer.Option(help="DeepSeek Harness home directory. Defaults to DSH_HOME/DSH_DIR or ~/.dsh.")] = None,
     cursor_home: Annotated[Optional[Path], typer.Option(help="Cursor application-support root. Defaults to ~/Library/Application Support/Cursor; only User/globalStorage/state.vscdb is inspected.")] = None,
     limit_sessions: Annotated[int, typer.Option(help="Recent sessions to inspect per client.")] = 20,
     dry_run: Annotated[bool, typer.Option(help="Preview importable usage without writing agentacct events.")] = False,
@@ -8691,6 +8935,7 @@ def usage_import_local(
         opencode_home=opencode_home,
         hermes_home=hermes_home,
         openclaw_home=openclaw_home,
+        dsh_home=dsh_home,
         cursor_home=cursor_home,
         limit_sessions=limit_sessions,
         dry_run=dry_run,
@@ -8728,12 +8973,13 @@ def usage_watch(
         Optional[Path],
         typer.Option(help=_STORE_DIR_HELP),
     ] = None,
-    client: Annotated[str, typer.Option(help="Client to import: all, codex, claude-code, opencode, hermes, openclaw, or observation-only cursor.")] = "all",
+    client: Annotated[str, typer.Option(help="Client to import: all, codex, claude-code, opencode, hermes, openclaw, dsh, or observation-only cursor.")] = "all",
     codex_home: Annotated[Optional[Path], typer.Option(help="Codex home directory. Defaults to CODEX_HOME or ~/.codex.")] = None,
     claude_home: Annotated[Optional[Path], typer.Option(help="Claude Code home directory. Defaults to CLAUDE_CONFIG_DIR, then XDG and ~/.claude homes.")] = None,
     opencode_home: Annotated[Optional[Path], typer.Option(help="OpenCode home/export directory. Defaults to ~/.local/share/opencode.")] = None,
     hermes_home: Annotated[Optional[Path], typer.Option(help="Hermes home directory. Defaults to ~/.hermes.")] = None,
     openclaw_home: Annotated[Optional[Path], typer.Option(help="OpenClaw home directory. Defaults to ~/.openclaw and related roots.")] = None,
+    dsh_home: Annotated[Optional[Path], typer.Option(help="DeepSeek Harness home directory. Defaults to DSH_HOME/DSH_DIR or ~/.dsh.")] = None,
     cursor_home: Annotated[Optional[Path], typer.Option(help="Cursor application-support root. Defaults to ~/Library/Application Support/Cursor; only User/globalStorage/state.vscdb is inspected.")] = None,
     interval_seconds: Annotated[float, typer.Option(help="Seconds between import scans when running continuously.")] = 60.0,
     limit_sessions: Annotated[int, typer.Option(help="Recent sessions to inspect per client per scan.")] = 20,
@@ -8790,6 +9036,7 @@ def usage_watch(
                     opencode_home=opencode_home,
                     hermes_home=hermes_home,
                     openclaw_home=openclaw_home,
+                    dsh_home=dsh_home,
                     cursor_home=cursor_home,
                     limit_sessions=limit_sessions,
                     dry_run=False,
@@ -9102,6 +9349,7 @@ def usage_discover_sources(
     opencode_home: Annotated[Optional[Path], typer.Option(help="OpenCode data/export directory. Defaults to OPENCODE_DATA_DIR or ~/.local/share/opencode.")] = None,
     hermes_home: Annotated[Optional[Path], typer.Option(help="Hermes home directory. Defaults to HERMES_HOME or ~/.hermes.")] = None,
     openclaw_home: Annotated[Optional[Path], typer.Option(help="OpenClaw home directory. Defaults to OPENCLAW_DIR or known OpenClaw roots.")] = None,
+    dsh_home: Annotated[Optional[Path], typer.Option(help="DeepSeek Harness home directory. Defaults to DSH_HOME/DSH_DIR or ~/.dsh.")] = None,
     cursor_home: Annotated[Optional[Path], typer.Option(help="Cursor application-support root. Defaults to ~/Library/Application Support/Cursor; only User/globalStorage/state.vscdb is inspected.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
@@ -9113,6 +9361,7 @@ def usage_discover_sources(
         opencode_home=opencode_home,
         hermes_home=hermes_home,
         openclaw_home=openclaw_home,
+        dsh_home=dsh_home,
         cursor_home=cursor_home,
     )
     payload = {"sources": [source.to_dict() for source in sources]}

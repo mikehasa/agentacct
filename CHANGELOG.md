@@ -6,6 +6,30 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- DeepSeek Harness (dsh) local usage import. agentacct now reads dsh's
+  Zstandard-compressed JSONL session logs under `$DSH_HOME`/`~/.dsh`
+  (`session.vN.jsonl.zstd`), summing input/output/cache/reasoning tokens per
+  session into the Work, Usage, and Sources views. Drive it with `agentacct
+  usage import-local --client dsh` (also `usage watch`, `usage sources`, and a
+  `--dsh-home` override). dsh records no cost in its logs, so imported rows stay
+  cost-unknown unless `--estimate-costs` applies agentacct's local pricing
+  table (never a provider invoice). Adds a `zstandard` dependency for the
+  compressed logs. Experimental tier: the session-log schema was verified
+  against dsh source and two independent third-party parsers, not yet a
+  live-client smoke on the maintainer's machine.
+- dsh MCP self-reporting onboarding. `agentacct onboard --agent dsh` writes the
+  `@deepseek-ai/dsh-mcp-client` registration into `$DSH_HOME/cordis.patch.yml`
+  (the home patch layer applied over every profile the dsh CLI boots — the plain
+  `dsh` command has no default profile) and the record-your-work directive into
+  `$DSH_HOME/AGENTS.md`, so a dsh session records its own work over MCP like
+  Codex or OpenCode. Writes are idempotent and non-destructive (existing user
+  patches are preserved). `agentacct setup mcp --agent dsh` previews the same
+  registration. Onboarding prints a one-line `dsh plugin add` fallback because
+  source reports disagree on whether dsh resolves the bundled plugin in-box for
+  every profile, and there is no live dsh smoke yet.
+
 ## [0.10.11] — 2026-09-15
 
 Drains the codex reconcile conflicts left over from before 0.10.10, so sources

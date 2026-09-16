@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+import zstandard
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
@@ -22,6 +23,7 @@ from agentacct.client_usage import (
     discover_claude_code_usage,
     discover_client_usage_with_diagnostics,
     discover_codex_usage,
+    discover_dsh_usage,
     discover_hermes_usage,
     discover_opencode_usage,
     discover_openclaw_usage,
@@ -743,6 +745,60 @@ def _make_openclaw_home(root: Path) -> Path:
     ]
     stream.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
     return openclaw_home
+
+
+def _make_dsh_home(root: Path) -> Path:
+    dsh_home = root / "dsh-home"
+    session_dir = dsh_home / "sessions" / "--proj--" / "sess-abc"
+    session_dir.mkdir(parents=True)
+    header = {
+        "type": "session",
+        "version": 3,
+        "id": "sess-abc",
+        "createdAt": 1_769_753_000_000,
+        "cwd": "/home/u/proj",
+        "isSeeded": False,
+        "delegationDepth": 0,
+    }
+    ev1 = {
+        "type": "assistant/message",
+        "seq": 1,
+        "time": 1_769_753_001_000,
+        "data": {
+            "message": {"source": {"provider": "deepseek", "model": "deepseek-chat"}},
+            "usage": {
+                "inputTokens": 1200,
+                "outputTokens": 300,
+                "cacheReadTokens": 5000,
+                "cacheWriteTokens": 40,
+                "reasoningTokens": 80,
+                "totalTokens": 6540,
+            },
+        },
+    }
+    ev2 = {
+        "type": "assistant/message",
+        "seq": 2,
+        "time": 1_769_753_002_000,
+        "data": {
+            "message": {"source": {"provider": "deepseek", "model": "deepseek-reasoner"}},
+            "usage": {"inputTokens": 10, "outputTokens": 20},
+        },
+    }
+    # A non-usage lifecycle row and an attempt row with no usage must be ignored.
+    other = {"type": "turn/end", "seq": 3, "time": 1_769_753_003_000, "data": {}}
+    attempt = {"type": "assistant/attempt", "seq": 4, "time": 1_769_753_004_000, "data": {}}
+    compressor = zstandard.ZstdCompressor(level=3)
+    # dsh appends one Zstandard frame per batch, so a real log is CONCATENATED
+    # frames; split the rows across two frames to exercise multi-frame decoding.
+    frame_a = compressor.compress(
+        (json.dumps(header) + "\n" + json.dumps(ev1) + "\n").encode("utf-8")
+    )
+    frame_b = compressor.compress(
+        (json.dumps(ev2) + "\n" + json.dumps(other) + "\n" + json.dumps(attempt) + "\n").encode("utf-8")
+    )
+    (session_dir / "session.v3.jsonl.zstd").write_bytes(frame_a + frame_b)
+    return dsh_home
 
 
 def _make_hermes_home(root: Path) -> Path:
@@ -4384,6 +4440,141 @@ def test_discover_openclaw_usage_reads_jsonl_tokens_and_cost(tmp_path):
     assert payload["estimated_cost_usd"] == 0.02
     assert payload["metadata"]["usage_update_semantics"] == "openclaw_assistant_usage_rows"
     assert "content" not in json.dumps(payload).lower()
+
+
+def test_discover_dsh_usage_reads_zstd_jsonl_tokens_and_no_cost(tmp_path):
+    dsh_home = _make_dsh_home(tmp_path)
+
+    events = discover_dsh_usage(dsh_home=dsh_home, limit_sessions=10)
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.client == "dsh"
+    assert event.client_session_id == "sess-abc"
+    assert event.provider == "deepseek"
+    # A multi-model session is attributed to the latest model seen.
+    assert event.model == "deepseek-reasoner"
+    # inputTokens is uncached input; totals sum across both assistant/message rows.
+    assert event.input_tokens == 1210
+    assert event.output_tokens == 320
+    assert event.cache_read_input_tokens == 5000
+    assert event.cache_creation_input_tokens == 40
+    assert event.cached_input_tokens == 5040
+    assert event.cache_read_tokens_reported is True
+    assert event.cache_creation_tokens_reported is True
+    # reasoningTokens is a subset of output and is tracked separately, never re-added.
+    assert event.reasoning_output_tokens == 80
+    assert event.turn_count == 2
+    assert event.cwd == "/home/u/proj"
+    # dsh persists no cost, so the row must not fabricate one.
+    assert event.client_reported_cost_usd is None
+    payload = event.to_sentinel_event()
+    assert payload["provider"] == "deepseek"
+    assert payload["cost_confidence"] == "unknown"
+    assert payload["metadata"]["usage_update_semantics"] == "dsh_assistant_usage_rows"
+    assert "content" not in json.dumps(payload).lower()
+
+
+def test_discover_dsh_usage_reports_stable_diagnostic_when_zstd_decoder_missing(
+    tmp_path, monkeypatch
+):
+    dsh_home = _make_dsh_home(tmp_path)  # writes a .zstd session log
+    # Simulate a build without the zstd decoder: a .zstd log must surface a
+    # stable diagnostic code, never a silent empty import.
+    monkeypatch.setattr("agentacct.client_usage.zstandard", None)
+
+    result = discover_client_usage_with_diagnostics(
+        client="dsh",
+        codex_home=tmp_path / "missing-codex",
+        claude_home=tmp_path / "missing-claude",
+        opencode_home=tmp_path / "missing-opencode",
+        hermes_home=tmp_path / "missing-hermes",
+        openclaw_home=tmp_path / "missing-openclaw",
+        dsh_home=dsh_home,
+        cursor_home=tmp_path / "missing-cursor",
+        limit_sessions=10,
+    )
+
+    assert [event for event in result.events if event.client == "dsh"] == []
+    diagnostics = result.diagnostics.get("dsh", {})
+    assert diagnostics.get("error_count", 0) >= 1
+    assert "dsh_zstd_decoder_unavailable" in (diagnostics.get("error_codes") or [])
+
+
+def test_discover_dsh_usage_surfaces_decode_failure_instead_of_silent_empty(tmp_path):
+    dsh_home = _make_dsh_home(tmp_path)  # one good session
+    bad_dir = dsh_home / "sessions" / "--proj--" / "sess-bad"
+    bad_dir.mkdir(parents=True)
+    # A file globbed as an importable dsh session log but corrupt from byte 0.
+    (bad_dir / "session.v1.jsonl.zstd").write_bytes(b"\x00\x01\x02 not a zstd stream " * 8)
+
+    result = discover_client_usage_with_diagnostics(
+        client="dsh",
+        codex_home=tmp_path / "missing-codex",
+        claude_home=tmp_path / "missing-claude",
+        opencode_home=tmp_path / "missing-opencode",
+        hermes_home=tmp_path / "missing-hermes",
+        openclaw_home=tmp_path / "missing-openclaw",
+        dsh_home=dsh_home,
+        cursor_home=tmp_path / "missing-cursor",
+        limit_sessions=10,
+    )
+
+    diagnostics = result.diagnostics.get("dsh", {})
+    # An undecodable-but-present log surfaces a stable code, never a silent empty import.
+    assert "dsh_zstd_decode_failed" in (diagnostics.get("error_codes") or [])
+    assert diagnostics.get("error_count", 0) >= 1
+    # The healthy session in the same home is still imported alongside the corrupt one.
+    assert any(
+        event.client == "dsh" and event.client_session_id == "sess-abc"
+        for event in result.events
+    )
+
+
+def test_dsh_reader_bounds_memory_on_newline_free_payload_and_flags_capped(tmp_path, monkeypatch):
+    # Shrink the budgets so a modest fixture exercises the bomb guard: a readline
+    # loop would materialize the whole line before any cap could fire.
+    monkeypatch.setattr("agentacct.client_usage._DSH_MAX_DECOMPRESSED_BYTES", 2_000_000)
+    monkeypatch.setattr("agentacct.client_usage._DSH_MAX_LINE_CHARS", 500_000)
+    home = tmp_path / "dsh-home"
+    session_dir = home / "sessions" / "--proj--" / "sess-bomb"
+    session_dir.mkdir(parents=True)
+    header = json.dumps({"type": "session", "id": "sess-bomb", "createdAt": 1_769_753_000_000}) + "\n"
+    # A single ~40 MB line with no trailing newline.
+    payload = (header + ("x" * 40_000_000)).encode("utf-8")
+    (session_dir / "session.v3.jsonl.zstd").write_bytes(
+        zstandard.ZstdCompressor(level=3).compress(payload)
+    )
+
+    source = next(
+        candidate
+        for candidate in client_usage_module._dsh_session_paths(home)
+        if candidate.path.parent.name == "sess-bomb"
+    )
+    status = client_usage_module._DshReadStatus()
+    yielded_chars = sum(
+        len(line) for line in client_usage_module._dsh_iter_jsonl_lines(source, status)
+    )
+
+    # The oversized line is dropped and the scan is flagged capped; total yielded
+    # text stays under the budget, so the 40 MB payload never lands in memory.
+    assert status.truncated is True
+    assert yielded_chars < 2_000_000
+
+    result = discover_client_usage_with_diagnostics(
+        client="dsh",
+        codex_home=tmp_path / "missing-codex",
+        claude_home=tmp_path / "missing-claude",
+        opencode_home=tmp_path / "missing-opencode",
+        hermes_home=tmp_path / "missing-hermes",
+        openclaw_home=tmp_path / "missing-openclaw",
+        dsh_home=home,
+        cursor_home=tmp_path / "missing-cursor",
+        limit_sessions=10,
+    )
+    assert "dsh_session_scan_capped" in (
+        result.diagnostics.get("dsh", {}).get("error_codes") or []
+    )
 
 
 def test_discover_hermes_usage_reads_state_db_sessions_and_client_cost(tmp_path):

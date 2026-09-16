@@ -55,6 +55,7 @@ def test_manifest_has_stable_independent_lanes_and_no_supported_badge() -> None:
         "hermes",
         "opencode",
         "openclaw",
+        "dsh",
         "cursor",
         "gemini-cli",
         "github-copilot-cli",

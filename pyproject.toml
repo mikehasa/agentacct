@@ -49,6 +49,12 @@ dependencies = [
   # The TUI is built and tested against Textual 8.x; cap the major so a future
   # Textual release with breaking API changes can't silently break a PyPI install.
   "textual>=8,<9",
+  # DeepSeek Harness (dsh) writes its session logs as Zstandard-compressed JSONL
+  # (session.vN.jsonl.zstd). Python has no stdlib zstd before 3.14, so the dsh
+  # usage importer needs a decoder; zstandard ships prebuilt wheels for the
+  # macOS + Linux targets above and its C extension is bundled into the frozen
+  # CLI. read_across_frames handling is version-agnostic (decompressobj loop).
+  "zstandard>=0.22",
 ]
 
 [project.urls]

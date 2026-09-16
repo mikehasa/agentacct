@@ -300,6 +300,20 @@ _OPENCLAW_USAGE_FIXTURE = _verification_record(
         "tests/test_client_usage.py::test_discover_openclaw_usage_reads_jsonl_tokens_and_cost",
     ),
 )
+_DSH_USAGE_FIXTURE = _verification_record(
+    "synthetic_fixture",
+    verified_at="2026-09-15",
+    evidence_refs=(
+        "tests/test_client_usage.py::test_discover_dsh_usage_reads_zstd_jsonl_tokens_and_no_cost",
+    ),
+)
+_DSH_ONBOARD_FIXTURE = _verification_record(
+    "synthetic_fixture",
+    verified_at="2026-09-15",
+    evidence_refs=(
+        "tests/test_onboard_global.py::test_onboard_global_agent_dsh_writes_home_patch_and_instructions",
+    ),
+)
 _CURSOR_LIVE = _verification_record(
     "live_smoke",
     verified_at="2026-07-17",
@@ -725,6 +739,90 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
             ),
         },
         "limitations": ["Remain experimental until real fixtures, namespace hardening, routing, and per-model lanes exist."],
+    },
+    {
+        "client": "dsh",
+        "display_name": "DeepSeek Harness",
+        "roadmap_phase": "phase_1",
+        "source_formats": ["Zstandard-compressed assistant/message JSONL"],
+        "session_scope": "Usage-bearing assistant/message events in per-session dsh logs.",
+        "zero_usage_observation": "unavailable",
+        "namespace_hardening": "not_hardened",
+        "verified_stability": _stability_record(
+            "fixture_only",
+            verified_at="2026-09-15",
+            evidence_refs=(
+                "tests/test_client_usage.py::test_discover_dsh_usage_reads_zstd_jsonl_tokens_and_no_cost",
+            ),
+            limitations=(
+                "Usage parsing is synthetic-fixture only; the session-log schema was verified against dsh source and two independent third-party parsers, not a live dsh client on this machine.",
+            ),
+        ),
+        "capabilities": {
+            "session_discovery": _capability_record(
+                "experimental",
+                "Session ids from the dsh session header (falling back to the session directory name) of per-session logs.",
+                activation="opt_in_project",
+                verification=_DSH_USAGE_FIXTURE,
+                limitations=(
+                    "Subagent session logs are counted as separate sessions; overlap with parent aggregation is not de-duplicated.",
+                ),
+            ),
+            "usage_import": _capability_record(
+                "experimental",
+                "Input, output, cache, and reasoning tokens from assistant/message events (Zstandard-compressed JSONL).",
+                activation="opt_in_project",
+                verification=_DSH_USAGE_FIXTURE,
+                limitations=(
+                    "Synthetic happy-path fixture only; malformed/schema-drift diagnostics are incomplete.",
+                    "dsh does not persist a cost, so only agentacct's local pricing-table estimate is possible.",
+                ),
+                usage_basis="client_reported",
+                cost_basis="unknown",
+            ),
+            "mechanical_capture": _unavailable_capability("No typed dsh plugin-hook adapter is implemented."),
+            "mcp_semantics": _capability_record(
+                "experimental",
+                "`agentacct onboard --agent dsh` writes the @deepseek-ai/dsh-mcp-client registration into $DSH_HOME/cordis.patch.yml (the home patch applied over every profile) and the record-your-work directive into $DSH_HOME/AGENTS.md, so a dsh session can record work over MCP; `setup mcp --agent dsh` previews the same registration.",
+                activation="one_command_global",
+                verification=_DSH_ONBOARD_FIXTURE,
+                limitations=("Whether dsh resolves the bundled plugin in-box for every profile and the end-to-end record path are unproven — no live dsh MCP smoke yet.",),
+            ),
+            "model_attribution": _capability_record(
+                "experimental",
+                "Model/provider from an assistant message source within one session log.",
+                activation="opt_in_project",
+                verification=_DSH_USAGE_FIXTURE,
+                limitations=("A multi-model session is currently aggregated under the final/current model.",),
+            ),
+            "cache_read": _capability_record(
+                "experimental",
+                "cacheReadTokens when an assistant/message event reports it.",
+                activation="opt_in_project",
+                verification=_DSH_USAGE_FIXTURE,
+                limitations=("Synthetic fixture only; missing remains unknown.",),
+                usage_basis="client_reported",
+            ),
+            "cache_write": _capability_record(
+                "experimental",
+                "cacheWriteTokens when an assistant/message event reports it.",
+                activation="opt_in_project",
+                verification=_DSH_USAGE_FIXTURE,
+                limitations=("Synthetic fixture only; missing remains unknown.",),
+                usage_basis="client_reported",
+            ),
+            "automatic_install": _capability_record(
+                "experimental",
+                "`agentacct onboard --agent dsh` writes the record-your-work directive to $DSH_HOME/AGENTS.md and the @deepseek-ai/dsh-mcp-client registration to $DSH_HOME/cordis.patch.yml (the home patch applied over every profile the CLI boots).",
+                activation="one_command_global",
+                verification=_DSH_ONBOARD_FIXTURE,
+                limitations=(
+                    "Whether dsh resolves the bundled @deepseek-ai/dsh-mcp-client plugin in-box for every profile is unproven; onboarding prints the one-line `dsh plugin add` fallback.",
+                    "No live dsh-client end-to-end recording smoke yet.",
+                ),
+            ),
+        },
+        "limitations": ["Remain experimental until real dsh-client fixtures, a live smoke, and namespace hardening exist."],
     },
     {
         "client": "cursor",
