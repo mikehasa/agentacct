@@ -20,7 +20,7 @@ enum RecordingHealthAction: String, Equatable, Codable {
     var title: String {
         switch self {
         case .setup: return "Open Connections"
-        case .sources: return "View Sources"
+        case .sources: return "View Diagnostics"
         case .refresh: return "Check again"
         }
     }
@@ -161,7 +161,7 @@ struct RecordingHealthSnapshot: Equatable {
             let hasIssues = !(ingestion.issues ?? []).isEmpty || ingestion.state == "degraded"
             dimensions.append(.init(id: "coverage", title: "Evidence coverage", value: hasIssues ? "Needs review" : ingestion.issues == nil ? "Not assessed" : "No issues reported", detail: hasIssues ? "Reported import or attribution issues may affect coverage. New capture does not repair missing or conflicting history." : "A health snapshot cannot establish complete historical coverage.", tone: hasIssues ? .caution : .neutral))
             if ingestion.state == "degraded", (ingestion.issues ?? []).isEmpty {
-                causes.append(.init(id: "ingestion:degraded", scope: .ingestion, title: "Import coverage needs review", detail: "The recorder reports degraded ingestion without a specific cause. Review Sources for the reported source states.", tone: .caution, action: .sources, affectedSources: [], recoveryDetail: "The recorder no longer reports degraded ingestion. Historical completeness is still not established."))
+                causes.append(.init(id: "ingestion:degraded", scope: .ingestion, title: "Import coverage needs review", detail: "The recorder reports degraded ingestion without a specific cause. Open Diagnostics for the reported source states.", tone: .caution, action: .sources, affectedSources: [], recoveryDetail: "The recorder no longer reports degraded ingestion. Historical completeness is still not established."))
             }
         } else {
             dimensions.append(.init(id: "imports", title: "Imports and coverage", value: "Not confirmed", detail: ingestion == nil ? "Waiting for source health." : "The last source snapshot is retained, but current health cannot be confirmed while the recorder is unreachable.", tone: .neutral))

@@ -876,6 +876,8 @@ enum MainPane: String, CaseIterable, Identifiable {
     case worksets = "Work"
     case work = "Sessions"
     case usage = "Usage"
-    case sources = "Sources"
+    // Internal case stays `.sources`; it now shows as "Diagnostics" because the
+    // panel is where you check the whole service's health and what went wrong.
+    case sources = "Diagnostics"
     var id: String { rawValue }
 }

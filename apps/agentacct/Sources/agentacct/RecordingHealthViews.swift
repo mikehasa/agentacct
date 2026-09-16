@@ -198,7 +198,7 @@ struct RecordingHealthPopover: View {
                 Button("Connections") { onAction(.setup) }
                     .buttonStyle(NativeSetupActionStyle())
                     .accessibilityIdentifier("recording-health.connections")
-                Button("Sources") { onAction(.sources) }.buttonStyle(NativeSetupActionStyle())
+                Button("Diagnostics") { onAction(.sources) }.buttonStyle(NativeSetupActionStyle())
                 if !layout.stacksControls { Spacer() }
                 Button("Check again") { onAction(.refresh) }.buttonStyle(NativeSetupActionStyle())
             }

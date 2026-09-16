@@ -34,6 +34,39 @@ INGESTION_HEALTH_DIRNAME = "ingestion-health"
 INGESTION_HEALTH_FILENAME = "state.json"
 EVIDENCE_REFRESHABLE_USAGE_ERROR_CODE = "evidence_refreshable_usage_failed"
 
+# Not every issue means the imported data is wrong. An issue's severity decides
+# how loudly the Diagnostics surface reports it: "error" is red, "attention" is
+# amber (a real but recoverable problem — imports may be paused or a source keeps
+# being busy), and "advisory" is a quiet note (cosmetic / dev-only, data still
+# imports). Anything not listed defaults to "error" so a genuinely new failure is
+# never silently downgraded. Note: single self-healing scan races never reach
+# here at all — the hysteresis below suppresses them before any issue is emitted,
+# so a source_changed_during_scan issue that DOES surface is a persisted failure
+# that has degraded the source, and belongs in the loud card (attention), not a
+# quiet note.
+_ISSUE_SEVERITY: dict[str, str] = {
+    "source_changed_during_scan": "attention",
+    "watcher_version_mismatch": "advisory",
+    "watcher_stale": "attention",
+    "scan_stuck": "attention",
+}
+_DEFAULT_ISSUE_SEVERITY = "error"
+
+# Receipt-level error codes that are benign concurrent-write races: the client
+# was rewriting its own log while agentacct read it, so the scan aborted and the
+# next scan simply succeeds. A single one of these must not degrade a source.
+_TRANSIENT_RECEIPT_CODES: frozenset[str] = frozenset(
+    {
+        "source_changed_during_scan",
+        "claude_transcript_changed_during_scan",
+        "cursor_state_db_changed_during_scan",
+        "cursor_state_db_replaced_during_scan",
+    }
+)
+# How many consecutive failing scans a transient race must reach before it is
+# treated as a real (degraded) problem rather than a self-healing blip.
+_DEGRADE_AFTER_CONSECUTIVE_FAILURES = 2
+
 _SOURCE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,79}")
 _LEASE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _ERROR_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,119}")
@@ -996,8 +1029,23 @@ class IngestionHealthStore:
             incomplete_alias_migrations = _nonnegative_int(
                 receipt.get("incomplete_alias_migrations")
             )
+            consecutive_failures = _nonnegative_int(receipt.get("consecutive_failures"))
+            # A benign concurrent-write race — the client rewrote its own log
+            # while agentacct read it — aborts the scan, and the next scan simply
+            # succeeds. A single one must not degrade the source (that is what
+            # made a healthy pipeline flap red); only a persistent streak does.
+            transient_only = (
+                bool(receipt_error_codes)
+                and set(receipt_error_codes).issubset(_TRANSIENT_RECEIPT_CODES)
+                and namespace_conflicts == 0
+            )
+            suppress_transient = (
+                transient_only and consecutive_failures < _DEGRADE_AFTER_CONSECUTIVE_FAILURES
+            )
             base_state = (
-                "degraded"
+                "healthy"
+                if suppress_transient and last_success is not None
+                else "degraded"
                 if failed_after_success or error_count or namespace_conflicts
                 else "healthy"
                 if last_success is not None
@@ -1016,6 +1064,7 @@ class IngestionHealthStore:
                 )
                 current_failure = bool(
                     receipt_version_matches
+                    and not suppress_transient
                     and (
                         (
                             last_failure is not None
@@ -1028,7 +1077,14 @@ class IngestionHealthStore:
                         )
                     )
                 )
-                source_state = "degraded" if current_failure else "healthy" if current_success else "pending"
+                # A suppressed blip may only read "healthy" off a success the
+                # CURRENT watcher actually produced — otherwise it falls through
+                # to "pending", so a freshly restarted watcher never claims green
+                # from a stale, pre-watcher success.
+                if suppress_transient and last_success is not None and float(last_success) >= watcher_started_at:
+                    source_state = "healthy"
+                else:
+                    source_state = "degraded" if current_failure else "healthy" if current_success else "pending"
             else:
                 source_state = base_state
             if last_success is not None and (not watcher_is_fresh or source in configured_sources):
@@ -1090,6 +1146,7 @@ class IngestionHealthStore:
                     for code in {
                         "cursor_state_db_replaced_during_scan",
                         "cursor_state_db_changed_during_scan",
+                        "claude_transcript_changed_during_scan",
                     }
                 ):
                     issues.append(
@@ -1097,9 +1154,9 @@ class IngestionHealthStore:
                             "code": "source_changed_during_scan",
                             "source": source,
                             "action": (
-                                "Cursor changed or replaced its primary state database during the read. "
-                                "Wait for Cursor to become idle or quit it, then retry Cursor only from "
-                                "Advanced. No partial observation was saved."
+                                "A live session was writing its own log while agentacct read it, so this "
+                                "scan was skipped and the next one picks it up — nothing partial was saved. "
+                                "This only shows up if it keeps happening; wait for that app to go idle."
                             ),
                         }
                     )
@@ -1339,20 +1396,40 @@ class IngestionHealthStore:
                 }
             )
 
-        # Deduplicate identical aggregate issues while preserving order.
+        # Deduplicate identical aggregate issues while preserving order, and tag
+        # each with a severity so the surface can separate real failures from
+        # advisories and self-healing blips.
         unique_issues: list[dict[str, Any]] = []
         seen_issues: set[tuple[Any, ...]] = set()
         for issue in issues:
             key = (issue.get("code"), issue.get("source"), issue.get("action"))
             if key not in seen_issues:
                 seen_issues.add(key)
+                issue.setdefault(
+                    "severity", _ISSUE_SEVERITY.get(str(issue.get("code")), _DEFAULT_ISSUE_SEVERITY)
+                )
                 unique_issues.append(issue)
 
-        if unique_issues:
+        # A source is only accountable for the overall state within the live
+        # watcher's scope (historical receipts stay visible without turning the
+        # panel red). Its degraded state already carries hysteresis, so a single
+        # transient race never reaches here.
+        any_source_degraded = any(
+            row["state"] == "degraded"
+            for row in source_rows
+            if not watcher_is_fresh or row["source"] in configured_sources
+        )
+        severities = {issue.get("severity") for issue in unique_issues}
+        if "error" in severities or any_source_degraded:
+            # A real data/import failure — the only thing that paints red.
             overall_state = "degraded"
+        elif "attention" in severities:
+            # Imports may be paused (watcher stale/stuck) — amber, not red.
+            overall_state = "attention"
         elif watcher_is_fresh and configured_sources and all(
             row["state"] == "healthy" for row in source_rows if row["source"] in configured_sources
         ):
+            # Advisory notes (e.g. a dev version mismatch) never worsen this.
             overall_state = "healthy"
         else:
             # A clean manual scan is useful evidence but not proof that a live

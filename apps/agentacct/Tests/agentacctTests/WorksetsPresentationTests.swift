@@ -14,13 +14,15 @@ final class WorksetsPresentationTests: XCTestCase {
     // MARK: tab structure
 
     func testTabOrderAndLabels() {
-        // Dashboard | Work (worksets) | Sessions (receipts) | Usage | Sources.
+        // Dashboard | Work (worksets) | Sessions (receipts) | Usage | Diagnostics.
         XCTAssertEqual(MainPane.allCases.map(\.rawValue),
-                       ["Dashboard", "Work", "Sessions", "Usage", "Sources"])
+                       ["Dashboard", "Work", "Sessions", "Usage", "Diagnostics"])
         // The new feature's tab is "Work"; the receipts pane kept its `.work`
         // case but now reads as "Sessions".
         XCTAssertEqual(MainPane.worksets.rawValue, "Work")
         XCTAssertEqual(MainPane.work.rawValue, "Sessions")
+        // The source/watcher-health pane is named for what it is: Diagnostics.
+        XCTAssertEqual(MainPane.sources.rawValue, "Diagnostics")
     }
 
     // MARK: timeline geometry

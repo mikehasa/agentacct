@@ -375,6 +375,7 @@ def test_hermes_multiple_home_failure_requires_selection_not_refresh(tmp_path: P
                 "them. Set HERMES_HOME to one absolute Hermes home in the dashboard process and restart "
                 "agentacct. Refreshing the unchanged configuration cannot repair this."
             ),
+            "severity": "error",
         }
     ]
 

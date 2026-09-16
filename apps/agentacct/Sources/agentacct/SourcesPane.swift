@@ -63,8 +63,32 @@ struct V1IngestionIssue: Decodable, Identifiable {
     let code: String?
     let source: String?
     let action: String?
+    /// error | attention | advisory | transient. Absent → treated as error, so a
+    /// new issue is never silently demoted to a quiet note.
+    let severity: String?
+
+    // Explicit init so `severity` defaults to nil at call sites (test fixtures)
+    // without dropping the synthesized Decodable conformance.
+    init(code: String?, source: String?, action: String?, severity: String? = nil) {
+        self.code = code
+        self.source = source
+        self.action = action
+        self.severity = severity
+    }
 
     var id: String { "\(code ?? "?")-\(source ?? "*")" }
+
+    /// Only errors and attention items belong in the loud card; advisories and
+    /// self-healing transients are quiet notes that never paint the panel red.
+    var isAlert: Bool { (severity ?? "error") == "error" || severity == "attention" }
+
+    var tint: Color {
+        switch severity {
+        case "attention": return Theme.amber
+        case "advisory", "transient": return Theme.muted
+        default: return Theme.coral
+        }
+    }
 }
 
 /// Only this backend code is a store-wide cause projected onto each source.
@@ -149,10 +173,10 @@ struct SourcesPane: View {
     private var header: some View {
         adaptiveRow(spacing: Space.l) {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Evidence sources")
+            Text("Diagnostics")
                 .workFont(.titlePage).tracking(Type.titlePageTracking)
                 .foregroundStyle(Theme.ink)
-            Text("Recording connections and local import health")
+            Text("Your data sources and the recorder's health — and anything that needs a look")
                 .workFont(.dataSmall).foregroundStyle(Theme.muted)
         }
         if !stacksRows { Spacer() }
@@ -361,8 +385,10 @@ struct SourcesPane: View {
                 StateLozenge(text: "Reporting", tint: Theme.green, wash: Theme.tintGreen, pip: .filled)
             case "healthy":
                 StateLozenge(text: "Idle", tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+            case "attention":
+                StateLozenge(text: "Attention", tint: Theme.amber, wash: Theme.tintAmber, pip: .hollow)
             case "degraded":
-                StateLozenge(text: "Degraded", tint: Theme.amber, wash: Theme.tintAmber, pip: .hollow)
+                StateLozenge(text: "Needs a fix", tint: Theme.coral, wash: Theme.tintCoral, pip: .hollow)
             case let state:
                 StateLozenge(text: state.capitalized, tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
             }
@@ -433,26 +459,64 @@ struct SourcesPane: View {
 
     @ViewBuilder
     private func issuesCard(_ issues: [V1IngestionIssue]) -> some View {
-        if !issues.isEmpty {
-            let groups = SourceIssueGroup.group(issues)
-            Card(padding: Space.xl) {
-                VStack(alignment: .leading, spacing: 0) {
-                    adaptiveRow(spacing: Space.s, alignment: .firstTextBaseline) {
-                        Text("\(presentation.isRetained ? "Previously reported" : "Needs attention") (\(groups.count))")
-                            .workFont(.titleCard).foregroundStyle(Theme.ink)
-                        Text("\(issues.count) diagnostic \(issues.count == 1 ? "report" : "reports")")
-                            .workFont(.caption).foregroundStyle(Theme.muted)
-                    }
-                    Rectangle().fill(Theme.hairline).frame(height: 1).padding(.vertical, Space.m)
-                    VStack(alignment: .leading, spacing: Space.xl) {
-                        ForEach(groups) { group in
-                            if group.isGlobalReconciliation {
-                                sharedReconciliationIssue(group)
-                            } else if let issue = group.issues.first {
-                                originalDiagnostic(issue)
-                            }
+        // Loud (error/attention) vs quiet (advisory/transient): the alarming card
+        // is only for things that actually need action; everything else is a
+        // calm note so a self-healing system never reads as broken.
+        let alerts = issues.filter { $0.isAlert }
+        let notes = issues.filter { !$0.isAlert }
+        VStack(alignment: .leading, spacing: Space.l) {
+            if !alerts.isEmpty { alertsCard(alerts) }
+            // Only reassure that imports are fine when there's no real alert
+            // sitting right above saying otherwise.
+            if !notes.isEmpty { notesCard(notes, reassure: alerts.isEmpty) }
+        }
+    }
+
+    private func alertsCard(_ issues: [V1IngestionIssue]) -> some View {
+        let groups = SourceIssueGroup.group(issues)
+        return Card(padding: Space.xl) {
+            VStack(alignment: .leading, spacing: 0) {
+                adaptiveRow(spacing: Space.s, alignment: .firstTextBaseline) {
+                    Text("\(presentation.isRetained ? "Previously reported" : "Needs attention") (\(groups.count))")
+                        .workFont(.titleCard).foregroundStyle(Theme.ink)
+                    Text("\(issues.count) diagnostic \(issues.count == 1 ? "report" : "reports")")
+                        .workFont(.caption).foregroundStyle(Theme.muted)
+                }
+                Rectangle().fill(Theme.hairline).frame(height: 1).padding(.vertical, Space.m)
+                VStack(alignment: .leading, spacing: Space.xl) {
+                    ForEach(groups) { group in
+                        if group.isGlobalReconciliation {
+                            sharedReconciliationIssue(group)
+                        } else if let issue = group.issues.first {
+                            originalDiagnostic(issue)
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// Quiet, non-alarming notes: cosmetic advisories (e.g. a dev version
+    /// mismatch) and self-healing transients. Never red; reassures that data
+    /// is still importing.
+    private func notesCard(_ notes: [V1IngestionIssue], reassure: Bool) -> some View {
+        Card(padding: Space.xl) {
+            VStack(alignment: .leading, spacing: Space.m) {
+                Text("Notes").workFont(.titleCard).foregroundStyle(Theme.ink)
+                ForEach(notes) { note in
+                    HStack(alignment: .top, spacing: Space.s) {
+                        Image(systemName: "info.circle").workFont(.caption).foregroundStyle(Theme.muted)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(issueTitle(note)).workFont(.rowLabel).foregroundStyle(Theme.ink)
+                            Text(note.action ?? "Nothing to do — this clears on its own.")
+                                .workFont(.caption).foregroundStyle(Theme.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                if reassure {
+                    Text("Your data is still importing normally.")
+                        .workFont(.caption).foregroundStyle(Theme.muted)
                 }
             }
         }
@@ -491,7 +555,7 @@ struct SourcesPane: View {
     private func originalDiagnostic(_ issue: V1IngestionIssue) -> some View {
         VStack(alignment: .leading, spacing: Space.s) {
             Text(issueTitle(issue))
-                .workFont(.rowLabel).foregroundStyle(presentation.isRetained ? Theme.muted : Theme.amber)
+                .workFont(.rowLabel).foregroundStyle(presentation.isRetained ? Theme.muted : issue.tint)
             Text(issue.code ?? "code not supplied").workFont(.dataSmall).foregroundStyle(Theme.muted)
             Text(issue.action ?? "See agentacct doctor for source diagnostics.")
                 .workFont(.caption).foregroundStyle(Theme.muted)
