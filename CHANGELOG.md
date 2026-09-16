@@ -34,6 +34,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   onboarding still prints the `dsh plugin add` fallback for environments where the
   plugin does not resolve. Usage-import lanes remain synthetic-fixture verified.
 
+### Changed
+
+- The recording instructions given to every agent (the MCP server instructions,
+  the SessionStart hook context, and the `CLAUDE.md`/`AGENTS.md` workflow block)
+  now cue a session-level completion: when the user signals the whole deliverable
+  is done ("ship it", a merge), the agent records a final `section_status=completed`
+  summarizing the whole deliverable and leaves no section open, so the session's
+  outcome is stated rather than left inferable from the sub-task sections. No new
+  status word and no UI change — the completion is still graded from evidence,
+  surfacing as "Verified" or "Reported", never as an un-graded "Completed".
+
 ## [0.10.11] — 2026-09-15
 
 Drains the codex reconcile conflicts left over from before 0.10.10, so sources

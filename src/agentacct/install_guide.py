@@ -288,6 +288,16 @@ _RECORDING_CONTRACT_LINES = (
     "- Open a section with `agentacct_record_section` BEFORE your first other tool call, and again before each meaningful task. REQUIRED args: `source` (your client name, e.g. \"codex\" or \"claude-code\"), a stable `section_id` (reuse the SAME id across this section's started/checkpoint/terminal calls), and `section_status`; also set `section_title` to a short human goal. Start with `section_status=started`; normally finish with `completed` or `blocked`. Example: agentacct_record_section(source=\"codex\", section_id=\"add-rate-limit\", section_status=\"started\", section_title=\"add rate-limit to login\").",
     "- For a long task, send `section_status=checkpoint` updates rather than one giant section.",
     "- When the user hands the work off or says they are continuing in a new session, record the section as `section_status=handed_off` (a clean stop) — do not leave it `started`/`checkpoint`.",
+    # The whole-job-done capstone. The per-task bullet above closes each task,
+    # but nothing cued a SESSION-level close when the user signals the whole
+    # deliverable is finished ("ship it" / a merge). Without it a finished session
+    # reads as a pile of sub-tasks, its done-ness only inferable. Deliberately
+    # NOT promising a decision word: the work views grade completion from evidence
+    # (verified vs. reported) and a late completed update can even re-stale earlier
+    # checks — so this cues only the honest close, and the machine_check bullet
+    # below owns the evidence. Triggers stay unambiguous (a mid-task "looks good"
+    # must not fire it).
+    "- When the user signals the whole job is done (\"ship it\", or after a merge), record a final `section_status=completed` summarizing the whole deliverable, and leave no section on `started`/`checkpoint`.",
     "- After running tests or a build, record the objective result with `agentacct_record_machine_check`.",
     "- Keep MCP/event evidence separate from token/cost claims: MCP events prove what work happened; a token or cost figure is only real if it comes from actual client usage the importer read — never fabricate one.",
 )
