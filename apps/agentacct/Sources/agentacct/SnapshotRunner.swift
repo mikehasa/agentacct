@@ -25,6 +25,11 @@ enum SnapshotRunner {
                 let glance = GlanceState(preloaded: snapshot)
                 let dashboard = DashboardStore()
                 await dashboard.refresh()
+                // The Work (worksets) pane's own loader is gated off in snapshot
+                // mode (deterministic rendering can't wait on its SwiftUI .task),
+                // and refresh() doesn't cover it — fetch the groupings explicitly
+                // so window-work-*.png renders populated cards, not the empty state.
+                await dashboard.fetchWorksets()
                 let selection = AppSelection()
                 // refresh() also loads the Task list. Select the newest Task
                 // (or the one named by AGENTACCT_SNAPSHOT_TASK — id or prefix —
@@ -110,11 +115,19 @@ enum SnapshotRunner {
                     // Propose a tall canvas so the whole record — summary strip,
                     // the two-column dimensions + evidence rail, and Sessions &
                     // steps — renders; the docs pipeline trims trailing canvas.
+                    // The height must sit at the record's natural height: the
+                    // offscreen ScrollBox pins content to the top, so a taller
+                    // frame stretches the flexible timeline card into an empty
+                    // band and a shorter one clips the supporting sections. The
+                    // docs pipeline owns the value (next to its crop table) and
+                    // passes it as AGENTACCT_SNAPSHOT_WIDE_HEIGHT (points).
+                    let wideHeight = ProcessInfo.processInfo.environment["AGENTACCT_SNAPSHOT_WIDE_HEIGHT"]
+                        .flatMap(Double.init) ?? 1500
                     let wideWork = MainWindow()
                         .environment(glance)
                         .environment(dashboard)
                         .environment(selection)
-                        .frame(width: 1520, height: 2600, alignment: .top)
+                        .frame(width: 1520, height: wideHeight, alignment: .top)
                         .environment(\.colorScheme, scheme)
                     try SnapshotImageWriter.render(
                         wideWork,

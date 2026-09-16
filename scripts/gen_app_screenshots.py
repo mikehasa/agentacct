@@ -35,30 +35,47 @@ APP_BIN = REPO_ROOT / "apps" / "agentacct" / ".build" / "agentacct.app" / "Conte
 
 # Curated: the light-mode panes we surface in the README, renamed for the docs.
 # The simple panes are copied 1:1; the Work Receipt hero and the Sessions & steps
-# shot are cropped out of one wide, tall Work render (WIDE_CROPS below).
+# shot are cropped out of one wide, tall Sessions render (WIDE_CROPS below).
+#
+# The tab labels: `worksets` (the pane loop writes it as window-work-*.png) is
+# the "Work" tab — folder-anchored groupings across agents. The receipts
+# collection (window-work-table-*.png, rendered task-unselected) is the
+# "Sessions" tab. Keep those two straight when re-measuring crops.
 CURATE = {
-    "window-work-table-light.png": "app-work-table.png",
+    "window-work-light.png": "app-work.png",          # the Work tab (worksets)
+    "window-work-table-light.png": "app-sessions.png",  # the Sessions tab (receipts table)
     "window-dashboard-light.png": "app-dashboard.png",
     "window-usage-light.png": "app-usage.png",
+    "window-diagnostics-light.png": "app-diagnostics.png",  # per-agent Connections + source health
 }
 
 # The Work Receipt is the README hero. SnapshotRunner renders the flagship record
-# once more at a WIDE, tall canvas (window-work-wide-light.png) so the receipt's
-# adaptive two-column layout — record detail on the left, the evidence side rail
-# (coverage · sources · gaps) on the right — is visible, with the full Sessions &
-# steps drill-down below it. We crop two docs assets out of that one render.
-# Regions are (left, top, right, bottom) in device pixels; None means the render's
-# own edge. These pin the deterministic demo layout — if the demo store or the
-# Work pane layout changes materially, re-measure them (the raw render is kept in
-# SHOTS_TMP for exactly that).
+# once more at a WIDE canvas (window-work-wide-light.png) sized so the receipt
+# fills it without the timeline card stretching (a shorter frame keeps the
+# offscreen ScrollBox from top-padding a flexible child into a tall empty band).
+# The single-column receipt reads top to bottom: verdict + summary strip, the
+# activity timeline (steps + their checks over time), then the Usage / Cost /
+# Weekly plan / Sessions / Recording dimensions. We crop two docs assets — the
+# hero (verdict + timeline) and the dimensions ledger — from the detail column
+# (right of the ~320 pt master list · 2 + 1 px divider). Regions are
+# (left, top, right, bottom) in device pixels; None means the render's own edge.
+# Re-measure if the demo store or the receipt layout changes materially (the raw
+# render is kept in SHOTS_TMP for exactly that).
 WIDE_SRC = "window-work-wide-light.png"
+# The wide render's frame height in points. It must sit at the record's natural
+# height: the offscreen ScrollBox pins content to the top, so a taller frame
+# stretches the flexible timeline card into an empty band, and a shorter one
+# clips the supporting sections. SnapshotRunner reads it from the environment.
+WIDE_HEIGHT = 2348
 WIDE_CROPS = {
-    # Hero: summary strip + the two-column Receipt dimensions / evidence rail,
-    # ending at the dimensions card (before the standalone Checks card).
-    "app-work-receipt.png": (0, 0, None, 2830),
-    # "The work, not just the tokens": the Sessions & steps drill-down, detail
-    # column only (right of the master-list divider at 368 pt · 2 + 1 px).
-    "app-work-sessions-steps.png": (738, 3712, None, 5185),
+    # Hero: breadcrumb, title + verdict, the Steps / Checks outcome bars, and the
+    # first two (expanded) steps of the numbered step spine.
+    "app-work-receipt.png": (642, 130, None, 1720),
+    # The activity timeline: every recorded step and its checks over time.
+    "app-receipt-timeline.png": (642, 2318, None, 3466),
+    # The supporting sections: Usage (tool-call breakdown), Cost + its basis,
+    # Weekly plan, and Recording (task, agents, coverage, sources, gaps).
+    "app-receipt-detail.png": (642, 3484, None, 4626),
 }
 
 sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -379,7 +396,42 @@ def build_store():
                    touched=[RL, TST],
                    commands=["pytest tests/test_ratelimit.py -q", "ruff check src/", "git diff --stat"])
 
+    seed_worksets(svc)
     return svc
+
+
+# ---- Worksets (the Work tab) --------------------------------------------------
+# Folder-anchored groupings the user defines: a workset says "the sessions under
+# this folder are one piece of work" and gathers a project's runs across every
+# agent onto one shared timeline. It never re-grades a session — each keeps its
+# own receipt; the group is a labeled sum of independently-attributed parts.
+#
+# `project_identity` is NOT the raw path: a session's identity is
+# `project:{leaf}:{sha256(path)[:16]}` (agentacct.work_ledger._project_identity),
+# and the workset's stored project_identity must be byte-identical to it or
+# membership resolves empty. Seeded via record_workset_action (the only trusted
+# workset-stamping path — a workset from a raw record_event is stripped). Two
+# groups so the pane renders a populated list; billing-svc is created last so,
+# ordered newest-first, its 3-agent (Claude Code + Codex + OpenCode) card leads.
+
+def _workset_identity(project: str) -> str:
+    """The hashed session identity for `/demo/{project}`, computed from the real
+    projection function so the seed can never drift from what membership joins on."""
+    from agentacct.work_ledger import _project_identity
+    return _project_identity(f"/demo/{project}")
+
+
+def seed_worksets(svc):
+    svc.record_workset_action(
+        action="create", workset_id="ws-acme-web", name="acme-web",
+        project_identity=_workset_identity("acme-web"),
+        expected_revision=0, idempotency_key="demo-workset-acme-web",
+    )
+    svc.record_workset_action(
+        action="create", workset_id="ws-billing-svc", name="billing-svc",
+        project_identity=_workset_identity("billing-svc"),
+        expected_revision=0, idempotency_key="demo-workset-billing-svc",
+    )
 
 
 def backdate_ledger():
@@ -445,6 +497,20 @@ def seed_ingestion():
     health.heartbeat_watcher("demo-watcher")
 
 
+def seed_activation():
+    """Seed the activation record the Diagnostics pane's per-agent Connections
+    card joins against: agentacct "set up" the four demo agents, so their live,
+    healthy sources read as Recording. Unlisted agents stay honest — dsh renders
+    as not connected (with its Connect action), OpenClaw and Cursor as read-only."""
+    from agentacct.activation import ActivationStateStore
+    from agentacct.cli import _package_version
+
+    ActivationStateStore(STORE).mark_configured(
+        project_dir=FAKE_HOME, clients=["claude-code", "codex", "opencode", "hermes"],
+        configured_at=NOW - 3 * DAY, agentacct_version=_package_version(),
+    )
+
+
 # --- orchestration ------------------------------------------------------------
 
 def _daemon_env():
@@ -465,6 +531,7 @@ def main():
     build_store()
     backdate_ledger()
     seed_ingestion()
+    seed_activation()
 
     if not APP_BIN.exists():
         sys.exit(f"app binary not found: {APP_BIN}\n  build it first: apps/agentacct/Scripts/build-app.sh")
@@ -490,7 +557,8 @@ def main():
         print("rendering app panes (offscreen)…")
         # Real HOME for the app process (GUI/WindowServer); AGENTACCT_STORE_DIR
         # is the only thing that points it at the demo store.
-        app_env = {**os.environ, "AGENTACCT_STORE_DIR": str(STORE)}
+        app_env = {**os.environ, "AGENTACCT_STORE_DIR": str(STORE),
+                   "AGENTACCT_SNAPSHOT_WIDE_HEIGHT": str(WIDE_HEIGHT)}
         r = subprocess.run([str(APP_BIN), "--snapshot", str(SHOTS_TMP)], env=app_env,
                            capture_output=True, text=True, timeout=180)
         if r.returncode != 0:

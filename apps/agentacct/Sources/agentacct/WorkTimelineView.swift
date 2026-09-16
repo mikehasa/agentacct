@@ -380,22 +380,32 @@ struct WorkTimelineView: View {
         }
     }
 
-    private var activityMenu: some View {
-        Menu {
-            Button("Show all time") { hold(); navigation.view.interval = displayProjection.interval }
-                .buttonStyle(QuietButtonStyle())
-            Button("Export visible records…", action: exportReview)
-                .disabled(filtered.isEmpty)
-                .buttonStyle(QuietButtonStyle())
-        } label: {
+    @ViewBuilder private var activityMenu: some View {
+        if SnapshotMode.rendersStaticControls {
+            // The offscreen docs renderer draws a SwiftUI Menu as a yellow
+            // "unsupported control" placeholder, so the docs screenshots show
+            // the menu's label as a static primitive instead. The live app and
+            // the golden fixture renders (which never set this flag) are unchanged.
             Image(systemName: "ellipsis")
+                .padding(.horizontal, 8)
+                .accessibilityLabel("Activity actions")
+        } else {
+            Menu {
+                Button("Show all time") { hold(); navigation.view.interval = displayProjection.interval }
+                    .buttonStyle(QuietButtonStyle())
+                Button("Export visible records…", action: exportReview)
+                    .disabled(filtered.isEmpty)
+                    .buttonStyle(QuietButtonStyle())
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .menuStyle(.borderlessButton)
+            .buttonStyle(QuietButtonStyle(horizontalPadding: 8))
+            .fixedSize()
+            .accessibilityLabel("Activity actions")
+            .accessibilityIdentifier("work.timeline.actions")
+            .help("Activity actions")
         }
-        .menuStyle(.borderlessButton)
-        .buttonStyle(QuietButtonStyle(horizontalPadding: 8))
-        .fixedSize()
-        .accessibilityLabel("Activity actions")
-        .accessibilityIdentifier("work.timeline.actions")
-        .help("Activity actions")
     }
 
     private func exportReview() {

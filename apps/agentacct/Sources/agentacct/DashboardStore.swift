@@ -371,7 +371,13 @@ final class DashboardStore {
     /// Sources retries only its own endpoint (upstream PR #158). A cancelled
     /// window refresh leaves retained source health and its timestamp intact.
     func refreshIngestion() async {
-        guard !isOfflineSnapshot, !SnapshotMode.enabled, !isRefreshingIngestion else { return }
+        // Snapshot mode is allowed through (unlike the live-only retry loops the
+        // other panes gate off): the docs `--snapshot` render calls refresh()
+        // once against the demo daemon, so source health — the dashboard's
+        // Evidence-trust signal and the Sources pane — renders populated instead
+        // of a perpetual "checking" state. Golden fixture renders never call
+        // refresh(), so their pixels are unaffected.
+        guard !isOfflineSnapshot, !isRefreshingIngestion else { return }
         isRefreshingIngestion = true
         defer { isRefreshingIngestion = false }
         do {
@@ -399,7 +405,12 @@ final class DashboardStore {
     /// Per-agent connection rows for the Diagnostics pane. Retains the last rows
     /// on a cancelled/failed refresh, like source health.
     func refreshConnections() async {
-        guard !isOfflineSnapshot, !SnapshotMode.enabled, !isRefreshingConnections else { return }
+        // Snapshot mode is allowed through for the same reason as
+        // refreshIngestion(): the docs `--snapshot` render calls refresh() once
+        // against the demo daemon, so the Diagnostics pane renders its per-agent
+        // Connections card instead of the older per-source fallback. Golden
+        // fixture renders never call refresh(), so their pixels are unaffected.
+        guard !isOfflineSnapshot, !isRefreshingConnections else { return }
         isRefreshingConnections = true
         defer { isRefreshingConnections = false }
         do {

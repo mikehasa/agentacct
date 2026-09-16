@@ -980,7 +980,9 @@ private struct WorkTablePage: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Work")
+            // The receipts collection's tab is "Sessions" (MainPane.work); the
+            // page title matches it. "Work" is the sibling worksets tab.
+            Text("Sessions")
                 .workFont(.titlePage).tracking(Type.titlePageTracking)
                 .foregroundStyle(Theme.ink)
                 .accessibilityAddTraits(.isHeader)
