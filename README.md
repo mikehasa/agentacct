@@ -7,7 +7,7 @@
 
 **Your coding agent says it is done. agentacct shows you the evidence: one honest Work Receipt per task, with what the agent did, what it cost, and how well that is proven, entirely on your machine.**
 
-![A Work Receipt in the macOS app: the task "Add a token-bucket rate limiter to the login API" carries a green Verified badge; two outcome bars summarize 5 steps (4 self-checked, 1 claimed) and 5 recorded checks (5 passed); below, the numbered step spine shows each step's summary, its agent-reported check with exit code and provenance, and the file it touched.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-work-receipt.png)
+![A Work Receipt in the macOS app: the task "Add a token-bucket rate limiter to the login API" carries a green Verified badge; two outcome bars summarize 5 steps (4 self-checked, 1 claimed) and 5 recorded checks (5 passed); below, the numbered step spine shows each step's summary, its agent-reported check with exit code and provenance, and the file it touched.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/app-work-receipt.png)
 
 agentacct is local-first Agent Work Intelligence for coding agents such as Claude Code, Codex, OpenCode, and Hermes. It reads the session logs your agents already write, joins them with the work each session records over MCP, and renders the result as a receipt you can hold the agent to. Read it in the macOS app, in the terminal (`agentacct tui`), or over a loopback-only JSON API.
 
@@ -39,7 +39,7 @@ Three questions, in the order a skeptical reviewer asks them:
 - **Who says so?** Every check carries an evidence tier (an agent's own claim < an agent-reported check < a hook-observed exit code < CI), and the tier travels with the check into every table as a pip shape.
 - **Is the proof still current?** A passing check that predates later recorded work is no longer current, and the receipt says so; a re-run or a later edit never inherits an older green.
 
-![The receipt's activity timeline card: a Live toggle and an activity search above a shared time axis; step cards (Write the failing tests, Implement the token-bucket middleware, Handle bursts + concurrent requests, Code review + document the limits) each read Reported completed, and check cards run from 12 failed (red) through two 12 passed runs to 38 passed, with a scrubber bar at the bottom.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-receipt-timeline.png)
+![The receipt's activity timeline card: a Live toggle and an activity search above a shared time axis; step cards (Write the failing tests, Implement the token-bucket middleware, Handle bursts + concurrent requests, Code review + document the limits) each read Reported completed, and check cards run from 12 failed (red) through two 12 passed runs to 38 passed, with a scrubber bar at the bottom.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/app-receipt-timeline.png)
 
 The timeline keeps the red run. A failing check is superseded by the passing one that follows, never averaged away, so you can see when the proof caught up with the code and when it did not. Two worked examples show the idea end to end: [when an agent says *done*](docs/examples/when-an-agent-says-done.md) and [Claude Code vs Codex on the same task](docs/examples/compare-claude-code-and-codex.md).
 
@@ -49,37 +49,37 @@ The macOS app has five tabs: **Dashboard · Work · Sessions · Usage · Diagnos
 
 ### Dashboard: start with what needs review
 
-![The Dashboard: a Shift Brief naming "Fix the flaky payment test" as the primary attention item (billing-svc · claude-code · 1 failed, 7 passed; recorded reason Failed check, observed 1d ago, provenance MCP record, no next step recorded) with Review evidence and Copy review brief buttons; a Signal rail with Working now, Capacity (codex · 37% headroom · provider reported), Usage change, and Evidence trust (Sources healthy); a Recent work table with Outcome, Evidence, and Cost; and a seven-day usage-history chart.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-dashboard.png)
+![The Dashboard: a Shift Brief naming "Fix the flaky payment test" as the primary attention item (billing-svc · claude-code · 1 failed, 7 passed; recorded reason Failed check, observed 1d ago, provenance MCP record, no next step recorded) with Review evidence and Copy review brief buttons; a Signal rail with Working now, Capacity (codex · 37% headroom · provider reported), Usage change, and Evidence trust (Sources healthy); a Recent work table with Outcome, Evidence, and Cost; and a seven-day usage-history chart.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/app-dashboard.png)
 
 The Shift Brief leads with the single task that most needs you, its recorded reason, and where the claim came from. **Copy review brief** copies only recorded facts and never reruns anything; each rail signal says *not reported* instead of showing a confident number when its data is missing or stale.
 
 ### Sessions: one row per task, with its verdict and its proof
 
-![The Sessions tab: lifecycle tabs (All 19, Attention 1, Verified 4, Reported 11, In progress 1, Observed 1, Stopped 1) above a table with Task, Claims supported, Client, Check runs, Est. cost, and Updated columns; the top row reads Verified, 3/3 claims supported, claude-code, 4/4 passed, ≈$118.00, and a Reported hermes row reads 0/1 claims supported with no check runs.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-sessions.png)
+![The Sessions tab: lifecycle tabs (All 19, Attention 1, Verified 4, Reported 11, In progress 1, Observed 1, Stopped 1) above a table with Task, Claims supported, Client, Check runs, Est. cost, and Updated columns; the top row reads Verified, 3/3 claims supported, claude-code, 4/4 passed, ≈$118.00, and a Reported hermes row reads 0/1 claims supported with no check runs.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/app-sessions.png)
 
 Lifecycle tabs never inflate a claim, the Claims supported column says how many claims are supported and at what evidence tier, Check runs shows real pass/fail tallies, and every cost wears its basis. Open a row to get the receipt at the top of this page, or run `agentacct receipt <task>` (`--markdown` pastes into a PR).
 
 ### The receipt's ledger: the work, not just the tokens
 
-![The lower half of a Work Receipt: Usage (53 tool calls captured, split Read 24, Edit 9, Execute 11, Search 6, Plan 3, plus related paths), Cost (≈$118.00 pricing estimate; 47.5M tokens total, 9.5M fresh, 38.0M cache read), Weekly plan (≈0.9%), and Recording (task, agents claude-code · claude-opus-4-8, coverage 3 of 3 claims supported, sources client_log · hook · mcp, no recorded gaps, task ID).](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-receipt-detail.png)
+![The lower half of a Work Receipt: Usage (53 tool calls captured, split Read 24, Edit 9, Execute 11, Search 6, Plan 3, plus related paths), Cost (≈$118.00 pricing estimate; 47.5M tokens total, 9.5M fresh, 38.0M cache read), Weekly plan (≈0.9%), and Recording (task, agents claude-code · claude-opus-4-8, coverage 3 of 3 claims supported, sources client_log · hook · mcp, no recorded gaps, task ID).](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/app-receipt-detail.png)
 
 Below the step spine the receipt becomes a ledger: tool calls by category, cost with its basis and the fresh-vs-cache split behind it, the weekly-plan estimate, and a Recording block naming the agents, the source of each fact, and any gap the receipt could not close.
 
 ### Work: a folder's sessions across every agent you run
 
-![The Work tab: a "billing-svc" card grouped by folder gathers six sessions across Claude Code, Codex, and OpenCode on one Sep 11 to Sep 15 timeline (3 sources, span ~4 days, cost sum of receipts ≈$70.50); an "acme-web" card gathers seven sessions across two sources (~6 days, ≈$207.90); each card notes that its total is a sum of 6 or 7 sessions, not a combined verdict.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-work.png)
+![The Work tab: a "billing-svc" card grouped by folder gathers six sessions across Claude Code, Codex, and OpenCode on one Sep 11 to Sep 15 timeline (3 sources, span ~4 days, cost sum of receipts ≈$70.50); an "acme-web" card gathers seven sessions across two sources (~6 days, ≈$207.90); each card notes that its total is a sum of 6 or 7 sessions, not a combined verdict.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/app-work.png)
 
 Point Work at a project folder and every session that ran there lands on one shared timeline, whichever agent ran it. It is an overlay, not a re-grading: each session keeps its own receipt and evidence tier, and the group's totals are a labeled sum, never a combined verdict.
 
 ### Usage: provider capacity beside recorded usage
 
-![The Usage & limits page: per-client provider windows (codex 5-hour 12% used and weekly 63% used with reset times; claude-code 34% and 59%; opencode and hermes report no provider limit) beside each client's seven-day recorded use, then recorded-usage totals, a cost-per-day chart, and a by-model table; the footer notes costs are pricing estimates and fresh tokens exclude cache-read tokens.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-usage.png)
+![The Usage & limits page: per-client provider windows (codex 5-hour 12% used and weekly 63% used with reset times; claude-code 34% and 59%; opencode and hermes report no provider limit) beside each client's seven-day recorded use, then recorded-usage totals, a cost-per-day chart, and a by-model table; the footer notes costs are pricing estimates and fresh tokens exclude cache-read tokens.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/app-usage.png)
 
 Provider-reported quota windows sit beside each agent's recorded usage, with daily history and per-model attribution below. The weekly Claude plan share appears only once agentacct can calibrate to your own recorded limit history.
 
 ### Diagnostics: which agents are recording, and how healthy the store is
 
-![The Diagnostics tab: an Agents card listing Claude Code, Codex, Hermes, and OpenCode as Recording, DeepSeek Harness as Not connected with a Connect button, and OpenClaw and Cursor as Read-only; a Continuous sync card reading Running with a heartbeat 2s ago and scans every 60s; a collapsed Verification connections row reading not connected; and a Local evidence store card.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-diagnostics.png)
+![The Diagnostics tab: an Agents card listing Claude Code, Codex, Hermes, and OpenCode as Recording, DeepSeek Harness as Not connected with a Connect button, and OpenClaw and Cursor as Read-only; a Continuous sync card reading Running with a heartbeat 2s ago and scans every 60s; a collapsed Verification connections row reading not connected; and a Local evidence store card.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/app-diagnostics.png)
 
 One row per agent says plainly whether agentacct is **Recording** it, **Not connected** with a Connect action where onboarding can do the rest, or **Read-only** where agentacct only reads logs (OpenClaw until you add its MCP server by hand; Cursor always). The verification shelf reads *not connected* until independent evidence such as CI actually lands.
 
@@ -169,11 +169,11 @@ Then remove what onboarding added:
 
 The terminal app has no folder-grouping tab. Its **Work** tab is the receipts list the macOS app calls **Sessions**, and its **Sources** tab is the macOS app's **Diagnostics**.
 
-![agentacct tui, the Dashboard: a Shift Brief with the primary attention item (a Blocked task, its recorded reason, and recorded next step), a Signal rail with working now, capacity, usage change, and evidence trust, a Recent work table with outcome, evidence, and cost, and a fresh-token usage history.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-dashboard.png)
+![agentacct tui, the Dashboard: a Shift Brief with the primary attention item (a Blocked task, its recorded reason, and recorded next step), a Signal rail with working now, capacity, usage change, and evidence trust, a Recent work table with outcome, evidence, and cost, and a fresh-token usage history.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/tui-dashboard.png)
 
 Select a receipt and press `↵` to drill into its sessions and steps. A currently failing check stays in view under *Needs attention* instead of being averaged away.
 
-![agentacct tui, a receipt's sessions and steps: the failing test surfaced under Needs attention with its exit code and provenance, four passing checks (build, lint, artifact, test) below it, and the two files the task touched.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-steps.png)
+![agentacct tui, a receipt's sessions and steps: the failing test surfaced under Needs attention with its exit code and provenance, four passing checks (build, lint, artifact, test) below it, and the two files the task touched.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/tui-steps.png)
 
 ## How it works
 
