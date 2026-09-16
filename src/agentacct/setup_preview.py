@@ -20,7 +20,7 @@ from . import hooks, install_guide
 from . import version as version_info
 
 SCHEMA = "agentacct.setup-preview.v1"
-CLIENTS = ("codex", "claude-code", "opencode", "hermes")
+CLIENTS = ("codex", "claude-code", "opencode", "hermes", "dsh")
 REGISTRATION_NAMES = ("agentacct", "agent-chronicle", "agent-sentinel")
 MAX_CONFIG_BYTES = 4_000_000
 
@@ -182,6 +182,27 @@ def build_setup_preview(
         if row["existing_status"] in {"parse_error", "unsupported"}:
             row["conditions"].append("The MCP writer skips JSONC comments, malformed JSON, or a non-object mcp value. Register the server manually if this remains unresolved.")
         item(directory / "plugins/agentacct.js", "plugin", "Generated activity plugin", hooks.render_opencode_plugin(command, store_dir=store_dir))
+
+    elif client == "dsh":
+        dsh_env = (environment.get("DSH_HOME") or environment.get("DSH_DIR") or "").strip()
+        dsh_home = Path(dsh_env).expanduser() if dsh_env else home / ".dsh"
+        instructions(dsh_home / "AGENTS.md")
+        # dsh's cordis.patch.yml is a top-level YAML LIST of loader patch ops (not
+        # a servers mapping), applied over every profile the CLI boots.
+        patch_path = dsh_home / "cordis.patch.yml"
+        row, text = item(patch_path, "mcp", "Proposed MCP registration", cli._dsh_mcp_patch_block(store_dir, command=command))
+        if text is None:
+            registration(row, "agentacct", "unresolved", "Generated content only; the existing patch could not be inspected.")
+        elif row["existing_status"] == "absent" or not text.strip():
+            registration(row, "agentacct", "add", "Create the home patch with the agentacct MCP server (applies to every dsh profile).")
+        elif cli._dsh_patch_has_agentacct(text):
+            registration(row, "agentacct", "update", "An agentacct insert (id: mcp-agentacct) is already registered; it is left in place.")
+        elif cli._dsh_patch_rows(text) is not None:
+            registration(row, "agentacct", "add", "Append the agentacct insert op to the existing patch list; other patches are preserved.")
+        else:
+            row["existing_status"] = "unsupported"
+            row["conditions"].append("The existing patch file is not a plain patch list agentacct can safely extend; the block is previewed for manual application.")
+        row["conditions"].append("Writes to $DSH_HOME/cordis.patch.yml are non-destructive (append-only, tolerant of custom !!js tags). Whether dsh resolves the bundled @deepseek-ai/dsh-mcp-client plugin for every profile is verified on one machine only.")
 
     else:
         path = home / ".hermes/config.yaml"

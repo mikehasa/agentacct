@@ -26,9 +26,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `$DSH_HOME/AGENTS.md`, so a dsh session records its own work over MCP like
   Codex or OpenCode. Writes are idempotent and non-destructive (existing user
   patches are preserved). `agentacct setup mcp --agent dsh` previews the same
-  registration. Onboarding prints a one-line `dsh plugin add` fallback because
-  source reports disagree on whether dsh resolves the bundled plugin in-box for
-  every profile, and there is no live dsh smoke yet.
+  registration, and the macOS app's guided setup flow offers DeepSeek Harness as
+  a client. A live dsh 0.1.5-rc.1 session confirmed the loop end to end — the
+  bundled plugin resolves in-box (no `dsh plugin add` needed) and a work section
+  recorded with `source=dsh` — so the dsh MCP self-reporting lanes are marked
+  `verified_partial` (single-machine live observation) rather than experimental;
+  onboarding still prints the `dsh plugin add` fallback for environments where the
+  plugin does not resolve. Usage-import lanes remain synthetic-fixture verified.
 
 ## [0.10.11] — 2026-09-15
 

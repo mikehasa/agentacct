@@ -13,7 +13,7 @@ Client support is capability-based, not a binary badge:
 | Hermes | Global onboard writes profile config; project setup previews it | `state.db` importer | Global onboard installs observe-only v1 shell hooks (consent + gateway restart required); no generic Evidence v2 adapter | Usage + MCP work + hook-observed activity/checks after consent |
 | OpenCode | Global onboard writes user config; project setup previews it | Native SQLite `session` rollup importer (JSON export fallback) | Global onboard installs an observe-only v1 plugin; no generic Evidence v2 adapter | Usage + MCP work + plugin/import activity and checks |
 | OpenClaw | Manual profile command preview | JSONL importer | Typed plugin hooks and `sessions.json` routing are not integrated yet | Usage plus MCP work when separately configured |
-| DeepSeek Harness (dsh) | Global onboard writes the home patch (`$DSH_HOME/cordis.patch.yml`) + `AGENTS.md`; project setup previews | Zstandard-compressed JSONL importer | Typed plugin hooks are not integrated; plugin resolution + end-to-end record path unproven (no live smoke) | Usage + MCP work once dsh loads the home patch |
+| DeepSeek Harness (dsh) | Global onboard writes the home patch (`$DSH_HOME/cordis.patch.yml`) + `AGENTS.md`; project setup previews | Zstandard-compressed JSONL importer | Typed plugin hooks are not integrated; MCP self-report verified live on one machine (dsh 0.1.5-rc.1), usage-import fixture-only | Usage + MCP work once dsh loads the home patch |
 | Cursor | Portable MCP definition only | Primary `state.vscdb` composer observations only; no token importer | Metadata payload normalization exists, but onboarding does not install it | A metadata-only composer Task after explicit refresh/manual capture; usage, cache, and cost unavailable |
 | Other MCP clients | Portable stdio definition | None unless a client-specific importer exists | None | MCP work context only |
 
@@ -207,7 +207,7 @@ agentacct onboard --agent dsh
 
 Global onboard writes both legs at the HOME level, which every profile the dsh CLI boots layers on top of (the plain `dsh` command has no default profile — `--profile` is required): the `@deepseek-ai/dsh-mcp-client` registration goes to `$DSH_HOME/cordis.patch.yml` (the home patch applied over every profile) and the record-your-work directive goes to `$DSH_HOME/AGENTS.md` (loaded by dsh-base's agent-instructions on every base-backed session). dsh hot-reloads the patch and exposes the tools as `mcp__agentacct__*`, so a dsh session records like Codex/OpenCode. `agentacct setup mcp --agent dsh` previews the same registration without writing.
 
-Honest caveat: source reports disagree on whether dsh resolves the bundled `@deepseek-ai/dsh-mcp-client` plugin in-box for every profile, and there is no live dsh smoke yet — onboarding prints a one-line `dsh plugin --profile <name> add @deepseek-ai/dsh-mcp-client` fallback for the case where dsh cannot find the plugin.
+Verified: a live dsh 0.1.5-rc.1 session loaded the bundled `@deepseek-ai/dsh-mcp-client` plugin in-box (no `dsh plugin add` step needed) and recorded a work section over MCP with `source=dsh` — on one machine and version, with the recording task explicitly requested. Onboarding still prints a one-line `dsh plugin --profile <name> add @deepseek-ai/dsh-mcp-client` fallback for environments where the plugin does not resolve.
 
 ### Generic MCP-capable agents
 

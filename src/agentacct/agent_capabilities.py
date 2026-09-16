@@ -314,6 +314,14 @@ _DSH_ONBOARD_FIXTURE = _verification_record(
         "tests/test_onboard_global.py::test_onboard_global_agent_dsh_writes_home_patch_and_instructions",
     ),
 )
+_DSH_MCP_LIVE = _verification_record(
+    "live_smoke",
+    verified_at="2026-09-16",
+    client_versions=("0.1.5-rc.1",),
+    evidence_refs=(
+        "docs/adapter-capability-evidence.md#2026-09-16-deepseek-harness-dsh-015-rc1-mcp-self-reporting-smoke",
+    ),
+)
 _CURSOR_LIVE = _verification_record(
     "live_smoke",
     verified_at="2026-07-17",
@@ -749,13 +757,15 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
         "zero_usage_observation": "unavailable",
         "namespace_hardening": "not_hardened",
         "verified_stability": _stability_record(
-            "fixture_only",
-            verified_at="2026-09-15",
+            "single_machine_live_observation",
+            verified_at="2026-09-16",
+            client_versions=("0.1.5-rc.1",),
             evidence_refs=(
-                "tests/test_client_usage.py::test_discover_dsh_usage_reads_zstd_jsonl_tokens_and_no_cost",
+                "docs/adapter-capability-evidence.md#2026-09-16-deepseek-harness-dsh-015-rc1-mcp-self-reporting-smoke",
             ),
             limitations=(
-                "Usage parsing is synthetic-fixture only; the session-log schema was verified against dsh source and two independent third-party parsers, not a live dsh client on this machine.",
+                "One machine, one dsh version (0.1.5-rc.1), and the recording task was explicitly requested; spontaneous recording and multi-version stability are not claimed.",
+                "Usage-import (session-log parsing) remains synthetic-fixture only; the schema was verified against dsh source and two independent third-party parsers, not a live usage-log smoke.",
             ),
         ),
         "capabilities": {
@@ -782,11 +792,11 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
             ),
             "mechanical_capture": _unavailable_capability("No typed dsh plugin-hook adapter is implemented."),
             "mcp_semantics": _capability_record(
-                "experimental",
-                "`agentacct onboard --agent dsh` writes the @deepseek-ai/dsh-mcp-client registration into $DSH_HOME/cordis.patch.yml (the home patch applied over every profile) and the record-your-work directive into $DSH_HOME/AGENTS.md, so a dsh session can record work over MCP; `setup mcp --agent dsh` previews the same registration.",
+                "verified_partial",
+                "`agentacct onboard --agent dsh` writes the @deepseek-ai/dsh-mcp-client registration into $DSH_HOME/cordis.patch.yml (the home patch over every profile) and the record-your-work directive into $DSH_HOME/AGENTS.md. A live dsh 0.1.5-rc.1 session loaded the plugin in-box and recorded a work section over MCP (source=dsh); `setup mcp --agent dsh` previews the same registration.",
                 activation="one_command_global",
-                verification=_DSH_ONBOARD_FIXTURE,
-                limitations=("Whether dsh resolves the bundled plugin in-box for every profile and the end-to-end record path are unproven — no live dsh MCP smoke yet.",),
+                verification=_DSH_MCP_LIVE,
+                limitations=("Verified on one machine and version with an explicitly-requested recording; spontaneous (uninstructed) recording and multi-version behavior are not claimed.",),
             ),
             "model_attribution": _capability_record(
                 "experimental",
@@ -812,17 +822,16 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
                 usage_basis="client_reported",
             ),
             "automatic_install": _capability_record(
-                "experimental",
-                "`agentacct onboard --agent dsh` writes the record-your-work directive to $DSH_HOME/AGENTS.md and the @deepseek-ai/dsh-mcp-client registration to $DSH_HOME/cordis.patch.yml (the home patch applied over every profile the CLI boots).",
+                "verified_partial",
+                "`agentacct onboard --agent dsh` writes the record-your-work directive to $DSH_HOME/AGENTS.md and the @deepseek-ai/dsh-mcp-client registration to $DSH_HOME/cordis.patch.yml (the home patch over every profile the CLI boots), verified end to end on a live dsh 0.1.5-rc.1 session.",
                 activation="one_command_global",
-                verification=_DSH_ONBOARD_FIXTURE,
+                verification=_DSH_MCP_LIVE,
                 limitations=(
-                    "Whether dsh resolves the bundled @deepseek-ai/dsh-mcp-client plugin in-box for every profile is unproven; onboarding prints the one-line `dsh plugin add` fallback.",
-                    "No live dsh-client end-to-end recording smoke yet.",
+                    "One machine and version: the bundled @deepseek-ai/dsh-mcp-client plugin resolved in-box in this smoke, and onboarding still prints the `dsh plugin add` fallback for environments where it does not.",
                 ),
             ),
         },
-        "limitations": ["Remain experimental until real dsh-client fixtures, a live smoke, and namespace hardening exist."],
+        "limitations": ["Usage-import lanes remain synthetic-fixture experimental until a live dsh usage-log smoke and namespace hardening exist; the MCP self-reporting lanes are verified on one machine/version."],
     },
     {
         "client": "cursor",

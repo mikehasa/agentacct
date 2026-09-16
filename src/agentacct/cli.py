@@ -5462,7 +5462,7 @@ def _instruction_target_path(agent: str, *, user: bool, path: Path | None) -> Pa
 
 @setup_app.command("preview")
 def setup_preview(
-    agent: Annotated[str, typer.Option(help="Client to preview: codex, claude-code, opencode, or hermes.")],
+    agent: Annotated[str, typer.Option(help="Client to preview: codex, claude-code, opencode, hermes, or dsh.")],
     user: Annotated[bool, typer.Option("--user", help="Preview the user-level onboarding content.")] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit the versioned read-only preview payload.")] = False,
     store_dir: Annotated[Optional[Path], typer.Option(help="Proposed absolute recording store; no store is created or opened.")] = None,
