@@ -63,15 +63,18 @@ WIDE_SRC = "window-work-wide-light.png"
 # height: the offscreen ScrollBox pins content to the top, so a taller frame
 # stretches the flexible timeline card into an empty band, and a shorter one
 # clips the supporting sections. SnapshotRunner reads it from the environment.
-WIDE_HEIGHT = 2348
+WIDE_HEIGHT = 1993
+# Which steps the receipt opens in the docs render: "<with checks>,<without>".
+# One expanded step keeps the spine short enough for the hero to fit the step
+# spine and the activity timeline in one screenshot.
+EXPANDED_STEPS = "1,0"
 # Crops out of the raw renders: dst -> (raw render, (left, top, right, bottom)).
 # Regions are device pixels; None means the render's own edge.
 CROPS = {
-    # Hero: breadcrumb, title + verdict, the Steps / Checks outcome bars, and the
-    # whole numbered step spine (five steps) from the wide receipt render.
-    "app-work-receipt.png": (WIDE_SRC, (642, 130, None, 2290)),
-    # The activity timeline: every recorded step and its checks over time.
-    "app-receipt-timeline.png": (WIDE_SRC, (642, 2318, None, 3466)),
+    # Hero: the task list, then the open receipt — title + verdict, the Steps /
+    # Checks outcome bars, the numbered step spine (one step expanded), and the
+    # activity timeline card — from the wide Sessions render.
+    "app-work-receipt.png": (WIDE_SRC, (0, 130, None, 2760)),
     # The Work tab: the nav bar, the page title, and the first (workday) card.
     "app-work.png": ("window-work-light.png", (0, 0, None, 1122)),
     # Usage: the page title and the per-client Current capacity table only.
@@ -642,7 +645,8 @@ def main():
         # Real HOME for the app process (GUI/WindowServer); AGENTACCT_STORE_DIR
         # is the only thing that points it at the demo store.
         app_env = {**os.environ, "AGENTACCT_STORE_DIR": str(STORE),
-                   "AGENTACCT_SNAPSHOT_WIDE_HEIGHT": str(WIDE_HEIGHT)}
+                   "AGENTACCT_SNAPSHOT_WIDE_HEIGHT": str(WIDE_HEIGHT),
+                   "AGENTACCT_SNAPSHOT_EXPANDED_STEPS": EXPANDED_STEPS}
         r = subprocess.run([str(APP_BIN), "--snapshot", str(SHOTS_TMP)], env=app_env,
                            capture_output=True, text=True, timeout=180)
         if r.returncode != 0:

@@ -1251,6 +1251,14 @@ enum SnapshotMode {
     /// fixture renderers leave it `false` and keep the real interactive controls
     /// — so the golden references are unchanged.
     nonisolated(unsafe) static var rendersStaticControls = false
+
+    /// How many steps a snapshot opens: check-bearing steps first, then
+    /// un-checked ones. The golden fixture renders keep the default (2 + 1) so
+    /// their references are unchanged; the README `--snapshot` path can narrow
+    /// it (AGENTACCT_SNAPSHOT_EXPANDED_STEPS, e.g. "1,0") so a single docs
+    /// screenshot fits the step spine and the activity timeline together.
+    nonisolated(unsafe) static var expandedStepsWithChecks = 2
+    nonisolated(unsafe) static var expandedStepsWithoutChecks = 1
 }
 
 struct ScrollBox<Content: View>: View {

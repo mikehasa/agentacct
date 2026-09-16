@@ -5,11 +5,11 @@
 [![Python](https://img.shields.io/pypi/pyversions/agentacct.svg)](https://pypi.org/project/agentacct/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
-**Your coding agent says it is done. agentacct shows you what it actually did, what it cost, and how much of that is proven.**
+**agentacct answers one simple question: what the fuck are my agents actually doing?**
 
-One Work Receipt per task, built from the session logs your coding agents (Claude Code, Codex, OpenCode, Hermes, and others) already write on your machine. No account, no cloud, nothing leaves your computer.
+Your coding agent says it is done. agentacct shows you what it actually did, what it cost, and how much of that is proven: one Work Receipt per task, built from the session logs your coding agents (Claude Code, Codex, OpenCode, Hermes, and others) already write on your machine. No account, no cloud, nothing leaves your computer.
 
-![A Work Receipt for "Add a token-bucket rate limiter to the login API", marked Verified. Two bars summarize the run: 5 steps (4 self-checked, 1 claimed) and 5 checks (5 passed). Below them the numbered step spine lists the five steps; the expanded ones show each check with its exit code, whether it was agent-reported, and the file touched, and the planning step shows no machine check at all.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/app-work-receipt.png)
+![The Sessions view: on the left, the task list with one verdict per row (Verified, In Progress, Reported, Observed); on the right, the open receipt for "Add a token-bucket rate limiter to the login API", marked Verified, with two bars (5 steps: 4 self-checked, 1 claimed; 5 checks: 5 passed), the numbered step spine with the latest step expanded to its agent-reported check, exit code, and touched file, and below it the activity timeline where the check cards run from 12 failed to 12 passed, 12 passed, and 38 passed.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/app-work-receipt.png)
 
 <sub>Screenshots show a synthetic demo workspace; your install renders your own local data.</sub>
 
@@ -29,15 +29,11 @@ The per-agent setup, a `--scope project` install, and the `uv`/`venv` alternativ
 
 ## Done, according to whom?
 
-The receipt at the top answers three questions in order: did it finish, who says so, and is the proof still current.
+The receipt above answers three questions in order: did it finish, who says so, and is the proof still current.
 
 The agent's own "done" files under **Reported**. A task reads **Verified** only when every current check passes and ran after the last recorded change. A step with no check stays **claimed**, and every check carries its evidence tier: agent-reported, a hook-observed exit code, or CI. In the receipt above, steps 1 to 4 carry agent-reported checks; step 5 is a bare claim, and the receipt says so.
 
-## The red run stays on the record
-
-![The receipt's activity timeline: each recorded step sits above a shared time axis as "Reported completed"; below the axis the check cards read 12 failed, then 12 passed and 12 passed, with a final 38 passed card above the axis at the right edge and a 2 records cluster card at the bottom right.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/app-receipt-timeline.png)
-
-Failing runs are never averaged away. Here the first test run failed 12; the later runs passed 12, 12, and 38, and the timeline keeps all four, so you can see when the proof caught up with the code and when it did not.
+The timeline under the steps keeps the red run. The first test run failed 12; the later runs passed 12, 12, and 38, and nothing is averaged away, so you can see when the proof caught up with the code and when it did not.
 
 ## A day's work, across every agent you run
 
@@ -47,9 +43,9 @@ Point a work group at a project folder and every session that ran there lands on
 
 ## Start the day with what needs you
 
-![The Dashboard: a Shift Brief leading with "Fix the flaky payment test" (billing-svc, claude-code, 1 failed and 7 passed, recorded reason Failed check, observed 9 hours ago, provenance MCP record) with Review evidence and Copy review brief buttons; a Signal rail with Working now, Capacity, Usage change, and Evidence trust; a Recent work table; and a seven-day usage chart.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/app-dashboard.png)
+![The Dashboard: a Shift Brief leading with "Fix the flaky payment test" (billing-svc, claude-code, 1 failed and 7 passed, recorded reason Failed check, provenance MCP record) with Review evidence and Copy review brief buttons; a Signal rail with Working now, Capacity, Usage change, and Evidence trust; a Recent work table; and a seven-day usage chart.](https://raw.githubusercontent.com/mikehasa/agentacct/readme-revamp/docs/assets/app-dashboard.png)
 
-The Shift Brief names the one task that most needs a human, its recorded reason, and where that claim came from: here a failed check on "Fix the flaky payment test", observed 9 hours ago, recorded over MCP. **Copy review brief** copies only recorded facts and never reruns anything.
+The Shift Brief names the one task that most needs a human, its recorded reason, and where that claim came from: here a failed check on "Fix the flaky payment test", recorded over MCP. **Copy review brief** copies only recorded facts and never reruns anything.
 
 ## Know your limits before the agent hits them
 
