@@ -21,10 +21,12 @@ from . import version as version_info
 from .activation import ActivationStateStore
 from .agent_capabilities import agent_capability_manifest
 from .client_usage import (
+    SUPPORTED_CLIENTS,
     ClientUsageDiscoveryResult,
     ClientUsageEvent,
     discover_client_usage_with_diagnostics,
 )
+from .connections import CONNECTIONS_SCHEMA_VERSION, build_connections
 from .capture import CaptureContext, DEFAULT_CAPTURE_REGISTRY, render_hook_manifest
 from .capture.registry import DEFAULT_MAX_PAYLOAD_BYTES
 from .capture_runtime import capture_hook_payload
@@ -3689,6 +3691,34 @@ def create_local_api_app(
         return {
             "schema": V1_INGESTION_SCHEMA_VERSION,
             "ingestion": ingestion_health.snapshot(),
+        }
+
+    @app.get("/v1/connections")
+    def v1_connections(request: Request) -> dict[str, Any]:
+        """One honest row per supported agent for the Diagnostics/Connections
+        surface: its kind (active/semi/passive), whether agentacct set it up
+        (the activation record), whether it is recording (ingestion health), and
+        the per-agent action (connect / re-sync / resolve). A pure read of the
+        activation + ingestion stores — never claims connected/recording without
+        their evidence."""
+
+        _require_v1_token(request)
+        # A locked/corrupt activation file must not 500 this endpoint while
+        # /v1/ingestion (which never reads activation) stays healthy — an
+        # asymmetric failure would leave the app showing a stale connections
+        # array as if live. Degrade to "nothing configured": active agents then
+        # read as not_connected (honest under-claim), never as recording.
+        try:
+            activation = ActivationStateStore(store_dir).snapshot() or {}
+        except Exception:
+            activation = {}
+        return {
+            "schema": CONNECTIONS_SCHEMA_VERSION,
+            "connections": build_connections(
+                supported_clients=SUPPORTED_CLIENTS,
+                configured_clients=activation.get("clients") or (),
+                ingestion_snapshot=ingestion_health.snapshot(),
+            ),
         }
 
     @app.get("/")

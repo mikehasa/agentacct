@@ -140,7 +140,7 @@ struct MainWindow: View {
                         case .worksets: WorksetsPane()
                         case .work: WorkPane()
                         case .usage: UsagePane()
-                        case .sources: SourcesPane(onSetup: { openRecordingSetup() })
+                        case .sources: SourcesPane(onSetup: { client in openRecordingSetup(client: client) })
                         }
                     }
                     .id(selection.pane)
@@ -303,11 +303,14 @@ struct MainWindow: View {
         activationClient = target
     }
 
-    private func openRecordingSetup(cause: RecordingHealthCause? = nil) {
+    private func openRecordingSetup(cause: RecordingHealthCause? = nil, client: SetupClient? = nil) {
         selection.prepareWorkReturnFocus()
         activationClient = nil
         openWorkAfterSetup = false
         savedWork = SavedWorkSnapshot.current()
+        // A per-agent Connect/Re-sync pre-selects that agent in the wizard (its
+        // picker initializes from setup.selectedClient).
+        if let client { setup.selectClientForSetup(client) }
         switch RecordingSetupRoute.project(
             selectedCause: cause,
             currentCauses: health.causes,

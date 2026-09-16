@@ -112,6 +112,11 @@ final class DashboardStore {
     private(set) var ingestionError: String?
     private(set) var ingestionLastUpdated: Date?
     private(set) var isRefreshingIngestion = false
+
+    /// Per-agent connection rows from /v1/connections (the Diagnostics pane).
+    private(set) var connections: [V1Connection]?
+    private(set) var connectionsError: String?
+    private(set) var isRefreshingConnections = false
     private(set) var isRefreshing = false
     private(set) var isLoadingReceipts = false
     private(set) var lastUpdated: Date?
@@ -292,6 +297,7 @@ final class DashboardStore {
         async let planRequest: V1PlanPayload = client.getAuthed("/v1/plan?days=\(days)")
         async let usageRequest: UsageSummary = client.getLocal("/usage/summary?days=\(days)")
         async let ingestionRefresh: Void = refreshIngestion()
+        async let connectionsRefresh: Void = refreshConnections()
 
         var tasksSucceeded = false
         do {
@@ -340,6 +346,7 @@ final class DashboardStore {
         }
 
         _ = await ingestionRefresh
+        _ = await connectionsRefresh
 
         do {
             let (plan, summary) = try await (planRequest, usageRequest)
@@ -385,6 +392,32 @@ final class DashboardStore {
         } catch {
             if !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
                 ingestionError = "source health fetch failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Per-agent connection rows for the Diagnostics pane. Retains the last rows
+    /// on a cancelled/failed refresh, like source health.
+    func refreshConnections() async {
+        guard !isOfflineSnapshot, !SnapshotMode.enabled, !isRefreshingConnections else { return }
+        isRefreshingConnections = true
+        defer { isRefreshingConnections = false }
+        do {
+            let payload: V1ConnectionsPayload = try await client.getAuthed("/v1/connections")
+            try Task.checkCancellation()
+            connections = payload.connections
+            connectionsError = nil
+        } catch GlanceClientError.http(404) {
+            if !Task.isCancelled {
+                connectionsError = "this daemon predates /v1/connections"
+            }
+        } catch GlanceClientError.noDiscovery(_) {
+            if !Task.isCancelled {
+                connectionsError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            }
+        } catch {
+            if !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
+                connectionsError = "connections fetch failed: \(error.localizedDescription)"
             }
         }
     }
