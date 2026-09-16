@@ -11,7 +11,7 @@
 
 很多时候，你的 coding agent 号称完成了一个任务，可你并不知道它具体做了什么、花了多少钱、哪些结果是真正验证过的。agentacct 把这些整理成每个任务一张 Work Receipt（工作收据），数据来自 Claude Code、Codex、OpenCode、Hermes 等 agent 本来就写在你电脑上的会话日志。不需要注册账号，不上传云端，所有数据都留在本机。
 
-![Sessions 视图：左侧是任务列表，每一行都有自己的判定（Verified、In Progress、Reported、Observed）；右侧打开的是"给登录接口加一个令牌桶限流"这张收据，判定为 Verified，顶部两条汇总条显示 5 个步骤（4 个自检、1 个仅声明）和 5 次检查（全部通过），中间是带编号的步骤列表，最新一步展开后能看到 agent 上报的检查、退出码和改动的文件，最下方是活动时间线，检查卡片从 12 个失败一路走到 12、12、38 个通过。](https://raw.githubusercontent.com/mikehasa/agentacct/readme-zh-cn/docs/assets/zh-CN/app-work-receipt.png)
+![Sessions 视图：左侧是任务列表，每一行都有自己的判定（Verified、In Progress、Reported、Observed）；右侧打开的是"给登录接口加一个令牌桶限流"这张收据，判定为 Verified，顶部两条汇总条显示 5 个步骤（4 个自检、1 个仅声明）和 5 次检查（全部通过），中间是带编号的步骤列表，最新一步展开后能看到 agent 上报的检查、退出码和改动的文件，最下方是活动时间线，检查卡片从 12 个失败一路走到 12、12、38 个通过。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-work-receipt.png)
 
 <sub>截图里是合成的演示数据；装好之后你看到的是自己机器上的真实数据。</sub>
 
@@ -39,19 +39,19 @@ agent 自己说的"做完了"只算 **Reported**（自述完成）。只有当�
 
 ## 一整天的工作，不管用的是哪个 agent
 
-![Work 标签页：一个叫 "billing-svc" 的分组，8 个会话、4 个 agent、前后约 9 小时（费用 ≈$72.71，是各张收据相加的结果），全部排在 09:05 到 18:20 的同一条时间轴上。两段较长的 Claude Code 运行撑起了上午和下午；更短的 Codex 和 Hermes 运行嵌在它们中间；OpenCode 的运行跨在边缘；最后一条需要处理的运行带着红点。](https://raw.githubusercontent.com/mikehasa/agentacct/readme-zh-cn/docs/assets/zh-CN/app-work.png)
+![Work 标签页：一个叫 "billing-svc" 的分组，8 个会话、4 个 agent、前后约 9 小时（费用 ≈$72.71，是各张收据相加的结果），全部排在 09:05 到 18:20 的同一条时间轴上。两段较长的 Claude Code 运行撑起了上午和下午；更短的 Codex 和 Hermes 运行嵌在它们中间；OpenCode 的运行跨在边缘；最后一条需要处理的运行带着红点。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-work.png)
 
 在 Work 标签页里把一个 work group 指向某个项目目录，这个目录下跑过的所有会话都会出现在同一条时间轴上，不管是哪个 agent 跑的。每个会话保留自己的收据和证据；分组显示的合计只是 8 张收据的简单相加，不是对整个工作的综合评判。
 
 ## 一天从最需要你处理的事开始
 
-![Dashboard：Shift Brief 置顶了"修复不稳定的支付测试"（billing-svc，claude-code，1 个失败 7 个通过，记录的原因是 Failed check，来源是 MCP record），配有 Review evidence 和 Copy review brief 两个按钮；右侧的 Signal rail 显示 Working now、Capacity、Usage change 和 Evidence trust；下方是 Recent work 表格和最近七天的用量图。](https://raw.githubusercontent.com/mikehasa/agentacct/readme-zh-cn/docs/assets/zh-CN/app-dashboard.png)
+![Dashboard：Shift Brief 置顶了"修复不稳定的支付测试"（billing-svc，claude-code，1 个失败 7 个通过，记录的原因是 Failed check，来源是 MCP record），配有 Review evidence 和 Copy review brief 两个按钮；右侧的 Signal rail 显示 Working now、Capacity、Usage change 和 Evidence trust；下方是 Recent work 表格和最近七天的用量图。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-dashboard.png)
 
 Shift Brief 只挑出最需要人介入的那一个任务，告诉你记录在案的原因，以及这个判断的依据从哪来：这里是"修复不稳定的支付测试"的一次失败检查，通过 MCP 记录下来的。**Copy review brief** 只复制记录在案的事实，不会重新执行任何东西。
 
 ## 在 agent 撞上额度上限之前，先看清余量
 
-![Usage & limits：按客户端显示供应商的额度窗口（codex 的 5 小时窗口已用 12%、每周额度已用 63%，带重置时间；claude-code 分别是 34% 和 59%；opencode 和 hermes 没有供应商额度信息），旁边是每个客户端最近七天的实际用量，全部标注为 pricing estimate。](https://raw.githubusercontent.com/mikehasa/agentacct/readme-zh-cn/docs/assets/zh-CN/app-usage.png)
+![Usage & limits：按客户端显示供应商的额度窗口（codex 的 5 小时窗口已用 12%、每周额度已用 63%，带重置时间；claude-code 分别是 34% 和 59%；opencode 和 hermes 没有供应商额度信息），旁边是每个客户端最近七天的实际用量，全部标注为 pricing estimate。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-usage.png)
 
 各家供应商上报的额度窗口，和每个 agent 实际的用量并排显示。token 数来自客户端自己的记录，费用是按价目表估算的，带 `≈` 标记，从来不是账单。
 
