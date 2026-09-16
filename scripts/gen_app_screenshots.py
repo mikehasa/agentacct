@@ -31,6 +31,104 @@ FAKE_HOME = "/tmp/agentacct-app-demo-home"
 STORE = Path(FAKE_HOME) / ".local" / "state" / "agentacct" / "state"
 SHOTS_TMP = Path("/tmp/agentacct-app-shots")
 OUT = REPO_ROOT / "docs" / "assets"
+
+# --- demo-content locale ------------------------------------------------------
+# `--locale zh-CN` renders the same store with its CONTENT (task and step
+# titles, summaries, blockers, check results) in Chinese and writes the assets
+# to docs/assets/zh-CN/ for README.zh-CN.md. The app's own chrome stays English:
+# that is what the product looks like, and file paths, commands, and model names
+# are English in real use too.
+LOCALE = "en"
+_UNTRANSLATED: set[str] = set()
+
+ZH_CN = {
+    # flagship receipt
+    "Add a token-bucket rate limiter to the login API": "给登录接口加一个令牌桶限流",
+    "Design the token-bucket limiter": "设计令牌桶限流方案",
+    "Chose a Redis token bucket — 100 req/min per IP, burst 20.": "选用 Redis 令牌桶：每个 IP 每分钟 100 次，突发上限 20。",
+    "Write the failing tests": "先写会失败的测试",
+    "Added 12 cases: under limit, at limit, burst, window reset.": "加了 12 个用例：未达上限、刚到上限、突发、窗口重置。",
+    "Implement the token-bucket middleware": "实现令牌桶中间件",
+    "Implemented the bucket + refill; the 12 tests pass.": "实现了令牌桶和补充逻辑，12 个测试通过。",
+    "Handle bursts + concurrent requests": "处理突发和并发请求",
+    "Made the refill atomic under concurrent hits (Lua CAS).": "并发场景下把补充改成原子操作（Lua CAS）。",
+    "Code review + document the limits": "代码评审并把限流规则写进文档",
+    "Addressed review comments; documented the limits in the API guide.": "处理了评审意见，限流规则已写进 API 文档。",
+    "12 failed (red)": "12 个失败",
+    "12 passed": "12 个通过",
+    "38 passed": "38 个通过",
+    "6 passed": "6 个通过",
+    "ruff clean": "ruff 无告警",
+    # the workday on billing-svc
+    "Wire the Stripe webhook handler": "接入 Stripe webhook 处理",
+    "Plan the webhook + idempotency keys": "设计 webhook 和幂等键",
+    "Scoped the handler, replay protection, and the tests.": "定了处理逻辑、防重放和测试范围。",
+    "Handler + signature check in; retries still to do.": "处理逻辑和签名校验已提交，重试还没做。",
+    "14 passed": "14 个通过",
+    "Trace the slow query path": "排查慢查询路径",
+    "Trace the slow invoice query": "排查发票慢查询",
+    "Found the missing index on invoices(account_id, created_at).": "发现 invoices(account_id, created_at) 缺索引。",
+    "Paginate the invoices API": "给发票接口加分页",
+    "Add cursor pagination to /invoices": "给 /invoices 加游标分页",
+    "Cursor pagination + a covering index; p95 down 40%.": "游标分页加覆盖索引，p95 降了 40%。",
+    "Rotate the webhook signing secret": "轮换 webhook 签名密钥",
+    "Rotated the secret and updated the deploy config.": "换了密钥并更新了部署配置。",
+    "Emit OTLP metrics from the API": "API 输出 OTLP 指标",
+    "Plan the metrics + exporter": "设计指标和导出器",
+    "Chose the OTLP exporter and the request/latency histograms.": "选定 OTLP 导出器和请求/延迟直方图。",
+    "Instrumented the handlers; exporter wired to the collector.": "各处理函数已埋点，导出器接到了 collector。",
+    "9 passed": "9 个通过",
+    "Backfill the invoice index": "回填发票索引",
+    "Backfilled 2.1M rows in batches; verified the covering index is used.": "分批回填了 210 万行，确认覆盖索引已生效。",
+    "4 passed": "4 个通过",
+    "Add a CSV export endpoint": "加一个 CSV 导出接口",
+    "Add the /export.csv route + tests": "加 /export.csv 路由和测试",
+    "Streamed the CSV; added 6 tests for quoting and large results.": "CSV 改为流式输出，补了 6 个引号和大结果集的测试。",
+    "Fix the flaky payment test": "修复不稳定的支付测试",
+    "Plan & write the tests": "梳理改动并补测试",
+    "Scoped the change and the tests to add.": "确定了改动范围和要补的测试。",
+    "Started, then hit a blocker on staging.": "开始后在 staging 环境卡住了。",
+    "staging DB credentials unavailable": "拿不到 staging 数据库的凭证",
+    "1 failed, 7 passed": "1 个失败，7 个通过",
+    # the week's backdrop
+    "Migrate the event log to SQLite": "把事件日志迁移到 SQLite",
+    "Refactor the auth session store": "重构登录会话存储",
+    "Add full-text search to the docs": "给文档加全文搜索",
+    "Cache the dashboard queries": "缓存仪表盘查询",
+    "Add the weekly usage report": "加每周用量报告",
+    "Implemented the change.": "改动已完成。",
+    "18 passed": "18 个通过",
+    "Format + type-check the API package": "格式化并类型检查 API 包",
+    "Formatted + type-checked the API package; zero new findings.": "API 包格式化和类型检查完成，没有新问题。",
+    "Bump the pinned dependencies": "升级锁定的依赖",
+    "Bumped 14 pinned dependencies; lockfile regenerated.": "升级了 14 个锁定依赖，重新生成了 lockfile。",
+    "Quarantine a flaky integration test": "隔离一个不稳定的集成测试",
+    "Investigate the perf regression": "排查性能回退",
+    "Trace the N+1 query": "排查 N+1 查询",
+    "Traced the N+1 in the order loader and cached it.": "在订单加载器里找到 N+1 并加了缓存。",
+    "21 passed": "21 个通过",
+    "Rebuild the search index": "重建搜索索引",
+    "Rebuild the search index nightly": "搜索索引改成每晚重建",
+    "Moved the index rebuild to an incremental nightly job.": "索引重建改成每晚增量任务。",
+    "Add a health-check probe": "加一个健康检查探针",
+    "Add /healthz + wire the probe": "加 /healthz 并接上探针",
+    "Added a readiness probe and documented it.": "加了就绪探针并写了说明。",
+    "Instrument the checkout funnel": "给结账漏斗加埋点",
+    "Adding step events to the checkout funnel pages.": "正在给结账流程各页面加步骤事件。",
+}
+
+
+def _t(text):
+    """Localize one piece of demo CONTENT (a title, summary, blocker, or check
+    result). English is the identity; an untranslated string falls back to
+    English and is reported at the end so the table can be completed."""
+    if LOCALE == "en" or not text:
+        return text
+    table = ZH_CN if LOCALE == "zh-CN" else {}
+    if text in table:
+        return table[text]
+    _UNTRANSLATED.add(text)
+    return text
 APP_BIN = REPO_ROOT / "apps" / "agentacct" / ".build" / "agentacct.app" / "Contents" / "MacOS" / "agentacct"
 
 # Curated: the light-mode panes we surface in the README, renamed for the docs.
@@ -106,7 +204,7 @@ def _usage(svc, *, client, model, session, title, tokens, at, cost, project, cac
         cache_read = int(tokens * 4)
     ev = ClientUsageEvent(
         client=client, client_session_id=session,
-        source_path=Path(f"/demo/{client}/{session}.jsonl"), title=title, cwd=f"/demo/{project}",
+        source_path=Path(f"/demo/{client}/{session}.jsonl"), title=_t(title), cwd=f"/demo/{project}",
         model=model, input_tokens=tokens, output_tokens=0, cached_input_tokens=0,
         cache_creation_input_tokens=0, cache_read_input_tokens=cache_read,
         cache_creation_tokens_reported=True, cache_read_tokens_reported=True,
@@ -135,8 +233,8 @@ def _section(svc, *, session, title, section_id, status, at, client="claude-code
             "client_context_keys_authored": ["client_session_id", "client_transcript_id"],
             "demo_occurred_at": float(at),
             "project_dir": f"/demo/{project}", "section_id": section_id, "section_status": status,
-            "section_title": title, "summary": summary, "kind": kind,
-            "files": files if files is not None else ["src/app/module.py"], "blocker": blocker, "next_step": None,
+            "section_title": _t(title), "summary": _t(summary), "kind": kind,
+            "files": files if files is not None else ["src/app/module.py"], "blocker": _t(blocker), "next_step": None,
         },
     })
 
@@ -149,7 +247,7 @@ def _check(svc, *, session, section_id, result, at, summary, command, exit_code,
             "sentinel_semantic_kind": "evidence", "client": client, "client_session_id": session,
             "demo_occurred_at": float(at),
             "section_id": section_id, "evidence_type": "test", "result": result, "name": name,
-            "summary": summary, "command": command, "exit_code": exit_code,
+            "summary": _t(summary), "command": command, "exit_code": exit_code,
         },
     })
 
@@ -699,4 +797,17 @@ def main():
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--locale", choices=["en", "zh-CN"], default="en",
+                        help="language of the demo CONTENT (titles, summaries, check results); "
+                             "zh-CN writes to docs/assets/zh-CN/ for README.zh-CN.md")
+    args = parser.parse_args()
+    LOCALE = args.locale
+    if LOCALE != "en":
+        OUT = OUT / LOCALE
     main()
+    if _UNTRANSLATED:
+        print(f"WARNING: {len(_UNTRANSLATED)} demo strings have no {LOCALE} translation (rendered in English):")
+        for text in sorted(_UNTRANSLATED):
+            print(f"  - {text}")
