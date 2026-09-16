@@ -842,9 +842,9 @@ private struct WorksetTimeline: View {
     private var axisLabels: some View {
         if let start = layout.windowStart, let end = layout.windowEnd {
             HStack {
-                Text(WorksetFormat.axisDate(start)).workFont(.dataSmall).foregroundStyle(Theme.muted)
+                Text(WorksetFormat.axisLabel(start, span: end - start)).workFont(.dataSmall).foregroundStyle(Theme.muted)
                 Spacer()
-                Text(WorksetFormat.axisDate(end)).workFont(.dataSmall).foregroundStyle(Theme.muted)
+                Text(WorksetFormat.axisLabel(end, span: end - start)).workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
             .padding(.leading, Self.labelWidth + Space.m + Self.barInset)
             .padding(.trailing, Self.barInset)
@@ -1326,6 +1326,24 @@ enum WorksetFormat {
 
     static func axisDate(_ epoch: Double) -> String {
         axisFormatter.string(from: Date(timeIntervalSince1970: epoch))
+    }
+
+    /// A group that fits inside two days reads as a workday, so its axis
+    /// carries the clock in the viewer's own time zone ("Sep 15 09:05"); a
+    /// longer span keeps the date-only label.
+    static let axisClockSpan: Double = 48 * 3600
+
+    private static let axisClockFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MMM d HH:mm"
+        formatter.timeZone = TimeZone.current
+        return formatter
+    }()
+
+    static func axisLabel(_ epoch: Double, span: Double) -> String {
+        guard span.isFinite, span >= 0, span < axisClockSpan else { return axisDate(epoch) }
+        return axisClockFormatter.string(from: Date(timeIntervalSince1970: epoch))
     }
 
     /// A plain, honest span from first to last activity; never a fabricated

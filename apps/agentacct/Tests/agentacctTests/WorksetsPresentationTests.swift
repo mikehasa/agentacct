@@ -204,6 +204,16 @@ final class WorksetsPresentationTests: XCTestCase {
 
     // MARK: honest cost grammar
 
+    func testAxisLabelCarriesTheClockOnlyForWorkdaySpans() {
+        let epoch = 1_789_552_000.0
+        let workday = WorksetFormat.axisLabel(epoch, span: 9 * 3600)
+        let week = WorksetFormat.axisLabel(epoch, span: 6 * 86_400)
+        XCTAssertTrue(workday.contains(":"), "a sub-two-day window reads with a clock: \(workday)")
+        XCTAssertFalse(week.contains(":"), "a multi-day window keeps the date-only label: \(week)")
+        XCTAssertEqual(week, WorksetFormat.axisDate(epoch))
+        XCTAssertEqual(WorksetFormat.axisLabel(epoch, span: .nan), WorksetFormat.axisDate(epoch))
+    }
+
     func testCostLabelIsBareOrApproxWhenComplete() {
         let s = summary(#"{"session_count":2,"sources":[],"estimated_cost_usd":3.4,"cost_complete":true,"cost_confidence":"estimated_from_tokens"}"#)
         // A complete estimate wears the ≈ prefix (v10 cost grammar), never a bare $.
