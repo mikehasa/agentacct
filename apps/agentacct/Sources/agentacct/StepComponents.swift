@@ -182,6 +182,20 @@ struct SessionStepItem: Identifiable {
     }
 }
 
+extension SessionStepItem {
+    /// The deterministic step open-set snapshots use: the first two
+    /// check-bearing steps (so their evidence — command + exit code — shows)
+    /// plus one un-checked step (so an honest "no passing check" step is visible
+    /// too). One definition shared by every surface that renders a step list, so
+    /// a change here can't drift the golden references between them.
+    static func snapshotOpenedIDs(_ items: [SessionStepItem]) -> Set<String> {
+        Set(
+            items.filter { !($0.step.checks?.isEmpty ?? true) }.prefix(2).map(\.id)
+            + items.filter { ($0.step.checks?.isEmpty ?? true) }.prefix(1).map(\.id)
+        )
+    }
+}
+
 /// A single check's readable and accessible vocabulary. Unknown wire values
 /// remain unknown; they never inherit the trust level of a known source.
 struct CheckPresentation {

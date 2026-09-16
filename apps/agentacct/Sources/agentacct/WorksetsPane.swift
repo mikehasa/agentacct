@@ -954,6 +954,8 @@ private struct WorksetDetailView: View {
     let workset: WorksetCard
     let onBack: () -> Void
 
+    private var sessionsTotal: Int { workset.sessionsTotal ?? workset.summary.sessionCount }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Space.l) {
             Button(action: onBack) {
@@ -972,12 +974,32 @@ private struct WorksetDetailView: View {
                 WorksetChip(text: "grouped by folder")
             }
 
-            WorksetSummaryRow(summary: workset.summary)
+            WorksetKPIRow(card: workset)
+            OutcomeBar(
+                title: "Sessions",
+                total: "\(sessionsTotal) total",
+                segments: WorksetOutcome.sessionSegments(workset.sessions)
+            )
 
+            // The sessions list leads the detail so the group is more than a
+            // timeline: each row is one session's own honest state and drills in.
+            WorksetDetailSectionHeader(
+                title: "Sessions",
+                trailing: "\(sessionsTotal) session\(sessionsTotal == 1 ? "" : "s") · \(workset.summary.sources.count) source\(workset.summary.sources.count == 1 ? "" : "s")"
+            )
+            WorksetSessionsList(
+                lanes: workset.sessions,
+                sessionsTotal: sessionsTotal
+            )
+
+            WorksetDetailSectionHeader(
+                title: "Activity",
+                trailing: WorksetFormat.span(from: workset.summary.firstActivityAt, to: workset.summary.lastActivityAt)
+            )
             WorksetTimeline(
                 lanes: workset.sessions,
                 sources: workset.summary.sources,
-                sessionsTotal: workset.sessionsTotal ?? workset.summary.sessionCount,
+                sessionsTotal: sessionsTotal,
                 truncated: workset.sessionsTruncated ?? false,
                 zoomable: true
             )
@@ -990,6 +1012,215 @@ private struct WorksetDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
         .overlay(RoundedRectangle(cornerRadius: Metrics.radius).strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW))
+    }
+}
+
+// MARK: - Detail section header (caps eyebrow + trailing count + hairline)
+
+private struct WorksetDetailSectionHeader: View {
+    let title: String
+    var trailing: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                CapsLabel(text: title, tone: Theme.ink)
+                Spacer(minLength: Space.s)
+                if let trailing, !trailing.isEmpty {
+                    Text(trailing).workFont(.dataSmall).foregroundStyle(Theme.muted)
+                }
+            }
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+        }
+        .padding(.top, Space.xs)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+    }
+}
+
+// MARK: - Sessions list (one honest, drillable row per member session)
+
+private struct WorksetSessionsList: View {
+    let lanes: [WorksetLane]
+    let sessionsTotal: Int
+    @Environment(AppSelection.self) private var appSelection
+
+    private var hiddenCount: Int { max(0, sessionsTotal - lanes.count) }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(lanes.enumerated()), id: \.element.id) { index, lane in
+                if index > 0 { Divider().overlay(Theme.hairline) }
+                WorksetSessionRow(lane: lane) {
+                    if let key = lane.sessionKey, !key.isEmpty { appSelection.open(.session(key)) }
+                }
+            }
+            if hiddenCount > 0 {
+                Divider().overlay(Theme.hairline)
+                Text("\(hiddenCount) more session\(hiddenCount == 1 ? "" : "s") in this group — open a narrower time range to see them")
+                    .workFont(.caption).foregroundStyle(Theme.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, Space.s)
+            }
+        }
+    }
+}
+
+private struct WorksetSessionRow: View {
+    let lane: WorksetLane
+    let onOpen: () -> Void
+
+    private var isSubagent: Bool {
+        guard let kind = lane.sessionKind else { return false }
+        return kind != "root" && !kind.isEmpty
+    }
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(alignment: .center, spacing: Space.m) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Theme.sourceColor(lane.client))
+                    .frame(width: 6, height: 36)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: Space.s) {
+                        Text(lane.displayTitle)
+                            .workFont(.rowLabel).foregroundStyle(Theme.ink)
+                            .lineLimit(2)
+                            .layoutPriority(1)
+                        if lane.status == "blocked" {
+                            Chip(text: "blocked", tint: Theme.coral)
+                        }
+                        if isSubagent, let kind = lane.sessionKind {
+                            Chip(text: kind, tint: Theme.muted)
+                        }
+                    }
+                    HStack(spacing: Space.s) {
+                        Text(WorksetFormat.sourceLabel(lane.client ?? "unknown"))
+                            .workFont(.caption).foregroundStyle(Theme.muted)
+                        laneOutcome
+                    }
+                }
+
+                Spacer(minLength: Space.s)
+
+                VStack(alignment: .trailing, spacing: 4) {
+                    if let cost = WorksetFormat.laneCost(lane) {
+                        Text(cost).workFont(.dataSmall).foregroundStyle(Theme.ink)
+                    }
+                    HStack(spacing: Space.s) {
+                        if let tokens = lane.totalTokens, tokens > 0 {
+                            Text("\(UsageTotals.compact(tokens)) tok")
+                                .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                        }
+                        if let dur = WorksetFormat.duration(lane.durationSeconds) {
+                            Text(dur).workFont(.dataSmall).foregroundStyle(Theme.muted)
+                        }
+                    }
+                }
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.muted)
+                    .accessibilityHidden(true)
+            }
+            .padding(.vertical, Space.m)
+            .padding(.horizontal, Space.xs)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(SurfaceButtonStyle(focusInset: 2))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityHint("Opens this session")
+    }
+
+    /// Step count and the honest check tally. A failing count is coral; a plain
+    /// check total stays muted — the group view never implies verification with
+    /// green, matching the workset honesty note.
+    @ViewBuilder private var laneOutcome: some View {
+        HStack(spacing: 6) {
+            if let steps = lane.steps, steps > 0 {
+                Text("· \(steps) step\(steps == 1 ? "" : "s")")
+                    .workFont(.dataSmall).foregroundStyle(Theme.muted)
+            }
+            if let failed = lane.checksFailed, failed > 0 {
+                Text("· \(failed) failed")
+                    .workFont(.dataSmallSemibold).foregroundStyle(Theme.coral)
+            } else if let checks = lane.checks, checks > 0 {
+                Text("· \(checks) check\(checks == 1 ? "" : "s")")
+                    .workFont(.dataSmall).foregroundStyle(Theme.muted)
+            }
+        }
+    }
+
+    private var accessibilityLabel: String {
+        var parts = [lane.displayTitle, WorksetFormat.sourceLabel(lane.client ?? "unknown")]
+        if isSubagent, let kind = lane.sessionKind { parts.append("\(kind) subagent") }
+        if let status = lane.status { parts.append(status) }
+        if let steps = lane.steps, steps > 0 { parts.append("\(steps) steps") }
+        if let failed = lane.checksFailed, failed > 0 { parts.append("\(failed) failed checks") }
+        else if let checks = lane.checks, checks > 0 { parts.append("\(checks) checks") }
+        if let cost = WorksetFormat.laneCost(lane) { parts.append(cost) }
+        if let tokens = lane.totalTokens, tokens > 0 { parts.append("\(UsageTotals.compact(tokens)) tokens") }
+        if let dur = WorksetFormat.duration(lane.durationSeconds) { parts.append(dur) }
+        return parts.joined(separator: ", ")
+    }
+}
+
+// MARK: - Detail overview (KPI tiles + session-outcome bar)
+
+/// The work group's honest sums, as tiles. A workset never re-grades — these
+/// are a sum of independent receipts, so the Checks tile flags failures but the
+/// composition (which sessions are blocked / done) lives in the outcome bar and
+/// the per-session list, never in a single combined verdict.
+private struct WorksetKPIRow: View {
+    let card: WorksetCard
+
+    private var lanes: [WorksetLane] { card.sessions }
+    private var stepsSum: Int { lanes.reduce(0) { $0 + ($1.steps ?? 0) } }
+    private var checksSum: Int { lanes.reduce(0) { $0 + ($1.checks ?? 0) } }
+    private var failedSum: Int { lanes.reduce(0) { $0 + ($1.checksFailed ?? 0) } }
+    private var toolCallsSum: Int { lanes.reduce(0) { $0 + ($1.toolCalls ?? 0) } }
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: Space.s)], spacing: Space.s) {
+            PanelTile(label: "Steps", value: "\(stepsSum)")
+            PanelTile(label: "Checks", value: "\(checksSum)",
+                      detail: failedSum > 0 ? "\(failedSum) failed" : nil,
+                      accent: failedSum > 0 ? Theme.coral : Theme.ink)
+            PanelTile(label: "Tool calls", value: toolCallsSum > 0 ? "\(toolCallsSum)" : "—")
+            PanelTile(label: card.summary.costComplete == true ? "Cost, sum" : "Cost, partial",
+                      value: worksetCostLabel(card.summary) ?? "not priced")
+            PanelTile(label: "Tokens",
+                      value: card.summary.totalTokens.map { UsageTotals.compact($0) } ?? "—")
+            PanelTile(label: "Span",
+                      value: WorksetFormat.span(from: card.summary.firstActivityAt, to: card.summary.lastActivityAt))
+        }
+    }
+}
+
+enum WorksetOutcome {
+    /// Sessions grouped by their own recorded status — a sum of statuses, not a
+    /// re-graded verdict (green is never used here; completion stays ink).
+    static func sessionSegments(_ lanes: [WorksetLane]) -> [OutcomeSegment] {
+        var completed = 0, active = 0, blocked = 0, handedOff = 0, other = 0
+        for lane in lanes {
+            switch lane.status {
+            case "completed": completed += 1
+            case "active": active += 1
+            case "blocked": blocked += 1
+            case "handed_off": handedOff += 1
+            default: other += 1
+            }
+        }
+        var segments: [OutcomeSegment] = []
+        if completed > 0 { segments.append(.init(count: completed, color: Theme.ink, label: "completed")) }
+        if active > 0 { segments.append(.init(count: active, color: Theme.accent, label: "active")) }
+        if blocked > 0 { segments.append(.init(count: blocked, color: Theme.coral, label: "blocked")) }
+        if handedOff > 0 { segments.append(.init(count: handedOff, color: Theme.amber, label: "handed off")) }
+        if other > 0 { segments.append(.init(count: other, color: Theme.muted, label: "other")) }
+        return segments
     }
 }
 

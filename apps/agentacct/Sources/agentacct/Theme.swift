@@ -930,6 +930,8 @@ struct PanelTile: View {
             RoundedRectangle(cornerRadius: Metrics.radius)
                 .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW)
         )
+        // One VoiceOver stop per tile ("label, value, detail") instead of three.
+        .accessibilityElement(children: .combine)
     }
 }
 
