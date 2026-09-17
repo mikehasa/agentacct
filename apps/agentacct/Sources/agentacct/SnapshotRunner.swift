@@ -282,7 +282,8 @@ enum SnapshotRunner {
                     fixture: fixture,
                     outputDirectory: outputURL
                 )
-                let rendered = pages + sessionSteps
+                let components = try WorkComponentSnapshotRenderer.render(outputDirectory: outputURL)
+                let rendered = pages + sessionSteps + components
                 print("work snapshots written to \(outputURL.path): \(rendered.count) files")
             } catch {
                 exitCode = 1
