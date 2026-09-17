@@ -128,6 +128,17 @@ struct MenuUsagePresentation {
     }
 }
 
+/// The popover's session list: one row per (client, session), newest first.
+/// The glance feed is already ordered by recency, so the first row for a
+/// session is the one to keep; a repeated identity would otherwise render two
+/// rows the reader cannot tell apart.
+enum MenuSessionPresentation {
+    static func distinct(_ sessions: [RecentSession]) -> [RecentSession] {
+        var seen: Set<String> = []
+        return sessions.filter { seen.insert("\($0.client)::\($0.sessionId)").inserted }
+    }
+}
+
 struct MenuCalibrationPresentation: Equatable {
     let summary: String
     let detail: String?
