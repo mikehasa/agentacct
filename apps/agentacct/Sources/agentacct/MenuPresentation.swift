@@ -149,9 +149,10 @@ struct MenuCalibrationPresentation: Equatable {
         }
         let client = MenuLimitPresentation.clientLabel(entry.client)
         if let used = entry.intervalsUsed, let needed = entry.intervalsNeeded {
-            summary = "Learning \(client)'s weekly share · \(used) of \(needed) intervals"
+            // Kept to one popover line: the old wording's length was the limit.
+            summary = "Learning \(client) weekly share · \(used)/\(needed) intervals"
         } else {
-            summary = "Learning \(client)'s weekly share"
+            summary = "Learning \(client) weekly share"
         }
         detail = entry.stateDetail
     }

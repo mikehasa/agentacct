@@ -118,7 +118,7 @@ final class MenuPresentationTests: XCTestCase {
 
         XCTAssertEqual(
             presentation.summary,
-            "Learning Claude Code's weekly share · 9 of 24 intervals"
+            "Learning Claude Code weekly share · 9/24 intervals"
         )
         XCTAssertTrue(presentation.detail?.contains("stable intervals") == true)
     }
