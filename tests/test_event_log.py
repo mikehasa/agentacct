@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
+
+import orjson
 
 from agentacct.event_log import RawEventLog, serialize_event
 
@@ -16,6 +19,56 @@ def _write_ledger(path: Path, events: list[dict]) -> None:
 
 def _event(event_id: str, event_type: str = "note", **extra) -> dict:
     return {"event_id": event_id, "event_type": event_type, "created_at": 1.0, **extra}
+
+
+def _rich_events() -> list[dict]:
+    return [
+        _event(
+            "e1",
+            note="café — ünïçø∂é ✓ 日本語",
+            ratio=0.1234567890123456,
+            neg=-3,
+            small_neg=-1,
+            nested={"a": [1, 2, {"b": -7}], "c": {"d": 1.5, "e": []}},
+        ),
+        _event("e2", run_id="r1", value=123456789012345, flag=True, none=None),
+        _event("e3", empty=[], obj={}, big=9007199254740991),
+    ]
+
+
+def test_read_events_parses_identically_under_orjson(tmp_path: Path) -> None:
+    events = _rich_events()
+    ledger = tmp_path / "events.jsonl"
+    _write_ledger(ledger, events)
+    # A corrupt, non-JSON line must be skipped by read_events (not parsed).
+    with ledger.open("a", encoding="utf-8") as handle:
+        handle.write("{not-json\n")
+
+    log = RawEventLog(tmp_path / "events.sqlite3")
+    assert log.absorb_new_events(ledger) == 4  # 3 valid events + 1 stored corrupt line
+
+    parsed = log.read_events()
+    # Order preserved and the corrupt line skipped (count == valid lines only).
+    assert parsed == events
+
+    lines = log.read_lines()
+    valid_lines = [line for line in lines if not line.startswith("{not-json")]
+    assert len(valid_lines) == len(events)
+    # The orjson read path is parse-identical to stdlib json, line for line.
+    assert parsed == [json.loads(line) for line in valid_lines]
+    for line in valid_lines:
+        assert orjson.loads(line) == json.loads(line)
+
+
+def test_ledger_byte_parity_read_then_write(tmp_path: Path) -> None:
+    # The honesty-critical guard for the mixed read(orjson) -> write(stdlib json)
+    # path: reading a canonical line with orjson then re-serializing it with the
+    # stdlib writer must reproduce the exact same bytes.
+    events = _rich_events()
+    ledger = tmp_path / "events.jsonl"
+    _write_ledger(ledger, events)
+    for line in ledger.read_text(encoding="utf-8").splitlines():
+        assert serialize_event(orjson.loads(line)) == line
 
 
 def test_append_and_read_preserve_order_and_content(tmp_path: Path) -> None:

@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 import hmac
 import json
+import orjson
 import math
 import os
 import re
@@ -1318,9 +1319,22 @@ class SentinelService:
         events: list[dict[str, Any]] = []
         for line in self._ledger_lines():
             try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+                # READ path only: orjson.loads is the hottest ledger parse (~2x
+                # json.loads). The WRITE path (serialize_event / json.dumps) stays
+                # stdlib json for ledger byte-parity. orjson is strictly stricter
+                # than json — it rejects >64-bit ints and Infinity/NaN that
+                # json.loads accepts — so on an orjson decode error we FALL BACK to
+                # json.loads to keep the parsed corpus byte-identical to before
+                # (those rare extreme lines are recovered, not silently dropped),
+                # and only skip when json.loads also rejects the line. This
+                # preserves the original narrow skip contract (json.JSONDecodeError
+                # only) exactly.
+                event = orjson.loads(line)
+            except orjson.JSONDecodeError:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
             if run_id is None or event.get("run_id") == run_id:
                 events.append(event)
         return events

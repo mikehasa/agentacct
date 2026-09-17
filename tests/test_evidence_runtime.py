@@ -2,8 +2,49 @@ from __future__ import annotations
 
 import json
 
-from agentacct.evidence_runtime import EVIDENCE_V2_ENV, EvidenceRuntime, evidence_v2_enabled
+from agentacct.evidence_runtime import (
+    EVIDENCE_V2_ENV,
+    EVIDENCE_V2_SHADOW_SKIP_ENV,
+    EvidenceRuntime,
+    evidence_v2_enabled,
+    evidence_v2_shadow_skip_event_types,
+)
 from agentacct.service import SentinelService
+
+
+def _tool_activity_v1_event() -> dict[str, object]:
+    return {
+        "event_id": "evt-tool-1",
+        "created_at": 1_750_000_100.0,
+        "source": "codex",
+        "event_type": "tool_activity_observed",
+        "run_id": "run-1",
+        "metadata": {
+            "sentinel_semantic_kind": "tool_activity",
+            "client": "codex",
+            "client_session_id": "session-1",
+            "tool_name": "Bash",
+        },
+    }
+
+
+def _machine_check_v1_event() -> dict[str, object]:
+    return {
+        "event_id": "evt-check-1",
+        "created_at": 1_750_000_200.0,
+        "source": "claude_code_hook",
+        "event_type": "machine_check_observed",
+        "run_id": "run-1",
+        "exit_code": 0,
+        "metadata": {
+            "sentinel_semantic_kind": "evidence",
+            "client": "claude-code",
+            "client_context_source": "claude_code_hook",
+            "client_session_id": "session-1",
+            "name": "pytest",
+            "result": "passed",
+        },
+    }
 
 
 def _v1_event() -> dict[str, object]:
@@ -52,6 +93,45 @@ def test_shadow_failure_is_fail_open(tmp_path) -> None:
     assert result.enabled is True
     assert result.appended is False
     assert result.error
+
+
+def test_shadow_skips_high_cardinality_types_but_keeps_checks(tmp_path) -> None:
+    runtime = EvidenceRuntime(tmp_path, enabled=True)
+
+    skipped = runtime.shadow_v1_event(_tool_activity_v1_event(), transport="mcp")
+    assert skipped.disposition == "skipped"
+    assert skipped.appended is False
+    assert skipped.evidence_id is None
+    assert runtime.store.stats().evidence_versions == 0
+
+    kept = runtime.shadow_v1_event(_machine_check_v1_event(), transport="client_hook")
+    assert kept.disposition == "inserted"
+    assert kept.appended is True
+    assert runtime.store.stats().evidence_versions == 1
+    envelope = runtime.envelopes()[0]
+    assert envelope.event_type == "machine_check_observed"
+    assert envelope.source_type == "client_hook"
+
+
+def test_shadow_skip_config_opt_out(tmp_path) -> None:
+    runtime = EvidenceRuntime(tmp_path, enabled=True, shadow_skip_event_types=())
+
+    result = runtime.shadow_v1_event(_tool_activity_v1_event(), transport="mcp")
+    assert result.disposition == "inserted"
+    assert runtime.store.stats().evidence_versions == 1
+
+
+def test_shadow_skip_env_defaults_on_and_disables(monkeypatch) -> None:
+    monkeypatch.delenv(EVIDENCE_V2_SHADOW_SKIP_ENV, raising=False)
+    default = evidence_v2_shadow_skip_event_types()
+    assert "tool_activity_observed" in default
+    assert "rate_limit_observed" in default
+
+    monkeypatch.setenv(EVIDENCE_V2_SHADOW_SKIP_ENV, "none")
+    assert evidence_v2_shadow_skip_event_types() == frozenset()
+
+    monkeypatch.setenv(EVIDENCE_V2_SHADOW_SKIP_ENV, "foo_observed,bar_observed")
+    assert evidence_v2_shadow_skip_event_types() == frozenset({"foo_observed", "bar_observed"})
 
 
 def test_disabled_runtime_does_not_create_v2_store(tmp_path) -> None:

@@ -523,9 +523,13 @@ class RuntimeManager:
         host: str = "127.0.0.1",
         port: int = 8765,
         cwd: Path | str | None = None,
+        watch_interval_seconds: float = 300.0,
+        watch_estimate_costs: bool = True,
     ) -> None:
         self.store_dir = Path(store_dir).expanduser().resolve()
         self.executable = str(Path(executable).expanduser().resolve())
+        self.watch_interval_seconds = float(watch_interval_seconds)
+        self.watch_estimate_costs = bool(watch_estimate_costs)
         self.host = host
         self.port = int(port)
         self.cwd = Path(cwd).expanduser().resolve() if cwd is not None else self._project_root()
@@ -730,18 +734,24 @@ class RuntimeManager:
     def _commands(self) -> dict[str, tuple[str, ...]]:
         """Build the argv for the watcher and dashboard commands we start."""
         store = str(self.store_dir)
+        watcher_argv = [
+            self.executable,
+            "usage",
+            "watch",
+            "--store-dir",
+            store,
+            "--client",
+            "all",
+            "--refresh",
+            "--interval-seconds",
+            ("%g" % self.watch_interval_seconds),
+        ]
+        # A calmer cadence (default 300s) means far fewer cache-invalidating
+        # ledger writes; --estimate-costs is opt-out so its per-scan pricing
+        # recompute can be dropped when it is not needed.
+        watcher_argv.append("--estimate-costs" if self.watch_estimate_costs else "--no-estimate-costs")
         return {
-            "watcher": (
-                self.executable,
-                "usage",
-                "watch",
-                "--store-dir",
-                store,
-                "--client",
-                "all",
-                "--refresh",
-                "--estimate-costs",
-            ),
+            "watcher": tuple(watcher_argv),
             "dashboard": (
                 self.executable,
                 "serve",

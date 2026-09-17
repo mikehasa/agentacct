@@ -6,6 +6,61 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-09-17
+
+Makes the dashboard fast again — the API-serving caches no longer rebuild the multi-second work ledger on every idle poll, and the recorder stops shadowing its highest-cardinality events into an unbounded store — plus a way to reclaim that store and one-click recorder self-update.
+
+### Added
+
+- One-click recorder self-update. `GET /v1/version` now also reports `current`,
+  `latest`, `update_available`, and `is_dev_install` (read from a short-TTL
+  cache; PyPI is only checked on a background thread so the handshake never
+  blocks). The Diagnostics pane shows the recorder version and, when a newer
+  release is published, an **Update** button that installs it and restarts the
+  recorder (`POST /v1/self-update`; `agentacct self-update`). Refused for a
+  development/editable checkout at the UI, the route, and the CLI — no daemon
+  ever silently drifts onto an old release again.
+- `agentacct evidence prune` reclaims the evidence-v2 projection: a
+  transactional, batched delete of non-consumed shadow rows (default: the
+  `tool_activity_observed` shadow that never feeds a correctness lane) plus an
+  optional `VACUUM`. The append-only spool is never touched, so the evidence log
+  stays complete and recoverable; `client_hook` and refreshable-usage rows are
+  refused three ways (denylist, exclusion subqueries, foreign keys).
+
+### Changed
+
+- Terminal UI (`agentacct tui`): the Sessions master list is now a sortable
+  DataTable (Task / Outcome / Evidence / Cost / Age, `s` to cycle sort,
+  `ctrl+d`/`ctrl+u` to scroll the detail, CJK-safe truncation); every pane docks
+  a key-guidance footer; Work cards share one global time axis; and the
+  session-detail activity timeline is sized to its column and built from the raw
+  task checks so every check carries its real time. (#289)
+- The recorder no longer shadows the highest-cardinality event types
+  (`tool_activity_observed`, `rate_limit_observed`) into the evidence-v2 store —
+  they were ~99% of it and fed no correctness-critical lane. Stops the shadow
+  store's unbounded growth (configurable via
+  `AGENTACCT_EVIDENCE_V2_SHADOW_SKIP_EVENT_TYPES`). The `independently_checked`
+  lift (client_hook mechanical checks) is untouched.
+- The API-serving work-ledger and sessions caches drop their 30-second wall-clock
+  TTL for a composite change key (events fingerprint + an append-only signature
+  of the cost / run-report / evidence-spool stores). Unchanged stores reuse the
+  build regardless of age — no more periodic multi-second rebuild on idle polls —
+  and any secondary-store change still invalidates it, so no stale reduced state
+  is ever served. The dashboard also warms these caches on startup.
+- The managed usage watcher scans every 300 s (was 60 s) and skips the heavy
+  parse when no source file changed since the last scan (recording a zero-parse
+  "unchanged" scan so freshness still advances), with `--estimate-costs`
+  now opt-out. Far fewer cache-invalidating ledger writes while agents work.
+  Tunable via `--interval-seconds`, `--skip-unchanged/--no-skip-unchanged`, and
+  `AGENTACCT_WATCH_INTERVAL_SECONDS` / `AGENTACCT_WATCH_ESTIMATE_COSTS`.
+- Read-path JSON parsing uses `orjson` (byte-identical to the stdlib parse; the
+  write/serialize path stays on stdlib `json` for ledger byte-parity), and the
+  legacy `/overview`, `/timeline`, `/work-items` routes now reuse the shared
+  revision-cached event snapshot instead of re-reading and re-hashing the whole
+  ledger on every request. The work-ledger reduce memoizes its hottest steps
+  (credential-scrub, nearest-usage attribution, project-label derivation) with
+  byte-identical output.
+
 ## [0.11.0] — 2026-09-17
 
 The Work tab lands — folder-anchored session groupings across every agent on one cross-agent timeline, in the app and the terminal — alongside DeepSeek Harness support, readable Session and Work detail records, calmer Diagnostics, and a rewritten product README.
@@ -1195,7 +1250,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.11.1
 [0.11.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.11.0
 [0.10.11]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.11
 [0.10.10]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.10

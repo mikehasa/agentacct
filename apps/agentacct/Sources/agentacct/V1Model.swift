@@ -1663,6 +1663,16 @@ struct WorksetWriteResponse: Decodable {
     }
 }
 
+/// Response from POST /v1/self-update. `applied` is false when already on the
+/// latest version; true (HTTP 202) means the daemon is installing + restarting.
+struct SelfUpdateResponse: Decodable {
+    let ok: Bool
+    let applied: Bool?
+    let to: String?
+    let reason: String?
+    let current: String?
+}
+
 /// Places member sessions as bars on ONE shared time axis (the tryairis-style
 /// timeline): each bar's left offset and width are fractions of the group's
 /// total span, so a Claude Code session and a Codex session read against the

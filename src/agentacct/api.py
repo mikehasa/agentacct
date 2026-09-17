@@ -6,6 +6,8 @@ import json
 import math
 import os
 import secrets
+import subprocess
+import sys
 import threading
 import time
 # ``field`` is aliased: several helpers below use ``field`` as a loop variable.
@@ -17,6 +19,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from . import self_update as _self_update
 from . import version as version_info
 from .activation import ActivationStateStore
 from .agent_capabilities import agent_capability_manifest
@@ -64,7 +67,11 @@ from .cost import (
     pricing_catalog_path_for_store,
     reset_pricing_catalog_cache,
 )
-from .evidence_store import EVIDENCE_STORE_DIRNAME
+from .evidence_store import (
+    EVIDENCE_SPOOL_FILENAME,
+    EVIDENCE_STORE_DIRNAME,
+    REFRESHABLE_USAGE_SPOOL_FILENAME,
+)
 from .finding_disposition import (
     FindingDispositionConflict,
     FindingDispositionNotFound,
@@ -2871,24 +2878,68 @@ def create_local_api_app(
 
     ledger_cache = WorkLedgerCache()
 
+    def _ledger_secondary_signature() -> int:
+        """Cheap append-only change key for the ledger inputs the events
+        fingerprint cannot see: cost events, run reports, and the evidence
+        client_hook spool. Each mutates without minting a primary ledger event
+        (no revision bump), so folding their stat signatures into the cache key
+        is what lets the ledger/session caches drop their wall-clock TTL without
+        ever serving stale REDUCED state. Fail-open: an unreadable store
+        contributes (0, 0)."""
+
+        def _stat_sig(path: Path) -> tuple[int, int]:
+            try:
+                st = path.stat()
+                return (st.st_size, st.st_mtime_ns)
+            except OSError:
+                return (0, 0)
+
+        parts: list[tuple[int, int]] = [_stat_sig(cost_ledger.path)]
+        # Stat the evidence spools DIRECTLY from store_dir; do NOT touch
+        # service.evidence.store (its lazy property would mkdir the evidence
+        # store on a fresh store — the anti-pattern _mechanical_projection_*
+        # already avoids).
+        ev_root = Path(store_dir).expanduser() / EVIDENCE_STORE_DIRNAME
+        parts.append(_stat_sig(ev_root / EVIDENCE_SPOOL_FILENAME))
+        parts.append(_stat_sig(ev_root / REFRESHABLE_USAGE_SPOOL_FILENAME))
+        try:
+            run_dirs = sorted(p for p in service.store.runs_root.iterdir() if p.is_dir())[
+                :_LEDGER_RUN_REPORT_LIMIT
+            ]
+            for run_dir in run_dirs:
+                parts.append(_stat_sig(run_dir))
+        except OSError:
+            pass
+        return hash(tuple(parts))
+
+    def _ledger_cache_key(fingerprint: int) -> int:
+        return hash((fingerprint, _ledger_secondary_signature()))
+
     def _derived_work_ledger(
         events: list[dict[str, Any]] | None = None,
         *,
         fingerprint: int | None = None,
+        cache_key: int | None = None,
     ) -> dict[str, Any]:
-        """The derived ledger, fingerprint + TTL cached (see WorkLedgerCache).
+        """The derived ledger, change-keyed cached (see WorkLedgerCache).
 
         Every ledger-backed route shares one cache. Native app routes pass the
         revisioned event snapshot and its one precomputed fingerprint, so an
         unchanged poll skips both ledger decoding and O(n) hashing as well as
-        the multi-second rebuild. Other callers may still pass their own
-        ``events``/``fingerprint`` pair to avoid duplicate work.
+        the multi-second rebuild. The cache key composes the fingerprint with a
+        cheap signature of the fingerprint-invisible secondary stores, so an
+        unchanged store reuses the build regardless of age and a secondary
+        append (cost/run/mechanical-check) still invalidates it. Callers that
+        also key a sibling cache (V1SessionsCache) pass the SAME ``cache_key``
+        so both stay in lockstep within one request.
         """
 
         if events is None:
             events = service.list_all_events()
         if fingerprint is None:
             fingerprint = events_fingerprint(events)
+        if cache_key is None:
+            cache_key = _ledger_cache_key(fingerprint)
         loaded_events = events
 
         def _build() -> dict[str, Any]:
@@ -2919,7 +2970,7 @@ def create_local_api_app(
             ledger[_LEDGER_MECHANICAL_CHECK_EVENTS_KEY] = build_mechanical_check_events(mechanical_envelopes)
             return ledger
 
-        return ledger_cache.ledger(fingerprint, _build)
+        return ledger_cache.ledger(cache_key, _build)
 
     def _page_data(
         local_usage_preview: list[ClientUsageEvent] | None = None,
@@ -3031,6 +3082,14 @@ def create_local_api_app(
         never a JSON parse error)."""
 
         _require_v1_token(request)
+        # Self-update fields are ADDITIVE and read from a non-blocking cache
+        # (network refresh happens on a background thread), so the compatibility
+        # handshake keys — including `version` — are unchanged and never block.
+        update = _self_update.update_status(store_dir=store_dir, allow_network=False)
+        try:
+            _self_update.refresh_in_background(store_dir)
+        except Exception:
+            pass
         return {
             "schema": "agentacct.v1-version.v1",
             "version": _dashboard_importer_version(),
@@ -3045,6 +3104,11 @@ def create_local_api_app(
             "pid": os.getpid(),
             "store_dir": str(store_dir),
             "store_scope": store_scope,
+            # Clean package version (distinct from the fingerprinted `version`).
+            "current": update.current,
+            "latest": update.latest,
+            "update_available": update.update_available,
+            "is_dev_install": update.is_dev_install,
         }
 
     @app.get("/v1/glance")
@@ -3068,6 +3132,25 @@ def create_local_api_app(
 
     v1_sessions_cache = V1SessionsCache()
 
+    def _warm_ledger_caches() -> None:
+        # Best-effort: run the ~seconds-long reduce ONCE at startup so the first
+        # /v1/sessions poll is a cache hit instead of a cold rebuild. Fail-open —
+        # a cold first request self-heals, so a warm failure is never fatal.
+        try:
+            events, fingerprint = _dashboard_events()
+            ledger_key = _ledger_cache_key(fingerprint)
+            ledger = _derived_work_ledger(events, fingerprint=fingerprint, cache_key=ledger_key)
+            v1_sessions_cache.view(ledger_key, lambda: build_v1_sessions_view(ledger, events))
+        except Exception:
+            pass
+
+    app.router.add_event_handler(
+        "startup",
+        lambda: threading.Thread(
+            target=_warm_ledger_caches, name="agentacct-ledger-warm", daemon=True
+        ).start(),
+    )
+
     @app.get("/v1/sessions")
     def v1_sessions(
         request: Request,
@@ -3088,10 +3171,11 @@ def create_local_api_app(
 
         _require_v1_token(request)
         events, fingerprint = _dashboard_events()
+        ledger_key = _ledger_cache_key(fingerprint)
         view = v1_sessions_cache.view(
-            fingerprint,
+            ledger_key,
             lambda: build_v1_sessions_view(
-                _derived_work_ledger(events, fingerprint=fingerprint), events
+                _derived_work_ledger(events, fingerprint=fingerprint, cache_key=ledger_key), events
             ),
         )
         return slice_sessions_payload(view, roots_only=roots_only, limit=limit, offset=offset, client=client)
@@ -3111,9 +3195,10 @@ def create_local_api_app(
 
         _require_v1_token(request)
         events, fingerprint = _dashboard_events()
-        ledger = _derived_work_ledger(events, fingerprint=fingerprint)
+        ledger_key = _ledger_cache_key(fingerprint)
+        ledger = _derived_work_ledger(events, fingerprint=fingerprint, cache_key=ledger_key)
         view = v1_sessions_cache.view(
-            fingerprint,
+            ledger_key,
             lambda: build_v1_sessions_view(ledger, events),
         )
         detail = build_v1_session_detail(view, ledger, client=client, session_id=session_id)
@@ -3652,6 +3737,29 @@ def create_local_api_app(
             raise HTTPException(status_code=404, detail="unknown workset for this store")
         return {"schema": WORKSET_SCHEMA_VERSION, **_workset_card(state, rollup)}
 
+    @app.post("/v1/self-update")
+    def v1_self_update(request: Request) -> dict[str, Any]:
+        """Apply a published update and restart the recorder (one-click, from the
+        Diagnostics pane). Refuses a dev/editable install. This route never
+        touches the ledger or evidence store — self-update is an operational
+        action, not recorded work."""
+
+        _require_v1_token(request)
+        status = _self_update.update_status(store_dir=store_dir, allow_network=True)
+        if status.is_dev_install:
+            raise HTTPException(status_code=409, detail="cannot self-update a development/editable install")
+        if not status.update_available or not status.latest:
+            return {"ok": True, "applied": False, "reason": "already_latest", "current": status.current}
+        # Spawn a DETACHED updater so this response returns BEFORE the restart
+        # kills this daemon; start_new_session keeps it alive across that death.
+        subprocess.Popen(
+            _self_update.restart_updater_argv(store_dir),
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return {"ok": True, "applied": True, "to": status.latest, "restarting": True}
+
     @app.post("/v1/worksets")
     def v1_worksets_write(
         request: Request, payload: dict[str, Any] = Body(...)
@@ -3837,7 +3945,8 @@ def create_local_api_app(
         attention_counts, attention_group_count. The schema_version envelope
         key is new; no existing keys were removed.
         """
-        ledger = _derived_work_ledger()
+        events, fingerprint = _dashboard_events()
+        ledger = _derived_work_ledger(events, fingerprint=fingerprint)
         return {"schema_version": ledger["schema_version"], "overview": ledger["overview"]}
 
     @app.get("/timeline")
@@ -3851,7 +3960,8 @@ def create_local_api_app(
         row-level and unchanged by the dashboard's grouped display view. The
         schema_version envelope key is new; no existing keys were removed.
         """
-        ledger = _derived_work_ledger()
+        events, fingerprint = _dashboard_events()
+        ledger = _derived_work_ledger(events, fingerprint=fingerprint)
         return {"schema_version": ledger["schema_version"], "timeline": ledger["timeline"][:limit]}
 
     @app.get("/work-items")
@@ -3864,13 +3974,15 @@ def create_local_api_app(
         usage_cache_read_total / usage_cache_creation_total. The
         schema_version envelope key is new; no existing keys were removed.
         """
-        ledger = _derived_work_ledger()
+        events, fingerprint = _dashboard_events()
+        ledger = _derived_work_ledger(events, fingerprint=fingerprint)
         return {"schema_version": ledger["schema_version"], "work_items": ledger["work_items"][:limit]}
 
     @app.get("/work-items/{work_id}")
     def work_item(work_id: str) -> dict[str, Any]:
         """One work item by namespaced work_id (raw section_id fallback kept)."""
-        ledger = _derived_work_ledger()
+        events, fingerprint = _dashboard_events()
+        ledger = _derived_work_ledger(events, fingerprint=fingerprint)
         for item in ledger["work_items"]:
             if item.get("work_id") == work_id or item.get("section_id") == work_id:
                 return {"schema_version": ledger["schema_version"], "work_item": item}
@@ -3938,7 +4050,8 @@ def create_local_api_app(
             for name in ("client", "project", "join", "kind", "days", "sort", "work", "show")
             if name in request.query_params
         )
-        ledger = _derived_work_ledger()
+        events, fingerprint = _dashboard_events()
+        ledger = _derived_work_ledger(events, fingerprint=fingerprint)
         rollup = ledger["session_rollup"]
         rollup_sessions = rollup.get("sessions") if isinstance(rollup, dict) else []
         rollup_sessions = rollup_sessions if isinstance(rollup_sessions, list) else []
@@ -3961,7 +4074,8 @@ def create_local_api_app(
         (groups derive FROM the detail items, so total_items can never
         disagree with the raw attention list). GET-only, zero writes.
         """
-        ledger = _derived_work_ledger()
+        events, fingerprint = _dashboard_events()
+        ledger = _derived_work_ledger(events, fingerprint=fingerprint)
         groups_payload = ledger["attention_groups"]
         groups = groups_payload.get("groups") if isinstance(groups_payload, dict) else []
         groups = groups if isinstance(groups, list) else []

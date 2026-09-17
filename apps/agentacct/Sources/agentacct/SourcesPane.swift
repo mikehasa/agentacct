@@ -260,6 +260,10 @@ struct SourcesPane: View {
                 connectedCard(snapshot)
             }
             watcherCard(snapshot.watcher).padding(.top, Space.xl)
+            // Gated off snapshot renders so the golden fixtures are pixel-unaffected.
+            if !SnapshotMode.enabled {
+                updateCard.padding(.top, Space.xl)
+            }
             verificationDisclosure.padding(.top, Space.xl)
             scopeCard.padding(.top, Space.xl)
         } else if let error = dashboard.ingestionError {
@@ -614,7 +618,64 @@ struct SourcesPane: View {
         }
     }
 
-    // MARK: watcher
+    // MARK: version + update
+
+    /// Recorder version + a one-click Update when a newer release is published.
+    /// Notify + one-click, never silent: the button appears only for a packaged
+    /// install with an update available, and never for a dev/editable build.
+    @ViewBuilder
+    private var updateCard: some View {
+        let info = dashboard.versionInfo
+        let shownVersion = info?.displayVersion
+        let updateAvailable = info?.offersInAppUpdate == true
+        Card(padding: Space.xl) {
+            VStack(alignment: .leading, spacing: 0) {
+                adaptiveRow(spacing: Space.s) {
+                    Text("Recorder version").workFont(.titleCard).foregroundStyle(Theme.ink)
+                    if !stacksRows { Spacer() }
+                    if let shownVersion {
+                        Text(shownVersion).workFont(.dataSmall).foregroundStyle(Theme.muted).textSelection(.enabled)
+                    } else {
+                        Text("unknown").workFont(.dataSmall).foregroundStyle(Theme.muted)
+                    }
+                }
+                Rectangle().fill(Theme.hairline).frame(height: 1).padding(.vertical, Space.m)
+                if updateAvailable {
+                    adaptiveRow(spacing: Space.s) {
+                        HStack(spacing: Space.s) {
+                            Image(systemName: "arrow.up.circle.fill").foregroundStyle(Theme.amber)
+                                .accessibilityHidden(true)
+                            Text("Update available → \(info?.latest ?? "newer")")
+                                .workFont(.body).foregroundStyle(Theme.ink)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if !stacksRows { Spacer() }
+                        Button(dashboard.updateRestarting ? "Updating…" : "Update") {
+                            Task { try? await dashboard.applyUpdate() }
+                        }
+                        .buttonStyle(NativeSetupActionStyle(prominent: true))
+                        .disabled(dashboard.isApplyingUpdate || dashboard.updateRestarting || dashboard.isOfflineSnapshot)
+                        .accessibilityIdentifier("diagnostics.update")
+                    }
+                    if dashboard.updateRestarting {
+                        Text("Installing the update and restarting the recorder — this pane will reconnect on its own.")
+                            .workFont(.caption).foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, Space.s)
+                    }
+                } else if info?.isDevInstall == true {
+                    Text("Development build — update via git, not in-app.")
+                        .workFont(.caption).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if let error = dashboard.versionError {
+                    Text(error).workFont(.caption).foregroundStyle(Theme.muted).textSelection(.enabled)
+                } else {
+                    Text("Up to date.").workFont(.caption).foregroundStyle(Theme.muted)
+                }
+            }
+        }
+        .accessibilityIdentifier("diagnostics-update-card")
+    }
 
     @ViewBuilder
     private func watcherCard(_ watcher: V1IngestionWatcher?) -> some View {

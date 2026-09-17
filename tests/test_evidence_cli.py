@@ -5,10 +5,74 @@ import json
 from typer.testing import CliRunner
 
 from agentacct.cli import app
+from agentacct.evidence_runtime import EvidenceRuntime
 from agentacct.service import SentinelService
 
 
 runner = CliRunner()
+
+
+def _seed_tool_activity_shadow(store_dir, count: int) -> None:
+    # shadow_skip_event_types=() opts out of the default skip so the seeded
+    # tool_activity rows actually land in the projection for the prune to remove.
+    runtime = EvidenceRuntime(store_dir, enabled=True, shadow_skip_event_types=())
+    for i in range(count):
+        runtime.shadow_v1_event(
+            {
+                "event_id": f"ta-{i}",
+                "created_at": 1_750_000_000.0 + i,
+                "source": "codex",
+                "event_type": "tool_activity_observed",
+                "run_id": "run-1",
+                "metadata": {"client": "codex", "client_session_id": "session-1", "tool_name": "Bash"},
+            },
+            transport="mcp",
+        )
+
+
+def test_evidence_prune_cli_dry_run_default(tmp_path) -> None:
+    store = tmp_path / "state"
+    _seed_tool_activity_shadow(store, 2)
+
+    result = runner.invoke(app, ["evidence", "prune", "--store-dir", str(store), "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["dry_run"] is True
+    assert payload["matched_versions"] == 2
+    assert payload["deleted_versions"] == 0
+    assert payload["spool_left_intact"] is True
+
+
+def test_evidence_prune_cli_real(tmp_path) -> None:
+    store = tmp_path / "state"
+    _seed_tool_activity_shadow(store, 2)
+
+    deleted = runner.invoke(
+        app,
+        ["evidence", "prune", "--store-dir", str(store), "--no-dry-run", "--yes", "--no-vacuum", "--json"],
+    )
+    assert deleted.exit_code == 0, deleted.output
+    assert json.loads(deleted.output)["deleted_versions"] == 2
+
+    rerun = runner.invoke(
+        app,
+        ["evidence", "prune", "--store-dir", str(store), "--no-dry-run", "--yes", "--no-vacuum", "--json"],
+    )
+    assert rerun.exit_code == 0, rerun.output
+    assert json.loads(rerun.output)["matched_versions"] == 0
+
+
+def test_evidence_prune_cli_refuses_honesty_critical_source(tmp_path) -> None:
+    store = tmp_path / "state"
+    _seed_tool_activity_shadow(store, 1)
+
+    result = runner.invoke(
+        app,
+        ["evidence", "prune", "--store-dir", str(store), "--source-type", "client_hook", "--no-dry-run", "--yes"],
+    )
+
+    assert result.exit_code != 0
 
 
 def test_evidence_work_event_preserves_v1_and_adds_v2(tmp_path) -> None:

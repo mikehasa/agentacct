@@ -111,6 +111,14 @@ def test_help_surfaces_current_handoff_and_refresh_contracts(color):
         assert "--refresh" in output
         assert "Refresh & save usage" not in output
 
+    # The managed-cadence + skip-unchanged knobs are surfaced on `usage watch`.
+    watch_output = unstyle(watch_help.output)
+    assert "--interval-seconds" in watch_output
+    assert "--skip-unchanged" in watch_output
+    assert "--no-skip-unchanged" in watch_output
+    assert "--estimate-costs" in watch_output
+    assert "--no-estimate-costs" in watch_output
+
 
 def test_init_claude_code_respects_legacy_pre_rename_section(tmp_path):
     # Pre-rename "Agent Chronicle" headings are recognized forever: an existing

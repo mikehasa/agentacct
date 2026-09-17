@@ -1331,3 +1331,153 @@ def test_evidence_store_uses_owner_only_posix_permissions(tmp_path: Path) -> Non
     assert store.refreshable_usage_spool_path.stat().st_mode & 0o077 == 0
     assert store.projection_path.stat().st_mode & 0o077 == 0
     assert store.lock_path.stat().st_mode & 0o077 == 0
+
+
+def _tool_activity_shadow(source_event_id: str, *, timestamp: str = "2026-07-13T00:00:00.000000Z"):
+    return _evidence(
+        source_event_id,
+        timestamp=timestamp,
+        assertion="claimed",
+        dimension="tool_activity",
+        source_type="mcp_agent_reported",
+        source_system="codex",
+        event_type="tool_activity_observed",
+    )
+
+
+def test_prune_default_deletes_only_tool_activity_shadow_and_children(tmp_path: Path) -> None:
+    store = EvidenceStore(tmp_path)
+    ta_ids = [store.append(_tool_activity_shadow(f"ta-{i}")).evidence_id for i in range(3)]
+    store.append(_evidence("check-1", assertion="observed"))  # client_hook
+    store.reconcile_refreshable_usage(
+        (_refreshable_usage_item("slot-a", value=1, source_order=1),)
+    )
+
+    before = store.stats().evidence_versions
+    result = store.prune_versions(dry_run=False, vacuum=False)
+
+    assert result.matched_versions == 3
+    assert result.deleted_versions == 3
+    assert store.stats().evidence_versions == before - 3
+    for eid in ta_ids:
+        assert store.receipts(eid) == []
+        assert store.get(eid) is None
+    assert store.query(source_type="client_hook")
+    assert store.query(source_type="local_client_log")
+
+
+def test_prune_dry_run_writes_nothing(tmp_path: Path) -> None:
+    store = EvidenceStore(tmp_path)
+    for i in range(2):
+        store.append(_tool_activity_shadow(f"ta-{i}"))
+    before = store.stats().evidence_versions
+
+    result = store.prune_versions(dry_run=True)
+
+    assert result.matched_versions == 2
+    assert result.deleted_versions == 0
+    assert store.stats().evidence_versions == before
+
+
+def test_prune_denylist_refuses_honesty_critical(tmp_path: Path) -> None:
+    store = EvidenceStore(tmp_path)
+    with pytest.raises(ValueError):
+        store.prune_versions(source_types=["client_hook"], dry_run=False)
+    with pytest.raises(ValueError):
+        store.prune_versions(source_types=["local_client_log"], dry_run=False)
+
+
+def test_prune_excludes_claimed_link_refs(tmp_path: Path) -> None:
+    store = EvidenceStore(tmp_path)
+    keep = store.append(_tool_activity_shadow("ta-keep")).evidence_id
+    drop = store.append(_tool_activity_shadow("ta-drop")).evidence_id
+    with store._connection() as conn:
+        conn.execute(
+            "INSERT INTO claimed_link_versions(link_id, idempotency_key, integrity_hash, "
+            "claimed_evidence_id, observed_evidence_id, dimensions_json, link_json, validation_state) "
+            "VALUES('lnk-1','idem-1','hash-1',?,?,'[]','{}','pending')",
+            (keep, keep),
+        )
+
+    result = store.prune_versions(dry_run=False)
+
+    assert result.deleted_versions == 1
+    assert store.get(keep) is not None
+    assert store.get(drop) is None
+
+
+def test_prune_does_not_resurrect_on_recover(tmp_path: Path) -> None:
+    store = EvidenceStore(tmp_path)
+    for i in range(4):
+        store.append(_tool_activity_shadow(f"ta-{i}"))
+
+    store.prune_versions(dry_run=False, vacuum=False)
+    assert store.query(source_type="mcp_agent_reported", event_type="tool_activity_observed") == []
+
+    reopened = EvidenceStore(tmp_path)
+    replay = reopened.recover()
+    assert replay.projected_receipts == 0
+    assert reopened.query(source_type="mcp_agent_reported", event_type="tool_activity_observed") == []
+
+
+def test_prune_older_than_filters_by_timestamp(tmp_path: Path) -> None:
+    store = EvidenceStore(tmp_path)
+    old = store.append(_tool_activity_shadow("ta-old", timestamp="2026-01-01T00:00:00.000000Z")).evidence_id
+    new = store.append(_tool_activity_shadow("ta-new", timestamp="2026-07-01T00:00:00.000000Z")).evidence_id
+
+    result = store.prune_versions(older_than="2026-03-01T00:00:00.000000Z", dry_run=False)
+
+    assert result.deleted_versions == 1
+    assert store.get(old) is None
+    assert store.get(new) is not None
+
+
+def test_prune_vacuum_shrinks_projection_file(tmp_path: Path) -> None:
+    store = EvidenceStore(tmp_path)
+    for i in range(200):
+        store.append(_tool_activity_shadow(f"ta-{i}"))
+    before = store.projection_path.stat().st_size
+
+    result = store.prune_versions(dry_run=False, vacuum=True)
+
+    assert result.vacuumed is True
+    assert store.projection_path.stat().st_size < before
+    assert oct(store.projection_path.stat().st_mode)[-3:] == "600"
+
+
+def test_prune_deletes_every_match_across_many_batches(tmp_path: Path) -> None:
+    # More rows than one chunk (batch_size=100) so the forward-by-rowid walk
+    # must span multiple batches and still remove every matching row — the
+    # regression that the earlier "delete from the temp table each batch"
+    # approach made O(N^2) and could leave rows behind on interruption.
+    store = EvidenceStore(tmp_path)
+    for i in range(250):
+        store.append(_tool_activity_shadow(f"ta-{i}"))
+    store.append(_evidence("keep-1", assertion="observed"))  # client_hook survivor
+
+    result = store.prune_versions(dry_run=False, vacuum=False, batch_size=100)
+
+    assert result.matched_versions == 250
+    assert result.deleted_versions == 250
+    assert result.batches >= 3
+    assert store.query(source_type="mcp_agent_reported", event_type="tool_activity_observed") == []
+    assert store.query(source_type="client_hook")  # untouched
+    # A second run finds nothing left.
+    assert store.prune_versions(dry_run=False, vacuum=False).matched_versions == 0
+
+
+def test_auto_prune_throttles(tmp_path: Path) -> None:
+    store = EvidenceStore(tmp_path)
+    for i in range(5):
+        store.append(_tool_activity_shadow(f"ta-{i}"))
+
+    first = store.auto_prune_if_due(
+        min_interval_seconds=3600, older_than_seconds=0, max_rows=100, now=1000.0
+    )
+    assert first is not None
+    assert first.deleted_versions == 5
+
+    second = store.auto_prune_if_due(
+        min_interval_seconds=3600, older_than_seconds=0, max_rows=100, now=1060.0
+    )
+    assert second is None

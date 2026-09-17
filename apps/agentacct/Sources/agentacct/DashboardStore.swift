@@ -117,6 +117,11 @@ final class DashboardStore {
     private(set) var connections: [V1Connection]?
     private(set) var connectionsError: String?
     private(set) var isRefreshingConnections = false
+
+    private(set) var versionInfo: VersionInfo?
+    private(set) var versionError: String?
+    private(set) var isApplyingUpdate = false
+    private(set) var updateRestarting = false
     private(set) var isRefreshing = false
     private(set) var isLoadingReceipts = false
     private(set) var lastUpdated: Date?
@@ -298,6 +303,7 @@ final class DashboardStore {
         async let usageRequest: UsageSummary = client.getLocal("/usage/summary?days=\(days)")
         async let ingestionRefresh: Void = refreshIngestion()
         async let connectionsRefresh: Void = refreshConnections()
+        async let versionRefresh: Void = refreshVersion()
 
         var tasksSucceeded = false
         do {
@@ -347,6 +353,7 @@ final class DashboardStore {
 
         _ = await ingestionRefresh
         _ = await connectionsRefresh
+        _ = await versionRefresh
 
         do {
             let (plan, summary) = try await (planRequest, usageRequest)
@@ -430,6 +437,48 @@ final class DashboardStore {
             if !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
                 connectionsError = "connections fetch failed: \(error.localizedDescription)"
             }
+        }
+    }
+
+    /// Recorder version + whether a newer release is published. Retains the last
+    /// value on a cancelled/failed refresh, like source health.
+    func refreshVersion() async {
+        guard !isOfflineSnapshot, !isApplyingUpdate else { return }
+        do {
+            let payload: VersionInfo = try await client.getAuthed("/v1/version")
+            try Task.checkCancellation()
+            versionInfo = payload
+            versionError = nil
+        } catch GlanceClientError.http(404) {
+            if !Task.isCancelled {
+                versionError = "this daemon predates /v1/version"
+            }
+        } catch GlanceClientError.noDiscovery(_) {
+            if !Task.isCancelled {
+                // Expected while a self-update restart is in flight: the daemon
+                // drops its discovery file as it respawns on the new binary.
+                if !updateRestarting {
+                    versionError = "daemon not running (no discovery file) — start it with `agentacct start`"
+                }
+            }
+        } catch {
+            if !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
+                versionError = "version fetch failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// One-click apply of a published update. The daemon installs the new
+    /// version and restarts itself, so a subsequent noDiscovery is expected, not
+    /// an error. Never offered for a dev/editable install (the button is hidden).
+    func applyUpdate() async throws {
+        guard !isOfflineSnapshot else { throw SavedWorkError.readOnly }
+        guard !isApplyingUpdate else { return }
+        isApplyingUpdate = true
+        defer { isApplyingUpdate = false }
+        let response: SelfUpdateResponse = try await client.postAuthed("/v1/self-update", body: [:])
+        if response.applied == true {
+            updateRestarting = true
         }
     }
 
