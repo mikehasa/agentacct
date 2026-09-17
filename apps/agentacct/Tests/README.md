@@ -382,6 +382,8 @@ harness never depends on the current checkout, machine settings, or wall clock.
 | `menu-connected-sparse-dark.png` | sparse, dark | 720 × 880 px |
 | `menu-connected-dense-light.png` | dense, light | 720 × 928 px |
 | `menu-connected-dense-dark.png` | dense, dark | 720 × 928 px |
+| `menu-connected-duplicate-sessions-light.png` | sparse lane with one session reported twice, light; rendered once | 720 × 854 px |
+| `menu-connected-duplicate-sessions-dark.png` | same state, dark | 720 × 854 px |
 
 For an ad-hoc menu render that does not compare or update references:
 

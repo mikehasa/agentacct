@@ -38,6 +38,10 @@ final class MenuSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "menu-connected-sparse-dark.png", pixelsWide: 720, pixelsHigh: 880),
         ExpectedArtifact(filename: "menu-connected-dense-light.png", pixelsWide: 720, pixelsHigh: 928),
         ExpectedArtifact(filename: "menu-connected-dense-dark.png", pixelsWide: 720, pixelsHigh: 928),
+        // Two distinct rows from three reported sessions, with no overflow
+        // control: shorter than the sparse lane.
+        ExpectedArtifact(filename: "menu-connected-duplicate-sessions-light.png", pixelsWide: 720, pixelsHigh: 854),
+        ExpectedArtifact(filename: "menu-connected-duplicate-sessions-dark.png", pixelsWide: 720, pixelsHigh: 854),
     ]
 
     @MainActor
