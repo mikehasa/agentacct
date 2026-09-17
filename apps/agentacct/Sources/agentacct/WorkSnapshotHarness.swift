@@ -223,7 +223,9 @@ struct SessionStepsSnapshotConfiguration {
         (.expandedHistory, 760, 1_450),
         (.loadFailure, 760, 240),
         (.retrying, 760, 240),
-        (.compactChecks, 360, 1_600),
+        // The step summary now sets in body type, so the compact checks
+        // render needs a taller canvas than the caption-sized body did.
+        (.compactChecks, 360, 1_680),
         (.rtlStress, 760, 1_250),
         // Full-content exports, not window viewports: allow the explicit large-text ramp.
         (.compactAccessibility, 360, 5_400),
