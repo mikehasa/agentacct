@@ -12,6 +12,9 @@ struct DashboardSnapshotFixture: Decodable {
     let daemonVersion: String
     let glance: Glance
     let menuSparseGlance: Glance?
+    /// Recent sessions that never recorded a work status or title: the
+    /// Working now row must name the agent, not a session hash.
+    let statuslessGlance: Glance?
     let plan: V1PlanPayload
     let attention: V1AttentionPayload
     let ingestion: V1IngestionPayload?
@@ -28,6 +31,7 @@ struct DashboardSnapshotFixture: Decodable {
         case glance, plan, attention, ingestion, tasks, usage, work
         case usage90Days = "usage_90_days"
         case menuSparseGlance = "menu_sparse_glance"
+        case statuslessGlance = "statusless_glance"
         case ingestionHealthySources = "ingestion_healthy_sources"
         case ingestionDegraded = "ingestion_degraded"
         case daemonVersion = "daemon_version"
@@ -52,6 +56,15 @@ struct DashboardSnapshotFixture: Decodable {
             throw SnapshotError.unsupportedSchema(
                 payload: "sparse menu glance",
                 actual: menuSparseGlance.schema,
+                expected: GlanceClient.supportedGlanceSchema
+            )
+        }
+        if let statuslessGlance = fixture.statuslessGlance,
+           statuslessGlance.schema != GlanceClient.supportedGlanceSchema
+        {
+            throw SnapshotError.unsupportedSchema(
+                payload: "statusless glance",
+                actual: statuslessGlance.schema,
                 expected: GlanceClient.supportedGlanceSchema
             )
         }
@@ -169,12 +182,20 @@ enum SnapshotError: LocalizedError {
 }
 
 struct DashboardSnapshotConfiguration {
+    /// Which glance lane feeds the rail: the primary fixture, or the
+    /// status-less sessions lane.
+    enum GlanceLane {
+        case primary
+        case statusless
+    }
+
     let viewport: String
     let width: CGFloat
     let height: CGFloat
     let colorScheme: ColorScheme
     let workState: SnapshotWorkStoreState
     let recordedUsageState: SnapshotRecordedUsageState
+    var glanceLane: GlanceLane = .primary
 
     var filename: String {
         let appearance = colorScheme == .dark ? "dark" : "light"
@@ -193,6 +214,10 @@ struct DashboardSnapshotConfiguration {
         Self(viewport: "weekly-reference", width: 1120, height: 900, colorScheme: .dark, workState: .populated, recordedUsageState: .ninetyDays),
         Self(viewport: "trust-unavailable", width: 1120, height: 800, colorScheme: .light, workState: .shiftBriefUnavailable, recordedUsageState: .sevenDays),
         Self(viewport: "trust-unavailable", width: 1120, height: 800, colorScheme: .dark, workState: .shiftBriefUnavailable, recordedUsageState: .sevenDays),
+        // Sessions with no recorded work status: the Working now row names
+        // the agent and the recency, never a session hash.
+        Self(viewport: "statusless-sessions", width: 1120, height: 800, colorScheme: .light, workState: .populated, recordedUsageState: .sevenDays, glanceLane: .statusless),
+        Self(viewport: "statusless-sessions", width: 1120, height: 800, colorScheme: .dark, workState: .populated, recordedUsageState: .sevenDays, glanceLane: .statusless),
     ]
 }
 
@@ -235,7 +260,15 @@ enum DashboardSnapshotRenderer {
 
         return try configurations.map { configuration in
             SnapshotScheme.override = configuration.colorScheme
-            let glance = GlanceState(preloaded: fixture.glanceSnapshot)
+            let glanceLane: Glance
+            switch configuration.glanceLane {
+            case .primary: glanceLane = fixture.glance
+            case .statusless: glanceLane = fixture.statuslessGlance ?? fixture.glance
+            }
+            let glance = GlanceState(preloaded: GlanceSnapshot(
+                glance: glanceLane,
+                daemonVersion: fixture.daemonVersion
+            ))
             let dashboard = DashboardStore(
                 preloaded: fixture,
                 workState: configuration.workState,
