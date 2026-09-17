@@ -207,8 +207,47 @@ def _version_callback(value: bool) -> None:
     raise typer.Exit()
 
 
-@app.callback()
+def _print_help_overview() -> None:
+    """Print a short, friendly overview of the commands most users need.
+
+    `agentacct --help` still lists every command; this curated overview is what
+    bare `agentacct` and `agentacct help` print, so a new user immediately sees
+    what the tool does and how to start the recorder.
+    """
+    from rich.table import Table
+
+    console.print()
+    console.print("[bold]agentacct[/bold] — local-first work intelligence for coding agents.")
+    console.print("Usage truth, recorded work, and honest joins — all on your own machine.")
+    console.print()
+    common = Table.grid(padding=(0, 3))
+    common.add_column(style="bold cyan", no_wrap=True, justify="right")
+    common.add_column()
+    common.add_row("onboard", "Install agentacct for your coding agents (one-time setup).")
+    common.add_row(
+        "start",
+        "Start the local recorder (background daemon + API). Run this if the app "
+        "says the recorder is unreachable.",
+    )
+    common.add_row("status", "Show whether the recorder and local API are running.")
+    common.add_row("stop", "Stop the recorder processes this install owns.")
+    common.add_row("tui", "Open the live terminal dashboard.")
+    common.add_row("now", "Print a usage & cost snapshot by client and model.")
+    common.add_row("receipts", "List recent work receipts — what your agents actually did.")
+    common.add_row("doctor", "Check local readiness without printing secrets.")
+    console.print("[bold]Common commands[/bold]")
+    console.print(common)
+    console.print()
+    console.print(
+        "Run [bold]agentacct --help[/bold] for the full command list, "
+        "or [bold]agentacct <command> --help[/bold] for one command's options."
+    )
+    console.print()
+
+
+@app.callback(invoke_without_command=True)
 def _app_main(
+    ctx: typer.Context,
     version: Annotated[
         Optional[bool],
         typer.Option(
@@ -221,7 +260,17 @@ def _app_main(
 ) -> None:
     # No docstring: Typer falls back to the app-level help= above, so adding this
     # callback for --version does not change `agentacct --help` output.
-    return
+    # With no subcommand, print a friendly overview instead of Click's terse
+    # "Missing command." error (exit 2), so bare `agentacct` is useful on its own.
+    if ctx.invoked_subcommand is None:
+        _print_help_overview()
+        raise typer.Exit()
+
+
+@app.command("help")
+def help_overview() -> None:
+    """Show a short overview of the most useful agentacct commands."""
+    _print_help_overview()
 cost_app = typer.Typer(help="Usage cost ledger and subscription commands.")
 hooks_app = typer.Typer(help="Hook pack commands for agent runtimes.")
 policy_app = typer.Typer(help="Project policy commands.")

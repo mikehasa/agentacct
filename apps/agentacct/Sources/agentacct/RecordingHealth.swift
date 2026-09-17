@@ -51,6 +51,11 @@ struct RecordingHealthCause: Equatable, Identifiable, Codable {
         default: return "Source issue no longer reported"
         }
     }
+
+    /// The recorder-unreachable fault is the one a one-click "Start recorder"
+    /// (an in-app `agentacct start`) can address. Every other cause routes to
+    /// setup or diagnostics instead, so only this one carries the restart button.
+    var isRecorderUnreachable: Bool { id == "endpoint:unreachable" }
 }
 
 struct RecordingHealthDimension: Equatable, Identifiable {

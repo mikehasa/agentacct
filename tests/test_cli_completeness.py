@@ -567,6 +567,34 @@ def test_validate_policy_model_directly_reports_errors(tmp_path):
     assert "checkpoints.every_steps must be positive" in errors
 
 
+def test_help_command_and_bare_invocation_print_a_friendly_overview():
+    runner = CliRunner()
+
+    for args in ([], ["help"]):
+        result = runner.invoke(app, args)
+        assert result.exit_code == 0, result.output
+        output = unstyle(result.output)
+        assert "Common commands" in output
+        # The overview must lead a stuck user to the command that revives an
+        # unreachable recorder.
+        assert "onboard" in output
+        assert "start" in output
+        assert "status" in output
+
+
+def test_top_level_help_still_lists_every_command_including_help():
+    result = CliRunner().invoke(app, ["--help"])
+
+    assert result.exit_code == 0, result.output
+    output = unstyle(result.output)
+    # `--help` stays the full auto-generated command list, not the curated
+    # overview, and now includes the new `help` command itself.
+    assert "Common commands" not in output
+    assert "help" in output
+    assert "onboard" in output
+    assert "start" in output
+
+
 def test_workflow_docs_and_hermes_skill_template_are_present() -> None:
     workflow = Path("docs/agentacct-workflow-instructions.md").read_text()
     integrations = Path("docs/coding-agent-integrations.md").read_text()

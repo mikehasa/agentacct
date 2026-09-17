@@ -47,6 +47,21 @@ struct MainWindow: View {
         RecorderDisplayStoreGate.explanation(display: try? GlanceClient.storeDir(), managedPath: setup.recordingStorePath)
     }
 
+    /// The one-click restart control for the always-visible health surfaces.
+    /// Present only when the app owns a recorder it can actually start (a matching
+    /// packaged CLI, and the displayed store is the managed one). Otherwise the
+    /// unreachable cause keeps its existing "Open Connections" path, and it is
+    /// suppressed entirely in deterministic snapshot renders.
+    private var recorderRestart: RecorderRestartControl? {
+        guard !SnapshotMode.enabled,
+              setup.canReconnectRecorder,
+              reconnectStoreExplanation == nil else { return nil }
+        return RecorderRestartControl(
+            inFlight: setup.reconnectPhase == .working,
+            onRestart: { restartRecorderFromHealth() }
+        )
+    }
+
     private var canViewSavedWork: Bool {
         recorderSynchronizationFinished || SnapshotMode.enabled || savedWork?.hasWork == true
     }
@@ -71,6 +86,7 @@ struct MainWindow: View {
                 canSetUp: canSetUp,
                 health: health,
                 healthCoordinator: healthCoordinator,
+                restart: recorderRestart,
                 onActivateClient: { openActivation($0) },
                 onSetupCause: { openRecordingSetup(cause: $0) },
                 awaitRecorderSynchronization: {
@@ -181,6 +197,7 @@ struct MainWindow: View {
             if !showSetup && offlineDashboard == nil && activationClient == nil {
                 RecordingHealthNoticeStack(
                     coordinator: healthCoordinator,
+                    restart: recorderRestart,
                     onSetup: { openRecordingSetup() },
                     onSetupCause: { openRecordingSetup(cause: $0) },
                     onSources: { selection.open(.sources) },
@@ -371,6 +388,27 @@ struct MainWindow: View {
         }
     }
 
+    /// One-click recovery from the always-visible health surfaces (the toolbar
+    /// popover and the notice stack). Runs the verified app-owned `agentacct
+    /// start`; on success it refreshes, and on failure it opens the full recovery
+    /// flow so the reconnect log and the specific reason are visible rather than
+    /// failing silently. Gated upstream by `recorderRestart` being non-nil.
+    private func restartRecorderFromHealth() {
+        Task { @MainActor in
+            // If another surface (e.g. the menu bar) already has a restart in
+            // flight, do nothing rather than misread its busy no-op as a failure
+            // and pop an unwanted setup sheet over a reconnect that is proceeding.
+            guard setup.reconnectPhase != .working else { return }
+            let succeeded = await setup.reconnectRecorder()
+            if succeeded {
+                offlineDashboard = nil
+                refreshHealthAndWork()
+            } else {
+                openRecordingSetup()
+            }
+        }
+    }
+
     private func waitForRecorderSynchronization() async -> SetupModel.AutomaticUpgradeOutcome {
         if let lifecycle {
             return await lifecycle.waitUntilReady()
@@ -452,6 +490,7 @@ struct TopBar: View {
     var canSetUp: Bool = false
     var health: RecordingHealthSnapshot? = nil
     var healthCoordinator: RecordingHealthCoordinator? = nil
+    var restart: RecorderRestartControl? = nil
     var onActivateClient: ((String) -> Void)? = nil
     var onSetupCause: ((RecordingHealthCause) -> Void)? = nil
     var awaitRecorderSynchronization: () async -> SetupModel.AutomaticUpgradeOutcome = { .notNeeded }
@@ -523,6 +562,7 @@ struct TopBar: View {
                 RecordingHealthToolbarButton(
                     snapshot: health,
                     coordinator: healthCoordinator,
+                    restart: restart,
                     onSetup: onSetUp,
                     onSetupCause: onSetupCause,
                     onActivateClient: onActivateClient,

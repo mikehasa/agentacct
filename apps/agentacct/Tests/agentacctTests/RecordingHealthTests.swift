@@ -151,6 +151,18 @@ final class RecordingHealthTests: XCTestCase {
         XCTAssertEqual(coordinator.recentRecoveries.map(\.id), [firstID])
     }
 
+    func testUnreachableRecorderIsTheOnlyCauseThatOffersARestart() throws {
+        let offline = try project(phase: .disconnected("connection refused"))
+        let cause = try XCTUnwrap(offline.causes.first)
+        XCTAssertEqual(cause.id, "endpoint:unreachable")
+        XCTAssertTrue(cause.isRecorderUnreachable)
+        // A coverage/reconciliation fault is a different remedy (diagnostics or
+        // setup), never a one-click recorder restart.
+        let coverage = try project(ingestion: conflict())
+        XCTAssertFalse(coverage.causes.isEmpty)
+        XCTAssertTrue(coverage.causes.allSatisfy { !$0.isRecorderUnreachable })
+    }
+
     private func project(
         phase: GlanceState.Phase? = nil,
         setup: SetupModel.Phase = .idle,

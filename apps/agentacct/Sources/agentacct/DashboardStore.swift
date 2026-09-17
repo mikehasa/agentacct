@@ -762,16 +762,24 @@ final class DashboardStore {
         defer { isLoadingWorksets = false }
         do {
             let payload: WorksetsPayload = try await client.getAuthed("/v1/worksets")
+            try Task.checkCancellation()
             worksets = payload.worksets
             worksetsError = nil
             worksetsLastUpdated = SnapshotMode.enabled ? nil : Date()
         } catch GlanceClientError.noDiscovery(_) {
-            worksetsError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            if !Task.isCancelled {
+                worksetsError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            }
         } catch GlanceClientError.http(404) {
             worksets = []
             worksetsError = nil
         } catch {
-            worksetsError = "work groups fetch failed: \(error.localizedDescription)"
+            // A cancelled fetch (pane switch / view teardown) is benign and must
+            // never surface as a failure — every sibling fetch in this file guards
+            // this the same way. Retain the last rows instead of showing "cancelled".
+            if !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
+                worksetsError = "work groups fetch failed: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -779,12 +787,20 @@ final class DashboardStore {
         guard !isOfflineSnapshot else { return }
         do {
             let payload: WorksetCandidatesPayload = try await client.getAuthed("/v1/workset-candidates")
+            try Task.checkCancellation()
             worksetCandidates = payload.candidates
             worksetCandidatesError = nil
         } catch GlanceClientError.noDiscovery(_) {
-            worksetCandidatesError = "daemon not running"
+            if !Task.isCancelled { worksetCandidatesError = "daemon not running" }
+        } catch GlanceClientError.http(404) {
+            // A daemon predating /v1/workset-candidates: no candidates is a named
+            // empty state, not an error toast (mirrors fetchWorksets' 404 branch).
+            worksetCandidates = []
+            worksetCandidatesError = nil
         } catch {
-            worksetCandidatesError = "folders fetch failed: \(error.localizedDescription)"
+            if !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
+                worksetCandidatesError = "folders fetch failed: \(error.localizedDescription)"
+            }
         }
     }
 
