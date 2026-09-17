@@ -56,6 +56,8 @@ final class WorkVisualRegressionTests: XCTestCase {
         "work-session-steps-compact-accessibility-dark.png",
         "work-session-steps-rtl-accessibility-light.png",
         "work-session-steps-rtl-accessibility-dark.png",
+        "work-session-steps-redacted-checks-light.png",
+        "work-session-steps-redacted-checks-dark.png",
         "work-actions-exact-regular-light.png",
         "work-actions-exact-regular-dark.png",
         "work-actions-exact-compact-light.png",

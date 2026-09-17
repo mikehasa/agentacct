@@ -356,6 +356,7 @@ text sizes, and both appearances; transient states render at the standard viewpo
 | compact check preview | 360 × 1600 pt, light/dark | `work-session-steps-compact-checks-*.png` |
 | Arabic RTL/mixed-text stress | 760 × 1250 pt, light/dark | `work-session-steps-rtl-stress-*.png` |
 | accessibility5 compact and Arabic RTL stress | 360 × 4000 pt, light/dark | `work-session-steps-{compact,rtl}-accessibility-*.png` |
+| all-redacted passing checks | 760 × 700 pt, light/dark; summary first, redaction stated once, lone passed group without a heading | `work-session-steps-redacted-checks-*.png` |
 | decision badge gallery | 760 × 760 pt, light/dark; every legend key as page and row badge | `work-components-decision-badges-*.png` |
 
 For an ad-hoc render that does not compare or update references:
