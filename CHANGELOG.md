@@ -6,8 +6,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-09-17
+
+The Work tab lands — folder-anchored session groupings across every agent on one cross-agent timeline, in the app and the terminal — alongside DeepSeek Harness support, readable Session and Work detail records, calmer Diagnostics, and a rewritten product README.
+
 ### Added
 
+- Work tab: folder-anchored session groupings across every agent you run. A group is an overlay — a labeled sum of independently-attributed sessions, never a combined verdict. New append-only `worksets` lane with `service.record_workset_action` and routes `GET /v1/worksets|/v1/workset|/v1/workset-candidates` plus `POST /v1/worksets`; reserved workset provenance is stripped on every raw write path so a grouping can never be forged. The former Work tab (the receipts table) is now **Sessions**. (#256)
+- Diagnostics: a per-agent Connections view (`GET /v1/connections`). A source reads as recording only behind a running watcher that actually covers it, and a semi-active agent is never offered a false one-click connect. The Sources tab is renamed **Diagnostics**. (#261)
+- Terminal parity with the app's five-tab layout: `agentacct tui` gains the folder-anchored **Work** tab with the cross-agent timeline (each session a duration bar, colour by agent, status by pip), a keyboard-zoomable and scrubbable group detail, inline create/rename/delete, a per-task activity timeline in the receipt drill-down, a Dashboard review deep-link, and severity-graded Diagnostics. Worksets read through one shared `build_store_worksets` so the app, the CLI, and the terminal can never disagree about a grouping. (#264)
 - DeepSeek Harness (dsh) local usage import. agentacct now reads dsh's
   Zstandard-compressed JSONL session logs under `$DSH_HOME`/`~/.dsh`
   (`session.vN.jsonl.zstd`), summing input/output/cache/reasoning tokens per
@@ -36,6 +43,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Session and Work detail views are readable records: Steps/Checks outcome bars, a numbered step spine with checks and files inline, and an activity timeline below. A passed check stays agent-reported-colored unless independently observed, and Work detail gains KPI tiles and a per-session outcome bar. (#260)
+- Ingestion-health issues carry a severity (`error` / `attention` / `advisory`) with hysteresis, so a transient blip no longer flips the Diagnostics panel red. (#261)
+- The README is rewritten as a product page with regenerated screenshots, and a Simplified Chinese README ships with Chinese-content screenshots. A Work group spanning under two days labels its timeline axis with the clock in the viewer's time zone. (#262, #263)
 - The recording instructions given to every agent (the MCP server instructions,
   the SessionStart hook context, and the `CLAUDE.md`/`AGENTS.md` workflow block)
   now cue a session-level completion: when the user signals the whole deliverable
@@ -1185,7 +1195,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.11...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.11.0
 [0.10.11]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.11
 [0.10.10]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.10
 [0.10.9]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.9
