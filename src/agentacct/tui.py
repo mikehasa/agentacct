@@ -242,14 +242,16 @@ def _decision_colors(key: str, pal: dict[str, str]) -> tuple[str, str | None]:
     if key in _LIVE:
         return pal["accent"], pal["ta"]  # live: accent text on accent wash (a filled chip)
     if key in _CLAIMED:
-        return pal["accent"], pal["ta"]
+        # A claim is settled, not live: ink on the neutral wash (Swift
+        # DecisionTintClass.claimed), never the live accent.
+        return pal["ink"], pal["tn"]
     if key in _INFERRED:
         return pal["amber"], pal["tm"]
     if key in _VERIFIED:
         return pal["green"], pal["tg"]
-    # inactive + unknown → a quiet neutral badge: ink text on the neutral wash
-    # (Swift DecisionTintClass.neutral) — never green, never alarming.
-    return pal["ink"], pal["tn"]
+    # inactive + unknown → the quieter neutral badge: muted text on the chip
+    # wash (Swift DecisionTintClass.neutral) — never green, never alarming.
+    return pal["muted"], pal["chip"]
 
 
 def decision_badge(key: str | None, pal: dict[str, str], label: str | None = None) -> str:

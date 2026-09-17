@@ -116,3 +116,20 @@ final class InactiveDecisionStateTests: XCTestCase {
         XCTAssertFalse(presentation.handedOff)
     }
 }
+
+final class ClaimedDecisionTintTests: XCTestCase {
+    /// A claim is settled, not live: it must not share the in-flight cobalt
+    /// with "In progress", and it stays distinguishable from the quieter
+    /// inferred/unknown neutral.
+    func testReportedIsNeitherLiveCobaltNorInferredNeutral() {
+        let reported = DecisionTintClass.forKey("reported")
+        let live = DecisionTintClass.forKey("in_progress")
+        let inferred = DecisionTintClass.forKey("inactive")
+        XCTAssertEqual(reported, .claimed)
+        XCTAssertNotEqual(reported.text, live.text)
+        XCTAssertNotEqual(reported.wash, live.wash)
+        XCTAssertNotEqual(reported.text, inferred.text)
+        XCTAssertNotEqual(reported.wash, inferred.wash)
+        XCTAssertNotEqual(reported.text, Theme.green)
+    }
+}

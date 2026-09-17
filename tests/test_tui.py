@@ -1002,3 +1002,13 @@ def test_tui_requires_interactive_terminal():
 def test_tui_rejects_bad_window():
     result = CliRunner().invoke(cli_app, ["tui", "--window", "5m"])
     assert result.exit_code != 0
+
+
+def test_reported_badge_is_neither_live_accent_nor_inferred_neutral() -> None:
+    reported = tui._decision_colors("reported", _DARK)
+    live = tui._decision_colors("in_progress", _DARK)
+    inactive = tui._decision_colors("inactive", _DARK)
+    assert reported != live
+    assert reported != inactive
+    assert reported[0] != _DARK["accent"]
+    assert reported[0] != _DARK["green"]
