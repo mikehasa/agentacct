@@ -3578,7 +3578,9 @@ def _build_sources_parts(snapshot: dict, store_dir: Any, pal: dict[str, str], wi
             worst = sev
         color = _issue_severity_color(sev, pal)
         code = str(issue.get("code") or "issue").replace("_", " ")
-        src = f" — {issue.get('source')}" if issue.get("source") else ""
+        affected = issue.get("affected_sources")
+        src_names = issue.get("source") or (", ".join(str(a) for a in affected) if isinstance(affected, list) and affected else "")
+        src = f" — {src_names}" if src_names else ""
         tag = "" if sev == "error" else f" [{pal['dim']}]· {sev}[/]"
         issue_lines.append(f"[{color}]{_escape(code.capitalize() + src)}[/]{tag}")
         if issue.get("action"):

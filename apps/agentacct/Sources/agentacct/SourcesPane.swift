@@ -66,14 +66,28 @@ struct V1IngestionIssue: Decodable, Identifiable {
     /// error | attention | advisory | transient. Absent → treated as error, so a
     /// new issue is never silently demoted to a quiet note.
     let severity: String?
+    /// A store-wide issue is reported once and names the sources it touched
+    /// here instead of carrying one copy per source.
+    let affectedSources: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case code, source, action, severity
+        case affectedSources = "affected_sources"
+    }
 
     // Explicit init so `severity` defaults to nil at call sites (test fixtures)
     // without dropping the synthesized Decodable conformance.
-    init(code: String?, source: String?, action: String?, severity: String? = nil) {
+    init(code: String?, source: String?, action: String?, severity: String? = nil, affectedSources: [String]? = nil) {
         self.code = code
         self.source = source
         self.action = action
         self.severity = severity
+        self.affectedSources = affectedSources
+    }
+
+    /// Every source this issue names: its own source plus any affected list.
+    var namedSources: [String] {
+        (source.map { [$0] } ?? []) + (affectedSources ?? [])
     }
 
     var id: String { "\(code ?? "?")-\(source ?? "*")" }
@@ -133,7 +147,7 @@ struct SourceIssueGroup: Identifiable {
     private(set) var issues: [V1IngestionIssue]
 
     var isGlobalReconciliation: Bool { issues.first?.code == Self.globalReconciliationCode }
-    var affectedSources: [String] { Array(Set(issues.compactMap(\.source))).sorted() }
+    var affectedSources: [String] { Array(Set(issues.flatMap(\.namedSources))).sorted() }
 
     static func group(_ issues: [V1IngestionIssue]) -> [Self] {
         var result: [Self] = []
@@ -743,17 +757,14 @@ struct SourcesPane: View {
 
     private func sharedReconciliationIssue(_ group: SourceIssueGroup) -> some View {
         VStack(alignment: .leading, spacing: Space.m) {
-            Text("Evidence reconciliation needs review")
+            Text("Usage totals may be incomplete")
                 .workFont(.rowLabel).foregroundStyle(presentation.isRetained ? Theme.muted : Theme.amber)
             Text(group.affectedSources.isEmpty
-                ? "One global reconciliation fault is reported. Affected sources were not identified."
-                : "One global reconciliation fault is reported across \(group.affectedSources.count) source \(group.affectedSources.count == 1 ? "summary" : "summaries").")
+                ? "Recorded usage did not reconcile cleanly. The affected sources were not identified."
+                : "Recorded usage for \(group.affectedSources.joined(separator: ", ")) did not reconcile cleanly.")
                 .workFont(.body).foregroundStyle(Theme.ink)
-            if !group.affectedSources.isEmpty {
-                Text("Affected sources: \(group.affectedSources.joined(separator: ", "))")
-                    .workFont(.caption).foregroundStyle(Theme.muted)
-            }
-            Text("Usage history may be incomplete or conflicting. This shared fault does not establish that every affected client stopped recording.")
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Refresh usage; if it persists, run agentacct doctor before rebuilding or cleaning any store. This does not mean any client stopped recording.")
                 .workFont(.caption).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
             DisclosureGroup {
                 VStack(alignment: .leading, spacing: Space.l) {

@@ -108,6 +108,28 @@ def test_active_agent_degraded_offers_point_to_point_resync():
     assert rows[0]["primary_action"] == "resync"
 
 
+def test_store_wide_issue_reaches_every_affected_connection():
+    rows = build_connections(
+        supported_clients=["codex", "claude-code"],
+        configured_clients=["codex", "claude-code"],
+        ingestion_snapshot=_snapshot(
+            sources=[{"source": "codex", "state": "degraded"}, {"source": "claude-code", "state": "degraded"}],
+            issues=[{
+                "code": "evidence_refreshable_usage_failed",
+                "source": None,
+                "affected_sources": ["codex", "claude-code"],
+                "action": "Refresh usage",
+                "severity": "error",
+            }],
+        ),
+    )
+    by_id = {row["id"]: row for row in rows}
+    for client in ("codex", "claude-code"):
+        assert by_id[client]["status"] == "needs_attention"
+        assert [issue["code"] for issue in by_id[client]["issues"]] == ["evidence_refreshable_usage_failed"]
+        assert by_id[client]["issues"][0]["source"] == client
+
+
 def test_configured_but_no_data_yet_reads_as_connected_idle_not_recording():
     rows = build_connections(
         supported_clients=["opencode"],

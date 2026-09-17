@@ -210,10 +210,10 @@ struct RecordingHealthSnapshot: Equatable {
         return grouped.keys.sorted().compactMap { key in
             guard let entries = grouped[key], let first = entries.first else { return nil }
             let isGlobal = first.code == globalCode
-            let sources = Array(Set(entries.compactMap(\.source))).sorted()
-            let title = isGlobal ? "Evidence reconciliation needs review" : readableIssue(first.code)
+            let sources = Array(Set(entries.flatMap(\.namedSources))).sorted()
+            let title = isGlobal ? "Usage totals may be incomplete" : readableIssue(first.code)
             let detail = isGlobal
-                ? "One reconciliation fault is reported across \(sources.count) source \(sources.count == 1 ? "summary" : "summaries"). Usage history may be incomplete or conflicting; this does not establish that every client stopped recording."
+                ? "One reconciliation fault is reported for \(Fmt.count(sources.count, "source")). Recorded usage may be incomplete or conflicting; this does not establish that any client stopped recording."
                 : first.action ?? "Review the source diagnostics for the reported issue."
             return .init(id: key, scope: .ingestion, title: title, detail: detail, tone: .caution, action: .sources, affectedSources: sources, recoveryDetail: "The latest source health no longer reports this issue. Any historical gap still requires separate evidence to establish its extent.")
         }

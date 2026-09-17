@@ -90,6 +90,14 @@ def test_post_persist_evidence_failure_degrades_configured_sources_without_leaki
         "private implementation detail" not in issue["action"]
         for issue in snapshot["issues"]
     )
+    # One store-wide fault is reported once, naming every source it touched,
+    # never one copy per source.
+    assert len(snapshot["issues"]) == 1
+    issue = snapshot["issues"][0]
+    assert issue["source"] is None
+    assert issue["affected_sources"] == ["claude-code", "codex"]
+    assert "claude-code, codex" in issue["action"]
+    assert "Evidence v2" not in issue["action"]
 
 
 def test_disabled_or_clean_evidence_reconcile_does_not_degrade_health_results() -> None:
