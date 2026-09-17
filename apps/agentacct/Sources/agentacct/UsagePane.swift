@@ -600,13 +600,19 @@ struct UsagePeriodChart: View {
     /// Plot height: the top gridline is exactly the max value's line.
     private static let plotHeight: CGFloat = 128
 
-    /// The peak annotation, centered over the peak bar in its own band.
+    /// The bar whose tooltip is showing (hover wins, then keyboard focus,
+    /// then the click selection).
+    private var activeIndex: Int? { hoveredIndex ?? focusedIndex ?? selectedIndex }
+
+    /// The peak annotation, centered over the peak bar in its own band. It
+    /// yields to the tooltip when that tooltip is already showing the peak
+    /// bar, so one value is never printed twice.
     @ViewBuilder
     private var peakBand: some View {
         HStack(alignment: .bottom, spacing: 3) {
             ForEach(Array(periods.enumerated()), id: \.offset) { index, period in
                 Group {
-                    if index == peakIndex, let peak = value(period), peak > 0 {
+                    if index == peakIndex, activeIndex != index, let peak = value(period), peak > 0 {
                         Text("peak \(valueText(period))")
                             .workFont(.dataSmall)
                             .foregroundStyle(Theme.muted)
