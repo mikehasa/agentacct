@@ -215,6 +215,31 @@ enum SnapshotRunner {
         exit(exitCode)
     }
 
+    static func runSourcesFixture(fixturePath: String, outputDir: String) {
+        let fixtureURL = URL(fileURLWithPath: (fixturePath as NSString).expandingTildeInPath)
+        let outputURL = URL(fileURLWithPath: (outputDir as NSString).expandingTildeInPath)
+        var finished = false
+        var exitCode: Int32 = 0
+        Task { @MainActor in
+            defer { finished = true }
+            do {
+                let fixture = try DashboardSnapshotFixture.load(from: fixtureURL)
+                let rendered = try SourcesSnapshotRenderer.render(
+                    fixture: fixture,
+                    outputDirectory: outputURL
+                )
+                print("sources snapshots written to \(outputURL.path): \(rendered.count) files")
+            } catch {
+                exitCode = 1
+                FileHandle.standardError.write(Data("sources snapshot failed: \(error)\n".utf8))
+            }
+        }
+        while !finished {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        exit(exitCode)
+    }
+
     static func runMenuFixture(fixturePath: String, outputDir: String) {
         let fixtureURL = URL(fileURLWithPath: (fixturePath as NSString).expandingTildeInPath)
         let outputURL = URL(fileURLWithPath: (outputDir as NSString).expandingTildeInPath)

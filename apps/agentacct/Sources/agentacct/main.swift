@@ -45,6 +45,18 @@ if let index = CommandLine.arguments.firstIndex(of: "--snapshot-native-fixture")
         )
         exit(2)
     }
+} else if let flagIndex = CommandLine.arguments.firstIndex(of: "--snapshot-sources-fixture") {
+    if CommandLine.arguments.count > flagIndex + 2 {
+        SnapshotRunner.runSourcesFixture(
+            fixturePath: CommandLine.arguments[flagIndex + 1],
+            outputDir: CommandLine.arguments[flagIndex + 2]
+        )
+    } else {
+        FileHandle.standardError.write(
+            Data("usage: agentacct --snapshot-sources-fixture <fixture.json> <output-dir>\n".utf8)
+        )
+        exit(2)
+    }
 } else if let flagIndex = CommandLine.arguments.firstIndex(of: "--snapshot-menu-fixture") {
     if CommandLine.arguments.count > flagIndex + 2 {
         SnapshotRunner.runMenuFixture(
