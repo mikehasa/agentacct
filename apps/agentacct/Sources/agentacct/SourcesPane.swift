@@ -314,6 +314,13 @@ struct SourcesPane: View {
         .accessibilityIdentifier("sources-retained-health")
     }
 
+    /// When every row wears the same state the rows already say it; a
+    /// seventh copy in the header adds nothing.
+    static func rowsShareState(_ sources: [V1IngestionSource], overall: String?) -> Bool {
+        guard sources.count > 1, let overall else { return false }
+        return sources.allSatisfy { $0.state == overall }
+    }
+
     private func connectedCard(_ snapshot: V1IngestionSnapshot) -> some View {
         let sources = (snapshot.sources ?? []).sorted { $0.source < $1.source }
         let watcherRunning = presentation.watcherIsCurrentlyRunning(snapshot.watcher)
@@ -325,7 +332,7 @@ struct SourcesPane: View {
                         Text("\(sources.count)").workFont(.dataSmall).foregroundStyle(Theme.muted)
                     }
                     if !stacksRows { Spacer() }
-                    if let overall = snapshot.state {
+                    if let overall = snapshot.state, !Self.rowsShareState(sources, overall: overall) {
                         overallLozenge(overall, watcherRunning: watcherRunning)
                     }
                 }
@@ -845,9 +852,11 @@ struct SourcesPane: View {
 
     private func originalDiagnostic(_ issue: V1IngestionIssue) -> some View {
         VStack(alignment: .leading, spacing: Space.s) {
+            // The raw code is for diagnostics, so it lives on hover; the
+            // title already says the same thing in words.
             Text(issueTitle(issue))
                 .workFont(.rowLabel).foregroundStyle(presentation.isRetained ? Theme.muted : issue.tint)
-            Text(issue.code ?? "code not supplied").workFont(.dataSmall).foregroundStyle(Theme.muted)
+                .help("Diagnostic code: \(issue.code ?? "not supplied")")
             Text(issue.action ?? "See agentacct doctor for source diagnostics.")
                 .workFont(.caption).foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
