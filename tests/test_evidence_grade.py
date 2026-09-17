@@ -77,7 +77,7 @@ def test_step_grade_claimed_and_none() -> None:
 
 
 def test_step_grade_carries_a_reason() -> None:
-    assert "not independent" in _reason("completed", [_MCP])
+    assert "not independently verified" in _reason("completed", [_MCP])
     assert "independent of the agent" in _reason("completed", [_HOOK])
     assert "no passing machine check" in _reason("completed", [])
 
