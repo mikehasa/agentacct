@@ -41,6 +41,21 @@ struct UsagePane: View {
         }
     }
 
+    /// The capacity help carries the two finer freshness stamps the title
+    /// row used to print beside the toolbar's page-level stamp.
+    private var capacityHelpMessage: String {
+        var parts = ["Provider-reported usage allowance. agentacct does not enforce a spending budget or stop work."]
+        if let updated = glance.lastUpdated {
+            parts.append("Capacity refreshed \(dashboardFreshnessText(updated)).")
+        }
+        if dashboard.usage != nil {
+            parts.append(dashboard.usageLastUpdated.map {
+                "Recorded use refreshed \(dashboardFreshnessText($0))."
+            } ?? "Recorded use update time unavailable.")
+        }
+        return parts.joined(separator: " ")
+    }
+
     @ViewBuilder
     private var capacitySection: some View {
         switch glance.phase {
@@ -56,17 +71,10 @@ struct UsagePane: View {
                     Text("Current capacity")
                         .workFont(.titleSection).tracking(Type.titleSectionTracking)
                         .foregroundStyle(Theme.ink)
-                    ContextHelp(title: "About current capacity", message: "Provider-reported usage allowance. agentacct does not enforce a spending budget or stop work.", identifier: "usage.capacity-help")
-                    if let updated = glance.lastUpdated {
-                        Text("capacity refreshed \(dashboardFreshnessText(updated))")
-                            .workFont(.dataSmall).foregroundStyle(Theme.muted)
-                    }
-                    if dashboard.usage != nil {
-                        Text(dashboard.usageLastUpdated.map {
-                            "recorded use refreshed \(dashboardFreshnessText($0))"
-                        } ?? "recorded use update time unavailable")
-                            .workFont(.dataSmall).foregroundStyle(Theme.muted)
-                    }
+                    // The toolbar already stamps the page's freshness; the two
+                    // finer stamps (capacity vs recorded use) live in the help
+                    // where a reader who needs them looks, not beside the title.
+                    ContextHelp(title: "About current capacity", message: capacityHelpMessage, identifier: "usage.capacity-help")
                     Spacer()
                     staleControl(count: snapshot.glance.limits.filter { $0.stale == true }.count)
                 }
@@ -183,10 +191,6 @@ struct UsagePane: View {
                         .workFont(.titleSection).tracking(Type.titleSectionTracking)
                         .foregroundStyle(Theme.ink)
                     ContextHelp(title: "About recorded cost", message: "Cost is usage reporting, not a provider invoice or balance due. Verify charges with your provider. Cost basis and completeness are shown beside each total.", identifier: "usage.cost-help")
-                }
-                if let updated = dashboard.usageLastUpdated {
-                    Text("Usage refreshed \(dashboardFreshnessText(updated))")
-                        .workFont(.dataSmall).foregroundStyle(Theme.muted)
                 }
             }
 
