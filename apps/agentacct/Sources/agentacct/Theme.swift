@@ -801,8 +801,25 @@ struct ProvenanceChip: View {
     let text: String
     var tint: Color = Theme.muted
 
+    /// Provenance ids are payload tokens (`client_log`, `mcp`, …). The chip
+    /// shows the same human label the terminal UI uses for them; anything
+    /// that is not a known token (a client name, say) passes through.
+    static func label(for raw: String) -> String {
+        switch raw {
+        case "mcp": return "MCP record"
+        case "client_log": return "Client log"
+        case "hook": return "Client hook"
+        case "transcript_scan": return "Transcript scan"
+        case "ci": return "CI"
+        case "external": return "External"
+        case "provider": return "Provider"
+        case "none": return "Not captured"
+        default: return raw
+        }
+    }
+
     var body: some View {
-        Text(text)
+        Text(Self.label(for: text))
             .workFont(.dataSmall)
             .foregroundStyle(tint)
             .padding(.horizontal, 12)
