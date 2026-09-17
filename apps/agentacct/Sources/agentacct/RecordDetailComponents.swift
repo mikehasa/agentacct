@@ -549,6 +549,16 @@ struct StepDetailBody: View {
     }
 
     private var current: [StepCheckItem] { digest.current }
+    /// Every check carries the same redaction: say it once under the list,
+    /// not on every row.
+    private var allCommandsRedacted: Bool {
+        !digest.all.isEmpty && digest.all.allSatisfy { $0.check.commandRedacted == true }
+    }
+    /// The step header already counts its checks; a single passed group
+    /// under it needs no heading repeating the number.
+    private var showsPassedHeading: Bool {
+        !attention.isEmpty || !other.isEmpty || !digest.history.isEmpty
+    }
     private var attention: [StepCheckItem] { current.filter(\.needsAttention) }
     private var passed: [StepCheckItem] { current.filter { !$0.needsAttention && $0.check.result == "passed" } }
     private var other: [StepCheckItem] { current.filter { !$0.needsAttention && $0.check.result != "passed" } }
@@ -609,7 +619,9 @@ struct StepDetailBody: View {
                     checkList(attention)
                 }
                 if !passed.isEmpty {
-                    groupHeading("Passed", count: passed.count, tint: Theme.muted)
+                    if showsPassedHeading {
+                        groupHeading("Passed", count: passed.count, tint: Theme.muted)
+                    }
                     let shown = showAllPassed ? passed : Array(passed.prefix(StepCheckDigest.currentPreviewLimit))
                     checkList(shown)
                     if passed.count > shown.count || (showAllPassed && passed.count > StepCheckDigest.currentPreviewLimit) {
@@ -625,6 +637,10 @@ struct StepDetailBody: View {
                         moreButton(count: other.count - StepCheckDigest.currentPreviewLimit,
                                    expanded: showAllOther, tint: Theme.accent) { showAllOther.toggle() }
                     }
+                }
+                if allCommandsRedacted {
+                    Text("Command details are redacted for these checks.")
+                        .workFont(.caption).foregroundStyle(Theme.muted)
                 }
                 if !digest.history.isEmpty {
                     Divider().overlay(Theme.hairline)
@@ -652,7 +668,7 @@ struct StepDetailBody: View {
     @ViewBuilder private func checkList(_ items: [StepCheckItem]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(items) { item in
-                CheckRow(check: item.check)
+                CheckRow(check: item.check, showsRedaction: !allCommandsRedacted)
                 if item.id != items.last?.id {
                     Divider().overlay(Theme.hairline).padding(.leading, 22)
                 }
@@ -673,7 +689,7 @@ struct StepDetailBody: View {
 
     private func filesSection(_ files: [String]) -> some View {
         VStack(alignment: .leading, spacing: Space.xs) {
-            Text("Files \u{00B7} \(files.count)")
+            Text(Fmt.count(files.count, "file"))
                 .workFont(.captionSemibold).foregroundStyle(Theme.ink)
                 .accessibilityHeading(.h3)
             ForEach(files, id: \.self) { file in
