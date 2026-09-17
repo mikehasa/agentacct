@@ -3541,7 +3541,7 @@ def _build_sources_parts(snapshot: dict, store_dir: Any, pal: dict[str, str], wi
             "connected_title": "CONNECTED SOURCES",
             "connected": f"[{pal['muted']}]Source health unavailable — {_escape(str(snapshot['_error']))}[/]",
             "watcher_title": "CONTINUOUS SYNC", "watcher": f"[{pal['dim']}]—[/]",
-            "verifiers_title": "VERIFIERS · NOT CONNECTED · UPGRADE SELF-CHECKED → VERIFIED", "verifiers": _verifiers_markup(pal),
+            "verifiers_title": "VERIFIERS · NOT CONNECTED", "verifiers": _verifiers_markup(pal),
             "issues_title": "", "issues": "",
             "local": _sources_local_markup(store_dir, pal, card_w),
         }
@@ -3594,7 +3594,7 @@ def _build_sources_parts(snapshot: dict, store_dir: Any, pal: dict[str, str], wi
         "head": head,
         "connected_title": f"CONNECTED SOURCES · {len(sources)}", "connected": "\n".join(conn),
         "watcher_title": "CONTINUOUS SYNC", "watcher": watcher_body,
-        "verifiers_title": "VERIFIERS · NOT CONNECTED · UPGRADE SELF-CHECKED → VERIFIED", "verifiers": _verifiers_markup(pal, card_w),
+        "verifiers_title": "VERIFIERS · NOT CONNECTED", "verifiers": _verifiers_markup(pal, card_w),
         "issues_title": f"NEEDS ATTENTION · {len(issues)}", "issues": "\n".join(issue_lines),
         "issues_color": issues_color,
         "local": _sources_local_markup(store_dir, pal, card_w),

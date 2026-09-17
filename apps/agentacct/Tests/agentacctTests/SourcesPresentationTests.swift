@@ -69,6 +69,15 @@ final class SourcesPresentationTests: XCTestCase {
         XCTAssertEqual(issue.namedSources, ["codex", "hermes"])
     }
 
+    func testHeaderChipYieldsWhenEveryRowAlreadySaysTheState() throws {
+        let rows = try JSONDecoder().decode([V1IngestionSource].self, from: Data("""
+        [{"source": "codex", "state": "degraded"}, {"source": "hermes", "state": "degraded"}]
+        """.utf8))
+        XCTAssertTrue(SourcesPane.rowsShareState(rows, overall: "degraded"))
+        XCTAssertFalse(SourcesPane.rowsShareState(rows, overall: "healthy"))
+        XCTAssertFalse(SourcesPane.rowsShareState(Array(rows.prefix(1)), overall: "degraded"))
+    }
+
     func testMissingGlobalSourceRemainsUnknown() {
         let groups = SourceIssueGroup.group([
             .init(code: "evidence_refreshable_usage_failed", source: nil, action: "Inspect evidence")
