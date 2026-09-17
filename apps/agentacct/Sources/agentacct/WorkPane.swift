@@ -397,13 +397,13 @@ struct WorkAttentionEmptyCopy: Equatable {
     init(payload: V1AttentionPayload, query: String) {
         if payload.total == 0 {
             title = "No current review items"
-            detail = "The complete attention projection reports no failed checks, failed steps, or unresolved blockers."
+            detail = "No failed checks, failed steps, or unresolved blockers are recorded."
         } else if !query.isEmpty, !payload.items.isEmpty {
             title = "No review items match this filter"
             detail = "The bounded queue has \(payload.items.count) of \(payload.total) review items; adjust the filter to inspect them."
         } else {
             title = "Review queue details unavailable"
-            detail = "The complete projection reports \(payload.total) review items, but no bounded queue rows were returned. Refresh before acting."
+            detail = "\(Fmt.count(payload.total, "review item")) recorded, but none were returned. Refresh before acting."
         }
     }
 }
@@ -1155,7 +1155,7 @@ private struct WorkTablePage: View {
                         } else {
                             ProgressView().controlSize(.small).tint(Theme.muted)
                         }
-                        Text("Checking the complete review projection…")
+                        Text("Checking recorded work…")
                             .workFont(.body).foregroundStyle(Theme.muted)
                     }
                     .padding(Space.xl)

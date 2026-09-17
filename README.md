@@ -45,9 +45,9 @@ Point a work group at a project folder and every session that ran there lands on
 
 ## Start the day with what needs you
 
-![The Dashboard: a Shift Brief leading with "Fix the flaky payment test" (billing-svc, claude-code, 1 failed and 7 passed, recorded reason Failed check, provenance MCP record) with Review evidence and Copy review brief buttons; a Signal rail with Working now, Capacity, Usage change, and Evidence trust; a Recent work table; and a seven-day usage chart.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-dashboard.png)
+![The Dashboard: a Needs review block leading with "Fix the flaky payment test" (billing-svc, claude-code, 1 failed and 7 passed, recorded reason Failed check, provenance MCP record) with Review evidence and Copy review brief buttons; a Right now rail with Working now, Capacity, Usage change, and Evidence trust; a Recent work table; and a seven-day usage chart.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-dashboard.png)
 
-The Shift Brief names the one task that most needs a human, its recorded reason, and where that claim came from: here a failed check on "Fix the flaky payment test", recorded over MCP. **Copy review brief** copies only recorded facts and never reruns anything.
+The Needs review block names the one task that most needs a human, its recorded reason, and where that claim came from: here a failed check on "Fix the flaky payment test", recorded over MCP. **Copy review brief** copies only recorded facts and never reruns anything.
 
 ## Know your limits before the agent hits them
 
@@ -57,9 +57,9 @@ Provider-reported quota windows sit beside what each agent actually used. Tokens
 
 ## Also in the terminal
 
-![agentacct tui: a Shift Brief whose primary attention item is a blocked claude-code task with its recorded reason, next step, and MCP-record provenance; a Signal rail with Working now, Capacity, Usage change, and Evidence trust; a Recent work table with outcome, evidence, and estimated cost; and a usage history sparkline.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-dashboard.png)
+![agentacct tui: a Needs review block whose first item is a blocked claude-code task with its recorded reason, next step, and MCP-record provenance; a Right now rail with Working now, Capacity, Usage change, and Evidence trust; a Recent work table with outcome, evidence, and estimated cost; and a usage history sparkline.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-dashboard.png)
 
-`agentacct tui` shows the same Shift Brief, receipts, and capacity in your shell — including the folder-anchored **Work** tab, where each group draws its sessions across every agent on one cross-agent timeline you can open (`↵`) and zoom/scrub by keyboard. Press `?` for the keys.
+`agentacct tui` shows the same Needs review block, receipts, and capacity in your shell — including the folder-anchored **Work** tab, where each group draws its sessions across every agent on one cross-agent timeline you can open (`↵`) and zoom/scrub by keyboard. Press `?` for the keys.
 
 ## Honest by design
 

@@ -45,9 +45,9 @@ agent 自己说的"做完了"只算 **Reported**（自述完成）。只有当�
 
 ## 一天从最需要你处理的事开始
 
-![Dashboard：Shift Brief 置顶了"修复不稳定的支付测试"（billing-svc，claude-code，1 个失败 7 个通过，记录的原因是 Failed check，来源是 MCP record），配有 Review evidence 和 Copy review brief 两个按钮；右侧的 Signal rail 显示 Working now、Capacity、Usage change 和 Evidence trust；下方是 Recent work 表格和最近七天的用量图。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-dashboard.png)
+![Dashboard：Needs review 区块置顶了"修复不稳定的支付测试"（billing-svc，claude-code，1 个失败 7 个通过，记录的原因是 Failed check，来源是 MCP record），配有 Review evidence 和 Copy review brief 两个按钮；右侧的 Right now 栏显示 Working now、Capacity、Usage change 和 Evidence trust；下方是 Recent work 表格和最近七天的用量图。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-dashboard.png)
 
-Shift Brief 只挑出最需要人介入的那一个任务，告诉你记录在案的原因，以及这个判断的依据从哪来：这里是"修复不稳定的支付测试"的一次失败检查，通过 MCP 记录下来的。**Copy review brief** 只复制记录在案的事实，不会重新执行任何东西。
+Needs review 区块只挑出最需要人介入的那一个任务，告诉你记录在案的原因，以及这个判断的依据从哪来：这里是"修复不稳定的支付测试"的一次失败检查，通过 MCP 记录下来的。**Copy review brief** 只复制记录在案的事实，不会重新执行任何东西。
 
 ## 在 agent 撞上额度上限之前，先看清余量
 
@@ -57,9 +57,9 @@ Shift Brief 只挑出最需要人介入的那一个任务，告诉你记录在�
 
 ## 终端里也能用
 
-![agentacct tui：Shift Brief 置顶一个被阻塞的 claude-code 任务，带记录的原因、下一步和 MCP record 来源；Signal rail 显示 Working now、Capacity、Usage change 和 Evidence trust；Recent work 表格列出结果、证据和估算费用；底部是用量历史的迷你图。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-dashboard.png)
+![agentacct tui：Needs review 区块置顶一个被阻塞的 claude-code 任务，带记录的原因、下一步和 MCP record 来源；Right now 栏显示 Working now、Capacity、Usage change 和 Evidence trust；Recent work 表格列出结果、证据和估算费用；底部是用量历史的迷你图。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-dashboard.png)
 
-`agentacct tui` 在终端里显示同样的 Shift Brief、收据和额度；按 `?` 查看快捷键。终端版暂时没有按目录分组的标签页。
+`agentacct tui` 在终端里显示同样的 Needs review 区块、收据和额度；按 `?` 查看快捷键。终端版暂时没有按目录分组的标签页。
 
 ## 宁可留白，也不瞎猜
 

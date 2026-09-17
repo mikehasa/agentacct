@@ -2639,11 +2639,11 @@ def _build_dashboard_parts(
     if attention:
         headline = str(attention[0].get("title") or attention[0].get("task_id") or "—")
         n_rev = len(attention)
-        head = f"{caps('Shift brief', pal)}\n" + _two_edge(
+        head = f"{caps('Needs review', pal)}\n" + _two_edge(
             f"[b {pal['ink']}]{_escape(headline)}[/]",
             f"[{pal['dim']}]{n_rev} review item{'s' if n_rev != 1 else ''}[/]", full_w)
     else:
-        head = f"{caps('Shift brief', pal)}\n" + _two_edge(
+        head = f"{caps('All clear', pal)}\n" + _two_edge(
             f"[b {pal['ink']}]All clear[/]",
             f"[{pal['dim']}]nothing needs attention[/]", full_w)
 
@@ -2652,7 +2652,7 @@ def _build_dashboard_parts(
     if attention:
         top = attention[0]
         detail = attention_details.get(str(top.get("task_id"))) or {}
-        attn_title = f"PRIMARY ATTENTION · 1 OF {len(attention)}"
+        attn_title = f"TO REVIEW · 1 OF {len(attention)}"
         dkey = str((top.get("decision_status") or {}).get("key"))
         client = str((top.get("primary_root") or {}).get("client") or top.get("project") or "")
         rows = []
@@ -2683,7 +2683,7 @@ def _build_dashboard_parts(
                     f"[{pal['accent']}]View queue →[/]")
         attn = "\n".join(rows)
     else:
-        attn_title = "PRIMARY ATTENTION"
+        attn_title = "TO REVIEW"
         attn = f"[{pal['green']}]Nothing needs your review right now.[/]"
 
     # signal rail — four stacked metric blocks.
@@ -2756,7 +2756,7 @@ def _build_dashboard_parts(
     return {
         "head": head,
         "attn_title": attn_title, "attn": attn,
-        "rail_title": "SIGNAL RAIL", "rail": rail,
+        "rail_title": "RIGHT NOW", "rail": rail,
         "recent_title": recent_title, "recent": recent,
         "spark_title": "USAGE HISTORY · FRESH TOKENS · 90D · CLIENT REPORTED", "spark": spark,
     }
