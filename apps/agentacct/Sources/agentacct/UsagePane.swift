@@ -146,11 +146,14 @@ struct UsagePane: View {
 
     private func scopedCapacityState(title: String, detail: String) -> some View {
         VStack(alignment: .leading, spacing: Space.m) {
-            Text("Current capacity")
-                .workFont(.titleSection).tracking(Type.titleSectionTracking)
-                .foregroundStyle(Theme.ink)
-            Text("Provider-reported usage allowance. agentacct does not enforce a spending budget or stop work.")
-                .workFont(.caption).foregroundStyle(Theme.muted)
+            HStack(alignment: .firstTextBaseline, spacing: Space.m) {
+                Text("Current capacity")
+                    .workFont(.titleSection).tracking(Type.titleSectionTracking)
+                    .foregroundStyle(Theme.ink)
+                // The definition lives in help here too, matching the loaded
+                // state, instead of a caption under the title.
+                ContextHelp(title: "About current capacity", message: capacityHelpMessage, identifier: "usage.capacity-help")
+            }
             Card {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title).workFont(.rowLabel).foregroundStyle(Theme.ink)
@@ -221,7 +224,6 @@ struct UsagePane: View {
                     days: dashboard.usageDays,
                     rows: usage.byModel.map { ($0.model ?? "Unattributed model", $0) }
                 )
-                basisFooter(usage)
             } else {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Recorded usage not loaded").workFont(.rowLabel).foregroundStyle(Theme.ink)
@@ -297,7 +299,10 @@ struct UsagePane: View {
     }
 
     @ViewBuilder
-    private func basisFooter(_ usage: UsageSummary) -> some View {
+    /// The basis facts for the loaded range. They used to trail the page as
+    /// a fourth disclaimer line; they now open the About disclosure, where
+    /// the rest of the numbers' definitions already live.
+    private func basisText(_ usage: UsageSummary) -> String {
         let parts: [String] = [
             Fmt.costConfidenceLabel(usage.totals?.costConfidence).map { "cost: \($0)" },
             "token counts come from client usage records",
@@ -305,9 +310,7 @@ struct UsagePane: View {
                 "fresh tokens exclude \(UsageTotals.compact($0)) cache-read tokens"
             },
         ].compactMap { $0 }
-        Text(parts.joined(separator: " · "))
-            .workFont(.dataSmall).foregroundStyle(Theme.muted)
-            .fixedSize(horizontal: false, vertical: true)
+        return parts.joined(separator: " · ")
     }
 
     @ViewBuilder
@@ -341,6 +344,15 @@ struct UsagePane: View {
 
     private var aboutDetails: some View {
         VStack(alignment: .leading, spacing: Space.l) {
+            if let usage = dashboard.usage {
+                VStack(alignment: .leading, spacing: 6) {
+                    CapsLabel(text: "This range")
+                    Text(basisText(usage))
+                        .workFont(.caption).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+            }
             VStack(alignment: .leading, spacing: 6) {
                 CapsLabel(text: "Cost grammar")
                 Text("$ complete reported or billed · ≈$ estimate · ~$ known partial subtotal · unpriced when no amount is available")
