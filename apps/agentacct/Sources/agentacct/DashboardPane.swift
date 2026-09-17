@@ -1072,19 +1072,27 @@ private struct DashboardAttentionBriefCard: View {
 
             DashboardProofline(focus: focus)
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text("RECORDED NEXT STEP")
-                    .workFont(.labelCaps)
-                    .tracking(Type.labelCapsTracking)
+            // A recorded next step earns its own box. Its absence is one
+            // muted line, not a labelled box holding a negative.
+            if let nextStep = focus.nextStep {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("RECORDED NEXT STEP")
+                        .workFont(.labelCaps)
+                        .tracking(Type.labelCapsTracking)
+                        .foregroundStyle(Theme.muted)
+                    Text(nextStep)
+                        .workFont(.body)
+                        .foregroundStyle(Theme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(Space.m)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
+            } else {
+                Text("No next step recorded.")
+                    .workFont(.caption)
                     .foregroundStyle(Theme.muted)
-                Text(focus.nextStep ?? "No next step recorded.")
-                    .workFont(.body)
-                    .foregroundStyle(focus.nextStep == nil ? Theme.muted : Theme.ink)
-                    .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(Space.m)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
 
             if SnapshotMode.rendersStaticControls {
                 DashboardStaticBriefActions(copyTitle: brief.buttonTitle)
@@ -1176,49 +1184,39 @@ private struct DashboardStaticBriefActions: View {
     }
 }
 
+/// The three recorded facts behind the item, as one line: the reason, when
+/// it was observed, and where the record came from. Three short values do not
+/// need three caps eyebrows; the labels stay available on hover and to
+/// assistive tech.
 private struct DashboardProofline: View {
     let focus: DashboardAttentionItem
 
+    private var observed: String { focus.recency.map { "seen \($0)" } ?? "time unavailable" }
+    private var provenance: String { focus.sourceLabel.map { "recorded via \($0)" } ?? "source unavailable" }
+
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 0) {
-                fact(label: "RECORDED REASON", value: focus.reasonLabel)
-                proofRule
-                fact(label: "OBSERVED", value: focus.recency ?? "Time unavailable")
-                proofRule
-                fact(label: "PROVENANCE", value: focus.sourceLabel ?? "Source unavailable")
-            }
-            VStack(alignment: .leading, spacing: Space.s) {
-                fact(label: "RECORDED REASON", value: focus.reasonLabel)
-                fact(label: "OBSERVED", value: focus.recency ?? "Time unavailable")
-                fact(label: "PROVENANCE", value: focus.sourceLabel ?? "Source unavailable")
-            }
+        HStack(spacing: Space.s) {
+            Text(focus.reasonLabel)
+                .workFont(.captionSemibold)
+                .foregroundStyle(Theme.ink)
+            Text("·").foregroundStyle(Theme.rule)
+            Text(observed)
+                .workFont(.caption)
+                .foregroundStyle(Theme.muted)
+            Text("·").foregroundStyle(Theme.rule)
+            Text(provenance)
+                .workFont(.caption)
+                .foregroundStyle(Theme.muted)
         }
+        .lineLimit(1)
         .padding(.vertical, Space.s)
         .overlay(alignment: .top) { Divider().overlay(Theme.hairline) }
         .overlay(alignment: .bottom) { Divider().overlay(Theme.hairline) }
+        .help("Recorded reason · when it was observed · where the record came from")
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
             "Recorded reason: \(focus.reasonLabel). Observed: \(focus.recency ?? "time unavailable"). Provenance: \(focus.sourceLabel ?? "unavailable")."
         )
-    }
-
-    private func fact(label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label)
-                .workFont(.labelCaps)
-                .tracking(Type.labelCapsTracking)
-                .foregroundStyle(Theme.muted)
-            Text(value)
-                .workFont(.dataSmallSemibold)
-                .foregroundStyle(Theme.ink)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var proofRule: some View {
-        Rectangle().fill(Theme.hairline).frame(width: 1, height: 35).padding(.horizontal, Space.m)
     }
 }
 
@@ -1234,10 +1232,8 @@ private struct DashboardBriefEmptyState: View {
                     .tracking(Type.labelCapsTracking)
                     .foregroundStyle(Theme.green)
             }
-            Text("No recorded work needs review.")
-                .workFont(.titleSection)
-                .tracking(Type.titleSectionTracking)
-                .foregroundStyle(Theme.ink)
+            // The page headline above already reads "No recorded work needs
+            // review"; the card states the fact once, not the headline twice.
             Text("No failed check, failed step, or unresolved blocker is recorded across all tracked work.")
                 .workFont(.body)
                 .foregroundStyle(Theme.muted)
