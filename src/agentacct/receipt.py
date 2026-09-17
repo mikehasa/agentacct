@@ -603,7 +603,7 @@ def plan_share_headline(plan_share: Mapping[str, Any] | None) -> str:
         # allowance rather than repeating the label.
         return f"{shown} of allowance"
     if state == "calibrating":
-        return "calibrating — not enough 7-day history yet"
+        return "still learning — not enough 7-day history yet"
     if state == "never":
         return "not applicable for this client"
     return "—"

@@ -288,7 +288,7 @@ struct MenuContent: View {
             }
 
             if let legend = usage.legendText {
-                Text("Client-token pricing · \(legend)")
+                Text("Priced from client tokens · \(legend)")
                     .font(Type.caption)
                     .foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
