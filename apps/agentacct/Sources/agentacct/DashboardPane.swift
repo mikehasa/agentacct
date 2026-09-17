@@ -1356,7 +1356,7 @@ private struct DashboardSignalRail: View {
                 DashboardCardHeader("Right now")
                 Divider().overlay(Theme.hairline)
                 DashboardSignalRow(
-                    eyebrow: "WORKING NOW",
+                    eyebrow: "Working now",
                     title: active.title,
                     detail: active.detail,
                     tint: active.promotesInactivity
@@ -1366,7 +1366,7 @@ private struct DashboardSignalRail: View {
                 )
                 Divider().overlay(Theme.hairline).padding(.leading, Space.l)
                 DashboardSignalRow(
-                    eyebrow: "CAPACITY",
+                    eyebrow: "Capacity",
                     title: capacityTitle,
                     detail: capacityDetail,
                     tint: capacityTint,
@@ -1374,7 +1374,7 @@ private struct DashboardSignalRail: View {
                 )
                 Divider().overlay(Theme.hairline).padding(.leading, Space.l)
                 DashboardSignalRow(
-                    eyebrow: "USAGE CHANGE",
+                    eyebrow: "Usage change",
                     title: usagePulse.title,
                     detail: usagePulse.detail,
                     tint: usagePulse.state == .ready ? Theme.accent : Theme.muted,
@@ -1382,7 +1382,7 @@ private struct DashboardSignalRail: View {
                 )
                 Divider().overlay(Theme.hairline).padding(.leading, Space.l)
                 DashboardSignalRow(
-                    eyebrow: "EVIDENCE TRUST",
+                    eyebrow: "Evidence trust",
                     title: ingestionTitle,
                     detail: ingestionDetail,
                     tint: ingestionTint,
@@ -1463,9 +1463,10 @@ private struct DashboardSignalRow: View {
                     .frame(width: 3, height: 30)
                     .padding(.top, 2)
                 VStack(alignment: .leading, spacing: 4) {
+                    // Four rows, four labels: sentence case reads as a label
+                    // without competing with the page's one caps eyebrow.
                     Text(eyebrow)
-                        .workFont(.labelCaps)
-                        .tracking(Type.labelCapsTracking)
+                        .workFont(.captionSemibold)
                         .foregroundStyle(Theme.muted)
                     Text(title)
                         .workFont(.rowLabel)
