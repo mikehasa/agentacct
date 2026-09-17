@@ -519,10 +519,11 @@ private struct UsageCapacityLedgerRow: View {
         switch state {
         // Plain words for the reader: whether agentacct knows this client's
         // share of the weekly plan yet.
-        case "calibrated": return "weekly share known"
-        case "calibrating": return "learning weekly share"
+        // Short enough for the client lane's one-line chip.
+        case "calibrated": return "share known"
+        case "calibrating": return "learning share"
         case "never": return "no weekly share"
-        default: return "weekly share \(state)"
+        default: return "share \(state)"
         }
     }
 
