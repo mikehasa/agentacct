@@ -317,12 +317,18 @@ struct UsagePane: View {
     private var aboutSection: some View {
         if SnapshotMode.enabled {
             Card {
-                HStack {
-                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
-                    Text("About these numbers").workFont(.rowLabel).foregroundStyle(Theme.ink)
-                    Spacer()
-                    Text("cost, windows, and plan calibration")
-                        .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Image(systemName: SnapshotMode.expandsUsageAbout ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("About these numbers").workFont(.rowLabel).foregroundStyle(Theme.ink)
+                        Spacer()
+                        Text("cost, windows, and plan calibration")
+                            .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                    }
+                    if SnapshotMode.expandsUsageAbout {
+                        aboutDetails.padding(.top, Space.l)
+                    }
                 }
             }
         } else {

@@ -1262,6 +1262,9 @@ enum SnapshotMode {
     /// fixture renderers leave it `false` and keep the real interactive controls
     /// — so the golden references are unchanged.
     nonisolated(unsafe) static var rendersStaticControls = false
+    /// Snapshot-only: render the Usage page's "About these numbers"
+    /// disclosure open, so its contents are reviewed like any other surface.
+    nonisolated(unsafe) static var expandsUsageAbout = false
 
     /// How many steps a snapshot opens: check-bearing steps first, then
     /// un-checked ones. The golden fixture renders keep the default (2 + 1) so

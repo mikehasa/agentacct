@@ -16,6 +16,8 @@ final class UsageVisualRegressionTests: XCTestCase {
         "usage-weekly-reference-dark.png",
         "usage-disconnected-reference-light.png",
         "usage-disconnected-reference-dark.png",
+        "usage-about-expanded-light.png",
+        "usage-about-expanded-dark.png",
     ]
 
     @MainActor

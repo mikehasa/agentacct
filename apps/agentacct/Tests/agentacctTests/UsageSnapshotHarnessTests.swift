@@ -23,6 +23,8 @@ final class UsageSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "usage-weekly-reference-dark.png", pixelsWide: 2240, pixelsHigh: 2240),
         ExpectedArtifact(filename: "usage-disconnected-reference-light.png", pixelsWide: 2240, pixelsHigh: 1800),
         ExpectedArtifact(filename: "usage-disconnected-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1800),
+        ExpectedArtifact(filename: "usage-about-expanded-light.png", pixelsWide: 2240, pixelsHigh: 4800),
+        ExpectedArtifact(filename: "usage-about-expanded-dark.png", pixelsWide: 2240, pixelsHigh: 4800),
     ]
 
     @MainActor
