@@ -276,7 +276,7 @@ struct UsagePlanPresentation {
         var parts: [String] = []
         switch client.calibrationState {
         case "calibrated": parts.append("calibrated weekly plan-share estimate")
-        case "calibrating": parts.append("calibrating from provider limit history")
+        case "calibrating": parts.append("learning the weekly share from provider limit history")
         case "never": parts.append("weekly plan share unavailable for this meter")
         case .some(let state): parts.append("calibration status: \(state)")
         case nil: parts.append("calibration status not reported by this daemon")
@@ -517,10 +517,12 @@ private struct UsageCapacityLedgerRow: View {
 
     private func calibrationLabel(_ state: String) -> String {
         switch state {
-        case "calibrated": return "plan share ready"
-        case "calibrating": return "calibrating"
+        // Plain words for the reader: whether agentacct knows this client's
+        // share of the weekly plan yet.
+        case "calibrated": return "weekly share known"
+        case "calibrating": return "learning weekly share"
         case "never": return "no weekly share"
-        default: return "calibration \(state)"
+        default: return "weekly share \(state)"
         }
     }
 

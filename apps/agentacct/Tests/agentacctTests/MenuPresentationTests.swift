@@ -93,7 +93,7 @@ final class MenuPresentationTests: XCTestCase {
         XCTAssertEqual(populated.rows[0].costText, "≈$200.67")
         XCTAssertEqual(populated.rows[2].costText, "~$990.99")
         XCTAssertEqual(populated.rows[2].tokenText, "41.9M")
-        XCTAssertEqual(populated.legendText, "≈ estimate · ~ priced subtotal")
+        XCTAssertEqual(populated.legendText, "≈ estimate · ~ partial subtotal")
 
         let missing = try decodeGlance("""
         {
@@ -118,7 +118,7 @@ final class MenuPresentationTests: XCTestCase {
 
         XCTAssertEqual(
             presentation.summary,
-            "Claude Code session share calibrating · 9/24 intervals"
+            "Learning Claude Code's weekly share · 9 of 24 intervals"
         )
         XCTAssertTrue(presentation.detail?.contains("stable intervals") == true)
     }
