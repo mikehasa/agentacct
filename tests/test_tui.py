@@ -35,7 +35,7 @@ from agentacct.tui import (  # noqa: E402
     _WORK_TABS,
     _ZoomWindow,
 )
-from textual.widgets import Input, ListView  # noqa: E402
+from textual.widgets import DataTable, Input, ListView  # noqa: E402
 
 
 def _run(coro) -> None:
@@ -302,6 +302,132 @@ def test_steps_builder_renders_checks_timeline(tmp_path):
     assert "FILES" in plain and "WorkPane.swift" in plain
 
 
+def test_steps_lists_all_current_checks_without_dead_toggle():
+    """'Other current checks' renders in full (the detail scrolls by keyboard) —
+    no capped '▾ Show N more' cue that nothing could open."""
+
+    pal = _DARK
+    receipt = {
+        "task_id": "t1", "title": "Big task", "last_activity_at": time.time(),
+        "axes": {"decision_status": {"key": "verified"},
+                 "evidence_strength": {"key": "independently_checked"}},
+    }
+    checks = [{"result": "passed", "name": f"c{i}", "kind": "test", "summary": f"check {i} ok",
+               "command": "pytest -q", "exit_code": 0, "source": "claude-code",
+               "at": time.time() - i} for i in range(6)]
+    parts = tui._build_steps_parts(receipt, checks, pal, 150, task=None)
+    plain = Text.from_markup(parts["body"]).plain
+    assert "OTHER CURRENT CHECKS · 6" in plain            # section cap is upper-cased
+    assert "Show" not in plain and "▾" not in plain       # no dead expand cue
+    for i in range(6):                                     # every check, not just 4
+        assert f"check {i} ok" in plain
+
+
+def test_sessions_jk_moves_cursor(tmp_path):
+    """j/k move the Sessions list cursor (the help overlay advertises them, so
+    they must be wired, not just decorative)."""
+
+    _seed(tmp_path)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.press("3")  # Sessions
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            first = app._selected_task_id
+            assert first is not None
+            await pilot.press("j")
+            await pilot.pause()
+            assert app._selected_task_id != first          # j moved down
+            await pilot.press("k")
+            await pilot.pause()
+            assert app._selected_task_id == first           # k moved back up
+
+    _run(scenario())
+
+
+def test_ctrl_d_scrolls_the_detail(tmp_path):
+    """ctrl+d pages the receipt/steps detail. Its VerticalScroll never holds focus
+    and the focused ListView already binds pagedown to scroll ITSELF, so a
+    dedicated, non-shadowed key is the only keyboard path to a tall detail."""
+
+    from textual.containers import VerticalScroll
+
+    now = time.time()
+    _seed_finding_task(tmp_path, now)
+    svc = SentinelService(tmp_path)
+    for i in range(24):  # pile on distinct checks so the steps body overflows
+        _record_check(svc, session="s-find", section_id="s-find-1", result="passed",
+                      at=now - 3600 + i, summary=f"extra check {i}", command=f"cmd-{i}")
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test(size=(120, 24)) as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.press("3")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            tid = next(str(s.get("task_id")) for s in app._work_summaries
+                       if str(s.get("title")) == "Review dashboard visual regression")
+            app._show_receipt(tid)
+            await pilot.pause()
+            app._open_steps()
+            await pilot.pause()
+            ds = app.query_one("#work-detail", VerticalScroll)
+            assert ds.max_scroll_y > 0                 # the detail overflows → scrollable
+            before = ds.scroll_offset.y
+            await pilot.press("ctrl+d")
+            await pilot.pause()
+            assert ds.scroll_offset.y > before          # ctrl+d paged the detail down
+
+    _run(scenario())
+
+
+def test_steps_activity_timeline_times_checks_and_fits_column(tmp_path):
+    """Regression for the 'messy' session-detail timeline: (1) every check must
+    carry a real time — build_timeline_events reads created_at, so the TUI passes
+    the RAW task checks (checks=None), not the projected list (whose time is under
+    'at') — otherwise checks bunch timeless at the start; and (2) the track is
+    sized to the detail COLUMN, never the full terminal, so it can't wrap."""
+
+    from agentacct.api import _task_title, build_store_task_projection
+    from agentacct.receipt import _project_checks, build_receipt
+    from agentacct.task_timeline import build_timeline_events
+
+    now = time.time()
+    _seed_finding_task(tmp_path, now)
+    proj = build_store_task_projection(tmp_path)
+    task = next(t for t in proj["tasks"] if _task_title(t) == "Review dashboard visual regression")
+
+    # (1) The raw-check path times every check event (the fix for timeless checks).
+    events = build_timeline_events(task)
+    check_events = [e for e in events if e.get("kind") == "check"]
+    assert check_events, "the seeded task has recorded checks"
+    assert all(isinstance(e.get("occurred_at"), (int, float)) and not isinstance(e.get("occurred_at"), bool)
+               for e in check_events)
+
+    receipt = build_receipt(task, public_task_id=str(task.get("public_task_id")), title=_task_title(task))
+    checks = _project_checks(task)
+    width = 150
+    parts = tui._build_steps_parts(receipt, checks, _DARK, width, task=task)
+    body_plain = Text.from_markup(parts["body"]).plain
+    assert "no recorded time" not in body_plain      # nothing bunched timeless
+
+    # (2) Every timeline row fits the detail column (dw), so it never wraps.
+    dw = max(46, int(width * 0.54) - 10)
+    tl = tui._task_activity_timeline(events, _DARK, dw)
+    for row in tl["rows"]:
+        assert tui._plainlen(row) <= dw
+    if tl["axis"]:
+        assert tui._plainlen(tl["axis"]) <= dw
+
+
 def test_work_receipt_drills_into_steps_and_back(tmp_path):
     """↵ on a receipt swaps the detail cards for the sessions & steps card; esc
     (action_steps_back) returns to the receipt view."""
@@ -437,6 +563,9 @@ def test_dashboard_shows_attention_and_recent_work(tmp_path):
             # the blocked task drives the attention hero
             assert "PRIMARY ATTENTION" in plain
             assert "Fix the flaky payment test" in plain
+            # ↵ review deep-link is real; the old dead "Copy review brief" chip is gone
+            assert "Review evidence" in plain
+            assert "Copy review brief" not in plain
 
     _run(scenario())
 
@@ -471,11 +600,13 @@ def test_work_list_populates_and_detail_follows(tmp_path):
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
-            table = app.query_one("#work-list", ListView)
-            assert len(table.children) >= 2
+            table = app.query_one("#work-list", DataTable)
+            assert table.row_count >= 2
             # a receipt is auto-selected and its detail rendered
             detail = Text.from_markup(app._work_detail_text).plain
             assert "Current outcome" in detail or "All receipts" in detail
+            # the plain-text row mirror carries the receipt titles
+            assert "payment" in app._work_rows_text.lower()
 
     _run(scenario())
 
@@ -527,12 +658,12 @@ def test_work_status_tab_filters(tmp_path):
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
-            all_rows = len(app.query_one("#work-list", ListView).children)
+            all_rows = app.query_one("#work-list", DataTable).row_count
             # jump to the Attention bucket → only the blocked task
             app._work_status = "attention"
             app._render_work_list()
             await pilot.pause()
-            att_rows = len(app.query_one("#work-list", ListView).children)
+            att_rows = app.query_one("#work-list", DataTable).row_count
             assert 0 < att_rows <= all_rows
 
     _run(scenario())
@@ -553,7 +684,7 @@ def test_work_filter_narrows_rows(tmp_path):
             await pilot.pause()
             app.query_one("#work-filter", Input).value = "payment"
             await pilot.pause()
-            rows = len(app.query_one("#work-list", ListView).children)
+            rows = app.query_one("#work-list", DataTable).row_count
             assert rows == 1
 
     _run(scenario())
@@ -572,11 +703,11 @@ def test_work_sort_cycles(tmp_path):
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
-            assert app._work_sort == "attention"
-            app.action_work_sort()
-            assert app._work_sort == "latest"
+            assert app._work_sort == "latest"  # default is time order
             app.action_work_sort()
             assert app._work_sort == "cost"
+            app.action_work_sort()
+            assert app._work_sort == "attention"
 
     _run(scenario())
 
@@ -594,8 +725,8 @@ def test_work_cursor_follows_selection(tmp_path):
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
-            table = app.query_one("#work-list", ListView)
-            if len(table.children) >= 2:
+            table = app.query_one("#work-list", DataTable)
+            if table.row_count >= 2:
                 first = app._selected_task_id
                 await pilot.press("down")  # cursor-follows: detail tracks the row
                 await pilot.pause()
@@ -603,6 +734,147 @@ def test_work_cursor_follows_selection(tmp_path):
                 assert app._selected_task_id != first
 
     _run(scenario())
+
+
+def test_sessions_datatable_columns_enter_and_sort(tmp_path):
+    """The Sessions master list is a DataTable: five columns, Enter opens the steps
+    drill-in for the highlighted row, and cycling sort to 'cost' reorders by cost."""
+
+    _seed(tmp_path)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.press("3")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            dt = app.query_one("#work-list", DataTable)
+            assert len(dt.columns) == 5          # Task/Outcome/Evidence/Cost/Age
+            assert dt.row_count >= 2
+            # Enter drills the highlighted row into its steps.
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app._work_detail_mode == "steps"
+            await pilot.press("escape")           # back to the receipt view
+            await pilot.pause()
+            assert app._work_detail_mode == "receipt"
+            # Cycle the sort to cost → rows come back ordered by descending cost.
+            app.action_work_sort()                # latest → cost
+            await pilot.pause()
+            costs = [float((s.get("cost") or {}).get("estimated_cost_usd") or 0.0)
+                     for s in app._work_visible_rows]
+            assert costs == sorted(costs, reverse=True)
+
+    _run(scenario())
+
+
+def test_sessions_filter_enter_returns_focus_to_table(tmp_path):
+    """Submitting the filter (Enter) moves focus back to the DataTable — a stale
+    ListView query used to raise WrongType and leave focus stuck in the Input."""
+
+    _seed(tmp_path)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.press("3")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            inp = app.query_one("#work-filter", Input)
+            inp.focus()
+            inp.value = "payment"
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.focused is app.query_one("#work-list", DataTable)
+
+    _run(scenario())
+
+
+def test_steps_survives_refresh_non_top_row(tmp_path):
+    """Sticky steps must survive the rebuild for a NON-top row too — the rebuild
+    posts a transient row-0 highlight that used to clobber the drill-in for any
+    task that wasn't the cursor's first row."""
+
+    _seed(tmp_path)  # three receipts
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.press("3")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            dt = app.query_one("#work-list", DataTable)
+            assert dt.row_count >= 2
+            dt.move_cursor(row=1)                 # drill into a NON-top row
+            await pilot.pause()
+            second = app._selected_task_id
+            app._open_steps()
+            await pilot.pause()
+            assert app._work_detail_mode == "steps"
+            app.refresh_data(force=True)           # the periodic-refresh path
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.pause()
+            assert app._selected_task_id == second        # same non-top task
+            assert app._work_detail_mode == "steps"       # still drilled in
+            assert app.query_one("#work-steps").display
+
+    _run(scenario())
+
+
+def test_empty_filter_dismisses_stale_steps(tmp_path):
+    """Filtering to no matches while drilled into steps drops the drill-in instead
+    of leaving a stale steps card under the 'No receipts' head."""
+
+    _seed(tmp_path)
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.press("3")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            app._open_steps()
+            await pilot.pause()
+            assert app._work_detail_mode == "steps"
+            app.query_one("#work-filter", Input).value = "zzz-no-such-receipt-zzz"
+            await pilot.pause()
+            assert app._work_detail_mode == "receipt"
+            assert not app.query_one("#work-steps").display
+
+    _run(scenario())
+
+
+def test_work_row_evidence_never_overstates_ungradeable():
+    """The Evidence cell must not show a green passing tally next to an ungradeable
+    receipt (its checks are unattributed pool runs, not evidence for this task)."""
+
+    pal = _DARK
+    base = {"task_id": "t", "title": "x", "last_activity_at": time.time(), "cost": {},
+            "decision_status": {"key": "reported"}}
+    ungradeable = {**base, "evidence_strength": {
+        "gradeable": False, "key": "undefined",
+        "checks_total": 2, "checks_passed": 2, "checks_failed": 0}}
+    gradeable = {**base, "evidence_strength": {
+        "gradeable": True, "key": "independently_checked", "checkable_total": 1, "checked_total": 1,
+        "checks_total": 2, "checks_passed": 2, "checks_failed": 0}}
+    cells_u, _ = tui._work_row_cells(ungradeable, pal, 30)
+    cells_g, _ = tui._work_row_cells(gradeable, pal, 30)
+    assert "2/2" not in cells_u[2].plain     # ungradeable → pip only, no green tally
+    assert "2/2" in cells_g[2].plain          # gradeable → shows the count
 
 
 # --------------------------------------------------------------------------- #
@@ -673,6 +945,80 @@ def test_worksets_empty_state_when_no_groups(tmp_path):
     _run(scenario())
 
 
+def test_worksets_cursor_survives_refresh(tmp_path):
+    """The highlighted group stays on the SAME group across a rebuild (the 5s
+    refresh), instead of snapping back to the top card."""
+
+    _seed_workset(tmp_path, name="alpha")  # ws_proj anchored on /tmp/proj
+    svc = SentinelService(tmp_path)
+    now = time.time()
+    _record_usage(svc, client="claude-code", model="claude-opus-4-8", session_id="s-beta",
+                  tokens=10_000_000, updated_at=int(now - 1000), cost=2.0, title="beta work", project="proj2")
+    _record_section(svc, session="s-beta", section_id="s-beta-1", title="beta work",
+                    status="completed", at=now - 900, project="proj2")
+    svc.record_workset_action(action="create", workset_id="ws_proj2", name="beta",
+                              project_identity=_project_identity("/tmp/proj2"),
+                              expected_revision=0, idempotency_key="test:ws_proj2:create")
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.press("2")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            lv = app.query_one("#worksets-list", ListView)
+            assert len(lv.children) >= 2
+            lv.index = 1
+            await pilot.pause()
+            picked = app._selected_workset_id
+            assert picked is not None
+            # A rebuild — what the periodic refresh triggers.
+            app._start_worksets(force=True)
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert app._selected_workset_id == picked           # same group, by id
+            idx = app.query_one("#worksets-list", ListView).index
+            assert str(app._worksets[idx].get("workset_id")) == picked
+
+    _run(scenario())
+
+
+def test_steps_view_survives_refresh(tmp_path):
+    """A background refresh while reading a task's steps keeps you in steps (with
+    fresh data), instead of bouncing you back out to the receipt view."""
+
+    _seed_finding_task(tmp_path, time.time())
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.press("3")  # Sessions (receipts)
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            tid = next(str(s.get("task_id")) for s in app._work_summaries
+                       if str(s.get("title")) == "Review dashboard visual regression")
+            app._show_receipt(tid)
+            await pilot.pause()
+            app._open_steps()
+            await pilot.pause()
+            assert app._work_detail_mode == "steps"
+            assert app.query_one("#work-steps").display
+            # A forced rebuild — the periodic-refresh path.
+            app.refresh_data(force=True)
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert app._work_detail_mode == "steps"       # still drilled in
+            assert app.query_one("#work-steps").display   # steps card still shown
+
+    _run(scenario())
+
+
 def test_worksets_card_markup_survives_hostile_fields():
     """A group name / session title with stray markup must not crash the view."""
 
@@ -707,6 +1053,38 @@ def test_worksets_card_markup_survives_hostile_fields():
     assert "≈$70.50" in markup
 
 
+def test_cjk_titles_align_by_cell_width():
+    """Wide/CJK titles must be measured and padded by terminal CELLS, not chars,
+    so timeline rows with Chinese titles line up with ASCII rows (the alignment
+    bug the owner hit). A char-count pad would drift ~1 col per 2 CJK glyphs."""
+
+    # CJK glyphs are 2 cells wide, so cell width exceeds character count.
+    assert tui._cell_len("升级 SaaS 落地页") > len("升级 SaaS 落地页")
+    # Padding to a fixed cell width yields equal visual width for any script.
+    a = tui._pad_vis("[b]升级 agentacct 落地页[/]", 34)
+    b = tui._pad_vis("[b]Refactor the auth store[/]", 34)
+    assert tui._plainlen(a) == tui._plainlen(b) == 34
+    # Truncation respects cell width (never over-runs the column, never splits a
+    # wide glyph past the budget).
+    t = tui._trunc("升级 agentacct 落地页测试项目", 12)
+    assert tui._cell_len(t) <= 12 and t.endswith("…")
+
+    # In a real timeline, a CJK row and an ASCII row start their track at the
+    # same column: the left label pads to the same cell width on both.
+    pal = _DARK
+    base = 1_700_000_000.0
+    lanes = [
+        {"session_key": "z", "title": "升级 agentacct SaaS 落地页", "client": "claude-code",
+         "status": "completed", "first_activity_at": base, "last_activity_at": base + 100},
+        {"session_key": "a", "title": "Refactor auth", "client": "codex",
+         "status": "completed", "first_activity_at": base, "last_activity_at": base + 100},
+    ]
+    tl = tui._workset_timeline(lanes, pal, 120)
+    # every rendered row has the identical total cell width (the grid is aligned)
+    widths = {tui._plainlen(r) for r in tl["rows"]}
+    assert len(widths) == 1
+
+
 def test_worksets_timeline_draws_duration_bars():
     """A session is a BAR spanning first→last activity: a long run is a wide bar,
     a point-in-time session is a single cell (the fix for 'everything is a square')."""
@@ -728,6 +1106,51 @@ def test_worksets_timeline_draws_duration_bars():
     assert short_bar == 1               # a point session quantises to one cell
     assert long_bar >= 10               # a long session is a clearly multi-cell bar
     assert long_bar > short_bar
+
+
+def test_worksets_share_one_global_axis():
+    """Every Work card is drawn against ONE axis (earliest start → latest activity
+    across all groups), so a bar's column is comparable card-to-card and a group
+    that finished earlier does not get stretched to the right edge."""
+
+    pal = _DARK
+    base = 1_700_000_000.0
+    DAY = 86400.0
+    early = {"sessions": [  # group that ran days 0-1
+        {"session_key": "e1", "title": "early", "client": "claude-code", "status": "completed",
+         "first_activity_at": base, "last_activity_at": base + DAY},
+    ]}
+    late = {"sessions": [   # group that ran days 2-3
+        {"session_key": "l1", "title": "late", "client": "codex", "status": "completed",
+         "first_activity_at": base + 2 * DAY, "last_activity_at": base + 3 * DAY},
+    ]}
+
+    lo, hi = tui._worksets_axis_bounds([early, late])
+    assert (lo, hi) == (base, base + 3 * DAY)      # union of every group's span
+
+    e_lanes, l_lanes = early["sessions"], late["sessions"]
+    e_shared = tui._workset_timeline(e_lanes, pal, 120, axis_bounds=(lo, hi))
+    l_shared = tui._workset_timeline(l_lanes, pal, 120, axis_bounds=(lo, hi))
+    assert e_shared["axis"] == l_shared["axis"]    # identical axis on both cards
+
+    def track_plain(row):
+        # The row is "<left column> <track>"; keep the track (drop the label).
+        return Text.from_markup(row).plain.rsplit(" ", 1)[-1]
+
+    e_row = track_plain(e_shared["rows"][0])
+    l_row = track_plain(l_shared["rows"][0])
+    # The early group ends before the global hi -> its bar leaves trailing hair,
+    # so the row does NOT end in a block. The late group reaches hi -> ends in a block.
+    assert e_row.endswith("─") and not e_row.endswith("█")
+    assert l_row.endswith("█")
+    # The early group's bar sits left of the late group's bar (real comparison).
+    assert e_row.index("█") < l_row.index("█")
+
+    # Without the shared axis each card normalises to its own span, so both bars
+    # start at column 0 and the comparison is lost — the regression this guards.
+    e_solo = track_plain(tui._workset_timeline(e_lanes, pal, 120)["rows"][0])
+    l_solo = track_plain(tui._workset_timeline(l_lanes, pal, 120)["rows"][0])
+    assert e_solo.index("█") == 0 and l_solo.index("█") == 0
 
 
 def test_zoom_window_math_matches_swift():

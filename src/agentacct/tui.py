@@ -33,14 +33,16 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from rich.cells import cell_len as _cell_len, set_cell_size as _set_cells
 from rich.markup import escape as _escape
+from rich.text import Text as _RText
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.theme import Theme
-from textual.widgets import ContentSwitcher, Input, ListItem, ListView, Static
+from textual.widgets import ContentSwitcher, DataTable, Footer, Input, ListItem, ListView, Static
 
 from .service import SentinelService
 from .usage_snapshot import (
@@ -302,12 +304,13 @@ _MARKUP_TAG = re.compile(r"\[/?[^\]]*\]")
 
 
 def _plainlen(markup: str) -> int:
-    """Visible width of a Rich-markup string — tags stripped, escaped ``\\[``
-    counted as one column. Used to right-justify a two-edge row by hand (a Static
-    has no built-in justify)."""
+    """Terminal CELL width of a Rich-markup string — tags stripped, escaped ``\\[``
+    counted as one column, and every glyph measured by how many columns it
+    actually occupies (a CJK/wide character is 2, a zero-width combining mark 0).
+    Character COUNT would drift on non-ASCII text and misalign every column."""
 
-    stripped = _MARKUP_TAG.sub("", markup)
-    return len(stripped.replace("\\[", "["))
+    stripped = _MARKUP_TAG.sub("", markup).replace("\\[", "[")
+    return _cell_len(stripped)
 
 
 def _two_edge(left: str, right: str, width: int) -> str:
@@ -485,21 +488,21 @@ class WorksetDetailScreen(ModalScreen):
     exact WorksetZoomWindow math), 0 resets, ←→ pan. Positions snap to cells."""
 
     BINDINGS = [
-        Binding("escape", "close", "Back"),
-        Binding("q", "close", "Back", show=False),
-        Binding("up", "focus(-1)", "Select", show=False),
-        Binding("down", "focus(1)", "Select", show=False),
+        Binding("down", "focus(1)", "Move", key_display="↑↓"),
+        Binding("up", "focus(-1)", "Move", show=False),
         Binding("k", "focus(-1)", show=False),
         Binding("j", "focus(1)", show=False),
-        Binding("plus", "zoom(1.6)", "Zoom in", show=False),
+        Binding("plus", "zoom(1.6)", "Zoom in"),
         Binding("equals_sign", "zoom(1.6)", show=False),
-        Binding("minus", "zoom(0.625)", "Zoom out", show=False),
+        Binding("minus", "zoom(0.625)", "Zoom out"),
         Binding("underscore", "zoom(0.625)", show=False),
-        Binding("0", "reset_zoom", "Reset", show=False),
+        Binding("0", "reset_zoom", "Reset"),
+        Binding("right", "pan(1)", "Pan", key_display="←→"),
         Binding("left", "pan(-1)", "Pan", show=False),
-        Binding("right", "pan(1)", "Pan", show=False),
         Binding("h", "pan(-1)", show=False),
         Binding("l", "pan(1)", show=False),
+        Binding("escape", "close", "Back"),
+        Binding("q", "close", "Back", show=False),
     ]
 
     def __init__(self, card: dict, pal: dict[str, str]) -> None:
@@ -519,7 +522,15 @@ class WorksetDetailScreen(ModalScreen):
         # exceed the box's max height, and an un-scrollable overflow fails to lay
         # out. Content is built in compose so the Static is populated on first
         # render.
-        yield VerticalScroll(Static(self._body_text, id="ws-detail-body"), id="ws-detail-box")
+        # The box must NOT take focus: a focusable VerticalScroll would swallow the
+        # arrow keys for scrolling, so ↑↓ (move scrubber) / ←→ (pan) would never
+        # reach the screen bindings — and the Footer, which mirrors the active
+        # bindings, would drop them. With focus on the screen the scrubber drives
+        # the arrows; the mouse wheel still scrolls a tall body.
+        box = VerticalScroll(Static(self._body_text, id="ws-detail-body"), id="ws-detail-box")
+        box.can_focus = False
+        yield box
+        yield Footer()
 
     def on_mount(self) -> None:
         # After the first layout the body Static has a real content width; repaint
@@ -751,15 +762,58 @@ _PANES: tuple[tuple[str, str], ...] = (
     ("sources", "Diagnostics"),
 )
 
-# Contextual keybind hints shown in the status bar per pane. (key, label) pairs;
-# rendered with the key in accent. Global keys (?, q) are appended.
-_PANE_HINTS: dict[str, tuple[tuple[str, str], ...]] = {
-    "dashboard": (("1-5", "pane"), ("↵", "review queue")),
-    "worksets": (("↑↓", "move"), ("↵", "timeline"), ("g", "new"), ("e", "rename"), ("x", "delete")),
-    "work": (("↑↓", "move"), ("↵", "open"), ("/", "filter"), ("[ ]", "status"), ("s", "sort")),
-    "usage": (("d", "range"), ("↑↓", "scroll")),
-    "sources": (("↑↓", "source"),),
-}
+
+
+# Focusable pane widgets carry their OWN key bindings, so Textual's Footer shows
+# exactly the keys that apply wherever focus is — the fix for "the keys vanish
+# when I drill in". Actions resolve up the DOM to the App (bare action names), so
+# the App keeps every action method and each pane just declares which keys apply.
+# The list panes focus their inner ListView (its up/down/enter work); these
+# pane-level keys bubble up from the focused list, and the Footer shows them all.
+class _DashboardPane(VerticalScroll):
+    can_focus = True
+    BINDINGS = [Binding("enter", "app.dash_review", "Review queue")]
+
+
+class _WorksetsPane(Vertical):
+    can_focus = True
+    BINDINGS = [
+        Binding("g", "app.worksets_new", "New group"),
+        Binding("e", "app.worksets_rename", "Rename"),
+        Binding("x", "app.worksets_delete", "Delete"),
+        # vim aliases for ↑↓ — the help overlay advertises j/k, so honour them.
+        Binding("j", "app.list_nav(1)", show=False),
+        Binding("k", "app.list_nav(-1)", show=False),
+    ]
+
+
+class _SessionsPane(Vertical):
+    can_focus = True
+    BINDINGS = [
+        Binding("slash", "app.work_filter", "Filter"),
+        Binding("left_square_bracket", "app.work_status(-1)", "Prev tab"),
+        Binding("right_square_bracket", "app.work_status(1)", "Next tab"),
+        Binding("s", "app.work_sort", "Sort"),
+        # Scroll the receipt/steps detail (the right pane) from the list — its own
+        # VerticalScroll never holds focus, so without this a tall receipt or steps
+        # timeline is unreachable from the keyboard. ctrl+d/ctrl+u (not pagedown:
+        # the focused ListView already binds pagedown to scroll ITSELF and would
+        # shadow us).
+        Binding("ctrl+d", "app.work_scroll(1)", "Scroll"),
+        Binding("ctrl+u", "app.work_scroll(-1)", "Scroll", show=False),
+        # vim aliases for ↑↓ (the help overlay advertises j/k).
+        Binding("j", "app.list_nav(1)", show=False),
+        Binding("k", "app.list_nav(-1)", show=False),
+    ]
+
+
+class _UsagePane(VerticalScroll):
+    can_focus = True
+    BINDINGS = [Binding("d", "app.usage_range", "Range")]
+
+
+class _DiagnosticsPane(VerticalScroll):
+    can_focus = True
 
 
 class AgentAcctTUI(App):
@@ -774,7 +828,6 @@ class AgentAcctTUI(App):
        a pane switch. Plain vertical stacking keeps it the first row everywhere. */
     #topbar { height: 1; padding: 0 2; background: $surface; color: $foreground; }
     #toprule { height: 1; background: $surface; color: $border; }
-    #statusbar { height: 1; padding: 0 2; background: $surface; color: $text-muted; }
 
     #switcher { height: 1fr; }
 
@@ -814,14 +867,12 @@ class AgentAcctTUI(App):
     #work-split { height: 1fr; }
     #work-detail { width: 1fr; height: 1fr; padding: 0 0 0 2; }
 
-    /* Master: a selectable card list (not a table). Each receipt is a padded
-       ListItem; the highlighted one wears the accent edge + selected wash. */
+    /* Master: a DataTable of receipts — one row per receipt, sortable columns and
+       a proper row cursor. The detail pane (right) is authoritative for the rest. */
     #work-list { width: 46%; height: 1fr; background: $background; }
-    #work-list > ListItem { padding: 0 1 0 1; height: auto; background: $background; }
-    #work-list > ListItem > Static { padding: 1 1; border-left: wide $background; }
-    #work-list > ListItem.-highlight, #work-list > ListItem.--highlight { background: $block-cursor-background; }
-    #work-list > ListItem.-highlight > Static,
-    #work-list > ListItem.--highlight > Static { background: $block-cursor-background; border-left: wide $primary; }
+    #work-list > .datatable--header { background: $background; color: $text-muted; text-style: none; }
+    #work-list > .datatable--cursor { background: $block-cursor-background; }
+    #work-list > .datatable--hover { background: $background; }
 
     /* Worksets (the "Work" tab): a full-width stack of cards, each a selectable
        ListItem; the highlighted group wears the accent edge + selected wash. */
@@ -865,6 +916,11 @@ class AgentAcctTUI(App):
     #ws-prompt-title, #ws-confirm-title, #ws-create-title { height: auto; }
     """
 
+    # Global keys only. Pane-scoped keys live on the focusable pane widgets above
+    # (_WorksetsPane, _SessionsPane, _UsagePane, _DashboardPane) so Textual's
+    # Footer shows the right keys for wherever focus is — the fix for guidance
+    # vanishing on drill-in. `escape` (back out of the steps sub-mode) stays here
+    # because it is only meaningful in the Sessions pane and is gated in its action.
     BINDINGS = [
         Binding("1", "show_pane('dashboard')", "Dashboard"),
         Binding("2", "show_pane('worksets')", "Work"),
@@ -873,22 +929,10 @@ class AgentAcctTUI(App):
         Binding("5", "show_pane('sources')", "Diagnostics"),
         Binding("question_mark", "help", "Help"),
         Binding("r", "refresh", "Refresh"),
-        Binding("T", "cycle_theme", "Theme"),
-        Binding("p", "screenshot", "Snapshot"),
+        Binding("T", "cycle_theme", "Theme", show=False),
+        Binding("p", "screenshot", "Snapshot", show=False),
         Binding("q", "quit", "Quit"),
-        # Work-pane keys (gated to the Work pane in their actions).
-        Binding("left_square_bracket", "work_status(-1)", "Prev status", show=False),
-        Binding("right_square_bracket", "work_status(1)", "Next status", show=False),
-        Binding("s", "work_sort", "Sort", show=False),
-        Binding("slash", "work_filter", "Filter", show=False),
-        Binding("d", "usage_range", "Range", show=False),
         Binding("escape", "steps_back", "Back", show=False),
-        # Worksets write keys (gated to the Work pane in their actions).
-        Binding("g", "worksets_new", "New group", show=False),
-        Binding("e", "worksets_rename", "Rename group", show=False),
-        Binding("x", "worksets_delete", "Delete group", show=False),
-        # Dashboard deep-link: ↵ jumps to the attention queue (gated to Dashboard).
-        Binding("enter", "dash_review", "Review", show=False),
     ]
 
     def __init__(
@@ -935,14 +979,22 @@ class AgentAcctTUI(App):
         self._work_latest: float | None = None
         self._work_starts: dict[str, float] = {}
         self._work_status: str = "all"
-        self._work_sort: str = "attention"
+        self._work_sort: str = "latest"  # default to time order (newest first)
         self._work_filter: str = ""
         self._work_loading: bool = False
         self._work_built: bool = False
         self._work_visible_ids: list[str] = []
         self._work_visible_rows: list[dict] = []
-        self._expanded_index: int | None = None
+        self._work_rows_text: str = ""  # plain-string mirror of the DataTable rows
+        self._work_task_colkey = None   # DataTable ColumnKey for the resizable Task column
+        # True only while _render_work_list is repopulating the DataTable, so the
+        # transient RowHighlighted events that add_row/move_cursor post are ignored
+        # (the final detail is set synchronously in the rebuild).
+        self._rebuilding: bool = False
         self._selected_task_id: str | None = None
+        # The highlighted work group, remembered by its stable workset_id so the
+        # cursor survives the periodic rebuild instead of snapping back to the top.
+        self._selected_workset_id: str | None = None
         self._work_detail_text: str = ""
         # Work detail sub-mode: the receipt (default) vs the sessions & steps
         # drill-down (Enter opens, esc backs out).
@@ -969,7 +1021,6 @@ class AgentAcctTUI(App):
 
         # Test/inspection hooks: the last composed text for key regions, so
         # headless tests assert against strings, never Rich renderable internals.
-        self._status_text: str = ""
         self._topbar_text: str = ""
         self._dashboard_text: str = ""
 
@@ -979,22 +1030,22 @@ class AgentAcctTUI(App):
         yield Static("", id="topbar")
         yield Static("", id="toprule")
         with ContentSwitcher(initial="dashboard", id="switcher"):
-            with VerticalScroll(id="dashboard", classes="pane"):
+            with _DashboardPane(id="dashboard", classes="pane"):
                 yield Static("", id="dash-head")
                 with Horizontal(id="dash-hero"):
                     yield Static("", id="dash-attention", classes="card")
                     yield Static("", id="dash-rail", classes="card")
                 yield Static("", id="dash-recent", classes="card")
                 yield Static("", id="dash-spark", classes="card")
-            with Vertical(id="worksets", classes="pane"):
+            with _WorksetsPane(id="worksets", classes="pane"):
                 yield Static("", id="worksets-head", classes="pane-block")
                 yield ListView(id="worksets-list")
-            with Vertical(id="work", classes="pane"):
+            with _SessionsPane(id="work", classes="pane"):
                 yield Static("", id="work-head", classes="pane-block")
                 yield Static("", id="work-tabs", classes="pane-block")
                 yield Input(placeholder="Filter by task, client, or id", id="work-filter")
                 with Horizontal(id="work-split"):
-                    yield ListView(id="work-list")
+                    yield DataTable(id="work-list", cursor_type="row", zebra_stripes=False)
                     with VerticalScroll(id="work-detail"):
                         yield Static("", id="work-detail-head")
                         yield Static("", id="work-outcome", classes="card")
@@ -1003,18 +1054,18 @@ class AgentAcctTUI(App):
                         # The sessions & steps drill-down (Enter opens it, esc backs
                         # out); hidden until the receipt is expanded into it.
                         yield Static("", id="work-steps", classes="card")
-            with VerticalScroll(id="usage", classes="pane"):
+            with _UsagePane(id="usage", classes="pane"):
                 yield Static("", id="usage-head")
                 yield Static("", id="usage-capacity", classes="card")
                 yield Static("", id="usage-recorded", classes="card")
-            with VerticalScroll(id="sources", classes="pane"):
+            with _DiagnosticsPane(id="sources", classes="pane"):
                 yield Static("", id="sources-head")
                 yield Static("", id="sources-connected", classes="card")
                 yield Static("", id="sources-watcher", classes="card")
                 yield Static("", id="sources-verifiers", classes="card")
                 yield Static("", id="sources-issues", classes="card")
                 yield Static("", id="sources-local", classes="card")
-        yield Static("", id="statusbar")
+        yield Footer()
 
     def on_mount(self) -> None:
         self.register_theme(_THEME_DARK)
@@ -1023,7 +1074,6 @@ class AgentAcctTUI(App):
         self.title = "agentacct"
         self.query_one("#toprule", Static).update("─" * 400)
         self._render_topbar()
-        self._render_statusbar()
         self.query_one("#work-detail-head", Static).update(
             f"[{self.pal['dim']}]Select a receipt (↑↓) to read it; ↵ opens its sessions & steps.[/]"
         )
@@ -1032,6 +1082,7 @@ class AgentAcctTUI(App):
         self._start_import()
         self.set_interval(self.refresh_seconds, self.refresh_data)
         self.set_interval(1.0, self._tick)
+        self._focus_pane("dashboard")  # so the Footer shows the Dashboard's keys
 
     # -- theme --------------------------------------------------------------- #
 
@@ -1058,7 +1109,6 @@ class AgentAcctTUI(App):
         # (semantic content colour is baked into the markup, so a bare refresh is
         # not enough — every pane must recompose from its cached data).
         self._render_topbar()
-        self._render_statusbar()
         pane = self.current_pane
         if pane == "dashboard":
             self._start_dashboard(force=True)
@@ -1094,27 +1144,29 @@ class AgentAcctTUI(App):
         except Exception:  # noqa: BLE001
             return
         self._render_topbar()
-        self._render_statusbar()
         if pane == "worksets":
             self._start_worksets()
-            try:
-                self.query_one("#worksets-list", ListView).focus()
-            except Exception:  # noqa: BLE001
-                pass
         elif pane == "work":
             self._start_work()
-            try:
-                self.query_one("#work-list", ListView).focus()
-            except Exception:  # noqa: BLE001
-                pass
         elif pane == "usage":
             self._render_usage()
         elif pane == "sources":
             self._render_sources()
+        # Focus the pane (its list, if it has one) so Textual's Footer shows that
+        # view's keys. Focusing the inner ListView keeps up/down/enter native while
+        # the pane-level keys (g/e/x, sort/filter, range) bubble up into the Footer.
+        self._focus_pane(pane)
         # A ContentSwitcher change can leave the docked chrome (top bar) un-
         # composited for an offscreen screenshot; force a clean full repaint.
         try:
             self.screen.refresh(repaint=True, layout=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _focus_pane(self, pane: str) -> None:
+        target = {"worksets": "#worksets-list", "work": "#work-list"}.get(pane, f"#{pane}")
+        try:
+            self.query_one(target).focus()
         except Exception:  # noqa: BLE001
             pass
 
@@ -1166,25 +1218,6 @@ class AgentAcctTUI(App):
         label = "just now" if ago == "0s ago" else ago
         return f"{dot} Local data · {label}"
 
-    def _render_statusbar(self) -> None:
-        pal = self.pal
-
-        def _cells(pairs):
-            return "   ".join(f"[b {pal['accent']}]{k}[/] [{pal['muted']}]{v}[/]" for k, v in pairs)
-
-        left = _cells(_PANE_HINTS.get(self.current_pane, ()))
-        r_label = "rescan" if self.current_pane == "sources" else "refresh"
-        right = _cells((("r", r_label), ("?", "help"), ("q", "quit")))
-        # Extra margin: the left hints use symbol glyphs (↑↓ ↵ [ ]) that some
-        # terminal fonts render wider than one column, so keep the right group
-        # off the very edge rather than risk a clipped last word.
-        width = max(60, int(getattr(self.size, "width", 0) or 150) - 8)
-        text = _two_edge(left, right, width)
-        self._status_text = text
-        try:
-            self.query_one("#statusbar", Static).update(text)
-        except Exception:  # noqa: BLE001
-            pass
 
     # -- refresh (the usage cube; drives the Dashboard signal rail) ---------- #
 
@@ -1232,7 +1265,6 @@ class AgentAcctTUI(App):
     def _render_all(self) -> None:
         try:
             self._render_topbar()
-            self._render_statusbar()
             pane = self.current_pane
             if pane == "usage":
                 self._render_usage()
@@ -1594,15 +1626,28 @@ class AgentAcctTUI(App):
             lv.append(ListItem(Static(_worksets_empty_markup(pal))))
             self._worksets_text = "No work groups yet"
             return
+        # One shared axis across every card, so bars are comparable card-to-card.
+        axis_bounds = _worksets_axis_bounds(self._worksets)
         parts: list[str] = []
         for w in self._worksets:
-            markup = _workset_card_markup(w, pal, width)
+            markup = _workset_card_markup(w, pal, width, axis_bounds=axis_bounds)
             parts.append(markup)
             lv.append(ListItem(Static(markup)))
+        # Keep the cursor on the SAME group across a rebuild (the 5s refresh fires
+        # whenever the store changes). Fall back to the top only if that group is
+        # gone. Without this the highlight snapped back to the first card on every
+        # refresh — unusable while live sessions are writing.
+        target_idx = 0
+        if self._selected_workset_id is not None:
+            for i, w in enumerate(self._worksets):
+                if str(w.get("workset_id")) == self._selected_workset_id:
+                    target_idx = i
+                    break
         try:
-            lv.index = 0
+            lv.index = target_idx  # fires Highlighted → _selected_workset_id re-synced
         except Exception:  # noqa: BLE001
             pass
+        self._selected_workset_id = str(self._worksets[target_idx].get("workset_id"))
         # Plain-string mirror for headless tests (markup stripped downstream).
         self._worksets_text = "\n".join(parts)
 
@@ -1674,82 +1719,128 @@ class AgentAcctTUI(App):
         except Exception:  # noqa: BLE001
             pass
 
+    # Fixed content widths for the non-Task columns; Task takes the remainder.
+    _WORK_FIXED_W = {"outcome": 14, "evidence": 8, "cost": 9, "age": 9}
+
+    def _work_task_col_width(self) -> int:
+        """Content width for the Task cell/column. The list is ~46% of the terminal;
+        reserve room for the fixed columns + DataTable per-cell padding (2 each × 5)
+        so a long (CJK) title never forces a horizontal scroll (it ellipsizes)."""
+        list_w = int((int(getattr(self.size, "width", 0) or 150)) * 0.46)
+        return max(12, list_w - sum(self._WORK_FIXED_W.values()) - 12)
+
     def _render_work_list(self) -> None:
         pal = self.pal
         try:
-            lv = self.query_one("#work-list", ListView)
+            dt = self.query_one("#work-list", DataTable)
         except Exception:  # noqa: BLE001
             return
+        tcol = self._work_task_col_width()
+        if not dt.columns:  # one-time column setup, fixed widths so nothing grows
+            self._work_task_colkey = dt.add_column("Task", key="task", width=tcol)
+            dt.add_column("Outcome", key="outcome", width=self._WORK_FIXED_W["outcome"])
+            dt.add_column("Evidence", key="evidence", width=self._WORK_FIXED_W["evidence"])
+            dt.add_column(_RText("Cost", justify="right"), key="cost", width=self._WORK_FIXED_W["cost"])
+            dt.add_column("Age", key="age", width=self._WORK_FIXED_W["age"])
+        else:
+            # Keep the Task column matched to the current terminal width (resize);
+            # the fixed columns don't change. clear()+add_row below relays it out.
+            col = dt.columns.get(getattr(self, "_work_task_colkey", None))
+            if col is not None and col.width != tcol:
+                col.width = tcol
+                col.auto_width = False
         rows = self._filtered_work()
         self._work_visible_ids = [str(s.get("task_id")) for s in rows]
         self._work_visible_rows = rows
+        # Was the user drilled into the steps view, and on which task? A rebuild
+        # (the 5s refresh) rebuilds the receipt and would otherwise drop them back
+        # to the receipt view — so we re-open steps for the SAME task afterwards.
+        was_steps = self._work_detail_mode == "steps"
+        steps_task = self._selected_task_id if was_steps else None
         target = None
         sel_idx = None
         if rows:
             target = self._selected_task_id if self._selected_task_id in self._work_visible_ids else self._work_visible_ids[0]
             sel_idx = self._work_visible_ids.index(target)
-        self._expanded_index = sel_idx
-        # clear() queues removal of the current items (async); the fresh cards are
-        # appended without ids so a re-render can't collide on a stale id. The
-        # highlighted card is built EXPANDED, the rest compact.
-        lv.clear()
-        for i, s in enumerate(rows):
-            lv.append(ListItem(Static(_work_card_markup(s, pal, expanded=(i == sel_idx)))))
+        # Repopulate under the rebuild guard: add_row re-homes the DataTable cursor
+        # to row 0 and move_cursor then jumps to the target, each posting an async
+        # RowHighlighted. Without the guard the intermediate row-0 highlight fires
+        # _highlight_to_receipt(row0) and clobbers a sticky steps drill-in for any
+        # non-top row. We set the final detail synchronously here and clear the
+        # guard once those transient events have drained (call_after_refresh).
+        self._rebuilding = True
+        dt.clear()  # rows only — columns are kept
+        mirror: list[str] = []
+        for s in rows:
+            cells, plain = _work_row_cells(s, pal, tcol)
+            dt.add_row(*cells, key=str(s.get("task_id")))
+            mirror.append(plain)
+        # Plain-string mirror for headless tests (DataTable cells aren't a Static).
+        self._work_rows_text = "\n".join(mirror)
         if rows:
             try:
-                lv.index = sel_idx  # fires Highlighted → cursor-follows
+                dt.move_cursor(row=sel_idx)
             except Exception:  # noqa: BLE001
                 pass
-            self._show_receipt(target)
+            sticky = was_steps and target == steps_task
+            # For a sticky in-place refresh keep the reader's scroll position (the
+            # checks list is uncapped, so scroll matters); a genuine selection change
+            # falls through to the default top-of-detail.
+            self._show_receipt(target, preserve_scroll=sticky)
+            if sticky:
+                self._open_steps(preserve_scroll=True)
         else:
             self._selected_task_id = None
+            self._rebuilding = False  # no rows → no transient highlights to guard
+            # Drop any stale steps drill-in so it isn't left showing under the
+            # "No receipts" head with blank receipt cards.
+            self._work_detail_mode = "receipt"
+            self._apply_detail_mode()
             self.query_one("#work-detail-head", Static).update(
                 f"[{pal['dim']}]No receipts match this filter.[/]"
             )
             for wid in ("#work-outcome", "#work-summary", "#work-dimensions"):
                 self.query_one(wid, Static).update("")
 
-    def _highlight_to_receipt(self, index: int | None) -> None:
-        if index is None:
+    def _highlight_to_receipt(self, task_id: str | None) -> None:
+        # Cursor-follows: the detail tracks the highlighted row (↑↓ / j/k), like
+        # lazygit. Re-highlighting the SAME row must not reset the detail — only a
+        # move to a DIFFERENT receipt swaps it (and drops out of any steps drill-in).
+        if not task_id or task_id == self._selected_task_id:
             return
-        ids = getattr(self, "_work_visible_ids", [])
-        if 0 <= index < len(ids):
-            self._reflow_expanded(index)
-            self._show_receipt(ids[index])
+        self._show_receipt(task_id)
 
-    def _reflow_expanded(self, index: int) -> None:
-        """Move the expanded-card treatment to the newly-highlighted row without
-        rebuilding the whole list (cheap, and it avoids the async clear/append
-        churn on every arrow key). Only the outgoing + incoming cards repaint."""
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if event.data_table.id != "work-list" or event.row_key is None:
+            return
+        key = str(event.row_key.value)
+        if self._rebuilding:
+            # The rebuild sets the detail synchronously and posts transient
+            # highlights (an intermediate row-0 from add_row, then the target from
+            # move_cursor). Swallow them; clear the guard when the TARGET highlight
+            # arrives (always posted last, FIFO — or the sole one when coalesced), so
+            # a genuine later cursor move is honoured but the transient row-0 can't
+            # clobber a sticky steps drill-in. Deterministic, not timing-based.
+            if key == self._selected_task_id:
+                self._rebuilding = False
+            return
+        self._highlight_to_receipt(key)
 
-        old = getattr(self, "_expanded_index", None)
-        if old == index:
-            return
-        rows = getattr(self, "_work_visible_rows", [])
-        try:
-            items = list(self.query_one("#work-list", ListView).children)
-        except Exception:  # noqa: BLE001
-            return
-        for i in {old, index}:
-            if i is None or not (0 <= i < len(items) and i < len(rows)):
-                continue
-            try:
-                items[i].query_one(Static).update(_work_card_markup(rows[i], self.pal, expanded=(i == index)))
-            except Exception:  # noqa: BLE001
-                pass
-        self._expanded_index = index
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        # Enter drills the highlighted receipt into its sessions & steps.
+        if event.data_table.id == "work-list" and event.row_key is not None:
+            self._highlight_to_receipt(str(event.row_key.value))
+            self._open_steps()
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        # Cursor-follows: the detail tracks the highlighted card (j/k), like lazygit.
-        if event.list_view.id == "work-list":
-            self._highlight_to_receipt(event.list_view.index)
+        if event.list_view.id == "worksets-list":
+            # Remember which group is highlighted so the cursor survives a rebuild.
+            idx = event.list_view.index
+            if idx is not None and 0 <= idx < len(self._worksets):
+                self._selected_workset_id = str(self._worksets[idx].get("workset_id"))
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        # Enter drills the highlighted receipt into its sessions & steps.
-        if event.list_view.id == "work-list":
-            self._highlight_to_receipt(event.list_view.index)
-            self._open_steps()
-        elif event.list_view.id == "worksets-list":
+        if event.list_view.id == "worksets-list":
             self._open_workset_detail(event.list_view.index)
 
     def _open_workset_detail(self, index: int | None) -> None:
@@ -1859,7 +1950,7 @@ class AgentAcctTUI(App):
             self.pal, on_confirm,
         ))
 
-    def _show_receipt(self, task_id: str) -> None:
+    def _show_receipt(self, task_id: str, preserve_scroll: bool = False) -> None:
         self._selected_task_id = task_id
         # Moving to a receipt always returns to the receipt view (out of steps).
         self._work_detail_mode = "receipt"
@@ -1899,11 +1990,14 @@ class AgentAcctTUI(App):
             self._set_card("#work-dimensions", parts["dims_title"], parts["dims"])
         except Exception:  # noqa: BLE001
             pass
-        self._apply_detail_mode()
+        self._apply_detail_mode(preserve_scroll=preserve_scroll)
 
-    def _apply_detail_mode(self) -> None:
+    def _apply_detail_mode(self, preserve_scroll: bool = False) -> None:
         """Show the receipt cards or the sessions & steps card per the sub-mode,
-        and swap the breadcrumb head to match."""
+        and swap the breadcrumb head to match. ``preserve_scroll`` keeps the
+        detail's scroll position (an in-place refresh of the same view) instead of
+        snapping to the top — so a reader deep in a long checks list isn't yanked
+        up every time the store changes."""
 
         steps = self._work_detail_mode == "steps"
         try:
@@ -1913,11 +2007,12 @@ class AgentAcctTUI(App):
             self.query_one("#work-detail-head", Static).update(
                 self._steps_head if steps else self._receipt_head
             )
-            self.query_one("#work-detail", VerticalScroll).scroll_home(animate=False)
+            if not preserve_scroll:
+                self.query_one("#work-detail", VerticalScroll).scroll_home(animate=False)
         except Exception:  # noqa: BLE001
             pass
 
-    def _open_steps(self) -> None:
+    def _open_steps(self, preserve_scroll: bool = False) -> None:
         """Drill the selected receipt into its sessions & steps (checks timeline)."""
 
         if self.current_pane != "work" or not self._selected_task_id:
@@ -1939,7 +2034,7 @@ class AgentAcctTUI(App):
         self._steps_text = parts["title"] + "\n" + parts["body"]
         self._set_card("#work-steps", parts["title"], parts["body"])
         self._work_detail_mode = "steps"
-        self._apply_detail_mode()
+        self._apply_detail_mode(preserve_scroll=preserve_scroll)
 
     def action_steps_back(self) -> None:
         if self.current_pane == "work" and self._work_detail_mode == "steps":
@@ -1973,6 +2068,38 @@ class AgentAcctTUI(App):
         except Exception:  # noqa: BLE001
             pass
 
+    def action_list_nav(self, delta: int) -> None:
+        """j/k cursor move for the focused master list (vim aliases for ↑↓). The
+        Sessions list is a DataTable, the Work list a ListView — both expose
+        action_cursor_up/down."""
+        if self.current_pane == "work":
+            widget: Any = None
+            try:
+                widget = self.query_one("#work-list", DataTable)
+            except Exception:  # noqa: BLE001
+                return
+        elif self.current_pane == "worksets":
+            try:
+                widget = self.query_one("#worksets-list", ListView)
+            except Exception:  # noqa: BLE001
+                return
+        else:
+            return
+        try:
+            widget.action_cursor_down() if delta > 0 else widget.action_cursor_up()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def action_work_scroll(self, direction: int) -> None:
+        """Page the receipt/steps detail pane (its VerticalScroll never has focus)."""
+        if self.current_pane != "work":
+            return
+        try:
+            ds = self.query_one("#work-detail", VerticalScroll)
+            ds.scroll_page_down(animate=False) if direction > 0 else ds.scroll_page_up(animate=False)
+        except Exception:  # noqa: BLE001
+            pass
+
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "work-filter":
             return
@@ -1982,7 +2109,10 @@ class AgentAcctTUI(App):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "work-filter":
             try:
-                self.query_one("#work-list", ListView).focus()
+                # #work-list is a DataTable now — a stale ListView type here raised
+                # WrongType (swallowed), leaving focus stuck in the filter Input so
+                # j/k/arrows typed into the box instead of navigating the list.
+                self.query_one("#work-list", DataTable).focus()
             except Exception:  # noqa: BLE001
                 pass
 
@@ -2229,11 +2359,15 @@ def _lane_pip(status: Any, pal: dict[str, str]) -> str:
 
 
 def _axis_date(ts: Any) -> str:
-    """A UTC 'Mon D' axis label (mirrors WorksetFormat.axisDate)."""
+    """A local-time 'Mon D' axis label. The app's activity canvas renders dates with
+    Calendar.current (WorkTimelineOverview), so the terminal uses local time too — a
+    UTC label would read hours off from the work the user actually did. (The app's
+    worksets-card axis happens to format in UTC; we prefer local everywhere here as
+    the more honest, internally-consistent choice — the shift is date-only there.)"""
 
     if not (isinstance(ts, (int, float)) and not isinstance(ts, bool) and ts > 0):
         return ""
-    t = time.gmtime(float(ts))
+    t = time.localtime(float(ts))
     return f"{_MONTHS[t.tm_mon - 1]} {t.tm_mday}"
 
 
@@ -2277,13 +2411,21 @@ def _workset_cost_text(summary: dict) -> str:
 
 
 def _trunc(text: str, n: int) -> str:
+    """Truncate to ``n`` terminal CELLS (not characters) with a trailing ellipsis,
+    so a wide/CJK title is cut at the right visual width and never over-runs its
+    column. ``set_cell_size`` truncates on a cell boundary (it won't split a wide
+    glyph) and reserves one cell for the ellipsis."""
+
     text = str(text)
-    return text if len(text) <= n else text[: max(1, n - 1)] + "…"
+    if _cell_len(text) <= n:
+        return text
+    return _set_cells(text, max(1, n - 1)) + "…"
 
 
 def _pad_vis(markup: str, n: int) -> str:
-    """Right-pad a markup string to ``n`` VISIBLE columns (tags/escapes ignored),
-    so a colour-tagged left label still aligns the timeline track."""
+    """Right-pad a markup string to ``n`` terminal CELLS (tags/escapes ignored),
+    so a colour-tagged left label still aligns the timeline track — even when the
+    title contains wide/CJK glyphs that occupy two columns each."""
 
     vis = _plainlen(markup)
     return markup + " " * max(0, n - vis) if vis < n else markup
@@ -2307,7 +2449,7 @@ def _axis_stamp(ts: Any, span: float) -> str:
 
     if not (isinstance(ts, (int, float)) and not isinstance(ts, bool) and ts > 0):
         return ""
-    t = time.gmtime(float(ts))
+    t = time.localtime(float(ts))   # local time — see _axis_date
     base = f"{_MONTHS[t.tm_mon - 1]} {t.tm_mday}"
     if span and 0 < span < 36 * 3600:
         return f"{base} {t.tm_hour:02d}:{t.tm_min:02d}"
@@ -2326,6 +2468,23 @@ def _timeline_bounds(lanes: list[dict]) -> tuple[float | None, float | None]:
     return w0, w1
 
 
+def _worksets_axis_bounds(worksets: list[dict]) -> tuple[float | None, float | None]:
+    """The one axis every Work card shares: earliest start → latest activity across
+    ALL groups. Threaded into each card so a bar at a given column means the same
+    instant on every card, and you can read which group's work came first."""
+
+    los: list[float] = []
+    his: list[float] = []
+    for w in worksets:
+        lanes = [l for l in (w.get("sessions") or []) if isinstance(l, dict)]
+        lo, hi = _timeline_bounds(lanes)
+        if lo is not None:
+            los.append(lo)
+        if hi is not None:
+            his.append(hi)
+    return (min(los) if los else None, max(his) if his else None)
+
+
 def _workset_timeline(
     lanes: list[dict],
     pal: dict[str, str],
@@ -2333,23 +2492,34 @@ def _workset_timeline(
     *,
     win_start: float | None = None,
     win_end: float | None = None,
+    axis_bounds: tuple[float | None, float | None] | None = None,
     max_rows: int = _CARD_TIMELINE_ROWS,
     focus_key: str | None = None,
 ) -> dict[str, Any]:
     """The shared cross-agent axis: one row per member session — a status pip +
     title in a fixed left column, then a track where a block glyph sits at the
     session's start time, coloured by its agent. With ``win_start/win_end`` it
-    draws a ZOOMED window (lanes outside it are culled, timeless lanes kept), and
-    ``focus_key`` bolds the row whose session_key matches (the scrubber cursor).
-    Positions snap to character cells — a duration under one cell quantises to one
-    column (the honest terminal ceiling). Returns markup rows + counts + geometry."""
+    draws a ZOOMED window (lanes outside it are culled, timeless lanes kept).
+    ``axis_bounds`` instead pins the axis to an OUTER window (e.g. one shared
+    across every Work card) without culling — every lane is drawn, positioned
+    against that common range so bars line up card-to-card. ``focus_key`` bolds
+    the row whose session_key matches (the scrubber cursor). Positions snap to
+    character cells — a duration under one cell quantises to one column (the
+    honest terminal ceiling). Returns markup rows + counts + geometry."""
 
     left_col = max(20, min(34, width // 3))
     track = max(12, width - left_col - 1)
     data0, data1 = _timeline_bounds(lanes)
     zoomed = win_start is not None and win_end is not None
-    a0 = win_start if zoomed else data0
-    a1 = win_end if zoomed else data1
+    shared = (not zoomed and axis_bounds is not None
+              and axis_bounds[0] is not None and axis_bounds[1] is not None
+              and axis_bounds[1] > axis_bounds[0])
+    if zoomed:
+        a0, a1 = win_start, win_end
+    elif shared:
+        a0, a1 = axis_bounds
+    else:
+        a0, a1 = data0, data1
 
     if zoomed:
         visible = [l for l in lanes if _ZoomWindow.lane_visible(l.get("first_activity_at"), l.get("last_activity_at"), a0, a1)]
@@ -2406,10 +2576,13 @@ def _workset_timeline(
     }
 
 
-def _workset_card_markup(w: dict, pal: dict[str, str], width: int = 140) -> str:
+def _workset_card_markup(w: dict, pal: dict[str, str], width: int = 140,
+                         *, axis_bounds: tuple[float | None, float | None] | None = None) -> str:
     """One folder grouping as a card: name + 'grouped by folder' chip, the KPI
     SUM row, the agent legend, the shared cross-agent timeline, and the honesty
-    note (the total is a labelled sum of independent receipts, not a verdict)."""
+    note (the total is a labelled sum of independent receipts, not a verdict).
+    ``axis_bounds`` pins this card's timeline to a window shared across every
+    card, so a bar's horizontal position is comparable from one card to the next."""
 
     summary = w.get("summary") if isinstance(w.get("summary"), dict) else {}
     lanes = [l for l in (w.get("sessions") or []) if isinstance(l, dict)]
@@ -2441,7 +2614,7 @@ def _workset_card_markup(w: dict, pal: dict[str, str], width: int = 140) -> str:
         if isinstance(s, dict)
     )
 
-    tl = _workset_timeline(lanes, pal, width)
+    tl = _workset_timeline(lanes, pal, width, axis_bounds=axis_bounds)
 
     notes = [
         f"[{pal['dim']}]ⓘ Grouped because you pointed this at a folder. Each session keeps its own "
@@ -2588,12 +2761,9 @@ def _workset_detail_markup(card: dict, pal: dict[str, str], width: int = 140, *,
     if focused is not None:
         blocks += ["", _lane_facts(focused, pal, width)]
 
-    blocks += [
-        "",
-        f"[{pal['dim']}]"
-        f"[b {pal['accent']}]↑↓[/] select   [b {pal['accent']}]+ −[/] zoom   "
-        f"[b {pal['accent']}]0[/] reset   [b {pal['accent']}]← →[/] pan   [b {pal['accent']}]esc[/] back[/]",
-    ]
+    # No inline key hint: the screen docks a native Footer driven by the real
+    # bindings (Move / Zoom / Reset / Pan / Back), so guidance stays visible and
+    # never scrolls away with the body.
     return "\n".join(blocks)
 
 
@@ -2675,8 +2845,9 @@ def _build_dashboard_parts(
             for line in _wrap_words(str(next_step), half_w - 2):
                 rows.append(f"[{pal['ink']} on {pal['chip']}]{(' ' + _escape(line)):<{half_w}}[/]")
         rows.append("")
+        # Only ↵ (dash_review) is wired; the old " y Copy review brief " chip had no
+        # binding or clipboard path, so it is dropped rather than left a dead cue.
         rows.append(f"[{pal['accent']} on {pal['ta']}] ↵ Review evidence [/]  "
-                    f"[{pal['muted']} on {pal['chip']}] y Copy review brief [/]  "
                     f"[{pal['accent']}]View queue →[/]")
         attn = "\n".join(rows)
     else:
@@ -2724,21 +2895,21 @@ def _build_dashboard_parts(
             ) if p and p != "—")
             # Truncate title so title+meta always fit the fixed TASK column, so the
             # OUTCOME and EVIDENCE columns snap to the same x on every row.
-            avail = max(8, tcol - 4 - (len(suffix) if suffix else 0))
-            tt = title if len(title) <= avail else title[: avail - 1] + "…"
+            avail = max(8, tcol - 4 - (_cell_len(suffix) if suffix else 0))
+            tt = _trunc(title, avail)
             if suffix:
                 tmarkup = f"[{pal['ink']}]{_escape(tt)}[/]  [{pal['dim']}]{_escape(suffix)}[/]"
-                tvis = len(tt) + 2 + len(suffix)
+                tvis = _cell_len(tt) + 2 + _cell_len(suffix)
             else:
                 tmarkup = f"[{pal['ink']}]{_escape(tt)}[/]"
-                tvis = len(tt)
+                tvis = _cell_len(tt)
             blabel = decision_label(dkey)
             _fg, wash = _decision_colors(dkey, pal)
-            bvis = len(blabel) + (2 if wash is not None else 0)
+            bvis = _cell_len(blabel) + (2 if wash is not None else 0)
             short = _coverage_short(ev_s)
             cov = f"{short} supported" if "/" in short else short
             ev = f"{pip(ekey, pal)} [{pal['muted']}]{_escape(cov)}[/]"
-            evis = 2 + len(cov)
+            evis = 2 + _cell_len(cov)
             trows.append((tmarkup, tvis, decision_badge(dkey, pal), bvis, ev, evis,
                           receipt_cost_text(s.get("cost") or {})))
         # Reserve margin for the pane's vertical scrollbar (~2 cols) plus the
@@ -2799,30 +2970,44 @@ def _checks_count(ev: dict, pal: dict[str, str]) -> tuple[str, str]:
     return f"{passed}/{total}", (pal["coral"] if failed else pal["green"])
 
 
-def _work_card_markup(s: dict, pal: dict[str, str], *, expanded: bool = False) -> str:
-    """One receipt as a master-list card. The highlighted card EXPANDS to a
-    Claims/Checks grid (the GUI's selected card); the rest stay compact — a title,
-    badge, and one pip-led meta line — so the list keeps a clear hierarchy."""
+def _work_row_cells(s: dict, pal: dict[str, str], tcol: int) -> tuple[list[Any], str]:
+    """One receipt as a DataTable row: Task / Outcome / Evidence / Cost / Age, each
+    a single-line Rich Text so columns align and sort. The Task title is truncated
+    cell-width-aware (CJK-safe) to ``tcol`` so it never forces a horizontal scroll.
+    Also returns a plain-text mirror of the row for headless tests. The detail pane
+    is authoritative for everything a compact row can't show."""
 
     tid = str(s.get("task_id"))
     dkey = str((s.get("decision_status") or {}).get("key"))
     ev = s.get("evidence_strength") or {}
     ekey = str(ev.get("key"))
-    client = str((s.get("primary_root") or {}).get("client") or s.get("project") or "")
     cost = receipt_cost_text(s.get("cost") or {})
     age = _humanize_ago(s.get("last_activity_at"), time.time())
-    title_line = f"[b {pal['ink']}]{_escape(str(s.get('title') or tid))}[/]"
-    if expanded:
-        cov = _coverage_short(ev)
-        cval, ccol = _checks_count(ev, pal)
-        col = 15
-        grid = (f"[{pal['dim']}]{'CLAIMS':<{col}}CHECKS[/]\n"
-                f"[{pal['ink']}]{pip(ekey, pal)} {_escape(cov):<{col - 2}}[/][{ccol}]{cval}[/]")
-        meta = " · ".join(p for p in (client, cost, age) if p and p != "—")
-        return f"{title_line}\n{decision_badge(dkey, pal)}\n{grid}\n[{pal['dim']}]{_escape(meta)}[/]"
-    meta = " · ".join(p for p in (_coverage_short(ev), client, cost, age) if p and p != "—")
-    return (f"{title_line}\n{decision_badge(dkey, pal)}\n"
-            f"{pip(ekey, pal)} [{pal['dim']}]{_escape(meta)}[/]")
+    cov = _coverage_short(ev)
+    full_title = str(s.get("title") or tid)
+    title = _trunc(full_title, tcol)
+    outcome = decision_label(dkey)
+    fg, _wash = _decision_colors(dkey, pal)
+
+    task_cell = _RText(title, style=pal["ink"], no_wrap=True, overflow="ellipsis")
+    outcome_cell = _RText(_trunc(outcome, 14), style=fg, no_wrap=True)
+    # Evidence: the pip shape carries the grade; add a compact P/T checks count only
+    # when the receipt is GRADEABLE and checks ran. Never show a green passing tally
+    # next to an ungradeable receipt (its checks are unattributed pool runs, not
+    # evidence for this task) — that would overstate. The hollow pip says the rest.
+    cval, ccol = _checks_count(ev, pal)
+    ev_text = _RText.from_markup(pip(ekey, pal))
+    if ev.get("gradeable") and cval != "no runs":
+        ev_text.append(" ")
+        ev_text.append(cval, style=ccol)
+    cost_cell = _RText(cost, style=pal["dim"], justify="right")
+    # The "Age" header already says "ago"; drop the suffix so the cell fits.
+    age_cell = _RText(age.replace(" ago", ""), style=pal["dim"], no_wrap=True)
+    cells: list[Any] = [task_cell, outcome_cell, ev_text, cost_cell, age_cell]
+    # Mirror carries the FULL title (not the width-truncated cell) so headless
+    # tests can assert row content independent of the terminal width.
+    plain = " · ".join(p for p in (full_title, outcome, cov, cost, age) if p and p != "—")
+    return cells, plain
 
 
 def _kv_grid(cells: list[tuple[str, str]], pal: dict[str, str], width: int) -> str:
@@ -2831,7 +3016,7 @@ def _kv_grid(cells: list[tuple[str, str]], pal: dict[str, str], width: int) -> s
     (a lighter look than the KPI strips, which do carry ``│`` dividers)."""
 
     def pad(text: str) -> str:
-        return _escape(text + " " * max(3, width - len(text)))
+        return _escape(text + " " * max(3, width - _cell_len(text)))
 
     labels = "".join(f"[{pal['dim']}]{pad(c[0].upper())}[/]" for c in cells)
     values = "".join(f"[{pal['ink']}]{pad(str(c[1]))}[/]" for c in cells)
@@ -2864,7 +3049,7 @@ def _recent_table(rows: list[tuple[str, int, str, int, str, int, str]], pal: dic
         return markup + " " * max(2, target - vis)
 
     def head_cell(text: str, target: int) -> str:
-        return f"[{pal['dim']}]{_escape(text.upper())}[/]" + " " * max(2, target - len(text))
+        return f"[{pal['dim']}]{_escape(text.upper())}[/]" + " " * max(2, target - _cell_len(text.upper()))
 
     header = (head_cell("Task", tcol) + head_cell("Outcome", ocol)
               + head_cell("Evidence", ecol) + f"[{pal['dim']}]{'COST':>{max(4, tw - tcol - ocol - ecol)}}[/]")
@@ -2875,7 +3060,7 @@ def _recent_table(rows: list[tuple[str, int, str, int, str, int, str]], pal: dic
         title_cell = tmarkup + " " * max(1, tcol - tvis)
         left = title_cell + pad_vis(badge, bvis, ocol) + pad_vis(ev, evis, ecol)
         left_vis = tcol + max(ocol, bvis + 2) + max(ecol, evis + 2)
-        gap = max(1, tw - left_vis - len(cost))
+        gap = max(1, tw - left_vis - _cell_len(cost))
         out.append("")  # a blank line before each row — the artifact's airier rhythm
         out.append(left + " " * gap + f"[{pal['ink']}]{_escape(cost)}[/]")
     return "\n".join(out)
@@ -2887,7 +3072,7 @@ def _kpi_cells(cells: list[tuple[str, str, str]], pal: dict[str, str], width: in
     size, so prominence comes from weight + the labelled block, not size)."""
 
     def pad(text: str) -> str:
-        return _escape(text + " " * max(2, width - len(text)))
+        return _escape(text + " " * max(2, width - _cell_len(text)))
 
     sep = f"[{pal['line']}]│[/] "
     labels = sep.join(f"[{pal['dim']}]{pad(c[0].upper())}[/]" for c in cells)
@@ -2924,7 +3109,7 @@ def _wrap_words(text: str, width: int) -> list[str]:
     lines: list[str] = []
     cur = ""
     for w in words:
-        if cur and len(cur) + 1 + len(w) > width:
+        if cur and _cell_len(cur) + 1 + _cell_len(w) > width:
             lines.append(cur)
             cur = w
         else:
@@ -3234,12 +3419,20 @@ def _build_steps_parts(receipt: dict, checks: list[dict], pal: dict[str, str], w
         try:
             from .task_timeline import build_timeline_events
 
-            events = build_timeline_events(task, checks=checks)
+            # Let build_timeline_events use the RAW task checks (checks=None), exactly
+            # like the app's /v1 timeline route. The projected `checks` list carries
+            # its time as "at", but build_timeline_events reads "created_at" — so
+            # passing it made every check timeless (all bunched, faded, at the start:
+            # the old 'messy' activity timeline). The raw checks carry created_at.
+            events = build_timeline_events(task)
         except Exception:  # noqa: BLE001
             events = []
         if events:
-            tw = max(46, width - 6)
-            tl = _task_activity_timeline(events, pal, tw)
+            # Size the timeline to the DETAIL COLUMN (dw), not the full terminal.
+            # This card renders in the ~54% right column, so a full-width track
+            # would overflow and wrap — and a wrapped row throws every block off
+            # its axis (the old 'messy' timeline). Match the section rules' width.
+            tl = _task_activity_timeline(events, pal, dw)
             body.append("")
             body.append(f"[{pal['line']}]{'─' * dw}[/]")
             body.append(_cap(f"Activity · {len(events)} events", pal["dim"]))
@@ -3265,16 +3458,15 @@ def _build_steps_parts(receipt: dict, checks: list[dict], pal: dict[str, str], w
             body.extend(_check_rows(c, pal, now))
             body.append("")
 
-    # Other current checks (passed / skipped), capped.
+    # Other current checks (passed / skipped) — all of them. The detail pane
+    # scrolls by keyboard (ctrl+d / ctrl+u — pagedown is taken by the list cursor),
+    # so we list the full set like the app does rather than capping at 4 behind a
+    # "▾ Show more" cue that nothing could open.
     body.append(f"[{pal['line']}]{'─' * dw}[/]")
     body.append(_cap(f"Other current checks · {len(other)}", pal["dim"]))
     body.append("")
-    shown = other[:4]
-    for c in shown:
+    for c in other:
         body.extend(_check_rows(c, pal, now))
-        body.append("")
-    if len(other) > len(shown):
-        body.append(f"[{pal['accent']}]▾ Show {len(other) - len(shown)} more current checks[/]")
         body.append("")
 
     # Files touched by the checks.
