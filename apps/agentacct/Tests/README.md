@@ -358,6 +358,7 @@ text sizes, and both appearances; transient states render at the standard viewpo
 | accessibility5 compact and Arabic RTL stress | 360 × 4000 pt, light/dark | `work-session-steps-{compact,rtl}-accessibility-*.png` |
 | all-redacted passing checks | 760 × 700 pt, light/dark; summary first, redaction stated once, lone passed group without a heading | `work-session-steps-redacted-checks-*.png` |
 | decision badge gallery | 760 × 760 pt, light/dark; every legend key as page and row badge | `work-components-decision-badges-*.png` |
+| provenance chip gallery | 760 × 420 pt, light/dark; every provenance token as its chip beside the raw token | `work-components-provenance-chips-*.png` |
 
 For an ad-hoc render that does not compare or update references:
 

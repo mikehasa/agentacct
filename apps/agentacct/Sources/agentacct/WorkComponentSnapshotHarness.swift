@@ -6,6 +6,7 @@ import SwiftUI
 /// vocabulary rather than wherever a fixture happens to use it.
 enum WorkComponentSnapshotKind: String, CaseIterable {
     case decisionBadges = "decision-badges"
+    case provenanceChips = "provenance-chips"
 }
 
 struct WorkComponentSnapshotConfiguration {
@@ -21,6 +22,7 @@ struct WorkComponentSnapshotConfiguration {
 
     static let reviewConfigurations: [Self] = [
         (WorkComponentSnapshotKind.decisionBadges, CGFloat(760), CGFloat(760)),
+        (.provenanceChips, 760, 420),
     ].flatMap { kind, width, height in
         [
             Self(kind: kind, width: width, height: height, colorScheme: .light),
@@ -103,9 +105,28 @@ struct WorkComponentSnapshotScene: View {
             switch kind {
             case .decisionBadges:
                 decisionBadges
+            case .provenanceChips:
+                provenanceChips
             }
         }
         .padding(Space.l)
+    }
+
+    /// Every provenance token the daemon emits, as the chip the reader sees
+    /// beside the raw token, plus a client name that must pass through.
+    private var provenanceChips: some View {
+        VStack(alignment: .leading, spacing: Space.s) {
+            SectionCaption(text: "Provenance chips")
+            ForEach(["client_log", "mcp", "hook", "transcript_scan", "ci", "external", "provider", "none", "claude-code"], id: \.self) { token in
+                HStack(alignment: .center, spacing: Space.l) {
+                    ProvenanceChip(text: token)
+                        .frame(width: 170, alignment: .leading)
+                    Text(token)
+                        .workFont(.dataSmall)
+                        .foregroundStyle(Theme.muted)
+                }
+            }
+        }
     }
 
     /// Every decision key the legend defines, as the page badge and the row
