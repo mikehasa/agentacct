@@ -599,7 +599,9 @@ def plan_share_headline(plan_share: Mapping[str, Any] | None) -> str:
             shown = "≈<0.1%"
         else:
             shown = "≈0%"
-        return f"{shown} of weekly plan"
+        # The receipt row is labelled "Weekly plan"; the value names the
+        # allowance rather than repeating the label.
+        return f"{shown} of allowance"
     if state == "calibrating":
         return "calibrating — not enough 7-day history yet"
     if state == "never":

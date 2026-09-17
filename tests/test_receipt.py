@@ -776,15 +776,15 @@ def test_plan_share_headline_is_calibrated_or_nothing() -> None:
     # Calibrated: a real percentage, with the <0.1% band and an honest ≈0%.
     assert (
         plan_share_headline({"pct": 12.2, "calibration_state": "calibrated"})
-        == "≈12.2% of weekly plan"
+        == "≈12.2% of allowance"
     )
     assert (
         plan_share_headline({"pct": 0.05, "calibration_state": "calibrated"})
-        == "≈<0.1% of weekly plan"
+        == "≈<0.1% of allowance"
     )
     assert (
         plan_share_headline({"pct": 0.0, "calibration_state": "calibrated"})
-        == "≈0% of weekly plan"
+        == "≈0% of allowance"
     )
     # Not calibrated: a NAMED state, never a number — even when a pct is present.
     assert (
