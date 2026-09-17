@@ -24,13 +24,16 @@ from typer.testing import CliRunner  # noqa: E402
 from agentacct.cli import app as cli_app  # noqa: E402
 from agentacct.client_usage import ClientUsageEvent  # noqa: E402
 from agentacct.service import SentinelService  # noqa: E402
+from agentacct.work_ledger import _project_identity  # noqa: E402
 import agentacct.tui as tui  # noqa: E402
 from agentacct.tui import (  # noqa: E402
     AgentAcctTUI,
     HelpScreen,
+    WorksetDetailScreen,
     _DARK,
     _LIGHT,
     _WORK_TABS,
+    _ZoomWindow,
 )
 from textual.widgets import Input, ListView  # noqa: E402
 
@@ -231,7 +234,7 @@ def test_sources_markup_builder_renders_states():
     }
     parts = tui._build_sources_parts(snap, "/tmp/store", _DARK)
     plain = Text.from_markup("\n".join(parts.values())).plain
-    assert "Evidence sources" in plain
+    assert "Diagnostics" in plain
     assert "Reporting" in plain and "Degraded" in plain
     assert "CC" in plain  # claude-code monogram
     assert "Running" in plain
@@ -311,7 +314,7 @@ def test_work_receipt_drills_into_steps_and_back(tmp_path):
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
-            await pilot.press("2")  # Work
+            await pilot.press("3")  # Sessions (receipts)
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
@@ -329,6 +332,9 @@ def test_work_receipt_drills_into_steps_and_back(tmp_path):
             assert app.query_one("#work-steps").display            # steps card visible
             assert not app.query_one("#work-outcome").display      # receipt cards hidden
             assert "SESSIONS" in Text.from_markup(app._steps_head).plain
+            # The per-task activity timeline (recorded work + checks on a time axis).
+            steps_plain = Text.from_markup(app._steps_text).plain
+            assert "ACTIVITY" in steps_plain
 
             app.action_steps_back()
             await pilot.pause()
@@ -354,7 +360,13 @@ def test_mounts_and_switches_panes(tmp_path):
             await pilot.pause()
             assert app.current_pane == "dashboard"
             assert "agentacct" in Text.from_markup(app._topbar_text).plain
-            for key, pane in (("2", "work"), ("3", "usage"), ("4", "sources"), ("1", "dashboard")):
+            for key, pane in (
+                ("2", "worksets"),
+                ("3", "work"),
+                ("4", "usage"),
+                ("5", "sources"),
+                ("1", "dashboard"),
+            ):
                 await pilot.press(key)
                 await pilot.pause()
                 assert app.current_pane == pane
@@ -455,7 +467,7 @@ def test_work_list_populates_and_detail_follows(tmp_path):
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
-            await pilot.press("2")
+            await pilot.press("3")
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
@@ -480,7 +492,7 @@ def test_work_refreshes_after_poll_without_manual_refresh(tmp_path):
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
-            await pilot.press("2")
+            await pilot.press("3")
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
@@ -511,7 +523,7 @@ def test_work_status_tab_filters(tmp_path):
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
-            await pilot.press("2")
+            await pilot.press("3")
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
@@ -535,7 +547,7 @@ def test_work_filter_narrows_rows(tmp_path):
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
-            await pilot.press("2")
+            await pilot.press("3")
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
@@ -556,7 +568,7 @@ def test_work_sort_cycles(tmp_path):
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
-            await pilot.press("2")
+            await pilot.press("3")
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
@@ -578,7 +590,7 @@ def test_work_cursor_follows_selection(tmp_path):
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
-            await pilot.press("2")
+            await pilot.press("3")
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
@@ -589,6 +601,275 @@ def test_work_cursor_follows_selection(tmp_path):
                 await pilot.pause()
                 assert app._selected_task_id is not None
                 assert app._selected_task_id != first
+
+    _run(scenario())
+
+
+# --------------------------------------------------------------------------- #
+# Worksets ("Work" tab)                                                        #
+# --------------------------------------------------------------------------- #
+
+def _seed_workset(tmp: Path, *, name: str = "proj") -> str:
+    """The default seed already runs claude-code AND codex sessions in /tmp/proj;
+    group that folder so the Work tab has one cross-agent card to draw."""
+
+    _seed(tmp)
+    svc = SentinelService(tmp)
+    identity = _project_identity("/tmp/proj")
+    svc.record_workset_action(
+        action="create",
+        workset_id="ws_proj",
+        name=name,
+        project_identity=identity,
+        expected_revision=0,
+        idempotency_key="test:ws_proj:create",
+    )
+    return identity
+
+
+def test_worksets_pane_renders_cross_agent_timeline(tmp_path):
+    _seed_workset(tmp_path, name="webapp")
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.press("2")  # Work (the folder-anchored groupings)
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            plain = Text.from_markup(app._worksets_text).plain
+            # The card: the group name + the "grouped by folder" chip.
+            assert "webapp" in plain
+            assert "grouped by folder" in plain
+            # The cross-agent legend and the shared-axis block glyph (the timeline).
+            assert "Claude Code" in plain and "Codex" in plain
+            assert "█" in plain
+            # The honesty note: a labelled SUM, never a re-graded combined verdict.
+            assert "not a combined verdict" in plain
+            # A real card ListItem mounted (not just the empty state).
+            lv = app.query_one("#worksets-list", ListView)
+            assert len(lv.children) >= 1
+
+    _run(scenario())
+
+
+def test_worksets_empty_state_when_no_groups(tmp_path):
+    _seed(tmp_path)  # sessions, but no workset grouping created
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.press("2")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            plain = Text.from_markup(app._worksets_text).plain
+            assert "No work groups yet" in plain
+
+    _run(scenario())
+
+
+def test_worksets_card_markup_survives_hostile_fields():
+    """A group name / session title with stray markup must not crash the view."""
+
+    pal = _DARK
+    card = {
+        "name": "webapp [/] ]",
+        "summary": {
+            "session_count": 2,
+            "sources": [{"client": "claude-code", "session_count": 1}, {"client": "codex", "session_count": 1}],
+            "first_activity_at": 1000.0,
+            "last_activity_at": 1000.0 + 4 * 86400,
+            "estimated_cost_usd": 70.5,
+            "cost_complete": True,
+            "priced_sessions": 2,
+            "unpriced_sessions": 0,
+            "cost_confidence": "estimated_from_tokens",
+        },
+        "sessions": [
+            {"title": "Emit OTLP [/] metrics", "client": "claude-code", "status": "completed",
+             "first_activity_at": 1000.0, "last_activity_at": 1100.0},
+            {"title": "Trace the slow query", "client": "codex", "status": "blocked",
+             "first_activity_at": 1000.0 + 4 * 86400, "last_activity_at": 1000.0 + 4 * 86400},
+        ],
+        "sessions_total": 2,
+        "sessions_truncated": False,
+    }
+    markup = tui._workset_card_markup(card, pal, width=140)
+    # markup-safety invariant: it must parse cleanly as Rich markup.
+    Text.from_markup(markup)
+    assert "grouped by folder" in Text.from_markup(markup).plain
+    assert "~$70.50" not in markup  # complete estimate is ≈$, not a partial ~$
+    assert "≈$70.50" in markup
+
+
+def test_worksets_timeline_draws_duration_bars():
+    """A session is a BAR spanning first→last activity: a long run is a wide bar,
+    a point-in-time session is a single cell (the fix for 'everything is a square')."""
+
+    pal = _DARK
+
+    def blocks(markup):
+        return Text.from_markup(markup).plain.count("█")
+
+    base = 1_700_000_000.0  # realistic epoch times (0.0 is the "no timestamp" sentinel)
+    lanes = [
+        {"session_key": "k1", "title": "long run", "client": "claude-code", "status": "completed",
+         "first_activity_at": base, "last_activity_at": base + 90_000.0},
+        {"session_key": "k2", "title": "quick", "client": "codex", "status": "completed",
+         "first_activity_at": base + 95_000.0, "last_activity_at": base + 95_000.0},
+    ]
+    tl = tui._workset_timeline(lanes, pal, 120)
+    long_bar, short_bar = blocks(tl["rows"][0]), blocks(tl["rows"][1])
+    assert short_bar == 1               # a point session quantises to one cell
+    assert long_bar >= 10               # a long session is a clearly multi-cell bar
+    assert long_bar > short_bar
+
+
+def test_zoom_window_math_matches_swift():
+    # Half-range window centred: 2x zoom over [0,100] -> [25,75], 50% coverage.
+    w = _ZoomWindow(0.0, 100.0, 2.0, 0.5)
+    assert (round(w.start), round(w.end)) == (25, 75)
+    assert round(w.coverage(0.0, 100.0), 3) == 0.5
+    # Clamp: a window pushed past the edge slides back inside the data.
+    edge = _ZoomWindow(0.0, 100.0, 2.0, 1.0)
+    assert round(edge.end) == 100 and round(edge.start) == 50
+    # applyZoom keeps the anchored time fixed; zoom is clamped to [1, 64].
+    z, p = _ZoomWindow.apply_zoom(1.0, 0.5, 1000.0, 0.5, 0.0, 100.0)
+    assert z == 64.0
+    # A timeless lane stays visible in any window; a timed lane out of range culls.
+    assert _ZoomWindow.lane_visible(None, None, 10.0, 20.0) is True
+    assert _ZoomWindow.lane_visible(5.0, 5.0, 10.0, 20.0) is False
+    assert _ZoomWindow.lane_visible(15.0, 15.0, 10.0, 20.0) is True
+
+
+def test_worksets_detail_opens_zooms_and_scrubs(tmp_path):
+    _seed_workset(tmp_path, name="webapp")
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test(size=(150, 45)) as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.press("2")  # Work (worksets)
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.press("enter")  # open the highlighted group's timeline
+            await pilot.pause()
+            assert isinstance(app.screen, WorksetDetailScreen)
+            body = Text.from_markup(app.screen._body_text).plain
+            assert "full range" in body
+            # Zoom in: the coverage line becomes a percentage of the full range.
+            await pilot.press("plus")
+            await pilot.pause()
+            assert "% of range" in Text.from_markup(app.screen._body_text).plain
+            # Reset returns to the full range.
+            await pilot.press("0")
+            await pilot.pause()
+            assert "full range" in Text.from_markup(app.screen._body_text).plain
+            # Scrub down: the focused session's own facts read out.
+            await pilot.press("down")
+            await pilot.pause()
+            facts = Text.from_markup(app.screen._body_text).plain
+            assert "duration" in facts and "cost" in facts and "tokens" in facts
+            # Esc returns to the Work list.
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.current_pane == "worksets"
+
+    _run(scenario())
+
+
+def test_dashboard_review_deeplink_jumps_to_attention(tmp_path):
+    _seed(tmp_path)  # includes a blocked (attention) task
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert app.current_pane == "dashboard"
+            await pilot.press("enter")  # Review evidence deep-link
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert app.current_pane == "work"
+            assert app._work_status == "attention"
+
+    _run(scenario())
+
+
+def test_worksets_create_group_via_g(tmp_path):
+    _seed(tmp_path)  # cross-agent sessions in /tmp/proj, but no grouping yet
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test(size=(150, 45)) as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.press("2")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert "No work groups yet" in Text.from_markup(app._worksets_text).plain
+            await pilot.press("g")  # open the create flow
+            await pilot.pause()
+            from agentacct.tui import WorksetCreateScreen
+            assert isinstance(app.screen, WorksetCreateScreen)
+            await pilot.press("enter")  # folder row -> name field (name prefilled)
+            await pilot.pause()
+            await pilot.press("enter")  # submit the prefilled name -> create
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert app.current_pane == "worksets"
+            plain = Text.from_markup(app._worksets_text).plain
+            assert "grouped by folder" in plain  # a real card exists now
+            assert len(app._worksets) == 1
+
+    _run(scenario())
+
+
+def test_worksets_rename_and_delete(tmp_path):
+    _seed_workset(tmp_path, name="webapp")
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test(size=(150, 45)) as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.press("2")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert app._worksets and app._worksets[0]["name"] == "webapp"
+            # Rename.
+            await pilot.press("e")
+            await pilot.pause()
+            from agentacct.tui import _WorksetPromptScreen, _WorksetConfirmScreen
+            assert isinstance(app.screen, _WorksetPromptScreen)
+            app.screen.query_one("#ws-prompt-input", Input).value = "renamed-web"
+            await pilot.press("enter")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert app._worksets and app._worksets[0]["name"] == "renamed-web"
+            # Delete -> back to the empty state.
+            await pilot.press("x")
+            await pilot.pause()
+            assert isinstance(app.screen, _WorksetConfirmScreen)
+            await pilot.press("y")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert len(app._worksets) == 0
+            assert "No work groups yet" in Text.from_markup(app._worksets_text).plain
 
     _run(scenario())
 
@@ -606,7 +887,7 @@ def test_usage_shows_capacity_and_recorded(tmp_path):
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
-            await pilot.press("3")
+            await pilot.press("4")
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
@@ -627,7 +908,7 @@ def test_usage_range_cycles(tmp_path):
         app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("3")
+            await pilot.press("4")
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
@@ -652,10 +933,10 @@ def test_sources_renders_local_only(tmp_path):
         app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("4")
+            await pilot.press("5")
             await pilot.pause()
             plain = Text.from_markup(app._sources_text).plain
-            assert "Evidence sources" in plain
+            assert "Diagnostics" in plain
             assert "Nothing leaves this machine" in plain
 
     _run(scenario())
@@ -680,17 +961,17 @@ def test_markup_safety_with_hostile_fields(tmp_path):
             await pilot.pause()
             # every composed pane string must parse as valid markup
             Text.from_markup(app._dashboard_text)
-            await pilot.press("2")
+            await pilot.press("3")
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
             Text.from_markup(app._work_detail_text)
-            await pilot.press("3")  # usage
+            await pilot.press("4")  # usage
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
             Text.from_markup(app._usage_text)
-            await pilot.press("4")  # sources
+            await pilot.press("5")  # sources
             await pilot.pause()
             Text.from_markup(app._sources_text)
 

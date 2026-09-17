@@ -57,7 +57,7 @@ Provider-reported quota windows sit beside what each agent actually used. Tokens
 
 ![agentacct tui: a Shift Brief whose primary attention item is a blocked claude-code task with its recorded reason, next step, and MCP-record provenance; a Signal rail with Working now, Capacity, Usage change, and Evidence trust; a Recent work table with outcome, evidence, and estimated cost; and a usage history sparkline.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-dashboard.png)
 
-`agentacct tui` shows the same Shift Brief, receipts, and capacity in your shell; press `?` for the keys. The terminal app has no folder-grouping tab.
+`agentacct tui` shows the same Shift Brief, receipts, and capacity in your shell — including the folder-anchored **Work** tab, where each group draws its sessions across every agent on one cross-agent timeline you can open (`↵`) and zoom/scrub by keyboard. Press `?` for the keys.
 
 ## Honest by design
 

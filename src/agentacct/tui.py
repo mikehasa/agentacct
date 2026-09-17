@@ -29,6 +29,7 @@ from __future__ import annotations
 import os
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +76,9 @@ _DARK: dict[str, str] = {
     "line": "#313D44", "hair": "#2C363C",
     "ink": "#F2F4F3", "muted": "#A5B0B4", "dim": "#71808A",
     "accent": "#82A6FF", "green": "#78D5A8", "amber": "#E7C66A", "coral": "#FF9B88",
+    # Per-agent source hues (mirror Swift Theme.sourceColor): Claude=accent,
+    # Codex=purple, OpenCode=teal, Hermes=magenta; every other client = muted.
+    "codex": "#B6A2F0", "opencode": "#53C6D6", "hermes": "#E39AC8",
     "ta": "#24365C", "tg": "#1E3B2F", "tm": "#3D3420", "tc": "#412620",
     "tn": "#2A343B", "chip": "#232E34", "spark": "#31456F",
 }
@@ -83,6 +87,9 @@ _LIGHT: dict[str, str] = {
     "line": "#DDDACF", "hair": "#E4E1D7",
     "ink": "#171A1D", "muted": "#59636B", "dim": "#79848B",
     "accent": "#245BDB", "green": "#1F7653", "amber": "#7A5A00", "coral": "#B63F2F",
+    # Per-agent source hues (mirror Swift Theme.sourceColor): Claude=accent,
+    # Codex=purple, OpenCode=teal, Hermes=magenta; every other client = muted.
+    "codex": "#6A4BC0", "opencode": "#0E8494", "hermes": "#A5457F",
     "ta": "#E8EEFB", "tg": "#E2F0E9", "tm": "#F7EFDA", "tc": "#F8E5E1",
     "tn": "#EDEBE3", "chip": "#F7F5F0", "spark": "#B9CBF2",
 }
@@ -435,13 +442,13 @@ def sparkline(values: list[float], pal: dict[str, str]) -> str:
 # ============================================================================ #
 
 _HELP_ROWS: tuple[tuple[str, str], ...] = (
-    ("1 – 4", "switch pane · Dashboard / Work / Usage / Sources"),
+    ("1 – 5", "switch pane · Dashboard / Work / Sessions / Usage / Diagnostics"),
     ("↑ ↓ / j k", "move cursor · detail follows"),
-    ("↵", "open · drill into a receipt"),
+    ("↵", "open · a work group's timeline, or drill into a receipt"),
     ("esc", "close this help overlay"),
-    ("/", "filter the current list (Work)"),
-    ("[ ]", "previous / next status tab (Work)"),
-    ("s", "cycle sort — attention / latest / cost (Work)"),
+    ("/", "filter the current list (Sessions)"),
+    ("[ ]", "previous / next status tab (Sessions)"),
+    ("s", "cycle sort — attention / latest / cost (Sessions)"),
     ("d", "cycle range — 7d / 30d / 90d / all (Usage)"),
     ("T", "cycle theme · dark / light / auto"),
     ("r", "refresh · re-import from client logs"),
@@ -471,21 +478,284 @@ class HelpScreen(ModalScreen):
         self.app.pop_screen()
 
 
+class WorksetDetailScreen(ModalScreen):
+    """One work group's full cross-agent timeline, keyboard-zoomable. The honest
+    terminal answer to the app's pinch/drag canvas: ↑↓ move a scrubber cursor
+    (its session's facts read out below), +/− zoom around it (discrete steps, the
+    exact WorksetZoomWindow math), 0 resets, ←→ pan. Positions snap to cells."""
+
+    BINDINGS = [
+        Binding("escape", "close", "Back"),
+        Binding("q", "close", "Back", show=False),
+        Binding("up", "focus(-1)", "Select", show=False),
+        Binding("down", "focus(1)", "Select", show=False),
+        Binding("k", "focus(-1)", show=False),
+        Binding("j", "focus(1)", show=False),
+        Binding("plus", "zoom(1.6)", "Zoom in", show=False),
+        Binding("equals_sign", "zoom(1.6)", show=False),
+        Binding("minus", "zoom(0.625)", "Zoom out", show=False),
+        Binding("underscore", "zoom(0.625)", show=False),
+        Binding("0", "reset_zoom", "Reset", show=False),
+        Binding("left", "pan(-1)", "Pan", show=False),
+        Binding("right", "pan(1)", "Pan", show=False),
+        Binding("h", "pan(-1)", show=False),
+        Binding("l", "pan(1)", show=False),
+    ]
+
+    def __init__(self, card: dict, pal: dict[str, str]) -> None:
+        super().__init__()
+        self._card = card
+        self._pal = pal
+        self._lanes = [l for l in (card.get("sessions") or []) if isinstance(l, dict)]
+        self._lo, self._hi = _timeline_bounds(self._lanes)
+        self._zoom = 1.0
+        self._pan = 0.5
+        self._focus = 0
+        self._recenter()
+        self._body_text = self._body_markup()  # plain-string mirror for headless tests
+
+    def compose(self) -> ComposeResult:
+        # A scroll container (not a plain Vertical): the full timeline + facts can
+        # exceed the box's max height, and an un-scrollable overflow fails to lay
+        # out. Content is built in compose so the Static is populated on first
+        # render.
+        yield VerticalScroll(Static(self._body_text, id="ws-detail-body"), id="ws-detail-box")
+
+    def on_mount(self) -> None:
+        # After the first layout the body Static has a real content width; repaint
+        # against it so the axis/track fit exactly (the compose-time estimate is
+        # conservative). Named on_mount (a message handler) — never _render.
+        self.call_after_refresh(self._repaint)
+
+    def _content_width(self) -> int:
+        try:
+            w = int(self.query_one("#ws-detail-body", Static).content_size.width)
+            if w > 10:
+                return w
+        except Exception:  # noqa: BLE001
+            pass
+        app = getattr(self, "app", None)
+        return max(48, int(getattr(getattr(app, "size", None), "width", 0) or 150) - 18)
+
+    def _body_markup(self) -> str:
+        return _workset_detail_markup(
+            self._card, self._pal, self._content_width(), zoom=self._zoom, pan=self._pan, focus_key=self._focus_key()
+        )
+
+    def _focus_key(self) -> str | None:
+        if 0 <= self._focus < len(self._lanes):
+            return str(self._lanes[self._focus].get("session_key"))
+        return None
+
+    def _focus_time(self) -> float | None:
+        if 0 <= self._focus < len(self._lanes):
+            t = self._lanes[self._focus].get("first_activity_at")
+            if isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0:
+                return float(t)
+        return None
+
+    def _recenter(self) -> None:
+        ft = self._focus_time()
+        if ft is not None and self._lo is not None and self._hi is not None and self._hi > self._lo:
+            self._pan = min(1.0, max(0.0, (ft - self._lo) / (self._hi - self._lo)))
+
+    def _repaint(self) -> None:
+        # NB: never name this ``_render`` — Textual reserves ``Widget._render``
+        # (it must return the visual; a None-returning override crashes the
+        # compositor with 'NoneType has no attribute render_strips').
+        body = self._body_markup()
+        self._body_text = body
+        try:
+            self.query_one("#ws-detail-body", Static).update(body)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def action_close(self) -> None:
+        self.app.pop_screen()
+
+    def action_focus(self, delta: int) -> None:
+        if not self._lanes:
+            return
+        self._focus = min(len(self._lanes) - 1, max(0, self._focus + delta))
+        self._recenter()
+        self._repaint()
+
+    def action_zoom(self, factor: float) -> None:
+        if self._lo is None or self._hi is None or self._hi <= self._lo:
+            return
+        # After a recenter the focused session sits at window centre, so anchoring
+        # the zoom at 0.5 keeps it fixed under the cursor.
+        self._zoom, self._pan = _ZoomWindow.apply_zoom(self._zoom, self._pan, factor, 0.5, self._lo, self._hi)
+        self._repaint()
+
+    def action_reset_zoom(self) -> None:
+        self._zoom, self._pan = 1.0, 0.5
+        self._recenter()
+        self._repaint()
+
+    def action_pan(self, direction: int) -> None:
+        if self._lo is None or self._hi is None or self._hi <= self._lo:
+            return
+        win = _ZoomWindow(self._lo, self._hi, self._zoom, self._pan)
+        step = (win.end - win.start) * 0.25 * direction
+        full = self._hi - self._lo
+        self._pan = min(1.0, max(0.0, self._pan + (step / full if full else 0.0)))
+        self._repaint()
+
+
+class _WorksetPromptScreen(ModalScreen):
+    """A one-line text prompt (rename). Enter submits, esc cancels."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, title: str, initial: str, pal: dict[str, str], on_submit) -> None:
+        super().__init__()
+        self._title = title
+        self._initial = initial
+        self._pal = pal
+        self._on_submit = on_submit
+
+    def compose(self) -> ComposeResult:
+        pal = self._pal
+        with Vertical(id="ws-prompt-box"):
+            yield Static(f"[b {pal['ink']}]{_escape(self._title)}[/]", id="ws-prompt-title")
+            yield Input(value=self._initial, placeholder="Name", id="ws-prompt-input")
+            yield Static(f"[{pal['dim']}][b {pal['accent']}]↵[/] save   [b {pal['accent']}]esc[/] cancel[/]")
+
+    def on_mount(self) -> None:
+        inp = self.query_one("#ws-prompt-input", Input)
+        inp.focus()
+        inp.cursor_position = len(self._initial)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "ws-prompt-input":
+            self.app.pop_screen()
+            self._on_submit(event.value.strip())
+
+    def action_cancel(self) -> None:
+        self.app.pop_screen()
+
+
+class _WorksetConfirmScreen(ModalScreen):
+    """A destructive-action confirm (delete). y/Enter confirms, n/esc cancels."""
+
+    BINDINGS = [
+        Binding("y", "confirm", "Delete"),
+        Binding("enter", "confirm", "Delete", show=False),
+        Binding("n", "cancel", "Keep", show=False),
+        Binding("escape", "cancel", "Keep"),
+    ]
+
+    def __init__(self, title: str, body: str, pal: dict[str, str], on_confirm) -> None:
+        super().__init__()
+        self._title = title
+        self._body = body
+        self._pal = pal
+        self._on_confirm = on_confirm
+
+    def compose(self) -> ComposeResult:
+        pal = self._pal
+        with Vertical(id="ws-confirm-box"):
+            yield Static(f"[b {pal['coral']}]{_escape(self._title)}[/]", id="ws-confirm-title")
+            yield Static(f"[{pal['muted']}]{_escape(self._body)}[/]")
+            yield Static(f"[{pal['dim']}][b {pal['coral']}]y[/] delete   [b {pal['accent']}]n[/] keep[/]")
+
+    def action_confirm(self) -> None:
+        self.app.pop_screen()
+        self._on_confirm()
+
+    def action_cancel(self) -> None:
+        self.app.pop_screen()
+
+
+class WorksetCreateScreen(ModalScreen):
+    """The 'point at a folder' create flow: pick an ungrouped folder (its sessions
+    across every agent join the group live), name it, and create. The write goes
+    through record_workset_action like the app — never a raw event."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, candidates: list[dict], pal: dict[str, str], on_create) -> None:
+        super().__init__()
+        self._cands = candidates
+        self._pal = pal
+        self._on_create = on_create
+        self._selected: str | None = None
+
+    def compose(self) -> ComposeResult:
+        pal = self._pal
+        with Vertical(id="ws-create-box"):
+            yield Static(f"[b {pal['ink']}]New work group[/]  [{pal['dim']}]point at a folder[/]", id="ws-create-title")
+            yield ListView(id="ws-create-list")
+            yield Input(placeholder="Group name", id="ws-create-name")
+            yield Static(
+                f"[{pal['dim']}][b {pal['accent']}]↑↓[/] pick folder   "
+                f"[b {pal['accent']}]↵[/] on the name to create   [b {pal['accent']}]esc[/] cancel[/]"
+            )
+
+    def on_mount(self) -> None:
+        pal = self._pal
+        lv = self.query_one("#ws-create-list", ListView)
+        for c in self._cands:
+            label = c.get("label") or c.get("project_identity")
+            sc = c.get("session_count")
+            srcs = ", ".join(_agent_label(s) for s in (c.get("sources") or []))
+            lv.append(ListItem(Static(
+                f"[{pal['ink']}]{_escape(str(label))}[/]  "
+                f"[{pal['dim']}]{sc} session{'s' if sc != 1 else ''} · {_escape(srcs)}[/]"
+            )))
+        if self._cands:
+            lv.index = 0
+            self._select(0)
+        lv.focus()
+
+    def _select(self, i: int) -> None:
+        if 0 <= i < len(self._cands):
+            self._selected = self._cands[i].get("project_identity")
+            self.query_one("#ws-create-name", Input).value = str(self._cands[i].get("label") or "")
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        if event.list_view.id == "ws-create-list" and event.list_view.index is not None:
+            self._select(event.list_view.index)
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        # Enter on a folder row moves to the name field.
+        if event.list_view.id == "ws-create-list":
+            self.query_one("#ws-create-name", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "ws-create-name":
+            name = event.value.strip()
+            if self._selected and name:
+                self.app.pop_screen()
+                self._on_create(self._selected, name)
+
+    def action_cancel(self) -> None:
+        self.app.pop_screen()
+
+
 # ============================================================================ #
 # The application.                                                             #
 # ============================================================================ #
 
+# The five destinations, in the macOS app's order. The internal ids keep their
+# original names (many call sites: the receipts pane is `work`, ingestion is
+# `sources`) but the LABELS mirror the renamed GUI: the receipts collection is
+# "Sessions", the new folder-anchored grouping pane is "Work" (`worksets`), and
+# ingestion health is "Diagnostics".
 _PANES: tuple[tuple[str, str], ...] = (
     ("dashboard", "Dashboard"),
-    ("work", "Work"),
+    ("worksets", "Work"),
+    ("work", "Sessions"),
     ("usage", "Usage"),
-    ("sources", "Sources"),
+    ("sources", "Diagnostics"),
 )
 
 # Contextual keybind hints shown in the status bar per pane. (key, label) pairs;
 # rendered with the key in accent. Global keys (?, q) are appended.
 _PANE_HINTS: dict[str, tuple[tuple[str, str], ...]] = {
-    "dashboard": (("1-4", "pane"),),
+    "dashboard": (("1-5", "pane"), ("↵", "review queue")),
+    "worksets": (("↑↓", "move"), ("↵", "timeline"), ("g", "new"), ("e", "rename"), ("x", "delete")),
     "work": (("↑↓", "move"), ("↵", "open"), ("/", "filter"), ("[ ]", "status"), ("s", "sort")),
     "usage": (("d", "range"), ("↑↓", "scroll")),
     "sources": (("↑↓", "source"),),
@@ -553,19 +823,54 @@ class AgentAcctTUI(App):
     #work-list > ListItem.-highlight > Static,
     #work-list > ListItem.--highlight > Static { background: $block-cursor-background; border-left: wide $primary; }
 
+    /* Worksets (the "Work" tab): a full-width stack of cards, each a selectable
+       ListItem; the highlighted group wears the accent edge + selected wash. */
+    #worksets-list { height: 1fr; background: $background; }
+    #worksets-list > ListItem { padding: 0 0 1 0; height: auto; background: $background; }
+    #worksets-list > ListItem > Static { padding: 1 2; background: $panel; border-left: wide $panel; }
+    #worksets-list > ListItem.-highlight > Static,
+    #worksets-list > ListItem.--highlight > Static { background: $block-cursor-background; border-left: wide $primary; }
+
     HelpScreen { align: center middle; }
     #help-box {
         width: 72; height: auto; padding: 1 2;
         background: $panel; border: round $primary;
     }
     #help-body { height: auto; }
+
+    /* The zoomable work-group timeline overlay. */
+    WorksetDetailScreen { align: center middle; }
+    #ws-detail-box {
+        width: 92%; max-width: 160; height: auto; max-height: 90%; padding: 1 2;
+        background: $panel; border: round $primary;
+    }
+    #ws-detail-body { height: auto; }
+
+    /* Worksets write overlays (create / rename / delete). */
+    _WorksetPromptScreen, _WorksetConfirmScreen, WorksetCreateScreen { align: center middle; }
+    #ws-prompt-box, #ws-confirm-box {
+        width: 64; height: auto; padding: 1 2; background: $panel; border: round $primary;
+    }
+    #ws-create-box {
+        width: 80; height: auto; max-height: 80%; padding: 1 2;
+        background: $panel; border: round $primary;
+    }
+    #ws-create-list { height: auto; max-height: 12; background: $background; margin: 1 0; }
+    #ws-create-list > ListItem { padding: 0 1; background: $background; }
+    #ws-create-list > ListItem.-highlight, #ws-create-list > ListItem.--highlight { background: $block-cursor-background; }
+    #ws-prompt-input, #ws-create-name {
+        margin: 1 0; border: round $border; background: $background; padding: 0 1;
+    }
+    #ws-prompt-input:focus, #ws-create-name:focus { border: round $primary; }
+    #ws-prompt-title, #ws-confirm-title, #ws-create-title { height: auto; }
     """
 
     BINDINGS = [
         Binding("1", "show_pane('dashboard')", "Dashboard"),
-        Binding("2", "show_pane('work')", "Work"),
-        Binding("3", "show_pane('usage')", "Usage"),
-        Binding("4", "show_pane('sources')", "Sources"),
+        Binding("2", "show_pane('worksets')", "Work"),
+        Binding("3", "show_pane('work')", "Sessions"),
+        Binding("4", "show_pane('usage')", "Usage"),
+        Binding("5", "show_pane('sources')", "Diagnostics"),
         Binding("question_mark", "help", "Help"),
         Binding("r", "refresh", "Refresh"),
         Binding("T", "cycle_theme", "Theme"),
@@ -578,6 +883,12 @@ class AgentAcctTUI(App):
         Binding("slash", "work_filter", "Filter", show=False),
         Binding("d", "usage_range", "Range", show=False),
         Binding("escape", "steps_back", "Back", show=False),
+        # Worksets write keys (gated to the Work pane in their actions).
+        Binding("g", "worksets_new", "New group", show=False),
+        Binding("e", "worksets_rename", "Rename group", show=False),
+        Binding("x", "worksets_delete", "Delete group", show=False),
+        # Dashboard deep-link: ↵ jumps to the attention queue (gated to Dashboard).
+        Binding("enter", "dash_review", "Review", show=False),
     ]
 
     def __init__(
@@ -641,6 +952,16 @@ class AgentAcctTUI(App):
         self._receipt_head: str = ""
         self._steps_head: str = ""
 
+        # Worksets ("Work" tab) state — folder-anchored groupings across agents.
+        self._worksets: list[dict] = []
+        self._worksets_total: int = 0
+        self._workset_candidates: list[dict] = []
+        self._worksets_built: bool = False
+        self._worksets_loading: bool = False
+        self._worksets_err: str | None = None
+        self._worksets_notice: str | None = None  # transient result of a write
+        self._worksets_text: str = ""  # plain-string mirror for headless tests
+
         # Usage + Sources pane state / test hooks.
         self._usage_range_index: int = 0
         self._usage_text: str = ""
@@ -665,6 +986,9 @@ class AgentAcctTUI(App):
                     yield Static("", id="dash-rail", classes="card")
                 yield Static("", id="dash-recent", classes="card")
                 yield Static("", id="dash-spark", classes="card")
+            with Vertical(id="worksets", classes="pane"):
+                yield Static("", id="worksets-head", classes="pane-block")
+                yield ListView(id="worksets-list")
             with Vertical(id="work", classes="pane"):
                 yield Static("", id="work-head", classes="pane-block")
                 yield Static("", id="work-tabs", classes="pane-block")
@@ -738,6 +1062,8 @@ class AgentAcctTUI(App):
         pane = self.current_pane
         if pane == "dashboard":
             self._start_dashboard(force=True)
+        elif pane == "worksets":
+            self._start_worksets(force=True)
         elif pane == "work":
             self._render_work_head()
             self._render_work_tabs()
@@ -769,7 +1095,13 @@ class AgentAcctTUI(App):
             return
         self._render_topbar()
         self._render_statusbar()
-        if pane == "work":
+        if pane == "worksets":
+            self._start_worksets()
+            try:
+                self.query_one("#worksets-list", ListView).focus()
+            except Exception:  # noqa: BLE001
+                pass
+        elif pane == "work":
             self._start_work()
             try:
                 self.query_one("#work-list", ListView).focus()
@@ -788,6 +1120,17 @@ class AgentAcctTUI(App):
 
     def action_help(self) -> None:
         self.push_screen(HelpScreen())
+
+    def action_dash_review(self) -> None:
+        """The Dashboard's ↵ 'Review evidence' deep-link: jump to Sessions filtered
+        to the attention queue, with its top item selected (the app's review-queue
+        navigation). Gated to the Dashboard so the global ↵ does nothing elsewhere
+        (list panes consume Enter for their own cursor)."""
+
+        if self.current_pane != "dashboard":
+            return
+        self._work_status = "attention"
+        self.action_show_pane("work")
 
     # -- top bar + status bar ------------------------------------------------ #
 
@@ -877,9 +1220,12 @@ class AgentAcctTUI(App):
         self._snapshot = snapshot
         self._last_refresh_at = time.time()
         self._work_built = False
+        self._worksets_built = False
         self._render_all()
         if self.current_pane == "dashboard":
             self._start_dashboard()
+        elif self.current_pane == "worksets":
+            self._start_worksets(force=True)
         elif self.current_pane == "work":
             self._start_work(force=True)
 
@@ -1083,7 +1429,7 @@ class AgentAcctTUI(App):
         self._work_loading = True
         try:
             self.query_one("#work-head", Static).update(
-                f"[b {self.pal['ink']}]Work receipts[/]  [{self.pal['dim']}]building… (a few seconds)[/]"
+                f"[b {self.pal['ink']}]Sessions[/]  [{self.pal['dim']}]building… (a few seconds)[/]"
             )
         except Exception:  # noqa: BLE001
             pass
@@ -1154,6 +1500,112 @@ class AgentAcctTUI(App):
         self._render_work_tabs()
         self._render_work_list()
 
+    # -- Worksets ("Work"): folder-anchored groupings across agents ----------- #
+
+    def _start_worksets(self, force: bool = False) -> None:
+        if self._worksets_built and not force:
+            self._render_worksets_head()
+            self._render_worksets_list()
+            return
+        if self._worksets_loading and not force:
+            return
+        self._worksets_loading = True
+        try:
+            self.query_one("#worksets-head", Static).update(
+                f"[b {self.pal['ink']}]Work[/]  [{self.pal['dim']}]building… (a few seconds)[/]"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        self._build_worksets()
+
+    @work(thread=True, exclusive=True, group="worksets")
+    def _build_worksets(self) -> None:
+        from textual.worker import get_current_worker
+
+        worker = get_current_worker()
+        try:
+            # The SAME shared assembly the macOS app's /v1/worksets route reads,
+            # so a grouping can never render differently here than in the app.
+            from .api import build_store_worksets
+
+            payload = build_store_worksets(self.store_dir)
+            worksets = [w for w in payload.get("worksets", []) if isinstance(w, dict)]
+            total = int(payload.get("total") or len(worksets))
+            candidates = [c for c in payload.get("candidates", []) if isinstance(c, dict)]
+        except Exception as exc:  # noqa: BLE001
+            if not worker.is_cancelled:
+                self.call_from_thread(self._worksets_error, str(exc))
+            return
+        if worker.is_cancelled:
+            return
+        self.call_from_thread(self._populate_worksets, worksets, total, candidates)
+
+    def _worksets_error(self, message: str) -> None:
+        self._worksets_loading = False
+        self._worksets_err = message
+        try:
+            self.query_one("#worksets-head", Static).update(
+                f"[{self.pal['coral']}]could not build work groups:[/] {_escape(message)}"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _populate_worksets(self, worksets: list[dict], total: int, candidates: list[dict] | None = None) -> None:
+        self._worksets_loading = False
+        self._worksets_built = True
+        self._worksets_err = None
+        self._worksets = worksets
+        self._worksets_total = total
+        if candidates is not None:
+            self._workset_candidates = candidates
+        self._render_worksets_head()
+        self._render_worksets_list()
+
+    def _render_worksets_head(self) -> None:
+        pal = self.pal
+        n = len(self._worksets)
+        ungrouped = sum(1 for c in self._workset_candidates if not c.get("existing_workset_id"))
+        right = f"[b {pal['accent']}]g[/] [{pal['muted']}]new group[/]" if ungrouped else ""
+        top = _two_edge(
+            f"{caps('Work', pal)}  [{pal['dim']}]· {n} group{'s' if n != 1 else ''}[/]",
+            right,
+            max(40, int(getattr(self.size, "width", 0) or 150) - 8),
+        )
+        sub = self._worksets_notice or "Group a folder's sessions across every agent you run."
+        sub_color = pal["accent"] if self._worksets_notice else pal["muted"]
+        head = f"{top}\n[{sub_color}]{_escape(sub)}[/]"
+        try:
+            self.query_one("#worksets-head", Static).update(head)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _render_worksets_list(self) -> None:
+        pal = self.pal
+        try:
+            lv = self.query_one("#worksets-list", ListView)
+        except Exception:  # noqa: BLE001
+            return
+        # The card's usable content width: subtract the pane gutter, the item
+        # padding + accent edge, and the list scrollbar, so a full-width timeline
+        # row never wraps (a wrapped row throws every bar's column off).
+        width = max(48, int(getattr(self.size, "width", 0) or 150) - 14)
+        lv.clear()
+        if not self._worksets:
+            lv.append(ListItem(Static(_worksets_empty_markup(pal))))
+            self._worksets_text = "No work groups yet"
+            return
+        parts: list[str] = []
+        for w in self._worksets:
+            markup = _workset_card_markup(w, pal, width)
+            parts.append(markup)
+            lv.append(ListItem(Static(markup)))
+        try:
+            lv.index = 0
+        except Exception:  # noqa: BLE001
+            pass
+        # Plain-string mirror for headless tests (markup stripped downstream).
+        self._worksets_text = "\n".join(parts)
+
     def _bucket_counts(self) -> dict[str, int]:
         counts = {tab: 0 for tab, _label in _WORK_TABS}
         for s in self._work_summaries:
@@ -1197,7 +1649,7 @@ class AgentAcctTUI(App):
     def _render_work_head(self) -> None:
         pal = self.pal
         n = len(self._work_summaries)
-        text = (f"{caps('Work receipts', pal)} [{pal['dim']}]· {n}[/]   "
+        text = (f"{caps('Sessions', pal)} [{pal['dim']}]· {n}[/]   "
                 f"[{pal['dim']}]sort {self._work_sort}[/]")
         try:
             self.query_one("#work-head", Static).update(text)
@@ -1297,6 +1749,115 @@ class AgentAcctTUI(App):
         if event.list_view.id == "work-list":
             self._highlight_to_receipt(event.list_view.index)
             self._open_steps()
+        elif event.list_view.id == "worksets-list":
+            self._open_workset_detail(event.list_view.index)
+
+    def _open_workset_detail(self, index: int | None) -> None:
+        if index is None or not (0 <= index < len(self._worksets)):
+            return  # the empty-state card is inert
+        card = self._worksets[index]
+        if not isinstance(card, dict) or not card.get("sessions"):
+            return
+        self.push_screen(WorksetDetailScreen(card, self.pal))
+
+    # -- Worksets writes (create / rename / delete) -------------------------- #
+
+    def _focused_workset(self) -> dict | None:
+        try:
+            i = self.query_one("#worksets-list", ListView).index
+        except Exception:  # noqa: BLE001
+            return None
+        if i is None or not (0 <= i < len(self._worksets)):
+            return None
+        return self._worksets[i]
+
+    def _record_workset(self, *, action: str, workset_id: str, name: str | None = None,
+                        project_identity: str | None = None, expected_revision: int,
+                        success_notice: str) -> None:
+        """The ONLY sanctioned workset write: service.record_workset_action, which
+        server-stamps a trusted grouping event (a raw record_event is stripped).
+        A workset never re-grades a session's receipt or evidence — it is a human
+        overlay. Optimistic revision: a concurrent change surfaces, never a silent
+        overwrite."""
+
+        try:
+            svc = SentinelService(self.store_dir, create=False)
+            if action in ("create", "redirect") and project_identity:
+                # One group per folder (best-effort, mirrors the app's route); the
+                # store stays the integrity authority.
+                from .api import _grouped_workset_identities
+
+                existing = _grouped_workset_identities(svc.list_all_events()).get(project_identity)
+                if existing is not None and existing != workset_id:
+                    self._worksets_notice = "A work group for this folder already exists."
+                    self._start_worksets(force=True)
+                    return
+            svc.record_workset_action(
+                action=action,
+                workset_id=workset_id,
+                name=name,
+                project_identity=project_identity,
+                expected_revision=expected_revision,
+                idempotency_key=f"tui:workset:{workset_id}:{action}:{expected_revision}",
+            )
+            self._worksets_notice = success_notice
+        except Exception as exc:  # noqa: BLE001
+            self._worksets_notice = f"couldn't {action}: {exc}"
+        # Re-read the store so the new grouping (and its live membership) appears.
+        self.refresh_data(force=True)
+        self._start_worksets(force=True)
+
+    def action_worksets_new(self) -> None:
+        if self.current_pane != "worksets":
+            return
+        self._worksets_notice = None
+        ungrouped = [c for c in self._workset_candidates if not c.get("existing_workset_id")]
+        if not ungrouped:
+            self._worksets_notice = "No ungrouped folders yet — run an agent in a project first."
+            self._render_worksets_head()
+            return
+
+        def on_create(identity: str, name: str) -> None:
+            self._record_workset(action="create", workset_id=f"ws_{uuid.uuid4().hex}", name=name,
+                                 project_identity=identity, expected_revision=0,
+                                 success_notice=f"Created “{name}”.")
+
+        self.push_screen(WorksetCreateScreen(ungrouped, self.pal, on_create))
+
+    def action_worksets_rename(self) -> None:
+        if self.current_pane != "worksets":
+            return
+        w = self._focused_workset()
+        if not w:
+            return
+        self._worksets_notice = None
+
+        def on_submit(name: str) -> None:
+            if name and name != w.get("name"):
+                self._record_workset(action="rename", workset_id=str(w.get("workset_id")), name=name,
+                                     expected_revision=int(w.get("revision") or 0),
+                                     success_notice=f"Renamed to “{name}”.")
+
+        self.push_screen(_WorksetPromptScreen(f"Rename “{w.get('name')}”", str(w.get("name") or ""), self.pal, on_submit))
+
+    def action_worksets_delete(self) -> None:
+        if self.current_pane != "worksets":
+            return
+        w = self._focused_workset()
+        if not w:
+            return
+        self._worksets_notice = None
+
+        def on_confirm() -> None:
+            self._record_workset(action="delete", workset_id=str(w.get("workset_id")),
+                                 expected_revision=int(w.get("revision") or 0),
+                                 success_notice=f"Deleted “{w.get('name')}”.")
+
+        self.push_screen(_WorksetConfirmScreen(
+            f"Delete work group “{w.get('name')}”?",
+            "This only ungroups the folder — the sessions and their receipts are untouched.",
+            self.pal, on_confirm,
+        ))
 
     def _show_receipt(self, task_id: str) -> None:
         self._selected_task_id = task_id
@@ -1370,7 +1931,7 @@ class AgentAcctTUI(App):
             from .receipt import _project_checks
 
             checks = _project_checks(task)
-            parts = _build_steps_parts(receipt, checks, pal, int(getattr(self.size, "width", 0) or 150))
+            parts = _build_steps_parts(receipt, checks, pal, int(getattr(self.size, "width", 0) or 150), task=task)
         except Exception as exc:  # noqa: BLE001
             parts = {"head": f"[{pal['dim']}]‹ Receipt[/]",
                      "title": "SESSIONS & STEPS", "body": f"[{pal['coral']}]could not render steps:[/] {_escape(str(exc))}"}
@@ -1500,7 +2061,8 @@ class AgentAcctTUI(App):
             iss = self.query_one("#sources-issues", Static)
             iss.display = bool(parts["issues"])
             if parts["issues"]:
-                self._set_card("#sources-issues", parts["issues_title"], parts["issues"], pal["amber"])
+                self._set_card("#sources-issues", parts["issues_title"], parts["issues"],
+                               parts.get("issues_color") or pal["amber"])
             self._set_card("#sources-local", "LOCAL ONLY", parts["local"])
         except Exception:  # noqa: BLE001
             pass
@@ -1540,6 +2102,499 @@ class AgentAcctTUI(App):
             self.screen.refresh(repaint=True, layout=True)
         if saved is not None:
             self.notify(f"Saved a shareable snapshot →\n{saved}", title="◆ agentacct", timeout=6)
+
+
+# ============================================================================ #
+# Worksets ("Work" tab): folder-anchored groupings + the cross-agent timeline. #
+# Pure data+palette → Rich markup, so both the live render and the screenshot   #
+# fixtures share one drawing path. Every figure is a session's own, verbatim    #
+# from workset_session_lane / summarize_members — never re-graded here.         #
+# ============================================================================ #
+
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+# How many session lanes a card draws before it discloses the rest as a note —
+# mirrors the GUI card's 8-row window (the full group opens in the detail view).
+_CARD_TIMELINE_ROWS = 8
+# The detail (zoomable) timeline shows more rows since it fills the screen.
+_DETAIL_TIMELINE_ROWS = 20
+_MAX_ZOOM = 64.0
+
+
+class _ZoomWindow:
+    """A sub-range of [lo, hi], ``zoom``× narrower, centred at ``pan`` (0…1) and
+    clamped so it never leaves the data. A faithful Python port of the Swift
+    ``WorksetZoomWindow`` so the terminal's zoom math matches the app's exactly
+    (positions still snap to character cells — that is the honest ceiling)."""
+
+    def __init__(self, lo: float, hi: float, zoom: float, pan: float) -> None:
+        full = max(0.0, hi - lo)
+        z = min(_MAX_ZOOM, max(1.0, zoom if _finite(zoom) else 1.0))
+        width = full / z if z > 0 else full
+        center_frac = min(1.0, max(0.0, pan if _finite(pan) else 0.5))
+        center = lo + center_frac * full
+        s = center - width / 2
+        e = center + width / 2
+        if s < lo:
+            e = min(hi, e + (lo - s))
+            s = lo
+        if e > hi:
+            s = max(lo, s - (e - hi))
+            e = hi
+        self.start = s
+        self.end = e
+
+    @staticmethod
+    def lane_visible(first: Any, last: Any, start: float, end: float) -> bool:
+        if not (isinstance(first, (int, float)) and not isinstance(first, bool) and first and first > 0):
+            return True  # a timeless lane has no position — always kept, shown faded
+        lo = float(first)
+        hi = float(last) if isinstance(last, (int, float)) and not isinstance(last, bool) and last else lo
+        return not (hi < start or lo > end)
+
+    def coverage(self, lo: float, hi: float) -> float:
+        full = max(0.0, hi - lo)
+        if full <= 0:
+            return 1.0
+        return min(1.0, max(0.0, (self.end - self.start) / full))
+
+    @staticmethod
+    def apply_zoom(zoom: float, pan: float, factor: float, anchor: float, lo: float, hi: float) -> tuple[float, float]:
+        full = max(0.0, hi - lo)
+        z0 = min(_MAX_ZOOM, max(1.0, zoom if _finite(zoom) else 1.0))
+        center0 = min(1.0, max(0.0, pan if _finite(pan) else 0.5))
+        if not (full > 0 and _finite(factor) and factor > 0):
+            return z0, center0
+        win = _ZoomWindow(lo, hi, z0, center0)
+        a = min(1.0, max(0.0, anchor if _finite(anchor) else 0.5))
+        anchor_time = win.start + a * (win.end - win.start)
+        z1 = min(_MAX_ZOOM, max(1.0, z0 * factor))
+        new_width = full / z1
+        new_start = anchor_time - a * new_width
+        new_center = new_start + new_width / 2
+        return z1, min(1.0, max(0.0, (new_center - lo) / full if full else 0.5))
+
+
+def _finite(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and v not in (float("inf"), float("-inf"))
+
+
+def _agent_color(client: Any, pal: dict[str, str]) -> str:
+    """Per-agent hue, mirroring Swift Theme.sourceColor: Claude=accent, Codex=
+    purple, OpenCode=teal, Hermes=magenta, everything else muted."""
+
+    c = str(client or "").strip().lower()
+    if c in ("claude-code", "claude", "claude code"):
+        return pal["accent"]
+    if c in ("codex", "openai-codex", "codex-cli"):
+        return pal["codex"]
+    if c in ("opencode", "open-code"):
+        return pal["opencode"]
+    if c == "hermes":
+        return pal["hermes"]
+    return pal["muted"]
+
+
+def _agent_label(client: Any) -> str:
+    """A friendly agent name for the legend (mirrors WorksetFormat.sourceLabel)."""
+
+    c = str(client or "").strip().lower()
+    return {
+        "claude-code": "Claude Code",
+        "claude": "Claude Code",
+        "claude code": "Claude Code",
+        "codex": "Codex",
+        "openai-codex": "Codex",
+        "codex-cli": "Codex",
+        "opencode": "OpenCode",
+        "open-code": "OpenCode",
+        "hermes": "Hermes",
+        "dsh": "DeepSeek",
+        "deepseek": "DeepSeek",
+    }.get(c, (str(client).strip() or "unknown"))
+
+
+def _lane_pip(status: Any, pal: dict[str, str]) -> str:
+    """A session's own status as a coloured pip (SHAPE + colour, never colour
+    alone): blocked/failed → coral ●, live → accent ●, a clean terminal → ink ●,
+    and a bare observed/unknown → muted ○. Mirrors WorksetTimeline.pipColor."""
+
+    s = str(status or "").strip().lower()
+    if s in ("blocked", "failed"):
+        return f"[{pal['coral']}]●[/]"
+    if s in ("active", "in_progress", "started", "checkpoint", "handed_off"):
+        return f"[{pal['accent']}]●[/]"
+    if s in ("completed", "resolved"):
+        return f"[{pal['ink']}]●[/]"
+    return f"[{pal['dim']}]○[/]"
+
+
+def _axis_date(ts: Any) -> str:
+    """A UTC 'Mon D' axis label (mirrors WorksetFormat.axisDate)."""
+
+    if not (isinstance(ts, (int, float)) and not isinstance(ts, bool) and ts > 0):
+        return ""
+    t = time.gmtime(float(ts))
+    return f"{_MONTHS[t.tm_mon - 1]} {t.tm_mday}"
+
+
+def _span_text(first: Any, last: Any) -> str:
+    """A rough human span for the KPI row (mirrors WorksetFormat.span: '~4 days',
+    '~3 hr', '~12 min'). A labelled approximation, never a precise duration."""
+
+    if not (
+        isinstance(first, (int, float)) and not isinstance(first, bool)
+        and isinstance(last, (int, float)) and not isinstance(last, bool)
+        and last >= first
+    ):
+        return "—"
+    secs = float(last) - float(first)
+    if secs >= 86400:
+        n = round(secs / 86400)
+        return f"~{n} day" + ("s" if n != 1 else "")
+    if secs >= 3600:
+        n = round(secs / 3600)
+        return f"~{n} hr" + ("s" if n != 1 else "")
+    n = max(1, round(secs / 60))
+    return f"~{n} min"
+
+
+def _workset_cost_text(summary: dict) -> str:
+    """The cost KPI value under the shared cost grammar: a knowingly partial sum
+    (some members unpriced) reads ``~$``, a complete estimate ``≈$``/``$`` per
+    confidence, and nothing priced names its absence rather than a fake $0."""
+
+    cost = summary.get("estimated_cost_usd")
+    if cost is None:
+        return "unpriced"
+    priced = int(summary.get("priced_sessions") or 0)
+    unpriced = int(summary.get("unpriced_sessions") or 0)
+    conf = summary.get("cost_confidence")
+    if unpriced > 0 and priced > 0:
+        shown = cost_display(None, complete=False, confidence=conf, known_additive=float(cost))
+    else:
+        shown = cost_display(float(cost), complete=bool(summary.get("cost_complete")), confidence=conf)
+    return shown if shown is not None else "unpriced"
+
+
+def _trunc(text: str, n: int) -> str:
+    text = str(text)
+    return text if len(text) <= n else text[: max(1, n - 1)] + "…"
+
+
+def _pad_vis(markup: str, n: int) -> str:
+    """Right-pad a markup string to ``n`` VISIBLE columns (tags/escapes ignored),
+    so a colour-tagged left label still aligns the timeline track."""
+
+    vis = _plainlen(markup)
+    return markup + " " * max(0, n - vis) if vis < n else markup
+
+
+def _lane_title(lane: dict) -> str:
+    """A member session's display title, with the GUI's 'client · id[:8]' fallback
+    so a nameless session still reads as itself, never blank."""
+
+    title = lane.get("title")
+    if isinstance(title, str) and title.strip():
+        return title.strip()
+    client = str(lane.get("client") or "session")
+    tail = str(lane.get("client_session_id") or lane.get("session_key") or "")[:8]
+    return f"{client} · {tail}" if tail else client
+
+
+def _axis_stamp(ts: Any, span: float) -> str:
+    """An axis label: 'Mon D', plus HH:MM once the window is narrow enough (a
+    zoomed-in day) that the bare date would repeat on both ends."""
+
+    if not (isinstance(ts, (int, float)) and not isinstance(ts, bool) and ts > 0):
+        return ""
+    t = time.gmtime(float(ts))
+    base = f"{_MONTHS[t.tm_mon - 1]} {t.tm_mday}"
+    if span and 0 < span < 36 * 3600:
+        return f"{base} {t.tm_hour:02d}:{t.tm_min:02d}"
+    return base
+
+
+def _timeline_bounds(lanes: list[dict]) -> tuple[float | None, float | None]:
+    """The full data window: earliest start → latest of any start/end."""
+
+    firsts = [float(l["first_activity_at"]) for l in lanes
+              if isinstance(l.get("first_activity_at"), (int, float)) and not isinstance(l.get("first_activity_at"), bool) and l["first_activity_at"] > 0]
+    lasts = [float(l["last_activity_at"]) for l in lanes
+             if isinstance(l.get("last_activity_at"), (int, float)) and not isinstance(l.get("last_activity_at"), bool) and l["last_activity_at"] > 0]
+    w0 = min(firsts) if firsts else None
+    w1 = max(firsts + lasts) if (firsts or lasts) else None
+    return w0, w1
+
+
+def _workset_timeline(
+    lanes: list[dict],
+    pal: dict[str, str],
+    width: int,
+    *,
+    win_start: float | None = None,
+    win_end: float | None = None,
+    max_rows: int = _CARD_TIMELINE_ROWS,
+    focus_key: str | None = None,
+) -> dict[str, Any]:
+    """The shared cross-agent axis: one row per member session — a status pip +
+    title in a fixed left column, then a track where a block glyph sits at the
+    session's start time, coloured by its agent. With ``win_start/win_end`` it
+    draws a ZOOMED window (lanes outside it are culled, timeless lanes kept), and
+    ``focus_key`` bolds the row whose session_key matches (the scrubber cursor).
+    Positions snap to character cells — a duration under one cell quantises to one
+    column (the honest terminal ceiling). Returns markup rows + counts + geometry."""
+
+    left_col = max(20, min(34, width // 3))
+    track = max(12, width - left_col - 1)
+    data0, data1 = _timeline_bounds(lanes)
+    zoomed = win_start is not None and win_end is not None
+    a0 = win_start if zoomed else data0
+    a1 = win_end if zoomed else data1
+
+    if zoomed:
+        visible = [l for l in lanes if _ZoomWindow.lane_visible(l.get("first_activity_at"), l.get("last_activity_at"), a0, a1)]
+    else:
+        visible = list(lanes)
+    hidden_by_window = len(lanes) - len(visible)
+    shown = visible[:max_rows]
+    hidden = max(0, len(visible) - len(shown))
+    span = (a1 - a0) if (a0 is not None and a1 is not None and a1 > a0) else 0.0
+
+    rows: list[str] = []
+    timeless = 0
+    for i, lane in enumerate(shown):
+        focused = focus_key is not None and str(lane.get("session_key")) == focus_key
+        title = _escape(_trunc(_lane_title(lane), left_col - 2))
+        title_m = f"[b {pal['accent']}]{title}[/]" if focused else f"[{pal['ink']}]{title}[/]"
+        left = _pad_vis(f"{_lane_pip(lane.get('status'), pal)} {title_m}", left_col)
+        agent = _agent_color(lane.get("client"), pal)
+        t = lane.get("first_activity_at")
+        if isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0 and a0 is not None:
+            # A session is a BAR spanning first→last activity (not a point): a long
+            # run reads as a long bar, a quick one as a single cell. Mirrors the
+            # GUI's leftFraction/widthFraction. Clamped to the (possibly zoomed)
+            # window so a session overflowing the edge stays on-axis.
+            last = lane.get("last_activity_at")
+            end_t = float(last) if isinstance(last, (int, float)) and not isinstance(last, bool) and last and last >= t else float(t)
+            start_col = min(track - 1, max(0, round(((float(t) - a0) / span) * (track - 1)))) if span > 0 else 0
+            end_col = min(track - 1, max(0, round(((end_t - a0) / span) * (track - 1)))) if span > 0 else start_col
+            end_col = max(end_col, start_col)  # never narrower than one cell
+            bar_w = end_col - start_col + 1
+            line = pal["accent"] if focused else pal["hair"]
+            trackstr = (f"[{line}]{'─' * start_col}[/][{agent}]{'█' * bar_w}[/]"
+                        f"[{line}]{'─' * (track - end_col - 1)}[/]")
+        else:
+            timeless += 1
+            trackstr = f"[{pal['dim']}]█[/][{pal['hair']}]{'─' * (track - 1)}[/]"
+        rows.append(f"{left} {trackstr}")
+
+    if a0 is not None and a1 is not None:
+        axis = " " * (left_col + 1) + _two_edge(
+            f"[{pal['dim']}]{_axis_stamp(a0, span)}[/]", f"[{pal['dim']}]{_axis_stamp(a1, span)}[/]", track
+        )
+    else:
+        axis = ""
+    return {
+        "rows": rows,
+        "axis": axis,
+        "timeless": timeless,
+        "hidden": hidden,
+        "hidden_by_window": hidden_by_window,
+        "shown": len(shown),
+        "left_col": left_col,
+        "track": track,
+    }
+
+
+def _workset_card_markup(w: dict, pal: dict[str, str], width: int = 140) -> str:
+    """One folder grouping as a card: name + 'grouped by folder' chip, the KPI
+    SUM row, the agent legend, the shared cross-agent timeline, and the honesty
+    note (the total is a labelled sum of independent receipts, not a verdict)."""
+
+    summary = w.get("summary") if isinstance(w.get("summary"), dict) else {}
+    lanes = [l for l in (w.get("sessions") or []) if isinstance(l, dict)]
+    name = str(w.get("name") or w.get("project_identity") or "work group")
+
+    header = (
+        f"[b {pal['ink']}]{_escape(name)}[/]  "
+        f"[{pal['accent']} on {pal['ta']}] grouped by folder [/]"
+    )
+
+    sc = int(summary.get("session_count") or len(lanes))
+    sources = summary.get("sources") if isinstance(summary.get("sources"), list) else []
+    cost_label = "cost, sum of receipts" if summary.get("cost_complete") else "cost, partial sum"
+    col_w = max(18, min(30, width // 4))
+    kpi = _kpi_cells(
+        [
+            ("sessions", str(sc), ""),
+            ("sources", str(len(sources)), ""),
+            ("span", _span_text(summary.get("first_activity_at"), summary.get("last_activity_at")), ""),
+            (cost_label, _workset_cost_text(summary), ""),
+        ],
+        pal,
+        col_w,
+    )
+
+    legend = "   ".join(
+        f"[{_agent_color(s.get('client'), pal)}]■[/] [{pal['muted']}]{_escape(_agent_label(s.get('client')))}[/]"
+        for s in sources
+        if isinstance(s, dict)
+    )
+
+    tl = _workset_timeline(lanes, pal, width)
+
+    notes = [
+        f"[{pal['dim']}]ⓘ Grouped because you pointed this at a folder. Each session keeps its own "
+        f"receipt and evidence; the total is a sum of {sc} session{'s' if sc != 1 else ''}, "
+        f"not a combined verdict.[/]"
+    ]
+    if int(summary.get("unpriced_sessions") or 0) > 0:
+        notes.append(f"[{pal['dim']}]Some sessions here carry no imported cost, so the total is a partial sum.[/]")
+    if tl["hidden"] or w.get("sessions_truncated"):
+        total = int(w.get("sessions_total") or len(lanes))
+        notes.append(f"[{pal['dim']}]Showing {tl['shown']} of {total} sessions — press ↵ to open the group's full timeline.[/]")
+    if tl["timeless"]:
+        n = tl["timeless"]
+        notes.append(f"[{pal['dim']}]{n} session{'s' if n != 1 else ''} with no recorded time — shown faded at the start, not a real position.[/]")
+
+    blocks = [header, "", kpi]
+    if legend:
+        blocks += ["", legend]
+    if tl["rows"]:
+        blocks += [""] + tl["rows"] + ([tl["axis"]] if tl["axis"] else [])
+    blocks += [""] + notes
+    return "\n".join(blocks)
+
+
+def _worksets_empty_markup(pal: dict[str, str]) -> str:
+    """The empty state: what a work group is and how to make one."""
+
+    return (
+        f"[b {pal['ink']}]No work groups yet[/]\n"
+        f"[{pal['muted']}]A work group gathers one folder's sessions across every agent you run "
+        f"— Claude Code, Codex, OpenCode — onto a single cross-agent timeline. Each session keeps "
+        f"its own receipt; the group only sums them.[/]\n"
+        f"[{pal['dim']}]Press [b {pal['accent']}]g[/][{pal['dim']}] to point at a folder and create one.[/]"
+    )
+
+
+def _workset_scrubber(lanes: list[dict], pal: dict[str, str], left_col: int, track: int,
+                      lo: float | None, hi: float | None, win_start: float, win_end: float) -> str:
+    """The overview rail: the full range with a tick per session start and an
+    accent bar marking the currently-visible zoom window (the GUI's scrubber,
+    which drags to pan — here it's a read-only orientation strip driven by keys)."""
+
+    if lo is None or hi is None or hi <= lo:
+        return ""
+    full = hi - lo
+    cells = [f"[{pal['hair']}]┈[/]"] * track
+
+    def col_of(t: float) -> int:
+        return min(track - 1, max(0, round((t - lo) / full * (track - 1))))
+
+    s_col, e_col = col_of(win_start), col_of(win_end)
+    for c in range(min(s_col, e_col), max(s_col, e_col) + 1):
+        cells[c] = f"[{pal['accent']}]━[/]"
+    for lane in lanes:
+        t = lane.get("first_activity_at")
+        if isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0:
+            cells[col_of(float(t))] = f"[{pal['muted']}]╽[/]"
+    return " " * (left_col + 1) + "".join(cells)
+
+
+def _lane_facts(lane: dict, pal: dict[str, str], width: int) -> str:
+    """The focused session's own facts (the terminal stand-in for the GUI's hover
+    card): every figure verbatim from the lane, never re-graded or combined."""
+
+    title = _escape(_trunc(_lane_title(lane), max(24, width - 30)))
+    head = (f"{_lane_pip(lane.get('status'), pal)} [b {pal['ink']}]{title}[/]  "
+            f"[{pal['dim']}]{_escape(_agent_label(lane.get('client')))} · {_escape(str(lane.get('status') or 'observed'))}[/]")
+    dur = lane.get("duration_seconds")
+    cost = cost_display(lane.get("estimated_cost_usd"), complete=True, confidence=lane.get("cost_confidence"))
+    toks = lane.get("total_tokens")
+    checks = lane.get("checks")
+    facts = [
+        ("duration", humanize_seconds(float(dur)) if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > 0 else "—"),
+        ("cost", cost or "unpriced"),
+        ("tokens", abbr_tokens(toks) if isinstance(toks, (int, float)) and not isinstance(toks, bool) and toks else "—"),
+        ("tool calls", str(lane.get("tool_calls")) if lane.get("tool_calls") else "—"),
+        ("steps", str(lane.get("steps")) if lane.get("steps") else "—"),
+        ("checks", f"{checks} · {lane.get('checks_failed') or 0} failed" if checks else "—"),
+    ]
+    factline = "   ".join(f"[{pal['dim']}]{k}[/] [{pal['ink']}]{v}[/]" for k, v in facts)
+    return f"{head}\n{factline}"
+
+
+def _workset_detail_markup(card: dict, pal: dict[str, str], width: int = 140, *,
+                           zoom: float = 1.0, pan: float = 0.5, focus_key: str | None = None) -> str:
+    """The zoomable/scrubbable detail body for one work group: header, a zoom
+    coverage line, the windowed cross-agent timeline, the overview scrubber, and
+    the focused session's facts. Same honesty as the card — a labelled sum, never
+    a combined verdict; every lane figure is that session's own."""
+
+    lanes = [l for l in (card.get("sessions") or []) if isinstance(l, dict)]
+    summary = card.get("summary") if isinstance(card.get("summary"), dict) else {}
+    name = str(card.get("name") or card.get("project_identity") or "work group")
+    sources = summary.get("sources") if isinstance(summary.get("sources"), list) else []
+    sc = int(summary.get("session_count") or len(lanes))
+
+    lo, hi = _timeline_bounds(lanes)
+    windowed = lo is not None and hi is not None and hi > lo
+    if windowed:
+        win = _ZoomWindow(lo, hi, zoom, pan)
+        ws, we = win.start, win.end
+        coverage = win.coverage(lo, hi)
+        tl = _workset_timeline(lanes, pal, width, win_start=ws, win_end=we,
+                               max_rows=_DETAIL_TIMELINE_ROWS, focus_key=focus_key)
+    else:
+        ws = we = lo if lo is not None else 0.0
+        coverage = 1.0
+        tl = _workset_timeline(lanes, pal, width, max_rows=_DETAIL_TIMELINE_ROWS, focus_key=focus_key)
+
+    cov_text = "full range" if coverage >= 0.999 else f"~{max(1, round(coverage * 100))}% of range"
+    header = (f"[b {pal['ink']}]{_escape(name)}[/]  "
+              f"[{pal['dim']}]{sc} session{'s' if sc != 1 else ''} · "
+              f"{len(sources)} source{'s' if len(sources) != 1 else ''} · "
+              f"{_span_text(summary.get('first_activity_at'), summary.get('last_activity_at'))}[/]")
+    legend = "   ".join(
+        f"[{_agent_color(s.get('client'), pal)}]■[/] [{pal['muted']}]{_escape(_agent_label(s.get('client')))}[/]"
+        for s in sources if isinstance(s, dict)
+    )
+    zoom_line = f"[{pal['dim']}]zoom[/] [{pal['accent']}]{cov_text}[/]"
+
+    blocks: list[str] = [header]
+    if legend:
+        blocks.append(legend)
+    blocks += ["", zoom_line, ""]
+    blocks += tl["rows"]
+    if tl["axis"]:
+        blocks.append(tl["axis"])
+    scrub = _workset_scrubber(lanes, pal, tl["left_col"], tl["track"], lo, hi, ws, we)
+    if scrub:
+        blocks += ["", scrub]
+
+    notes: list[str] = []
+    if tl["hidden_by_window"]:
+        notes.append(f"[{pal['dim']}]{tl['hidden_by_window']} session(s) outside this range — zoom out (−) to see them.[/]")
+    if tl["hidden"]:
+        notes.append(f"[{pal['dim']}]Showing {tl['shown']} rows in view — zoom into a range to see the rest.[/]")
+    if tl["timeless"]:
+        n = tl["timeless"]
+        notes.append(f"[{pal['dim']}]{n} session{'s' if n != 1 else ''} with no recorded time — shown faded at the start.[/]")
+    if notes:
+        blocks += [""] + notes
+
+    focused = next((l for l in lanes if str(l.get("session_key")) == focus_key), None)
+    if focused is not None:
+        blocks += ["", _lane_facts(focused, pal, width)]
+
+    blocks += [
+        "",
+        f"[{pal['dim']}]"
+        f"[b {pal['accent']}]↑↓[/] select   [b {pal['accent']}]+ −[/] zoom   "
+        f"[b {pal['accent']}]0[/] reset   [b {pal['accent']}]← →[/] pan   [b {pal['accent']}]esc[/] back[/]",
+    ]
+    return "\n".join(blocks)
 
 
 # ============================================================================ #
@@ -1931,7 +2986,7 @@ def _build_receipt_parts(receipt: dict, pal: dict[str, str], width: int = 150) -
 
     # head — breadcrumb, title + decision badge, meta line.
     head_lines = [
-        f"[{pal['accent']}]‹ All receipts[/]   [{pal['dim']}]WORK / {_escape(short.upper())}[/]",
+        f"[{pal['accent']}]‹ All receipts[/]   [{pal['dim']}]SESSIONS / {_escape(short.upper())}[/]",
         f"[b {pal['ink']}]{_escape(str(receipt.get('title') or 'Task'))}[/]  {decision_badge(dkey, pal)}",
     ]
     updated = _humanize_ago(receipt.get("last_activity_at"), time.time())
@@ -2074,10 +3129,67 @@ def _check_rows(check: dict, pal: dict[str, str], now: float) -> list[str]:
     return [head, line2]
 
 
-def _build_steps_parts(receipt: dict, checks: list[dict], pal: dict[str, str], width: int = 150) -> dict[str, str]:
-    """The sessions & steps drill-down: a checks timeline grouped into NEEDS
+def _activity_mark(event: dict, pal: dict[str, str]) -> tuple[str, str]:
+    """(glyph, colour) for one activity event — a check wears its result mark
+    (✓/✗/»), other work a status pip (● live/done, ○ observed, coral if failed)."""
+
+    kind = str(event.get("kind") or "")
+    status = str(event.get("status") or "").lower()
+    if kind == "check":
+        return check_mark(status, pal)
+    if status in ("blocked", "failed"):
+        return "●", pal["coral"]
+    if status in ("active", "in_progress", "started", "checkpoint"):
+        return "●", pal["accent"]
+    if status in ("completed", "resolved"):
+        return "●", pal["ink"]
+    return "○", pal["muted"]
+
+
+def _task_activity_timeline(events: list[dict], pal: dict[str, str], width: int, max_rows: int = 12) -> dict[str, Any]:
+    """One task's recorded work + checks on a shared time axis — the terminal
+    stand-in for the app's Activity canvas. Each event is a row (its result mark
+    + title) with a block at its occurred_at; a timeless event sits faded at the
+    start. Chronological (oldest first), matching build_timeline_events order."""
+
+    left_col = max(24, min(44, width // 2))
+    track = max(12, width - left_col - 1)
+    times = [float(e["occurred_at"]) for e in events
+             if isinstance(e.get("occurred_at"), (int, float)) and not isinstance(e.get("occurred_at"), bool) and e["occurred_at"] > 0]
+    w0 = min(times) if times else None
+    w1 = max(times) if times else None
+    span = (w1 - w0) if (w0 is not None and w1 is not None and w1 > w0) else 0.0
+    shown = events[:max_rows]
+    rows: list[str] = []
+    timeless = 0
+    for e in shown:
+        glyph, color = _activity_mark(e, pal)
+        title = _escape(_trunc(str(e.get("title") or "event"), left_col - 2))
+        left = _pad_vis(f"[{color}]{glyph}[/] [{pal['ink']}]{title}[/]", left_col)
+        t = e.get("occurred_at")
+        if isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0 and w0 is not None:
+            frac = ((float(t) - w0) / span) if span > 0 else 0.0
+            col = min(track - 1, max(0, round(frac * (track - 1))))
+            trackstr = f"[{pal['hair']}]{'─' * col}[/][{color}]█[/][{pal['hair']}]{'─' * (track - col - 1)}[/]"
+        else:
+            timeless += 1
+            trackstr = f"[{pal['dim']}]█[/][{pal['hair']}]{'─' * (track - 1)}[/]"
+        rows.append(f"{left} {trackstr}")
+    if w0 is not None and w1 is not None:
+        axis = " " * (left_col + 1) + _two_edge(
+            f"[{pal['dim']}]{_axis_stamp(w0, span)}[/]", f"[{pal['dim']}]{_axis_stamp(w1, span)}[/]", track
+        )
+    else:
+        axis = ""
+    return {"rows": rows, "axis": axis, "hidden": max(0, len(events) - len(shown)), "timeless": timeless}
+
+
+def _build_steps_parts(receipt: dict, checks: list[dict], pal: dict[str, str], width: int = 150,
+                       task: dict | None = None) -> dict[str, str]:
+    """The sessions & steps drill-down: a per-task ACTIVITY timeline (recorded
+    work + checks on a shared axis) atop a checks list grouped into NEEDS
     ATTENTION (failing) and OTHER CURRENT CHECKS (passed/skipped), plus files.
-    Mirrors the artifact's sessions-&-steps frame."""
+    Mirrors the app's activity timeline + sessions-&-steps frame."""
 
     now = time.time()
     dw = max(46, int(width * 0.54) - 10)
@@ -2089,7 +3201,7 @@ def _build_steps_parts(receipt: dict, checks: list[dict], pal: dict[str, str], w
     short = _short_task_id(str(receipt.get("task_id") or ""))
     title = str(receipt.get("title") or "Task")
 
-    head = f"[{pal['accent']}]‹ Receipt[/]   [{pal['dim']}]WORK / {_escape(short.upper())} / SESSIONS[/]"
+    head = f"[{pal['accent']}]‹ Receipt[/]   [{pal['dim']}]SESSIONS / {_escape(short.upper())} / STEPS[/]"
 
     def _cap(text: str, color: str) -> str:
         return f"[{color}]{_escape(text.upper())}[/]"
@@ -2115,6 +3227,33 @@ def _build_steps_parts(receipt: dict, checks: list[dict], pal: dict[str, str], w
         body.append(f"[{pal['accent']}]↳[/] [{pal['ink']}]{_escape(str(statement))}[/]")
     if attn and dkey not in _DANGER:
         body.append(f"[{pal['amber']}]Marked done, but a recorded check is currently failing.[/]")
+
+    # Activity timeline: the task's recorded work + checks on a shared time axis
+    # (the app's Activity canvas, as a keyboard-friendly lane view).
+    if task is not None:
+        try:
+            from .task_timeline import build_timeline_events
+
+            events = build_timeline_events(task, checks=checks)
+        except Exception:  # noqa: BLE001
+            events = []
+        if events:
+            tw = max(46, width - 6)
+            tl = _task_activity_timeline(events, pal, tw)
+            body.append("")
+            body.append(f"[{pal['line']}]{'─' * dw}[/]")
+            body.append(_cap(f"Activity · {len(events)} events", pal["dim"]))
+            body.append("")
+            body.extend(tl["rows"])
+            if tl["axis"]:
+                body.append(tl["axis"])
+            tail_notes = []
+            if tl["hidden"]:
+                tail_notes.append(f"{tl['hidden']} earlier event(s) not shown")
+            if tl["timeless"]:
+                tail_notes.append(f"{tl['timeless']} with no recorded time (faded at start)")
+            if tail_notes:
+                body.append(f"[{pal['dim']}]{_escape(' · '.join(tail_notes))}[/]")
 
     # Needs attention (failing checks).
     if attn:
@@ -2332,13 +3471,28 @@ def _source_lozenge(s: dict, running: bool, pal: dict[str, str]) -> str:
 
 
 def _overall_lozenge(state: str, running: bool, pal: dict[str, str]) -> str:
+    # Severity-graded, matching the app's calmer Diagnostics: only a real "error"
+    # (or a genuinely degraded source) is loud; a transient "attention" is amber,
+    # and an advisory (a self-healing blip) never turns the surface red.
     if state == "healthy" and running:
         return _loz("Reporting", pal["green"], pal["tg"], "●")
     if state == "healthy":
         return _loz("Idle", pal["muted"], pal["tn"], "○")
+    if state == "error":
+        return _loz("Needs attention", pal["coral"], pal["tc"], "○")
     if state == "degraded":
         return _loz("Degraded", pal["amber"], pal["tm"], "○")
+    if state == "attention":
+        return _loz("Attention", pal["amber"], pal["tm"], "○")
     return _loz(state.capitalize() or "Unknown", pal["muted"], pal["tn"], "○")
+
+
+# Ingestion issue severity → (content colour, wash) and a loud-first sort rank.
+_ISSUE_SEV_RANK = {"error": 0, "attention": 1, "advisory": 2}
+
+
+def _issue_severity_color(sev: str, pal: dict[str, str]) -> str:
+    return {"error": pal["coral"], "attention": pal["amber"]}.get(sev, pal["dim"])
 
 
 def _watcher_lozenge(watcher: dict, pal: dict[str, str]) -> str:
@@ -2375,8 +3529,8 @@ def _watcher_detail(watcher: dict) -> str:
 
 def _build_sources_parts(snapshot: dict, store_dir: Any, pal: dict[str, str], width: int = 150) -> dict[str, str]:
     card_w = max(60, width - 10)
-    head = (f"[b {pal['ink']}]Evidence sources[/]   "
-            f"[{pal['dim']}]what feeds the store · capture is local only[/]")
+    head = (f"[b {pal['ink']}]Diagnostics[/]   "
+            f"[{pal['dim']}]what feeds the store · recording health · capture is local only[/]")
 
     if snapshot.get("_error"):
         return {
@@ -2414,13 +3568,22 @@ def _build_sources_parts(snapshot: dict, store_dir: Any, pal: dict[str, str], wi
         f"[{pal['muted']}]{_escape(_watcher_detail(watcher))}[/]", _watcher_lozenge(watcher, pal), card_w)
 
     issues = snapshot.get("issues") or []
+    issues_sorted = sorted(issues, key=lambda i: _ISSUE_SEV_RANK.get(str(i.get("severity") or "error"), 0))
     issue_lines: list[str] = []
-    for issue in issues:
+    worst = "advisory"
+    for issue in issues_sorted:
+        sev = str(issue.get("severity") or "error")
+        if _ISSUE_SEV_RANK.get(sev, 0) < _ISSUE_SEV_RANK.get(worst, 2):
+            worst = sev
+        color = _issue_severity_color(sev, pal)
         code = str(issue.get("code") or "issue").replace("_", " ")
         src = f" — {issue.get('source')}" if issue.get("source") else ""
-        issue_lines.append(f"[{pal['amber']}]{_escape(code.capitalize() + src)}[/]")
+        tag = "" if sev == "error" else f" [{pal['dim']}]· {sev}[/]"
+        issue_lines.append(f"[{color}]{_escape(code.capitalize() + src)}[/]{tag}")
         if issue.get("action"):
             issue_lines.append(f"  [{pal['dim']}]{_escape(str(issue.get('action')))}[/]")
+    # Loud (error) → coral card, an attention blip → amber, advisory-only → quiet.
+    issues_color = pal["coral"] if worst == "error" else pal["amber"] if worst == "attention" else pal["dim"]
 
     return {
         "head": head,
@@ -2428,6 +3591,7 @@ def _build_sources_parts(snapshot: dict, store_dir: Any, pal: dict[str, str], wi
         "watcher_title": "CONTINUOUS SYNC", "watcher": watcher_body,
         "verifiers_title": "VERIFIERS · NOT CONNECTED · UPGRADE SELF-CHECKED → VERIFIED", "verifiers": _verifiers_markup(pal, card_w),
         "issues_title": f"NEEDS ATTENTION · {len(issues)}", "issues": "\n".join(issue_lines),
+        "issues_color": issues_color,
         "local": _sources_local_markup(store_dir, pal, card_w),
     }
 

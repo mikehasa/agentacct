@@ -2595,6 +2595,86 @@ def build_store_task_projection(
     return projection
 
 
+# A card carries at most this many member lanes so a pathological grouping (a
+# huge shared folder) can never balloon a response; the summary count stays
+# exact regardless. Shared by the /v1/worksets route and build_store_worksets so
+# the app, the CLI, and the TUI can never disagree about a grouping's shape.
+_WORKSET_LANE_CAP = 200
+
+
+def _workset_member_lanes(rollup: Any, project_identity: str) -> list[dict[str, Any]]:
+    """One session lane per member of a folder grouping, oldest-start first.
+
+    The bar order on the shared timeline axis; ties break on session_key so the
+    ordering is stable across reads."""
+
+    lanes = [workset_session_lane(entry) for entry in workset_member_entries(rollup, project_identity)]
+    lanes.sort(
+        key=lambda lane: (
+            lane.get("first_activity_at") is None,
+            lane.get("first_activity_at") or 0.0,
+            str(lane.get("session_key") or ""),
+        )
+    )
+    return lanes
+
+
+def _workset_card_dict(state: Any, rollup: Any) -> dict[str, Any]:
+    """One workset shaped as its card: the grouping state, a labeled SUM summary
+    (never a combined verdict), and a bounded, time-sorted member-lane preview."""
+
+    summary = summarize_members(workset_member_entries(rollup, state.project_identity))
+    lanes = _workset_member_lanes(rollup, state.project_identity)
+    return {
+        **state.to_dict(),
+        "summary": summary,
+        "sessions_total": len(lanes),
+        "sessions": lanes[:_WORKSET_LANE_CAP],
+        "sessions_truncated": len(lanes) > _WORKSET_LANE_CAP,
+    }
+
+
+def _grouped_workset_identities(events: list[dict[str, Any]]) -> dict[str, str]:
+    """project_identity -> workset_id for every live (non-deleted) grouping, so a
+    picker can hide an already-grouped folder and a duplicate create is refused."""
+
+    projection = reduce_worksets(events)
+    return {state.project_identity: state.workset_id for state in projection.active()}
+
+
+def build_store_worksets(
+    store_dir: Path | str,
+    *,
+    continuation_snapshot: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The GET /v1/worksets projection built directly from a store (no HTTP).
+
+    The single shared assembly the app's route, the CLI, and the TUI all read,
+    so a folder grouping can never render differently on one surface than
+    another. Returns the same card shape as /v1/worksets plus the create-picker
+    candidates (each stamped with any existing_workset_id). Mirrors
+    build_store_task_projection: one build_page_data pass yields the session
+    rollup that both the reduction and the candidate picker query live."""
+
+    data = build_page_data(store_dir, continuation_snapshot=continuation_snapshot)
+    rollup: Any = data.ledger.get("session_rollup") if isinstance(data.ledger, dict) else None
+    if rollup is None:
+        rollup = {"sessions": data.rollup_sessions, "summary": data.rollup_summary}
+    projection = reduce_worksets(data.events)
+    active = projection.active()
+    grouped = {state.project_identity: state.workset_id for state in active}
+    candidates = workset_candidates(rollup)
+    for candidate in candidates:
+        candidate["existing_workset_id"] = grouped.get(candidate.get("project_identity"))
+    worksets = [_workset_card_dict(state, rollup) for state in active]
+    return {
+        "schema": WORKSET_SCHEMA_VERSION,
+        "worksets": worksets,
+        "total": len(worksets),
+        "candidates": candidates,
+    }
+
+
 def surfaced_finding_episodes(projection: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     """Every finding episode the projection actually surfaces.
 
@@ -3502,45 +3582,17 @@ def create_local_api_app(
             "event_id": recorded.get("event_id"),
         }
 
-    # A generous safety cap on lanes per card so one enormous folder cannot
-    # balloon a response; every real curated group is far below it, and the
-    # summary count stays exact regardless.
-    _WORKSET_LANE_CAP = 200
-
     def _workset_rollup() -> Any:
+        # The HTTP route keeps its cached, fingerprint-gated derived ledger (the
+        # module-level build_store_worksets rebuilds from the store for the
+        # CLI/TUI instead). Both then shape the card through the SAME shared
+        # _workset_card / _grouped_identities helpers, so no surface can drift.
         events, fingerprint = _dashboard_events()
         ledger = _derived_work_ledger(events, fingerprint=fingerprint)
         return events, ledger.get("session_rollup")
 
-    def _workset_lanes(rollup: Any, project_identity: str) -> list[dict[str, Any]]:
-        lanes = [workset_session_lane(entry) for entry in workset_member_entries(rollup, project_identity)]
-        lanes.sort(
-            key=lambda lane: (
-                lane.get("first_activity_at") is None,
-                lane.get("first_activity_at") or 0.0,
-                str(lane.get("session_key") or ""),
-            )
-        )
-        return lanes
-
-    def _workset_card(state: Any, rollup: Any) -> dict[str, Any]:
-        summary = summarize_members(workset_member_entries(rollup, state.project_identity))
-        lanes = _workset_lanes(rollup, state.project_identity)
-        return {
-            **state.to_dict(),
-            "summary": summary,
-            "sessions_total": len(lanes),
-            "sessions": lanes[:_WORKSET_LANE_CAP],
-            "sessions_truncated": len(lanes) > _WORKSET_LANE_CAP,
-        }
-
-    def _grouped_identities(events: list[dict[str, Any]]) -> dict[str, str]:
-        """project_identity -> workset_id for every live (non-deleted) grouping,
-        so the picker can hide an already-grouped folder and a duplicate create
-        can be refused."""
-
-        projection = reduce_worksets(events)
-        return {state.project_identity: state.workset_id for state in projection.active()}
+    _workset_card = _workset_card_dict
+    _grouped_identities = _grouped_workset_identities
 
     @app.get("/v1/workset-candidates")
     def v1_workset_candidates(request: Request) -> dict[str, Any]:
