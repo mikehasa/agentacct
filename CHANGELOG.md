@@ -6,19 +6,6 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
-
-- One-click recorder recovery in the app. When the recorder is unreachable, the always-visible recording-health surfaces (the toolbar popover and the notice stack) and the menu-bar dropdown now offer a **Start recorder** button that runs the same `agentacct start` the CLI would — so a stuck recorder no longer strands the user with only a passive `agentacct start` hint and no way to act. It is shown only when the app owns a matching recorder it can start; a development backend keeps the existing Connections/setup path, and on a failed start the full recovery flow opens with its log.
-- `agentacct help`, plus a friendly overview for a bare `agentacct` invocation: both list the everyday commands (start, status, stop, onboard, tui, now, receipts, doctor) and point at `agentacct --help` for the complete list. `agentacct --help` itself is unchanged.
-
-### Changed
-
-- Bare `agentacct` (no subcommand) now prints the command overview and exits 0, instead of the terse `Missing command.` error (exit 2).
-
-### Fixed
-
-- The Work tab no longer shows "work groups fetch failed: cancelled". A benign in-flight fetch cancelled by a normal pane switch or view teardown is now ignored — matching every other pane's fetch — instead of surfacing as a failure; the last groups are retained. The folder-candidates fetch gets the same guard, and a daemon predating `/v1/workset-candidates` now reads as an empty state rather than a fetch error.
-
 ## [0.11.1] — 2026-09-17
 
 Makes the dashboard fast again — the API-serving caches no longer rebuild the multi-second work ledger on every idle poll, and the recorder stops shadowing its highest-cardinality events into an unbounded store — plus a way to reclaim that store and one-click recorder self-update.
@@ -39,6 +26,8 @@ Makes the dashboard fast again — the API-serving caches no longer rebuild the 
   optional `VACUUM`. The append-only spool is never touched, so the evidence log
   stays complete and recoverable; `client_hook` and refreshable-usage rows are
   refused three ways (denylist, exclusion subqueries, foreign keys).
+- One-click recorder recovery in the app. When the recorder is unreachable, the always-visible recording-health surfaces (the toolbar popover and the notice stack) and the menu-bar dropdown now offer a **Start recorder** button that runs the same `agentacct start` the CLI would — so a stuck recorder no longer strands the user with only a passive `agentacct start` hint and no way to act. It is shown only when the app owns a matching recorder it can start; a development backend keeps the existing Connections/setup path, and on a failed start the full recovery flow opens with its log. (#292)
+- `agentacct help`, plus a friendly overview for a bare `agentacct` invocation: both list the everyday commands (start, status, stop, onboard, tui, now, receipts, doctor) and point at `agentacct --help` for the complete list. `agentacct --help` itself is unchanged. (#292)
 
 ### Changed
 
@@ -73,6 +62,11 @@ Makes the dashboard fast again — the API-serving caches no longer rebuild the 
   ledger on every request. The work-ledger reduce memoizes its hottest steps
   (credential-scrub, nearest-usage attribution, project-label derivation) with
   byte-identical output.
+- Bare `agentacct` (no subcommand) now prints the command overview and exits 0, instead of the terse `Missing command.` error (exit 2). (#292)
+
+### Fixed
+
+- The Work tab no longer shows "work groups fetch failed: cancelled". A benign in-flight fetch cancelled by a normal pane switch or view teardown is now ignored — matching every other pane's fetch — instead of surfacing as a failure; the last groups are retained. The folder-candidates fetch gets the same guard, and a daemon predating `/v1/workset-candidates` now reads as an empty state rather than a fetch error. (#292)
 
 ## [0.11.0] — 2026-09-17
 
