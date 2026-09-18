@@ -7,6 +7,8 @@ struct UsageSnapshotConfiguration {
         case disconnected
     }
 
+    /// Pins the chart's selected bar (tooltip) for the chart-peak renders.
+    var chartSelection: Int? = nil
     let viewport: String
     let width: CGFloat
     let height: CGFloat
@@ -20,6 +22,13 @@ struct UsageSnapshotConfiguration {
     }
 
     static let reviewConfigurations: [Self] = [
+        // The chart prints its peak once: with the peak bar selected the
+        // tooltip carries the value and the peak label yields; with another
+        // bar selected both show. The 7-day fixture's peak is its last bar.
+        Self(chartSelection: 6, viewport: "chart-peak-selected", width: 1120, height: 1120, colorScheme: .light, capacityState: .connected, recordedUsageState: .sevenDays),
+        Self(chartSelection: 6, viewport: "chart-peak-selected", width: 1120, height: 1120, colorScheme: .dark, capacityState: .connected, recordedUsageState: .sevenDays),
+        Self(chartSelection: 3, viewport: "chart-peak-elsewhere", width: 1120, height: 1120, colorScheme: .light, capacityState: .connected, recordedUsageState: .sevenDays),
+        Self(chartSelection: 3, viewport: "chart-peak-elsewhere", width: 1120, height: 1120, colorScheme: .dark, capacityState: .connected, recordedUsageState: .sevenDays),
         Self(viewport: "minimum", width: 960, height: 560, colorScheme: .light, capacityState: .connected, recordedUsageState: .sevenDays),
         Self(viewport: "minimum", width: 960, height: 560, colorScheme: .dark, capacityState: .connected, recordedUsageState: .sevenDays),
         Self(viewport: "reference", width: 1120, height: 900, colorScheme: .light, capacityState: .connected, recordedUsageState: .sevenDays),
@@ -99,6 +108,8 @@ enum UsageSnapshotRenderer {
                 .environment(\.appearsActive, true)
                 .transaction { $0.disablesAnimations = true }
             let outputURL = outputDirectory.appendingPathComponent(configuration.filename)
+            SnapshotMode.usageChartSelectedIndex = configuration.chartSelection
+            defer { SnapshotMode.usageChartSelectedIndex = nil }
             try SnapshotImageWriter.render(
                 view,
                 to: outputURL,

@@ -1265,6 +1265,9 @@ enum SnapshotMode {
     /// screenshot fits the step spine and the activity timeline together.
     nonisolated(unsafe) static var expandedStepsWithChecks = 2
     nonisolated(unsafe) static var expandedStepsWithoutChecks = 1
+    /// Snapshot-only: pin the Usage chart's selected bar so a render can show
+    /// the tooltip on a chosen period (nil keeps the live default).
+    nonisolated(unsafe) static var usageChartSelectedIndex: Int? = nil
 }
 
 struct ScrollBox<Content: View>: View {
