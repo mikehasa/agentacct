@@ -27,16 +27,16 @@ struct UsagePane: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: Space.m) {
+        // Title only. The recorded-usage range lives on the Recorded usage
+        // section it governs (below), not up here: the page's top-trailing
+        // corner is where recording notices surface, and a control there
+        // disappears behind them.
+        HStack(alignment: .center, spacing: Space.m) {
             HStack(alignment: .firstTextBaseline, spacing: Space.s) {
                 Text("Usage & limits")
                     .workFont(.titlePage).tracking(Type.titlePageTracking)
                     .foregroundStyle(Theme.ink)
                 ContextHelp(title: "About usage and limits", message: "Provider-reported capacity and locally recorded usage have separate time windows. Changing the recorded usage range updates client totals, history and attribution; it does not change provider quota windows or today's summary.", identifier: "usage.range-help")
-            }
-            HStack(spacing: Space.m) {
-                Text("Recorded usage range").workFont(.caption).foregroundStyle(Theme.muted)
-                usageRangeControl
             }
         }
     }
@@ -189,11 +189,24 @@ struct UsagePane: View {
     private var recordedUsageSection: some View {
         VStack(alignment: .leading, spacing: Space.m) {
             VStack(alignment: .leading, spacing: Space.s) {
-                HStack(alignment: .firstTextBaseline, spacing: Space.s) {
-                    Text("Recorded usage")
-                        .workFont(.titleSection).tracking(Type.titleSectionTracking)
-                        .foregroundStyle(Theme.ink)
-                    ContextHelp(title: "About recorded cost", message: "Cost is usage reporting, not a provider invoice or balance due. Verify charges with your provider. Cost basis and completeness are shown beside each total.", identifier: "usage.cost-help")
+                // The window this section (and the capacity table's
+                // "Recorded use" column) is measured over sits on the section's
+                // own title row, trailing — the composition the Dashboard's
+                // usage card uses for its Tokens/Cost switch.
+                HStack(alignment: .center, spacing: Space.m) {
+                    HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                        Text("Recorded usage")
+                            .workFont(.titleSection).tracking(Type.titleSectionTracking)
+                            .foregroundStyle(Theme.ink)
+                        ContextHelp(title: "About recorded cost", message: "Cost is usage reporting, not a provider invoice or balance due. Verify charges with your provider. Cost basis and completeness are shown beside each total.", identifier: "usage.cost-help")
+                    }
+                    Spacer(minLength: Space.m)
+                    HStack(spacing: Space.s) {
+                        CapsLabel(text: UsageRangePresentation.caption)
+                        usageRangeControl
+                    }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel(UsageRangePresentation.accessibilityName)
                 }
             }
 
@@ -240,25 +253,17 @@ struct UsagePane: View {
         return false
     }
 
-    @ViewBuilder
     private var usageRangeControl: some View {
-        if SnapshotMode.enabled {
-            HStack(spacing: Space.s) {
-                Chip(text: "\(dashboard.usageDays)d", tint: Theme.accent)
-            }
-        } else {
-            Picker("Usage range", selection: Binding(
+        SegmentedChoice(
+            options: UsageRangePresentation.options.map(\.days),
+            label: { UsageRangePresentation.label(forDays: $0) },
+            selection: Binding(
                 get: { dashboard.usageDays },
                 set: { days in Task { await dashboard.setUsageDays(days) } }
-            )) {
-                Text("7d").tag(7)
-                Text("30d").tag(30)
-                Text("90d").tag(90)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 190)
-            .accessibilityIdentifier("usage.history.range")
-        }
+            ),
+            identifier: { "usage.history.range.\(UsageRangePresentation.label(forDays: $0))" }
+        )
+        .accessibilityIdentifier("usage.history.range")
     }
 
     private func summaryStrip(_ usage: UsageSummary) -> some View {
@@ -715,17 +720,17 @@ struct UsagePeriodChart: View {
                         .disabled(selectedIndex == periods.index(before: periods.endIndex))
                         .accessibilityLabel(presentation.nextAccessibilityLabel)
                     }
-                    if SnapshotMode.enabled {
-                        Chip(text: series.rawValue, tint: Theme.accent)
-                    } else {
-                        CapsLabel(text: "Measure")
-                        Picker("Chart measure", selection: $series) {
-                            ForEach(Series.allCases) { Text($0.rawValue).tag($0) }
-                        }
-                        .pickerStyle(.segmented)
-                        .fixedSize()
-                        .labelsHidden()
-                        .accessibilityIdentifier("usage.history.measure")
+                    CapsLabel(text: "Measure")
+                    SegmentedChoice(
+                        options: Series.allCases,
+                        label: { $0.rawValue },
+                        selection: $series,
+                        identifier: { "usage.history.measure.\($0 == .cost ? "cost" : "tokens")" }
+                    )
+                    .accessibilityIdentifier("usage.history.measure")
+                    // ImageRenderer cannot draw a menu picker; the grouping
+                    // menu is an interactive-only affordance.
+                    if !SnapshotMode.enabled {
                         if series == .tokens, clients.count > 1 {
                             Picker("Group", selection: $group) {
                                 Text("All clients").tag(String?.none)
@@ -989,3 +994,33 @@ struct UsageBreakdownTable: View {
         )
     }
 }
+
+// MARK: - Recorded usage range
+
+/// The recorded-usage range control: one caps label ("Recorded range") beside
+/// the house segmented control, on the page's title row, and the three window
+/// lengths it offers. The full phrase names the control for VoiceOver.
+enum UsageRangePresentation {
+    struct Option: Equatable {
+        let days: Int
+        let label: String
+    }
+
+    /// The caps label printed beside the control.
+    static let caption = "Recorded range"
+    /// The control's accessibility name: the full phrase, once.
+    static let accessibilityName = "Recorded usage range"
+
+    static let options: [Option] = [
+        Option(days: 7, label: "7d"),
+        Option(days: 30, label: "30d"),
+        Option(days: 90, label: "90d"),
+    ]
+
+    /// The segment label for a window length; a length outside the three
+    /// offered still reads as its own day count rather than a blank segment.
+    static func label(forDays days: Int) -> String {
+        options.first { $0.days == days }?.label ?? "\(days)d"
+    }
+}
+

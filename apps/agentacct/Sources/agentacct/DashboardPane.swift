@@ -1844,24 +1844,19 @@ private struct DashboardUsageChart: View {
                     Text(series.totalText(for: periods))
                         .workFont(.dataSmall)
                         .foregroundStyle(Theme.muted)
-                    HStack(spacing: 2) {
-                        ForEach(DashboardUsageSeries.allCases) { choice in
-                            Button {
+                    SegmentedChoice(
+                        options: DashboardUsageSeries.allCases,
+                        label: { $0.rawValue },
+                        selection: Binding(
+                            get: { series },
+                            set: { choice in
                                 series = choice
                                 hoveredIndex = nil
                                 pinnedIndex = nil
-                            } label: {
-                                Text(choice.rawValue).workFont(.captionSemibold)
-                                    .padding(.horizontal, 9)
-                                    .frame(height: 24)
                             }
-                            .buttonStyle(DashboardSeriesButtonStyle(selected: series == choice))
-                            .accessibilityAddTraits(series == choice ? .isSelected : [])
-                            .accessibilityIdentifier("dashboard.usage.\(choice.rawValue.lowercased())")
-                        }
-                    }
-                    .padding(2)
-                    .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
+                        ),
+                        identifier: { "dashboard.usage.\($0.rawValue.lowercased())" }
+                    )
                 }
                 .padding(.horizontal, Space.l)
                 .frame(minHeight: 47)
@@ -2016,54 +2011,6 @@ private struct DashboardChartTooltip: View {
                 .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW)
         )
         .fixedSize()
-    }
-}
-
-private struct DashboardSeriesButtonStyle: ButtonStyle {
-    let selected: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        DashboardSeriesButtonBody(configuration: configuration, selected: selected)
-    }
-}
-
-private struct DashboardSeriesButtonBody: View {
-    let configuration: ButtonStyleConfiguration
-    let selected: Bool
-    @State private var hovering = false
-    @Environment(\.isFocused) private var isFocused
-    @Environment(\.isEnabled) private var isEnabled
-
-    private var phase: ButtonInteractionPhase {
-        buttonInteractionPhase(
-            isEnabled: isEnabled,
-            isPressed: configuration.isPressed,
-            isHovering: hovering
-        )
-    }
-
-    var body: some View {
-        configuration.label
-            .foregroundStyle(selected ? Theme.ink : Theme.muted)
-            .background {
-                RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
-                    .fill(selected ? Theme.card : Color.clear)
-                RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
-                    .fill(Theme.accent.opacity(ButtonFeedback.surfaceFillOpacity(for: phase)))
-            }
-            .opacity(ButtonFeedback.labelOpacity(for: phase, pressed: 0.82))
-            .overlay {
-                if isFocused && isEnabled {
-                    RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
-                        .strokeBorder(Theme.accent, lineWidth: Metrics.focusW)
-                }
-            }
-            .onHover { inside in
-                withAnimation(Motion.hover) {
-                    hovering = inside
-                }
-            }
-            .animation(Motion.feedback, value: phase)
     }
 }
 
