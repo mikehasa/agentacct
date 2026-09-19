@@ -10429,6 +10429,10 @@ def _render_receipt_text(receipt: dict[str, Any]) -> None:
 def receipts(
     store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
     limit: Annotated[int, typer.Option(help="Maximum number of Tasks to list.")] = 20,
+    client: Annotated[
+        Optional[str],
+        typer.Option(help="Filter to one client (e.g. codex, claude-code); 'all' or omit for every client."),
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit the raw summary JSON.")] = False,
 ) -> None:
     """List recent Tasks with their Receipt summary (decision × evidence, cost)."""
@@ -10449,6 +10453,12 @@ def receipts(
         for task in projection.get("tasks", [])
         if isinstance(task, dict) and str(task.get("public_task_id") or "")
     ]
+    if client not in (None, "all"):
+        tasks = [
+            task
+            for task in tasks
+            if str((task.get("primary_root") or {}).get("client") or "") == client
+        ]
     latest = latest_store_activity(tasks)
     starts = session_start_index(tasks)
     tasks.sort(key=lambda task: float(task.get("last_activity_at") or 0.0), reverse=True)
