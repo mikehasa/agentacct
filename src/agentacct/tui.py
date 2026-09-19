@@ -1024,6 +1024,7 @@ class AgentAcctTUI(App):
         # headless tests assert against strings, never Rich renderable internals.
         self._topbar_text: str = ""
         self._dashboard_text: str = ""
+        self._work_head_text: str = ""
 
     # -- lifecycle ----------------------------------------------------------- #
 
@@ -1331,7 +1332,7 @@ class AgentAcctTUI(App):
 
         worker = get_current_worker()
         try:
-            from .api import _task_title, build_store_task_projection
+            from .api import _dashboard_receipt_attention, _task_title, build_store_task_projection
             from .receipt import (
                 build_attention_reason,
                 build_receipt_summary,
@@ -1358,14 +1359,29 @@ class AgentAcctTUI(App):
                 )
                 for t in kept
             ]
-            # The leading attention reason per task (why it needs the user), for the
-            # Dashboard's primary-attention grid — computed here where the raw tasks
-            # live, then keyed by id for the pure parts builder.
+            # Attention is scanned over the FULL store, never the truncated
+            # recent-work slice (#220): a blocker older than the newest
+            # _RECEIPTS_LIMIT tasks must still surface, and "All clear" must mean
+            # the WHOLE review queue is empty. Reuse the api full-scan projection
+            # (the same #152/#153 fix /v1/tasks and the GUI use); `tasks` is
+            # already newest-first, as it expects.
+            attention = _dashboard_receipt_attention(
+                tasks, latest_store_activity_at=latest, session_starts=starts
+            )
+            # The leading attention reason per task (why it needs the user), for
+            # the Dashboard's primary-attention grid — built for the PREVIEWED
+            # items, which may include a task older than the recent-work cutoff,
+            # so map each preview row back to its task rather than reusing `kept`.
+            by_id = {str(t.get("public_task_id")): t for t in tasks}
             attention_details: dict[str, dict] = {}
-            for t in kept:
-                res = build_attention_reason(t, latest_store_activity_at=latest, session_starts=starts)
+            for row in attention.get("tasks", []):
+                tid = str(row.get("task_id"))
+                task = by_id.get(tid)
+                if task is None:
+                    continue
+                res = build_attention_reason(task, latest_store_activity_at=latest, session_starts=starts)
                 if res is not None:
-                    attention_details[str(t.get("public_task_id"))] = res[1]
+                    attention_details[tid] = res[1]
             try:
                 from .ingestion_health import IngestionHealthStore
 
@@ -1388,7 +1404,8 @@ class AgentAcctTUI(App):
         if worker.is_cancelled:
             return
         self.call_from_thread(
-            self._render_dashboard, summaries, ingestion, series, history_total, attention_details
+            self._render_dashboard, summaries, ingestion, series, history_total,
+            attention_details, attention,
         )
 
     def _dashboard_error(self, message: str) -> None:
@@ -1424,6 +1441,7 @@ class AgentAcctTUI(App):
         series: list[float] | None = None,
         history_total: float = 0.0,
         attention_details: dict[str, dict] | None = None,
+        attention_projection: dict | None = None,
     ) -> None:
         self._dash_loading = False
         pal = self.pal
@@ -1431,6 +1449,7 @@ class AgentAcctTUI(App):
         parts = _build_dashboard_parts(
             summaries, ingestion, self._snapshot, self._client_limits(), pal,
             series or [], history_total, attention_details or {}, width,
+            attention_projection,
         )
         # Combined mirror for headless tests (titles live on the borders).
         self._dashboard_text = "\n".join([
@@ -1491,7 +1510,13 @@ class AgentAcctTUI(App):
             tasks.sort(key=lambda t: float(t.get("last_activity_at") or 0.0), reverse=True)
             by_key: dict[str, dict] = {}
             summaries: list[dict] = []
-            for t in tasks[:_RECEIPTS_LIMIT]:
+            # Build a row for EVERY task, not just the newest _RECEIPTS_LIMIT
+            # (#220): text search and the lifecycle-tab filters must be able to
+            # reach a blocker older than the recent cutoff, and the head can then
+            # disclose the true total. The displayed list itself is still capped,
+            # in _render_work_list; `tasks` stays newest-first so that slice keeps
+            # taking the most recent.
+            for t in tasks:
                 tid = str(t.get("public_task_id"))
                 by_key[tid] = t
                 summaries.append(
@@ -1695,8 +1720,15 @@ class AgentAcctTUI(App):
     def _render_work_head(self) -> None:
         pal = self.pal
         n = len(self._work_summaries)
-        text = (f"{caps('Sessions', pal)} [{pal['dim']}]· {n}[/]   "
-                f"[{pal['dim']}]sort {self._work_sort}[/]")
+        segs = [f"{caps('Sessions', pal)} [{pal['dim']}]· {n}[/]"]
+        # Disclose the display cap when the current view has more matches than
+        # the list can show (#220), so a hidden older row is never silent.
+        shown = len(self._filtered_work())
+        if shown > _RECEIPTS_LIMIT:
+            segs.append(f"[{pal['dim']}]showing {_RECEIPTS_LIMIT} of {shown}[/]")
+        segs.append(f"[{pal['dim']}]sort {self._work_sort}[/]")
+        text = "   ".join(segs)
+        self._work_head_text = text
         try:
             self.query_one("#work-head", Static).update(text)
         except Exception:  # noqa: BLE001
@@ -1750,7 +1782,10 @@ class AgentAcctTUI(App):
             if col is not None and col.width != tcol:
                 col.width = tcol
                 col.auto_width = False
-        rows = self._filtered_work()
+        # The full-store filter runs first (#220 — so an older blocked task is
+        # findable by search); only the DISPLAY is capped here, to the newest
+        # _RECEIPTS_LIMIT matches (rows are newest-first within each sort).
+        rows = self._filtered_work()[:_RECEIPTS_LIMIT]
         self._work_visible_ids = [str(s.get("task_id")) for s in rows]
         self._work_visible_rows = rows
         # Was the user drilled into the steps view, and on which task? A rebuild
@@ -2105,6 +2140,7 @@ class AgentAcctTUI(App):
         if event.input.id != "work-filter":
             return
         self._work_filter = event.value
+        self._render_work_head()
         self._render_work_list()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -2784,6 +2820,7 @@ def _build_dashboard_parts(
     history_total: float,
     attention_details: dict[str, dict] | None = None,
     width: int = 150,
+    attention_projection: dict | None = None,
 ) -> dict[str, str]:
     """The Dashboard as separate panels: a head plus four cards, each returned as
     (border title, body markup) so the app can draw them as bordered surfaces."""
@@ -2793,20 +2830,30 @@ def _build_dashboard_parts(
     full_w = max(60, width - 6)     # a full-pane row's inner width
     card_w = max(60, width - 10)     # a bordered card's inner width
     half_w = max(30, width // 2 - 10)  # one hero card's inner width (two share the row)
-    attention = [
-        s for s in summaries
-        if needs_attention(str((s.get("decision_status") or {}).get("key")),
-                           (s.get("evidence_strength") or {}).get("checks_failed"))
-    ]
+    # Attention is computed over the FULL store (#220): the api full-scan
+    # projection carries the exact `total` plus a bounded preview, so a stale
+    # blocker outside the recent-work slice still surfaces and "All clear" only
+    # shows when the WHOLE queue is empty. Fall back to deriving from the
+    # (possibly truncated) summaries only when no projection is supplied.
+    if attention_projection is not None:
+        attention = list(attention_projection.get("tasks") or [])
+        attention_total = int(attention_projection.get("total") or 0)
+    else:
+        attention = [
+            s for s in summaries
+            if needs_attention(str((s.get("decision_status") or {}).get("key")),
+                               (s.get("evidence_strength") or {}).get("checks_failed"))
+        ]
+        attention_total = len(attention)
     # Lead with the most ACTIONABLE item: one that carries a recorded next step
     # (a blocker with a remedy) before one that does not (a bare failed check).
-    # Stable, so recency order is preserved within each group.
+    # Stable, so priority/recency order is preserved within each group.
     attention.sort(key=lambda s: 0 if (attention_details.get(str(s.get("task_id"))) or {}).get("next_step") else 1)
 
     # head — the shift-brief eyebrow + the headline item (count pinned right).
     if attention:
         headline = str(attention[0].get("title") or attention[0].get("task_id") or "—")
-        n_rev = len(attention)
+        n_rev = attention_total
         head = f"{caps('Shift brief', pal)}\n" + _two_edge(
             f"[b {pal['ink']}]{_escape(headline)}[/]",
             f"[{pal['dim']}]{n_rev} review item{'s' if n_rev != 1 else ''}[/]", full_w)
@@ -2820,7 +2867,7 @@ def _build_dashboard_parts(
     if attention:
         top = attention[0]
         detail = attention_details.get(str(top.get("task_id"))) or {}
-        attn_title = f"PRIMARY ATTENTION · 1 OF {len(attention)}"
+        attn_title = f"PRIMARY ATTENTION · 1 OF {attention_total}"
         dkey = str((top.get("decision_status") or {}).get("key"))
         client = str((top.get("primary_root") or {}).get("client") or top.get("project") or "")
         rows = []

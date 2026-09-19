@@ -6,6 +6,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The TUI Dashboard could report "All clear" and the Work pane could hide (and
+  make unsearchable) a blocked task older than the 300 most recent, because both
+  sliced to the newest 300 before classifying attention or filtering. Attention
+  is now classified over the whole store, Work builds a row for every task so
+  search reaches an older blocker, and the Work head discloses "showing 300 of
+  N" when its list is truncated. (#220)
+
 ## [0.11.1] — 2026-09-17
 
 Makes the dashboard fast again — the API-serving caches no longer rebuild the multi-second work ledger on every idle poll, and the recorder stops shadowing its highest-cardinality events into an unbounded store — plus a way to reclaim that store and one-click recorder self-update.
