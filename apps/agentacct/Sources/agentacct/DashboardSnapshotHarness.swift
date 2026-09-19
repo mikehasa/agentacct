@@ -230,6 +230,9 @@ struct DashboardSnapshotConfiguration {
         // Nothing needs review: the headline eyebrow and the card must say so once each.
         Self(viewport: "all-clear", width: 1120, height: 800, colorScheme: .light, workState: .attentionClear, recordedUsageState: .sevenDays),
         Self(viewport: "all-clear", width: 1120, height: 800, colorScheme: .dark, workState: .attentionClear, recordedUsageState: .sevenDays),
+        // The blocker item leads: its recorded next step earns the box, and the proof line reads as one sentence.
+        Self(viewport: "next-step", width: 1120, height: 800, colorScheme: .light, workState: .attentionNextStepFirst, recordedUsageState: .sevenDays),
+        Self(viewport: "next-step", width: 1120, height: 800, colorScheme: .dark, workState: .attentionNextStepFirst, recordedUsageState: .sevenDays),
         // Sessions with no recorded work status: the Working now row names
         // the agent and the recency, never a session hash.
         Self(viewport: "statusless-sessions", width: 1120, height: 800, colorScheme: .light, workState: .populated, recordedUsageState: .sevenDays, glanceLane: .statusless),
