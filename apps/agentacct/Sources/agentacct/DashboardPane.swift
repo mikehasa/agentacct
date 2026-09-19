@@ -303,9 +303,19 @@ enum DashboardAttentionPresentation: Equatable {
         }
     }
 
+    /// The eyebrow over the dashboard headline: what the block is, in the
+    /// reader's words.
+    var dashboardEyebrow: String {
+        switch self {
+        case .clear: return "ALL CLEAR"
+        case .focus, .inconsistent: return "NEEDS REVIEW"
+        case .loading, .unavailable: return "REVIEW"
+        }
+    }
+
     var dashboardStatus: String {
         switch self {
-        case .loading: return "Loading review projection"
+        case .loading: return "Checking recorded work"
         case .unavailable: return "Refresh to retry"
         case .clear: return "0 review items"
         case .focus(_, let total), .inconsistent(let total):
@@ -932,7 +942,7 @@ private struct DashboardShiftBriefHeader: View {
     var body: some View {
         HStack(alignment: .lastTextBaseline, spacing: Space.xl) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("SHIFT BRIEF")
+                Text(presentation.dashboardEyebrow)
                     .workFont(.labelCaps)
                     .tracking(Type.labelCapsTracking)
                     .foregroundStyle(Theme.accent)
@@ -1012,7 +1022,7 @@ private struct DashboardAttentionBriefCard: View {
                     Text("Checking recorded work…")
                         .workFont(.titleSection)
                         .foregroundStyle(Theme.ink)
-                    Text("Loading the complete review projection; no clear-state claim is shown yet.")
+                    Text("Checking every recorded task before reporting all clear.")
                         .workFont(.body)
                         .foregroundStyle(Theme.muted)
                 }
@@ -1027,7 +1037,7 @@ private struct DashboardAttentionBriefCard: View {
         let copyFailed = copyFeedback == .failed(brief.text)
         return VStack(alignment: .leading, spacing: Space.l) {
             HStack(spacing: Space.s) {
-                Text("PRIMARY ATTENTION")
+                Text("TO REVIEW")
                     .workFont(.labelCaps)
                     .tracking(Type.labelCapsTracking)
                     .foregroundStyle(tint)
@@ -1219,7 +1229,7 @@ private struct DashboardBriefEmptyState: View {
                 Image(systemName: "checkmark.seal.fill")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(Theme.green)
-                Text("COMPLETE REVIEW PROJECTION")
+                Text("ALL CLEAR")
                     .workFont(.labelCaps)
                     .tracking(Type.labelCapsTracking)
                     .foregroundStyle(Theme.green)
@@ -1228,7 +1238,7 @@ private struct DashboardBriefEmptyState: View {
                 .workFont(.titleSection)
                 .tracking(Type.titleSectionTracking)
                 .foregroundStyle(Theme.ink)
-            Text("No current failed check, failed step, or unresolved blocker was found across the complete attention projection.")
+            Text("No failed check, failed step, or unresolved blocker is recorded across all tracked work.")
                 .workFont(.body)
                 .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1347,7 +1357,7 @@ private struct DashboardSignalRail: View {
     var body: some View {
         Card(padding: 0, fillsHeight: true) {
             VStack(spacing: 0) {
-                DashboardCardHeader("Signal rail")
+                DashboardCardHeader("Right now")
                 Divider().overlay(Theme.hairline)
                 DashboardSignalRow(
                     eyebrow: "WORKING NOW",

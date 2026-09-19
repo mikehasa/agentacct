@@ -557,11 +557,11 @@ def test_dashboard_shows_attention_and_recent_work(tmp_path):
             await app.workers.wait_for_complete()
             await pilot.pause()
             plain = Text.from_markup(app._dashboard_text).plain
-            assert "SHIFT BRIEF" in plain
-            assert "SIGNAL RAIL" in plain
+            assert "NEEDS REVIEW" in plain
+            assert "RIGHT NOW" in plain
             assert "RECENT WORK" in plain
             # the blocked task drives the attention hero
-            assert "PRIMARY ATTENTION" in plain
+            assert "TO REVIEW" in plain
             assert "Fix the flaky payment test" in plain
             # ↵ review deep-link is real; the old dead "Copy review brief" chip is gone
             assert "Review evidence" in plain

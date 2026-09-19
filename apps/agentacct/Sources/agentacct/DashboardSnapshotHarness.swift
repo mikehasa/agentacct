@@ -227,6 +227,9 @@ struct DashboardSnapshotConfiguration {
         Self(viewport: "weekly-reference", width: 1120, height: 900, colorScheme: .dark, workState: .populated, recordedUsageState: .ninetyDays),
         Self(viewport: "trust-unavailable", width: 1120, height: 800, colorScheme: .light, workState: .shiftBriefUnavailable, recordedUsageState: .sevenDays),
         Self(viewport: "trust-unavailable", width: 1120, height: 800, colorScheme: .dark, workState: .shiftBriefUnavailable, recordedUsageState: .sevenDays),
+        // Nothing needs review: the headline eyebrow and the card must say so once each.
+        Self(viewport: "all-clear", width: 1120, height: 800, colorScheme: .light, workState: .attentionClear, recordedUsageState: .sevenDays),
+        Self(viewport: "all-clear", width: 1120, height: 800, colorScheme: .dark, workState: .attentionClear, recordedUsageState: .sevenDays),
         // Sessions with no recorded work status: the Working now row names
         // the agent and the recency, never a session hash.
         Self(viewport: "statusless-sessions", width: 1120, height: 800, colorScheme: .light, workState: .populated, recordedUsageState: .sevenDays, glanceLane: .statusless),

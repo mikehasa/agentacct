@@ -268,6 +268,8 @@ The dashboard renderer owns this complete fixed matrix at 2x scale:
 | `dashboard-weekly-reference-dark.png` | 1120 × 900 pt 90-day weekly usage state, dark | 2240 × 1800 px |
 | `dashboard-trust-unavailable-light.png` | 1120 × 800 pt failed attention and source refresh with retained success data, light | 2240 × 1600 px |
 | `dashboard-trust-unavailable-dark.png` | 1120 × 800 pt failed attention and source refresh with retained success data, dark | 2240 × 1600 px |
+| `dashboard-all-clear-light.png` | 1120 × 800 pt, light; recorded work but nothing needing review (ALL CLEAR eyebrow, one-sentence card) | 2240 × 1600 px |
+| `dashboard-all-clear-dark.png` | 1120 × 800 pt, dark; same state | 2240 × 1600 px |
 | `dashboard-statusless-sessions-light.png` | 1120 × 800 pt, light; recent sessions with no recorded work status (Working now names the agent, not a hash) | 2240 × 1600 px |
 | `dashboard-statusless-sessions-dark.png` | 1120 × 800 pt, dark; same state | 2240 × 1600 px |
 
