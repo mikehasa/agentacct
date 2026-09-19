@@ -1651,6 +1651,13 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(browse.visibleTasks(in: recent).map(\.taskId), ["task-recent-failure"])
     }
 
+    func testSortMenuReadsSentenceCaseWhileRawValuesStayStable() {
+        // The menu and its trigger show these words; raw values remain the
+        // identifiers the rest of the app keys on.
+        XCTAssertEqual(WorkSort.allCases.map(\.label), ["Attention first", "Latest", "Highest cost"])
+        XCTAssertEqual(WorkSort.allCases.map(\.rawValue), ["attention", "latest", "cost"])
+    }
+
     func testFailedChecksPutReportedReceiptInAttentionGroupAndSort() throws {
         let reportedFailure = try decode(
             ReceiptSummary.self,
