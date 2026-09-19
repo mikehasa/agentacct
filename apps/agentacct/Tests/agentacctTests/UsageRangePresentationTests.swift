@@ -1,13 +1,13 @@
 import XCTest
 @testable import agentacct
 
-/// The recorded-usage range control prints its caption once. The segmented
-/// picker's own label is hidden, so "Recorded usage range" is both the visible
-/// caption and the control's accessibility name, and each offered window has
-/// a short segment label.
+/// The recorded-usage range control is labelled once: a caps label beside the
+/// house segmented control on the title row, with the full phrase as the
+/// control's accessibility name, and a short segment label per window.
 final class UsageRangePresentationTests: XCTestCase {
-    func testCaptionIsTheSingleLabelForTheControl() {
-        XCTAssertEqual(UsageRangePresentation.caption, "Recorded usage range")
+    func testCaptionAndAccessibilityNameSayTheSameThingOnce() {
+        XCTAssertEqual(UsageRangePresentation.caption, "Recorded range")
+        XCTAssertEqual(UsageRangePresentation.accessibilityName, "Recorded usage range")
     }
 
     func testOfferedWindowsAreSevenThirtyAndNinetyDays() {

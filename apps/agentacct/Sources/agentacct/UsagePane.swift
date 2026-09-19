@@ -27,20 +27,23 @@ struct UsagePane: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: Space.m) {
+        // The recorded-usage window sits on the title row, the way the
+        // Dashboard's usage card keeps its Tokens/Cost switch on its own
+        // header: one caps label and the house segmented control, trailing.
+        HStack(alignment: .center, spacing: Space.m) {
             HStack(alignment: .firstTextBaseline, spacing: Space.s) {
                 Text("Usage & limits")
                     .workFont(.titlePage).tracking(Type.titlePageTracking)
                     .foregroundStyle(Theme.ink)
                 ContextHelp(title: "About usage and limits", message: "Provider-reported capacity and locally recorded usage have separate time windows. Changing the recorded usage range updates client totals, history and attribution; it does not change provider quota windows or today's summary.", identifier: "usage.range-help")
             }
-            HStack(alignment: .center, spacing: Space.m) {
-                // The one visible label for the range control. The picker's own
-                // label is hidden (it used to print "Usage range" beside this
-                // caption, wrapped onto two lines) and carried for VoiceOver.
-                Text(UsageRangePresentation.caption).workFont(.caption).foregroundStyle(Theme.muted)
+            Spacer(minLength: Space.m)
+            HStack(spacing: Space.s) {
+                CapsLabel(text: UsageRangePresentation.caption)
                 usageRangeControl
             }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(UsageRangePresentation.accessibilityName)
         }
     }
 
@@ -243,30 +246,17 @@ struct UsagePane: View {
         return false
     }
 
-    @ViewBuilder
     private var usageRangeControl: some View {
-        if SnapshotMode.enabled {
-            // ImageRenderer draws a segmented Picker as a placeholder, so the
-            // snapshot shows the same three segments as a static stand-in.
-            SegmentedStandIn(
-                options: UsageRangePresentation.options.map(\.label),
-                selected: UsageRangePresentation.label(forDays: dashboard.usageDays)
-            )
-        } else {
-            Picker(UsageRangePresentation.caption, selection: Binding(
+        SegmentedChoice(
+            options: UsageRangePresentation.options.map(\.days),
+            label: { UsageRangePresentation.label(forDays: $0) },
+            selection: Binding(
                 get: { dashboard.usageDays },
                 set: { days in Task { await dashboard.setUsageDays(days) } }
-            )) {
-                ForEach(UsageRangePresentation.options, id: \.days) { option in
-                    Text(option.label).tag(option.days)
-                }
-            }
-            .pickerStyle(.segmented)
-            .fixedSize()
-            .labelsHidden()
-            .accessibilityLabel(UsageRangePresentation.caption)
-            .accessibilityIdentifier("usage.history.range")
-        }
+            ),
+            identifier: { "usage.history.range.\(UsageRangePresentation.label(forDays: $0))" }
+        )
+        .accessibilityIdentifier("usage.history.range")
     }
 
     private func summaryStrip(_ usage: UsageSummary) -> some View {
@@ -723,17 +713,17 @@ struct UsagePeriodChart: View {
                         .disabled(selectedIndex == periods.index(before: periods.endIndex))
                         .accessibilityLabel(presentation.nextAccessibilityLabel)
                     }
-                    if SnapshotMode.enabled {
-                        Chip(text: series.rawValue, tint: Theme.accent)
-                    } else {
-                        CapsLabel(text: "Measure")
-                        Picker("Chart measure", selection: $series) {
-                            ForEach(Series.allCases) { Text($0.rawValue).tag($0) }
-                        }
-                        .pickerStyle(.segmented)
-                        .fixedSize()
-                        .labelsHidden()
-                        .accessibilityIdentifier("usage.history.measure")
+                    CapsLabel(text: "Measure")
+                    SegmentedChoice(
+                        options: Series.allCases,
+                        label: { $0.rawValue },
+                        selection: $series,
+                        identifier: { "usage.history.measure.\($0 == .cost ? "cost" : "tokens")" }
+                    )
+                    .accessibilityIdentifier("usage.history.measure")
+                    // ImageRenderer cannot draw a menu picker; the grouping
+                    // menu is an interactive-only affordance.
+                    if !SnapshotMode.enabled {
                         if series == .tokens, clients.count > 1 {
                             Picker("Group", selection: $group) {
                                 Text("All clients").tag(String?.none)
@@ -1000,16 +990,19 @@ struct UsageBreakdownTable: View {
 
 // MARK: - Recorded usage range
 
-/// The recorded-usage range control: one caption ("Recorded usage range") and
-/// the three window lengths. The segmented picker hides its own label so the
-/// caption is printed once; the same words name the control for VoiceOver.
+/// The recorded-usage range control: one caps label ("Recorded range") beside
+/// the house segmented control, on the page's title row, and the three window
+/// lengths it offers. The full phrase names the control for VoiceOver.
 enum UsageRangePresentation {
     struct Option: Equatable {
         let days: Int
         let label: String
     }
 
-    static let caption = "Recorded usage range"
+    /// The caps label printed beside the control.
+    static let caption = "Recorded range"
+    /// The control's accessibility name: the full phrase, once.
+    static let accessibilityName = "Recorded usage range"
 
     static let options: [Option] = [
         Option(days: 7, label: "7d"),
