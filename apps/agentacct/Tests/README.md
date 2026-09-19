@@ -357,6 +357,7 @@ text sizes, and both appearances; transient states render at the standard viewpo
 | all-redacted passing checks | 760 × 700 pt, light/dark; summary first, redaction stated once, lone passed group without a heading | `work-session-steps-redacted-checks-*.png` |
 | decision badge gallery | 760 × 760 pt, light/dark; every legend key as page and row badge | `work-components-decision-badges-*.png` |
 | provenance chip gallery | 760 × 420 pt, light/dark; every provenance token as its chip beside the raw token | `work-components-provenance-chips-*.png` |
+| outcome card gallery | 960 × 480 pt, light/dark; side by side the cards share one height when only Checks carries the attention note, plus the narrow stacked fallback | `work-components-outcome-cards-*.png` |
 
 For an ad-hoc render that does not compare or update references:
 
@@ -368,7 +369,7 @@ open /tmp/agentacct-work-review
 ```
 
 Ad-hoc and CI artifact images are review aids only. Including the focused
-Checks, Session/steps, and action matrices, the visual test reads 74 canonical PNGs from
+Checks, Session/steps, action, and component-gallery matrices, the visual test reads 82 canonical PNGs from
 `Tests/agentacctTests/ReferenceImages/<platform-id>`, so
 a Work UI change is not visually verified until those source-tree files are
 reviewed and committed.

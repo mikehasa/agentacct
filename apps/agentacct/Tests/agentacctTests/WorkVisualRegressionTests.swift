@@ -86,6 +86,8 @@ final class WorkVisualRegressionTests: XCTestCase {
         "work-components-decision-badges-dark.png",
         "work-components-provenance-chips-light.png",
         "work-components-provenance-chips-dark.png",
+        "work-components-outcome-cards-light.png",
+        "work-components-outcome-cards-dark.png",
     ]
 
     @MainActor
