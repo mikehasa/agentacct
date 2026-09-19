@@ -4,7 +4,8 @@ import XCTest
 final class WorkTimelineExportTests: XCTestCase {
     func testFilteredExportIncludesOnlyDisplayedRecordsWithFullIdentity() {
         let first = WorkTimelineRecord(id: "event:first", eventID: "first", laneID: "codex::same-prefix-0001", laneTitle: "Review parser",
-            lineage: "Root session", kind: .check, title: "Test parser", result: "failed", source: "Client hook", scope: "parser-check")
+            lineage: "Root session", kind: .check, title: "Test parser", result: "failed", source: "Client hook", scope: "parser-check",
+            resultText: "Failed", resultTone: "failure")
         let second = WorkTimelineRecord(id: "event:second", eventID: "second", laneID: "codex::same-prefix-0002", laneTitle: "Review parser",
             lineage: "Root session", kind: .check, title: "Test parser", result: "passed", source: "Client hook")
         let projection = WorkTimelineProjection(records: [first, second])
@@ -25,6 +26,18 @@ final class WorkTimelineExportTests: XCTestCase {
         XCTAssertFalse(output.contains("Selected comparison:"))
     }
 
+    func testExportUsesTheReducerCommandSentence() {
+        var record = WorkTimelineRecord(id: "event:cmd", laneID: "session", laneTitle: "Review parser",
+            lineage: "Root session", kind: .check, title: "pytest", result: "passed", source: "Client hook")
+        record.commandRedacted = true
+        record.commandStateText = "The agent's command argument was not stored; the title is the name the agent recorded."
+        let output = WorkTimelineExport.text(taskID: "task", title: nil, records: [record],
+            projection: WorkTimelineProjection(records: [record]), following: false, query: "", file: nil,
+            generatedAt: Date(timeIntervalSince1970: 1_000), failuresOnly: false)
+        XCTAssertTrue(output.contains("The agent's command argument was not stored; the title is the name the agent recorded."))
+        XCTAssertFalse(output.contains("deliberately not captured"))
+    }
+
     func testEmptyFilteredExportDoesNotFallBackToLoadedRecords() {
         let hidden = WorkTimelineRecord(id: "hidden", laneID: "session", laneTitle: "Review parser",
             lineage: "Root session", kind: .check, title: "Hidden evidence", result: "passed", source: "Client hook")
@@ -41,7 +54,8 @@ final class WorkTimelineExportTests: XCTestCase {
         let record = WorkTimelineRecord(id: "check", laneID: "codex::session", laneTitle: "Review",
             lineage: "Root session", kind: .check, title: "Verify", start: time, result: "failed",
             resolution: "One case fixed", resolutionScope: "partial", artifact: "report-ref",
-            artifactPath: "reports/check.json", artifactURL: "https://example.test/check")
+            artifactPath: "reports/check.json", artifactURL: "https://example.test/check",
+            resultText: "Failed", resultTone: "failure")
         let output = WorkTimelineExport.text(taskID: "task", title: nil, records: [record],
             projection: .init(records: [record]), following: false, query: "", file: nil,
             generatedAt: Date(timeIntervalSince1970: 1_700_000_100))
@@ -57,14 +71,16 @@ final class WorkTimelineExportTests: XCTestCase {
     func testRedactedArtifactsDoNotLeakIntoExportAndStepBlockersKeepTheirMeaning() {
         let record = WorkTimelineRecord(id: "check", laneID: "lane", laneTitle: "Review",
             lineage: "Root", kind: .check, title: "Verify", artifactPath: "private-path",
-            artifactURL: "private-url", artifactPathRedacted: true, artifactURLRedacted: true)
+            artifactURL: "private-url", artifactPathRedacted: true, artifactURLRedacted: true,
+            artifactPathStateText: "The artifact path was withheld by its source and is not shown.",
+            artifactURLStateText: "The artifact URL was withheld by its source and is not shown.")
         let output = WorkTimelineExport.text(taskID: "task", title: nil, records: [record],
             projection: .init(records: [record]), following: false, query: "", file: nil,
             generatedAt: Date(timeIntervalSince1970: 1_700_000_100))
         XCTAssertFalse(output.contains("private-path"))
         XCTAssertFalse(output.contains("private-url"))
-        XCTAssertTrue(output.contains("Artifact path intentionally not captured"))
-        XCTAssertTrue(output.contains("Artifact URL intentionally not captured"))
+        XCTAssertTrue(output.contains("The artifact path was withheld by its source and is not shown."))
+        XCTAssertTrue(output.contains("The artifact URL was withheld by its source and is not shown."))
         var step = record
         step.kind = .step
         step.resolution = "Blocked: credentials unavailable"
@@ -74,7 +90,7 @@ final class WorkTimelineExportTests: XCTestCase {
     func testExportPreservesUnknownFieldsFailureAndHeldScope() {
         let failed = WorkTimelineRecord(id: "check-a", laneID: "codex::session-a", laneTitle: "Review",
             lineage: "Root session", kind: .check, title: "Test", result: "failed", source: "Agent-reported check",
-            identityNote: "No immutable event identity")
+            identityNote: "No immutable event identity", resultText: "Failed", resultTone: "failure")
         let other = WorkTimelineRecord(id: "check-b", laneID: "codex::session-b", laneTitle: "Other",
             lineage: "Child session", kind: .check, title: "Hidden record")
         let output = WorkTimelineExport.text(taskID: "task", title: "Task", records: [failed],

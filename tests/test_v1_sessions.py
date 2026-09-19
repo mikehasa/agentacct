@@ -105,6 +105,8 @@ def _record_section(
         "section_id": resolved_section,
         "section_status": status,
         "section_title": title,
+        "summary": "Recorded outcome for this fixture section." if status in {"completed", "handed_off"} else None,
+        "blocker": "The staging migration needs an owner role this account does not have." if status == "blocked" else None,
     }
     if kind is not None:
         metadata["kind"] = kind
@@ -1039,7 +1041,10 @@ def test_detail_steps_carry_tui_grade_depth(tmp_path):
     # the check carries its trusted source_type so a surface can show independence.
     assert step["evidence_grade"] == "self_checked"
     assert step["evidence_grade_reason"]
+    assert step["evidence_grade_label"] == "self-checked"
     assert checks[0]["source_type"] == "mcp_agent_reported"
+    # ...and the shared display label for it, so the app keeps no label map.
+    assert checks[0]["source_label"] == "Agent-reported"
 
 
 def test_detail_descendants_and_plan_block(tmp_path):

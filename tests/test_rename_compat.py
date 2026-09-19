@@ -454,6 +454,9 @@ def test_frozen_tool_names_and_semantic_kind() -> None:
         "agentacct_record_agent_usage_debug",
         "agentacct_list_events",
         "agentacct_get_event_summary",
+        # Added after the rename: read-only status. Additive, so no frozen name
+        # is renamed and every name above still exists.
+        "agentacct_work_status",
     ]
     # RECOGNIZE-MANY: the log-evidence creation-tool set (a READ path over
     # historical transcripts) accepts BOTH the new agentacct_* names AND the

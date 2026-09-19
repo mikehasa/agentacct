@@ -20,14 +20,18 @@ final class InactiveDecisionStateTests: XCTestCase {
     /// statement ride the payload exactly as the daemon emits them.
     private func inactiveSummary(
         label: String? = "Inactive",
-        checksFailed: Int? = nil
+        checksFailed: Int? = nil,
+        attentionOpen: Bool? = nil
     ) throws -> ReceiptSummary {
         let labelField = label.map { ",\"label\":\"\($0)\"" } ?? ""
         let failedField = checksFailed.map { ",\"checks_failed\":\($0)" } ?? ""
+        let attentionField = attentionOpen.map { "\"attention_open\": \($0)," } ?? ""
         return try decode(
             ReceiptSummary.self,
             from: """
             {
+              \(attentionField)
+              "group_key": "stopped",
               "task_id": "went-quiet",
               "title": "Refactor the importer",
               "decision_status": {
@@ -44,8 +48,9 @@ final class InactiveDecisionStateTests: XCTestCase {
 
     // MARK: - Lifecycle bucket
 
-    func testInactiveKeyFoldsIntoStoppedBucket() {
-        XCTAssertEqual(WorkGroup.forKey("inactive"), .stopped)
+    func testInactiveGroupKeyFoldsIntoStoppedBucket() {
+        XCTAssertEqual(WorkGroup(payloadKey: "stopped"), .stopped)
+        XCTAssertNil(WorkGroup(payloadKey: "inactive"), "decision words are not group keys")
     }
 
     func testInactiveTaskGroupsAsStoppedNotAttention() throws {
@@ -57,9 +62,12 @@ final class InactiveDecisionStateTests: XCTestCase {
 
     // MARK: - Attention exclusion
 
-    func testInactiveNeverEntersAttention() {
-        XCTAssertFalse(workReceiptNeedsAttention(decisionKey: "inactive", checksFailed: nil))
-        XCTAssertFalse(workReceiptNeedsAttention(decisionKey: "inactive", checksFailed: 0))
+    func testInactiveNeverEntersAttention() throws {
+        // The reducer's attention_open predicate is the only attention signal.
+        XCTAssertEqual(WorkGroup.forTask(try inactiveSummary(attentionOpen: false)), .stopped)
+        XCTAssertEqual(WorkGroup.forTask(try inactiveSummary(checksFailed: 0, attentionOpen: false)), .stopped)
+        // A payload without the predicate still never promotes inactive.
+        XCTAssertEqual(WorkGroup.forTask(try inactiveSummary(attentionOpen: nil)), .stopped)
     }
 
     // MARK: - Tint (quiet, never green, never done-ish)
@@ -77,10 +85,13 @@ final class InactiveDecisionStateTests: XCTestCase {
     // MARK: - Legend
 
     func testDecisionLegendCarriesInactiveAsAnInferredNonCompletion() throws {
+        let url = try XCTUnwrap(Bundle.module.url(forResource: "dashboard", withExtension: "json"))
+        let legend = try XCTUnwrap(DashboardSnapshotFixture.load(from: url).tasks.decisionLegend)
         let entry = try XCTUnwrap(
-            DecisionLegend.entries.first { $0.key == "inactive" },
+            legend.decisions.first { $0.key == "inactive" },
             "The status legend must define the inactive word."
         )
+        XCTAssertEqual(entry.groupKey, "stopped")
         XCTAssertEqual(entry.label, "Inactive")
         // The definition states an inference, not a completion.
         XCTAssertTrue(entry.definition.lowercased().contains("inferred"))
@@ -96,12 +107,14 @@ final class InactiveDecisionStateTests: XCTestCase {
         XCTAssertEqual(item.outcome, "Inactive")
     }
 
-    func testDashboardOutcomeFallbackCapitalizesInactiveWhenDaemonOmitsLabel() throws {
-        // Older daemon payload with no explicit label — the fallback still reads
-        // "Inactive", never the raw key.
+    func testDashboardOutcomeNamesAbsenceWhenDaemonOmitsLabel() throws {
+        // Older daemon payload with no explicit label — the reducer owns the
+        // decision word, so the fallback names the absence and never renders
+        // (or re-cases) the raw key.
         let item = DashboardWorkItem(task: try inactiveSummary(label: nil))
         XCTAssertEqual(item.outcomeKey, "inactive")
-        XCTAssertEqual(item.outcome, "Inactive")
+        XCTAssertEqual(item.outcome, "decision not reported")
+        XCTAssertFalse(item.outcome.lowercased().contains("inactive"))
     }
 
     // MARK: - Work row presentation
@@ -113,6 +126,6 @@ final class InactiveDecisionStateTests: XCTestCase {
         XCTAssertFalse(presentation.decisionHelp.isEmpty)
         // Quiet: an inactive Task states no coral attention reason.
         XCTAssertNil(presentation.attentionReason)
-        XCTAssertFalse(presentation.handedOff)
+        XCTAssertNil(presentation.lifecycleMarkerText)
     }
 }

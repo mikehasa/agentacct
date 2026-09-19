@@ -733,9 +733,11 @@ def test_codex_paginated_jsonl_links_trusted_import_to_gradeable_receipt(tmp_pat
                 "client_session_id": None,
                 "section_id": "paginated-regression",
                 "section_status": "completed",
+                "files": ["src/agentacct/mcp.py"],
                 "section_title": "Fix paginated Codex evidence",
                 "kind": "implementation",
                 "project_dir": "/work/project",
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )
@@ -1343,9 +1345,11 @@ def _section_event(
         "client_transcript_id": transcript,
         "section_id": section_id,
         "section_status": "completed",
+        "files": ["src/agentacct/mcp.py"],
         "section_title": f"Section {section_id}",
         "kind": "implementation",
         "project_dir": "/tmp/projA",
+        "summary": "Recorded outcome for this fixture section.",
     }
     if authored:
         metadata["client_context_keys_authored"] = list(authored)

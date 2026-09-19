@@ -79,12 +79,27 @@ from .finding_disposition import (
     finding_target_digest,
     reduce_finding_dispositions,
 )
+from .display_vocabulary import (
+    BY_MODEL_SESSIONS_FOOTNOTE,
+    COST_CHART_LEGEND,
+    COST_CHART_UNIT,
+    COST_LEGEND,
+    USAGE_SERIES,
+    cost_basis_label,
+    FAILED_CHECK_RESULTS,
+    NOT_RUN_CHECK_RESULTS,
+    TASK_LIST_FIELD_LABELS,
+    attention_queue_copy,
+    decision_legend,
+)
 from .env_compat import read_env_alias
 from .localhost_guard import install_localhost_guard
 from .ingestion_health import (
     IngestionHealthStore,
     V1_INGESTION_SCHEMA_VERSION,
     importer_build_id,
+    recorded_usage_session_count,
+    with_ingestion_state_copy,
 )
 from .join_rules import namespace_join_compatible
 from .mechanical_checks import build_mechanical_check_events
@@ -103,10 +118,11 @@ from .supervisor import OwnedSupervisor, SupervisorError
 from .task_continuations import ContinuationTaskStore
 from .task_identity import TaskIdentityCodec
 from .task_outcome import (
-    NON_CHECK_RELEVANT_KINDS,
+    CHECK_SERIES_RESULTS,
     evidence_event_key,
     finding_check_key,
     latest_check_events,
+    step_is_checkable,
 )
 from .task_projection import build_task_projection
 from .receipt import (
@@ -1215,36 +1231,73 @@ def _task_title(task: Mapping[str, Any]) -> str:
     )
     project = str(primary_session.get("project") or "").strip() if isinstance(primary_session, Mapping) else ""
     client_label = _human_client(primary.get("client"))
-    return f"{client_label} in {project}" if project else f"Untitled {client_label} chat"
+    if project:
+        return f"{client_label} in {project}"
+    # Nothing names this Task: no client session title, no work title, no project.
+    # Four such rows used to read identically as "Untitled OpenClaw chat", which
+    # is a placeholder a reader cannot act on (measured: 4 of 55 Tasks in the
+    # installed store). Prefer something that distinguishes one row from the next
+    # -- the observation's own start time -- over a label that cannot.
+    started = primary_session.get("started_at") if isinstance(primary_session, Mapping) else None
+    if started is None:
+        started = task.get("last_activity_at")
+    try:
+        day = _short_date(float(started)) if started is not None else ""
+    except (TypeError, ValueError):
+        day = ""
+    return f"{client_label} session · {day}" if day else f"{client_label} session (unnamed)"
+
+
+def _short_date(timestamp: float) -> str:
+    """A local calendar day for a title, or "" when the stamp is unusable."""
+    import datetime as _datetime
+
+    if timestamp <= 0 or timestamp != timestamp:  # noqa: PLR0124 - NaN check
+        return ""
+    try:
+        moment = _datetime.datetime.fromtimestamp(timestamp)
+    except (OverflowError, OSError, ValueError):
+        return ""
+    return moment.strftime("%d %b")
+
+
+# The reducer's attention order classes: 0 failed checks and steps, 1 blockers,
+# 2 checks that could not run (``display_vocabulary.ATTENTION_SORT_TEXT``).
+RECEIPT_ATTENTION_ORDER_CLASSES = 3
 
 
 def _receipt_attention_priority(summary: Mapping[str, Any]) -> int | None:
-    """Dashboard review priority for one compact Receipt summary.
+    """The review priority of one compact Receipt summary — the REDUCER's own
+    class, never a second predicate.
 
-    Open machine findings and recorded failures come before agent-reported
-    blockers. Human-resolved or superseded findings retain their failed-check
-    history without returning to the attention queue.
+    ``build_receipt_summary`` already decides whether a Task is in the queue
+    (``group_key`` / ``attention_open``) and where it sorts
+    (``attention_order``). A local rule here re-derived membership from the
+    decision key and the failed-check count, so it could not see a check that
+    could not run (order class 2): ``/v1/tasks``'s attention block undercounted
+    the queue that ``/v1/attention``, the app's tabs and the TUI all agreed on.
     """
 
-    decision = summary.get("decision_status")
-    evidence = summary.get("evidence_strength")
-    decision_key = str(
-        decision.get("key") if isinstance(decision, Mapping) else ""
-    ).strip()
-    failed_checks = (
-        int(evidence.get("checks_failed") or 0)
-        if isinstance(evidence, Mapping)
-        else 0
-    )
-    settled_finding_keys = {"finding_superseded", "finding_resolved_by_user"}
-    has_finding = (
-        failed_checks > 0 and decision_key not in settled_finding_keys
-    ) or decision_key in {"finding", "failed"}
-    if has_finding:
-        return 0
-    if decision_key == "blocked":
-        return 1
-    return None
+    if not _summary_attention_open(summary):
+        return None
+    order = summary.get("attention_order")
+    if isinstance(order, int) and not isinstance(order, bool) and 0 <= order < RECEIPT_ATTENTION_ORDER_CLASSES:
+        return order
+    # Open, but from a payload that carried no order class: last, never dropped.
+    return RECEIPT_ATTENTION_ORDER_CLASSES - 1
+
+
+def _summary_attention_open(summary: Mapping[str, Any]) -> bool:
+    """Whether the reducer left this summary's attention block open, read from
+    the fields it ships (group first, then the explicit predicate)."""
+
+    group = str(summary.get("group_key") or "").strip()
+    if group:
+        return group == "attention"
+    if isinstance(summary.get("attention_open"), bool):
+        return bool(summary["attention_open"])
+    attention = summary.get("attention")
+    return bool(isinstance(attention, Mapping) and attention.get("open"))
 
 
 def _dashboard_receipt_attention(
@@ -1259,7 +1312,9 @@ def _dashboard_receipt_attention(
     keeps memory bounded while the full scan proves whether the queue is empty.
     """
 
-    preview_by_priority: tuple[list[dict[str, Any]], list[dict[str, Any]]] = ([], [])
+    preview_by_priority: list[list[dict[str, Any]]] = [
+        [] for _ in range(RECEIPT_ATTENTION_ORDER_CLASSES)
+    ]
     total = 0
     for task in tasks:
         row = build_receipt_summary(
@@ -1277,7 +1332,7 @@ def _dashboard_receipt_attention(
         if len(bucket) < DASHBOARD_RECEIPT_ATTENTION_LIMIT:
             bucket.append(row)
 
-    preview = (preview_by_priority[0] + preview_by_priority[1])[
+    preview = [row for bucket in preview_by_priority for row in bucket][
         :DASHBOARD_RECEIPT_ATTENTION_LIMIT
     ]
     return {
@@ -1365,8 +1420,9 @@ def _link_mechanical_checks_by_session_time(projection: dict[str, Any]) -> dict[
       * only a PASSING hook check is placed — a failing one is never guessed onto
         a step (that would falsely demote an unrelated verified step); it stays
         task-level, visible on the decision axis.
-      * only a check-relevant step (kind not research/review/planning/docs) is a
-        candidate — a test never credits a docs step.
+      * only a check-relevant step is a candidate (``step_is_checkable``: kind
+        not research/review/planning/docs, unless the step already carries an
+        attached check) — a test never credits a check-less docs step.
     A check that fits no eligible step (none had begun in that session yet) stays
     task-level and is disclosed as an unattributed check in the receipt ledger —
     never guessed onto an arbitrary step.
@@ -1384,8 +1440,15 @@ def _link_mechanical_checks_by_session_time(projection: dict[str, Any]) -> dict[
             # A test/build/lint only exercises check-relevant work — a docs or
             # planning step is never a candidate (crediting it would also make the
             # check vanish from the ledger, since a non-checkable step is excluded
-            # from the tiers).
-            if str(item.get("kind") or "unknown").lower() in NON_CHECK_RELEVANT_KINDS:
+            # from the tiers). Evidence beats declared kind: a step that already
+            # carries an attached check is checkable whatever its kind — the one
+            # shared step_is_checkable rule the receipt ledger uses.
+            attached = (
+                item.get("current_check_events")
+                if isinstance(item.get("current_check_events"), list)
+                else item.get("evidence_events")
+            )
+            if not step_is_checkable(item, attached):
                 continue
             session_id = str(item.get("client_session_id") or "")
             if session_id:
@@ -1518,7 +1581,7 @@ def _attach_evidence_to_task_projection(
                 if not isinstance(event, Mapping):
                     continue
                 work_evidence_keys.add(_evidence_event_key(event))
-                if str(event.get("result") or "").lower() in {"passed", "failed", "error"}:
+                if str(event.get("result") or "").lower() in CHECK_SERIES_RESULTS:
                     series = finding_check_key(event, task_scoped=True)
                     task_work_items_by_series.setdefault((task_id, series), []).append(item)
         task["work_evidence_event_keys"] = work_evidence_keys
@@ -1533,7 +1596,7 @@ def _attach_evidence_to_task_projection(
             event
             for event in item_events
             if isinstance(event, Mapping)
-            and str(event.get("result") or "").lower() in {"passed", "failed", "error"}
+            and str(event.get("result") or "").lower() in CHECK_SERIES_RESULTS
         ]
         item["current_check_events"] = [dict(event) for event in latest_check_events(result_events)]
         for event in result_events:
@@ -1674,7 +1737,7 @@ def _attach_evidence_to_task_projection(
     check_events = [
         event
         for event in evidence_events
-        if isinstance(event, dict) and str(event.get("result") or "").lower() in {"passed", "failed", "error"}
+        if isinstance(event, dict) and str(event.get("result") or "").lower() in CHECK_SERIES_RESULTS
     ]
     task_scoped_groups: dict[str, list[dict[str, Any]]] = {}
     for event in check_events:
@@ -1689,7 +1752,9 @@ def _attach_evidence_to_task_projection(
         if not latest_rows:
             return
         event = latest_rows[0]
-        if str(event.get("result") or "").lower() not in {"failed", "error"}:
+        # Only a recorded failure is a finding; a check that could not run
+        # asserts no defect, so it never becomes an unassigned finding.
+        if str(event.get("result") or "").lower() not in FAILED_CHECK_RESULTS:
             return
         event_key = _evidence_event_key(event)
         diagnostic = assignment_diagnostics.get(event_key, {})
@@ -1722,7 +1787,7 @@ def _attach_evidence_to_task_projection(
             return
         latest = latest_rows[0]
         append_unique(task["current_check_events"], latest)
-        if str(latest.get("result") or "").lower() in {"failed", "error"}:
+        if str(latest.get("result") or "").lower() in FAILED_CHECK_RESULTS:
             append_unique(task["open_finding_events"], latest)
         work_keys = task.get("work_evidence_event_keys") if isinstance(task.get("work_evidence_event_keys"), set) else set()
         for event in events:
@@ -1794,7 +1859,7 @@ def _attach_evidence_to_task_projection(
 
     # Non-result evidence remains historical context when it has one safe Task.
     for event in evidence_events:
-        if not isinstance(event, dict) or str(event.get("result") or "").lower() in {"passed", "failed", "error"}:
+        if not isinstance(event, dict) or str(event.get("result") or "").lower() in CHECK_SERIES_RESULTS:
             continue
         candidates = event_candidates.get(_evidence_event_key(event), set())
         if len(candidates) == 1:
@@ -1811,7 +1876,7 @@ def _attach_evidence_to_task_projection(
         current = [dict(event) for event in latest_check_events(current)]
         item["current_check_events"] = current
         item["open_finding_events"] = [
-            event for event in current if str(event.get("result") or "").lower() in {"failed", "error"}
+            event for event in current if str(event.get("result") or "").lower() in FAILED_CHECK_RESULTS
         ]
 
     unassigned_findings.sort(key=lambda finding: float(finding.get("updated_at") or 0.0), reverse=True)
@@ -1856,7 +1921,12 @@ def _apply_finding_dispositions_to_projection(
         for event in events:
             if not isinstance(event, Mapping):
                 continue
-            if str(event.get("result") or "").lower() not in {"failed", "error"}:
+            # A failed check is a finding; a check that could not run is a
+            # named gap. Both carry a human-attention episode (so the reviewer
+            # can mark either reviewed or resolved), told apart by
+            # ``objective_state``; only failures count as findings.
+            result = str(event.get("result") or "").lower()
+            if result not in FAILED_CHECK_RESULTS | NOT_RUN_CHECK_RESULTS:
                 continue
             target_digest = finding_target_digest(event)
             if target_digest is None or target_digest in seen:
@@ -1875,7 +1945,9 @@ def _apply_finding_dispositions_to_projection(
                 {
                     "target_digest": target_digest,
                     "finding_token": token,
-                    "objective_state": "current_failure",
+                    "objective_state": (
+                        "current_failure" if result in FAILED_CHECK_RESULTS else "check_not_run"
+                    ),
                     "disposition_state": disposition.state,
                     "attention_open": attention_open,
                     "supersession_state": str(event.get("supersession_state") or "") or None,
@@ -1942,10 +2014,14 @@ def _apply_finding_dispositions_to_projection(
         )
         task["finding_episodes"] = task_episodes
         task["open_finding_events"] = [
-            episode["failure_event"] for episode in task_episodes if episode["attention_open"]
+            episode["failure_event"]
+            for episode in task_episodes
+            if episode["attention_open"] and episode["objective_state"] == "current_failure"
         ]
         task["disposed_finding_events"] = [
-            episode["failure_event"] for episode in task_episodes if not episode["attention_open"]
+            episode["failure_event"]
+            for episode in task_episodes
+            if not episode["attention_open"] and episode["objective_state"] == "current_failure"
         ]
         for item in task.get("work_items", []):
             if not isinstance(item, dict):
@@ -1961,7 +2037,9 @@ def _apply_finding_dispositions_to_projection(
             )
             item["finding_episodes"] = item_episodes
             item["open_finding_events"] = [
-                episode["failure_event"] for episode in item_episodes if episode["attention_open"]
+                episode["failure_event"]
+                for episode in item_episodes
+                if episode["attention_open"] and episode["objective_state"] == "current_failure"
             ]
 
     unresolved_rows = (
@@ -1983,7 +2061,9 @@ def _apply_finding_dispositions_to_projection(
         )
         item["finding_episodes"] = item_episodes
         item["open_finding_events"] = [
-            episode["failure_event"] for episode in item_episodes if episode["attention_open"]
+            episode["failure_event"]
+            for episode in item_episodes
+            if episode["attention_open"] and episode["objective_state"] == "current_failure"
         ]
 
     unassigned_rows = (
@@ -2041,6 +2121,10 @@ def _apply_finding_dispositions_to_projection(
         for finding in [*open_unassigned, *disposed_unassigned]
         if isinstance(finding.get("episode"), Mapping)
     ]
+    # Finding counts count findings only: an episode for a check that could not
+    # run is a named gap, never an open finding.
+    task_episodes = [e for e in task_episodes if e.get("objective_state") != "check_not_run"]
+    unresolved_episodes = [e for e in unresolved_episodes if e.get("objective_state") != "check_not_run"]
     all_episodes = [*task_episodes, *unresolved_episodes, *unassigned_episodes]
     open_count = sum(bool(episode.get("attention_open")) for episode in all_episodes)
     reviewed_count = sum(episode.get("disposition_state") == "reviewed" for episode in all_episodes)
@@ -2815,6 +2899,18 @@ def create_local_api_app(
 
     cost_ledger = CostLedger(store_dir)
     ingestion_health = IngestionHealthStore(store_dir)
+
+    def _ingestion_snapshot() -> dict[str, Any]:
+        """The ingestion-health snapshot with its display copy. With no import
+        receipt on record, the store's own usage decides the wording: usage
+        already present reads "import history not recorded", never "no
+        import happened"."""
+
+        snapshot = ingestion_health.snapshot()
+        if snapshot.get("last_success_at") is None:
+            events, _fingerprint = _dashboard_events()
+            with_ingestion_state_copy(snapshot, recorded_usage_sessions=recorded_usage_session_count(events))
+        return snapshot
     continuation_store = ContinuationTaskStore(store_dir)
     task_identity = TaskIdentityCodec(store_dir)
     activation_store = ActivationStateStore(store_dir)
@@ -3123,12 +3219,78 @@ def create_local_api_app(
 
         _require_v1_token(request)
         events, fingerprint = _dashboard_events()
-        return glance_cache.snapshot(
+        payload = glance_cache.snapshot(
             events,
             store_dir=store_dir,
             version=_dashboard_importer_version(),
             fingerprint=fingerprint,
         )
+        sessions = payload.get("recent_sessions") or []
+        if not sessions:
+            return payload
+        try:
+            decisions = _recent_session_decisions(sessions)
+        except Exception:  # noqa: BLE001 - the join is additive; never break the glance.
+            return payload
+        # A shallow copy: the cached payload stays the pure events-only build.
+        return {
+            **payload,
+            "recent_sessions": [
+                {**row, **decisions.get((str(row.get("client") or ""), str(row.get("session_id") or "")), {})}
+                for row in sessions
+            ],
+        }
+
+    glance_decision_cache: dict[str, Any] = {}
+
+    def _recent_session_decisions(sessions: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
+        """Each recent session's TASK decision, from the same cached projection
+        and receipt reducers /v1/tasks serves, so the menu row and the Work row
+        can never word one Task differently: ``decision_key``,
+        ``decision_label`` and ``attention_open``. A session no visible Task
+        contains gets no decision fields (its work status still shows)."""
+
+        projection = _v1_task_projection()
+        tasks = _visible_tasks(projection)
+        wanted = {(str(row.get("client") or ""), str(row.get("session_id") or "")) for row in sessions}
+        by_session: dict[tuple[str, str], Mapping[str, Any]] = {}
+        for task in tasks:
+            for ref in task.get("session_keys") or []:
+                if not isinstance(ref, Mapping):
+                    continue
+                key = (str(ref.get("client") or ""), str(ref.get("client_session_id") or ""))
+                if key in wanted and key not in by_session:
+                    by_session[key] = task
+        if not by_session:
+            return {}
+        cache_key = glance_decision_cache.get("projection")
+        if cache_key is not projection:
+            glance_decision_cache.clear()
+            glance_decision_cache["projection"] = projection
+            glance_decision_cache["latest"] = latest_store_activity(tasks)
+            glance_decision_cache["starts"] = session_start_index(tasks)
+        out: dict[tuple[str, str], dict[str, Any]] = {}
+        for key, task in by_session.items():
+            task_id = str(task.get("public_task_id") or "")
+            cached = glance_decision_cache.get(("task", task_id))
+            if cached is None:
+                summary = build_receipt_summary(
+                    task,
+                    public_task_id=task_id,
+                    title=_task_title(task),
+                    latest_store_activity_at=glance_decision_cache["latest"],
+                    session_starts=glance_decision_cache["starts"],
+                )
+                decision = summary.get("decision_status") or {}
+                cached = {
+                    "task_id": task_id,
+                    "decision_key": decision.get("key"),
+                    "decision_label": decision.get("label"),
+                    "attention_open": bool(summary.get("attention_open")),
+                }
+                glance_decision_cache[("task", task_id)] = cached
+            out[key] = cached
+        return out
 
     v1_sessions_cache = V1SessionsCache()
 
@@ -3365,12 +3527,13 @@ def create_local_api_app(
             candidates: list[
                 tuple[int, float, str, Mapping[str, Any], dict[str, Any]]
             ] = []
-            counts = {"failed_check": 0, "failed_step": 0, "blocker": 0}
+            counts = {"failed_check": 0, "failed_step": 0, "blocker": 0, "check_not_run": 0}
             for task in tasks:
                 classified = build_attention_reason(
                     task,
                     latest_store_activity_at=latest,
                     session_starts=starts,
+                    task_title=_task_title(task),
                 )
                 if classified is None:
                     continue
@@ -3442,6 +3605,11 @@ def create_local_api_app(
             # Additive, exact across every visible Task, and preview-bounded.
             # Unlike ``tasks``, this is never scoped to the recent page.
             "attention": projection["_dashboard_receipt_attention"],
+            # The status legend (decision words + filter groups) and the queue's
+            # words, so every surface renders the vocabulary instead of a copy.
+            "decision_legend": decision_legend(),
+            "field_labels": dict(TASK_LIST_FIELD_LABELS),
+            "queue": attention_queue_copy(int(projection["_dashboard_receipt_attention"].get("total") or 0)),
         }
 
     @app.get("/v1/attention")
@@ -3486,6 +3654,7 @@ def create_local_api_app(
             "offset": offset,
             "limit": limit,
             "truncated": offset + len(items) < total,
+            "queue": attention_queue_copy(total),
         }
 
     from .task_timeline import TimelineCursorError, TimelineSnapshotCache, build_timeline_events
@@ -3850,7 +4019,7 @@ def create_local_api_app(
         _require_v1_token(request)
         return {
             "schema": V1_INGESTION_SCHEMA_VERSION,
-            "ingestion": ingestion_health.snapshot(),
+            "ingestion": _ingestion_snapshot(),
         }
 
     @app.get("/v1/connections")
@@ -3931,7 +4100,7 @@ def create_local_api_app(
 
     @app.get("/ingestion/health")
     def ingestion_health_status() -> dict[str, Any]:
-        return ingestion_health.snapshot()
+        return _ingestion_snapshot()
 
     @app.get("/overview")
     def overview() -> dict[str, Any]:
@@ -4462,6 +4631,26 @@ def create_local_api_app(
                 ),
             },
             "totals": cube["totals"],
+            # The cost-prefix legend (one shared string), so no surface keeps
+            # its own copy of the grammar.
+            "cost_legend": COST_LEGEND,
+            # The chart's words (display_vocabulary): the legend row under a
+            # cost chart, the unit its caption names, the token basis, the
+            # by-model overlap note, and the one measure vocabulary with the
+            # resting measure for THIS payload (Cost when anything is priced).
+            "cost_chart_legend": COST_CHART_LEGEND,
+            "cost_chart_unit": COST_CHART_UNIT,
+            "token_basis_label": cost_basis_label("client_reported"),
+            "by_model_sessions_footnote": BY_MODEL_SESSIONS_FOOTNOTE,
+            "usage_series": [dict(entry) for entry in USAGE_SERIES],
+            "usage_series_default": (
+                "cost"
+                if any(
+                    period.get("estimated_cost_usd") is not None or period.get("known_additive_cost_usd") is not None
+                    for period in cube["by_period"] or []
+                )
+                else "tokens"
+            ),
             "usage_exclusions": {
                 "non_additive_rows": len(excluded_records),
                 "unknown_time_rows": excluded_unknown_time_rows,

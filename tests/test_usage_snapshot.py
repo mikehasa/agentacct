@@ -129,14 +129,21 @@ def test_format_tokens():
 
 
 def test_cost_text_honours_cost_complete():
-    # complete → plain $; presence of estimated_cost_usd alone is NOT enough.
-    assert us.cost_text({"cost_complete": True, "estimated_cost_usd": 4.0, "known_additive_cost_usd": 4.0}) == "$4.00"
+    # complete → the complete figure; presence of estimated_cost_usd alone is NOT
+    # enough. A complete figure with no reported confidence is an estimate (≈$).
+    assert us.cost_text({"cost_complete": True, "estimated_cost_usd": 4.0, "known_additive_cost_usd": 4.0}) == "≈$4.00"
+    # a complete client-reported / provider-billed figure wears a bare $.
+    assert us.cost_text({"cost_complete": True, "estimated_cost_usd": 4.0, "known_additive_cost_usd": 4.0,
+                         "cost_confidence": "client_reported"}) == "$4.00"
     # priced subtotal present but not complete → partial with ~.
     assert us.cost_text({"cost_complete": False, "estimated_cost_usd": 4.0, "known_additive_cost_usd": 4.0}) == "~$4.00"
-    # nothing priced → em-dash.
-    assert us.cost_text({"cost_complete": False, "estimated_cost_usd": None, "known_additive_cost_usd": None}) == "—"
-    # non-finite degrades to em-dash (never $nan).
-    assert us.cost_text({"cost_complete": True, "estimated_cost_usd": float("nan"), "known_additive_cost_usd": float("inf")}) == "—"
+    # amounts are thousands-grouped.
+    assert us.cost_text({"cost_complete": False, "estimated_cost_usd": None, "known_additive_cost_usd": 1635.574}) == "~$1,635.57"
+    # nothing priced → a named absence, never a dash.
+    assert us.cost_text({"rows": 3, "cost_complete": False, "estimated_cost_usd": None, "known_additive_cost_usd": None}) == "unpriced"
+    assert us.cost_text({"rows": 0, "cost_complete": False, "estimated_cost_usd": None, "known_additive_cost_usd": None}) == "no usage recorded"
+    # non-finite degrades to the named absence (never $nan).
+    assert us.cost_text({"rows": 2, "cost_complete": True, "estimated_cost_usd": float("nan"), "known_additive_cost_usd": float("inf")}) == "unpriced"
 
 
 def test_usage_bar_clamps_and_sizes():
@@ -158,13 +165,13 @@ def test_humanize_seconds():
 
 
 def test_window_label():
-    assert us.window_label({"kind": "5h"}) == "5-hour"
-    assert us.window_label({"kind": "7d"}) == "7-day"
-    assert us.window_label({"kind": "other", "window_minutes": 120}) == "120m"
-    assert us.window_label({"kind": "other"}) == "window"
-    # non-finite window_minutes must not reach int() (would raise) → "window".
-    assert us.window_label({"kind": "other", "window_minutes": float("inf")}) == "window"
-    assert us.window_label({"kind": "other", "window_minutes": float("nan")}) == "window"
+    assert us.window_label({"kind": "5h"}) == "5-hour limit"
+    assert us.window_label({"kind": "7d"}) == "7-day limit"
+    assert us.window_label({"kind": "other", "window_minutes": 120}) == "120m limit"
+    assert us.window_label({"kind": "other"}) == "limit window"
+    # non-finite window_minutes must not reach int() (would raise) → "limit window".
+    assert us.window_label({"kind": "other", "window_minutes": float("inf")}) == "limit window"
+    assert us.window_label({"kind": "other", "window_minutes": float("nan")}) == "limit window"
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +263,8 @@ def test_usage_snapshot_all_priced_is_complete(tmp_path):
     snap = us.build_usage_snapshot(service.list_all_events(), now=_NOW, today=_TODAY)
     today = {w.label: w for w in snap.windows}["today"].totals
     assert today["cost_complete"] is True
-    assert us.cost_text(today) == "$4.00"
+    # complete, but a pricing estimate rather than a reported figure → ≈$.
+    assert us.cost_text(today) == "≈$4.00"
 
 
 def test_usage_snapshot_empty_store(tmp_path):
@@ -330,7 +338,7 @@ def test_build_client_limits_parses_windows():
     assert codex.plan_type == "pro"
     assert len(codex.windows) == 1
     assert codex.windows[0].kind == "7d"
-    assert codex.windows[0].label == "7-day"
+    assert codex.windows[0].label == "7-day limit"
     assert codex.windows[0].used_percent == 55.0
     assert codex.windows[0].resets_at == 42
 
@@ -385,7 +393,9 @@ def test_limit_json_entry_and_parity():
 def test_limit_teaser_lines():
     events = [_codex_7d(52.4, captured=2000.0), _claude_desktop(org="abc", fh=12.0, sd=26.0, captured=1500.0)]
     lines = us.limit_teaser_lines(events)
-    assert "codex: 7d 52%" in lines
+    # The codex fixture's reset instant is long past: its share predates the
+    # reset, so the teaser names it in the past tense, never as current.
+    assert "codex: 7d last reported 52%" in lines
     assert "claude-code: 5h 12% · 7d 26%" in lines
 
 

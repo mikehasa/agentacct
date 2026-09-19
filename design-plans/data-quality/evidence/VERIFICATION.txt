@@ -1,0 +1,83 @@
+agentacct recording-fix verification
+========================================================================
+
+1. The Codex SessionStart hook is installed, and its context is used
+  [PASS] Codex hooks.json wires SessionStart
+         events installed: ['PreToolUse', 'SessionEnd', 'SessionStart']
+  [PASS] every wired event points at the same wrapper
+         one wrapper serves all events (it dispatches on hook_event_name)
+  [PASS] the capture writes a Codex-specific slot, not Claude's
+         wrote client-context/codex.json
+  [PASS] a section recorded with no ids of its own inherits the Codex session id
+         client_session_id='codex-session-verify' client='codex'
+  [PASS] the inherited id is labelled as hook-derived, not exact
+         client_context_source='claude_code_hook'
+
+1b. An existing install upgrades without losing the user's own hooks
+  [PASS] SessionStart is added to an existing old config
+         events now: ['PreToolUse', 'SessionEnd', 'SessionStart', 'UserPromptSubmit']
+  [PASS] the user's own unrelated hook survives the upgrade
+         a third-party UserPromptSubmit hook is untouched
+  [PASS] the OLD agentacct wrapper is replaced, not duplicated
+         wrapper occurrences=1 (2 would double-record tool activity)
+  [PASS] a third-party hook co-located in our row survives the replacement
+         user command occurrences=1 (preserved, not duplicated)
+
+2. Every write lane refuses the same incomplete records
+  [PASS] all three transports refuse a terminal section with no outcome
+         refused by: http(yes), cli(yes), mcp(yes)
+  [PASS] the MCP refusal tells the agent what to add
+         section_status=completed requires `summary`: describe what actually changed and what was verified; section_status=comple...
+
+3. Incomplete reports are refused; complete ones are accepted
+  [PASS] refused: a whitespace-only title
+         section_title must contain readable text, not only whitespace (received 3 characters)...
+  [PASS] refused: a check with nothing re-runnable
+         machine check `check` (result=passed) records nothing a reviewer can re-run or inspect: pass `command` (the ex...
+  [PASS] accepted: a complete section
+         stored
+  [PASS] accepted: a check naming what it ran, with an exit code
+         stored
+  [PASS] accepted: a repair recorded as before/after exit codes
+         stored
+
+4. The read-back loop returns what the agent recorded
+  [PASS] agentacct_work_status returns the blocker and its next step
+         blocked=1 next_step='Ask the platform team to grant the owner role.'
+  [PASS] calling it writes nothing
+         events before=5 after=5
+
+5. The recording contract reaches the agent, inside its line budget
+  [PASS] the contract stays within 14 lines
+         9 bullets (a long directive competes with the user's request)
+  [PASS] the contract tells the agent about client_session_id
+         
+  [PASS] the contract tells the agent about turn_id
+         
+  [PASS] the contract tells the agent about next_step
+         
+  [PASS] the contract tells the agent about blocker
+         
+  [PASS] the contract tells the agent about agentacct_work_status
+         
+
+6. Display budgets agree with the surfaces
+  [PASS] the schema discloses the card budget to the author
+         section_title says a card renders about 54 characters
+  [PASS] the schema is never tighter than the surface that needs the room
+         summary maxLength=1200 inspector=600
+  [PASS] a summary reused as a card title becomes a sentence, not a clip
+         label='Inspected live Dashboard, Work receipt and Usage.'
+  [PASS] truncation never exceeds its budget
+         checked limits 1, 5, 54, 100
+
+7. The rules do not refuse records the real store already accepted
+  [FAIL] replaying every stored record through the rules refuses < 1%
+         133 of 2004 refused (6.64%); by type: {'section_completed': 116, 'machine_check': 6, 'section_blocked': 3, 'section_checkpoint': 3, 'section_handed_off': 5}
+  [PASS] the historian's own sections already carry resolved session ids
+         at least one recorded section is session-linked in the live store
+
+========================================================================
+29 of 30 checks passed
+FAILED:
+  - replaying every stored record through the rules refuses < 1%

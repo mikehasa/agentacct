@@ -9,6 +9,8 @@ from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .display_vocabulary import COMMAND_STATE_AGENT_RECORDED, FAILED_CHECK_RESULTS
+from .plural import count_noun
 from .confidence import (
     normalize_cost_basis,
     normalize_cost_confidence,
@@ -19,6 +21,7 @@ from .tool_activity import (
     build_commands_by_session,
     build_tool_activity_by_session,
     build_tool_activity_capture_basis_by_session,
+    build_tool_activity_window_by_session,
     build_tool_names_by_session,
     build_touched_files_by_session,
 )
@@ -59,8 +62,16 @@ from .usage_truth import (
 # handed_off is an additive terminal status (a clean stop / handoff), never a
 # rename of any frozen token. See task_outcome._HANDED_OFF_STATUS / DECISION 1.
 WORK_STATUSES = {"started", "checkpoint", "blocked", "completed", "handed_off"}
+# Status transitions that close a section rather than change its work. They
+# still move ``updated_at`` (recency), but not ``last_nonterminal_update_at``,
+# the section's work clock: a check recorded just before the agent marks its own
+# section completed still describes the finished work.
+TERMINAL_WORK_STATUSES = {"completed", "blocked", "handed_off"}
 EVIDENCE_TYPES = {"test", "build", "lint", "typecheck", "smoke", "benchmark", "browser", "security", "artifact", "other"}
-EVIDENCE_RESULTS = {"passed", "failed", "skipped", "error", "unknown"}
+# ``not_reproduced`` is additive (never a rename): a probe that ran cleanly and
+# could not reproduce the reported problem. It proves no defect, so it is never
+# a Finding — the gap it names is that the question is still open.
+EVIDENCE_RESULTS = {"passed", "failed", "skipped", "error", "unknown", "not_reproduced"}
 _BLOCKER_RESOLUTION_CONTRACT = "server_validated_v1"
 
 _JOIN_RANK = {"unjoined": 0, "low": 1, "medium": 2, "high": 3, "exact": 4}
@@ -224,6 +235,10 @@ def build_work_ledger(
     # scan). Carried so the Receipt names Actions provenance honestly instead of
     # assuming a hook — Codex/OpenCode Actions are transcript-scan-derived.
     capture_basis_by_session = build_tool_activity_capture_basis_by_session(events)
+    # WHEN each session's capture was running. A count with no window cannot say
+    # whether it covers the work or a slice of it, so the Receipt carries the
+    # window beside the total and downgrades "exact" when the two disagree.
+    tool_activity_window_by_session = build_tool_activity_window_by_session(events)
     if tool_activity_by_session or tool_names_by_session or touched_files_by_session or commands_by_session:
         for entry in session_rollup.get("sessions", []):
             entry_key = (str(entry.get("client") or ""), str(entry.get("client_session_id") or ""))
@@ -236,6 +251,9 @@ def build_work_ledger(
             bases = capture_basis_by_session.get(entry_key)
             if bases:
                 entry["tool_activity_capture_bases"] = list(bases)
+            window = tool_activity_window_by_session.get(entry_key)
+            if window:
+                entry["tool_activity_window"] = dict(window)
             # Paths a file-edit tool wrote (hook-captured), cwd-relative — an out-of-tree
             # edit rides as ``../`` and a home-file edit as ``~/…`` (no username). Each was
             # gated by _normalize_touched_path at the tick, the drain, and
@@ -954,6 +972,49 @@ def build_attributions(
     return attributions
 
 
+def _collect_progress_note(item: dict[str, Any], event: Mapping[str, Any]) -> None:
+    """Keep one section snapshot's prose when it is about to be overwritten.
+
+    Only NON-TERMINAL snapshots are collected. A terminal snapshot's summary is
+    the section's headline and stays exactly where it is; a started/checkpoint
+    summary has no other home, so without this it is lost the moment the next
+    snapshot arrives. A snapshot that merely repeats the previous prose adds no
+    beat — the agent re-sent context, it did not narrate twice.
+    """
+
+    summary = str(event.get("summary") or "").strip()
+    if not summary or event.get("status") in TERMINAL_WORK_STATUSES:
+        return
+    notes = item.setdefault("progress_notes", [])
+    if notes and notes[-1].get("summary") == summary:
+        return
+    notes.append(
+        {
+            "event_id": event.get("event_id"),
+            "at": event.get("created_at"),
+            "status": str(event.get("status") or "started"),
+            "summary": summary,
+        }
+    )
+
+
+def _settled_progress_notes(notes: Any, headline: Any) -> list[dict[str, Any]]:
+    """The section's beats in recorded order, with the headline removed.
+
+    A section that reported the same sentence at its checkpoint and again at
+    its close said it once: the beat would be a duplicate row of the summary
+    already printed on the section, so it is dropped rather than shown twice.
+    """
+
+    settled = str(headline or "").strip()
+    rows = [note for note in (notes if isinstance(notes, list) else []) if isinstance(note, dict)]
+    kept = [dict(note) for note in rows if note.get("summary") and note.get("summary") != settled]
+    # Snapshots normally arrive in order; sorting makes the beats' order a
+    # property of the RECORD TIME rather than of ingestion order.
+    kept.sort(key=lambda note: (note.get("at") is None, float(note.get("at") or 0.0)))
+    return kept
+
+
 def build_work_items(
     work_events: list[dict[str, Any]],
     evidence_events: list[dict[str, Any]],
@@ -1015,13 +1076,30 @@ def build_work_items(
                 ),
                 "started_at": event.get("created_at"),
                 "updated_at": event.get("created_at"),
+                "last_nonterminal_update_at": None,
                 "files": [],
                 "blocker": None,
                 "next_step": None,
+                # Recorded ONCE, on a task's first section. Unlike summary and
+                # next_step below, this is FIRST-write-wins: a later section
+                # re-stating the goal must not overwrite what the task was
+                # opened for, and a later section that omits it must not erase
+                # it. Carried here because receipt._task_dimension reads it off
+                # the item; without this the page said no goal was recorded for
+                # tasks whose agent had recorded one.
+                "task_goal": None,
+                # Every non-terminal summary this section recorded, oldest
+                # first. The item keeps ONE summary (last write wins), so the
+                # prose of a `checkpoint` update — the narration the recording
+                # contract explicitly asks agents to send — used to be stored
+                # and then overwritten out of every projection. These are kept
+                # verbatim beside it; they are NARRATION, never extra steps.
+                "progress_notes": [],
             },
         )
         item["title"] = event.get("title") or item["title"]
         item["latest_status"] = event.get("status") or item["latest_status"]
+        _collect_progress_note(item, event)
         item["summary"] = event.get("summary") or item["summary"]
         item["client"] = event.get("client") or item["client"]
         item["reporting_source"] = event.get("source") or item["reporting_source"]
@@ -1126,7 +1204,15 @@ def build_work_items(
         ]
         item["run_id"] = event.get("run_id") or item["run_id"]
         item["project_dir"] = event.get("project_dir") or item["project_dir"]
-        item["kind"] = event.get("kind") or item["kind"]
+        # Kind names what the section IS, so it is sticky like the title: a
+        # later snapshot that omits it (normalized to "unknown") never replaces a
+        # declared kind. Overwriting it would silently change whether the step
+        # owes a check (step_is_checkable) and so the receipt's coverage.
+        incoming_kind = event.get("kind")
+        if incoming_kind and incoming_kind != "unknown":
+            item["kind"] = incoming_kind
+        elif not item.get("kind"):
+            item["kind"] = incoming_kind
         item["phase"] = event.get("phase") or item["phase"]
         item["latest_event_id"] = event.get("event_id") or item["latest_event_id"]
         item["project_identity"] = event.get("project_identity") or item["project_identity"]
@@ -1145,8 +1231,14 @@ def build_work_items(
             item["next_step"] = event.get("next_step") or item["next_step"]
             if event.get("status") == "blocked":
                 item["current_blocked_event_id"] = event.get("event_id")
+        if not item.get("task_goal"):
+            item["task_goal"] = event.get("task_goal")
         item["started_at"] = _min_timestamp(item.get("started_at"), event.get("created_at"))
         item["updated_at"] = _max_timestamp(item.get("updated_at"), event.get("created_at"))
+        if event.get("status") not in TERMINAL_WORK_STATUSES:
+            item["last_nonterminal_update_at"] = _max_timestamp(
+                item.get("last_nonterminal_update_at"), event.get("created_at")
+            )
         _extend_unique(item["files"], event.get("files"))
 
     usage_by_work: dict[str, list[dict[str, Any]]] = {}
@@ -1222,6 +1314,7 @@ def build_work_items(
         work_items.append(
             {
                 **item,
+                "progress_notes": _settled_progress_notes(item.get("progress_notes"), item.get("summary")),
                 "usage_total": usage_total,
                 "usage_fresh_total": sum(int(attr.get("usage_fresh_tokens") or 0) for attr in usage),
                 "usage_cache_read_total": sum(int(attr.get("usage_cache_read_tokens") or 0) for attr in usage),
@@ -1707,12 +1800,15 @@ _ATTENTION_GROUP_NEXT_STEPS = {
     "usage_truth_without_mcp_context": _USAGE_WITHOUT_MCP_CONTEXT_NEXT_STEP,
 }
 
+# One-vocabulary pluralization (shared with every receipt surface). Each title
+# is a callable of the count so "1 usage row has no work context" reads correctly
+# instead of "1 usage row(s) have no work context".
 _ATTENTION_GROUP_TITLES = {
-    "completed_without_strong_evidence": "{count} completed work item(s) without strong evidence",
-    "completed_evidenced_work_without_attributed_usage": "{count} evidence-backed completed item(s) with no attributed usage",
-    "ambiguous_same_session_attribution": "{count} work item(s) with ambiguous same-session usage",
-    "missing_client_session_id": "{count} work item(s) missing client_session_id",
-    "usage_truth_without_mcp_context": "{count} usage row(s) have no work context",
+    "completed_without_strong_evidence": lambda n: f"{count_noun(n, 'completed work item')} without strong evidence",
+    "completed_evidenced_work_without_attributed_usage": lambda n: f"{count_noun(n, 'evidence-backed completed item')} with no attributed usage",
+    "ambiguous_same_session_attribution": lambda n: f"{count_noun(n, 'work item')} with ambiguous same-session usage",
+    "missing_client_session_id": lambda n: f"{count_noun(n, 'work item')} missing client_session_id",
+    "usage_truth_without_mcp_context": lambda n: f"{count_noun(n, 'usage row')} {'has' if n == 1 else 'have'} no work context",
 }
 
 ATTENTION_GROUP_EXAMPLE_LIMIT = 3
@@ -1766,9 +1862,11 @@ def build_attention_groups(
         reverse=True,
     )
     for group in groups:
-        template = _ATTENTION_GROUP_TITLES.get(str(group["cause"]))
+        title_builder = _ATTENTION_GROUP_TITLES.get(str(group["cause"]))
         group["title"] = (
-            template.format(count=group["count"]) if template else f"{group['count']} attention item(s): {group['cause']}"
+            title_builder(group["count"])
+            if title_builder
+            else f"{count_noun(group['count'], 'attention item')}: {group['cause']}"
         )
     return {"groups": groups, "total_items": len(attention_items)}
 
@@ -3997,6 +4095,71 @@ def _proxy_usage_event(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def latest_recorded_section_state(
+    events: list[dict[str, Any]],
+    *,
+    section_id: str,
+    client: Any,
+    session_scope: Any,
+) -> dict[str, Any]:
+    """What a section already has on record, for the fields a later call inherits.
+
+    Identity is the ledger's own composite work key (client::session::section_id),
+    so a section_id reused by another session or client never lends anything.
+
+    Three fields are sticky, and each for the same reason: they describe the
+    SECTION, not the status report, so making an agent repeat them just to close
+    a step is how a closing call ends up contradicting the opening one.
+
+    * ``title`` -- the latest readable one (an agent that omits it keeps its name);
+    * ``kind`` -- the latest declared one (a terminal call that omits it must not
+      silently re-label a declared step as ``unknown``);
+    * ``has_files`` -- whether ANY record of this section named a file, so the
+      file anchor is satisfied by naming the paths once.
+    """
+    from .semantic_rules import has_readable_title, readable_text_or_none
+
+    target = work_key(client, session_scope, section_id)
+    title: str | None = None
+    kind: str | None = None
+    has_files = False
+    for event in events:
+        if not _is_work_event(event):
+            continue
+        metadata = _metadata(event)
+        if _optional_str(metadata.get("section_id")) != section_id:
+            continue
+        event_client = _optional_str(metadata.get("client")) or _optional_str(event.get("source"))
+        event_session = _optional_str(metadata.get("client_session_id")) or _optional_str(
+            metadata.get("client_transcript_id")
+        )
+        if work_key(event_client, event_session, section_id) != target:
+            continue
+        candidate = metadata.get("section_title")
+        if has_readable_title(candidate):
+            title = readable_text_or_none(candidate)
+        candidate_kind = _optional_str(metadata.get("kind")) or _optional_str(metadata.get("phase"))
+        if candidate_kind and candidate_kind != "unknown":
+            kind = candidate_kind
+        if _safe_relative_paths(metadata.get("files")):
+            has_files = True
+    return {"title": title, "kind": kind, "has_files": has_files}
+
+
+def latest_recorded_section_title(
+    events: list[dict[str, Any]],
+    *,
+    section_id: str,
+    client: Any,
+    session_scope: Any,
+) -> str | None:
+    """The latest readable title already recorded for one section identity."""
+
+    return latest_recorded_section_state(
+        events, section_id=section_id, client=client, session_scope=session_scope
+    )["title"]
+
+
 def _work_event(event: dict[str, Any]) -> dict[str, Any] | None:
     metadata = _metadata(event)
     section_id = _optional_str(metadata.get("section_id"))
@@ -4042,6 +4205,12 @@ def _work_event(event: dict[str, Any]) -> dict[str, Any] | None:
         "files": files,
         "blocker": _optional_str(metadata.get("blocker")),
         "next_step": _optional_str(metadata.get("next_step")),
+        # The task-level goal. This builder reads metadata DIRECTLY rather than
+        # going through WorkEvent, so carrying the field there was not enough:
+        # the goal reached the event object and the receipt read for it, and the
+        # page still said none was recorded, because THIS dict is what the ledger
+        # actually folds into a work item.
+        "task_goal": _optional_str(metadata.get("task_goal")),
     }
 
 
@@ -4056,19 +4225,51 @@ def _evidence_event(event: dict[str, Any]) -> dict[str, Any] | None:
         == _BLOCKER_RESOLUTION_CONTRACT
     )
     evidence_type = _optional_str(metadata.get("evidence_type")) or "other"
-    # Preserve retry identity without exposing a command. A name or command
-    # differentiates independent checks of the same broad evidence type;
-    # type-only legacy events retain their historical retry behavior.
+    # Preserve retry identity without exposing a command. Identity is what
+    # supersession groups on, so it must survive the thing an honest agent
+    # CHANGES between runs -- and that thing is the display name: `name` is a
+    # human label ("percentage() rounds half-up"), and rewording it must not
+    # split a re-run away from the failure it fixes.
+    #
+    # Three bases, strongest first. Each is deliberately shaped so a record
+    # already in the store keeps the identity it has always had:
+    #
+    # 1. ``check_key`` -- declared by the agent. 0 stored rows carry it, so it
+    #    can only ever add identity, never move an existing one.
+    # 2. command + evidence_type + section_id -- the server-derived key. A row
+    #    with a command changes identity ONCE, together with every other run of
+    #    the same command in the same section, so runs that grouped before still
+    #    group (and runs that only ever differed by label now group too, which
+    #    is the defect this fixes). Section scope matches what supersession
+    #    already enforces pairwise, so no demotion changes.
+    # 3. evidence_type + name + command -- the historical material, byte for
+    #    byte. This is what a legacy row whose NAME IS THE COMMAND (no `command`
+    #    field) hashes to, today and after this change, so those rows keep
+    #    superseding exactly as they did.
+    #
+    # The git revision is deliberately absent from all three: a re-run at a new
+    # commit must still supersede the same check's earlier failure.
     check_name = _optional_str(metadata.get("name"))
     check_command = _optional_str(metadata.get("command"))
-    if check_name or check_command:
-        identity_material = "\0".join((evidence_type, check_name or "", check_command or ""))
-        check_identity = f"check:{sha256(identity_material.encode('utf-8')).hexdigest()[:16]}"
+    declared_key = _optional_str(metadata.get("check_key"))
+    identity_section = _optional_str(metadata.get("section_id")) or _optional_str(metadata.get("work_id")) or ""
+    if declared_key:
+        identity_material = "\0".join(("check_key", declared_key))
+        check_identity_basis = "declared_key"
+    elif check_command:
+        identity_material = "\0".join(("command", evidence_type, check_command, identity_section))
+        check_identity_basis = "command_scope"
+    elif check_name:
+        identity_material = "\0".join((evidence_type, check_name, ""))
         check_identity_basis = "name_or_command"
+    else:
+        identity_material = None
+        check_identity_basis = "type_fallback"
+    if identity_material is not None:
+        check_identity = f"check:{sha256(identity_material.encode('utf-8')).hexdigest()[:16]}"
         check_identity_stable = True
     else:
         check_identity = f"type:{evidence_type}"
-        check_identity_basis = "type_fallback"
         check_identity_stable = False
     return {
         "event_id": _event_id(event),
@@ -4107,6 +4308,9 @@ def _evidence_event(event: dict[str, Any]) -> dict[str, Any] | None:
         "check_identity": check_identity,
         "check_identity_basis": check_identity_basis,
         "check_identity_stable": check_identity_stable,
+        # The agent-declared identity, when one was sent. Auditable proof of WHY
+        # two runs group: a reader can see the key rather than infer it.
+        "check_key": declared_key,
         # Read-time supersession stamps (computed in build_evidence_events once
         # the whole cohort is known). Defaults keep every failure a standing
         # finding until the pairwise gate proves a later same-scope pass.
@@ -4121,9 +4325,24 @@ def _evidence_event(event: dict[str, Any]) -> dict[str, Any] | None:
             if result == "passed"
             else None
         ),
+        # The agent's short check name, projected as its own field so every
+        # surface can title a check by name. It is never folded into
+        # ``summary``: a check recorded without a summary keeps summary None
+        # (a named absence), rather than repeating the name as its body.
+        "name": check_name,
         "result": result,
-        "summary": _optional_str(metadata.get("summary")) or _optional_str(metadata.get("after_summary")) or _optional_str(metadata.get("name")),
+        "summary": _optional_str(metadata.get("summary")) or _optional_str(metadata.get("after_summary")),
         "command": None,
+        # The agent VOLUNTEERED this command with its check: the text is stored
+        # verbatim on the event and the receipt prints the name the agent
+        # recorded instead of repeating it. That is "recorded, not shown" — a
+        # different fact from a hook-derived check, where only a sha256 digest
+        # of the command exists and there is no text anywhere (see
+        # mechanical_checks, which stamps ``digest_only``). Both used to render
+        # the digest-only sentence, which was false here.
+        "command_state": (
+            COMMAND_STATE_AGENT_RECORDED if _optional_str(metadata.get("command")) else None
+        ),
         "command_redacted": bool(_optional_str(metadata.get("command"))),
         "exit_code": _safe_optional_int(metadata.get("exit_code")),
         "artifact_ref": _optional_str(metadata.get("artifact_ref")),
@@ -4132,6 +4351,21 @@ def _evidence_event(event: dict[str, Any]) -> dict[str, Any] | None:
         "artifact_path_redacted": bool(_optional_str(metadata.get("artifact_path")) and _safe_artifact_path(metadata.get("artifact_path")) is None),
         "artifact_url_redacted": bool(_optional_str(metadata.get("artifact_url")) and _safe_artifact_url(metadata.get("artifact_url")) is None),
         "files": _safe_relative_paths(metadata.get("files")),
+        # Environment-captured revision (server/host read `git`, never a
+        # self-reported SHA). Deliberately NOT part of check_identity above: a
+        # re-run at a new commit must still supersede the same check's earlier
+        # failure, so identity keys on (type, name, command) only.
+        "git_commit": _optional_str(metadata.get("git_commit")),
+        "git_branch": _optional_str(metadata.get("git_branch")),
+        "git_dirty": metadata.get("git_dirty") if isinstance(metadata.get("git_dirty"), bool) else None,
+        "git_revision_basis": _optional_str(metadata.get("git_revision_basis")),
+        # Paths this check DECLARED that the stamped revision does not contain —
+        # verified once, mechanically, at record time. A non-empty list is proof
+        # the stamp is not the revision the check ran against. Server-authored;
+        # a caller cannot smuggle its own verdict through free-form metadata.
+        "git_declared_files_absent": _safe_relative_paths(
+            metadata.get("git_declared_files_absent")
+        ),
         "resolves_blocked_event_id": (
             _optional_str(metadata.get("resolves_blocked_event_id"))
             if trusted_resolution
@@ -4516,11 +4750,14 @@ def _evidence_run_context_compatible(
 def _evidence_status(evidence_events: list[dict[str, Any]], files: Any) -> str:
     # A superseded failure is historical evidence, not a current failure: a later
     # same-scope pass contradicted it. It must not read as "failed evidence" on
+    # secondary chips. A check that could not run (``error``) asserts no defect:
+    # it is never "failed" evidence, only recorded-but-unproven ("weak").
+    #
     # secondary chips, but demotion is a state stamp, so the event is still here.
     active_failures = [
         event
         for event in evidence_events
-        if str(event.get("result") or "unknown") in {"failed", "error"}
+        if str(event.get("result") or "unknown") in FAILED_CHECK_RESULTS
         and str(event.get("supersession_state") or "") != "superseded"
     ]
     if active_failures:

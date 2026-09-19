@@ -5,11 +5,16 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .task_timeline import build_timeline_events, task_checks as _checks
+from .display_vocabulary import DECISION_DEFINITIONS, TIMELINE_BEAT_DEFINITION, check_result_label
+from .task_timeline import BEAT_KIND, build_timeline_events, task_checks as _checks
 from .task_outcome import reduce_task_outcome, step_verification_counts
 
 
 TASK_INTELLIGENCE_SCHEMA_VERSION = "agent-chronicle.task-intelligence.v1"
+
+# Outcome keys that report the work as done; a recorded next step is not
+# surfaced as pending work on these.
+_COMPLETED_OUTCOMES = frozenset({"reported", "verified"})
 
 
 def _text(value: Any) -> str:
@@ -157,25 +162,26 @@ def _decision_brief(
     )
     items = _items(task)
     owner = next((_text(item.get("owner") or item.get("action_owner")) for item in reversed(items) if _text(item.get("owner") or item.get("action_owner"))), None)
-    next_action = next((_text(item.get("next_step")) for item in reversed(items) if _text(item.get("next_step"))), None)
     outcome = axes["outcome"]["key"]
+    # The agent's recorded continuation point: the newest step that carries
+    # ``next_step`` text, verbatim. No owner is required (nothing records one),
+    # so gating on it left this field permanently empty. It is withheld only
+    # when the Task's outcome is a completion (reported/verified), so an old
+    # next step never reads as pending work on a finished Task.
+    steps_with_next = [item for item in items if _text(item.get("next_step"))]
+    next_action = (
+        _text(
+            max(
+                steps_with_next,
+                key=lambda item: _number(item.get("updated_at") or item.get("started_at")),
+            ).get("next_step")
+        )
+        if steps_with_next and outcome not in _COMPLETED_OUTCOMES
+        else None
+    )
     attention_state = _text(canonical.get("finding_attention_state")) or None
-    statement = {
-        "verified": "Recorded machine evidence verifies the latest outcome.",
-        "finding": "A recorded check found an issue in the work being reviewed.",
-        "finding_superseded": (
-            "A recorded check failed, but a later same-scope check passed; the finding "
-            "is kept in history and is not a verified outcome."
-        ),
-        "blocked": "The agent recorded a blocker for this Task.",
-        "resolved": "A later passed check explicitly reports the exact blocker resolved; this is not a verified completion.",
-        "reported": "The agent reported completing work; no check verifies the completion claim itself.",
-        "handed_off": "The work was cleanly handed off (continued elsewhere or in a new session); this is a deliberate stop, not a completed or verified outcome.",
-        "ended_open": "The session ended with a step still open; agentacct inferred a stop from the session-end event — this is not a recorded completion or a deliberate handoff.",
-        "inactive": "This Task has open steps, nothing recorded as finished, and work has since continued elsewhere in the store; agentacct inferred it went quiet — this is not a completion and not a stated stop.",
-        "mostly_done": "Recorded steps completed while one or more were left open without a terminal record; this is not a claim the Task is finished.",
-        "unknown": "agentacct observed this Task but no outcome was recorded.",
-    }[outcome]
+    # The one definition per outcome key, shared with the receipt and legend.
+    statement = DECISION_DEFINITIONS.get(outcome, DECISION_DEFINITIONS["unknown"])
     if outcome == "finding" and attention_state == "reviewed":
         statement = (
             "Every current finding was reviewed or marked resolved; no passing check has replaced the failed evidence."
@@ -195,8 +201,8 @@ def _decision_brief(
         "finding_attention_state": attention_state,
         "owner": owner,
         "owner_state": "recorded" if owner else "not_recorded",
-        "next_action": next_action if owner else None,
-        "next_action_state": "recorded" if owner and next_action else "not_recorded",
+        "next_action": next_action,
+        "next_action_state": "recorded" if next_action else "not_recorded",
     }
 
 
@@ -216,8 +222,9 @@ def _finding_inventory(task: Mapping[str, Any]) -> dict[str, Any]:
             {
                 # Process-scoped form capability, not a durable episode ID.
                 "action_token": _text(episode.get("finding_token")) or None,
-                "objective_state": "current_failure",
+                "objective_state": _text(episode.get("objective_state")) or "current_failure",
                 "result": _text(failure.get("result") or "failed").lower(),
+                "result_label": check_result_label(failure.get("result") or "failed"),
                 "summary": _proof_summary(failure),
                 "evidence_type": _text(failure.get("evidence_type")) or None,
                 "observed_at": _number(failure.get("created_at") or failure.get("occurred_at")),
@@ -231,12 +238,18 @@ def _finding_inventory(task: Mapping[str, Any]) -> dict[str, Any]:
                 },
             }
         )
+    # Findings are recorded failures; a check that could not run rides the
+    # same list (it is dispositionable) but is counted apart, never as a finding.
+    failures = [row for row in current if row["objective_state"] != "check_not_run"]
+    not_run = [row for row in current if row["objective_state"] == "check_not_run"]
     return {
         "current": current,
-        "current_count": len(current),
-        "open_count": sum(row["attention_state"] == "open" for row in current),
-        "reviewed_count": sum(row["attention_state"] == "reviewed" for row in current),
-        "resolved_count": sum(row["attention_state"] == "resolved" for row in current),
+        "current_count": len(failures),
+        "open_count": sum(row["attention_state"] == "open" for row in failures),
+        "reviewed_count": sum(row["attention_state"] == "reviewed" for row in failures),
+        "resolved_count": sum(row["attention_state"] == "resolved" for row in failures),
+        "not_run_count": len(not_run),
+        "not_run_open_count": sum(row["attention_state"] == "open" for row in not_run),
     }
 
 
@@ -373,10 +386,28 @@ def _timeline(
     if total <= limit:
         return events, total
     selected = events[-limit:]
-    important_missing = [event for event in events[:-limit] if event.get("important")]
-    # Keep older important records in source-time order as well. Inserting
-    # each at index zero reversed the retained prefix in text/receipt output.
-    return important_missing[-5:] + selected, total
+    dropped = events[:-limit]
+    # What survives truncation, inside a fixed budget: EVIDENCE first, then the
+    # loudest work.
+    #
+    # Salience used to be constant, so "keep the important ones" kept every
+    # older check by accident. Now that it varies, two things would go wrong at
+    # once with that rule: a routine passing check would be dropped for not
+    # being loud, and a run of salient sections would crowd out the checks that
+    # are loud. Checks therefore get first claim on the budget — evidence is the
+    # one lane this product exists to show — and salient work fills what is
+    # left. Beats are narration under a section retained on its own merits, so
+    # they are the first thing truncation gives up.
+    budget = 5
+    keep = [event for event in dropped if event.get("kind") == "check"][-budget:]
+    remaining = budget - len(keep)
+    if remaining > 0:
+        keep += [event for event in dropped if event.get("important") and event.get("kind") != "check"][-remaining:]
+    # Restore source-time order: inserting each at index zero reversed the
+    # retained prefix in text/receipt output.
+    order = {id(event): index for index, event in enumerate(dropped)}
+    keep.sort(key=lambda event: order[id(event)])
+    return keep + selected, total
 
 
 def build_task_intelligence(
@@ -427,6 +458,12 @@ def build_task_intelligence(
             "shown": len(timeline),
             "total": total,
             "truncated": len(timeline) < total,
+            # Beats are recorded progress notes, not steps. They are counted
+            # separately and named so a reader of "12 records" can see that
+            # three of them are narration: no step count, coverage denominator
+            # or check tally anywhere in this payload includes them.
+            "beat_count": sum(1 for event in timeline if event.get("kind") == BEAT_KIND),
+            "beat_definition": TIMELINE_BEAT_DEFINITION,
         },
         "raw_evidence": {
             "work_item_count": len(_items(task)),

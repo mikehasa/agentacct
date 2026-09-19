@@ -108,21 +108,27 @@ def test_task_coverage_ratios_ledger_and_hidden_accounting() -> None:
             _item("completed", "implementation", [_MCP]),            # self_checked, checkable
             _item("completed", "testing", [_HOOK]),                  # independently_checked, checkable
             _item("completed", "implementation", []),                # unchecked, checkable
-            _item("completed", "research", [_check("eD", "mcp_agent_reported", ident="cD")]),  # excused
+            # evidence beats declared kind: a research step WITH a check is checkable
+            _item("completed", "research", [_check("eD", "mcp_agent_reported", ident="cD")]),
+            _item("completed", "research", []),                      # excused (no check attached)
             _item("in_progress", "implementation", [_MCP]),          # open
             _item("completed", "implementation", [_check("eF", "mcp_agent_reported", ident="cF")], sess="S1"),  # hidden
         ],
         "task_evidence_events": [_check("eZ", "mcp_agent_reported", ident="cZ")],  # orphan, on no step
         "current_check_events": None,
     }
-    s = _evidence_strength(task, [], {"verified_step_count": 0, "total_step_count": 6, "agent_reported_step_count": 0})
-    assert s["checkable_total"] == 4
-    assert s["by_tier"] == {"externally_verified": 0, "independently_checked": 1, "self_checked": 2, "unchecked": 1}
+    s = _evidence_strength(task, [], {"verified_step_count": 0, "total_step_count": 7, "agent_reported_step_count": 0})
+    assert s["checkable_total"] == 5
+    assert s["by_tier"] == {"externally_verified": 0, "independently_checked": 1, "self_checked": 3, "unchecked": 1}
     assert s["strongest_tier"] == "independently_checked"
     assert s["key"] == "independently_checked"
     assert s["not_checkable"] == 1
     assert s["open_or_incomplete"] == 1
+    assert s["still_open"] == 1
+    # The subagent step is counted inside its own bucket (self-checked), never
+    # as a peer of the buckets.
     assert s["hidden_in_subagents"] == 1
+    assert s["subagents_by_bucket"] == {"self_checked": 1}
     assert s["unattributed_checks"] == 1
     assert s["gradeable"] is True
 

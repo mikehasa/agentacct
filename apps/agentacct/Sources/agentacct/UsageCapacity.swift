@@ -1,16 +1,86 @@
 import Foundation
 import SwiftUI
 
-func usageResetClockText(
-    _ date: Date,
-    timeZone: TimeZone = .current
-) -> String {
-    let formatter = DateFormatter()
-    formatter.calendar = Calendar(identifier: .gregorian)
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.timeZone = timeZone
-    formatter.dateFormat = "HH:mm"
-    return formatter.string(from: date)
+/// One recorded-cost fact for a usage-cube bucket (a client, model or range
+/// total), shared by the Usage strip, the capacity ledger and accessibility.
+/// The amount keeps the shared cost grammar; the basis is the payload's
+/// `cost_confidence_display`. Absence and partial coverage are mutually
+/// exclusive: "Partial subtotal" appears only beside a priced figure whose
+/// cube state is `partial`, and a bucket with nothing priced carries exactly
+/// one named absence instead of a figure.
+struct UsageCostPresentation: Equatable {
+    /// The grammar-prefixed amount, or nil when nothing is priced.
+    let figure: String?
+    /// The single named state shown when `figure` is nil.
+    let absence: String
+    /// The payload basis label, or its named absence.
+    let basis: String
+    let isPartial: Bool
+    /// The reducer's `cost_total_label`: `total`, `Partial subtotal · N of M
+    /// usage records unpriced`, or the named absence. Never rebuilt in Swift.
+    let totalLabel: String
+
+    init(
+        costText: String,
+        hasFigure: Bool,
+        costState: String?,
+        costComplete: Bool?,
+        rows: Int?,
+        pricedRows: Int?,
+        unpricedRows: Int?,
+        costConfidenceDisplay: String?,
+        costTotalLabel: String? = nil
+    ) {
+        figure = hasFigure ? costText : nil
+        basis = PayloadAbsence.text(costConfidenceDisplay) ?? PayloadAbsence.costBasis
+        isPartial = hasFigure && costState == "partial"
+        totalLabel = PayloadAbsence.text(costTotalLabel) ?? PayloadAbsence.costLabel
+        // Nothing priced: the reducer's label IS the named absence.
+        absence = PayloadAbsence.text(costTotalLabel) ?? costText
+    }
+
+    init(bucket: UsageBucket) {
+        self.init(
+            costText: bucket.costText,
+            hasFigure: bucket.estimatedCostUsd != nil || bucket.knownAdditiveCostUsd != nil,
+            costState: bucket.costState,
+            costComplete: bucket.costComplete,
+            rows: bucket.rows,
+            pricedRows: bucket.pricedRows,
+            unpricedRows: bucket.unpricedRows,
+            costConfidenceDisplay: bucket.costConfidenceDisplay,
+            costTotalLabel: bucket.costTotalLabel
+        )
+    }
+
+    init(totals: UsageTotals) {
+        self.init(
+            costText: totals.costText,
+            hasFigure: totals.estimatedCostUsd != nil || totals.knownAdditiveCostUsd != nil,
+            costState: totals.costState,
+            costComplete: totals.costComplete,
+            rows: totals.rows,
+            pricedRows: totals.pricedRows,
+            unpricedRows: totals.unpricedRows,
+            costConfidenceDisplay: totals.costConfidenceDisplay,
+            costTotalLabel: totals.costTotalLabel
+        )
+    }
+
+    /// The amount, or the named absence.
+    var valueText: String { figure ?? absence }
+
+    /// The basis line under a priced figure; nil when nothing is priced (the
+    /// absence already is the whole fact).
+    var qualifier: String? {
+        guard figure != nil else { return nil }
+        return isPartial ? "\(totalLabel) · \(basis)" : basis
+    }
+
+    var accessibilityText: String {
+        guard let figure else { return absence }
+        return [figure, qualifier].compactMap { $0 }.joined(separator: ", ")
+    }
 }
 
 /// Presentation-only join for the merged Usage surface. Provider capacity and
@@ -180,9 +250,7 @@ struct UsageCapacityRow: Identifiable {
             parts.append("last \(days) days")
             parts.append(usage.freshTokens.map { "\($0) fresh tokens" } ?? "tokens not reported")
             parts.append(usage.sessions.map { Fmt.count($0, "session") } ?? "sessions not reported")
-            parts.append(usage.costText == "—" ? "cost unpriced" : usage.costText)
-            parts.append(usage.costComplete == false ? "Partial subtotal" : "")
-            parts.append(Fmt.costConfidenceLabel(usage.costConfidence) ?? "cost basis not reported")
+            parts.append(UsageCostPresentation(bucket: usage).accessibilityText)
         } else {
             parts.append(usageLoaded
                 ? "no recorded usage in this range"
@@ -201,67 +269,42 @@ struct LimitWindowPresentation {
         return used
     }
 
-    var name: String {
-        switch window.kind {
-        case "5h": return "5-hour window"
-        case "7d": return "Weekly"
-        case .some(let kind) where !kind.isEmpty: return "Provider window: \(kind)"
-        default: return "Provider window"
-        }
+    /// The reducer's window name (`5-hour limit`, `7-day limit`), or its
+    /// neutral named absence.
+    var name: String { window.windowLabelText }
+
+    /// Threshold markers drawn on the meter (fractions of the limit).
+    static let thresholds: [Double] = [0.75, 0.9]
+
+    /// True once the window's reset passed: the share is history (K32).
+    var resetPassed: Bool { window.resetPassed == true }
+
+    /// The reducer's value phrase (`99% used` / `last reported 3%`). The
+    /// window name already names its span, so no span text repeats it.
+    var statusText: String { window.valueLabelText }
+
+    /// Threshold text color (ink / amber / coral); muted for a passed reset.
+    var statusColor: Color {
+        guard !resetPassed, let used = validUsedPercent else { return Theme.muted }
+        return Theme.limitTextColor(usedPercent: used)
     }
 
-    var spanText: String? {
-        guard let minutes = window.windowMinutes, minutes.isFinite, minutes >= 0 else { return nil }
-        guard let whole = Int(exactly: minutes.rounded()) else { return "Invalid span" }
-        if whole == 0 { return "0m span" }
-        if whole % 1_440 == 0 { return "\(whole / 1_440)d span" }
-        if whole % 60 == 0 { return "\(whole / 60)h span" }
-        return "\(whole)m span"
-    }
-
-    var statusText: String {
-        guard let reported = window.usedPercent else { return "Used percent not reported" }
-        guard reported.isFinite, reported >= 0 else {
-            return "Invalid provider percentage (\(Self.percent(reported)))"
-        }
-        if reported > 100 { return "\(Self.percent(reported)) used · limit exceeded" }
-        if reported == 100 { return "100% used · limit reached" }
-        if reported >= 90 { return "\(Self.percent(reported)) used · high attention" }
-        if reported == 75 { return "75% used · at attention threshold" }
-        if reported > 75 { return "\(Self.percent(reported)) used · above attention threshold" }
-        return "\(Self.percent(reported)) used"
-    }
-
+    /// The reducer's reset phrase (`resets in 4d 3h`, `reset passed Sep 15,
+    /// 3:36 AM`, `reset time not reported`), capitalized only because it
+    /// starts its own line here. The words are never rebuilt in Swift.
     var resetText: String {
-        guard let resetsAt = window.resetsAt else { return "Reset time not reported" }
-        let date = Date(timeIntervalSince1970: resetsAt)
-        let now = SnapshotMode.currentDate
-        let time = usageResetClockText(date)
-        guard resetsAt > now.timeIntervalSince1970 else {
-            return "Reported reset passed \(date.formatted(.dateTime.month(.abbreviated).day())) \(time)"
-        }
-        let calendar = Calendar.current
-        if calendar.isDate(date, inSameDayAs: now) { return "Resets today \(time)" }
-        if let days = calendar.dateComponents([.day], from: now, to: date).day, days < 7 {
-            return "Resets \(date.formatted(.dateTime.weekday(.abbreviated))) \(time)"
-        }
-        let dateText = calendar.component(.year, from: date) == calendar.component(.year, from: now)
-            ? date.formatted(.dateTime.month(.abbreviated).day())
-            : date.formatted(.dateTime.year().month(.abbreviated).day())
-        return "Resets \(dateText) \(time)"
+        Self.sentenceStart(window.resetLabelText)
+    }
+
+    static func sentenceStart(_ text: String) -> String {
+        guard let first = text.first else { return text }
+        return first.uppercased() + text.dropFirst()
     }
 
     var accessibilityText: String {
-        var parts = [name]
-        if let spanText { parts.append(spanText) }
-        parts.append(statusText)
-        parts.append(resetText)
+        var parts = [name, statusText, resetText]
         if stale { parts.append("stale reading") }
         return parts.joined(separator: ", ")
-    }
-
-    private static func percent(_ value: Double) -> String {
-        value.formatted(.number.precision(.fractionLength(0))) + "%"
     }
 }
 
@@ -272,16 +315,14 @@ struct UsagePlanPresentation {
     let client: V1PlanClient
     let days: Int
 
+    /// The plain-language conclusion first (reducer `headline`), then the
+    /// calibrated share figures. The technical fit detail is `basisText`,
+    /// shown only behind a disclosure (K113).
     var detailText: String {
-        var parts: [String] = []
-        switch client.calibrationState {
-        case "calibrated": parts.append("calibrated weekly plan-share estimate")
-        case "calibrating": parts.append("calibrating from provider limit history")
-        case "never": parts.append("weekly plan share unavailable for this meter")
-        case .some(let state): parts.append("calibration status: \(state)")
-        case nil: parts.append("calibration status not reported by this daemon")
-        }
-        if let used = client.intervalsUsed, let needed = client.intervalsNeeded {
+        var parts: [String] = [PayloadAbsence.text(client.headline) ?? PayloadAbsence.planShare]
+        // A progress fraction is only meaningful while calibration is still
+        // short of its interval target ("160 of 3" is not progress).
+        if let used = client.intervalsUsed, let needed = client.intervalsNeeded, used < needed {
             parts.append("\(used) of \(needed) clean intervals observed")
         }
         if client.calibrationState == "calibrated" {
@@ -295,11 +336,12 @@ struct UsagePlanPresentation {
                 parts.append("\(unknown) from unusable timestamps, excluded from daily estimates")
             }
         }
-        if let detail = client.stateDetail, !detail.isEmpty { parts.append(detail) }
-        if let basis = client.basis, !basis.isEmpty, basis != client.stateDetail {
-            parts.append("basis: \(basis)")
-        }
         return parts.joined(separator: " · ")
+    }
+
+    /// The reducer's technical fit detail (fit ratio, bands), or nil.
+    var basisText: String? {
+        PayloadAbsence.text(client.basisText)
     }
 
     var dailyText: String? {
@@ -330,8 +372,22 @@ struct UsagePlanPresentation {
         return shares.map { share in
             let model = share.model.flatMap { $0.isEmpty ? nil : $0 } ?? "Model name not reported"
             let shareText = Self.percentText(share.pct) ?? Self.invalidOrMissingPercent(share.pct)
-            let tokensText = Self.tokenText(share.totalTokens)
+            let tokensText = Self.tokenText(share.totalTokens, label: client.modelTokensLabel)
             return "\(model) · \(shareText) · \(tokensText)"
+        }
+    }
+
+    /// The payload chip (`plan share ready`, `calibrating`, …) from the one
+    /// vocabulary table; Swift keeps no copy of the words.
+    var chipText: String {
+        PayloadAbsence.text(client.chipText) ?? PayloadAbsence.planShare
+    }
+
+    /// Styling only (never text): the state's chip tint.
+    static func chipTint(calibrationState state: String) -> Color {
+        switch state {
+        case "calibrating": return Theme.amber
+        default: return Theme.muted
         }
     }
 
@@ -349,13 +405,14 @@ struct UsagePlanPresentation {
         value == nil ? "share not reported" : "invalid share"
     }
 
-    private static func tokenText(_ value: Double?) -> String {
-        guard let value else { return "tokens not reported" }
+    private static func tokenText(_ value: Double?, label: String?) -> String {
+        let measure = PayloadAbsence.text(label) ?? PayloadAbsence.tokens
+        guard let value else { return "\(measure) not reported" }
         guard value.isFinite, value >= 0,
               let whole = Int(exactly: value.rounded()) else {
             return "invalid token total"
         }
-        return "\(UsageTotals.compact(whole)) tokens"
+        return "\(UsageTotals.compact(whole)) \(measure)"
     }
 }
 
@@ -372,7 +429,7 @@ struct UsageCapacityLedger: View {
                     HStack(spacing: Space.l) {
                         CapsLabel(text: "Client").frame(width: 160, alignment: .leading)
                         CapsLabel(text: "Provider window").frame(maxWidth: .infinity, alignment: .leading)
-                        CapsLabel(text: "Recorded use · \(days)d").frame(width: 230, alignment: .leading)
+                        CapsLabel(text: RecordedUsageVocabulary.columnLabel(days: days)).frame(width: 230, alignment: .leading)
                     }
                     .padding(.horizontal, Space.xl)
                     .frame(height: Metrics.rowHeader)
@@ -416,7 +473,7 @@ private struct UsageCapacityLedgerRow: View {
                     Text("Provider windows").workFont(.captionSemibold).foregroundStyle(Theme.muted)
                     capacityLane
                     Rectangle().fill(Theme.hairline).frame(height: 1)
-                    Text("Recorded use · \(days)d").workFont(.captionSemibold).foregroundStyle(Theme.muted)
+                    Text(RecordedUsageVocabulary.columnLabel(days: days)).workFont(.captionSemibold).foregroundStyle(Theme.muted)
                     usageLane
                 }
             } else {
@@ -447,8 +504,13 @@ private struct UsageCapacityLedgerRow: View {
                     .workFont(.dataSmall)
                     .foregroundStyle(Theme.muted)
             }
-            if let state = row.plan?.calibrationState {
-                Chip(text: calibrationLabel(state), tint: calibrationTint(state))
+            if let plan = row.plan, let state = plan.calibrationState {
+                // The column is 160pt: a long chip wraps inside it rather
+                // than spilling into the provider-window caption.
+                FittingChip(
+                    text: UsagePlanPresentation(client: plan, days: days).chipText,
+                    tint: UsagePlanPresentation.chipTint(calibrationState: state)
+                )
             }
         }
     }
@@ -478,7 +540,8 @@ private struct UsageCapacityLedgerRow: View {
                     } else {
                         ForEach(Array((reading.entry.windows ?? []).enumerated()), id: \.offset) { _, window in
                             UsageCapacityWindowRow(
-                                presentation: LimitWindowPresentation(window: window, stale: reading.isStale)
+                                presentation: LimitWindowPresentation(window: window, stale: reading.isStale),
+                                dataAgeText: PayloadAbsence.text(reading.entry.dataAgeText)
                             )
                         }
                     }
@@ -499,13 +562,17 @@ private struct UsageCapacityLedgerRow: View {
                 }
                 Text(usage.sessions.map { Fmt.count($0, "session") } ?? "Sessions not reported")
                     .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                let cost = UsageCostPresentation(bucket: usage)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(usage.costText == "—" ? "Cost unpriced" : usage.costText)
-                        .workFont(.dataSmallSemibold)
-                        .foregroundStyle(usage.costText == "—" ? Theme.muted : Theme.ink)
-                    Text((usage.costComplete == false ? "Partial subtotal · " : "") + (Fmt.costConfidenceLabel(usage.costConfidence) ?? "cost basis not reported"))
-                        .workFont(.caption).foregroundStyle(Theme.muted)
+                    Text(cost.valueText)
+                        .workFont(cost.figure == nil ? .caption : .dataSmallSemibold)
+                        .foregroundStyle(cost.figure == nil ? Theme.muted : Theme.ink)
                         .fixedSize(horizontal: false, vertical: true)
+                    if let qualifier = cost.qualifier {
+                        Text(qualifier)
+                            .workFont(.caption).foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
         } else {
@@ -515,85 +582,56 @@ private struct UsageCapacityLedgerRow: View {
         }
     }
 
-    private func calibrationLabel(_ state: String) -> String {
-        switch state {
-        case "calibrated": return "plan share ready"
-        case "calibrating": return "calibrating"
-        case "never": return "no weekly share"
-        default: return "calibration \(state)"
-        }
-    }
-
-    private func calibrationTint(_ state: String) -> Color {
-        switch state {
-        case "calibrated": return Theme.accent
-        case "calibrating": return Theme.amber
-        default: return Theme.muted
-        }
-    }
 }
 
 private struct UsageCapacityWindowRow: View {
     let presentation: LimitWindowPresentation
+    var dataAgeText: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: Space.s) {
                 Text(presentation.name).workFont(.captionSemibold).foregroundStyle(Theme.ink)
-                if let span = presentation.spanText {
-                    Text(span).workFont(.dataSmall).foregroundStyle(Theme.muted)
+                if let dataAgeText {
+                    // How old the provider reading is (K32), not the poll time.
+                    Text(dataAgeText).workFont(.dataSmall).foregroundStyle(Theme.muted)
                 }
                 if presentation.stale { Chip(text: "stale", tint: Theme.amber) }
             }
             if let used = presentation.validUsedPercent {
-                LimitMeter(usedPercent: used).accessibilityHidden(true)
+                LimitMeter(usedPercent: used, resetPassed: presentation.resetPassed).accessibilityHidden(true)
             } else {
-                HatchedTrack().accessibilityHidden(true)
+                // Same footprint as a meter with its threshold ticks.
+                HatchedTrack()
+                    .padding(.vertical, MeterBar.tickOverhang)
+                    .accessibilityHidden(true)
             }
             HStack(alignment: .firstTextBaseline, spacing: Space.s) {
                 Text(presentation.statusText)
                     .workFont(.dataSmallSemibold)
-                    .foregroundStyle(
-                        presentation.validUsedPercent.map { Theme.limitColor(usedPercent: $0) }
-                            ?? Theme.amber
-                    )
+                    .foregroundStyle(presentation.statusColor)
                 Spacer(minLength: Space.s)
-                Text(presentation.resetText).workFont(.dataSmall).foregroundStyle(Theme.muted)
+                Text(presentation.resetText).workFont(FieldFont.resetText).foregroundStyle(Theme.muted)
             }
         }
     }
 }
 
-/// Provider percentage meter. The fill caps visually at 100%, while the text
-/// beside it preserves an over-limit value exactly.
+/// Provider percentage meter: the shared `MeterBar` with the fill-weight limit
+/// color and the 75%/90% markers drawn as ink ticks outside the bar. The fill
+/// caps visually at 100%, while the text beside it preserves an over-limit
+/// value exactly.
 struct LimitMeter: View {
     let usedPercent: Double
+    /// A passed-reset share draws in the muted fill (history, not a threshold).
+    var resetPassed: Bool = false
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 2).fill(Theme.tintNeutral)
-                if usedPercent > 0 {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(Theme.limitColor(usedPercent: usedPercent))
-                        .frame(width: max(1, proxy.size.width * min(usedPercent / 100, 1)))
-                }
-            }
-            .overlay {
-                ZStack {
-                    ForEach([0.75, 0.9], id: \.self) { notch in
-                        Rectangle()
-                            .fill(Theme.rule)
-                            .frame(width: 1.5, height: Metrics.meterH + 4)
-                            .position(
-                                x: proxy.size.width * notch,
-                                y: proxy.size.height / 2
-                            )
-                    }
-                }
-            }
-        }
-        .frame(height: Metrics.meterH)
+        Theme.MeterBar(
+            fraction: usedPercent / 100,
+            tint: resetPassed ? Theme.muted : Theme.limitFillColor(usedPercent: usedPercent),
+            thresholds: LimitWindowPresentation.thresholds
+        )
     }
 }
 

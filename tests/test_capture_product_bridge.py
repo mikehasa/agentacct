@@ -92,9 +92,11 @@ def _record_usage_and_work(store: Path, session_id: str) -> None:
                 "sentinel_semantic_kind": "section",
                 "section_id": "bridge-work",
                 "section_status": "completed",
+                "files": ["src/agentacct/mcp.py"],
                 "section_title": "Build the session bridge",
                 "client": "codex",
                 "client_session_id": session_id,
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )

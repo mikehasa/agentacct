@@ -81,14 +81,49 @@ final class SourcesPresentationTests: XCTestCase {
     }
 
     func testFailedRefreshDoesNotPresentRetainedRunningWatcherAsCurrent() {
-        let watcher = V1IngestionWatcher(state: "running", intervalSeconds: 30, heartbeatAt: 100)
+        let watcher = V1IngestionWatcher(state: "running", intervalSeconds: 30, heartbeatAt: 100, stateTitle: "Running")
         let retained = SourceHealthPresentation(refreshError: "Current fetch failed")
 
         XCTAssertTrue(retained.isRetained)
         XCTAssertFalse(retained.watcherIsCurrentlyRunning(watcher))
-        XCTAssertEqual(retained.retainedStatus(watcher.state), "Last reported: Running")
-        XCTAssertEqual(retained.retainedStatus("healthy"), "Last reported: Healthy")
-        XCTAssertEqual(retained.retainedStatus(nil), "Last reported: Unknown")
+        XCTAssertEqual(
+            retained.retainedStatus(title: SourceHealthPresentation.watcherTitle(watcher)),
+            "Last reported: Running"
+        )
         XCTAssertTrue(SourceHealthPresentation(refreshError: nil).watcherIsCurrentlyRunning(watcher))
+    }
+
+    func testTitlesAreThePayloadStateCopyOrANamedAbsence() throws {
+        let payload = try JSONDecoder().decode(V1IngestionPayload.self, from: Data("""
+        {
+          "schema": "agentacct.v1-ingestion.v1",
+          "ingestion": {
+            "state": "unknown",
+            "last_success_at": null,
+            "state_title": "Import history not recorded",
+            "state_detail": "Usage from 336 sessions is stored, but no import run was recorded for this store.",
+            "sources": [
+              { "source": "codex", "state": "healthy", "parsed": 8,
+                "state_title": "Reporting",
+                "state_detail": "The latest import parsed rows and the running watcher keeps this source current." },
+              { "source": "cursor", "state": "future_state" }
+            ],
+            "watcher": { "state": "running", "state_title": "Running",
+                         "state_detail": "The importer keeps the store current in the background." },
+            "issues": []
+          }
+        }
+        """.utf8))
+        let snapshot = payload.ingestion
+        XCTAssertEqual(SourceHealthPresentation.overallTitle(snapshot), "Import history not recorded")
+        XCTAssertEqual(snapshot.sources?.map(SourceHealthPresentation.sourceTitle), ["Reporting", "Source state not reported"])
+        XCTAssertEqual(SourceHealthPresentation.watcherTitle(snapshot.watcher), "Running")
+        XCTAssertEqual(SourceHealthPresentation.watcherTitle(nil), "Watcher state not reported")
+        XCTAssertEqual(
+            SourceHealthPresentation(refreshError: "x").retainedStatus(
+                title: SourceHealthPresentation.sourceTitle(try XCTUnwrap(snapshot.sources?.first))
+            ),
+            "Last reported: Reporting"
+        )
     }
 }

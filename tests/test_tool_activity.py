@@ -198,3 +198,45 @@ def test_capture_tool_activity_records_name_and_category_but_never_arguments(tmp
 def test_capture_tool_activity_without_session_is_a_noop(tmp_path: Path) -> None:
     capture_tool_activity(json.dumps({"tool_name": "Read"}), store_dir=tmp_path)
     assert not tool_activity_spool_path(tmp_path).exists()
+
+
+def _activity_batch(*, session: str, captured_at: float | None, created_at: float) -> dict:
+    metadata = {"client": "claude-code", "client_session_id": session,
+                "tool_category_counts": {"read": 1}}
+    if captured_at is not None:
+        metadata["captured_at"] = captured_at
+    return {"event_type": TOOL_ACTIVITY_EVENT_TYPE, "created_at": created_at, "metadata": metadata}
+
+
+def test_tool_activity_window_spans_every_batch_of_a_session() -> None:
+    """A count with no window cannot say whether it covers the work or a slice
+    of it, so the window travels with the counts."""
+
+    from agentacct.tool_activity import build_tool_activity_window_by_session
+
+    events = [
+        _activity_batch(session="s1", captured_at=100.0, created_at=101.0),
+        _activity_batch(session="s1", captured_at=340.0, created_at=341.0),
+        _activity_batch(session="s1", captured_at=220.0, created_at=221.0),
+        _activity_batch(session="s2", captured_at=900.0, created_at=901.0),
+    ]
+    windows = build_tool_activity_window_by_session(events)
+    assert windows[("claude-code", "s1")] == {"first_at": 100.0, "last_at": 340.0}
+    assert windows[("claude-code", "s2")] == {"first_at": 900.0, "last_at": 900.0}
+
+
+def test_tool_activity_window_falls_back_to_created_at_and_skips_unusable_times() -> None:
+    from agentacct.tool_activity import build_tool_activity_window_by_session
+
+    events = [
+        _activity_batch(session="s1", captured_at=None, created_at=50.0),
+        _activity_batch(session="s1", captured_at=0.0, created_at=70.0),
+        {"event_type": TOOL_ACTIVITY_EVENT_TYPE, "created_at": 80.0,
+         "metadata": {"client": "", "client_session_id": "s1"}},
+        {"event_type": "model_usage", "created_at": 1.0,
+         "metadata": {"client": "claude-code", "client_session_id": "s1"}},
+    ]
+    windows = build_tool_activity_window_by_session(events)
+    # captured_at=0 is unusable, so that batch falls back to nothing at all
+    # rather than dragging the window back to the epoch.
+    assert windows == {("claude-code", "s1"): {"first_at": 50.0, "last_at": 70.0}}

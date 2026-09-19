@@ -39,24 +39,37 @@ from rich.markup import escape as _rich_escape
 from rich.table import Table
 
 from . import version as version_info
-from .plural import count_noun
 from .activation import ActivationStateError, ActivationStateStore, RuntimeManager, RuntimeManagerError
 from . import autostart as autostart_mod
 from .autostart import AutostartError
 from .agent_capabilities import agent_capability_manifest
 from .api import UsageDiscoveryConfig, create_local_api_app
+from .display_vocabulary import (
+    COST_ABSENT_NO_USAGE,
+    COST_BASIS_NOT_REPORTED,
+    COST_LEGEND,
+    data_age_text,
+    limit_value_text,
+    usage_records_text,
+    DECISION_LABELS,
+    ORIGIN_LABELS,
+    RECEIPT_FIELD_LABELS,
+    decision_label,
+    reset_text,
+    receipt_field_label,
+    source_label,
+)
 from .usage_snapshot import (
     NOW_WINDOW_ALIASES,
-    ORIGIN_LABELS,
     build_usage_snapshot,
     cost_text,
     format_tokens,
-    humanize_seconds,
     latest_limit_events,
     limit_json_entry,
     limit_teaser_lines,
     usage_bar,
     window_label,
+    window_reset_passed,
 )
 from .client_usage import (
     SUPPORTED_CLIENTS,
@@ -6842,6 +6855,12 @@ def evidence_work_event(
     client_session_id: Annotated[Optional[str], typer.Option(help="Optional exact client session identifier.")] = None,
     title: Annotated[Optional[str], typer.Option(help="Optional short title.")] = None,
     summary: Annotated[Optional[str], typer.Option(help="Optional human-readable claim; never usage/billing truth.")] = None,
+    # A terminal section owes a file anchor and, when it is stopped rather than
+    # finished, a continuation point. Without these two options the CLI lane
+    # could not satisfy rules the MCP and HTTP lanes enforce -- the rule would be
+    # unsatisfiable here rather than merely strict.
+    files: Annotated[Optional[list[str]], typer.Option("--files", help="Project-relative path this step changed; repeat for several. A terminal section of a file-touching kind needs at least one.")] = None,
+    next_step: Annotated[Optional[str], typer.Option(help="Where to resume. Required on a blocked or handed_off section.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
     """Record a transport-neutral semantic claim through the CLI transport."""
@@ -6879,6 +6898,8 @@ def evidence_work_event(
         summary=summary,
         client=client,
         client_session_id=client_session_id,
+        next_step=next_step,
+        files=tuple(files or ()),
         original_event_type=event_type,
     )
     recorded = SentinelService(_resolve_cli_store_dir(store_dir).path).record_event(
@@ -9448,24 +9469,17 @@ def usage_health(
 ) -> None:
     """Show per-source scan receipts and continuous watcher health."""
 
+    from .ingestion_health import store_ingestion_snapshot
+
     resolved_store_dir = _resolve_cli_store_dir(store_dir).path
-    snapshot = IngestionHealthStore(resolved_store_dir).snapshot()
+    # The same snapshot path /v1/ingestion serves, so the CLI prints the app's
+    # words; raw state keys appear only in --json.
+    snapshot = store_ingestion_snapshot(resolved_store_dir)
     if json_output:
         print(json.dumps(snapshot, indent=2, sort_keys=True))
         return
-    print(f"Ingestion: {snapshot.get('state', 'unknown')}")
-    watcher = snapshot.get("watcher") if isinstance(snapshot.get("watcher"), dict) else {}
-    print(f"Watcher: {watcher.get('state', 'not_configured')}")
-    for source in snapshot.get("sources") or []:
-        if not isinstance(source, dict):
-            continue
-        print(
-            f"{source.get('source')}: {source.get('state')} "
-            f"parsed={source.get('parsed', 0)} errors={source.get('error_count', 0)}"
-        )
-    for issue in snapshot.get("issues") or []:
-        if isinstance(issue, dict):
-            print(f"Action: {issue.get('action')}")
+    for line in _ingestion_health_lines(snapshot):
+        print(line)
 
 
 @usage_app.command("repair-dead-scans")
@@ -9486,7 +9500,9 @@ def usage_repair_dead_scans(
     resolved_store_dir = _resolve_cli_store_dir(store_dir).path
     health_store = IngestionHealthStore(resolved_store_dir)
     removed_scan_ids = health_store.repair_dead_active_scans()
-    snapshot = health_store.snapshot()
+    from .ingestion_health import store_ingestion_snapshot
+
+    snapshot = store_ingestion_snapshot(resolved_store_dir)
     payload = {
         "store_dir": str(resolved_store_dir),
         "removed_count": len(removed_scan_ids),
@@ -9497,7 +9513,32 @@ def usage_repair_dead_scans(
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
     print(f"Retired dead scan receipts: {len(removed_scan_ids)}")
-    print(f"Ingestion: {snapshot.get('state', 'unknown')}")
+    print(_ingestion_state_line("Ingestion", snapshot))
+
+
+def _ingestion_state_line(label: str, row: Mapping[str, Any]) -> str:
+    """``Label: <state_title> — <state_detail>`` from the reducer's copy (the
+    named absence when a row carries none)."""
+
+    title = str(row.get("state_title") or "").strip() or "State not recorded"
+    detail = str(row.get("state_detail") or "").strip()
+    return f"{label}: {title}" + (f" — {detail}" if detail else "")
+
+
+def _ingestion_health_lines(snapshot: Mapping[str, Any]) -> list[str]:
+    """The text ``usage health`` prints: the store, the watcher and each
+    source in the reducer's words, then any recorded action."""
+
+    lines = [_ingestion_state_line("Ingestion", snapshot)]
+    watcher = snapshot.get("watcher") if isinstance(snapshot.get("watcher"), Mapping) else {}
+    lines.append(_ingestion_state_line("Watcher", watcher))
+    for source in snapshot.get("sources") or []:
+        if isinstance(source, Mapping):
+            lines.append(_ingestion_state_line(str(source.get("source") or "Source"), source))
+    for issue in snapshot.get("issues") or []:
+        if isinstance(issue, Mapping) and issue.get("action"):
+            lines.append(f"Action: {issue.get('action')}")
+    return lines
 
 
 @usage_app.command("merge-store")
@@ -9871,15 +9912,15 @@ def now(
         return
 
     console.print(
-        "agentacct now — local event log; costs are token-based estimates, not billing."
+        "agentacct now — local event log; every cost names its basis (usage reporting, not billing)."
     )
     if snapshot.as_of is not None:
         console.print(
-            f"as of {humanize_seconds(snapshot.generated_at - snapshot.as_of)} ago · "
-            f"{snapshot.usage_record_count} usage records\n"
+            f"{data_age_text(snapshot.as_of, snapshot.generated_at)} · "
+            f"{usage_records_text(snapshot.usage_record_count)}\n"
         )
     elif snapshot.usage_record_count:
-        console.print(f"{snapshot.usage_record_count} usage records · newest timestamp unknown\n")
+        console.print(f"{usage_records_text(snapshot.usage_record_count)} · newest timestamp unknown\n")
     else:
         console.print("")
 
@@ -9893,33 +9934,61 @@ def now(
         )
         return
 
+    # Headline measure: fresh tokens (input + output) — the same measure the app
+    # leads with. Cache reads get their own named column, never folded in.
     windows_table = Table(title=None)
     windows_table.add_column("window")
-    windows_table.add_column("tokens", justify="right")
-    windows_table.add_column("est. cost", justify="right")
+    # no_wrap on both token columns is load-bearing, not cosmetic. These two
+    # headers share their noun and differ only in the qualifier, so WRAPPING
+    # them is the one degradation that destroys the distinction: at 80 columns
+    # "fresh tokens" and "cache-read tokens" each split across two lines and the
+    # header's last line reads "tokens │ tokens" — two adjacent columns with
+    # identical names. Truncation degrades the other way, keeping the qualifier
+    # and dropping the shared tail ("fresh toke…" vs "cache-read…"), which stays
+    # unambiguous. So we forbid the wrap and accept the ellipsis.
+    windows_table.add_column("fresh tokens", justify="right", no_wrap=True)
+    windows_table.add_column("cache-read tokens", justify="right", no_wrap=True)
+    # Money is no_wrap for a different reason: a wrapped or truncated figure
+    # loses its magnitude. "≈$1,554…" could be $1,554.67 or $1,554,000 — an
+    # actively misleading cell, which is worse than an ambiguous header. Six
+    # columns do not fit in 80, so this fixes the sacrifice order: the columns
+    # that give way are `sessions` and `cost basis`, whose truncation is
+    # visible and whose meaning survives it.
+    windows_table.add_column("cost", justify="right", no_wrap=True)
+    windows_table.add_column("cost basis")
     windows_table.add_column("sessions", justify="right")
     for entry in snapshot.windows:
         totals = entry.totals
+        if _bucket_has_no_usage(totals):
+            # A window with no usage rows names that absence in EVERY cell —
+            # never a fabricated 0 beside "no usage recorded".
+            windows_table.add_row(entry.label, *([COST_ABSENT_NO_USAGE] * 5))
+            continue
         windows_table.add_row(
             entry.label,
-            format_tokens(totals.get("total_tokens_including_cached")),
+            format_tokens(totals.get("fresh_tokens")),
+            _cache_read_cell(totals),
             cost_text(totals),
+            _cost_basis_cell(totals),
             format_tokens(totals.get("sessions")),
         )
     console.print(windows_table)
-    console.print("[dim]~ cost = partial (some usage unpriced or held); costs are estimates, not billing.[/dim]")
+    console.print(f"[dim]{COST_LEGEND}[/dim]")
 
     by_client = snapshot.by_client
     if by_client:
         client_table = Table(title=f"by client · {snapshot.breakdown_window}")
         client_table.add_column("client")
-        client_table.add_column("tokens", justify="right")
-        client_table.add_column("est. cost", justify="right")
+        # See the windows table above: wrapping collapses both headers to "tokens".
+        client_table.add_column("fresh tokens", justify="right", no_wrap=True)
+        client_table.add_column("cache-read tokens", justify="right", no_wrap=True)
+        client_table.add_column("cost", justify="right", no_wrap=True)
         client_table.add_column("sessions", justify="right")
-        for row in sorted(by_client, key=lambda r: -(r.get("total_tokens_including_cached") or 0)):
+        for row in sorted(by_client, key=lambda r: -(r.get("fresh_tokens") or 0)):
             client_table.add_row(
                 str(row.get("client")),
-                format_tokens(row.get("total_tokens_including_cached")),
+                format_tokens(row.get("fresh_tokens")),
+                _cache_read_cell(row),
                 cost_text(row),
                 format_tokens(row.get("sessions")),
             )
@@ -9930,14 +9999,17 @@ def now(
         model_table = Table(title=f"top models · {snapshot.breakdown_window}")
         model_table.add_column("model")
         model_table.add_column("client")
-        model_table.add_column("tokens", justify="right")
-        model_table.add_column("est. cost", justify="right")
-        top_models = sorted(by_model, key=lambda r: -(r.get("total_tokens_including_cached") or 0))[:8]
+        # See the windows table above: wrapping collapses both headers to "tokens".
+        model_table.add_column("fresh tokens", justify="right", no_wrap=True)
+        model_table.add_column("cache-read tokens", justify="right", no_wrap=True)
+        model_table.add_column("cost", justify="right", no_wrap=True)
+        top_models = sorted(by_model, key=lambda r: -(r.get("fresh_tokens") or 0))[:8]
         for row in top_models:
             model_table.add_row(
                 str(row.get("model") or "—"),
                 str(row.get("client") or ""),
-                format_tokens(row.get("total_tokens_including_cached")),
+                format_tokens(row.get("fresh_tokens")),
+                _cache_read_cell(row),
                 cost_text(row),
             )
         console.print(model_table)
@@ -9947,6 +10019,33 @@ def now(
         console.print("\nlimits (provider-reported; run `agentacct limits` for detail):")
         for line in teaser:
             console.print(f"  {line}")
+
+
+def _bucket_has_no_usage(bucket: Mapping[str, Any]) -> bool:
+    """True when a cube bucket recorded no usage rows at all."""
+
+    rows = bucket.get("rows")
+    return bucket.get("cost_state") == "none_recorded" or (
+        isinstance(rows, int) and not isinstance(rows, bool) and rows <= 0
+    )
+
+
+def _cost_basis_cell(bucket: Mapping[str, Any]) -> str:
+    """The bucket's basis words beside its cost (the cube's one basis label);
+    empty when nothing is priced — the named absence is already the fact."""
+
+    if bucket.get("estimated_cost_usd") is None and bucket.get("known_additive_cost_usd") is None:
+        return ""
+    return str(bucket.get("cost_confidence_display") or COST_BASIS_NOT_REPORTED)
+
+
+def _cache_read_cell(bucket: dict[str, Any]) -> str:
+    """Cache-read tokens for a usage bucket, or the named absence when no row in
+    it reported the counter (never a fabricated measured zero)."""
+
+    if bucket.get("cache_read_reporting") in {"not_reported", "unknown"}:
+        return "not reported"
+    return format_tokens(bucket.get("cache_read_tokens"))
 
 
 @app.command("limits")
@@ -10028,23 +10127,20 @@ def limits(
             created = event.get("created_at")
             captured = created if isinstance(created, (int, float)) else None
         if isinstance(captured, (int, float)):
-            header += f"  (as of {humanize_seconds(now - captured)} ago)"
+            header += f"  ({data_age_text(captured, now)})"
         console.print(header)
         windows = metadata.get("windows")
         for window in windows if isinstance(windows, list) else []:
             if not isinstance(window, Mapping):
                 continue
             used = window.get("used_percent")
-            used_value = float(used) if isinstance(used, (int, float)) and not isinstance(used, bool) else 0.0
-            line = f"  {window_label(window):>7}  {usage_bar(used_value)}  {used_value:5.1f}%"
-            resets_at = window.get("resets_at")
-            if isinstance(resets_at, (int, float)) and not isinstance(resets_at, bool) and resets_at > 0:
-                delta = resets_at - now
-                line += (
-                    f"  · resets in {humanize_seconds(delta)}"
-                    if delta > 0
-                    else "  · resets now"
-                )
+            valid = isinstance(used, (int, float)) and not isinstance(used, bool) and math.isfinite(float(used))
+            passed = window_reset_passed(window.get("resets_at"), now)
+            # A missing share, or one whose window already reset, draws an
+            # empty dotted track — never a fabricated or present-tense fill.
+            bar = usage_bar(float(used)) if valid and not passed else "·" * 20
+            line = f"  {window_label(window):>12}  {bar}  {limit_value_text(used, reset_passed=passed)}"
+            line += f"  · {reset_text(window.get('resets_at'), now)}"
             console.print(line)
         credits = metadata.get("credits")
         if isinstance(credits, Mapping) and credits.get("has_credits"):
@@ -10273,12 +10369,6 @@ def _receipt_cost_text(cost: dict[str, Any]) -> str:
     return receipt_cost_text(cost)
 
 
-def _receipt_category_text(counts: dict[str, Any]) -> str:
-    from .receipt import receipt_category_text
-
-    return receipt_category_text(counts)
-
-
 def _find_receipt_task(projection: dict[str, Any], task_id: str) -> dict[str, Any] | None:
     tasks = [
         task
@@ -10293,136 +10383,159 @@ def _find_receipt_task(projection: dict[str, Any], task_id: str) -> dict[str, An
     return matches[0] if len(matches) == 1 else None
 
 
+def _receipt_label_grid(rows: list[tuple[str, list[str]]], *, label_width: int = 20) -> Table:
+    """Label/value rows with a hanging indent: the value column keeps its
+    left edge when a value wraps or carries embedded newlines (each line is
+    its own line in the cell, never a continuation at column 0)."""
+
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(width=label_width, no_wrap=True)
+    grid.add_column(overflow="fold")
+    for label, lines in rows:
+        grid.add_row(label, "\n".join(lines))
+    return grid
+
+
+def _receipt_lines(text: str, style: str | None = None) -> list[str]:
+    """One escaped markup line per embedded line of ``text``."""
+
+    parts = [_rich_escape(part) for part in str(text).splitlines() or [""]]
+    return [f"[{style}]{part}[/{style}]" if style and part else part for part in parts]
+
+
 def _render_receipt_text(receipt: dict[str, Any]) -> None:
-    from .receipt import (
-        evidence_coverage_headline,
-        evidence_coverage_ledger,
-        plan_share_headline,
+    """The terminal Work Receipt. Every label and sentence comes from the shared
+    receipt text helpers (the same strings the app and ``--markdown`` print);
+    this renderer only adds Rich emphasis and the Actions detail lines."""
+
+    from rich.padding import Padding
+
+    from .receipt_markdown import (
+        receipt_attention_lines,
+        receipt_dimension_rows,
+        receipt_lead,
     )
 
     axes = receipt.get("axes", {})
     dims = receipt.get("dimensions", {})
-    decision = axes.get("decision_status", {})
-    evidence = axes.get("evidence_strength", {})
+    lead = receipt_lead(receipt)
 
     console.print(f"[bold]Work Receipt[/bold] · {_rich_escape(str(receipt.get('title') or 'Task'))}")
     console.print(f"[dim]{_rich_escape(str(receipt.get('task_id') or ''))}[/dim]\n")
 
-    console.print(
-        f"  Decision status    [bold]{str(decision.get('key') or 'unknown').upper()}[/bold]"
-        f"  (asserted by {decision.get('asserted_by') or 'none'})"
-    )
-    if decision.get("statement"):
-        console.print(f"                     [dim]{_rich_escape(str(decision['statement']))}[/dim]")
-    handoff = axes.get("handoff", {})
-    if handoff.get("handed_off") and str(decision.get("key") or "") != "handed_off":
+    # The verdict LEADS: one line joining the claim with how well it is proven,
+    # then the single gap and the time-bounded health claim. The Decision /
+    # Coverage lines below are the same facts, expanded.
+    if lead["headline"]:
+        console.print(Padding(f"[bold]{_rich_escape(lead['headline'])}[/bold]", (0, 0, 0, 2), expand=False))
+        detail = [line for line in (lead["gap_line"], lead["health_text"]) if line]
+        if detail:
+            console.print(
+                _receipt_label_grid([("", [x for line in detail for x in _receipt_lines(line, "dim")])])
+            )
+        console.print("")
+
+    rows: list[tuple[str, list[str]]] = []
+    decision_lines = [
+        f"[bold]{_rich_escape(lead['decision_word'])}[/bold] · asserted by {_rich_escape(lead['asserted_by_phrase'])}"
+    ]
+    for line in (lead["decision_statement"], lead["outcome_summary_line"], lead["next_step_line"]):
+        if line:
+            decision_lines.extend(_receipt_lines(line, "dim"))
+    rows.append((f"  {_rich_escape(lead['decision_label'])}", decision_lines))
+    if lead["handoff_word"]:
         # The deliberate-stop lifecycle marker, shown BESIDE the decision word (not
         # instead of it) so a finding/blocked headline never hides the handoff.
-        console.print("  Lifecycle          [magenta]↗ Handed off[/magenta]")
-        if handoff.get("statement"):
-            console.print(f"                     [dim]{_rich_escape(str(handoff['statement']))}[/dim]")
-    console.print(f"  Evidence coverage  [bold]{_rich_escape(evidence_coverage_headline(evidence))}[/bold]")
-    ledger = evidence_coverage_ledger(evidence)
-    if ledger:
-        console.print(f"                     [dim]{_rich_escape(ledger)}[/dim]")
-    if evidence.get("definition"):
-        console.print(f"                     [dim]{_rich_escape(str(evidence['definition']))}[/dim]")
+        handoff_lines = [f"[magenta]{_rich_escape(lead['handoff_word'])}[/magenta]"]
+        if lead["handoff_statement"]:
+            handoff_lines.extend(_receipt_lines(lead["handoff_statement"], "dim"))
+        rows.append(("  Lifecycle", handoff_lines))
+    coverage_lines = [f"[bold]{_rich_escape(lead['coverage_hero'])}[/bold]"]
+    for line in (lead["coverage_ledger"], lead["scope_definition"], lead["coverage_definition"]):
+        if line:
+            coverage_lines.extend(_receipt_lines(line, "dim"))
+    rows.append((f"  {_rich_escape(lead['coverage_label'])}", coverage_lines))
+    console.print(_receipt_label_grid(rows))
     if axes.get("orthogonality_note"):
-        console.print(f"  [dim]{axes['orthogonality_note']}[/dim]")
+        console.print(Padding("\n".join(_receipt_lines(str(axes["orthogonality_note"]), "dim")), (0, 0, 0, 2), expand=False))
+
+    attention_lines = receipt_attention_lines(receipt)
+    if attention_lines:
+        reason, label, *rest = attention_lines
+        console.print("\n[bold]Attention[/bold]")
+        console.print(
+            Padding(f"[bold]{_rich_escape(reason)}[/bold]" + (f" · {_rich_escape(label)}" if label else ""), (0, 0, 0, 2), expand=False)
+        )
+        if rest:
+            console.print(Padding("\n".join(x for line in rest for x in _receipt_lines(line, "dim")), (0, 0, 0, 4), expand=False))
 
     table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
     table.add_column("Dimension")
     table.add_column("Summary")
     table.add_column("Source", style="dim")
 
-    task = dims.get("task", {})
-    objectives = task.get("objectives") or []
-    boundary = task.get("boundary", {})
-    task_summary = "; ".join(objectives[:2]) or "no objective recorded"
-    if boundary.get("project"):
-        task_summary += f"  · project {boundary['project']}"
-    table.add_row("Task", _rich_escape(task_summary), ", ".join(task.get("provenance") or []))
-
-    actors = dims.get("actors", {})
-    actor_summary = " · ".join(
-        part
-        for part in (
-            actors.get("primary_agent"),
-            ", ".join(actors.get("models") or []) or None,
-            (f"{actors.get('subagent_session_count')} subagents" if actors.get("subagent_session_count") else None),
-        )
-        if part
-    )
-    table.add_row("Actors", _rich_escape(actor_summary or "—"), ", ".join(actors.get("provenance") or []))
-
     actions = dims.get("actions", {})
-    actions_summary = _receipt_category_text(actions.get("tool_category_counts") or {})
-    actions_summary += f"  · touched {count_noun(int(actions.get('touched_file_count') or 0), 'file')}"
-    _command_count = int(actions.get("command_count") or 0)
-    if _command_count:
-        actions_summary += f"  · ran {count_noun(int(_command_count), 'command')}"
-    names_preview = actions.get("tool_names_preview") or []
-    if names_preview:
-        # The SPECIFIC tools/connectors the agent used (most-used first). Names are
-        # user-controlled (e.g. mcp__server__tool) so the line is rich-escaped.
-        tools = "  ".join(f"{p.get('name')}×{int(p.get('count') or 0)}" for p in names_preview)
-        elided = int(actions.get("tool_names_elided") or 0)
-        if elided:
-            tools += f"  … +{elided} more"
-        actions_summary += f"\n[dim]tools: {_rich_escape(tools)}[/dim]"
-    shown_files = actions.get("touched_files_preview") or []
-    elided_files = int(actions.get("touched_files_elided") or 0)
-    if shown_files:
-        # Show the actual artifact paths, not just the count. The daemon already
-        # capped the slice and disclosed the overflow; only the count was ever
-        # surfaced before.
-        lines = "\n".join(str(path) for path in shown_files)
-        if elided_files:
-            lines += f"\n… +{elided_files} more"
-        actions_summary += f"\n[dim]{_rich_escape(lines)}[/dim]"
-    shown_commands = actions.get("commands_preview") or []
-    elided_commands = int(actions.get("commands_elided") or 0)
-    if shown_commands:
-        # The actual commands the agent ran (single-line, credential-scrubbed), not just
-        # the count. The daemon capped the slice and disclosed the overflow.
-        cmd_lines = "\n".join(f"$ {cmd}" for cmd in shown_commands)
-        if elided_commands:
-            cmd_lines += f"\n… +{elided_commands} more"
-        actions_summary += f"\n[dim]{_rich_escape(cmd_lines)}[/dim]"
-    table.add_row("Actions", actions_summary, ", ".join(actions.get("provenance") or []))
-
-    cost = dims.get("cost", {})
-    table.add_row("Cost", _receipt_cost_text(cost), ", ".join(cost.get("provenance") or []))
-    table.add_row("Weekly plan", plan_share_headline(cost.get("plan_share")), "")
-
-    evidence_dim = dims.get("evidence", {})
-    table.add_row(
-        "Evidence",
-        f"{int(evidence_dim.get('checks_total') or 0)} checks · "
-        f"{int(evidence_dim.get('checks_passed') or 0)} passed · "
-        f"{int(evidence_dim.get('checks_failed') or 0)} failed",
-        ", ".join(evidence_dim.get("provenance") or []),
-    )
-
-    outcome = dims.get("outcome", {})
-    table.add_row(
-        "Outcome",
-        f"{outcome.get('decision_status')} · asserted by {outcome.get('asserted_by')}",
-        ", ".join(outcome.get("provenance") or []),
-    )
+    actions_label = str((receipt.get("field_labels") or {}).get("actions") or receipt_field_label("actions"))
+    for name, summary, source in receipt_dimension_rows(receipt):
+        cell = _rich_escape(summary)
+        if name == actions_label:
+            cell += _receipt_actions_detail(actions)
+        table.add_row(_rich_escape(name), cell, _rich_escape(source))
     console.print(table)
 
     gaps = dims.get("gaps", {})
     if gaps.get("items"):
         console.print(f"\n[bold]Gaps[/bold] ({gaps.get('count')}) — what could not be proven")
+        gap_grid = Table.grid(padding=(0, 1))
+        gap_grid.add_column(width=3, no_wrap=True)
+        gap_grid.add_column(overflow="fold")
         for item in gaps["items"]:
-            console.print(f"  · \\[{item.get('dimension')}] {_rich_escape(str(item.get('reason')))}")
+            label = str(item.get("dimension_label") or receipt_field_label(item.get("dimension")))
+            gap_grid.add_row("  ·", f"[bold]{_rich_escape(label)}[/bold] — {_rich_escape(str(item.get('reason')))}")
+        console.print(gap_grid)
 
     legend = dims.get("provenance", {}).get("legend") or {}
     if legend:
         console.print("\n[bold]Provenance[/bold]")
-        for source, description in legend.items():
-            console.print(f"  {source} — [dim]{description}[/dim]")
+        console.print(
+            _receipt_label_grid(
+                [
+                    (f"  {_rich_escape(source_label(source))}", _receipt_lines(str(description), "dim"))
+                    for source, description in legend.items()
+                ]
+            )
+        )
+
+
+def _receipt_actions_detail(actions: dict[str, Any]) -> str:
+    """The terminal-only Actions detail under the shared Actions summary: the
+    specific tools, touched paths and commands, each preview capped by the
+    daemon with its overflow disclosed. Names and paths are user-controlled, so
+    every line is Rich-escaped."""
+
+    detail = ""
+    names_preview = actions.get("tool_names_preview") or []
+    if names_preview:
+        tools = "  ".join(f"{p.get('name')}×{int(p.get('count') or 0)}" for p in names_preview)
+        elided = int(actions.get("tool_names_elided") or 0)
+        if elided:
+            tools += f"  … +{elided} more"
+        detail += f"\n[dim]tools: {_rich_escape(tools)}[/dim]"
+    shown_files = actions.get("touched_files_preview") or []
+    elided_files = int(actions.get("touched_files_elided") or 0)
+    if shown_files:
+        lines = "\n".join(str(path) for path in shown_files)
+        if elided_files:
+            lines += f"\n… +{elided_files} more"
+        detail += f"\n[dim]{_rich_escape(lines)}[/dim]"
+    shown_commands = actions.get("commands_preview") or []
+    elided_commands = int(actions.get("commands_elided") or 0)
+    if shown_commands:
+        cmd_lines = "\n".join(f"$ {cmd}" for cmd in shown_commands)
+        if elided_commands:
+            cmd_lines += f"\n… +{elided_commands} more"
+        detail += f"\n[dim]{_rich_escape(cmd_lines)}[/dim]"
+    return detail
 
 
 @app.command("receipts")
@@ -10471,21 +10584,24 @@ def receipts(
     table = Table(title="Work Receipts", header_style="bold")
     table.add_column("Task")
     table.add_column("Title")
-    table.add_column("Decision")
-    table.add_column("Evidence coverage")
-    table.add_column("Cost")
+    table.add_column(RECEIPT_FIELD_LABELS["decision"])
+    table.add_column(RECEIPT_FIELD_LABELS["coverage"])
+    table.add_column(RECEIPT_FIELD_LABELS["cost"])
     for row in rows:
         decision_key = str(row["decision_status"]["key"])
-        decision_cell = decision_key
+        decision_cell = _rich_escape(decision_label(decision_key))
         if row.get("handed_off") and decision_key != "handed_off":
             # Parallel lifecycle marker: shown beside a finding/blocked/… word so a
             # clean handoff is never hidden by the louder problem.
-            decision_cell += "  [magenta]↗ handed off[/magenta]"
+            decision_cell += f"  [magenta]↗ {DECISION_LABELS['handed_off']}[/magenta]"
         table.add_row(
             str(row["task_id"])[:16],
             _rich_escape(str(row.get("title") or "")[:48]),
             decision_cell,
-            _rich_escape(evidence_coverage_headline(row.get("evidence_strength") or {})),
+            _rich_escape(
+                str((row.get("evidence_strength") or {}).get("coverage_row") or "")
+                or evidence_coverage_headline(row.get("evidence_strength") or {})
+            ),
             _receipt_cost_text(row.get("cost") or {}),
         )
     console.print(table)

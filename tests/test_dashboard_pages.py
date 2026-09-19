@@ -234,9 +234,11 @@ def test_tasks_projection_uses_root_task_boundary_and_nests_run_id_steps(tmp_pat
                 "sentinel_semantic_kind": "section",
                 "section_id": "linked-step",
                 "section_status": "completed",
+                "files": ["src/agentacct/mcp.py"],
                 "section_title": "Linked review step",
                 "client": "codex",
                 "client_session_id": "linked-review-session",
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )
@@ -249,8 +251,10 @@ def test_tasks_projection_uses_root_task_boundary_and_nests_run_id_steps(tmp_pat
                 "sentinel_semantic_kind": "section",
                 "section_id": "idless-step",
                 "section_status": "completed",
+                "files": ["src/agentacct/mcp.py"],
                 "section_title": "Id-less sibling step",
                 "client": "codex",
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )

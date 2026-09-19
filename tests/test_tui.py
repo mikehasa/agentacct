@@ -65,7 +65,7 @@ def _record_usage(service, *, client, model, session_id, tokens, updated_at, cos
 
 
 def _record_section(service, *, session, section_id, title, status, at, client="claude-code", project="proj",
-                    kind="implementation", summary="", blocker=None):
+                    kind="implementation", summary="", blocker=None, next_step=None):
     service.record_event({
         "event_id": f"evt_section_{session}_{section_id}_{status}",
         "created_at": float(at), "source": client, "event_type": f"section_{status}", "run_id": None,
@@ -74,8 +74,15 @@ def _record_section(service, *, session, section_id, title, status, at, client="
             "client_transcript_id": session,
             "client_context_keys_authored": ["client_session_id", "client_transcript_id"],
             "project_dir": f"/tmp/{project}", "section_id": section_id, "section_status": status,
-            "section_title": title, "summary": summary, "kind": kind,
-            "files": ["src/mod.py"], "blocker": blocker, "next_step": None,
+            "section_title": title,
+            # A terminal section must carry its outcome (RULES.md R4), so the
+            # builder supplies one when the caller leaves the default empty.
+            "summary": (summary or ("Recorded outcome for this fixture section." if status in {"completed", "handed_off"} else summary)),
+            "kind": kind,
+            "files": ["src/mod.py"], "blocker": blocker,
+            # A stopped section must say where to resume (D2b), so the builder
+            # supplies one when the caller leaves the default empty.
+            "next_step": next_step or ("Restore the staging credentials, then re-run the suite" if status in {"blocked", "handed_off"} else None),
         },
     })
 
@@ -159,7 +166,7 @@ def test_pip_shape_carries_tier():
 
 def test_decision_label_and_families():
     assert tui.decision_label("in_progress") == "In progress"
-    assert tui.decision_label("finding") == "Open finding"
+    assert tui.decision_label("finding") == "Finding"
     assert tui.decision_label("handed_off") == "Handed off"
     assert tui.decision_label("inactive") == "Inactive"
     # danger keys wear a coral wash; every decision (live included) is a filled
@@ -171,14 +178,21 @@ def test_decision_label_and_families():
 
 
 def test_cost_grammar():
-    assert tui.cost_display(4.82, complete=True, confidence="client_reported") == "$4.82"
-    assert tui.cost_display(4.82, complete=True, confidence="provider_billed") == "$4.82"
-    assert tui.cost_display(4.82, complete=True, confidence="estimated_from_tokens") == "≈$4.82"
-    assert tui.cost_display(3.0, complete=False, confidence=None, known_additive=2.5) == "~$2.50"
-    assert tui.cost_display(None, complete=False, confidence=None) is None
     assert tui.receipt_cost_text({}) == "unpriced"
     assert tui.receipt_cost_text(
         {"estimated_cost_usd": 4.82, "cost_complete": True, "cost_confidence": "client_reported"}) == "$4.82"
+    assert tui.receipt_cost_text(
+        {"estimated_cost_usd": 4.82, "cost_complete": True, "cost_confidence": "estimated_from_tokens"}) == "≈$4.82"
+    assert tui.receipt_cost_text(
+        {"estimated_cost_usd": 3.0, "cost_complete": False, "known_additive_cost_usd": 2.5}) == "~$2.50"
+    # The payload's own string wins — the TUI prints the receipt's cost, it does
+    # not re-derive one (and so can never name an absence differently).
+    assert tui.receipt_cost_text(
+        {"display_text": "no usage recorded", "estimated_cost_usd": None, "rows": 0}) == "no usage recorded"
+    # Without a payload string the shared bucket grammar names the SAME absence:
+    # zero usage rows is "no usage recorded", not "unpriced".
+    assert tui.receipt_cost_text({"rows": 0, "estimated_cost_usd": None}) == "no usage recorded"
+    assert tui.receipt_cost_text({"rows": 3, "estimated_cost_usd": None}) == "unpriced"
 
 
 def test_meter_threshold_colours():
@@ -191,9 +205,45 @@ def test_meter_threshold_colours():
 def test_check_mark_vocabulary():
     assert tui.check_mark("passed", _DARK)[0] == "✓"
     assert tui.check_mark("failed", _DARK)[0] == "✗"
-    assert tui.check_mark("error", _DARK)[0] == "✗"
-    assert tui.check_mark("skipped", _DARK)[0] == "»"
-    assert tui.check_mark("other", _DARK)[0] == "•"
+    # Coral ✗ is a recorded failure only; a check that could not run, was
+    # skipped or has no result proved nothing and reads as a muted minus.
+    assert tui.check_mark("failed", _DARK)[1] == _DARK["coral"]
+    assert tui.check_mark("error", _DARK) == ("−", _DARK["dim"])
+    assert tui.check_mark("skipped", _DARK)[0] == "−"
+    assert tui.check_mark("other", _DARK)[0] == "−"
+
+
+def test_a_passing_check_wears_its_tier_not_green():
+    """Green is the live connection and the externally-verified tier only. A
+    pass takes the tier its SOURCE can support, exactly as the app does
+    (``CheckResultTone.tint(pass:)``); an unattributed pass stays ink."""
+
+    from agentacct.display_vocabulary import source_tier_key
+
+    assert tui.check_mark("passed", _DARK, "externally_verified")[1] == _DARK["green"]
+    assert tui.check_mark("passed", _DARK, "independently_checked")[1] == _DARK["ink"]
+    assert tui.check_mark("passed", _DARK, "self_checked")[1] == _DARK["accent"]
+    # No source, or a source that is not a check source at all: ink, not green.
+    assert tui.check_mark("passed", _DARK)[1] == _DARK["ink"]
+    assert tui.check_mark("passed", _DARK, source_tier_key("mcp"))[1] == _DARK["accent"]
+    assert tui.check_mark("passed", _DARK, source_tier_key("client_log"))[1] == _DARK["ink"]
+    # ``ci`` is the ONE source that can support the green tier.
+    assert tui.check_mark("passed", _DARK, source_tier_key("ci"))[1] == _DARK["green"]
+    assert _DARK["green"] not in {
+        tui.check_mark("passed", _DARK, source_tier_key(key))[1]
+        for key in ("mcp", "hook", "client_log", "transcript_scan", "git", "human", "inferred", "none", "")
+    }
+
+
+def test_tier_labels_come_from_the_shared_vocabulary():
+    """The terminal keeps pip SHAPES, never tier WORDS: a hyphenated
+    "externally-verified" here would be a second spelling beside the CLI's."""
+
+    from agentacct.display_vocabulary import EVIDENCE_GRADE_LABELS
+
+    for grade, expected in EVIDENCE_GRADE_LABELS.items():
+        assert tui.tier_style(grade)[2] == expected, grade
+    assert tui.tier_style(None)[2] == EVIDENCE_GRADE_LABELS["none"]
 
 
 def test_work_tabs_cover_the_lifecycle():
@@ -202,22 +252,47 @@ def test_work_tabs_cover_the_lifecycle():
             "in_progress", "observed", "stopped", "other"} == ids
 
 
-def test_attention_and_buckets_match_the_swift_mapping():
-    from agentacct.tui import needs_attention, task_bucket
-    # danger keys and any failing check escalate to Attention...
-    assert needs_attention("blocked", 0)
-    assert needs_attention("reported", 1)
-    assert task_bucket({"decision_status": {"key": "reported"},
-                        "evidence_strength": {"checks_failed": 1}}) == "attention"
-    # ...unless the finding is already settled
-    assert not needs_attention("finding_superseded", 1)
-    # forKey buckets, verbatim from Swift WorkGroup.forKey
+def test_attention_and_buckets_follow_the_payload_group():
+    from agentacct.tui import task_bucket
+    # A danger word with no attention block still lands in the queue; a settled
+    # finding does not — and the TUI has no local predicate of its own left.
+    assert task_bucket({"decision_status": {"key": "blocked"}}) == "attention"
+    assert not hasattr(__import__("agentacct.tui", fromlist=["x"]), "needs_attention"), (
+        "the TUI must read the payload's group, never re-derive attention"
+    )
+    # The payload's group key wins; the reducer's attention predicate decides
+    # Attention (a danger word no longer open leaves it), via the vocabulary.
+    assert task_bucket({"group_key": "attention", "decision_status": {"key": "reported"}}) == "attention"
+    assert task_bucket({"decision_status": {"key": "reported"}, "attention_open": True}) == "attention"
+    assert task_bucket({"decision_status": {"key": "finding"}, "attention_open": False}) == "other"
+    assert task_bucket({"decision_status": {"key": "blocked"}, "attention": {"open": True}}) == "attention"
     assert task_bucket({"decision_status": {"key": "handed_off"}, "evidence_strength": {}}) == "stopped"
     assert task_bucket({"decision_status": {"key": "inactive"}, "evidence_strength": {}}) == "stopped"
     assert task_bucket({"decision_status": {"key": "ended_open"}, "evidence_strength": {}}) == "stopped"
     assert task_bucket({"decision_status": {"key": "finding_superseded"}, "evidence_strength": {}}) == "reported"
     assert task_bucket({"decision_status": {"key": "observed"}, "evidence_strength": {}}) == "observed"
     assert task_bucket({"decision_status": {"key": "weird"}, "evidence_strength": {}}) == "other"
+
+
+def test_attention_rows_are_the_payload_queue_in_the_reducers_order():
+    """The Dashboard's shift brief and the Work tabs share ONE queue and ONE
+    sort: the payload's group plus the reducer's ``attention_order`` class,
+    then recency. No surface re-ranks by a rule of its own."""
+
+    from agentacct.tui import attention_rank, attention_rows
+
+    not_run = {"task_id": "c", "group_key": "attention", "attention_order": 2, "last_activity_at": 900.0}
+    blocker = {"task_id": "b", "group_key": "attention", "attention_order": 1, "last_activity_at": 100.0}
+    failed_old = {"task_id": "a1", "group_key": "attention", "attention_order": 0, "last_activity_at": 10.0}
+    failed_new = {"task_id": "a2", "group_key": "attention", "attention_order": 0, "last_activity_at": 20.0}
+    settled = {"task_id": "z", "group_key": "other", "attention_order": None, "last_activity_at": 999.0}
+
+    rows = attention_rows([not_run, settled, blocker, failed_old, failed_new])
+    assert [r["task_id"] for r in rows] == ["a2", "a1", "b", "c"]
+    # A reviewed danger word (group "other") is out of the queue entirely.
+    assert settled not in rows
+    # A summary with no order class sorts last, never first.
+    assert attention_rank({"attention_order": None})[0] == 99
 
 
 def test_sources_markup_builder_renders_states():
@@ -1320,8 +1395,29 @@ def test_usage_shows_capacity_and_recorded(tmp_path):
             assert "claude-code" in plain
             assert "47% used" in plain
             assert "RECORDED USAGE" in plain
+            assert "FRESH TOKENS" in plain and "CACHE READS" in plain
 
     _run(scenario())
+
+
+def test_usage_headline_reads_fresh_tokens_not_cache_inclusive_totals():
+    from types import SimpleNamespace
+
+    bucket = {"client": "codex", "rows": 2, "sessions": 1, "fresh_tokens": 1_500, "cache_read_tokens": 90_000,
+              "total_tokens_including_cached": 91_500, "estimated_cost_usd": 1.0, "cost_complete": True,
+              "cost_confidence": "estimated_from_tokens",
+              "cost_confidence_display": "mixed · mostly pricing estimate"}
+    snap = SimpleNamespace(usage=SimpleNamespace(windows=[SimpleNamespace(label="today", totals=bucket)],
+                                                 by_client=[bucket]))
+    page = SimpleNamespace(totals=bucket, by_period=[])
+    parts = tui._build_usage_parts(page, [], snap, "7d", _LIGHT)
+    plain = {key: Text.from_markup(value).plain for key, value in parts.items()}
+    assert "1.5K fresh tokens" in plain["head"]
+    assert "91.5K" not in plain["head"] and "91.5K" not in plain["rec"]
+    assert "1.5K fresh tokens" in plain["cap"] and "90K cache-read tokens" in plain["cap"]
+    assert "FRESH TOKENS" in plain["rec"] and "CACHE READS" in plain["rec"]
+    assert "mixed · mostly pricing estimate" in plain["rec"]
+    assert tui._window_total(snap, "today") == 1_500
 
 
 def test_usage_range_cycles(tmp_path):

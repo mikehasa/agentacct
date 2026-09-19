@@ -50,4 +50,46 @@ final class WorkTimelineRangeTests: XCTestCase {
         XCTAssertNil(WorkTimelineRangeNavigation.hitRecord(records, laneID: "s", x: 307, width: 1000, within: full))
     }
 
+    /// A long section's SPAN crossing the window is not a card on screen. The
+    /// canvas draws a card at its record's start, so a window that holds only
+    /// the tail of a 70-minute section renders the named-empty state — the
+    /// exact first paint task_c5bffb80 opened with. An app-chosen window must
+    /// therefore be repaired to one that actually draws something.
+    func testAWindowHoldingOnlyALongSectionsTailIsNotAPopulatedCanvas() {
+        let full = WorkTimelineInterval(lower: 0, upper: 10_000)
+        let section = WorkTimelineRecord(id: "section", laneID: "s", laneTitle: "S", lineage: "root",
+                                         kind: .step, title: "Long section", start: 1_000, end: 5_200)
+        let tail = WorkTimelineInterval(lower: 5_000, upper: 5_100)
+
+        // ONE rule now answers both questions (F5). The heading's count asks
+        // `contains`; the canvas asks `holdsACard`; they used to disagree here
+        // — span overlap said "in the window", card position said "nothing is
+        // drawn" — so the header could read "1 of 16" over an empty canvas.
+        XCTAssertFalse(tail.contains(section),
+                       "the count rule and the drawing rule are the same rule")
+        XCTAssertFalse(WorkTimelineRangeNavigation.holdsACard(tail, records: [section]),
+                       "no card is drawn there: the card sits at the section's start")
+
+        let repaired = WorkTimelineRangeNavigation.populated(tail, records: [section], newest: section, within: full)
+        XCTAssertNotEqual(repaired, tail, "an app-chosen empty window is repaired")
+        XCTAssertTrue(WorkTimelineRangeNavigation.holdsACard(repaired, records: [section]),
+                      "the repaired window draws the card")
+    }
+
+    /// The repair is a threshold, not a blanket move: a window that already
+    /// draws a card is left exactly as it is, and a task with no dated record
+    /// has nothing to repair toward.
+    func testAWindowThatAlreadyDrawsACardIsLeftAlone() {
+        let full = WorkTimelineInterval(lower: 0, upper: 10_000)
+        let point = WorkTimelineRecord(id: "point", laneID: "s", laneTitle: "S", lineage: "root",
+                                       kind: .check, title: "Check", start: 5_050)
+        let window = WorkTimelineInterval(lower: 5_000, upper: 5_100)
+        XCTAssertEqual(WorkTimelineRangeNavigation.populated(window, records: [point], newest: point, within: full),
+                       window)
+
+        let undated = WorkTimelineRecord(id: "undated", laneID: "s", laneTitle: "S", lineage: "root",
+                                         kind: .check, title: "Undated", start: nil)
+        XCTAssertEqual(WorkTimelineRangeNavigation.populated(window, records: [undated], newest: undated, within: full),
+                       window, "an undated task keeps the window rather than jumping somewhere arbitrary")
+    }
 }

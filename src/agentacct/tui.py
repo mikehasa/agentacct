@@ -46,6 +46,31 @@ from textual.widgets import ContentSwitcher, DataTable, Footer, Input, ListItem,
 
 from .plural import count_noun
 from .service import SentinelService
+from .display_vocabulary import (
+    ATTENTION_OPEN_ACTION,
+    ATTENTION_REASON_LABELS,
+    ATTENTION_SORT_TEXT,
+    GROUP_DEFINITIONS,
+    attention_count_text,
+    decision_group,
+    receipt_field_label,
+    COST_BASIS_NOT_REPORTED,
+    DECISION_LABELS,
+    check_result_label,
+    cost_display,
+    check_result_tone,
+    evidence_grade_label,
+    RECEIPT_FIELD_LABELS,
+    RECORDED_USAGE_TITLE,
+    WINDOW_LABELS,
+    data_age_text,
+    decision_label,
+    limit_used_text,
+    relative_age_text,
+    reset_text,
+    source_label,
+    source_tier_key,
+)
 from .usage_snapshot import (
     ClientLimit,
     LiveSnapshot,
@@ -53,8 +78,10 @@ from .usage_snapshot import (
     build_client_limits,
     build_live_snapshot,
     build_usage_page,
+    cost_basis_caption,
     cost_text,
     format_tokens,
+    headline_limit_choice,
     humanize_seconds,
     limit_is_stale,
 )
@@ -135,21 +162,27 @@ _THEME_LIGHT = _theme("agentacct-light", _LIGHT, dark=False)
 # Every function takes the active palette so it recolours with the theme.       #
 # ============================================================================ #
 
-# Evidence tier grade -> (pip glyph, palette colour key, display label).
-# Shape is the tier; colour is redundant (v10 rule 1). ``◉`` = a filled disc in
-# a ring, ``●`` filled, ``◐`` half, ``○`` hollow.
-_TIER: dict[str, tuple[str, str, str]] = {
-    "externally_verified": ("◉", "green", "externally-verified"),
-    "independently_checked": ("●", "ink", "independently-checked"),
-    "self_checked": ("◐", "accent", "self-checked"),
-    "claimed": ("○", "amber", "claimed"),
-    "unchecked": ("○", "amber", "unchecked"),
-    "none": ("○", "dim", "none"),
+# Evidence tier grade -> (pip glyph, palette colour key). Shape is the tier;
+# colour is redundant (v10 rule 1). ``◉`` = a filled disc in a ring, ``●``
+# filled, ``◐`` half, ``○`` hollow. The WORDS are never kept here: a tier's
+# label comes from the shared vocabulary (``evidence_grade_label``), so the
+# terminal cannot grow a hyphenated second spelling of "externally verified".
+_TIER: dict[str, tuple[str, str]] = {
+    "externally_verified": ("◉", "green"),
+    "independently_checked": ("●", "ink"),
+    "self_checked": ("◐", "accent"),
+    "claimed": ("○", "amber"),
+    "unchecked": ("○", "amber"),
+    "none": ("○", "dim"),
 }
 
 
 def tier_style(grade: str | None) -> tuple[str, str, str]:
-    return _TIER.get(str(grade or "none"), ("○", "dim", str(grade or "none")))
+    """``(pip glyph, palette colour key, label)`` for one evidence grade. The
+    label is the vocabulary's word for that grade, never a local spelling."""
+
+    glyph, color = _TIER.get(str(grade or "none"), ("○", "dim"))
+    return glyph, color, evidence_grade_label(grade)
 
 
 def pip(grade: str | None, pal: dict[str, str]) -> str:
@@ -171,72 +204,45 @@ _CLAIMED = {
 _INFERRED = {"ended_open"}
 _VERIFIED = {"verified"}
 
-# Work lifecycle tabs, verbatim from the Swift WorkGroup.forKey / forTask
-# (apps/agentacct/Sources/agentacct/WorkPane.swift): a task lands in exactly one
-# bucket, and ANY task with a currently-failing check escalates to Attention (the
-# checks_failed rule) unless the finding is already settled.
+# Work lifecycle tabs: the group keys and labels the shared vocabulary owns
+# (the app's tabs read the same table). A task lands in exactly one group.
 _WORK_TABS: tuple[tuple[str, str], ...] = (
-    ("all", "All"), ("attention", "Attention"), ("verified", "Verified"),
-    ("reported", "Reported"), ("in_progress", "In progress"),
-    ("observed", "Observed"), ("stopped", "Stopped"), ("other", "Other"),
+    ("all", "All"),
+    *((key, label) for key, (label, _definition) in GROUP_DEFINITIONS.items()),
 )
-_FORKEY_BUCKET: dict[str, str] = {
-    "verified": "verified",
-    "reported": "reported", "resolved": "reported", "mostly_done": "reported",
-    "finding_superseded": "reported", "finding_resolved_by_user": "reported",
-    "blocker_resolved_by_user": "reported",
-    "in_progress": "in_progress", "started": "in_progress", "checkpoint": "in_progress",
-    "observed": "observed",
-    "handed_off": "stopped", "ended_open": "stopped", "inactive": "stopped",
-}
-_ATTENTION_KEYS = {"finding", "failed", "blocked"}
-_SETTLED_FINDING_KEYS = {"finding_superseded", "finding_resolved_by_user"}
-
-
-def needs_attention(decision_key: str | None, checks_failed: int | None) -> bool:
-    """A task needs the user when its decision is a danger key, OR any check is
-    currently failing and the finding is not already settled (Swift
-    ``workReceiptNeedsAttention``)."""
-
-    key = str(decision_key or "")
-    return key in _ATTENTION_KEYS or (int(checks_failed or 0) > 0 and key not in _SETTLED_FINDING_KEYS)
-
-
 def task_bucket(summary: dict) -> str:
-    """The single lifecycle bucket a receipt-summary belongs to (Swift forTask)."""
+    """The single filter group a receipt summary belongs to: the payload's
+    ``group_key``, else the shared vocabulary's rule over the reducer's
+    attention predicate (never a local mapping)."""
 
+    group = str(summary.get("group_key") or "").strip()
+    if group:
+        return group
     decision = summary.get("decision_status") or {}
-    key = str(decision.get("key") or "")
-    checks_failed = int((summary.get("evidence_strength") or {}).get("checks_failed") or 0)
-    if needs_attention(key, checks_failed):
-        return "attention"
-    return _FORKEY_BUCKET.get(key, "other")
-
-# Human labels for the decision keys (raw keys stay in the data).
-_DECISION_LABEL: dict[str, str] = {
-    "verified": "Verified",
-    "in_progress": "In progress",
-    "started": "In progress",
-    "checkpoint": "In progress",
-    "blocked": "Blocked",
-    "failed": "Failed",
-    "finding": "Open finding",
-    "reported": "Agent reported",
-    "resolved": "Resolved",
-    "mostly_done": "Mostly done",
-    "handed_off": "Handed off",
-    "ended_open": "Ended open",
-    "inactive": "Inactive",
-    "finding_superseded": "Superseded",
-    "finding_resolved_by_user": "Resolved (reviewed)",
-    "blocker_resolved_by_user": "Resolved (reviewed)",
-}
+    open_now = summary.get("attention_open")
+    if open_now is None and isinstance(summary.get("attention"), dict):
+        open_now = summary["attention"].get("open")
+    return decision_group(decision.get("key"), open_now)
 
 
-def decision_label(key: str | None) -> str:
-    key = str(key or "")
-    return _DECISION_LABEL.get(key, key.replace("_", " ").capitalize() or "—")
+def attention_rank(summary: dict) -> tuple[int, float]:
+    """The ONE sort key every TUI surface uses for the queue, straight from the
+    reducer: its ``attention_order`` class (0 failed checks and steps, 1
+    blockers, 2 checks that could not run) then most recent. Stated once as
+    ``ATTENTION_SORT_TEXT``; no surface adds a rule of its own."""
 
+    order = summary.get("attention_order")
+    rank = int(order) if isinstance(order, int) and not isinstance(order, bool) else 99
+    return (rank, -float(summary.get("last_activity_at") or 0.0))
+
+
+def attention_rows(summaries: list[dict]) -> list[dict]:
+    """The Attention queue for a list of receipt summaries: the tasks whose
+    payload group IS the queue, in the reducer's order. The Work tabs and the
+    Dashboard's shift brief read the same two functions, so the terminal can
+    never show a queue the app and ``/v1/attention`` disagree with."""
+
+    return sorted((s for s in summaries if task_bucket(s) == "attention"), key=attention_rank)
 
 def _decision_colors(key: str, pal: dict[str, str]) -> tuple[str, str | None]:
     if key in _DANGER:
@@ -267,18 +273,27 @@ def decision_badge(key: str | None, pal: dict[str, str], label: str | None = Non
     return f"[{fg} on {wash}] {text} [/]"
 
 
-def check_mark(result: str | None, pal: dict[str, str]) -> tuple[str, str]:
-    """(glyph, colour) for a machine-check result — the same vocabulary the GUI
-    checks list uses: ✓ passed / ✗ failed·error / » skipped / • other."""
+def check_mark(
+    result: str | None,
+    pal: dict[str, str],
+    tier_key: str | None = None,
+) -> tuple[str, str]:
+    """(glyph, colour) for a machine-check result, keyed on the shared result
+    tone: ✓ pass / ✗ failure (coral, a recorded failure only) / − not run
+    (muted: could not run, skipped, or no result recorded).
 
-    r = str(result or "").lower()
-    if r == "passed":
-        return "✓", pal["green"]
-    if r in ("failed", "error"):
+    A PASS wears the tier its source can support — green ONLY for externally
+    verified, ink for an unknown or unattributed source (Swift
+    ``CheckResultTone.tint(pass:)``). Green is the live connection and the
+    externally-verified tier; a check passing under its own agent's word is not
+    either, so it never turns the terminal green."""
+
+    tone = check_result_tone(result)
+    if tone == "pass":
+        return "✓", pal[_TIER.get(str(tier_key or ""), ("", "ink"))[1]]
+    if tone == "failure":
         return "✗", pal["coral"]
-    if r == "skipped":
-        return "»", pal["amber"]
-    return "•", pal["dim"]
+    return "−", pal["dim"]
 
 
 def meter(fraction: float, width: int, pal: dict[str, str]) -> str:
@@ -322,46 +337,50 @@ def _two_edge(left: str, right: str, width: int) -> str:
     return f"{left}{' ' * pad}{right}"
 
 
-# ---- cost grammar (v10 rule 5: every cost carries its basis) --------------- #
-
-_REPORTED_BASES = {"client_reported", "provider_billed"}
-
-
-def cost_display(
-    usd: float | None,
-    *,
-    complete: bool | None,
-    confidence: str | None,
-    known_additive: float | None = None,
-) -> str | None:
-    """The app-wide cost grammar: ``$`` complete+reported, ``≈$`` complete
-    estimate, ``~$`` known-partial subtotal, ``None`` when nothing is priced so
-    the caller names the absence — never a fabricated ``$0``."""
-
-    reported = str(confidence or "") in _REPORTED_BASES
-    if complete and usd is not None:
-        return _money(usd, "$" if reported else "≈$")
-    if known_additive is not None:
-        return _money(known_additive, "~$")
-    if usd is not None:
-        return _money(usd, "≈$")
-    return None
-
-
-def _money(value: float, prefix: str) -> str:
-    return f"{prefix}{float(value):,.2f}"
-
-
 def receipt_cost_text(cost: dict) -> str:
-    """A receipt-summary cost dict → the honest cost string, or a named absence."""
+    """The cost string the PAYLOAD already carries — never re-derived here.
+
+    Every receipt cost object (the detail dimension and each summary row) ships
+    ``display_text`` from the one cost reducer, so the TUI prints it. A bare
+    cube/usage bucket without that field falls back to the shared
+    :func:`agentacct.usage_snapshot.cost_text`, which is the same grammar and —
+    crucially — the same NAMED absence: a bucket with zero rows reads ``no usage
+    recorded``, not ``unpriced``. Deriving it locally here is what let the Work
+    card call a Task with no usage at all "unpriced" while its own receipt said
+    "no usage recorded".
+    """
+
+    shown = str(cost.get("display_text") or "").strip()
+    if shown:
+        return shown
+    return cost_text({**cost, "cost_confidence": cost.get("cost_confidence") or cost.get("cost_basis")})
+
+
+def cost_string_or_absent(
+    usd: Any,
+    *,
+    complete: Any,
+    confidence: Any,
+    known_additive: Any = None,
+) -> str | None:
+    """A worksets/timeline figure in the ONE cost grammar
+    (:func:`agentacct.display_vocabulary.cost_display`), or ``None`` when nothing
+    is priced so the CALLER names the absence — never a fabricated ``$0``.
+
+    The worksets pane and the lane facts card grew their own copy of this
+    grammar; they now read the shared vocabulary instead, so ``$``/``≈$``/``~$``
+    and the named absence can only be spelled in one place.
+    """
 
     shown = cost_display(
-        cost.get("estimated_cost_usd"),
-        complete=cost.get("cost_complete"),
-        confidence=cost.get("cost_confidence") or cost.get("cost_basis"),
-        known_additive=cost.get("known_additive_cost_usd"),
+        usd,
+        complete,
+        confidence,
+        partial_amount=known_additive if known_additive is not None else usd,
     )
-    return shown if shown is not None else "unpriced"
+    if shown["state"] in ("unpriced", "no_usage"):
+        return None
+    return str(shown["display_text"])
 
 
 def abbr_tokens(value: Any) -> str:
@@ -378,23 +397,6 @@ def abbr_tokens(value: Any) -> str:
             trimmed = f"{n / scale:.1f}".rstrip("0").rstrip(".")
             return f"{trimmed}{suffix}"
     return f"{int(n):,}"
-
-
-# Attention-reason kind → the leading reason word the Dashboard's primary card
-# shows (mirrors build_attention_reason's "kind"); provenance source token → a
-# human label for the "recorded via" cell.
-_ATTENTION_REASON_LABEL: dict[str, str] = {
-    "failed_check": "Failed check",
-    "failed_step": "Failed step",
-    "blocker": "Blocked",
-}
-_PROVENANCE_LABEL: dict[str, str] = {
-    "mcp": "MCP record",
-    "client_log": "Client log",
-    "hook": "Client hook",
-    "transcript_scan": "Transcript scan",
-    "none": "—",
-}
 
 
 # ============================================================================ #
@@ -418,7 +420,7 @@ def _auto_import_enabled() -> bool:
 
 def _humanize_ago(ts: Any, now: float) -> str:
     if isinstance(ts, (int, float)) and not isinstance(ts, bool) and ts > 0 and ts <= now:
-        return f"{humanize_seconds(now - ts)} ago"
+        return relative_age_text(now - ts)
     return "—"
 
 
@@ -1216,8 +1218,7 @@ class AgentAcctTUI(App):
             return "loading…"
         ago = _humanize_ago(self._last_refresh_at, time.time())
         dot = f"[{pal['green']}]●[/]"
-        label = "just now" if ago == "0s ago" else ago
-        return f"{dot} Local data · {label}"
+        return f"{dot} Local data · {ago}"
 
 
     # -- refresh (the usage cube; drives the Dashboard signal rail) ---------- #
@@ -1363,24 +1364,27 @@ class AgentAcctTUI(App):
             # live, then keyed by id for the pure parts builder.
             attention_details: dict[str, dict] = {}
             for t in kept:
-                res = build_attention_reason(t, latest_store_activity_at=latest, session_starts=starts)
+                res = build_attention_reason(
+                    t, latest_store_activity_at=latest, session_starts=starts, task_title=_task_title(t)
+                )
                 if res is not None:
                     attention_details[str(t.get("public_task_id"))] = res[1]
-            try:
-                from .ingestion_health import IngestionHealthStore
-
-                ingestion = IngestionHealthStore(self.store_dir).snapshot()
-            except Exception:  # noqa: BLE001
-                ingestion = {}
             # A short by-period token series for the usage sparkline (oldest→newest).
+            events: list[dict] | None = None
             try:
                 events = SentinelService(self.store_dir, create=False).list_all_events()
                 page = build_usage_page(events, days=90)
                 dated = [p for p in page.by_period if p.get("period") != "unknown"]
-                full = [float(p.get("total_tokens_including_cached") or 0) for p in dated]
+                full = [float(p.get("fresh_tokens") or 0) for p in dated]
                 series, history_total = full[-14:], sum(full)
             except Exception:  # noqa: BLE001
                 series, history_total = [], 0.0
+            try:
+                from .ingestion_health import store_ingestion_snapshot
+
+                ingestion = store_ingestion_snapshot(self.store_dir, events=events)
+            except Exception:  # noqa: BLE001
+                ingestion = {}
         except Exception as exc:  # noqa: BLE001
             if not worker.is_cancelled:
                 self.call_from_thread(self._dashboard_error, str(exc))
@@ -1684,19 +1688,18 @@ class AgentAcctTUI(App):
             rows.sort(key=lambda s: float((s.get("cost") or {}).get("estimated_cost_usd") or 0.0), reverse=True)
         elif self._work_sort == "latest":
             rows.sort(key=lambda s: float(s.get("last_activity_at") or 0.0), reverse=True)
-        else:  # attention: tasks needing the user first, then recency
-            def _rank(s: dict) -> tuple[int, float]:
-                key = str((s.get("decision_status") or {}).get("key"))
-                cf = int((s.get("evidence_strength") or {}).get("checks_failed") or 0)
-                return (0 if needs_attention(key, cf) else 1, -float(s.get("last_activity_at") or 0.0))
-            rows.sort(key=_rank)
+        else:  # attention: the reducer's attention order, then recency
+            rows.sort(key=attention_rank)
         return rows
 
     def _render_work_head(self) -> None:
         pal = self.pal
         n = len(self._work_summaries)
+        # "Sessions" is the pane's renamed title (_PANES): the receipts collection.
+        # "Work" now belongs to the worksets pane, so this head must not claim it.
         text = (f"{caps('Sessions', pal)} [{pal['dim']}]· {n}[/]   "
-                f"[{pal['dim']}]sort {self._work_sort}[/]")
+                f"[{pal['dim']}]sort {self._work_sort}"
+                + (f" · {ATTENTION_SORT_TEXT}" if self._work_sort == "attention" else "") + "[/]")
         try:
             self.query_one("#work-head", Static).update(text)
         except Exception:  # noqa: BLE001
@@ -2172,9 +2175,9 @@ class AgentAcctTUI(App):
     def _render_sources(self) -> None:
         pal = self.pal
         try:
-            from .ingestion_health import IngestionHealthStore
+            from .ingestion_health import store_ingestion_snapshot
 
-            snapshot = IngestionHealthStore(self.store_dir).snapshot()
+            snapshot = store_ingestion_snapshot(self.store_dir)
         except Exception as exc:  # noqa: BLE001
             snapshot = {"_error": str(exc)}
         parts = _build_sources_parts(snapshot, self.store_dir, pal,
@@ -2405,9 +2408,9 @@ def _workset_cost_text(summary: dict) -> str:
     unpriced = int(summary.get("unpriced_sessions") or 0)
     conf = summary.get("cost_confidence")
     if unpriced > 0 and priced > 0:
-        shown = cost_display(None, complete=False, confidence=conf, known_additive=float(cost))
+        shown = cost_string_or_absent(None, complete=False, confidence=conf, known_additive=float(cost))
     else:
-        shown = cost_display(float(cost), complete=bool(summary.get("cost_complete")), confidence=conf)
+        shown = cost_string_or_absent(float(cost), complete=bool(summary.get("cost_complete")), confidence=conf)
     return shown if shown is not None else "unpriced"
 
 
@@ -2684,14 +2687,17 @@ def _lane_facts(lane: dict, pal: dict[str, str], width: int) -> str:
     head = (f"{_lane_pip(lane.get('status'), pal)} [b {pal['ink']}]{title}[/]  "
             f"[{pal['dim']}]{_escape(_agent_label(lane.get('client')))} · {_escape(str(lane.get('status') or 'observed'))}[/]")
     dur = lane.get("duration_seconds")
-    cost = cost_display(lane.get("estimated_cost_usd"), complete=True, confidence=lane.get("cost_confidence"))
+    cost = cost_string_or_absent(lane.get("estimated_cost_usd"), complete=True, confidence=lane.get("cost_confidence"))
     toks = lane.get("total_tokens")
     checks = lane.get("checks")
     facts = [
         ("duration", humanize_seconds(float(dur)) if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > 0 else "—"),
         ("cost", cost or "unpriced"),
         ("tokens", abbr_tokens(toks) if isinstance(toks, (int, float)) and not isinstance(toks, bool) and toks else "—"),
-        ("tool calls", str(lane.get("tool_calls")) if lane.get("tool_calls") else "—"),
+        # The NOUN is the vocabulary's ("Tool calls"); this row owns only the
+        # casing, so the absence budget can never find a second spelling here.
+        (receipt_field_label("actions").lower(),
+         str(lane.get("tool_calls")) if lane.get("tool_calls") else "—"),
         ("steps", str(lane.get("steps")) if lane.get("steps") else "—"),
         ("checks", f"{checks} · {lane.get('checks_failed') or 0} failed" if checks else "—"),
     ]
@@ -2793,15 +2799,12 @@ def _build_dashboard_parts(
     full_w = max(60, width - 6)     # a full-pane row's inner width
     card_w = max(60, width - 10)     # a bordered card's inner width
     half_w = max(30, width // 2 - 10)  # one hero card's inner width (two share the row)
-    attention = [
-        s for s in summaries
-        if needs_attention(str((s.get("decision_status") or {}).get("key")),
-                           (s.get("evidence_strength") or {}).get("checks_failed"))
-    ]
-    # Lead with the most ACTIONABLE item: one that carries a recorded next step
-    # (a blocker with a remedy) before one that does not (a bare failed check).
-    # Stable, so recency order is preserved within each group.
-    attention.sort(key=lambda s: 0 if (attention_details.get(str(s.get("task_id"))) or {}).get("next_step") else 1)
+    # The queue and its order both come from the payload (``attention_rows``):
+    # the reducer decides what is open and in what order, so the Dashboard's
+    # shift brief, the Work tabs and /v1/attention can never disagree about
+    # which Task leads. A local "most actionable" tweak here would be a second
+    # sort rule beside the one ATTENTION_SORT_TEXT states.
+    attention = attention_rows(summaries)
 
     # head — the shift-brief eyebrow + the headline item (count pinned right).
     if attention:
@@ -2809,7 +2812,7 @@ def _build_dashboard_parts(
         n_rev = len(attention)
         head = f"{caps('Shift brief', pal)}\n" + _two_edge(
             f"[b {pal['ink']}]{_escape(headline)}[/]",
-            f"[{pal['dim']}]{n_rev} review item{'s' if n_rev != 1 else ''}[/]", full_w)
+            f"[{pal['dim']}]{_escape(attention_count_text(n_rev))}[/]", full_w)
     else:
         head = f"{caps('Shift brief', pal)}\n" + _two_edge(
             f"[b {pal['ink']}]All clear[/]",
@@ -2832,9 +2835,9 @@ def _build_dashboard_parts(
         if statement:
             rows.append(f"[{pal['ink']}]{_escape(str(statement))}[/]")
         rows.append("")
-        reason = _ATTENTION_REASON_LABEL.get(str(detail.get("kind")), decision_label(dkey))
+        reason = ATTENTION_REASON_LABELS.get(str(detail.get("kind")), decision_label(dkey))
         observed = _humanize_ago(detail.get("observed_at") or top.get("last_activity_at"), now)
-        prov = _PROVENANCE_LABEL.get(str(detail.get("source")), str(detail.get("source") or "—"))
+        prov = source_label(detail.get("source"))
         rows.append(_kv_grid(
             [("Recorded reason", reason), ("Observed", observed), ("Recorded via", prov)], pal, 16))
         next_step = detail.get("next_step")
@@ -2849,7 +2852,7 @@ def _build_dashboard_parts(
         # Only ↵ (dash_review) is wired; the old " y Copy review brief " chip had no
         # binding or clipboard path, so it is dropped rather than left a dead cue.
         rows.append(f"[{pal['accent']} on {pal['ta']}] ↵ Review evidence [/]  "
-                    f"[{pal['accent']}]View queue →[/]")
+                    f"[{pal['accent']}]{_escape(ATTENTION_OPEN_ACTION)} →[/]")
         attn = "\n".join(rows)
     else:
         attn_title = "PRIMARY ATTENTION"
@@ -2868,8 +2871,10 @@ def _build_dashboard_parts(
     rail_blocks.append(_capacity_block(limits, pal))
     if snap is not None:
         rail_blocks.append(_rail_block(
-            "Usage change", f"Today · {abbr_tokens(_window_total(snap, 'today'))} fresh",
-            "client reported", pal))
+            "Usage change", f"Today · {abbr_tokens(_window_total(snap, 'today'))} fresh tokens",
+            # A basis only beside a priced figure; an absence names itself.
+            cost_basis_caption(_window_totals(snap, "today"), COST_BASIS_NOT_REPORTED)
+            or cost_text(_window_totals(snap, "today")), pal))
     rail_blocks.append(_trust_block(ingestion, pal))
     rail_lines: list[str] = []
     for i, b in enumerate(b for b in rail_blocks if b):
@@ -2920,7 +2925,7 @@ def _build_dashboard_parts(
 
     spark = _two_edge(
         sparkline(series, pal),
-        f"[b {pal['ink']}]{abbr_tokens(history_total)}[/] [{pal['dim']}]total[/]", card_w)
+        f"[b {pal['ink']}]{abbr_tokens(history_total)}[/] [{pal['dim']}]fresh tokens[/]", card_w)
 
     return {
         "head": head,
@@ -2934,6 +2939,11 @@ def _build_dashboard_parts(
 def _coverage_short(ev: dict) -> str:
     """A compact coverage token for the list (the full headline is in the detail)."""
 
+    tile = ev.get("coverage_tile") if isinstance(ev.get("coverage_tile"), dict) else {}
+    if str(tile.get("value") or "").strip():
+        return str(tile["value"])
+    if str(tile.get("absent") or "").strip():
+        return str(tile["absent"])
     if not ev.get("gradeable"):
         return "not gradeable"
     checkable = int(ev.get("checkable_total") or 0)
@@ -2946,17 +2956,18 @@ def _checks_cell(ev: dict, pal: dict[str, str]) -> str:
     total = int(ev.get("checks_total") or 0)
     passed = int(ev.get("checks_passed") or 0)
     failed = int(ev.get("checks_failed") or 0)
+    tally = _escape(str(ev.get("check_tally_text") or "").strip())
     if total == 0:
-        return f"[{pal['dim']}]no check runs[/]"
+        return f"[{pal['dim']}]{tally or 'no checks recorded'}[/]"
     if failed:
-        return f"[{pal['coral']}]{passed}/{total} · {failed} failed[/]"
-    return f"[{pal['green']}]{passed}/{total} passed[/]"
+        return f"[{pal['coral']}]{tally or f'{passed}/{total} · {failed} failed'}[/]"
+    return f"[{pal['green']}]{tally or f'{passed}/{total} passed'}[/]"
 
 
 def _prov_chips(names: list[str] | None, pal: dict[str, str]) -> str:
     if not names:
         return ""
-    return "  " + " ".join(f"[{pal['muted']} on {pal['chip']}] {_escape(str(n))} [/]" for n in names)
+    return "  " + " ".join(f"[{pal['muted']} on {pal['chip']}] {_escape(source_label(n))} [/]" for n in names)
 
 
 def _checks_count(ev: dict, pal: dict[str, str]) -> tuple[str, str]:
@@ -2966,9 +2977,11 @@ def _checks_count(ev: dict, pal: dict[str, str]) -> tuple[str, str]:
     total = int(ev.get("checks_total") or 0)
     passed = int(ev.get("checks_passed") or 0)
     failed = int(ev.get("checks_failed") or 0)
+    tile = ev.get("checks_tile") if isinstance(ev.get("checks_tile"), dict) else {}
+    shown = str(tile.get("value") or "").strip()
     if total == 0:
-        return "no runs", pal["dim"]
-    return f"{passed}/{total}", (pal["coral"] if failed else pal["green"])
+        return shown or "no runs", pal["dim"]
+    return shown or f"{passed}/{total}", (pal["coral"] if failed else pal["green"])
 
 
 def _work_row_cells(s: dict, pal: dict[str, str], tcol: int) -> tuple[list[Any], str]:
@@ -3052,8 +3065,9 @@ def _recent_table(rows: list[tuple[str, int, str, int, str, int, str]], pal: dic
     def head_cell(text: str, target: int) -> str:
         return f"[{pal['dim']}]{_escape(text.upper())}[/]" + " " * max(2, target - _cell_len(text.upper()))
 
-    header = (head_cell("Task", tcol) + head_cell("Outcome", ocol)
-              + head_cell("Evidence", ecol) + f"[{pal['dim']}]{'COST':>{max(4, tw - tcol - ocol - ecol)}}[/]")
+    header = (head_cell(receipt_field_label("task"), tcol) + head_cell(receipt_field_label("decision"), ocol)
+              + head_cell(receipt_field_label("coverage"), ecol)
+              + f"[{pal['dim']}]{receipt_field_label('cost').upper():>{max(4, tw - tcol - ocol - ecol)}}[/]")
     out = [header, f"[{pal['line']}]{'─' * tw}[/]"]
     for tmarkup, tvis, badge, bvis, ev, evis, cost in rows:
         # The TASK cell is padded to EXACTLY tcol (titles are pre-truncated to fit),
@@ -3154,6 +3168,8 @@ def _build_receipt_parts(receipt: dict, pal: dict[str, str], width: int = 150) -
     outcome with the two KPI blocks, a four-cell summary strip, and the dimension
     ledger with provenance chips + tool-by-type bars). Replaces the text wall."""
 
+    from .receipt_markdown import receipt_attention_lines, receipt_lead
+
     # The detail pane is the right ~54% of the split; a card inside it has border
     # + padding. This is the usable inner width for rules and wrapping.
     dw = max(46, int(width * 0.54) - 10)
@@ -3183,40 +3199,57 @@ def _build_receipt_parts(receipt: dict, pal: dict[str, str], width: int = 150) -
     if meta:
         head_lines.append(f"[{pal['dim']}]{_escape(meta)}[/]")
 
-    # outcome card — statement + the two KPI blocks + coverage ledger.
+    # outcome card — statement + the two KPI blocks + the attention block. Every
+    # label and sentence is the payload's own (the same strings the app, the CLI
+    # and --markdown print), via the shared receipt text helpers.
+    lead = receipt_lead(receipt)
+    labels = lead["field_labels"]
     out: list[str] = []
-    statement = decision.get("statement")
-    if statement:
-        tail = f" [{pal['green']}]— {_escape(str(decision.get('asserted_by')))}[/]" if decision.get("asserted_by") else ""
-        out.append(f"[{pal['ink']}]{_escape(str(statement))}[/]{tail}")
+    if lead["decision_statement"]:
+        tail = f" [{pal['muted']}]— asserted by {_escape(lead['asserted_by_phrase'])}[/]"
+        out.append(f"[{pal['ink']}]{_escape(lead['decision_statement'])}[/]{tail}")
+    for line in (lead["gap_line"], lead["coverage_ledger"], lead["outcome_summary_line"], lead["next_step_line"]):
+        if line:
+            out.extend(f"[{pal['muted']}]{_escape(x)}[/]" for x in _wrap_words(line, dw))
+    if out:
         out.append(f"[{pal['line']}]{'─' * dw}[/]")  # rule between the statement and the KPI blocks
-    if evidence.get("gradeable"):
-        claims_val = f"{int(evidence.get('checked_total') or 0)} of {int(evidence.get('checkable_total') or 0)}"
-    else:
-        claims_val = "not gradeable"
-    ctot = int(ev_dim.get("checks_total") or 0)
-    cfail = int(ev_dim.get("checks_failed") or 0)
-    checks_val = f"{int(ev_dim.get('checks_passed') or 0)} of {ctot}" if ctot else "no runs"
-    checks_sub = f"{cfail} failed" if cfail else ("check runs passed" if ctot else "no check runs")
+    coverage_tile = evidence.get("coverage_tile") or {}
+    checks_tile = ev_dim.get("checks_tile") or evidence.get("checks_tile") or {}
     out.append(_kpi_cells(
-        [("Claims supported", claims_val, "claims supported"), ("Check runs", checks_val, checks_sub)],
+        [
+            (labels["coverage"],
+             str(coverage_tile.get("value") or coverage_tile.get("absent") or lead["coverage_hero"]),
+             str(coverage_tile.get("qualifier") or "")),
+            (labels["checks"],
+             str(checks_tile.get("value") or checks_tile.get("absent") or ev_dim.get("check_tally_text") or ""),
+             str(checks_tile.get("qualifier") or "")),
+        ],
         pal, 26))
-    # (The coverage-ledger one-liner is intentionally omitted here to keep the
-    # detail short enough that the tool-by-type bars + footer stay above the fold;
-    # the same information lives in the CLAIMS SUPPORTED block's sub-label.)
+    attention_lines = receipt_attention_lines(receipt)
+    if attention_lines:
+        reason, label, *rest = attention_lines
+        out.append(f"[{pal['line']}]{'─' * dw}[/]")
+        out.append(f"[b {pal['ink']}]{_escape(reason)}[/]" + (f" [{pal['muted']}]· {_escape(label)}[/]" if label else ""))
+        for line in rest:
+            out.extend(f"  [{pal['muted']}]{_escape(x)}[/]" for x in _wrap_words(line, dw - 2))
 
     # summary strip — a four-cell metric row (its own bordered card).
-    tool_total = (sum(int(v or 0) for v in (actions.get("tool_category_counts") or {}).values())
-                  or sum(int(v or 0) for v in (actions.get("tool_name_counts") or {}).values()))
+    # The tool-call tile is the reducer's: a count, or its named absence.
+    actions_tile = actions.get("actions_tile") or {}
+    tool_value = str(actions_tile.get("value") or actions_tile.get("absent") or "not recorded")
     dur = receipt.get("duration_seconds")
-    elapsed = humanize_seconds(dur) if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > 0 else "—"
-    roots = int(actors.get("root_count") or 0)
-    sessions = int(actors.get("session_count") or receipt.get("session_count") or roots or 0)
+    elapsed = humanize_seconds(dur) if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > 0 else "not recorded"
+    boundary = (dims.get("task") or {}).get("boundary") or {}
+    raw_sessions = boundary.get("session_count")
+    sessions = raw_sessions if isinstance(raw_sessions, int) and not isinstance(raw_sessions, bool) else None
+    roots = int(boundary.get("root_count") or 0)
     summary = _kpi_cells([
-        ("Actions", str(tool_total), "tool calls"),
-        ("Est. cost", receipt_cost_text(cost), "estimate"),
+        (labels["actions"], tool_value, str(actions_tile.get("qualifier") or "")),
+        (labels["cost"], str(cost.get("display_text") or receipt_cost_text(cost)),
+         "" if str(cost.get("state") or "") in {"no_usage", "unpriced"} else str(cost.get("basis_label") or "")),
         ("Elapsed", elapsed, ""),
-        ("Sessions", str(sessions) if sessions else "—", f"{roots} root{'s' if roots != 1 else ''}" if roots else ""),
+        ("Sessions", str(sessions) if sessions else "not recorded",
+         f"{roots} root{'s' if roots != 1 else ''}" if roots else ""),
     ], pal, 15)
 
     # dimensions card — a label-gutter ledger (Task / Actors / Actions+bars /
@@ -3244,17 +3277,20 @@ def _build_receipt_parts(receipt: dict, pal: dict[str, str], width: int = 150) -
         ", ".join(actors.get("models") or []) or None,
         (f"{actors.get('subagent_session_count')} subagents" if actors.get("subagent_session_count") else None),
     ) if p]
-    actor_lines = [f"[{pal['ink']}]{_escape(x)}[/]" for x in _wrap_words(" · ".join(actor_parts) or "—", cw)]
-    ledger_rows.append(("Actors", actor_lines + _chips_line("actors")))
+    actor_lines = [f"[{pal['ink']}]{_escape(x)}[/]"
+                   for x in _wrap_words(" · ".join(actor_parts) or "no agent recorded", cw)]
+    ledger_rows.append((labels["agents"], actor_lines + _chips_line("actors")))
 
     # Prefer the specific tool NAMES (Read / Edit / Bash / Grep — the artifact's
     # breakdown); fall back to the coarse categories when names were not captured.
     bar_counts = (actions.get("tool_name_counts") or {}) or (actions.get("tool_category_counts") or {})
     if bar_counts:
-        act_lines = [f"[{pal['ink']}]{tool_total} tool calls captured[/][{pal['dim']}] · by type · shared scale[/]"]
+        synopsis = actions.get("actions_synopsis") or {}
+        headline = str(synopsis.get("headline") or tool_value)
+        act_lines = [f"[{pal['ink']}]{_escape(headline)}[/][{pal['dim']}] · by type · shared scale[/]"]
         act_lines += _chips_line("actions")
         act_lines += _tool_bars(bar_counts, pal).split("\n")
-        ledger_rows.append(("Actions", act_lines))
+        ledger_rows.append((labels["actions"], act_lines))
 
     # (OUTCOME is intentionally omitted here — it duplicates the CURRENT OUTCOME
     # hero card above; dropping it keeps the ledger short enough for the footer.)
@@ -3265,10 +3301,11 @@ def _build_receipt_parts(receipt: dict, pal: dict[str, str], width: int = 150) -
         dl.append(f"[{pal['line']}]{'─' * dw}[/]")
         dl.append(f"[{pal['amber']}]{caps(f'Gaps · {len(gaps)} — what could not be proven', pal)}[/]")
         for gap in gaps[:6]:
-            dl.append(f"  [{pal['dim']}]\\[{_escape(str(gap.get('dimension')))}][/] [{pal['muted']}]{_escape(str(gap.get('reason')))}[/]")
+            gap_label = str(gap.get("dimension_label") or receipt_field_label(gap.get("dimension")))
+            dl.append(f"  [{pal['dim']}]{_escape(gap_label)}[/] [{pal['muted']}]{_escape(str(gap.get('reason')))}[/]")
 
     # Footer affordance: drill into the sessions & steps behind this receipt.
-    n_sessions = int(actors.get("session_count") or receipt.get("session_count") or 0)
+    n_sessions = sessions or 0
     n_checks = int(ev_dim.get("checks_total") or 0)
     bits = []
     if n_sessions:
@@ -3291,8 +3328,8 @@ def _check_rows(check: dict, pal: dict[str, str], now: float) -> list[str]:
     """One check as a two-line entry: a result-tagged headline (glyph + Result +
     kind + summary) and a dim meta line (exit code · source · age · provenance)."""
 
-    glyph, col = check_mark(check.get("result"), pal)
-    rlabel = str(check.get("result") or "check").capitalize()
+    glyph, col = check_mark(check.get("result"), pal, source_tier_key(check.get("source")))
+    rlabel = str(check.get("result_label") or check_result_label(check.get("result")))
     kind = str(check.get("kind") or "").capitalize()
     text = str(check.get("summary") or check.get("name") or "recorded check")
     head = (f"[{col}]{glyph} {rlabel}[/] [{pal['muted']}]{_escape(kind)}[/]  "
@@ -3301,17 +3338,16 @@ def _check_rows(check: dict, pal: dict[str, str], now: float) -> list[str]:
     code = check.get("exit_code")
     if code is not None:
         meta.append(f"exit {int(code)}")
-    src = _PROVENANCE_LABEL.get(str(check.get("source")), str(check.get("source") or ""))
-    if src and src != "—":
-        meta.append(src)
+    if check.get("source"):
+        meta.append(source_label(check.get("source")))
     ago = _humanize_ago(check.get("at"), now)
     if ago != "—":
         meta.append(ago)
     line2 = f"  [{pal['dim']}]{_escape(' · '.join(meta) or 'no metadata')}[/]"
     if check.get("artifact_ref"):
         line2 += f"  [{pal['muted']} on {pal['chip']}] {_escape(str(check['artifact_ref']))} [/]"
-    elif check.get("command_redacted"):
-        line2 += f"  [{pal['dim']}]· command redacted[/]"
+    elif check.get("command_state_text"):
+        line2 += f"  [{pal['dim']}]· {_escape(str(check['command_state_text']))}[/]"
     return [head, line2]
 
 
@@ -3392,19 +3428,15 @@ def _build_steps_parts(receipt: dict, checks: list[dict], pal: dict[str, str], w
     def _cap(text: str, color: str) -> str:
         return f"[{color}]{_escape(text.upper())}[/]"
 
-    attn = [c for c in checks if str(c.get("result")) in ("failed", "error")]
-    other = [c for c in checks if str(c.get("result")) not in ("failed", "error")]
-    passed = sum(1 for c in checks if str(c.get("result")) == "passed")
-    skipped = sum(1 for c in checks if str(c.get("result")) == "skipped")
+    attn = [c for c in checks if check_result_tone(c.get("result")) == "failure"]
+    other = [c for c in checks if check_result_tone(c.get("result")) != "failure"]
 
     body: list[str] = []
     # Session summary.
     body.append(f"{pip(ekey, pal)} [b {pal['ink']}]{_escape(title)}[/]  {decision_badge(dkey, pal)}")
-    counts = " · ".join(p for p in (
-        f"{passed} passed" if passed else "",
-        f"{len(attn)} failed" if attn else "",
-        f"{skipped} skipped" if skipped else "",
-    ) if p) or "no checks recorded"
+    # The reducer's one tally (named remainders: could not run, superseded,
+    # earlier runs failed), never a local recount.
+    counts = str(evidence.get("check_tally_text") or "no checks recorded")
     updated = _humanize_ago(receipt.get("last_activity_at"), now)
     tail = f" · updated {updated}" if updated != "—" else ""
     body.append(f"[{pal['dim']}]{_escape(counts)} · {_escape(decision_label(dkey).lower())}{tail}[/]")
@@ -3499,22 +3531,15 @@ def _order_windows(windows: Any) -> list:
     return sorted(list(windows or []), key=lambda w: 0 if _is_weekly(w) else 1)
 
 
-def _window_label(window: Any) -> tuple[str, str]:
-    """(name, compact-kind) for a capacity window — ``Weekly 7d`` / ``5-hour 5h``."""
-    lab = str(getattr(window, "label", ""))
-    if _is_weekly(window):
-        return "Weekly", "7d"
-    low = lab.lower()
-    if "5" in low and ("hour" in low or "h" in low):
-        return "5-hour", "5h"
-    return lab, ""
+def _window_label(window: Any) -> str:
+    """The shared display name for a capacity window (``7-day limit`` /
+    ``5-hour limit``), keyed on the window kind."""
+    kind = str(getattr(window, "kind", ""))
+    return WINDOW_LABELS.get(kind, str(getattr(window, "label", "")) or "limit window")
 
 
 def _reset_text(resets_at: Any, now: float, pal: dict[str, str]) -> str:
-    if isinstance(resets_at, (int, float)) and not isinstance(resets_at, bool) and resets_at > 0:
-        delta = resets_at - now
-        return f"[{pal['dim']}]· resets in {humanize_seconds(delta)}[/]" if delta > 0 else f"[{pal['dim']}]· resets now[/]"
-    return f"[{pal['dim']}]· reset time not reported[/]"
+    return f"[{pal['dim']}]· {_escape(reset_text(resets_at, now))}[/]"
 
 
 def _build_usage_parts(
@@ -3527,13 +3552,12 @@ def _build_usage_parts(
 ) -> dict[str, str]:
     now = time.time()
     cap_w = max(60, width - 10)
-    head = f"[b {pal['ink']}]Usage & limits[/]   [{pal['dim']}]provider-reported capacity · locally recorded use[/]"
+    head = f"[b {pal['ink']}]Usage & limits[/]   [{pal['dim']}]provider-reported capacity · locally recorded usage[/]"
     if snap is not None:
         today_cost = cost_text(_window_totals(snap, "today"))
         head += (f"\n{caps('Today · all agents', pal)}  [b {pal['ink']}]{abbr_tokens(_window_total(snap, 'today'))}[/] "
                  f"[{pal['dim']}]fresh tokens[/]")
-        if today_cost != "—":
-            head += f"   [{pal['ink']}]{_escape(today_cost)}[/] [{pal['dim']}]est. this period[/]"
+        head += f"   [{pal['ink']}]{_escape(today_cost)}[/] [{pal['dim']}]this period[/]"
 
     by_client = {str(r.get("client")): r for r in (snap.usage.by_client if snap else [])}
 
@@ -3543,7 +3567,8 @@ def _build_usage_parts(
         if not rec:
             return []
         return [
-            f"[b {pal['ink']}]{abbr_tokens(rec.get('total_tokens_including_cached'))}[/] [{pal['dim']}]fresh[/]",
+            f"[b {pal['ink']}]{abbr_tokens(rec.get('fresh_tokens'))}[/] [{pal['dim']}]fresh tokens[/]",
+            f"[{pal['dim']}]{_cache_read_text(rec)} cache-read tokens[/]",
             f"[{pal['dim']}]{format_tokens(rec.get('sessions'))} sessions[/]",
             f"[{pal['dim']}]{_escape(cost_text(rec))}[/]",
         ]
@@ -3557,7 +3582,7 @@ def _build_usage_parts(
     else:
         cap_lines.append(_two_edge(
             f"[{pal['dim']}]{'CLIENT':<14}PROVIDER WINDOW[/]",
-            f"[{pal['dim']}]RECORDED USE · {label.upper()}[/]", cap_w))
+            f"[{pal['dim']}]{RECORDED_USAGE_TITLE.upper()} · {label.upper()}[/]", cap_w))
         cap_lines.append("")
 
     def _emit(left_rows: list[str], rec: dict | None) -> None:
@@ -3577,8 +3602,7 @@ def _build_usage_parts(
         for wi, window in enumerate(_order_windows(limit.windows)):
             if wi:  # a breath between a client's stacked meters (artifact rhythm)
                 left_rows.append("")
-            disp, kind = _window_label(window)
-            wlabel = f"[{pal['muted']}]{disp:<7}[/][{pal['dim']}]{kind:<3}[/]"
+            wlabel = f"[{pal['muted']}]{_escape(_window_label(window)):<13}[/]"
             used = window.used_percent
             if used is None:
                 left_rows.append(f"  {wlabel} [{pal['dim']}]not reported[/]")
@@ -3586,7 +3610,7 @@ def _build_usage_parts(
             # Two rows per meter (the artifact's rhythm): the bar on the label row,
             # then the "% used · reset" caption on its own indented line below.
             left_rows.append(f"  {wlabel} {meter(used / 100.0, 26, pal)}")
-            left_rows.append(f"            [{pal['accent']}]{used:.0f}% used[/]  "
+            left_rows.append(f"                [{pal['accent']}]{used:.0f}% used[/]  "
                              f"{_reset_text(window.resets_at, now, pal)}")
         _emit(left_rows, by_client.get(client))
         cap_lines.extend(["", ""])  # two-line gutter between clients (artifact rhythm)
@@ -3606,13 +3630,16 @@ def _build_usage_parts(
     )
     period_days = len([p for p in (page.by_period or []) if str(p.get("period")) != "unknown"])
     rec_cells = [
-        ("Tokens", abbr_tokens(totals.get("total_tokens_including_cached")), "fresh · client-reported"),
+        ("Fresh tokens", abbr_tokens(totals.get("fresh_tokens")), "input + output"),
+        ("Cache reads", _cache_read_text(totals), "cache-read tokens"),
         ("Sessions", format_tokens(totals.get("sessions")), "with recorded usage"),
-        ("Cost", cost_text(totals), "cost basis varies"),
     ]
     if period_days:
         rec_cells.append(("Active days", f"{active_days}/{period_days}", "with recorded usage"))
-    rec_body = _kpi_cells(rec_cells, pal, 16)
+    # Cost last: its basis label is the longest sub-label and must not push a
+    # following column out of alignment.
+    rec_cells.append(("Cost", cost_text(totals), cost_basis_caption(totals, COST_BASIS_NOT_REPORTED)))
+    rec_body = _kpi_cells(rec_cells, pal, 20)
     return {
         "head": head,
         "cap_title": "CURRENT CAPACITY", "cap": "\n".join(cap_lines).rstrip("\n") or f"[{pal['dim']}]—[/]",
@@ -3648,19 +3675,21 @@ def _source_detail(s: dict, watcher_running: bool) -> str:
 
 
 def _source_lozenge(s: dict, running: bool, pal: dict[str, str]) -> str:
+    """The per-source lozenge: the payload's ``state_title`` (the shared source
+    copy), tinted by the live-fact rule — green only for a reporting source."""
+
+    from .ingestion_health import source_state_copy
+
     state = str(s.get("state") or "unknown")
-    parsed = int(s.get("parsed") or 0)
-    if state == "healthy" and running and parsed > 0:
-        return _loz("Reporting", pal["green"], pal["tg"], "●")
-    if state == "healthy" and running:
-        return _loz("Watching · no data yet", pal["muted"], pal["tn"], "○")
-    if state == "healthy":
-        return _loz("Idle", pal["muted"], pal["tn"], "○")
+    title = str(s.get("state_title") or source_state_copy(s, watcher_running=running)["state_title"])
+    if state == "healthy" and running and int(s.get("parsed") or 0) > 0:
+        return _loz(title, pal["green"], pal["tg"], "●")
     if state == "degraded":
-        return _loz("Degraded", pal["amber"], pal["tm"], "○")
-    if state == "pending":
-        return _loz("Pending", pal["muted"], pal["tn"], "○")
-    return _loz(state.capitalize(), pal["muted"], pal["tn"], "○")
+        return _loz(title, pal["amber"], pal["tm"], "○")
+    # Every remaining state (pending, unknown, one this version does not name)
+    # still gets its NAMED title from the shared source copy — never a raw
+    # ``state.capitalize()``, which would print an unnamed absence.
+    return _loz(title, pal["muted"], pal["tn"], "○")
 
 
 def _overall_lozenge(state: str, running: bool, pal: dict[str, str]) -> str:
@@ -3689,35 +3718,35 @@ def _issue_severity_color(sev: str, pal: dict[str, str]) -> str:
 
 
 def _watcher_lozenge(watcher: dict, pal: dict[str, str]) -> str:
+    from .ingestion_health import watcher_state_copy
+
     state = str(watcher.get("state") or "")
+    title = str(watcher.get("state_title") or watcher_state_copy(watcher)["state_title"])
     if state == "running":
-        return _loz("Running", pal["green"], pal["tg"], "●")
+        return _loz(title, pal["green"], pal["tg"], "●")
     if state == "stale":
-        return _loz("Stale", pal["amber"], pal["tm"], "○")
+        return _loz(title, pal["amber"], pal["tm"], "○")
     if state == "stopped":
-        return _loz("Stopped", pal["coral"], pal["tc"], "○")
-    if state == "not_configured":
-        return _loz("Not configured", pal["muted"], pal["tn"], "○")
-    return _loz("Unknown", pal["muted"], pal["tn"], "○")
+        return _loz(title, pal["coral"], pal["tc"], "○")
+    return _loz(title, pal["muted"], pal["tn"], "○")
 
 
 def _watcher_detail(watcher: dict) -> str:
+    """The watcher's shared state sentence plus its recorded heartbeat and
+    cadence (facts, not vocabulary)."""
+
+    from .ingestion_health import watcher_state_copy
+
     if not watcher:
         return "The daemon reported no watcher block."
     heartbeat = _humanize_ago(watcher.get("heartbeat_at"), time.time())
     hb = f"last heartbeat {heartbeat}" if heartbeat != "—" else "no heartbeat recorded"
     cadence = watcher.get("interval_seconds")
     cad = f" · scans every {int(cadence)}s" if cadence else ""
-    state = str(watcher.get("state") or "")
-    if state == "running":
-        return f"The importer keeps the store current in the background — {hb}{cad}"
-    if state == "stale":
-        return f"The importer's heartbeat is overdue — {hb}{cad}"
-    if state == "stopped":
-        return f"Importer stopped — {hb}. Start it with `agentacct start`."
-    if state == "not_configured":
-        return "No continuous sync configured — imports happen only on manual scans."
-    return hb
+    detail = str(watcher.get("state_detail") or watcher_state_copy(watcher)["state_detail"])
+    if str(watcher.get("state") or "") == "not_configured":
+        return detail
+    return f"{detail} {hb}{cad}"
 
 
 def _build_sources_parts(snapshot: dict, store_dir: Any, pal: dict[str, str], width: int = 150) -> dict[str, str]:
@@ -3741,7 +3770,14 @@ def _build_sources_parts(snapshot: dict, store_dir: Any, pal: dict[str, str], wi
     running = str(watcher.get("state") or "") == "running"
     sources = sorted(snapshot.get("sources") or [], key=lambda s: str(s.get("source")))
 
-    conn: list[str] = []
+    from .ingestion_health import ingestion_state_copy
+
+    copy = ingestion_state_copy(snapshot)
+    overall_title = str(snapshot.get("state_title") or copy["state_title"])
+    overall_detail = str(snapshot.get("state_detail") or copy["state_detail"])
+    conn: list[str] = [
+        f"[b {pal['ink']}]{_escape(overall_title)}[/]  [{pal['dim']}]{_escape(overall_detail)}[/]",
+    ]
     if not sources:
         conn.append(f"[{pal['muted']}]No import sources configured — run `agentacct onboard` to wire your agents.[/]")
     for s in sources:
@@ -3816,25 +3852,25 @@ def _sources_local_markup(store_dir: Any, pal: dict[str, str], width: int = 74) 
 
 
 def _capacity_block(limits: list[ClientLimit], pal: dict[str, str]) -> str:
-    """The headroom rail block — prefer a weekly (7-day) window, the GUI's choice,
-    since it is the meaningful subscription budget; fall back to any window."""
+    """The capacity rail block: the ONE headline window every glance surface
+    leads with (:func:`headline_limit_choice` — the most constrained live
+    reading), worded ``99% used`` like the app."""
 
     now = time.time()
-    fresh = [limit for limit in limits if not limit_is_stale(limit, now)]
-
-    def _windows_by_preference(limit: ClientLimit):
-        weekly = [w for w in limit.windows if "7" in str(w.label) or "week" in str(w.label).lower()]
-        return weekly + [w for w in limit.windows if w not in weekly]
-
-    for limit in fresh:
-        for window in _windows_by_preference(limit):
-            used = window.used_percent
-            if used is not None:
-                headroom = max(0.0, 100.0 - used)
-                return _rail_block(
-                    "Capacity", f"{_escape(str(limit.client))} · {headroom:.0f}% headroom",
-                    f"{used:.0f}% of {_escape(str(window.label))} · provider reported", pal)
-    return _rail_block("Capacity", "no limit reported", "run `agentacct usage watch`", pal)
+    choice = headline_limit_choice(
+        (
+            ((limit, window), limit_is_stale(limit, now), window.used_percent, window.window_minutes, window.resets_at)
+            for limit in limits
+            for window in limit.windows
+        ),
+        now,
+    )
+    if choice is not None:
+        limit, window = choice
+        return _rail_block(
+            "Capacity", f"{_escape(str(limit.client))} · {_escape(limit_used_text(window.used_percent))}",
+            f"{_escape(str(window.label))} · provider reported · {_escape(data_age_text(limit.captured_at, now))}", pal)
+    return _rail_block("Capacity", "no live limit reported", "run `agentacct usage watch`", pal)
 
 
 def _trust_block(ingestion: dict, pal: dict[str, str]) -> str:
@@ -3843,7 +3879,11 @@ def _trust_block(ingestion: dict, pal: dict[str, str]) -> str:
     running = str(watcher.get("state") or "") == "running"
     sources = (ingestion or {}).get("sources") or []
     last = max((float(s.get("last_success_at") or 0) for s in sources), default=0.0)
-    ingest_sub = f"last successful ingest {_humanize_ago(last, time.time())}" if last else "no ingest recorded yet"
+    ingest_sub = (
+        f"last successful ingest {_humanize_ago(last, time.time())}"
+        if last
+        else _escape(str((ingestion or {}).get("state_detail") or "no ingest recorded yet"))
+    )
     if state == "healthy" and running:
         return _rail_block("Evidence trust", "Sources healthy", ingest_sub, pal, label_color=pal["green"])
     if state == "healthy":
@@ -3852,14 +3892,26 @@ def _trust_block(ingestion: dict, pal: dict[str, str]) -> str:
         return _rail_block("Evidence trust", "Sources degraded", ingest_sub, pal, label_color=pal["amber"])
     if not ingestion:
         return _rail_block("Evidence trust", "unavailable", "source health not reported", pal)
-    return _rail_block("Evidence trust", state or "unknown", ingest_sub, pal)
+    # Never a bare state key as the title: the reducer's state copy names it.
+    title = str(ingestion.get("state_title") or "Source status unavailable")
+    return _rail_block("Evidence trust", title, ingest_sub, pal)
 
 
 def _window_total(snap: LiveSnapshot, label: str) -> Any:
+    """A window's headline measure: fresh tokens (input + output), the same
+    measure the app and ``agentacct now`` lead with. Cache reads are named
+    separately wherever they are shown."""
     for window in snap.usage.windows:
         if str(window.label) == label:
-            return window.totals.get("total_tokens_including_cached")
+            return window.totals.get("fresh_tokens")
     return 0
+
+
+def _cache_read_text(bucket: dict) -> str:
+    """Cache-read tokens, or ``not reported`` when no row reported the counter."""
+    if bucket.get("cache_read_reporting") in {"not_reported", "unknown"}:
+        return "not reported"
+    return abbr_tokens(bucket.get("cache_read_tokens") or 0)
 
 
 def _window_totals(snap: LiveSnapshot, label: str) -> dict:

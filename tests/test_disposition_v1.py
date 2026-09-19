@@ -53,6 +53,7 @@ def _record_failed_check(
                 "command": "pytest -q",
                 "exit_code": 1,
                 "result": "failed",
+                "summary": "assert total == 42 failed: got 41 (one row dropped by the new filter)",
                 "project_dir": "/tmp/project",
             },
         }
@@ -101,6 +102,7 @@ def _record_blocked_section(
                 "identity_scope_state": "explicit",
                 "section_id": section_id,
                 "section_status": "blocked",
+                "files": ["src/agentacct/mcp.py"],
                 "section_title": "Publish the site",
                 "blocker": blocker,
                 "next_step": "ask the user",
@@ -229,8 +231,11 @@ def test_blocker_disposition_refuses_cleared_and_superseded_targets(tmp_path: Pa
                 "identity_scope_state": "explicit",
                 "section_id": "sec-b",
                 "section_status": "blocked",
-                "blocker": "newer blocker",
+                "files": ["src/agentacct/mcp.py"],
+                "next_step": "Re-run the focused suite and close the section",
+                "blocker": "A newer blocker replaced the earlier one for this target.",
                 "kind": "implementation",
+                "section_title": "Fixture section title",
             },
         }
     )

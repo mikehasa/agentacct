@@ -994,6 +994,94 @@ def _finding_event_matches_task_scope(
     return bool(event.get("run_id") and str(event.get("run_id")) in run_ids)
 
 
+def _enforce_semantic_rules(
+    event: dict[str, Any],
+    *,
+    transport: str | None,
+    recorded_section_title: Callable[..., str | None] | None = None,
+    recorded_section_state: Callable[..., dict[str, Any]] | None = None,
+) -> None:
+    """Refuse a semantic record the UI could not render.
+
+    Only agent-authored records are in scope. Imported usage, session
+    observations and finding dispositions are machine-recorded: no agent
+    authored them, a refusal would drop a fact instead of correcting a report,
+    and replaying historical imports through a stricter gate is exactly the
+    behaviour that would silently lose data.
+    """
+    from .semantic_rules import SemanticRecordError, inherited_section_title, validate_semantic_record
+
+    metadata = event.get("metadata")
+    if not isinstance(metadata, dict):
+        return
+    semantic_kind = metadata.get("sentinel_semantic_kind")
+    if semantic_kind not in {"section", "evidence"}:
+        return
+    if metadata.get("semantic_rules_validated"):
+        # The MCP handler already validated this record, and it did so with the
+        # full argument set -- which is strictly more information than the stored
+        # metadata carries (the before/after outcome lane, for instance, proves
+        # reproducibility with arguments that never enter metadata). Re-checking
+        # here would refuse records that already passed the stricter gate.
+        return
+    if transport is not None and transport not in {"mcp", "http", "cli"}:
+        return
+    event_type = str(event.get("event_type") or "")
+    status = str(metadata.get("section_status") or "").strip().lower()
+    if not status and event_type.startswith("section_"):
+        status = event_type.removeprefix("section_")
+    if not status:
+        status = "unknown"
+    if semantic_kind == "section" and recorded_section_title is not None:
+        # A later record of a section inherits its title (semantic_rules
+        # .inherited_section_title), exactly as the MCP lane does, so no lane
+        # makes an agent repeat the title just to close a section.
+        section_id = str(metadata.get("section_id") or "")
+        supplied = metadata.get("section_title") or metadata.get("title")
+        if section_id and (supplied is None or supplied == ""):
+            inherited = inherited_section_title(
+                supplied,
+                recorded_section_title(
+                    section_id=section_id,
+                    client=metadata.get("client") or event.get("source"),
+                    session_scope=metadata.get("client_session_id") or metadata.get("client_transcript_id"),
+                ),
+            )
+            if inherited is not None:
+                metadata["section_title"] = inherited
+                metadata["section_title_inherited"] = True
+    # The same three sticky fields the MCP lane resolves, so the HTTP and CLI
+    # lanes cannot refuse a section the MCP lane would accept (or accept one it
+    # would refuse). `kind` is written back -- it describes the section and a
+    # terminal report that omits it must not re-label the step "unknown";
+    # `files` are NOT, because a status report must not claim paths it did not
+    # send, so they travel as a validation-only flag.
+    validation_extra: dict[str, Any] = {}
+    if semantic_kind == "section" and recorded_section_state is not None:
+        section_id = str(metadata.get("section_id") or "")
+        if section_id:
+            try:
+                state = recorded_section_state(
+                    section_id=section_id,
+                    client=metadata.get("client") or event.get("source"),
+                    session_scope=metadata.get("client_session_id") or metadata.get("client_transcript_id"),
+                )
+            except Exception:  # noqa: BLE001 - inheritance is a convenience, never a write failure
+                state = {}
+            if not metadata.get("kind") and state.get("kind"):
+                metadata["kind"] = state["kind"]
+                metadata["kind_inherited"] = True
+            validation_extra["files_recorded_earlier"] = bool(state.get("has_files"))
+    try:
+        validate_semantic_record(
+            semantic_kind=semantic_kind,
+            status=status,
+            fields={**metadata, **validation_extra, "source": event.get("source")},
+        )
+    except SemanticRecordError as exc:
+        raise ValueError(str(exc)) from exc
+
+
 class SentinelService:
     """Core local service shared by CLI, HTTP API, sidecar, and future MCP tools."""
 
@@ -1431,6 +1519,17 @@ class SentinelService:
         # Worksets share the same forgery surface: only record_workset_action
         # may stamp the reserved contract, so strip any generic caller's stamp.
         event = strip_workset_provenance(event)
+        # Quality gate for agent-authored semantic records, applied once for
+        # EVERY lane (MCP, HTTP, CLI) rather than in each surface. The MCP tool
+        # handlers call the same rules earlier so a refusal reaches the agent as
+        # a JSON-RPC error; this is what stops the HTTP and CLI lanes from
+        # storing what the MCP lane would refuse (see RULES.md R10).
+        _enforce_semantic_rules(
+            event,
+            transport=transport,
+            recorded_section_title=self.recorded_section_title,
+            recorded_section_state=self.recorded_section_state,
+        )
         metadata = event.get("metadata")
         idempotency_key = metadata.get("idempotency_key") if isinstance(metadata, dict) else None
         with self._events_write_lock():
@@ -2864,6 +2963,23 @@ class SentinelService:
         events = self._read_events_file_order(run_id=run_id)
         events.sort(key=lambda item: _sortable_created_at(item), reverse=True)
         return events[:limit]
+
+    def recorded_section_title(self, *, section_id: str, client: Any, session_scope: Any) -> str | None:
+        """The latest readable title on record for one section identity, if any."""
+
+        return self.recorded_section_state(
+            section_id=section_id, client=client, session_scope=session_scope
+        )["title"]
+
+    def recorded_section_state(self, *, section_id: str, client: Any, session_scope: Any) -> dict[str, Any]:
+        """What one section already has on record: title, kind, and whether any
+        record of it named a file. These are the fields a later record of the
+        SAME section inherits instead of having to repeat."""
+        from .work_ledger import latest_recorded_section_state
+
+        return latest_recorded_section_state(
+            self.list_all_events(), section_id=section_id, client=client, session_scope=session_scope
+        )
 
     def list_all_events(self, *, run_id: str | None = None) -> list[dict[str, Any]]:
         # Keep the SQLite mirror fresh on the common read path (fail-open, and a

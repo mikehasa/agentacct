@@ -41,7 +41,7 @@ def _seed(store: Path, *, now: float = 1_700_000_000.0) -> None:
             "sentinel_semantic_kind": "section", "client": "claude-code", "client_session_id": "s1",
             "client_transcript_id": "s1", "project_dir": "/tmp/proj", "section_id": "s1-1",
             "section_status": "completed", "section_title": "Build the snapshot harness",
-            "summary": "Implemented and tested.", "kind": "implementation", "files": ["src/mod.py"],
+            "summary": "Implemented the snapshot harness and tested it against the fixture corpus.", "kind": "implementation", "files": ["src/mod.py"],
         },
     })
     svc.record_event({
@@ -100,8 +100,38 @@ def test_receipt_markup_survives_hostile_fields(tmp_path):
         "metadata": {
             "sentinel_semantic_kind": "section", "client": "claude-code", "client_session_id": "sx",
             "client_transcript_id": "sx", "project_dir": "/tmp/p", "section_id": "sx-1",
-            "section_status": "completed", "section_title": "pwn[/]step", "summary": "[/]boom",
+            "section_status": "completed",
+            "files": ["src/agentacct/mcp.py"], "section_title": "pwn[/]step with markup", "summary": "[/]boom [/]boom [/]boom [/]boom with hostile markup",
         },
     })
     receipt = _first_receipt(tmp_path)
     Text.from_markup("\n".join(_build_receipt_parts(receipt, _DARK).values()))  # no MarkupError
+
+
+def test_receipt_detail_prints_the_payload_vocabulary(tmp_path):
+    # One vocabulary: the TUI receipt uses the payload's field labels, tiles,
+    # asserted-by label, cost basis and outcome summary — the same strings the
+    # app, CLI and Markdown print — never TUI-local labels.
+    _seed(tmp_path)
+    receipt = _first_receipt(tmp_path)
+    plain = Text.from_markup("\n".join(_build_receipt_parts(receipt, _LIGHT).values())).plain
+    flat = " ".join(plain.split())
+    labels = receipt["field_labels"]
+    for key in ("coverage", "checks", "cost", "agents"):
+        assert labels[key].upper() in plain or labels[key] in plain
+    evidence = receipt["axes"]["evidence_strength"]
+    assert evidence["coverage_tile"]["value"] in plain
+    assert receipt["dimensions"]["evidence"]["checks_tile"]["value"] in plain
+    assert f"asserted by {receipt['axes']['decision_status']['asserted_by_phrase']}" in flat
+    cost = receipt["dimensions"]["cost"]
+    if cost["state"] in {"no_usage", "unpriced"}:
+        # An absence is the whole fact: it never wears a cost basis (the same
+        # rule the app's cost tile follows).
+        assert cost["display_text"] in plain
+        assert cost["basis_label"] not in plain
+    else:
+        assert cost["basis_label"] in plain
+    summary = receipt["dimensions"]["outcome"]["summary"]
+    assert " ".join(summary.split()) in flat
+    for local in ("Actors", "ACTORS", "CLAIMS SUPPORTED", "CHECK RUNS", "EST. COST"):
+        assert local not in plain

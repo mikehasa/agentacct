@@ -54,14 +54,14 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "work-session-steps-load-failure-dark.png", pixelsWide: 1520, pixelsHigh: 480),
         ExpectedArtifact(filename: "work-session-steps-retrying-light.png", pixelsWide: 1520, pixelsHigh: 480),
         ExpectedArtifact(filename: "work-session-steps-retrying-dark.png", pixelsWide: 1520, pixelsHigh: 480),
-        ExpectedArtifact(filename: "work-session-steps-compact-checks-light.png", pixelsWide: 720, pixelsHigh: 3200),
-        ExpectedArtifact(filename: "work-session-steps-compact-checks-dark.png", pixelsWide: 720, pixelsHigh: 3200),
+        ExpectedArtifact(filename: "work-session-steps-compact-checks-light.png", pixelsWide: 720, pixelsHigh: 3400),
+        ExpectedArtifact(filename: "work-session-steps-compact-checks-dark.png", pixelsWide: 720, pixelsHigh: 3400),
         ExpectedArtifact(filename: "work-session-steps-rtl-stress-light.png", pixelsWide: 1520, pixelsHigh: 2500),
         ExpectedArtifact(filename: "work-session-steps-rtl-stress-dark.png", pixelsWide: 1520, pixelsHigh: 2500),
-        ExpectedArtifact(filename: "work-session-steps-compact-accessibility-light.png", pixelsWide: 720, pixelsHigh: 10800),
-        ExpectedArtifact(filename: "work-session-steps-compact-accessibility-dark.png", pixelsWide: 720, pixelsHigh: 10800),
-        ExpectedArtifact(filename: "work-session-steps-rtl-accessibility-light.png", pixelsWide: 720, pixelsHigh: 10800),
-        ExpectedArtifact(filename: "work-session-steps-rtl-accessibility-dark.png", pixelsWide: 720, pixelsHigh: 10800),
+        ExpectedArtifact(filename: "work-session-steps-compact-accessibility-light.png", pixelsWide: 720, pixelsHigh: 14400),
+        ExpectedArtifact(filename: "work-session-steps-compact-accessibility-dark.png", pixelsWide: 720, pixelsHigh: 14400),
+        ExpectedArtifact(filename: "work-session-steps-rtl-accessibility-light.png", pixelsWide: 720, pixelsHigh: 14400),
+        ExpectedArtifact(filename: "work-session-steps-rtl-accessibility-dark.png", pixelsWide: 720, pixelsHigh: 14400),
         ExpectedArtifact(filename: "work-actions-exact-regular-light.png", pixelsWide: 1520, pixelsHigh: 1080),
         ExpectedArtifact(filename: "work-actions-exact-regular-dark.png", pixelsWide: 1520, pixelsHigh: 1080),
         ExpectedArtifact(filename: "work-actions-exact-compact-light.png", pixelsWide: 720, pixelsHigh: 1280),
@@ -299,11 +299,33 @@ final class WorkSnapshotHarnessTests: XCTestCase {
             let representation = try XCTUnwrap(image.representations.first, artifact.filename)
             XCTAssertEqual(representation.pixelsWide, artifact.pixelsWide, artifact.filename)
             XCTAssertEqual(representation.pixelsHigh, artifact.pixelsHigh, artifact.filename)
+            let pixels = try VisualSnapshotImage(contentsOf: imageURL)
             if artifact.filename == "work-receipt-accessibility-light.png"
                 || artifact.filename == "work-receipt-accessibility-dark.png" {
                 XCTAssertFalse(
-                    hasBroadUnsupportedNativeControlWarning(try VisualSnapshotImage(contentsOf: imageURL)),
+                    hasBroadUnsupportedNativeControlWarning(pixels),
                     "\(artifact.filename) contains ImageRenderer's unsupported native-control warning instead of rendered activity."
+                )
+            }
+            // No review render may show an unsupported-view placeholder in
+            // place of a control the live app draws (K68).
+            XCTAssertEqual(
+                pixels.unsupportedControlPlaceholderPixels, 0,
+                "\(artifact.filename) draws the renderer's #FFCC00 placeholder where a control belongs."
+            )
+            // The task count is not part of the scrolling list: at the minimum
+            // window the list is taller than the viewport, and a count inside
+            // the scroll region fell outside the captured viewport entirely
+            // (K57). It must stay readable at the smallest supported size.
+            if artifact.filename.hasPrefix("work-table-minimum") {
+                assertPinnedCountStrip(pixels, artifact.filename)
+            }
+            // No labelled slot may collapse into a void: the fixtures render
+            // at 2x, so 400pt of blank card is 800px (K56).
+            if artifact.filename.contains("accessibility") {
+                XCTAssertLessThanOrEqual(
+                    tallestInkFreeRun(pixels), 800,
+                    "\(artifact.filename) has an ink-free run taller than 400pt inside its content."
                 )
             }
 
@@ -577,6 +599,92 @@ final class WorkSnapshotHarnessTests: XCTestCase {
             guard case SnapshotError.missingWorkFixture = error else {
                 return XCTFail("Expected missing Work fixture error; got \(error)")
             }
+        }
+    }
+
+    /// The Work table's count sits in its own bar under the scroll region.
+    ///
+    /// The bar is page ground with the count's ink inside it, so at the bottom
+    /// of the render there is a clear ground band (the bar's lower padding)
+    /// with ink just above it (the count). Before this, the page scrolled as
+    /// one piece and the minimum viewport ended mid-row with the count drawn
+    /// past the fold — the render claimed nothing about how many tasks there
+    /// were (K57). Fixtures render at 2x.
+    private func assertPinnedCountStrip(
+        _ image: VisualSnapshotImage,
+        _ name: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard image.height > 160, image.width > 8 else {
+            return XCTFail("\(name) is too small to carry a count bar", file: file, line: line)
+        }
+        image.rgba.withUnsafeBytes { (pixels: UnsafeRawBufferPointer) in
+            func channel(_ x: Int, _ y: Int, _ offset: Int) -> Int {
+                Int(pixels[(y * image.width + x) * 4 + offset])
+            }
+            func differsFromGround(_ x: Int, _ y: Int, by tolerance: Int) -> Bool {
+                (0 ..< 3).contains { abs(channel(x, y, $0) - channel(2, image.height - 2, $0)) > tolerance }
+            }
+            // The bar's lower padding: ~12pt of uninterrupted ground.
+            var intruding = 0
+            for y in (image.height - 16) ..< image.height {
+                for x in 0 ..< image.width where differsFromGround(x, y, by: 2) { intruding += 1 }
+            }
+            XCTAssertLessThan(
+                intruding, image.width * 16 / 100,
+                "\(name) has no clear ground band at the foot: the count bar is not pinned there.",
+                file: file, line: line
+            )
+            // The count itself, drawn just above that padding.
+            var ink = 0
+            for y in (image.height - 72) ..< (image.height - 16) {
+                for x in 0 ..< image.width where differsFromGround(x, y, by: 24) { ink += 1 }
+            }
+            XCTAssertGreaterThan(
+                ink, 100,
+                "\(name) draws no count above its foot padding.",
+                file: file, line: line
+            )
+        }
+    }
+
+    /// The tallest run of rows carrying no ink between the first and last that
+    /// do, in pixels.
+    ///
+    /// A labelled slot whose value is squeezed to a near-zero column leaves a
+    /// void no layout intends: the accessibility fixtures showed ~2000pt of
+    /// blank card between a clipped "RECORDED NEXT STEP" and the next heading
+    /// (K56). Background is the image's two most common colours (the canvas
+    /// and the card), so the check reads the same in light and dark.
+    private func tallestInkFreeRun(_ image: VisualSnapshotImage) -> Int {
+        image.rgba.withUnsafeBytes { (pixels: UnsafeRawBufferPointer) -> Int in
+            func color(_ offset: Int) -> UInt32 {
+                UInt32(pixels[offset]) << 16 | UInt32(pixels[offset + 1]) << 8 | UInt32(pixels[offset + 2])
+            }
+            var histogram: [UInt32: Int] = [:]
+            for index in stride(from: 0, to: image.width * image.height * 4, by: 4) {
+                histogram[color(index), default: 0] += 1
+            }
+            let background = Set(histogram.sorted { $0.value > $1.value }.prefix(2).map(\.key))
+            func isInk(_ value: UInt32) -> Bool {
+                !background.contains { candidate in
+                    let delta = { (shift: UInt32) -> Int in
+                        abs(Int((value >> shift) & 0xFF) - Int((candidate >> shift) & 0xFF))
+                    }
+                    return delta(16) <= 12 && delta(8) <= 12 && delta(0) <= 12
+                }
+            }
+            var inkRows: [Int] = []
+            for y in 0 ..< image.height {
+                let row = y * image.width * 4
+                for x in 0 ..< image.width where isInk(color(row + x * 4)) {
+                    inkRows.append(y)
+                    break
+                }
+            }
+            guard inkRows.count > 1 else { return 0 }
+            return zip(inkRows, inkRows.dropFirst()).map { $1 - $0 - 1 }.max() ?? 0
         }
     }
 

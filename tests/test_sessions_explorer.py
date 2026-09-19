@@ -79,9 +79,13 @@ def _record_section(store_root, *, section_id, title, session, client="codex", s
                 "sentinel_semantic_kind": "section",
                 "section_id": section_id,
                 "section_status": status,
+                "files": ["src/agentacct/mcp.py"],
+                "next_step": "Re-run the focused suite and close the section",
                 "section_title": title,
                 "client": client,
                 "client_session_id": session,
+                "summary": "Recorded outcome for this fixture section." if status in {"completed", "handed_off"} else None,
+                "blocker": "The staging migration needs an owner role this account does not have." if status == "blocked" else None,
             },
         }
     )

@@ -19,10 +19,20 @@ struct V1IngestionSnapshot: Decodable {
     let sources: [V1IngestionSource]?
     let watcher: V1IngestionWatcher?
     let issues: [V1IngestionIssue]?
+    /// Reducer-owned display copy for `state` (`ingestion_state_copy`): the
+    /// title and one fact sentence. A state key is never rendered as a title.
+    var stateTitle: String?
+    var stateDetail: String?
+    /// The reducer's rail-length twin of `stateDetail`, leading with the named
+    /// absence, for a one-line signal row the sentence does not fit (K69).
+    var stateDetailCompact: String?
 
     enum CodingKeys: String, CodingKey {
         case state, sources, watcher, issues
         case lastSuccessAt = "last_success_at"
+        case stateTitle = "state_title"
+        case stateDetail = "state_detail"
+        case stateDetailCompact = "state_detail_compact"
     }
 }
 
@@ -36,11 +46,18 @@ struct V1IngestionSource: Decodable, Identifiable {
     let parsed: Int?
     let skipped: Int?
     let errorCount: Int?
+    /// Reducer-owned display copy for this source (`source_state_copy`):
+    /// `Reporting` / `Watching · no data yet` / `Idle` / `Degraded` / … and one
+    /// fact sentence. Swift never titles a state key itself.
+    var stateTitle: String? = nil
+    var stateDetail: String? = nil
 
     var id: String { source }
 
     enum CodingKeys: String, CodingKey {
         case source, state, scope, discovered, parsed, skipped
+        case stateTitle = "state_title"
+        case stateDetail = "state_detail"
         case lastSuccessAt = "last_success_at"
         case lastFailureAt = "last_failure_at"
         case errorCount = "error_count"
@@ -51,11 +68,16 @@ struct V1IngestionWatcher: Decodable {
     let state: String?
     let intervalSeconds: Double?
     let heartbeatAt: Double?
+    /// Reducer-owned display copy for the watcher (`watcher_state_copy`).
+    var stateTitle: String? = nil
+    var stateDetail: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case state
         case intervalSeconds = "interval_seconds"
         case heartbeatAt = "heartbeat_at"
+        case stateTitle = "state_title"
+        case stateDetail = "state_detail"
     }
 }
 
@@ -178,8 +200,25 @@ struct SourceHealthPresentation {
         !isRetained && watcher?.state == "running"
     }
 
-    func retainedStatus(_ state: String?) -> String {
-        "Last reported: \((state ?? "unknown").replacingOccurrences(of: "_", with: " ").capitalized)"
+    func retainedStatus(title: String) -> String {
+        "Last reported: \(title)"
+    }
+
+    /// The store-wide title comes from the reducer's state copy; a daemon that
+    /// predates it gets a named absence, never the capitalized key.
+    static func overallTitle(_ snapshot: V1IngestionSnapshot) -> String {
+        PayloadAbsence.text(snapshot.stateTitle) ?? "Source status not reported"
+    }
+
+    /// A source's title is the reducer's `state_title`; a daemon that predates
+    /// it gets a named absence, never a capitalized key.
+    static func sourceTitle(_ source: V1IngestionSource) -> String {
+        PayloadAbsence.text(source.stateTitle) ?? "Source state not reported"
+    }
+
+    /// The watcher's title is the reducer's `state_title`, or a named absence.
+    static func watcherTitle(_ watcher: V1IngestionWatcher?) -> String {
+        PayloadAbsence.text(watcher?.stateTitle) ?? "Watcher state not reported"
     }
 }
 
@@ -196,6 +235,10 @@ struct SourcesPane: View {
     private var monogramSize: CGFloat {
         WorkTypeScale.resolved(base: 36, systemScaled: scaledMonogramSize, dynamicTypeSize: dynamicTypeSize)
     }
+    /// The narrow retry's one name, used by the button and by the copy that
+    /// tells the reviewer which control to press.
+    static let retrySourceHealthTitle = "Retry source health"
+
     private var presentation: SourceHealthPresentation {
         SourceHealthPresentation(refreshError: dashboard.ingestionError)
     }
@@ -215,8 +258,7 @@ struct SourcesPane: View {
                 content.padding(.top, Space.xl)
             }
             .padding(Space.gutter)
-            .frame(maxWidth: 1172 + Space.gutter * 2, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .pageFrame()
         }
         .workFont(.body)
     }
@@ -234,18 +276,29 @@ struct SourcesPane: View {
             Text("Diagnostics")
                 .workFont(.titlePage).tracking(Type.titlePageTracking)
                 .foregroundStyle(Theme.ink)
-            Text("Your data sources and the recorder's health — and anything that needs a look")
-                .workFont(.dataSmall).foregroundStyle(Theme.muted)
+            Text("Recording connections and local import health")
+                .workFont(FieldFont.subtitle).foregroundStyle(Theme.muted)
         }
         if !stacksRows { Spacer() }
-        Button { Task { await dashboard.refreshIngestion(); await dashboard.refreshConnections() } } label: {
-            Image(systemName: "arrow.clockwise")
+        // No second bare refresh glyph here. The window's ⌘R refresh already
+        // re-requests source health (DashboardStore.refresh runs
+        // refreshIngestion), so this page carried an identical, unlabelled
+        // icon whose narrower scope only a hover tooltip could explain (K83).
+        // The narrow retry survives as a NAMED button, and only in the state
+        // where it does something the reviewer is waiting for. Its action is
+        // main's widened one: after the Connections view landed this page
+        // draws two feeds, so the retry re-requests both.
+        if dashboard.ingestionError != nil {
+            Button(Self.retrySourceHealthTitle) {
+                Task {
+                    await dashboard.refreshIngestion()
+                    await dashboard.refreshConnections()
+                }
+            }
+                .buttonStyle(QuietButtonStyle(tint: Theme.accent, horizontalPadding: 8))
+                .disabled(dashboard.isRefreshingIngestion || dashboard.isOfflineSnapshot || SnapshotMode.enabled)
+                .accessibilityIdentifier("sources.refresh")
         }
-        .buttonStyle(QuietButtonStyle(horizontalPadding: 8))
-        .disabled(dashboard.isRefreshingIngestion || dashboard.isOfflineSnapshot || SnapshotMode.enabled)
-        .help("Refresh source health")
-        .accessibilityLabel("Refresh source health")
-        .accessibilityIdentifier("sources.refresh")
         if let onSetup {
             Button("Connections") { onSetup(nil) }.buttonStyle(NativeSetupActionStyle())
                 .accessibilityIdentifier("sources.connections")
@@ -284,14 +337,65 @@ struct SourcesPane: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Source health unavailable").workFont(.rowLabel).foregroundStyle(Theme.ink)
                 Text(error).workFont(.caption).foregroundStyle(Theme.muted)
-                Text("Reconnect the recorder and refresh source health to load current diagnostics.")
+                Text("Reconnect the recorder, then \(Self.retrySourceHealthTitle) or refresh the window (\(RefreshCommandText.shortcut)) to load current diagnostics.")
                     .workFont(.caption).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             verificationDisclosure.padding(.top, Space.xl)
             scopeCard.padding(.top, Space.xl)
         } else {
-            Text("Loading source health…").workFont(.body).foregroundStyle(Theme.muted)
+            loadingScaffold
+            verificationDisclosure.padding(.top, Space.xl)
+            scopeCard.padding(.top, Space.xl)
         }
+    }
+
+    /// Before the first /v1/ingestion answer the page keeps its sections, each
+    /// with a named "not yet loaded" value, instead of collapsing to one line.
+    private var loadingScaffold: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Card(padding: 0) {
+                VStack(spacing: 0) {
+                    adaptiveRow(spacing: Space.s) {
+                        Text("Connected sources").workFont(.titleCard).foregroundStyle(Theme.ink)
+                        if !stacksRows { Spacer() }
+                        notYetLoadedLozenge
+                    }
+                    .padding(.horizontal, Space.xl)
+                    .padding(.vertical, Space.m)
+                    .frame(minHeight: 52)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Rectangle().fill(Theme.hairline).frame(height: 1).padding(.horizontal, Space.xl)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Source list not yet loaded")
+                            .workFont(.rowLabel).foregroundStyle(Theme.ink)
+                        Text("Loading source health from the recorder.")
+                            .workFont(.caption).foregroundStyle(Theme.muted)
+                    }
+                    .padding(Space.xl)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            Card(padding: Space.xl) {
+                VStack(alignment: .leading, spacing: 0) {
+                    adaptiveRow(spacing: Space.s) {
+                        Text("Continuous sync").workFont(.titleCard).foregroundStyle(Theme.ink)
+                        if !stacksRows { Spacer() }
+                        notYetLoadedLozenge
+                    }
+                    Rectangle().fill(Theme.hairline).frame(height: 1).padding(.vertical, Space.m)
+                    Text("Watcher status not yet loaded.")
+                        .workFont(.caption).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.top, Space.xl)
+        }
+        .accessibilityIdentifier("sources-loading")
+    }
+
+    private var notYetLoadedLozenge: some View {
+        StateLozenge(text: "Not yet loaded", tone: .quiet)
     }
 
     // MARK: connected sources
@@ -326,13 +430,21 @@ struct SourcesPane: View {
                     }
                     if !stacksRows { Spacer() }
                     if let overall = snapshot.state {
-                        overallLozenge(overall, watcherRunning: watcherRunning)
+                        overallLozenge(overall, title: SourceHealthPresentation.overallTitle(snapshot), watcherRunning: watcherRunning)
                     }
                 }
                 .padding(.horizontal, Space.xl)
                 .padding(.vertical, Space.m)
                 .frame(minHeight: 52)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                if let detail = snapshot.stateDetail {
+                    Text(detail)
+                        .workFont(.caption).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, Space.xl)
+                        .padding(.bottom, Space.m)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 Rectangle().fill(Theme.hairline).frame(height: 1).padding(.horizontal, Space.xl)
                 if sources.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
@@ -387,7 +499,7 @@ struct SourcesPane: View {
                     }
                     if !stacksRows { Spacer() }
                     if let overall = snapshot.state {
-                        overallLozenge(overall, watcherRunning: watcherRunning)
+                        overallLozenge(overall, title: SourceHealthPresentation.overallTitle(snapshot), watcherRunning: watcherRunning)
                     }
                 }
                 .padding(.horizontal, Space.xl).padding(.vertical, Space.m)
@@ -485,22 +597,31 @@ struct SourcesPane: View {
 
     @ViewBuilder
     private func connectionStatusLozenge(_ conn: V1Connection) -> some View {
+        // Tones, not raw tints: StateLozenge now takes a Tone so the green /
+        // amber / coral / neutral reservation lives in one place. The mapping
+        // is main's own, unchanged (green+filled -> .connected, coral ->
+        // .failure, muted+hollow -> .quiet).
+        //
+        // KNOWN GAP: these words are Swift-authored. /v1/connections carries
+        // no `status_title`, so there is no payload string to pass through
+        // yet — unlike source/watcher/overall state, which do carry one. Fix
+        // belongs in the Python reducer, not here.
         if connectionsRetained {
-            StateLozenge(text: "Last reported", tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+            StateLozenge(text: "Last reported", tone: .quiet)
         } else {
             switch conn.status {
             case "recording", "reading":
-                StateLozenge(text: conn.status == "reading" ? "Reading" : "Recording", tint: Theme.green, wash: Theme.tintGreen, pip: .filled)
+                StateLozenge(text: conn.status == "reading" ? "Reading" : "Recording", tone: .connected)
             case "connected_idle":
-                StateLozenge(text: "Connected", tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+                StateLozenge(text: "Connected", tone: .quiet)
             case "needs_attention":
-                StateLozenge(text: "Needs a fix", tint: Theme.coral, wash: Theme.tintCoral, pip: .hollow)
+                StateLozenge(text: "Needs a fix", tone: .failure)
             case "read_only":
-                StateLozenge(text: "Read-only", tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+                StateLozenge(text: "Read-only", tone: .quiet)
             case "not_connected":
-                StateLozenge(text: "Not connected", tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+                StateLozenge(text: "Not connected", tone: .quiet)
             default:
-                StateLozenge(text: conn.status.replacingOccurrences(of: "_", with: " ").capitalized, tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+                StateLozenge(text: conn.status.replacingOccurrences(of: "_", with: " ").capitalized, tone: .quiet)
             }
         }
     }
@@ -542,7 +663,8 @@ struct SourcesPane: View {
                 if let ago = agoText(source.lastSuccessAt) {
                     Text("last import \(ago)").workFont(.dataSmall).foregroundStyle(Theme.muted)
                 } else {
-                    Text("no successful import yet").workFont(.dataSmall).foregroundStyle(Theme.muted)
+                    // A named absence, not a timestamp: prose face (K10).
+                    Text("no successful import yet").workFont(FieldFont.absence).foregroundStyle(Theme.muted)
                 }
                 if let errors = source.errorCount, errors > 0 {
                     Text("\(errors) error\(errors == 1 ? "" : "s")")
@@ -585,49 +707,46 @@ struct SourcesPane: View {
         return parts.isEmpty ? "no scan recorded" : parts.joined(separator: " · ")
     }
 
-    /// Per-source lozenge — green "Reporting" is a LIVE-connection fact: it
-    /// requires a healthy source, a running watcher, and rows actually
-    /// parsed. A healthy source under a stopped watcher is "Idle"; a watch
-    /// that has never yielded a row is "Watching", not "Reporting".
+    /// Per-source lozenge. The words are the reducer's `state_title`; the tint
+    /// follows the live-fact rule — green only for a healthy source under a
+    /// running watcher that actually parsed rows, amber for degraded.
     @ViewBuilder
     private func sourceLozenge(_ source: V1IngestionSource, watcherRunning: Bool) -> some View {
+        let title = SourceHealthPresentation.sourceTitle(source)
         if presentation.isRetained {
-            StateLozenge(text: presentation.retainedStatus(source.state), tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+            StateLozenge(text: presentation.retainedStatus(title: title), tone: .quiet)
         } else {
             switch source.state ?? "unknown" {
             case "healthy" where watcherRunning && (source.parsed ?? 0) > 0:
-                StateLozenge(text: "Reporting", tint: Theme.green, wash: Theme.tintGreen, pip: .filled)
-            case "healthy" where watcherRunning:
-                StateLozenge(text: "Watching · no data yet", tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
-            case "healthy":
-                StateLozenge(text: "Idle", tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+                StateLozenge(text: title, tone: .connected)
             case "degraded":
-                StateLozenge(text: "Degraded", tint: Theme.amber, wash: Theme.tintAmber, pip: .hollow)
-            case "pending":
-                StateLozenge(text: "Pending", tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
-            case let state:
-                StateLozenge(text: state.capitalized, tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+                StateLozenge(text: title, tone: .warning)
+            default:
+                StateLozenge(text: title, tone: .quiet)
             }
         }
     }
 
     /// The card-level roll-up follows the same live-fact rule.
     @ViewBuilder
-    private func overallLozenge(_ state: String, watcherRunning: Bool) -> some View {
+    private func overallLozenge(_ state: String, title: String, watcherRunning: Bool) -> some View {
         if presentation.isRetained {
-            StateLozenge(text: presentation.retainedStatus(state), tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+            StateLozenge(text: presentation.retainedStatus(title: title), tone: .quiet)
         } else {
+            // Words from the reducer's `state_title`; green stays a live fact.
             switch state {
             case "healthy" where watcherRunning:
-                StateLozenge(text: "Reporting", tint: Theme.green, wash: Theme.tintGreen, pip: .filled)
-            case "healthy":
-                StateLozenge(text: "Idle", tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+                StateLozenge(text: title, tone: .connected)
+            // main separated the roll-up's two unhappy states: `attention` is
+            // amber, `degraded` is the more severe coral. That severity split
+            // is kept; the WORDS stay the reducer's `state_title`, never a
+            // Swift-authored "Attention"/"Needs a fix"/state.capitalized.
             case "attention":
-                StateLozenge(text: "Attention", tint: Theme.amber, wash: Theme.tintAmber, pip: .hollow)
+                StateLozenge(text: title, tone: .warning)
             case "degraded":
-                StateLozenge(text: "Needs a fix", tint: Theme.coral, wash: Theme.tintCoral, pip: .hollow)
-            case let state:
-                StateLozenge(text: state.capitalized, tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+                StateLozenge(text: title, tone: .failure)
+            default:
+                StateLozenge(text: title, tone: .quiet)
             }
         }
     }
@@ -699,19 +818,18 @@ struct SourcesPane: View {
                     Text("Continuous sync").workFont(.titleCard).foregroundStyle(Theme.ink)
                     if !stacksRows { Spacer() }
                     if presentation.isRetained {
-                        StateLozenge(text: presentation.retainedStatus(watcher?.state), tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+                        StateLozenge(text: presentation.retainedStatus(title: SourceHealthPresentation.watcherTitle(watcher)), tone: .quiet)
                     } else {
+                        let watcherTitle = SourceHealthPresentation.watcherTitle(watcher)
                         switch watcher?.state {
                         case "running":
-                            StateLozenge(text: "Running", tint: Theme.green, wash: Theme.tintGreen, pip: .filled)
+                            StateLozenge(text: watcherTitle, tone: .connected)
                         case "stale":
-                            StateLozenge(text: "Stale", tint: Theme.amber, wash: Theme.tintAmber, pip: .hollow)
+                            StateLozenge(text: watcherTitle, tone: .warning)
                         case "stopped":
-                            StateLozenge(text: "Stopped", tint: Theme.coral, wash: Theme.tintCoral, pip: .hollow)
-                        case "not_configured":
-                            StateLozenge(text: "Not configured", tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+                            StateLozenge(text: watcherTitle, tone: .failure)
                         default:
-                            StateLozenge(text: "Unknown", tint: Theme.muted, wash: Theme.tintNeutral, pip: .hollow)
+                            StateLozenge(text: watcherTitle, tone: .quiet)
                         }
                     }
                 }
@@ -723,30 +841,18 @@ struct SourcesPane: View {
         }
     }
 
-    /// State-dependent copy: present-tense "keeps the store current" is only
-    /// true while the watcher is actually running.
+    /// The reducer's watcher sentence (`state_detail`) followed by the
+    /// recorded heartbeat and cadence — facts, not vocabulary.
     private func watcherDetail(_ watcher: V1IngestionWatcher?) -> String {
         guard let watcher else { return "The daemon reported no watcher block." }
         let heartbeat = agoText(watcher.heartbeatAt).map { "last heartbeat \($0)" } ?? "no heartbeat recorded"
         if presentation.isRetained {
-            return "The previous snapshot reported \(watcher.state ?? "an unknown state") · \(heartbeat). Current watcher activity is unconfirmed."
+            return "Previous snapshot: \(SourceHealthPresentation.watcherTitle(watcher)) · \(heartbeat). Current watcher activity is unconfirmed."
         }
-        let cadenceSeconds = watcher.intervalSeconds.map { Int($0.rounded()) }
-        switch watcher.state {
-        case "running":
-            let cadence = cadenceSeconds.map { " · scans every \($0)s" } ?? ""
-            return "The importer keeps the store current in the background — \(heartbeat)\(cadence)"
-        case "stale":
-            let cadence = cadenceSeconds.map { " (expected every \($0)s)" } ?? ""
-            return "The importer's heartbeat is overdue — \(heartbeat)\(cadence)"
-        case "stopped":
-            let cadence = cadenceSeconds.map { " (expected every \($0)s)" } ?? ""
-            return "Importer stopped — \(heartbeat)\(cadence). Open recording health to reconnect."
-        case "not_configured":
-            return "No continuous sync is configured — imports happen only on manual scans."
-        default:
-            return heartbeat
-        }
+        let sentence = PayloadAbsence.text(watcher.stateDetail) ?? "Watcher state detail not reported."
+        if watcher.state == "not_configured" { return sentence }
+        let cadence = watcher.intervalSeconds.map { " · expected every \(Int($0.rounded()))s" } ?? ""
+        return "\(sentence) \(heartbeat)\(cadence)"
     }
 
     // MARK: issues
@@ -899,14 +1005,20 @@ struct SourcesPane: View {
                     RoundedRectangle(cornerRadius: Metrics.radius)
                         .fill(Theme.tintNeutral)
                         .frame(width: monogramSize, height: monogramSize)
-                        .overlay(EvidencePip(shape: .hollow, tint: Theme.muted, radius: 6))
+                        .overlay(
+                            // Not connected yet: a verifier slot, not a tier.
+                            Image(systemName: "link")
+                                .workFont(.icon).foregroundStyle(Theme.muted)
+                                .accessibilityHidden(true)
+                        )
                     VStack(alignment: .leading, spacing: 3) {
                         Text(name).workFont(.rowLabel).foregroundStyle(Theme.ink)
                         Text(provides).workFont(.dataSmall).foregroundStyle(Theme.muted)
                     }
                     if !stacksRows { Spacer() }
                     HStack(spacing: 6) {
-                        EvidencePip(shape: .verified, tint: Theme.muted)
+                        // The tier this verifier WOULD produce, drawn inactive.
+                        EvidencePip(grade: "externally_verified", inactive: true)
                         Text("→ verified").workFont(.captionSemibold).foregroundStyle(Theme.muted)
                     }
                 }
@@ -943,24 +1055,51 @@ struct SourcesPane: View {
     }
 }
 
-/// A v7 status lozenge: h22 rx4 tint wash, pip + 12/600 text.
+/// A v7 status lozenge: h22 rx4 tint wash, marker + 12/600 text. A source or
+/// watcher state is NOT an evidence tier (K05): only a live connection wears
+/// the green `StatusDot`; every other state carries the flat minus marker,
+/// never a pip shape.
 struct StateLozenge: View {
+    enum Tone {
+        case connected, warning, failure, quiet
+
+        var tint: Color {
+            switch self {
+            case .connected: return Theme.green
+            case .warning: return Theme.amber
+            case .failure: return Theme.coral
+            case .quiet: return Theme.muted
+            }
+        }
+
+        var wash: Color {
+            switch self {
+            case .connected: return Theme.tintGreen
+            case .warning: return Theme.tintAmber
+            case .failure: return Theme.tintCoral
+            case .quiet: return Theme.tintNeutral
+            }
+        }
+    }
+
     let text: String
-    let tint: Color
-    let wash: Color
-    let pip: PipShape
+    let tone: Tone
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ScaledMetric(relativeTo: .caption) private var scaledMinimumHeight = Metrics.tierBadgeH
 
     var body: some View {
         HStack(spacing: 6) {
-            EvidencePip(shape: pip, tint: tint)
-            Text(text).workFont(.captionSemibold).foregroundStyle(tint)
+            if tone == .connected {
+                StatusDot(color: Theme.green)
+            } else {
+                DisconnectedMarker(tint: tone.tint)
+            }
+            Text(text).workFont(.captionSemibold).foregroundStyle(tone.tint)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 3)
         .frame(minHeight: WorkTypeScale.resolved(base: Metrics.tierBadgeH, systemScaled: scaledMinimumHeight, dynamicTypeSize: dynamicTypeSize))
-        .background(wash, in: RoundedRectangle(cornerRadius: Metrics.radius))
+        .background(tone.wash, in: RoundedRectangle(cornerRadius: Metrics.radius))
     }
 }

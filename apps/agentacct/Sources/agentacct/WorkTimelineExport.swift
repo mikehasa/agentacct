@@ -28,20 +28,31 @@ enum WorkTimelineExport {
             lines += ["", "---", record.title, "Displayed record: \(record.id)",
                 "Event identity: \(record.eventID ?? "not supplied")",
                 "Evidence lane identity: \(record.laneID)",
+                // The reducer's lane and step kind: the same two facts the
+                // on-screen list and the canvas axis now carry, so a reviewer
+                // reading the export sees what a reviewer reading the app sees.
+                "Lane: \(record.laneLabel ?? "not supplied")",
+                "Kind: \(record.sectionKind ?? "not supplied")",
                 "Session: \(record.laneTitle)", record.lineage,
-                "Result: \(record.resultLabel)\(record.superseded ? " (superseded history)" : "")",
+                "Result: \(record.resultLabel)",
                 "Source: \(record.source)", "Scope: \(record.scope ?? "not supplied")",
                 "Recorded at: \(record.start.map { Date(timeIntervalSince1970: $0).ISO8601Format() } ?? "unknown")",
                 record.timeNote]
-            if let start = record.start { lines.append("Precise source time: \(WorkTimelineTimeAxis.preciseLabel(start))") }
-            if let end = record.end { lines.append("Last section update: \(WorkTimelineTimeAxis.preciseLabel(end))") }
+            if let start = record.start { lines.append("Precise source time: \(WorkTimelineTimeAxis.exportLabel(start))") }
+            if let end = record.end { lines.append("Last section update: \(WorkTimelineTimeAxis.exportLabel(end))") }
             if let summary = record.summary { lines.append("Summary: \(summary)") }
             if let code = record.exitCode { lines.append("Recorded exit code: \(code)") }
+            // The reducer's named result/exit-code disagreement, and the
+            // recorded continuation point — both reached the model and were
+            // printed nowhere.
+            if let note = record.noteText { lines.append(note) }
+            if let next = record.nextStep { lines.append("Next step: \(next)") }
+            if let revision = record.revisionLabel { lines.append(revision) }
             if let disposition = record.disposition { lines.append("Human disposition: \(disposition); recorded result unchanged.") }
             if let note = record.identityNote { lines.append("Identity limitation: \(note)") }
             if let resolution = record.resolutionDescription { lines.append(resolution) }
             lines += record.artifactDescriptions
-            if record.commandRedacted { lines.append("Command text was deliberately not captured.") }
+            if let commandState = record.commandStateText { lines.append(commandState) }
             lines.append(record.files.isEmpty ? "Files: not supplied" : "Files:\n" + record.files.joined(separator: "\n"))
         }
         return lines.joined(separator: "\n") + "\n"

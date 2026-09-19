@@ -11,9 +11,8 @@ final class SessionStepsPresentationTests: XCTestCase {
 
         XCTAssertEqual(digest.currentCount, 24)
         XCTAssertEqual(digest.passedCount, 23)
-        XCTAssertEqual(digest.failedCount, 1)
+        XCTAssertEqual(digest.attentionCount, 1)
         XCTAssertEqual(digest.historyCount, 1)
-        XCTAssertEqual(digest.summary, "23 passed · 1 failed · 1 history")
         XCTAssertEqual(digest.currentPreview.map(\.check.eventId).first, "live-failure")
         XCTAssertEqual(digest.currentPreview.count, 8)
         XCTAssertEqual(digest.hiddenAttentionCount, 0)
@@ -21,7 +20,7 @@ final class SessionStepsPresentationTests: XCTestCase {
     }
 
     func testDigestBoundsLargeFailureSetsBeforeOrdinaryChecks() {
-        let failures = (0..<10).map { check(id: "failure-\($0)", result: "error") }
+        let failures = (0..<10).map { check(id: "failure-\($0)", result: "failed") }
         let passes = (0..<20).map { check(id: "pass-\($0)", result: "passed") }
 
         let digest = StepCheckDigest(checks: passes + failures)
@@ -32,6 +31,29 @@ final class SessionStepsPresentationTests: XCTestCase {
         XCTAssertEqual(digest.hiddenOrdinaryCount, 20)
     }
 
+    /// A check that could not run proved nothing: it is never grouped with
+    /// the failures that need you, and never wears the failure mark.
+    func testCheckThatCouldNotRunIsNotAFailure() {
+        let errored = check(id: "errored", result: "error", exitCode: 4)
+        let digest = StepCheckDigest(checks: [errored])
+        let presentation = CheckPresentation(check: errored)
+
+        XCTAssertEqual(digest.currentCount, 1)
+        XCTAssertEqual(digest.attentionCount, 0)
+        XCTAssertEqual(presentation.resultLabel, "Could not run")
+        XCTAssertEqual(presentation.tone, .notRun)
+        XCTAssertEqual(presentation.resultSymbol, "minus.circle")
+        XCTAssertNotEqual(presentation.resultTint, Theme.coral)
+    }
+
+    /// The step tally is the reducer's string, verbatim; its absence is named.
+    func testStepTallyRendersThePayloadString() {
+        var withTally = step(workId: "w1", title: "Fix")
+        withTally.checkTallyText = "0/2 passed · 2 could not run"
+        XCTAssertEqual(withTally.checkTallyDisplay, "0/2 passed · 2 could not run")
+        XCTAssertEqual(step(workId: "w2", title: "No checks").checkTallyDisplay, "no checks recorded")
+    }
+
     func testUnconfirmedFailureRemainsCurrentAndActionable() {
         let digest = StepCheckDigest(checks: [
             check(id: "unconfirmed", result: "failed", supersession: "unconfirmed"),
@@ -40,7 +62,6 @@ final class SessionStepsPresentationTests: XCTestCase {
         XCTAssertEqual(digest.currentCount, 1)
         XCTAssertEqual(digest.attentionCount, 1)
         XCTAssertEqual(digest.historyCount, 0)
-        XCTAssertEqual(digest.summary, "1 failed")
     }
 
     func testUnknownSupersessionStateRemainsCurrentAndIsDisclosed() {
@@ -168,25 +189,29 @@ final class SessionStepsPresentationTests: XCTestCase {
 
     func testCheckPresentationUsesTruthfulFallbacksAndExactResultLabels() {
         let unknown = CheckPresentation(
-            check: check(id: "unknown", result: nil, summary: nil, source: "future_source")
+            check: check(id: "unknown", result: nil, summary: nil, source: "future_source", sourceLabel: nil)
         )
         let reported = CheckPresentation(
-            check: check(id: "reported", result: "passed", source: "mcp_agent_reported")
+            check: check(id: "reported", result: "passed", source: "mcp_agent_reported", sourceLabel: "Agent-reported")
         )
         let hook = CheckPresentation(
-            check: check(id: "hook", result: "error", source: "client_hook")
+            check: check(id: "hook", result: "error", source: "client_hook", sourceLabel: "Hook-captured")
         )
 
-        XCTAssertEqual(unknown.resultLabel, "Result unknown")
+        XCTAssertEqual(unknown.resultLabel, "result not reported")
         XCTAssertEqual(unknown.summary, "No summary recorded")
-        XCTAssertEqual(unknown.sourceLabel, "source unknown")
-        XCTAssertEqual(reported.sourceLabel, "agent-reported")
-        XCTAssertEqual(hook.resultLabel, "Error")
-        XCTAssertEqual(hook.sourceLabel, "hook")
+        // The label is the payload's `source_label`, verbatim; without one the
+        // absence is named — Swift never maps a `source_type` key itself.
+        XCTAssertEqual(unknown.sourceLabel, "source not reported")
+        XCTAssertEqual(reported.sourceLabel, "Agent-reported")
+        XCTAssertEqual(hook.resultLabel, "Could not run")
+        XCTAssertEqual(hook.sourceLabel, "Hook-captured")
         for unsupportedHook in ["runtime_hook", "native_hook", "official_hook"] {
             XCTAssertEqual(
-                CheckPresentation(check: check(id: unsupportedHook, result: "passed", source: unsupportedHook)).sourceLabel,
-                "source unknown"
+                CheckPresentation(
+                    check: check(id: unsupportedHook, result: "passed", source: unsupportedHook, sourceLabel: nil)
+                ).sourceLabel,
+                "source not reported"
             )
         }
     }
@@ -202,9 +227,10 @@ final class SessionStepsPresentationTests: XCTestCase {
             check: check(id: "expected", result: "passed", exitCode: 0)
         )
 
-        XCTAssertTrue(passedWithFailureExit.hasInconsistentExitCode)
-        XCTAssertTrue(failedWithSuccessExit.hasInconsistentExitCode)
-        XCTAssertFalse(expected.hasInconsistentExitCode)
+        // The disagreement is the reducer's named note, rendered verbatim.
+        XCTAssertEqual(passedWithFailureExit.resultNote, "Recorded as passed although the command exited 1.")
+        XCTAssertEqual(failedWithSuccessExit.resultNote, "Recorded as failed although the command exited 0.")
+        XCTAssertNil(expected.resultNote)
         XCTAssertEqual(passedWithFailureExit.exitLabel, "exit 1")
     }
 
@@ -215,6 +241,7 @@ final class SessionStepsPresentationTests: XCTestCase {
                 result: "failed",
                 summary: "The baseline changed.",
                 source: "mcp_agent_reported",
+                sourceLabel: "Agent-reported",
                 exitCode: 1,
                 supersession: "superseded"
             )
@@ -222,7 +249,7 @@ final class SessionStepsPresentationTests: XCTestCase {
 
         XCTAssertEqual(
             presentation.accessibilitySummary,
-            "Test. Failed. The baseline changed. exit 1. agent-reported. Historical, superseded."
+            "Test. Failed. The baseline changed. exit 1. Agent-reported. Historical, superseded."
         )
     }
 
@@ -271,7 +298,9 @@ final class SessionStepsPresentationTests: XCTestCase {
             "artifact_path":null,
             "artifact_url":null,
             "artifact_path_redacted":true,
-            "artifact_url_redacted":true
+            "artifact_url_redacted":true,
+            "artifact_path_state_text":"The artifact path was withheld by its source and is not shown.",
+            "artifact_url_state_text":"The artifact URL was withheld by its source and is not shown."
         }
         """#.utf8)
 
@@ -282,8 +311,9 @@ final class SessionStepsPresentationTests: XCTestCase {
         XCTAssertTrue(decoded.artifactUrlRedacted == true)
         XCTAssertNil(decoded.artifactPath)
         XCTAssertNil(decoded.artifactUrl)
-        XCTAssertEqual(presentation.artifactRedactionLabel, "Artifact path and URL redacted")
-        XCTAssertTrue(presentation.accessibilitySummary.contains("Artifact path and URL redacted."))
+        // The reducer's redaction sentences, verbatim (no Swift wording).
+        XCTAssertEqual(presentation.artifactRedactionLabel, "The artifact path was withheld by its source and is not shown. The artifact URL was withheld by its source and is not shown.")
+        XCTAssertTrue(presentation.accessibilitySummary.contains("The artifact URL was withheld by its source and is not shown."))
         XCTAssertFalse(presentation.accessibilitySummary.contains("artifact_path_redacted"))
     }
 
@@ -292,6 +322,7 @@ final class SessionStepsPresentationTests: XCTestCase {
         result: String?,
         summary: String? = "Recorded verification result.",
         source: String? = "client_hook",
+        sourceLabel: String? = "Hook-captured",
         exitCode: Int? = 0,
         supersession: String? = nil,
         supersededByEventId: String? = nil,
@@ -323,7 +354,11 @@ final class SessionStepsPresentationTests: XCTestCase {
             artifactUrl: nil,
             commandRedacted: nil,
             artifactPathRedacted: artifactPathRedacted,
-            artifactUrlRedacted: artifactUrlRedacted
+            artifactUrlRedacted: artifactUrlRedacted,
+            sourceLabel: sourceLabel,
+            resultLabel: result.map(SnapshotCheckPayload.label),
+            resultTone: result.map(SnapshotCheckPayload.tone),
+            noteText: SnapshotCheckPayload.note(result: result, exitCode: exitCode)
         )
     }
 

@@ -4,6 +4,7 @@
     "schema": "agentacct.glance.v1",
     "generated_at": 1787618800,
     "usage": {
+      "cost_legend": "~$ partial subtotal · ≈$ estimate · $ reported or billed",
       "windows": [
         {
           "label": "today",
@@ -13,7 +14,12 @@
             "total_tokens_including_cached": 91200000,
             "estimated_cost_usd": 525.14,
             "cost_complete": true,
-            "known_additive_cost_usd": 525.14
+            "known_additive_cost_usd": 525.14,
+            "cost_confidence": "estimated_from_tokens",
+            "cost_confidence_display": "pricing estimate",
+            "cost_state": "complete",
+            "usage_availability": "available",
+            "cost_total_label": "total"
           }
         },
         {
@@ -24,7 +30,12 @@
             "total_tokens_including_cached": 196400000,
             "estimated_cost_usd": 1087.42,
             "cost_complete": true,
-            "known_additive_cost_usd": 1087.42
+            "known_additive_cost_usd": 1087.42,
+            "cost_confidence": "estimated_from_tokens",
+            "cost_confidence_display": "pricing estimate",
+            "cost_state": "complete",
+            "usage_availability": "available",
+            "cost_total_label": "total"
           }
         },
         {
@@ -35,7 +46,12 @@
             "total_tokens_including_cached": 382100000,
             "estimated_cost_usd": 2146.88,
             "cost_complete": true,
-            "known_additive_cost_usd": 2146.88
+            "known_additive_cost_usd": 2146.88,
+            "cost_confidence": "estimated_from_tokens",
+            "cost_confidence_display": "pricing estimate",
+            "cost_state": "complete",
+            "usage_availability": "available",
+            "cost_total_label": "total"
           }
         }
       ],
@@ -48,7 +64,11 @@
           "known_additive_cost_usd": 402.1,
           "cost_complete": true,
           "cost_confidence": "estimated_from_tokens",
-          "sessions": 21
+          "sessions": 21,
+          "cost_confidence_display": "pricing estimate",
+          "cost_state": "complete",
+          "usage_availability": "available",
+          "cost_total_label": "total"
         },
         {
           "client": "claude-code",
@@ -57,7 +77,11 @@
           "known_additive_cost_usd": 680.32,
           "cost_complete": true,
           "cost_confidence": "estimated_from_tokens",
-          "sessions": 9
+          "sessions": 9,
+          "cost_confidence_display": "pricing estimate",
+          "cost_state": "complete",
+          "usage_availability": "available",
+          "cost_total_label": "total"
         },
         {
           "client": "hermes",
@@ -66,9 +90,14 @@
           "known_additive_cost_usd": 5.0,
           "cost_complete": true,
           "cost_confidence": "estimated_from_tokens",
-          "sessions": 2
+          "sessions": 2,
+          "cost_confidence_display": "pricing estimate",
+          "cost_state": "complete",
+          "usage_availability": "available",
+          "cost_total_label": "total"
         }
-      ]
+      ],
+      "cost_chart_legend": "~$ partial subtotal · open cap = partial"
     },
     "limits": [
       {
@@ -81,14 +110,31 @@
             "kind": "7d",
             "used_percent": 39,
             "window_minutes": 10080,
-            "resets_at": 1788184000
+            "resets_at": 1788184000,
+            "window_label": "7-day limit",
+            "reset_text": "resets in 6d 13h",
+            "limit_key": "0|codex|7d|0",
+            "reset_passed": false,
+            "value_text": "39% used"
           },
           {
             "kind": "5h",
             "used_percent": 12,
-            "window_minutes": 300
+            "window_minutes": 300,
+            "window_label": "5-hour limit",
+            "reset_text": "reset time not reported",
+            "limit_key": "0|codex|5h|1",
+            "reset_passed": false,
+            "value_text": "12% used"
           }
-        ]
+        ],
+        "plan_share": {
+          "calibration_state": "never",
+          "headline": "Not applicable: this client reports no weekly plan meter",
+          "chip_text": "no weekly share",
+          "sentence_text": "not applicable for this client"
+        },
+        "data_age_text": "as of 2m ago"
       },
       {
         "client": "claude-code",
@@ -99,21 +145,41 @@
           {
             "kind": "7d",
             "used_percent": 47,
-            "window_minutes": 10080
+            "window_minutes": 10080,
+            "window_label": "7-day limit",
+            "reset_text": "reset time not reported",
+            "limit_key": "1|claude-code|7d|0",
+            "reset_passed": false,
+            "value_text": "47% used"
           },
           {
             "kind": "5h",
             "used_percent": 7,
-            "window_minutes": 300
+            "window_minutes": 300,
+            "window_label": "5-hour limit",
+            "reset_text": "reset time not reported",
+            "limit_key": "1|claude-code|5h|1",
+            "reset_passed": false,
+            "value_text": "7% used"
           }
-        ]
+        ],
+        "plan_share": {
+          "calibration_state": "calibrating",
+          "headline": "Calibrating: not enough 7-day limit history recorded yet",
+          "chip_text": "calibrating",
+          "sentence_text": "calibrating — not enough 7-day history yet"
+        },
+        "data_age_text": "as of 2m ago"
       }
     ],
     "plan": [
       {
         "client": "codex",
         "confidence": "provider_reported",
-        "calibration_state": "never"
+        "calibration_state": "never",
+        "headline": "Not applicable: this client reports no weekly plan meter",
+        "chip_text": "no weekly share",
+        "sentence_text": "not applicable for this client"
       },
       {
         "client": "claude-code",
@@ -121,7 +187,11 @@
         "calibration_state": "calibrating",
         "intervals_used": 9,
         "intervals_needed": 24,
-        "state_detail": "9 intervals recorded; calibration needs 24 or more stable intervals spanning at least one week"
+        "state_detail": "9 intervals recorded; calibration needs 24 or more stable intervals spanning at least one week",
+        "headline": "Calibrating: not enough 7-day limit history recorded yet",
+        "chip_text": "calibrating",
+        "sentence_text": "calibrating — not enough 7-day history yet",
+        "basis_text": "9 intervals recorded; calibration needs 24 or more stable intervals spanning at least one week"
       }
     ],
     "recent_sessions": [
@@ -130,21 +200,45 @@
         "session_id": "fixture-active-01",
         "title": "Dashboard design system",
         "status": "in_progress",
-        "last_activity_at": 1787618788
+        "status_label": "In progress",
+        "last_activity_at": 1787618788,
+        "plan_share": {
+          "pct": null,
+          "calibration_state": "never",
+          "headline": "not applicable for this client",
+          "chip_text": "no weekly share",
+          "sentence_text": "not applicable for this client"
+        },
+        "decision_key": "in_progress",
+        "decision_label": "In progress",
+        "attention_open": false
       },
       {
         "client": "codex",
         "session_id": "fixture-active-02",
         "title": "Snapshot harness",
         "status": "checkpoint",
-        "last_activity_at": 1787618752
+        "status_label": "In progress",
+        "last_activity_at": 1787618752,
+        "plan_share": {
+          "pct": null,
+          "calibration_state": "never",
+          "headline": "not applicable for this client",
+          "chip_text": "no weekly share",
+          "sentence_text": "not applicable for this client"
+        },
+        "decision_key": "finding",
+        "decision_label": "Finding",
+        "attention_open": true
       }
-    ]
+    ],
+    "headline_limit_key": "1|claude-code|7d|0"
   },
   "menu_sparse_glance": {
     "schema": "agentacct.glance.v1",
     "generated_at": 1787618800,
     "usage": {
+      "cost_legend": "~$ partial subtotal · ≈$ estimate · $ reported or billed",
       "windows": [
         {
           "label": "today",
@@ -153,7 +247,12 @@
             "fresh_tokens": 8000000,
             "estimated_cost_usd": 200.67,
             "cost_complete": true,
-            "known_additive_cost_usd": 200.67
+            "known_additive_cost_usd": 200.67,
+            "cost_confidence": "estimated_from_tokens",
+            "cost_confidence_display": "pricing estimate",
+            "cost_state": "complete",
+            "usage_availability": "available",
+            "cost_total_label": "total"
           }
         },
         {
@@ -163,7 +262,12 @@
             "fresh_tokens": 39300000,
             "estimated_cost_usd": 949.36,
             "cost_complete": true,
-            "known_additive_cost_usd": 949.36
+            "known_additive_cost_usd": 949.36,
+            "cost_confidence": "estimated_from_tokens",
+            "cost_confidence_display": "pricing estimate",
+            "cost_state": "complete",
+            "usage_availability": "available",
+            "cost_total_label": "total"
           }
         },
         {
@@ -173,12 +277,18 @@
             "fresh_tokens": 41900000,
             "estimated_cost_usd": 990.99,
             "cost_complete": false,
-            "known_additive_cost_usd": 990.99
+            "known_additive_cost_usd": 990.99,
+            "cost_confidence": "estimated_from_tokens",
+            "cost_confidence_display": "pricing estimate",
+            "cost_state": "partial",
+            "usage_availability": "available",
+            "cost_total_label": "Partial subtotal"
           }
         }
       ],
       "usage_record_count": 18,
-      "by_client": []
+      "by_client": [],
+      "cost_chart_legend": "~$ partial subtotal · open cap = partial"
     },
     "limits": [
       {
@@ -192,16 +302,31 @@
             "kind": "7d",
             "used_percent": 4,
             "window_minutes": 10080,
-            "resets_at": 1788144400
+            "resets_at": 1788144400,
+            "window_label": "7-day limit",
+            "reset_text": "resets in 6d 2h",
+            "limit_key": "0|codex|7d|0",
+            "reset_passed": false,
+            "value_text": "4% used"
           }
-        ]
+        ],
+        "plan_share": {
+          "calibration_state": "never",
+          "headline": "Not applicable: this client reports no weekly plan meter",
+          "chip_text": "no weekly share",
+          "sentence_text": "not applicable for this client"
+        },
+        "data_age_text": "as of 2m ago"
       }
     ],
     "plan": [
       {
         "client": "codex",
         "confidence": "provider_reported",
-        "calibration_state": "never"
+        "calibration_state": "never",
+        "headline": "Not applicable: this client reports no weekly plan meter",
+        "chip_text": "no weekly share",
+        "sentence_text": "not applicable for this client"
       },
       {
         "client": "claude-code",
@@ -209,7 +334,11 @@
         "calibration_state": "calibrating",
         "intervals_used": 9,
         "intervals_needed": 24,
-        "state_detail": "9 intervals recorded; calibration needs 24 or more stable intervals spanning at least one week"
+        "state_detail": "9 intervals recorded; calibration needs 24 or more stable intervals spanning at least one week",
+        "headline": "Calibrating: not enough 7-day limit history recorded yet",
+        "chip_text": "calibrating",
+        "sentence_text": "calibrating — not enough 7-day history yet",
+        "basis_text": "9 intervals recorded; calibration needs 24 or more stable intervals spanning at least one week"
       }
     ],
     "recent_sessions": [
@@ -217,23 +346,48 @@
         "client": "codex",
         "session_id": "01a041c8-fixture",
         "status": "in_progress",
+        "status_label": "In progress",
         "last_activity_at": 1787618788,
-        "plan_pct": 1.2
+        "plan_pct": 1.2,
+        "plan_share": {
+          "pct": 1.2,
+          "calibration_state": "never",
+          "headline": "not applicable for this client",
+          "chip_text": "no weekly share",
+          "sentence_text": "not applicable for this client"
+        }
       },
       {
         "client": "codex",
         "session_id": "01a04201-fixture",
         "status": "checkpoint",
-        "last_activity_at": 1787618752
+        "status_label": "In progress",
+        "last_activity_at": 1787618752,
+        "plan_share": {
+          "pct": null,
+          "calibration_state": "never",
+          "headline": "not applicable for this client",
+          "chip_text": "no weekly share",
+          "sentence_text": "not applicable for this client"
+        }
       },
       {
         "client": "claude-code",
         "session_id": "01a04255-fixture",
         "title": "Limit calibration",
         "status": "completed",
-        "last_activity_at": 1787618700
+        "status_label": "Completed",
+        "last_activity_at": 1787618700,
+        "plan_share": {
+          "pct": null,
+          "calibration_state": "calibrating",
+          "headline": "calibrating — not enough 7-day history yet",
+          "chip_text": "calibrating",
+          "sentence_text": "calibrating — not enough 7-day history yet"
+        }
       }
-    ]
+    ],
+    "headline_limit_key": "0|codex|7d|0"
   },
   "plan": {
     "schema": "agentacct.plan.v1",
@@ -250,7 +404,12 @@
           "today": null,
           "7d": null
         },
-        "daily": []
+        "daily": [],
+        "chip_text": "no weekly share",
+        "sentence_text": "not applicable for this client",
+        "headline": "Not applicable: this client reports no weekly plan meter",
+        "basis_text": "Provider-reported account truth",
+        "model_tokens_label": "tokens incl. cache-read"
       },
       {
         "client": "claude-code",
@@ -259,7 +418,12 @@
         "calibratable": true,
         "state_detail": "9 intervals recorded; it calibrates once it holds split-half stable across 24+ intervals spanning a week or more",
         "window_pcts": {},
-        "daily": []
+        "daily": [],
+        "chip_text": "calibrating",
+        "sentence_text": "calibrating — not enough 7-day history yet",
+        "headline": "Calibrating: not enough 7-day limit history recorded yet",
+        "basis_text": "9 intervals recorded; it calibrates once it holds split-half stable across 24+ intervals spanning a week or more",
+        "model_tokens_label": "tokens incl. cache-read"
       }
     ]
   },
@@ -268,6 +432,8 @@
     "ingestion": {
       "state": "healthy",
       "last_success_at": 1787618770,
+      "state_title": "Sources healthy",
+      "state_detail": "Every configured source completed its latest import and the watcher is running.",
       "issues": []
     }
   },
@@ -284,7 +450,9 @@
           "discovered": 1240,
           "parsed": 1200,
           "skipped": 40,
-          "last_success_at": 1787618766
+          "last_success_at": 1787618766,
+          "state_title": "Reporting",
+          "state_detail": "The latest import parsed rows and the running watcher keeps this source current."
         },
         {
           "source": "codex",
@@ -292,7 +460,9 @@
           "scope": "watched",
           "discovered": 980,
           "parsed": 980,
-          "last_success_at": 1787618766
+          "last_success_at": 1787618766,
+          "state_title": "Reporting",
+          "state_detail": "The latest import parsed rows and the running watcher keeps this source current."
         },
         {
           "source": "hermes",
@@ -300,15 +470,22 @@
           "scope": "watched",
           "discovered": 0,
           "parsed": 0,
-          "last_success_at": 1787618766
+          "last_success_at": 1787618766,
+          "state_title": "Watching · no data yet",
+          "state_detail": "The running watcher scans this source, but no import has parsed a row yet."
         }
       ],
       "watcher": {
         "state": "running",
         "interval_seconds": 60,
-        "heartbeat_at": 1787618770
+        "heartbeat_at": 1787618770,
+        "state_title": "Running",
+        "state_detail": "The importer keeps the store current in the background."
       },
-      "issues": []
+      "issues": [],
+      "state_title": "Sources healthy",
+      "state_detail": "Every configured source completed its latest import and the watcher is running.",
+      "state_detail_compact": "Every source imported · watcher running"
     }
   },
   "ingestion_degraded": {
@@ -324,7 +501,9 @@
           "discovered": 6595,
           "parsed": 2119,
           "last_failure_at": 1787617300,
-          "error_count": 17
+          "error_count": 17,
+          "state_title": "Degraded",
+          "state_detail": "The latest import recorded an issue; this source's data may be missing or stale."
         },
         {
           "source": "codex",
@@ -334,7 +513,9 @@
           "parsed": 64,
           "last_success_at": 1787617240,
           "last_failure_at": 1787617300,
-          "error_count": 1
+          "error_count": 1,
+          "state_title": "Degraded",
+          "state_detail": "The latest import recorded an issue; this source's data may be missing or stale."
         },
         {
           "source": "cursor",
@@ -344,7 +525,9 @@
           "parsed": 0,
           "last_success_at": 1787617240,
           "last_failure_at": 1787617300,
-          "error_count": 1
+          "error_count": 1,
+          "state_title": "Degraded",
+          "state_detail": "The latest import recorded an issue; this source's data may be missing or stale."
         },
         {
           "source": "hermes",
@@ -354,7 +537,9 @@
           "parsed": 0,
           "last_success_at": 1787617240,
           "last_failure_at": 1787617300,
-          "error_count": 1
+          "error_count": 1,
+          "state_title": "Degraded",
+          "state_detail": "The latest import recorded an issue; this source's data may be missing or stale."
         },
         {
           "source": "openclaw",
@@ -364,7 +549,9 @@
           "parsed": 4,
           "last_success_at": 1787617240,
           "last_failure_at": 1787617300,
-          "error_count": 1
+          "error_count": 1,
+          "state_title": "Degraded",
+          "state_detail": "The latest import recorded an issue; this source's data may be missing or stale."
         },
         {
           "source": "opencode",
@@ -374,13 +561,17 @@
           "parsed": 19,
           "last_success_at": 1787617240,
           "last_failure_at": 1787617300,
-          "error_count": 1
+          "error_count": 1,
+          "state_title": "Degraded",
+          "state_detail": "The latest import recorded an issue; this source's data may be missing or stale."
         }
       ],
       "watcher": {
         "state": "running",
         "interval_seconds": 60,
-        "heartbeat_at": 1787618770
+        "heartbeat_at": 1787618770,
+        "state_title": "Running",
+        "state_detail": "The importer keeps the store current in the background."
       },
       "issues": [
         {
@@ -403,7 +594,10 @@
           "severity": "error",
           "action": "Recorded usage for claude-code, codex, cursor, hermes, openclaw, opencode did not reconcile cleanly, so usage totals may be incomplete or conflicting. Refresh usage; if it persists, run `agentacct doctor` before rebuilding or cleaning any store."
         }
-      ]
+      ],
+      "state_title": "Sources degraded",
+      "state_detail": "At least one source recorded an import issue; its latest data may be missing or stale.",
+      "state_detail_compact": "A source recorded an import issue"
     }
   },
   "attention": {
@@ -423,8 +617,12 @@
         "project": "agentacct-gui",
         "decision_status": {
           "key": "finding",
-          "label": "Open finding",
-          "asserted_by": "machine"
+          "label": "Finding",
+          "asserted_by": "machine",
+          "asserted_by_label": "Machine check",
+          "statement": "A recorded check found an issue in the work being reviewed.",
+          "finding_attention_state": "open",
+          "blocker": null
         },
         "evidence_strength": {
           "key": "unchecked",
@@ -437,13 +635,43 @@
           },
           "checks_total": 1,
           "checks_passed": 0,
-          "checks_failed": 1
+          "checks_failed": 1,
+          "not_checkable": 0,
+          "open_or_incomplete": 0,
+          "stopped_blocked": 0,
+          "stopped_handed_off": 0,
+          "stopped_failed": 0,
+          "hidden_in_subagents": 0,
+          "subagents_by_bucket": {},
+          "unattributed_checks": 0,
+          "checks_superseded": 0,
+          "checks_earlier_failed": 0,
+          "still_open": 0,
+          "coverage_hero": "0/1 checked · 1 unchecked",
+          "coverage_row": "0/1 checked",
+          "coverage_tile": {
+            "value": "0/1",
+            "absent": null,
+            "qualifier": "completed steps checked"
+          },
+          "checks_tile": {
+            "value": "0/1",
+            "absent": null,
+            "qualifier": "0 passed · 1 failed"
+          },
+          "check_tally_text": "0/1 passed · 1 failed",
+          "check_runs_state": "failed"
         },
         "cost": {
           "estimated_cost_usd": 1.08,
           "cost_basis": "pricing_table",
           "cost_confidence": "estimated",
-          "cost_complete": true
+          "cost_complete": true,
+          "state": "complete",
+          "display_text": "≈$1.08",
+          "basis_label": "pricing estimate",
+          "legend": "~$ partial subtotal · ≈$ estimate · $ reported or billed",
+          "gap_text": null
         },
         "primary_root": {
           "client": "codex",
@@ -452,11 +680,52 @@
         "last_activity_at": 1787618080,
         "attention": {
           "kind": "failed_check",
+          "reason_label": "Failed check",
           "summary": "The minimum-window snapshot differs from its reviewed reference.",
+          "check_name": null,
+          "evidence_type": null,
+          "result": "failed",
+          "result_label": "Failed",
+          "result_tone": "failure",
+          "note_text": null,
+          "exit_code": null,
+          "section_title": null,
+          "label": "Failed check",
           "next_step": "Inspect the changed hierarchy before accepting a new reference.",
           "observed_at": 1787618080,
-          "source": "mcp"
-        }
+          "source": "mcp",
+          "source_label": "Agent-reported",
+          "action_token": null,
+          "target_digest": null,
+          "revision": 0,
+          "disposition_state": "open",
+          "disposition_note": null,
+          "open": true,
+          "effects": {
+            "reviewed": "Marks the finding reviewed by you; it stays a Finding until resolved.",
+            "resolved": "Marks the finding resolved by you and clears it from Needs attention; the failing check stays in history."
+          }
+        },
+        "verdict": {
+          "headline": "Finding — 0/1 checked",
+          "decision_key": "finding",
+          "evidence_key": "unchecked",
+          "gap": "1 completed step unchecked",
+          "gap_evidence": [
+            "1 completed step unchecked"
+          ],
+          "gap_cost": [],
+          "gap_label": "Not yet proven",
+          "gap_text": "1 completed step unchecked",
+          "proof_clause": "0/1 checked",
+          "ledger_evidence": [],
+          "ledger_text": null
+        },
+        "handed_off": false,
+        "attention_open": true,
+        "group_key": "attention",
+        "attention_order": 0,
+        "lifecycle_marker_text": null
       },
       {
         "task_id": "task-provider-calibration",
@@ -465,7 +734,11 @@
         "decision_status": {
           "key": "blocked",
           "label": "Blocked",
-          "asserted_by": "agent_report"
+          "asserted_by": "agent_report",
+          "asserted_by_label": "Agent-reported",
+          "statement": "The agent recorded a blocker for this Task.",
+          "finding_attention_state": null,
+          "blocker": null
         },
         "evidence_strength": {
           "key": "not_gradeable",
@@ -474,9 +747,40 @@
           "checked_total": 0,
           "checks_total": 0,
           "checks_passed": 0,
-          "checks_failed": 0
+          "checks_failed": 0,
+          "not_checkable": 0,
+          "open_or_incomplete": 0,
+          "stopped_blocked": 0,
+          "stopped_handed_off": 0,
+          "stopped_failed": 0,
+          "hidden_in_subagents": 0,
+          "subagents_by_bucket": {},
+          "unattributed_checks": 0,
+          "checks_superseded": 0,
+          "checks_earlier_failed": 0,
+          "still_open": 0,
+          "coverage_hero": "Not gradeable (only step stopped: blocked)",
+          "coverage_row": "not gradeable",
+          "coverage_tile": {
+            "value": null,
+            "absent": "not gradeable",
+            "qualifier": "only step stopped: blocked"
+          },
+          "checks_tile": {
+            "value": null,
+            "absent": "no checks recorded",
+            "qualifier": null
+          },
+          "check_tally_text": "no checks recorded",
+          "check_runs_state": "none"
         },
-        "cost": {},
+        "cost": {
+          "state": "no_usage",
+          "display_text": "no usage recorded",
+          "basis_label": "cost basis not reported",
+          "legend": "~$ partial subtotal · ≈$ estimate · $ reported or billed",
+          "gap_text": "no usage recorded"
+        },
         "primary_root": {
           "client": "codex",
           "client_session_id": "fixture-blocked"
@@ -484,13 +788,59 @@
         "last_activity_at": 1787617900,
         "attention": {
           "kind": "blocker",
+          "reason_label": "Blocker",
           "summary": "Provider allowance calibration is waiting for a complete observation window.",
+          "check_name": null,
+          "evidence_type": null,
+          "result": null,
+          "exit_code": null,
+          "section_title": null,
+          "label": "Blocker",
           "next_step": "Review the recorded calibration state before changing provider settings.",
           "observed_at": 1787617900,
-          "source": "mcp"
-        }
+          "source": "mcp",
+          "source_label": "Agent-reported",
+          "action_token": null,
+          "target_digest": null,
+          "revision": 0,
+          "disposition_state": "open",
+          "disposition_note": null,
+          "open": true,
+          "effects": {
+            "reviewed": null,
+            "resolved": null
+          }
+        },
+        "verdict": {
+          "headline": "Blocked — not gradeable (only step stopped: blocked)",
+          "decision_key": "blocked",
+          "evidence_key": "not_gradeable",
+          "gap": "1 step blocked · no usage recorded",
+          "gap_evidence": [],
+          "gap_cost": [
+            "no usage recorded"
+          ],
+          "gap_label": null,
+          "gap_text": null,
+          "proof_clause": "Not gradeable (only step stopped: blocked)",
+          "ledger_evidence": [
+            "1 step blocked"
+          ],
+          "ledger_text": "1 step blocked"
+        },
+        "handed_off": false,
+        "attention_open": true,
+        "group_key": "attention",
+        "attention_order": 1,
+        "lifecycle_marker_text": null
       }
-    ]
+    ],
+    "queue": {
+      "noun": "Attention",
+      "count_text": "2 in Attention",
+      "open_action": "Open Attention",
+      "sort_text": "failed checks and steps, then blockers, then checks that could not run, then most recent"
+    }
   },
   "tasks": {
     "schema": "agentacct.receipt.v1",
@@ -503,7 +853,11 @@
         "decision_status": {
           "key": "verified",
           "label": "Verified",
-          "asserted_by": "machine"
+          "asserted_by": "machine",
+          "asserted_by_label": "Machine check",
+          "statement": "Recorded machine evidence verifies the latest outcome.",
+          "finding_attention_state": null,
+          "blocker": null
         },
         "evidence_strength": {
           "key": "independently_checked",
@@ -516,27 +870,80 @@
           },
           "checks_total": 4,
           "checks_passed": 4,
-          "checks_failed": 0
+          "checks_failed": 0,
+          "not_checkable": 0,
+          "open_or_incomplete": 0,
+          "stopped_blocked": 0,
+          "stopped_handed_off": 0,
+          "stopped_failed": 0,
+          "hidden_in_subagents": 0,
+          "subagents_by_bucket": {},
+          "unattributed_checks": 0,
+          "checks_superseded": 0,
+          "checks_earlier_failed": 0,
+          "still_open": 0,
+          "coverage_hero": "4/4 independently checked",
+          "coverage_row": "4/4 independently checked",
+          "coverage_tile": {
+            "value": "4/4",
+            "absent": null,
+            "qualifier": "independently checked completed steps"
+          },
+          "checks_tile": {
+            "value": "4/4",
+            "absent": null,
+            "qualifier": "4 passed"
+          },
+          "check_tally_text": "4/4 passed",
+          "check_runs_state": "passed"
         },
         "cost": {
           "estimated_cost_usd": 4.82,
           "cost_basis": "pricing_table",
           "cost_confidence": "estimated",
-          "cost_complete": true
+          "cost_complete": true,
+          "state": "complete",
+          "display_text": "≈$4.82",
+          "basis_label": "pricing estimate",
+          "legend": "~$ partial subtotal · ≈$ estimate · $ reported or billed",
+          "gap_text": null
         },
         "primary_root": {
           "client": "codex",
           "client_session_id": "fixture-active-02"
         },
-        "last_activity_at": 1787618680
+        "last_activity_at": 1787618680,
+        "verdict": {
+          "headline": "Verified — 4/4 independently checked",
+          "decision_key": "verified",
+          "evidence_key": "independently_checked",
+          "gap": null,
+          "gap_evidence": [],
+          "gap_cost": [],
+          "gap_label": null,
+          "gap_text": null,
+          "proof_clause": "4/4 independently checked",
+          "ledger_evidence": [],
+          "ledger_text": null
+        },
+        "handed_off": false,
+        "attention": null,
+        "attention_open": false,
+        "group_key": "verified",
+        "attention_order": null,
+        "lifecycle_marker_text": null
       },
       {
         "task_id": "task-dashboard-hierarchy",
         "title": "Rethink dashboard product hierarchy",
         "decision_status": {
           "key": "reported",
-          "label": "Agent reported",
-          "asserted_by": "agent_report"
+          "label": "Reported",
+          "asserted_by": "agent_report",
+          "asserted_by_label": "Agent-reported",
+          "statement": "The agent reported completing work; no check verifies the completion claim itself.",
+          "finding_attention_state": null,
+          "blocker": null
         },
         "evidence_strength": {
           "key": "self_checked",
@@ -550,19 +957,70 @@
           },
           "checks_total": 2,
           "checks_passed": 2,
-          "checks_failed": 0
+          "checks_failed": 0,
+          "not_checkable": 0,
+          "open_or_incomplete": 0,
+          "stopped_blocked": 0,
+          "stopped_handed_off": 0,
+          "stopped_failed": 0,
+          "hidden_in_subagents": 0,
+          "subagents_by_bucket": {},
+          "unattributed_checks": 0,
+          "checks_superseded": 0,
+          "checks_earlier_failed": 0,
+          "still_open": 0,
+          "coverage_hero": "2/3 self-checked · 1 unchecked",
+          "coverage_row": "2/3 self-checked",
+          "coverage_tile": {
+            "value": "2/3",
+            "absent": null,
+            "qualifier": "self-checked completed steps"
+          },
+          "checks_tile": {
+            "value": "2/2",
+            "absent": null,
+            "qualifier": "2 passed"
+          },
+          "check_tally_text": "2/2 passed",
+          "check_runs_state": "passed"
         },
         "cost": {
           "estimated_cost_usd": 2.16,
           "cost_basis": "pricing_table",
           "cost_confidence": "estimated",
-          "cost_complete": true
+          "cost_complete": true,
+          "state": "complete",
+          "display_text": "≈$2.16",
+          "basis_label": "pricing estimate",
+          "legend": "~$ partial subtotal · ≈$ estimate · $ reported or billed",
+          "gap_text": null
         },
         "primary_root": {
           "client": "codex",
           "client_session_id": "fixture-active-01"
         },
-        "last_activity_at": 1787618140
+        "last_activity_at": 1787618140,
+        "verdict": {
+          "headline": "Reported — 2/3 self-checked",
+          "decision_key": "reported",
+          "evidence_key": "self_checked",
+          "gap": "1 completed step unchecked",
+          "gap_evidence": [
+            "1 completed step unchecked"
+          ],
+          "gap_cost": [],
+          "gap_label": "Not yet proven",
+          "gap_text": "1 completed step unchecked",
+          "proof_clause": "2/3 self-checked",
+          "ledger_evidence": [],
+          "ledger_text": null
+        },
+        "handed_off": false,
+        "attention": null,
+        "attention_open": false,
+        "group_key": "reported",
+        "attention_order": null,
+        "lifecycle_marker_text": null
       },
       {
         "task_id": "task-provider-calibration",
@@ -570,7 +1028,11 @@
         "decision_status": {
           "key": "blocked",
           "label": "Blocked",
-          "asserted_by": "agent_report"
+          "asserted_by": "agent_report",
+          "asserted_by_label": "Agent-reported",
+          "statement": "The agent recorded a blocker for this Task.",
+          "finding_attention_state": null,
+          "blocker": null
         },
         "evidence_strength": {
           "key": "not_gradeable",
@@ -579,22 +1041,104 @@
           "checked_total": 0,
           "checks_total": 0,
           "checks_passed": 0,
-          "checks_failed": 0
+          "checks_failed": 0,
+          "not_checkable": 0,
+          "open_or_incomplete": 0,
+          "stopped_blocked": 0,
+          "stopped_handed_off": 0,
+          "stopped_failed": 0,
+          "hidden_in_subagents": 0,
+          "subagents_by_bucket": {},
+          "unattributed_checks": 0,
+          "checks_superseded": 0,
+          "checks_earlier_failed": 0,
+          "still_open": 0,
+          "coverage_hero": "Not gradeable (only step stopped: blocked)",
+          "coverage_row": "not gradeable",
+          "coverage_tile": {
+            "value": null,
+            "absent": "not gradeable",
+            "qualifier": "only step stopped: blocked"
+          },
+          "checks_tile": {
+            "value": null,
+            "absent": "no checks recorded",
+            "qualifier": null
+          },
+          "check_tally_text": "no checks recorded",
+          "check_runs_state": "none"
         },
-        "cost": {},
+        "cost": {
+          "state": "no_usage",
+          "display_text": "no usage recorded",
+          "basis_label": "cost basis not reported",
+          "legend": "~$ partial subtotal · ≈$ estimate · $ reported or billed",
+          "gap_text": "no usage recorded"
+        },
         "primary_root": {
           "client": "codex",
           "client_session_id": "fixture-blocked"
         },
-        "last_activity_at": 1787617900
+        "last_activity_at": 1787617900,
+        "verdict": {
+          "headline": "Blocked — not gradeable (only step stopped: blocked)",
+          "decision_key": "blocked",
+          "evidence_key": "not_gradeable",
+          "gap": "1 step blocked · no usage recorded",
+          "gap_evidence": [],
+          "gap_cost": [
+            "no usage recorded"
+          ],
+          "gap_label": null,
+          "gap_text": null,
+          "proof_clause": "Not gradeable (only step stopped: blocked)",
+          "ledger_evidence": [
+            "1 step blocked"
+          ],
+          "ledger_text": "1 step blocked"
+        },
+        "handed_off": false,
+        "attention": {
+          "kind": "blocker",
+          "reason_label": "Blocker",
+          "summary": "Provider allowance calibration is waiting for a complete observation window.",
+          "check_name": null,
+          "evidence_type": null,
+          "result": null,
+          "exit_code": null,
+          "section_title": null,
+          "label": "Blocker",
+          "next_step": "Review the recorded calibration state before changing provider settings.",
+          "observed_at": 1787617900,
+          "source": "mcp",
+          "source_label": "Agent-reported",
+          "action_token": null,
+          "target_digest": null,
+          "revision": 0,
+          "disposition_state": "open",
+          "disposition_note": null,
+          "open": true,
+          "effects": {
+            "reviewed": null,
+            "resolved": null
+          }
+        },
+        "attention_open": true,
+        "group_key": "attention",
+        "attention_order": 1,
+        "lifecycle_marker_text": null
       },
       {
         "task_id": "task-visual-regression",
         "title": "Review dashboard visual regression",
         "decision_status": {
           "key": "finding",
-          "label": "Open finding",
-          "asserted_by": "machine"
+          "label": "Finding",
+          "asserted_by": "machine",
+          "asserted_by_label": "Machine check",
+          "statement": "A recorded check found an issue in the work being reviewed.",
+          "finding_attention_state": "open",
+          "blocker": null
         },
         "evidence_strength": {
           "key": "unchecked",
@@ -607,19 +1151,97 @@
           },
           "checks_total": 1,
           "checks_passed": 0,
-          "checks_failed": 1
+          "checks_failed": 1,
+          "not_checkable": 0,
+          "open_or_incomplete": 0,
+          "stopped_blocked": 0,
+          "stopped_handed_off": 0,
+          "stopped_failed": 0,
+          "hidden_in_subagents": 0,
+          "subagents_by_bucket": {},
+          "unattributed_checks": 0,
+          "checks_superseded": 0,
+          "checks_earlier_failed": 0,
+          "still_open": 0,
+          "coverage_hero": "0/1 checked · 1 unchecked",
+          "coverage_row": "0/1 checked",
+          "coverage_tile": {
+            "value": "0/1",
+            "absent": null,
+            "qualifier": "completed steps checked"
+          },
+          "checks_tile": {
+            "value": "0/1",
+            "absent": null,
+            "qualifier": "0 passed · 1 failed"
+          },
+          "check_tally_text": "0/1 passed · 1 failed",
+          "check_runs_state": "failed"
         },
         "cost": {
           "estimated_cost_usd": 1.08,
           "cost_basis": "pricing_table",
           "cost_confidence": "estimated",
-          "cost_complete": true
+          "cost_complete": true,
+          "state": "complete",
+          "display_text": "≈$1.08",
+          "basis_label": "pricing estimate",
+          "legend": "~$ partial subtotal · ≈$ estimate · $ reported or billed",
+          "gap_text": null
         },
         "primary_root": {
           "client": "codex",
           "client_session_id": "fixture-failed"
         },
-        "last_activity_at": 1787618080
+        "last_activity_at": 1787618080,
+        "verdict": {
+          "headline": "Finding — 0/1 checked",
+          "decision_key": "finding",
+          "evidence_key": "unchecked",
+          "gap": "1 completed step unchecked",
+          "gap_evidence": [
+            "1 completed step unchecked"
+          ],
+          "gap_cost": [],
+          "gap_label": "Not yet proven",
+          "gap_text": "1 completed step unchecked",
+          "proof_clause": "0/1 checked",
+          "ledger_evidence": [],
+          "ledger_text": null
+        },
+        "handed_off": false,
+        "attention": {
+          "kind": "failed_check",
+          "reason_label": "Failed check",
+          "summary": "The minimum-window snapshot differs from its reviewed reference.",
+          "check_name": null,
+          "evidence_type": null,
+          "result": "failed",
+          "result_label": "Failed",
+          "result_tone": "failure",
+          "note_text": null,
+          "exit_code": null,
+          "section_title": null,
+          "label": "Failed check",
+          "next_step": "Inspect the changed hierarchy before accepting a new reference.",
+          "observed_at": 1787618080,
+          "source": "mcp",
+          "source_label": "Agent-reported",
+          "action_token": null,
+          "target_digest": null,
+          "revision": 0,
+          "disposition_state": "open",
+          "disposition_note": null,
+          "open": true,
+          "effects": {
+            "reviewed": "Marks the finding reviewed by you; it stays a Finding until resolved.",
+            "resolved": "Marks the finding resolved by you and clears it from Needs attention; the failing check stays in history."
+          }
+        },
+        "attention_open": true,
+        "group_key": "attention",
+        "attention_order": 0,
+        "lifecycle_marker_text": null
       }
     ],
     "attention": {
@@ -632,16 +1254,115 @@
           "title": "Review dashboard visual regression",
           "decision_status": {
             "key": "finding",
-            "label": "Open finding",
-            "asserted_by": "machine"
+            "label": "Finding",
+            "asserted_by": "machine",
+            "asserted_by_label": "Machine check",
+            "statement": "A recorded check found an issue in the work being reviewed.",
+            "finding_attention_state": "open",
+            "blocker": null
           },
           "evidence_strength": {
             "key": "unchecked",
             "gradeable": true,
-            "checks_failed": 1
+            "strongest_tier": "unchecked",
+            "checkable_total": 1,
+            "checked_total": 0,
+            "by_tier": {
+              "unchecked": 1
+            },
+            "checks_total": 1,
+            "checks_passed": 0,
+            "checks_failed": 1,
+            "not_checkable": 0,
+            "open_or_incomplete": 0,
+            "stopped_blocked": 0,
+            "stopped_handed_off": 0,
+            "stopped_failed": 0,
+            "hidden_in_subagents": 0,
+            "subagents_by_bucket": {},
+            "unattributed_checks": 0,
+            "checks_superseded": 0,
+            "checks_earlier_failed": 0,
+            "still_open": 0,
+            "coverage_hero": "0/1 checked · 1 unchecked",
+            "coverage_row": "0/1 checked",
+            "coverage_tile": {
+              "value": "0/1",
+              "absent": null,
+              "qualifier": "completed steps checked"
+            },
+            "checks_tile": {
+              "value": "0/1",
+              "absent": null,
+              "qualifier": "0 passed · 1 failed"
+            },
+            "check_tally_text": "0/1 passed · 1 failed",
+            "check_runs_state": "failed"
           },
-          "cost": {},
-          "last_activity_at": 1787618080
+          "cost": {
+            "estimated_cost_usd": 1.08,
+            "cost_basis": "pricing_table",
+            "cost_confidence": "estimated",
+            "cost_complete": true,
+            "state": "complete",
+            "display_text": "≈$1.08",
+            "basis_label": "pricing estimate",
+            "legend": "~$ partial subtotal · ≈$ estimate · $ reported or billed",
+            "gap_text": null
+          },
+          "last_activity_at": 1787618080,
+          "primary_root": {
+            "client": "codex",
+            "client_session_id": "fixture-failed"
+          },
+          "verdict": {
+            "headline": "Finding — 0/1 checked",
+            "decision_key": "finding",
+            "evidence_key": "unchecked",
+            "gap": "1 completed step unchecked",
+            "gap_evidence": [
+              "1 completed step unchecked"
+            ],
+            "gap_cost": [],
+            "gap_label": "Not yet proven",
+            "gap_text": "1 completed step unchecked",
+            "proof_clause": "0/1 checked",
+            "ledger_evidence": [],
+            "ledger_text": null
+          },
+          "handed_off": false,
+          "attention": {
+            "kind": "failed_check",
+            "reason_label": "Failed check",
+            "summary": "The minimum-window snapshot differs from its reviewed reference.",
+            "check_name": null,
+            "evidence_type": null,
+            "result": "failed",
+            "result_label": "Failed",
+            "result_tone": "failure",
+            "note_text": null,
+            "exit_code": null,
+            "section_title": null,
+            "label": "Failed check",
+            "next_step": "Inspect the changed hierarchy before accepting a new reference.",
+            "observed_at": 1787618080,
+            "source": "mcp",
+            "source_label": "Agent-reported",
+            "action_token": null,
+            "target_digest": null,
+            "revision": 0,
+            "disposition_state": "open",
+            "disposition_note": null,
+            "open": true,
+            "effects": {
+              "reviewed": "Marks the finding reviewed by you; it stays a Finding until resolved.",
+              "resolved": "Marks the finding resolved by you and clears it from Needs attention; the failing check stays in history."
+            }
+          },
+          "attention_open": true,
+          "group_key": "attention",
+          "attention_order": 0,
+          "lifecycle_marker_text": null
         },
         {
           "task_id": "task-provider-calibration",
@@ -649,17 +1370,257 @@
           "decision_status": {
             "key": "blocked",
             "label": "Blocked",
-            "asserted_by": "agent_report"
+            "asserted_by": "agent_report",
+            "asserted_by_label": "Agent-reported",
+            "statement": "The agent recorded a blocker for this Task.",
+            "finding_attention_state": null,
+            "blocker": null
           },
           "evidence_strength": {
             "key": "not_gradeable",
             "gradeable": false,
-            "checks_failed": 0
+            "checkable_total": 0,
+            "checked_total": 0,
+            "checks_total": 0,
+            "checks_passed": 0,
+            "checks_failed": 0,
+            "not_checkable": 0,
+            "open_or_incomplete": 0,
+            "stopped_blocked": 0,
+            "stopped_handed_off": 0,
+            "stopped_failed": 0,
+            "hidden_in_subagents": 0,
+            "subagents_by_bucket": {},
+            "unattributed_checks": 0,
+            "checks_superseded": 0,
+            "checks_earlier_failed": 0,
+            "still_open": 0,
+            "coverage_hero": "Not gradeable (only step stopped: blocked)",
+            "coverage_row": "not gradeable",
+            "coverage_tile": {
+              "value": null,
+              "absent": "not gradeable",
+              "qualifier": "only step stopped: blocked"
+            },
+            "checks_tile": {
+              "value": null,
+              "absent": "no checks recorded",
+              "qualifier": null
+            },
+            "check_tally_text": "no checks recorded",
+            "check_runs_state": "none"
           },
-          "cost": {},
-          "last_activity_at": 1787617900
+          "cost": {
+            "state": "no_usage",
+            "display_text": "no usage recorded",
+            "basis_label": "cost basis not reported",
+            "legend": "~$ partial subtotal · ≈$ estimate · $ reported or billed",
+            "gap_text": "no usage recorded"
+          },
+          "last_activity_at": 1787617900,
+          "primary_root": {
+            "client": "codex",
+            "client_session_id": "fixture-blocked"
+          },
+          "verdict": {
+            "headline": "Blocked — not gradeable (only step stopped: blocked)",
+            "decision_key": "blocked",
+            "evidence_key": "not_gradeable",
+            "gap": "1 step blocked · no usage recorded",
+            "gap_evidence": [],
+            "gap_cost": [
+              "no usage recorded"
+            ],
+            "gap_label": null,
+            "gap_text": null,
+            "proof_clause": "Not gradeable (only step stopped: blocked)",
+            "ledger_evidence": [
+              "1 step blocked"
+            ],
+            "ledger_text": "1 step blocked"
+          },
+          "handed_off": false,
+          "attention": {
+            "kind": "blocker",
+            "reason_label": "Blocker",
+            "summary": "Provider allowance calibration is waiting for a complete observation window.",
+            "check_name": null,
+            "evidence_type": null,
+            "result": null,
+            "exit_code": null,
+            "section_title": null,
+            "label": "Blocker",
+            "next_step": "Review the recorded calibration state before changing provider settings.",
+            "observed_at": 1787617900,
+            "source": "mcp",
+            "source_label": "Agent-reported",
+            "action_token": null,
+            "target_digest": null,
+            "revision": 0,
+            "disposition_state": "open",
+            "disposition_note": null,
+            "open": true,
+            "effects": {
+              "reviewed": null,
+              "resolved": null
+            }
+          },
+          "attention_open": true,
+          "group_key": "attention",
+          "attention_order": 1,
+          "lifecycle_marker_text": null
         }
       ]
+    },
+    "decision_legend": {
+      "decisions": [
+        {
+          "key": "blocked",
+          "label": "Blocked",
+          "definition": "The agent recorded a blocker for this Task.",
+          "group_key": "attention"
+        },
+        {
+          "key": "failed",
+          "label": "Failed",
+          "definition": "A step was recorded as failed.",
+          "group_key": "attention"
+        },
+        {
+          "key": "finding",
+          "label": "Finding",
+          "definition": "A recorded check found an issue in the work being reviewed.",
+          "group_key": "attention"
+        },
+        {
+          "key": "in_progress",
+          "label": "In progress",
+          "definition": "This Task is still in progress.",
+          "group_key": "in_progress"
+        },
+        {
+          "key": "verified",
+          "label": "Verified",
+          "definition": "Recorded machine evidence verifies the latest outcome.",
+          "group_key": "verified"
+        },
+        {
+          "key": "reported",
+          "label": "Reported",
+          "definition": "The agent reported completing work; no check verifies the completion claim itself.",
+          "group_key": "reported"
+        },
+        {
+          "key": "resolved",
+          "label": "Resolved",
+          "definition": "A later passed check reports the exact blocker resolved; this is not a verified completion.",
+          "group_key": "reported"
+        },
+        {
+          "key": "mostly_done",
+          "label": "Mostly done",
+          "definition": "Recorded steps completed while one or more were left open; not a claim the Task is finished.",
+          "group_key": "reported"
+        },
+        {
+          "key": "handed_off",
+          "label": "Handed off",
+          "definition": "The agent handed this work off; a deliberate stop, not a completed or verified outcome. Picked up by: not recorded.",
+          "group_key": "stopped"
+        },
+        {
+          "key": "blocker_resolved_by_user",
+          "label": "Blocker resolved",
+          "definition": "You marked the recorded blocker resolved; not a completion claim and not machine verification.",
+          "group_key": "reported"
+        },
+        {
+          "key": "finding_resolved_by_user",
+          "label": "Finding resolved",
+          "definition": "You marked the recorded finding resolved; the failing check stays in history — this is not machine verification.",
+          "group_key": "reported"
+        },
+        {
+          "key": "finding_superseded",
+          "label": "Finding superseded",
+          "definition": "A recorded check failed, but a later same-scope check passed; the finding is kept in history and is not a verified outcome.",
+          "group_key": "reported"
+        },
+        {
+          "key": "ended_open",
+          "label": "Ended open",
+          "definition": "The session ended with a step still open; agentacct inferred the stop — not a recorded completion or a deliberate handoff.",
+          "group_key": "stopped"
+        },
+        {
+          "key": "inactive",
+          "label": "Inactive",
+          "definition": "Open steps, nothing recorded as finished, and work has since continued elsewhere — agentacct inferred it went quiet. Not a completion, and not a stated stop.",
+          "group_key": "stopped"
+        },
+        {
+          "key": "observed",
+          "label": "No work recorded",
+          "definition": "agentacct saw this Task but no work steps were recorded.",
+          "group_key": "observed"
+        }
+      ],
+      "groups": [
+        {
+          "key": "attention",
+          "label": "Attention",
+          "definition": "Tasks with an open failed check, failed step, blocker, or check that could not run that you have not reviewed."
+        },
+        {
+          "key": "verified",
+          "label": "Verified",
+          "definition": "Recorded machine evidence verifies the latest outcome."
+        },
+        {
+          "key": "reported",
+          "label": "Reported",
+          "definition": "The agent or you settled the work; no check verifies the completion itself."
+        },
+        {
+          "key": "in_progress",
+          "label": "In progress",
+          "definition": "This Task is still in progress."
+        },
+        {
+          "key": "observed",
+          "label": "No work recorded",
+          "definition": "agentacct saw this Task but no work steps were recorded."
+        },
+        {
+          "key": "stopped",
+          "label": "Stopped",
+          "definition": "Work that stopped without finishing: handed off, ended open, or inactive."
+        },
+        {
+          "key": "other",
+          "label": "Other",
+          "definition": "Every Task outside the groups above, including reviewed items no longer in Attention."
+        }
+      ]
+    },
+    "queue": {
+      "noun": "Attention",
+      "count_text": "2 in Attention",
+      "open_action": "Open Attention",
+      "sort_text": "failed checks and steps, then blockers, then checks that could not run, then most recent"
+    },
+    "field_labels": {
+      "task": "Task",
+      "decision": "Decision",
+      "outcome": "Decision",
+      "coverage": "Coverage",
+      "checks": "Checks",
+      "evidence": "Checks",
+      "cost": "Cost",
+      "agents": "Agents",
+      "actors": "Agents",
+      "actions": "Tool calls",
+      "weekly_plan": "Weekly plan"
     }
   },
   "work": {
@@ -673,7 +1634,10 @@
           "key": "verified",
           "label": "Verified",
           "statement": "The deterministic snapshot harness is implemented and its renderer checks passed.",
-          "asserted_by": "machine"
+          "asserted_by": "machine",
+          "asserted_by_label": "Machine check",
+          "finding_attention_state": null,
+          "blocker": null
         },
         "evidence_strength": {
           "key": "independently_checked",
@@ -692,9 +1656,61 @@
           "checks_total": 6,
           "checks_passed": 6,
           "checks_failed": 0,
-          "definition": "Passing checks observed by a client hook cover every checkable step."
+          "definition": "Passing checks observed by a client hook cover every checkable step.",
+          "stopped_blocked": 0,
+          "stopped_handed_off": 0,
+          "stopped_failed": 0,
+          "subagents_by_bucket": {
+            "independently_checked": 1
+          },
+          "checks_superseded": 0,
+          "checks_earlier_failed": 0,
+          "still_open": 0,
+          "tier_legend": [
+            {
+              "key": "externally_verified",
+              "label": "externally verified",
+              "definition": "CI or the model provider ran the check outside the agent's session and reported the result."
+            },
+            {
+              "key": "independently_checked",
+              "label": "independently checked",
+              "definition": "An agentacct client hook saw the check run in the agent's session, apart from the agent's own report."
+            },
+            {
+              "key": "self_checked",
+              "label": "self-checked",
+              "definition": "The agent ran the check itself and reported the result."
+            },
+            {
+              "key": "unchecked",
+              "label": "unchecked",
+              "definition": "No one ran a passing check for this step; only the agent's report says it is done."
+            }
+          ],
+          "coverage_hero": "4/4 independently checked",
+          "coverage_row": "4/4 independently checked",
+          "coverage_tile": {
+            "value": "4/4",
+            "absent": null,
+            "qualifier": "independently checked completed steps"
+          },
+          "checks_tile": {
+            "value": "6/6",
+            "absent": null,
+            "qualifier": "6 passed"
+          },
+          "check_tally_text": "6/6 passed",
+          "check_runs_state": "passed",
+          "coverage_ledger": "2 checks not linked to a step · 1 not check-relevant",
+          "scope_definition": "Not check-relevant: review, research, planning, docs"
         },
-        "orthogonality_note": "Evidence coverage and decision status are separate axes: an agent reporting done never adds a passing check, and a human review never counts as machine verification."
+        "orthogonality_note": "Evidence coverage and decision status are separate axes: an agent reporting done never adds a passing check, and a human review never counts as machine verification.",
+        "handoff": {
+          "handed_off": false,
+          "statement": null,
+          "asserted_by": "agent_report"
+        }
       },
       "dimensions": {
         "task": {
@@ -705,7 +1721,9 @@
           "boundary": {
             "project": "agentacct-gui",
             "identity_scope": "repository",
-            "session_count": 3
+            "session_count": 3,
+            "root_count": 2,
+            "is_continuation": false
           },
           "provenance": [
             "agent_report",
@@ -818,7 +1836,55 @@
           },
           "provenance": [
             "client_log"
-          ]
+          ],
+          "actions_synopsis": {
+            "state": "exact",
+            "headline": "80 tool calls captured",
+            "integrity_detail": null,
+            "metrics": [
+              {
+                "key": "read",
+                "label": "Read",
+                "detail": "File or context read tool calls",
+                "count": 38
+              },
+              {
+                "key": "edit",
+                "label": "Edit",
+                "detail": "Edit or write tool calls",
+                "count": 7
+              },
+              {
+                "key": "execute",
+                "label": "Execute",
+                "detail": "Command or process tool calls",
+                "count": 24
+              },
+              {
+                "key": "search",
+                "label": "Search",
+                "detail": "File or text search tool calls",
+                "count": 11
+              }
+            ],
+            "can_show_distribution": true,
+            "capture_boundary": "No ordered action ledger; captured tool-call counts cannot be linked to results or timing.",
+            "stored_total": 80,
+            "categorized_total": 80,
+            "tile": {
+              "value": "80",
+              "absent": null,
+              "qualifier": "Hook-captured"
+            }
+          },
+          "actions_tile": {
+            "value": "80",
+            "absent": null,
+            "qualifier": "Hook-captured"
+          },
+          "related_paths_text": "18 related paths",
+          "related_paths_definition": "Related paths are unique paths from recorded work, machine checks, or captured edit tool calls — recorded associations, not modified files.",
+          "action_sources_text": "Hook-captured"
         },
         "cost": {
           "estimated_cost_usd": 4.82,
@@ -841,7 +1907,13 @@
           "provenance": [
             "client_log",
             "pricing_table"
-          ]
+          ],
+          "state": "complete",
+          "display_text": "≈$4.82",
+          "basis_label": "pricing estimate",
+          "legend": "~$ partial subtotal · ≈$ estimate · $ reported or billed",
+          "gap_text": null,
+          "plan_share_headline": "≈2.7% of weekly plan"
         },
         "evidence": {
           "checks_total": 6,
@@ -852,62 +1924,146 @@
               "kind": "test",
               "name": "Swift semantic suite",
               "result": "passed",
+              "result_label": "Passed",
+              "result_tone": "pass",
+              "note_text": null,
               "exit_code": 0,
               "scope": "app",
               "source": "hook",
+              "source_label": "Hook-captured",
               "at": 1787618500,
               "summary": "All Swift unit and interaction tests passed.",
-              "command_redacted": true
+              "command_redacted": true,
+              "evidence_type": "test",
+              "title": "Swift semantic suite",
+              "superseded": false,
+              "superseded_definition": null,
+              "command_state_text": "The agent's command argument was not stored; the title is the name the agent recorded.",
+              "revision": null,
+              "revision_label": "revision not captured",
+              "runs_total": 1,
+              "earlier_failed": 0,
+              "finding": null
             },
             {
               "kind": "test",
               "name": "Deterministic repeat render",
               "result": "passed",
+              "result_label": "Passed",
+              "result_tone": "pass",
+              "note_text": null,
               "exit_code": 0,
               "scope": "visual harness",
               "source": "hook",
+              "source_label": "Hook-captured",
               "at": 1787618540,
               "summary": "Two fixture renders stayed inside the one-channel antialiasing budget.",
-              "artifact_ref": "snapshot-matrix"
+              "artifact_ref": "snapshot-matrix",
+              "evidence_type": "test",
+              "title": "Deterministic repeat render",
+              "superseded": false,
+              "superseded_definition": null,
+              "command_state_text": null,
+              "revision": null,
+              "revision_label": "revision not captured",
+              "runs_total": 1,
+              "earlier_failed": 0,
+              "finding": null
             },
             {
               "kind": "test",
               "name": "Light and dark references",
               "result": "passed",
+              "result_label": "Passed",
+              "result_tone": "pass",
+              "note_text": null,
               "exit_code": 0,
               "scope": "visual baselines",
               "source": "hook",
-              "at": 1787618580
+              "source_label": "Hook-captured",
+              "at": 1787618580,
+              "evidence_type": "test",
+              "title": "Light and dark references",
+              "superseded": false,
+              "superseded_definition": null,
+              "command_state_text": null,
+              "revision": null,
+              "revision_label": "revision not captured",
+              "runs_total": 1,
+              "earlier_failed": 0,
+              "finding": null
             },
             {
               "kind": "build",
               "name": "Release app build",
               "result": "passed",
+              "result_label": "Passed",
+              "result_tone": "pass",
+              "note_text": null,
               "exit_code": 0,
               "scope": "macOS arm64",
               "source": "hook",
-              "at": 1787618620
+              "source_label": "Hook-captured",
+              "at": 1787618620,
+              "evidence_type": "build",
+              "title": "Release app build",
+              "superseded": false,
+              "superseded_definition": null,
+              "command_state_text": null,
+              "revision": null,
+              "revision_label": "revision not captured",
+              "runs_total": 1,
+              "earlier_failed": 0,
+              "finding": null
             },
             {
               "kind": "lint",
               "name": "Snapshot CLI contract",
               "result": "passed",
+              "result_label": "Passed",
+              "result_tone": "pass",
+              "note_text": null,
               "exit_code": 0,
               "scope": "shell harness",
               "source": "hook",
-              "at": 1787618640
+              "source_label": "Hook-captured",
+              "at": 1787618640,
+              "evidence_type": "lint",
+              "title": "Snapshot CLI contract",
+              "superseded": false,
+              "superseded_definition": null,
+              "command_state_text": null,
+              "revision": null,
+              "revision_label": "revision not captured",
+              "runs_total": 1,
+              "earlier_failed": 0,
+              "finding": null
             },
             {
               "kind": "artifact",
               "name": "Review PNG validation",
               "result": "passed",
+              "result_label": "Passed",
+              "result_tone": "pass",
+              "note_text": null,
               "exit_code": 0,
               "scope": "8 images",
               "source": "hook",
+              "source_label": "Hook-captured",
               "at": 1787618660,
               "files": [
                 "Tests/agentacctTests/ReferenceImages"
-              ]
+              ],
+              "evidence_type": "artifact",
+              "title": "Review PNG validation",
+              "superseded": false,
+              "superseded_definition": null,
+              "command_state_text": null,
+              "revision": null,
+              "revision_label": "revision not captured",
+              "runs_total": 1,
+              "earlier_failed": 0,
+              "finding": null
             }
           ],
           "provenance": [
@@ -915,7 +2071,16 @@
           ],
           "gaps": [
             "No hosted CI result is attached to this local receipt"
-          ]
+          ],
+          "checks_superseded": 0,
+          "checks_earlier_failed": 0,
+          "checks_tile": {
+            "value": "6/6",
+            "absent": null,
+            "qualifier": "6 passed"
+          },
+          "check_tally_text": "6/6 passed",
+          "check_runs_state": "passed"
         },
         "outcome": {
           "decision_status": "verified",
@@ -924,18 +2089,28 @@
           "provenance": [
             "agent_report",
             "client_hook"
-          ]
+          ],
+          "asserted_by_label": "Machine check",
+          "summary": "Inspected table density, receipt hierarchy, and light/dark contrast at both sizes.",
+          "summary_label": "Agent-reported",
+          "summary_section_title": "Review the generated PNG matrix",
+          "next_step": null,
+          "next_step_section_title": null,
+          "quiet_since": null,
+          "newer_session_started_at": null
         },
         "gaps": {
           "count": 2,
           "items": [
             {
               "dimension": "evidence",
-              "reason": "No hosted CI evidence is attached to this receipt."
+              "reason": "No hosted CI evidence is attached to this receipt.",
+              "dimension_label": "Checks"
             },
             {
               "dimension": "cost",
-              "reason": "Dollar cost is estimated from the pricing table."
+              "reason": "Dollar cost is estimated from the pricing table.",
+              "dimension_label": "Cost"
             }
           ]
         },
@@ -974,7 +2149,37 @@
             "client_log": "Actions and actors observed in the local client transcript.",
             "client_hook": "Machine result observed by the local client integration.",
             "pricing_table": "Estimated dollars derived from recorded token usage."
-          }
+          },
+          "sources": [
+            {
+              "key": "agent_report",
+              "label": "agent report",
+              "legend": null,
+              "tier_key": null,
+              "tier_label": null
+            },
+            {
+              "key": "client_hook",
+              "label": "client hook",
+              "legend": null,
+              "tier_key": null,
+              "tier_label": null
+            },
+            {
+              "key": "client_log",
+              "label": "Client log",
+              "legend": "Observed in the agent's own local session / usage log.",
+              "tier_key": null,
+              "tier_label": "not a check source"
+            },
+            {
+              "key": "pricing_table",
+              "label": "pricing table",
+              "legend": null,
+              "tier_key": null,
+              "tier_label": null
+            }
+          ]
         }
       },
       "sessions": [
@@ -1044,7 +2249,7 @@
             "title": "Define the review matrix",
             "status": "completed",
             "source": "codex",
-            "source_label": "Agent section report",
+            "source_label": "Agent-reported",
             "confidence": "exact",
             "important": false,
             "scope": "snapshot-scope",
@@ -1056,7 +2261,9 @@
             "client_session_id": "fixture-active-02",
             "session_key": "codex::fixture-active-02",
             "session_title": "Build reusable snapshot harness",
-            "lineage": "Root session · fixture-active-02"
+            "lineage": "Root session · fixture-active-02",
+            "status_label": "Reported completed",
+            "lane_label": "Primary session"
           },
           {
             "id": "event:check-scope",
@@ -1069,8 +2276,11 @@
             "lane": "evidence",
             "title": "Configuration contract covers the full review matrix.",
             "status": "passed",
+            "status_label": "Passed",
+            "result_tone": "pass",
+            "note_text": null,
             "source": "hook",
-            "source_label": "Client hook",
+            "source_label": "Hook-captured",
             "confidence": "observed",
             "important": true,
             "scope": "work-matrix",
@@ -1098,7 +2308,11 @@
             "artifact_url": null,
             "artifact_path_redacted": false,
             "artifact_url_redacted": false,
-            "command_redacted": false
+            "command_redacted": false,
+            "name": "Configuration contract covers the full review matrix.",
+            "revision_label": "revision not captured",
+            "command_state_text": null,
+            "lane_label": "Check evidence"
           },
           {
             "id": "work:b9f0391c3bc0cee3f7bd664fea5ebcadadd1615f3580b889942b1f7ca944f1d7",
@@ -1113,7 +2327,7 @@
             "title": "Render real Work surfaces from the fixture",
             "status": "completed",
             "source": "codex",
-            "source_label": "Agent section report",
+            "source_label": "Agent-reported",
             "confidence": "exact",
             "important": false,
             "scope": "snapshot-implement",
@@ -1128,7 +2342,9 @@
             "client_session_id": "fixture-active-02",
             "session_key": "codex::fixture-active-02",
             "session_title": "Build reusable snapshot harness",
-            "lineage": "Root session · fixture-active-02"
+            "lineage": "Root session · fixture-active-02",
+            "status_label": "Reported completed",
+            "lane_label": "Primary session"
           },
           {
             "id": "event:check-render",
@@ -1141,8 +2357,11 @@
             "lane": "evidence",
             "title": "Repeated renders stayed deterministic.",
             "status": "passed",
+            "status_label": "Passed",
+            "result_tone": "pass",
+            "note_text": null,
             "source": "hook",
-            "source_label": "Client hook",
+            "source_label": "Hook-captured",
             "confidence": "observed",
             "important": true,
             "scope": "work-render",
@@ -1170,7 +2389,11 @@
             "artifact_url": null,
             "artifact_path_redacted": false,
             "artifact_url_redacted": false,
-            "command_redacted": false
+            "command_redacted": false,
+            "name": "Repeated renders stayed deterministic.",
+            "revision_label": "revision not captured",
+            "command_state_text": null,
+            "lane_label": "Check evidence"
           },
           {
             "id": "work:1098bda6707018605c70dbf78f9643e8040d8b362ea9699043e43211bc813b25",
@@ -1185,7 +2408,7 @@
             "title": "Review the generated PNG matrix",
             "status": "completed",
             "source": "codex",
-            "source_label": "Agent section report",
+            "source_label": "Agent-reported",
             "confidence": "exact",
             "important": false,
             "scope": "snapshot-review",
@@ -1197,7 +2420,9 @@
             "client_session_id": "fixture-active-02",
             "session_key": "codex::fixture-active-02",
             "session_title": "Build reusable snapshot harness",
-            "lineage": "Root session · fixture-active-02"
+            "lineage": "Root session · fixture-active-02",
+            "status_label": "Reported completed",
+            "lane_label": "Primary session"
           },
           {
             "id": "anonymous-check:63c074ac18637361a6526b5b6ad9ea74bd17bd82b3f5a4baba2b459f68406ac1",
@@ -1210,8 +2435,11 @@
             "lane": "evidence",
             "title": "Swift semantic suite",
             "status": "passed",
+            "status_label": "Passed",
+            "result_tone": "pass",
+            "note_text": null,
             "source": "mcp",
-            "source_label": "Agent-reported check",
+            "source_label": "Agent-reported",
             "confidence": "observed",
             "important": true,
             "scope": "app",
@@ -1237,7 +2465,11 @@
             "artifact_url": null,
             "artifact_path_redacted": false,
             "artifact_url_redacted": false,
-            "command_redacted": true
+            "command_redacted": true,
+            "name": "Swift semantic suite",
+            "revision_label": "revision not captured",
+            "command_state_text": "The agent's command argument was not stored; the title is the name the agent recorded.",
+            "lane_label": "Check evidence"
           },
           {
             "id": "anonymous-check:942f1eccdf488e41f9093e57d4ad11953efb46ae23b7ee5baf02c438335bfb70",
@@ -1250,8 +2482,11 @@
             "lane": "evidence",
             "title": "Deterministic repeat render",
             "status": "passed",
+            "status_label": "Passed",
+            "result_tone": "pass",
+            "note_text": null,
             "source": "mcp",
-            "source_label": "Agent-reported check",
+            "source_label": "Agent-reported",
             "confidence": "observed",
             "important": true,
             "scope": "visual harness",
@@ -1277,7 +2512,11 @@
             "artifact_url": null,
             "artifact_path_redacted": false,
             "artifact_url_redacted": false,
-            "command_redacted": false
+            "command_redacted": false,
+            "name": "Deterministic repeat render",
+            "revision_label": "revision not captured",
+            "command_state_text": null,
+            "lane_label": "Check evidence"
           },
           {
             "id": "anonymous-check:f02d0e3198e7854175bda54058a2132f3bbc5adacddf908bab22c26dc09ab892",
@@ -1290,8 +2529,11 @@
             "lane": "evidence",
             "title": "Light and dark references",
             "status": "passed",
+            "status_label": "Passed",
+            "result_tone": "pass",
+            "note_text": null,
             "source": "mcp",
-            "source_label": "Agent-reported check",
+            "source_label": "Agent-reported",
             "confidence": "observed",
             "important": true,
             "scope": "visual baselines",
@@ -1317,7 +2559,11 @@
             "artifact_url": null,
             "artifact_path_redacted": false,
             "artifact_url_redacted": false,
-            "command_redacted": false
+            "command_redacted": false,
+            "name": "Light and dark references",
+            "revision_label": "revision not captured",
+            "command_state_text": null,
+            "lane_label": "Check evidence"
           },
           {
             "id": "anonymous-check:c90dffaba2499fda9a5b05280e8bc2e58000b7403e948d02de868b5f10ae4f73",
@@ -1330,8 +2576,11 @@
             "lane": "evidence",
             "title": "Release app build",
             "status": "passed",
+            "status_label": "Passed",
+            "result_tone": "pass",
+            "note_text": null,
             "source": "mcp",
-            "source_label": "Agent-reported check",
+            "source_label": "Agent-reported",
             "confidence": "observed",
             "important": true,
             "scope": "macOS arm64",
@@ -1357,7 +2606,11 @@
             "artifact_url": null,
             "artifact_path_redacted": false,
             "artifact_url_redacted": false,
-            "command_redacted": false
+            "command_redacted": false,
+            "name": "Release app build",
+            "revision_label": "revision not captured",
+            "command_state_text": null,
+            "lane_label": "Check evidence"
           },
           {
             "id": "anonymous-check:9db1068b42a754e7d8c5e1f0f68b8de146aa1cc7bb698a58336165c706f04bb7",
@@ -1370,8 +2623,11 @@
             "lane": "evidence",
             "title": "Snapshot CLI contract",
             "status": "passed",
+            "status_label": "Passed",
+            "result_tone": "pass",
+            "note_text": null,
             "source": "mcp",
-            "source_label": "Agent-reported check",
+            "source_label": "Agent-reported",
             "confidence": "observed",
             "important": true,
             "scope": "shell harness",
@@ -1397,7 +2653,11 @@
             "artifact_url": null,
             "artifact_path_redacted": false,
             "artifact_url_redacted": false,
-            "command_redacted": false
+            "command_redacted": false,
+            "name": "Snapshot CLI contract",
+            "revision_label": "revision not captured",
+            "command_state_text": null,
+            "lane_label": "Check evidence"
           },
           {
             "id": "anonymous-check:2367f3ee8097e5aae90ad2527a0a6663d69f372b9353f205b990d8072430c3ee",
@@ -1410,8 +2670,11 @@
             "lane": "evidence",
             "title": "Review PNG validation",
             "status": "passed",
+            "status_label": "Passed",
+            "result_tone": "pass",
+            "note_text": null,
             "source": "mcp",
-            "source_label": "Agent-reported check",
+            "source_label": "Agent-reported",
             "confidence": "observed",
             "important": true,
             "scope": "8 images",
@@ -1439,7 +2702,11 @@
             "artifact_url": null,
             "artifact_path_redacted": false,
             "artifact_url_redacted": false,
-            "command_redacted": false
+            "command_redacted": false,
+            "name": "Review PNG validation",
+            "revision_label": "revision not captured",
+            "command_state_text": null,
+            "lane_label": "Check evidence"
           },
           {
             "id": "work:1f17c76ad9e9720164b6b1a2966a35048e25e19befb710bba92042ca28e1c5a5",
@@ -1454,7 +2721,7 @@
             "title": "Document the canonical renderer workflow",
             "status": "completed",
             "source": "codex",
-            "source_label": "Agent section report",
+            "source_label": "Agent-reported",
             "confidence": "exact",
             "important": false,
             "scope": "snapshot-docs",
@@ -1466,7 +2733,9 @@
             "client_session_id": "fixture-active-02",
             "session_key": "codex::fixture-active-02",
             "session_title": "Build reusable snapshot harness",
-            "lineage": "Root session · fixture-active-02"
+            "lineage": "Root session · fixture-active-02",
+            "status_label": "Reported completed",
+            "lane_label": "Primary session"
           },
           {
             "id": "event:check-review",
@@ -1479,8 +2748,11 @@
             "lane": "evidence",
             "title": "All eight PNGs are valid source-tree references.",
             "status": "passed",
+            "status_label": "Passed",
+            "result_tone": "pass",
+            "note_text": null,
             "source": "hook",
-            "source_label": "Client hook",
+            "source_label": "Hook-captured",
             "confidence": "observed",
             "important": true,
             "scope": "work-pngs",
@@ -1508,7 +2780,11 @@
             "artifact_url": null,
             "artifact_path_redacted": false,
             "artifact_url_redacted": false,
-            "command_redacted": false
+            "command_redacted": false,
+            "name": "All eight PNGs are valid source-tree references.",
+            "revision_label": "revision not captured",
+            "command_state_text": null,
+            "lane_label": "Check evidence"
           },
           {
             "id": "work:36901405ae2d5f2cf3f394743dc363d1495c7d2de09b6d3f06ec6a8473434950",
@@ -1523,7 +2799,7 @@
             "title": "Record canonical Work references",
             "status": "completed",
             "source": "codex",
-            "source_label": "Agent section report",
+            "source_label": "Agent-reported",
             "confidence": "claimed",
             "important": false,
             "scope": "snapshot-record",
@@ -1535,7 +2811,9 @@
             "client_session_id": "fixture-continuation-01",
             "session_key": "codex::fixture-continuation-01",
             "session_title": "Record reviewed visual references",
-            "lineage": "Supporting session · fixture-continuation-01"
+            "lineage": "Supporting session · fixture-continuation-01",
+            "status_label": "Reported completed",
+            "lane_label": "Supporting session"
           },
           {
             "id": "work:7ca9bf4fbaea0aeba6922a0004b20869c2b1acb48f5dc0954c4dbfbc74dcc218",
@@ -1550,7 +2828,7 @@
             "title": "Probe renderer nondeterminism",
             "status": "completed",
             "source": "codex",
-            "source_label": "Agent section report",
+            "source_label": "Agent-reported",
             "confidence": "claimed",
             "important": false,
             "scope": "snapshot-adversarial-review",
@@ -1562,13 +2840,60 @@
             "client_session_id": "fixture-active-02:agent-review",
             "session_key": "codex::fixture-active-02:agent-review",
             "session_title": "Audit snapshot determinism",
-            "lineage": "Supporting session · fixture-active-02:agent-review"
+            "lineage": "Supporting session · fixture-active-02:agent-review",
+            "status_label": "Reported completed",
+            "lane_label": "Supporting session"
           }
         ],
         "shown": 15,
         "total": 15,
         "truncated": false
-      }
+      },
+      "verdict": {
+        "headline": "Verified — 4/4 independently checked",
+        "decision_key": "verified",
+        "decision_label": "Verified",
+        "evidence_key": "independently_checked",
+        "asserted_by": "machine",
+        "asserted_by_label": "Machine check",
+        "gap": "2 checks not linked to a step · 1 not check-relevant",
+        "gap_evidence": [],
+        "gap_cost": [],
+        "gap_label": null,
+        "gap_text": null,
+        "health_window": {
+          "since_at": 1787613433.0,
+          "since_iso": "2026-08-24",
+          "since_date": "Aug 24",
+          "proven": 4,
+          "checkable": 4,
+          "tier_word": "independently checked",
+          "text": "Counts since Aug 24"
+        },
+        "proof_clause": "4/4 independently checked",
+        "ledger_evidence": [
+          "2 checks not linked to a step",
+          "1 not check-relevant"
+        ],
+        "ledger_text": "2 checks not linked to a step · 1 not check-relevant"
+      },
+      "attention": null,
+      "attention_open": false,
+      "field_labels": {
+        "task": "Task",
+        "decision": "Decision",
+        "outcome": "Decision",
+        "coverage": "Coverage",
+        "checks": "Checks",
+        "evidence": "Checks",
+        "cost": "Cost",
+        "agents": "Agents",
+        "actors": "Agents",
+        "actions": "Tool calls",
+        "weekly_plan": "Weekly plan"
+      },
+      "group_key": "verified",
+      "lifecycle_marker_text": null
     },
     "attention_receipt": {
       "schema_version": "agentacct.receipt.v1",
@@ -1589,7 +2914,9 @@
             "updated_at": 1787617900,
             "blocked_step_count": 1,
             "later_completed_steps": 0
-          }
+          },
+          "asserted_by_label": "Agent-reported",
+          "finding_attention_state": null
         },
         "evidence_strength": {
           "key": "unchecked",
@@ -1605,9 +2932,62 @@
           "checks_passed": 1,
           "checks_failed": 1,
           "open_or_incomplete": 1,
-          "total_steps": 3
+          "total_steps": 3,
+          "not_checkable": 0,
+          "stopped_blocked": 0,
+          "stopped_handed_off": 0,
+          "stopped_failed": 0,
+          "hidden_in_subagents": 0,
+          "subagents_by_bucket": {},
+          "unattributed_checks": 0,
+          "checks_superseded": 0,
+          "checks_earlier_failed": 0,
+          "still_open": 1,
+          "tier_legend": [
+            {
+              "key": "externally_verified",
+              "label": "externally verified",
+              "definition": "CI or the model provider ran the check outside the agent's session and reported the result."
+            },
+            {
+              "key": "independently_checked",
+              "label": "independently checked",
+              "definition": "An agentacct client hook saw the check run in the agent's session, apart from the agent's own report."
+            },
+            {
+              "key": "self_checked",
+              "label": "self-checked",
+              "definition": "The agent ran the check itself and reported the result."
+            },
+            {
+              "key": "unchecked",
+              "label": "unchecked",
+              "definition": "No one ran a passing check for this step; only the agent's report says it is done."
+            }
+          ],
+          "coverage_hero": "1/2 self-checked · 1 unchecked",
+          "coverage_row": "1/2 self-checked",
+          "coverage_tile": {
+            "value": "1/2",
+            "absent": null,
+            "qualifier": "self-checked completed steps"
+          },
+          "checks_tile": {
+            "value": "1/2",
+            "absent": null,
+            "qualifier": "1 passed · 1 failed"
+          },
+          "check_tally_text": "1/2 passed · 1 failed",
+          "check_runs_state": "failed",
+          "coverage_ledger": "1 step still open",
+          "scope_definition": "Not check-relevant: review, research, planning, docs"
         },
-        "orthogonality_note": "The blocker is an agent-reported state; the failed check remains separate evidence."
+        "orthogonality_note": "The blocker is an agent-reported state; the failed check remains separate evidence.",
+        "handoff": {
+          "handed_off": false,
+          "statement": null,
+          "asserted_by": "agent_report"
+        }
       },
       "dimensions": {
         "task": {
@@ -1617,7 +2997,9 @@
           "boundary": {
             "project": "agentacct-gui",
             "identity_scope": "repository",
-            "session_count": 1
+            "session_count": 1,
+            "root_count": 1,
+            "is_continuation": false
           },
           "provenance": [
             "agent_report"
@@ -1643,12 +3025,54 @@
           "touched_file_count": 2,
           "provenance": [
             "client_log"
-          ]
+          ],
+          "actions_synopsis": {
+            "state": "exact",
+            "headline": "19 tool calls captured",
+            "integrity_detail": null,
+            "metrics": [
+              {
+                "key": "read",
+                "label": "Read",
+                "detail": "File or context read tool calls",
+                "count": 12
+              },
+              {
+                "key": "execute",
+                "label": "Execute",
+                "detail": "Command or process tool calls",
+                "count": 7
+              }
+            ],
+            "can_show_distribution": true,
+            "capture_boundary": "No ordered action ledger; captured tool-call counts cannot be linked to results or timing.",
+            "stored_total": 19,
+            "categorized_total": 19,
+            "tile": {
+              "value": "19",
+              "absent": null,
+              "qualifier": "Hook-captured"
+            }
+          },
+          "actions_tile": {
+            "value": "19",
+            "absent": null,
+            "qualifier": "Hook-captured"
+          },
+          "related_paths_text": "2 related paths",
+          "related_paths_definition": "Related paths are unique paths from recorded work, machine checks, or captured edit tool calls — recorded associations, not modified files.",
+          "action_sources_text": "Hook-captured"
         },
         "cost": {
           "provenance": [
             "client_log"
-          ]
+          ],
+          "state": "unpriced",
+          "display_text": "unpriced",
+          "basis_label": "cost basis not reported",
+          "legend": "~$ partial subtotal · ≈$ estimate · $ reported or billed",
+          "gap_text": "usage unpriced",
+          "plan_share_headline": "plan share not reported"
         },
         "evidence": {
           "checks_total": 2,
@@ -1659,24 +3083,61 @@
               "kind": "test",
               "name": "Calibration stability",
               "result": "failed",
+              "result_label": "Failed",
+              "result_tone": "failure",
+              "note_text": null,
               "exit_code": 1,
               "source": "hook",
+              "source_label": "Hook-captured",
               "summary": "The sample does not yet span the minimum representative window.",
-              "command_redacted": true
+              "command_redacted": true,
+              "evidence_type": "test",
+              "title": "Calibration stability",
+              "superseded": false,
+              "superseded_definition": null,
+              "command_state_text": "The agent's command argument was not stored; the title is the name the agent recorded.",
+              "revision": null,
+              "revision_label": "revision not captured",
+              "runs_total": 1,
+              "earlier_failed": 0,
+              "finding": null
             },
             {
               "kind": "test",
               "name": "Usage import integrity",
               "result": "passed",
+              "result_label": "Passed",
+              "result_tone": "pass",
+              "note_text": null,
               "exit_code": 0,
               "source": "hook",
+              "source_label": "Hook-captured",
               "summary": "Recorded usage rows are internally consistent.",
-              "command_redacted": true
+              "command_redacted": true,
+              "evidence_type": "test",
+              "title": "Usage import integrity",
+              "superseded": false,
+              "superseded_definition": null,
+              "command_state_text": "The agent's command argument was not stored; the title is the name the agent recorded.",
+              "revision": null,
+              "revision_label": "revision not captured",
+              "runs_total": 1,
+              "earlier_failed": 0,
+              "finding": null
             }
           ],
           "provenance": [
             "client_hook"
-          ]
+          ],
+          "checks_superseded": 0,
+          "checks_earlier_failed": 0,
+          "checks_tile": {
+            "value": "1/2",
+            "absent": null,
+            "qualifier": "1 passed · 1 failed"
+          },
+          "check_tally_text": "1/2 passed · 1 failed",
+          "check_runs_state": "failed"
         },
         "outcome": {
           "decision_status": "blocked",
@@ -1684,14 +3145,23 @@
           "asserted_by": "agent_report",
           "provenance": [
             "agent_report"
-          ]
+          ],
+          "asserted_by_label": "Agent-reported",
+          "summary": null,
+          "summary_label": null,
+          "summary_section_title": null,
+          "next_step": "Record normal usage across at least one week, then rerun calibration.",
+          "next_step_section_title": "Collect a representative usage window",
+          "quiet_since": null,
+          "newer_session_started_at": null
         },
         "gaps": {
           "count": 1,
           "items": [
             {
               "dimension": "evidence",
-              "reason": "The recorded window is not yet representative."
+              "reason": "The recorded window is not yet representative.",
+              "dimension_label": "Checks"
             }
           ]
         },
@@ -1725,7 +3195,30 @@
             "agent_report": "Outcome and blocker reported by the agent.",
             "client_log": "Actions and actors observed in the local client transcript.",
             "client_hook": "Machine result observed by the local client integration."
-          }
+          },
+          "sources": [
+            {
+              "key": "agent_report",
+              "label": "agent report",
+              "legend": null,
+              "tier_key": null,
+              "tier_label": null
+            },
+            {
+              "key": "client_hook",
+              "label": "client hook",
+              "legend": null,
+              "tier_key": null,
+              "tier_label": null
+            },
+            {
+              "key": "client_log",
+              "label": "Client log",
+              "legend": "Observed in the agent's own local session / usage log.",
+              "tier_key": null,
+              "tier_label": "not a check source"
+            }
+          ]
         }
       },
       "timeline": {
@@ -1742,8 +3235,11 @@
             "lane": "evidence",
             "title": "Calibration stability",
             "status": "failed",
+            "status_label": "Failed",
+            "result_tone": "failure",
+            "note_text": null,
             "source": "mcp",
-            "source_label": "Agent-reported check",
+            "source_label": "Agent-reported",
             "confidence": "observed",
             "important": true,
             "scope": null,
@@ -1769,7 +3265,11 @@
             "artifact_url": null,
             "artifact_path_redacted": false,
             "artifact_url_redacted": false,
-            "command_redacted": true
+            "command_redacted": true,
+            "name": "Calibration stability",
+            "revision_label": "revision not captured",
+            "command_state_text": "The agent's command argument was not stored; the title is the name the agent recorded.",
+            "lane_label": "Check evidence"
           },
           {
             "id": "anonymous-check:fbfd42ad4c8abc583551cd11029a71d15f5749a14f2b90f6634a389bf77b4302",
@@ -1782,8 +3282,11 @@
             "lane": "evidence",
             "title": "Usage import integrity",
             "status": "passed",
+            "status_label": "Passed",
+            "result_tone": "pass",
+            "note_text": null,
             "source": "mcp",
-            "source_label": "Agent-reported check",
+            "source_label": "Agent-reported",
             "confidence": "observed",
             "important": true,
             "scope": null,
@@ -1809,13 +3312,81 @@
             "artifact_url": null,
             "artifact_path_redacted": false,
             "artifact_url_redacted": false,
-            "command_redacted": true
+            "command_redacted": true,
+            "name": "Usage import integrity",
+            "revision_label": "revision not captured",
+            "command_state_text": "The agent's command argument was not stored; the title is the name the agent recorded.",
+            "lane_label": "Check evidence"
           }
         ],
         "shown": 2,
         "total": 2,
         "truncated": false
-      }
+      },
+      "verdict": {
+        "headline": "Blocked — 1/2 self-checked",
+        "decision_key": "blocked",
+        "decision_label": "Blocked",
+        "evidence_key": "unchecked",
+        "asserted_by": "agent_report",
+        "asserted_by_label": "Agent-reported",
+        "gap": "1 completed step unchecked · 1 step still open · usage unpriced",
+        "gap_evidence": [
+          "1 completed step unchecked"
+        ],
+        "gap_cost": [
+          "usage unpriced"
+        ],
+        "gap_label": "Not yet proven",
+        "gap_text": "1 completed step unchecked",
+        "health_window": null,
+        "proof_clause": "1/2 self-checked",
+        "ledger_evidence": [
+          "1 step still open"
+        ],
+        "ledger_text": "1 step still open"
+      },
+      "attention": {
+        "kind": "blocker",
+        "reason_label": "Blocker",
+        "summary": "The current sample is too short to support a stable calibration.",
+        "check_name": null,
+        "evidence_type": null,
+        "result": null,
+        "exit_code": null,
+        "section_title": "Collect a representative usage window",
+        "label": "Collect a representative usage window",
+        "next_step": "Record normal usage across at least one week, then rerun calibration.",
+        "observed_at": 1787617900,
+        "source": "mcp",
+        "source_label": "Agent-reported",
+        "action_token": null,
+        "target_digest": null,
+        "revision": 0,
+        "disposition_state": "open",
+        "disposition_note": null,
+        "open": true,
+        "effects": {
+          "reviewed": null,
+          "resolved": null
+        }
+      },
+      "attention_open": true,
+      "field_labels": {
+        "task": "Task",
+        "decision": "Decision",
+        "outcome": "Decision",
+        "coverage": "Coverage",
+        "checks": "Checks",
+        "evidence": "Checks",
+        "cost": "Cost",
+        "agents": "Agents",
+        "actors": "Agents",
+        "actions": "Tool calls",
+        "weekly_plan": "Weekly plan"
+      },
+      "group_key": "attention",
+      "lifecycle_marker_text": null
     },
     "sessions": [
       {
@@ -1867,12 +3438,17 @@
                 "created_at": 1787614800,
                 "evidence_type": "test",
                 "result": "passed",
+                "result_label": "Passed",
+                "result_tone": "pass",
+                "note_text": null,
                 "summary": "Configuration contract covers the full review matrix.",
                 "exit_code": 0,
                 "source_type": "client_hook",
+                "source_label": "Hook-captured",
                 "check_identity": "work-matrix"
               }
-            ]
+            ],
+            "evidence_grade_label": "independently checked"
           },
           {
             "work_id": "snapshot-implement",
@@ -1897,12 +3473,17 @@
                 "created_at": 1787617600,
                 "evidence_type": "test",
                 "result": "passed",
+                "result_label": "Passed",
+                "result_tone": "pass",
+                "note_text": null,
                 "summary": "Repeated renders stayed deterministic.",
                 "exit_code": 0,
                 "source_type": "client_hook",
+                "source_label": "Hook-captured",
                 "check_identity": "work-render"
               }
-            ]
+            ],
+            "evidence_grade_label": "independently checked"
           },
           {
             "work_id": "snapshot-review",
@@ -1923,12 +3504,17 @@
                 "created_at": 1787618680,
                 "evidence_type": "artifact",
                 "result": "passed",
+                "result_label": "Passed",
+                "result_tone": "pass",
+                "note_text": null,
                 "summary": "All eight PNGs are valid source-tree references.",
                 "exit_code": 0,
                 "source_type": "client_hook",
+                "source_label": "Hook-captured",
                 "check_identity": "work-pngs"
               }
-            ]
+            ],
+            "evidence_grade_label": "independently checked"
           },
           {
             "work_id": "snapshot-docs",
@@ -1942,7 +3528,8 @@
             "join_confidence": "exact",
             "evidence_status": "not_checked",
             "evidence_grade": "claimed",
-            "checks": []
+            "checks": [],
+            "evidence_grade_label": "unchecked"
           }
         ],
         "descendants": [
@@ -1997,7 +3584,8 @@
             "summary": "Checked clocks, locale, animations, viewport bounds, and async loaders.",
             "evidence_status": "passed",
             "evidence_grade": "independently_checked",
-            "checks": []
+            "checks": [],
+            "evidence_grade_label": "independently checked"
           }
         ],
         "descendants": []
@@ -2032,7 +3620,8 @@
             "summary": "Recorded and immediately re-verified the source-tree PNGs.",
             "evidence_status": "passed",
             "evidence_grade": "independently_checked",
-            "checks": []
+            "checks": [],
+            "evidence_grade_label": "independently checked"
           }
         ],
         "descendants": []
@@ -2040,6 +3629,7 @@
     ]
   },
   "usage": {
+    "cost_legend": "~$ partial subtotal · ≈$ estimate · $ reported or billed",
     "by_client": [
       {
         "client": "codex",
@@ -2049,7 +3639,12 @@
         "estimated_cost_usd": 402.1,
         "cost_complete": true,
         "known_additive_cost_usd": 402.1,
-        "cost_confidence_label": "complete"
+        "cost_confidence_label": "complete",
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "client": "claude-code",
@@ -2059,7 +3654,12 @@
         "estimated_cost_usd": 680.32,
         "cost_complete": true,
         "known_additive_cost_usd": 680.32,
-        "cost_confidence_label": "complete"
+        "cost_confidence_label": "complete",
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "client": "hermes",
@@ -2069,13 +3669,19 @@
         "estimated_cost_usd": 5.0,
         "cost_complete": true,
         "known_additive_cost_usd": 5.0,
-        "cost_confidence_label": "complete"
+        "cost_confidence_label": "complete",
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       }
     ],
     "by_model": [],
     "by_period": [
       {
         "period": "2026-08-19",
+        "period_label": "Aug 19",
         "fresh_tokens": 1800000,
         "estimated_cost_usd": 41.2,
         "cost_complete": true,
@@ -2086,10 +3692,16 @@
           "hermes": {
             "fresh_tokens": 400000
           }
-        }
+        },
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "period": "2026-08-20",
+        "period_label": "Aug 20",
         "fresh_tokens": 2400000,
         "estimated_cost_usd": 52.1,
         "cost_complete": true,
@@ -2097,10 +3709,16 @@
           "codex": {
             "fresh_tokens": 2400000
           }
-        }
+        },
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "period": "2026-08-21",
+        "period_label": "Aug 21",
         "fresh_tokens": 900000,
         "estimated_cost_usd": 19.75,
         "cost_complete": true,
@@ -2108,10 +3726,16 @@
           "codex": {
             "fresh_tokens": 900000
           }
-        }
+        },
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "period": "2026-08-22",
+        "period_label": "Aug 22",
         "fresh_tokens": 3600000,
         "estimated_cost_usd": 82.44,
         "cost_complete": true,
@@ -2119,10 +3743,16 @@
           "codex": {
             "fresh_tokens": 3600000
           }
-        }
+        },
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "period": "2026-08-23",
+        "period_label": "Aug 23",
         "fresh_tokens": 4800000,
         "estimated_cost_usd": 106.27,
         "cost_complete": true,
@@ -2133,10 +3763,16 @@
           "claude-code": {
             "fresh_tokens": 2100000
           }
-        }
+        },
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "period": "2026-08-24",
+        "period_label": "Aug 24",
         "fresh_tokens": 12100000,
         "estimated_cost_usd": 260.52,
         "cost_complete": true,
@@ -2147,10 +3783,16 @@
           "claude-code": {
             "fresh_tokens": 5300000
           }
-        }
+        },
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "period": "2026-08-25",
+        "period_label": "Aug 25",
         "fresh_tokens": 22500000,
         "estimated_cost_usd": 525.14,
         "cost_complete": true,
@@ -2161,7 +3803,12 @@
           "claude-code": {
             "fresh_tokens": 9100000
           }
-        }
+        },
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       }
     ],
     "filters_echo": {
@@ -2177,10 +3824,31 @@
       "estimated_cost_usd": 1087.42,
       "cost_complete": true,
       "known_additive_cost_usd": 1087.42,
-      "cost_confidence_label": "complete"
-    }
+      "cost_confidence_label": "complete",
+      "cost_confidence": "estimated_from_tokens",
+      "cost_confidence_display": "pricing estimate",
+      "cost_state": "complete",
+      "usage_availability": "available",
+      "cost_total_label": "total"
+    },
+    "cost_chart_legend": "~$ partial subtotal · open cap = partial",
+    "cost_chart_unit": "USD",
+    "token_basis_label": "client-reported",
+    "by_model_sessions_footnote": "sessions using several models count once per model",
+    "usage_series": [
+      {
+        "key": "tokens",
+        "label": "Fresh tokens"
+      },
+      {
+        "key": "cost",
+        "label": "Cost"
+      }
+    ],
+    "usage_series_default": "cost"
   },
   "usage_90_days": {
+    "cost_legend": "~$ partial subtotal · ≈$ estimate · $ reported or billed",
     "by_client": [
       {
         "client": "codex",
@@ -2190,7 +3858,12 @@
         "estimated_cost_usd": 920.5,
         "cost_complete": true,
         "known_additive_cost_usd": 920.5,
-        "cost_confidence_label": "complete"
+        "cost_confidence_label": "complete",
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "client": "claude-code",
@@ -2200,7 +3873,12 @@
         "estimated_cost_usd": 1174.25,
         "cost_complete": true,
         "known_additive_cost_usd": 1174.25,
-        "cost_confidence_label": "complete"
+        "cost_confidence_label": "complete",
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "client": "hermes",
@@ -2210,92 +3888,179 @@
         "estimated_cost_usd": 18.0,
         "cost_complete": true,
         "known_additive_cost_usd": 18.0,
-        "cost_confidence_label": "complete"
+        "cost_confidence_label": "complete",
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       }
     ],
     "by_model": [],
     "by_period": [
       {
         "period": "2026-05-25",
+        "period_label": "week of May 25",
         "fresh_tokens": 6200000,
         "estimated_cost_usd": 100.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "period": "2026-06-01",
+        "period_label": "week of Jun 1",
         "fresh_tokens": 8100000,
         "estimated_cost_usd": 130.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "period": "2026-06-08",
-        "fresh_tokens": 0
+        "period_label": "week of Jun 8",
+        "fresh_tokens": 0,
+        "cost_state": "none_recorded",
+        "usage_availability": "unknown",
+        "cost_total_label": "no usage recorded"
       },
       {
         "period": "2026-06-15",
+        "period_label": "week of Jun 15",
         "fresh_tokens": 9400000,
         "estimated_cost_usd": 145.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "period": "2026-06-22",
+        "period_label": "week of Jun 22",
         "fresh_tokens": 7800000,
         "estimated_cost_usd": 121.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "period": "2026-06-29",
+        "period_label": "week of Jun 29",
         "fresh_tokens": 10200000,
         "estimated_cost_usd": 158.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "period": "2026-07-06",
+        "period_label": "week of Jul 6",
         "fresh_tokens": 8700000,
         "estimated_cost_usd": 135.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "period": "2026-07-13",
+        "period_label": "week of Jul 13",
         "fresh_tokens": 11300000,
         "estimated_cost_usd": 175.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "period": "2026-07-20",
+        "period_label": "week of Jul 20",
         "fresh_tokens": 9900000,
         "estimated_cost_usd": 154.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "period": "2026-07-27",
+        "period_label": "week of Jul 27",
         "fresh_tokens": 12400000,
         "estimated_cost_usd": 192.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "period": "2026-08-03",
+        "period_label": "week of Aug 3",
         "fresh_tokens": 10800000,
         "estimated_cost_usd": 167.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "period": "2026-08-10",
+        "period_label": "week of Aug 10",
         "fresh_tokens": 13100000,
         "estimated_cost_usd": 204.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "period": "2026-08-17",
+        "period_label": "week of Aug 17",
         "fresh_tokens": 14600000,
         "estimated_cost_usd": 226.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       },
       {
         "period": "2026-08-24",
+        "period_label": "week of Aug 24",
         "fresh_tokens": 14000000,
         "estimated_cost_usd": 205.75,
-        "cost_complete": true
+        "cost_complete": true,
+        "cost_confidence": "estimated_from_tokens",
+        "cost_confidence_display": "pricing estimate",
+        "cost_state": "complete",
+        "usage_availability": "available",
+        "cost_total_label": "total"
       }
     ],
     "filters_echo": {
@@ -2311,7 +4076,27 @@
       "estimated_cost_usd": 2112.75,
       "cost_complete": true,
       "known_additive_cost_usd": 2112.75,
-      "cost_confidence_label": "complete"
-    }
+      "cost_confidence_label": "complete",
+      "cost_confidence": "estimated_from_tokens",
+      "cost_confidence_display": "pricing estimate",
+      "cost_state": "complete",
+      "usage_availability": "available",
+      "cost_total_label": "total"
+    },
+    "cost_chart_legend": "~$ partial subtotal · open cap = partial",
+    "cost_chart_unit": "USD",
+    "token_basis_label": "client-reported",
+    "by_model_sessions_footnote": "sessions using several models count once per model",
+    "usage_series": [
+      {
+        "key": "tokens",
+        "label": "Fresh tokens"
+      },
+      {
+        "key": "cost",
+        "label": "Cost"
+      }
+    ],
+    "usage_series_default": "cost"
   }
 }

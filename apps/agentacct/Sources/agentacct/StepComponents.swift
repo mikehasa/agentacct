@@ -14,6 +14,39 @@ extension V1Check {
     }
 }
 
+/// The reducer's check-result tone key (`result_tone`) → glyph and color. The
+/// only result mapping Swift keeps: the words come from `result_label`, and a
+/// missing or unknown tone is the muted "proved nothing" tone, never a failure.
+/// Coral and the cross belong to a recorded failure alone.
+enum CheckResultTone: String {
+    case pass
+    case failure
+    case notRun = "not_run"
+
+    init(payload: String?) {
+        let key = payload?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self = CheckResultTone(rawValue: key) ?? .notRun
+    }
+
+    var symbol: String {
+        switch self {
+        case .pass: return "checkmark"
+        case .failure: return "xmark"
+        case .notRun: return "minus.circle"
+        }
+    }
+
+    /// A pass wears the tint its caller supplies (the source's evidence tier,
+    /// or ink); a failure is coral; a check that proved nothing is muted.
+    func tint(pass: Color) -> Color {
+        switch self {
+        case .pass: return pass
+        case .failure: return Theme.coral
+        case .notRun: return Theme.muted
+        }
+    }
+}
+
 /// Stable, occurrence-aware identity for a check inside one step. Older or
 /// malformed payloads can omit or duplicate event ids; using V1Check.id in a
 /// ForEach would generate a fresh UUID for every render in the missing-id case.
@@ -23,7 +56,7 @@ struct StepCheckItem: Identifiable {
 
     var isHistory: Bool { check.normalizedSupersessionState == "superseded" }
     var needsAttention: Bool {
-        !isHistory && (check.result == "failed" || check.result == "error")
+        !isHistory && CheckResultTone(payload: check.resultTone) == .failure
     }
 }
 
@@ -71,23 +104,8 @@ struct StepCheckDigest {
     var currentCount: Int { current.count }
     var attentionCount: Int { attention.count }
     var historyCount: Int { history.count }
-    var passedCount: Int { current.filter { $0.check.result == "passed" }.count }
-    var failedCount: Int { current.filter { $0.check.result == "failed" }.count }
-    var errorCount: Int { current.filter { $0.check.result == "error" }.count }
-    var skippedCount: Int { current.filter { $0.check.result == "skipped" }.count }
-    var unknownCount: Int {
-        currentCount - passedCount - failedCount - errorCount - skippedCount
-    }
-
-    var summary: String {
-        var parts: [String] = []
-        appendCount(passedCount, singular: "passed", plural: "passed", to: &parts)
-        appendCount(failedCount, singular: "failed", plural: "failed", to: &parts)
-        appendCount(errorCount, singular: "error", plural: "errors", to: &parts)
-        appendCount(skippedCount, singular: "skipped", plural: "skipped", to: &parts)
-        appendCount(unknownCount, singular: "unknown", plural: "unknown", to: &parts)
-        appendCount(historyCount, singular: "history", plural: "history", to: &parts)
-        return parts.isEmpty ? "no checks" : parts.joined(separator: " · ")
+    var passedCount: Int {
+        current.filter { CheckResultTone(payload: $0.check.resultTone) == .pass }.count
     }
 
     func evidenceExplanation(status: String?, claimedFileCount: Int) -> String? {
@@ -110,16 +128,6 @@ struct StepCheckDigest {
         default:
             return nil
         }
-    }
-
-    private func appendCount(
-        _ count: Int,
-        singular: String,
-        plural: String,
-        to parts: inout [String]
-    ) {
-        guard count > 0 else { return }
-        parts.append("\(count) \(count == 1 ? singular : plural)")
     }
 
     private static func identityBase(_ check: V1Check) -> String {
@@ -203,36 +211,19 @@ extension SessionStepItem {
 struct CheckPresentation {
     let check: V1Check
 
+    /// The reducer's result words, or their named absence.
     var resultLabel: String {
-        switch check.result {
-        case "passed": return "Passed"
-        case "failed": return "Failed"
-        case "error": return "Error"
-        case "skipped": return "Skipped"
-        default: return "Result unknown"
-        }
+        PayloadAbsence.text(check.resultLabel) ?? PayloadAbsence.checkResult
     }
 
-    var resultSymbol: String {
-        switch check.result {
-        case "passed": return "checkmark"
-        case "failed", "error": return "xmark"
-        case "skipped": return "chevron.right.2"
-        default: return "circle.fill"
-        }
-    }
+    var tone: CheckResultTone { CheckResultTone(payload: check.resultTone) }
 
-    var resultTint: Color {
-        switch check.result {
-        case "passed":
-            let observed = ["ci", "external", "provider", "client_hook"]
-                .contains(check.sourceType ?? "")
-            return observed ? Theme.green : Theme.ink
-        case "failed", "error": return Theme.coral
-        case "skipped": return Theme.amber
-        default: return Theme.muted
-        }
-    }
+    var resultSymbol: String { tone.symbol }
+
+    /// A pass is never green by source (C27): green belongs only to the
+    /// externally-verified tier and the live StatusDot. The step's tier pip
+    /// and badge carry how independent the evidence is.
+    var resultTint: Color { tone.tint(pass: Theme.ink) }
 
     var evidenceType: String {
         let raw = check.evidenceType?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -244,15 +235,10 @@ struct CheckPresentation {
         return raw.isEmpty ? "No summary recorded" : raw
     }
 
+    /// Who recorded the check, verbatim from the payload (`source_label`);
+    /// its absence is named, never mapped from `source_type` in Swift.
     var sourceLabel: String {
-        switch check.sourceType {
-        case "ci": return "CI"
-        case "external": return "external"
-        case "provider": return "provider"
-        case "client_hook": return "hook"
-        case "mcp_agent_reported", "mcp", "manual", "generic_http": return "agent-reported"
-        default: return "source unknown"
-        }
+        PayloadAbsence.text(check.sourceLabel) ?? PayloadAbsence.source
     }
 
     var exitLabel: String? { check.exitCode.map { "exit \($0)" } }
@@ -275,36 +261,38 @@ struct CheckPresentation {
         }
     }
 
+    /// The reducer's redaction sentences for withheld artifact fields.
     var artifactRedactionLabel: String? {
-        switch (check.artifactPathRedacted == true, check.artifactUrlRedacted == true) {
-        case (true, true): return "Artifact path and URL redacted"
-        case (true, false): return "Artifact path redacted"
-        case (false, true): return "Artifact URL redacted"
-        case (false, false): return nil
-        }
+        let parts = [
+            check.artifactPathRedacted == true
+                ? PayloadAbsence.text(check.artifactPathStateText) ?? PayloadAbsence.artifact : nil,
+            check.artifactUrlRedacted == true
+                ? PayloadAbsence.text(check.artifactUrlStateText) ?? PayloadAbsence.artifact : nil,
+        ].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 
-    var hasInconsistentExitCode: Bool {
-        guard let exitCode = check.exitCode else { return false }
-        switch check.result {
-        case "passed": return exitCode != 0
-        case "failed", "error": return exitCode == 0
-        default: return false
-        }
+    /// The reducer's sentence about the recorded command (nil when none).
+    var commandStateText: String? {
+        guard check.commandRedacted == true else { return nil }
+        return PayloadAbsence.text(check.commandStateText) ?? PayloadAbsence.command
     }
+
+    /// The reducer's named result/exit-code disagreement (nil when they agree).
+    var resultNote: String? { PayloadAbsence.text(check.noteText) }
 
     var accessibilitySummary: String {
         var parts = [evidenceType, resultLabel, summary]
         if let exitLabel { parts.append(exitLabel) }
         parts.append(sourceLabel)
         if let supersessionLabel { parts.append(supersessionLabel) }
-        if hasInconsistentExitCode { parts.append("Inconsistent result and exit code") }
+        if let resultNote { parts.append(resultNote) }
         if let resolutionScopeLabel { parts.append(resolutionScopeLabel) }
         if let resolution = check.resolutionSummary?.trimmingCharacters(in: .whitespacesAndNewlines),
            !resolution.isEmpty {
             parts.append(resolution)
         }
-        if check.commandRedacted == true { parts.append("Command details redacted") }
+        if let commandStateText { parts.append(commandStateText) }
         if let artifactRedactionLabel { parts.append(artifactRedactionLabel) }
         let files = (check.files ?? []).filter { !$0.isEmpty }
         if !files.isEmpty { parts.append("Check files: \(files.joined(separator: ", "))") }
@@ -325,6 +313,9 @@ struct CheckPresentation {
 struct StepCard: View {
     let step: V1Step
     let accessibilityContext: String?
+    /// The recorded next step the PAGE already prints, when there is one. A step
+    /// whose own next step is the same text does not print it a second time.
+    let pageNextStep: String?
     @State private var expanded: Bool
     @State private var showAllAttention: Bool
     @State private var showAllCurrentChecks: Bool
@@ -337,10 +328,12 @@ struct StepCard: View {
         initiallyShowAllAttention: Bool = false,
         initiallyShowAllCurrentChecks: Bool = false,
         initiallyShowHistory: Bool = false,
-        accessibilityContext: String? = nil
+        accessibilityContext: String? = nil,
+        pageNextStep: String? = nil
     ) {
         self.step = step
         self.accessibilityContext = accessibilityContext
+        self.pageNextStep = pageNextStep
         _expanded = State(initialValue: initiallyExpanded)
         _showAllAttention = State(initialValue: initiallyShowAllAttention)
         _showAllCurrentChecks = State(initialValue: initiallyShowAllCurrentChecks)
@@ -361,8 +354,7 @@ struct StepCard: View {
     /// The collapsed row's tier pip (falls back to a muted hollow pip when an
     /// older daemon sent no grade).
     private var stepPip: some View {
-        let style = EvidenceTierStyle.forGrade(step.evidenceGrade)
-        return EvidencePip(shape: style.pip, tint: style.tint)
+        EvidencePip(grade: step.evidenceGrade)
     }
 
     private var title: String {
@@ -377,6 +369,7 @@ struct StepCard: View {
     private var checkDigest: StepCheckDigest { StepCheckDigest(checks: step.checks ?? []) }
 
     private var tierLabel: String {
+        if let label = PayloadAbsence.text(step.evidenceGradeLabel) { return label }
         if let grade = step.evidenceGrade {
             return EvidenceTierStyle.forGrade(grade).label
         }
@@ -389,7 +382,7 @@ struct StepCard: View {
             parts.append(status.replacingOccurrences(of: "_", with: " "))
         }
         parts.append(tierLabel)
-        parts.append(checkDigest.summary)
+        parts.append(step.checkTallyDisplay)
         return parts.joined(separator: ", ")
     }
 
@@ -409,18 +402,26 @@ struct StepCard: View {
         VStack(alignment: .leading, spacing: 0) {
             Button { expanded.toggle() } label: { header }
             .buttonStyle(SurfaceButtonStyle(focusInset: 2))
-            .accessibilityElement(children: .ignore)
+            .keyboardStop { expanded.toggle() }
+            // NOT `.accessibilityElement(children: .ignore)`: a Button already
+            // speaks as ONE element, and that modifier REPLACES it — the
+            // control loses its button role and its press action with it
+            // (K118). The label below is simply what the button says.
             .accessibilityLabel(accessibilityLabelText)
             .accessibilityValue(accessibilityValue)
             .accessibilityHint(expanded ? "Hides step details" : "Shows step details")
 
             if expanded {
                 VStack(alignment: .leading, spacing: 8) {
-                    if !detailMetadata.isEmpty {
-                        Text(detailMetadata.joined(separator: " · "))
-                            .workFont(.dataSmall)
-                            .foregroundStyle(Theme.muted)
+                    // The agent's outcome summary is the only prose a reader
+                    // sees, so it leads the details in body ink (C41).
+                    if let summary = PayloadAbsence.text(step.summary) {
+                        Text(summary)
+                            .workFont(.body)
+                            .foregroundStyle(Theme.ink)
+                            .lineLimit(nil)
                             .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
                     }
                     if let blocker = step.blocker, !blocker.isEmpty {
                         Label(blocker, systemImage: "hand.raised.fill")
@@ -429,30 +430,12 @@ struct StepCard: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                     }
-                    if let next = step.nextStep, !next.isEmpty {
-                        Label(next, systemImage: "arrow.turn.down.right")
-                            .workFont(.caption)
-                            .foregroundStyle(Theme.ink)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .textSelection(.enabled)
-                    }
-                    if let why = step.evidenceGradeReason {
-                        Text(why)
-                            .workFont(.caption)
-                            .foregroundStyle(Theme.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else if let why = evidenceExplanation {
-                        Text(why)
-                            .workFont(.caption)
-                            .foregroundStyle(Theme.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if let summary = step.summary, !summary.isEmpty {
-                        Text(summary)
-                            .workFont(.caption)
-                            .foregroundStyle(Theme.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .textSelection(.enabled)
+                    // Suppressed when the page above already prints this exact
+                    // text: merging two statements of one fact is right, and the
+                    // Task's own next step is the one a reviewer acts on.
+                    if let next = PayloadAbsence.text(step.nextStep),
+                       !restatesPayloadText(next, pageNextStep) {
+                        NextStepRow(text: next, compact: true)
                     }
                     checksSection
                     if let files = step.files, !files.isEmpty {
@@ -469,6 +452,18 @@ struct StepCard: View {
                                     .textSelection(.enabled)
                             }
                         }
+                    }
+                    if !detailMetadata.isEmpty {
+                        Text(detailMetadata.joined(separator: " · "))
+                            .workFont(.dataSmall)
+                            .foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let why = PayloadAbsence.text(step.evidenceGradeReason) ?? evidenceExplanation {
+                        Text(why)
+                            .workFont(.caption)
+                            .foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .padding(.horizontal, 12)
@@ -512,7 +507,7 @@ struct StepCard: View {
             if let kind = step.kind, kind != "unknown" {
                 Chip(text: kind, tint: Theme.muted)
             }
-            Text(checkDigest.summary)
+            Text(step.checkTallyDisplay)
                 .workFont(.dataSmall)
                 .foregroundStyle(Theme.muted)
             tierBadge
@@ -532,17 +527,25 @@ struct StepCard: View {
                     .layoutPriority(1)
             }
             VStack(alignment: .leading, spacing: Space.xs) {
-                HStack(spacing: 8) {
-                    if step.latestStatus == "blocked" || step.latestStatus == "failed" {
-                        Chip(text: step.latestStatus ?? "", tint: Theme.coral)
+                // Badges never wrap mid-word; the row does (C32). When the
+                // chips and the tier badge cannot share one line, the badge
+                // drops below the chips, and the chips themselves flow.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        statusAndKindChips
+                        Spacer(minLength: 4)
+                        tierBadge
                     }
-                    if let kind = step.kind, kind != "unknown" {
-                        Chip(text: kind, tint: Theme.muted)
+                    VStack(alignment: .leading, spacing: Space.xs) {
+                        if hasStatusOrKindChip {
+                            WrappingRowLayout(horizontalSpacing: 8, verticalSpacing: Space.xs) {
+                                statusAndKindChips
+                            }
+                        }
+                        tierBadge
                     }
-                    Spacer(minLength: 4)
-                    tierBadge
                 }
-                Text(checkDigest.summary)
+                Text(step.checkTallyDisplay)
                     .workFont(.dataSmall)
                     .foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -551,19 +554,39 @@ struct StepCard: View {
         }
     }
 
+    private var hasStatusOrKindChip: Bool {
+        step.latestStatus == "blocked" || step.latestStatus == "failed"
+            || (step.kind != nil && step.kind != "unknown")
+    }
+
+    @ViewBuilder
+    private var statusAndKindChips: some View {
+        if step.latestStatus == "blocked" || step.latestStatus == "failed" {
+            Chip(text: step.latestStatus ?? "", tint: Theme.coral)
+        }
+        if let kind = step.kind, kind != "unknown" {
+            Chip(text: kind, tint: Theme.muted)
+        }
+    }
+
     private var disclosureGlyph: some View {
         Image(systemName: expanded ? "chevron.down" : "chevron.forward")
-            .font(.system(size: 8, weight: .semibold))
+            .workFont(.icon)
             .foregroundStyle(Theme.muted)
-            .frame(width: 10, height: 16)
+            .workScaledFrame(width: 12, height: 16, relativeTo: .caption)
     }
 
     @ViewBuilder
     private var tierBadge: some View {
         if let grade = step.evidenceGrade {
-            TierBadge(grade: grade)
+            TierBadge(grade: grade, text: PayloadAbsence.text(step.evidenceGradeLabel))
         } else if let evidence = step.evidenceStatus {
-            Chip(text: evidence.replacingOccurrences(of: "_", with: " "), tint: evidenceTint(evidence))
+            // Legacy evidence words carry no tier: failure stays coral, every
+            // other word takes the ungraded tier style — never green (C27).
+            Chip(
+                text: evidence.replacingOccurrences(of: "_", with: " "),
+                tint: evidence == "failed" ? Theme.coral : EvidenceTierStyle.forGrade(nil).tint
+            )
         }
     }
 
@@ -588,14 +611,14 @@ struct StepCard: View {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .firstTextBaseline, spacing: Space.s) {
                     checksHeading
-                    Text(checkDigest.summary)
+                    Text(step.checkTallyDisplay)
                         .workFont(.dataSmall)
                         .foregroundStyle(Theme.muted)
                     Spacer(minLength: 0)
                 }
                 VStack(alignment: .leading, spacing: Space.xs) {
                     checksHeading
-                    Text(checkDigest.summary)
+                    Text(step.checkTallyDisplay)
                         .workFont(.dataSmall)
                         .foregroundStyle(Theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
@@ -625,6 +648,7 @@ struct StepCard: View {
                             )
                         }
                         .buttonStyle(SurfaceButtonStyle(focusInset: 2))
+                        .keyboardStop { showAllAttention.toggle() }
                         .accessibilityValue(showAllAttention ? "Expanded" : "Collapsed")
                     }
                 }
@@ -654,6 +678,7 @@ struct StepCard: View {
                             )
                         }
                         .buttonStyle(SurfaceButtonStyle(focusInset: 2))
+                        .keyboardStop { showAllCurrentChecks.toggle() }
                         .accessibilityValue(showAllCurrentChecks ? "Expanded" : "Collapsed")
                     }
                 }
@@ -670,6 +695,7 @@ struct StepCard: View {
                         )
                     }
                     .buttonStyle(SurfaceButtonStyle(focusInset: 2))
+                    .keyboardStop { showHistory.toggle() }
                     .accessibilityValue(showHistory ? "Expanded" : "Collapsed")
 
                     if showHistory {
@@ -703,7 +729,7 @@ struct StepCard: View {
         Label(text, systemImage: systemImage)
             .workFont(.captionSemibold)
             .foregroundStyle(tint)
-            .frame(minHeight: ButtonFeedback.minimumHitDimension, alignment: .leading)
+            .workScaledMinFrame(height: ButtonFeedback.minimumHitDimension, alignment: .leading)
             .contentShape(Rectangle())
     }
 }
@@ -725,7 +751,11 @@ struct CheckRow: View {
         } else if presentation.supersessionLabel == "Supersession state unknown" {
             parts.append("supersession state unknown")
         }
-        if check.commandRedacted == true { parts.append("command details redacted") }
+        // `command_state_text` is NOT here. It is identical on every check of a
+        // record — four prints under four checks on the flagship — so the record
+        // page states it once, in the Evidence section's disclosure. The spoken
+        // summary still carries it per row, where there is no shared line to
+        // hoist it to.
         return parts
     }
 
@@ -739,28 +769,58 @@ struct CheckRow: View {
         (check.files ?? []).filter { !$0.isEmpty }
     }
 
+    private var resultLabelText: some View {
+        Text(presentation.resultLabel)
+            .workFont(.captionSemibold)
+            .foregroundStyle(presentation.resultTint)
+            .lineLimit(1)
+    }
+
+    private var evidenceTypeText: some View {
+        Text(presentation.evidenceType)
+            .workFont(.dataSmallSemibold)
+            .foregroundStyle(Theme.muted)
+            .lineLimit(1)
+    }
+
+    private var hasRowChips: Bool {
+        check.normalizedSupersessionState == "superseded"
+    }
+
+    @ViewBuilder
+    private var rowChips: some View {
+        if check.normalizedSupersessionState == "superseded" {
+            Chip(text: "superseded", tint: Theme.muted)
+        }
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: Space.s) {
             Image(systemName: presentation.resultSymbol)
-                .font(.system(size: 10, weight: .bold))
+                .workFont(.icon)
                 .foregroundStyle(presentation.resultTint)
-                .frame(width: 14, height: 18)
+                .workScaledFrame(width: 14, height: 18, relativeTo: .caption)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: Space.xs) {
-                HStack(alignment: .firstTextBaseline, spacing: 7) {
-                    Text(presentation.resultLabel)
-                        .workFont(.captionSemibold)
-                        .foregroundStyle(presentation.resultTint)
-                    Text(presentation.evidenceType)
-                        .workFont(.dataSmallSemibold)
-                        .foregroundStyle(Theme.muted)
-                    if check.normalizedSupersessionState == "superseded" {
-                        Chip(text: "history", tint: Theme.muted)
+                // The result line reflows instead of breaking a word (C32).
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        resultLabelText
+                        evidenceTypeText
+                        rowChips
+                        Spacer(minLength: 0)
                     }
-                    if presentation.hasInconsistentExitCode {
-                        Chip(text: "inconsistent result", tint: Theme.amber)
+                    VStack(alignment: .leading, spacing: Space.xs) {
+                        HStack(alignment: .firstTextBaseline, spacing: 7) {
+                            resultLabelText
+                            evidenceTypeText
+                        }
+                        if hasRowChips {
+                            WrappingRowLayout(horizontalSpacing: 7, verticalSpacing: Space.xs, alignment: .top) {
+                                rowChips
+                            }
+                        }
                     }
-                    Spacer(minLength: 0)
                 }
                 Text(presentation.summary)
                     .workFont(.body)
@@ -772,6 +832,13 @@ struct CheckRow: View {
                     .foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
+                if let note = presentation.resultNote {
+                    // The reducer's named result/exit-code disagreement.
+                    Text(verbatim: note)
+                        .workFont(.caption)
+                        .foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let resolution = check.resolutionSummary, !resolution.isEmpty {
                     Label(
                         [presentation.resolutionScopeLabel, resolution]

@@ -734,6 +734,42 @@ def build_tool_activity_by_session(
     return _sum_additive_tool_activity(events, extract=_category_count_pairs)
 
 
+def build_tool_activity_window_by_session(
+    events: Iterable[Mapping[str, Any]],
+) -> dict[tuple[str, str], dict[str, float]]:
+    """The WINDOW each session's tool-activity capture actually covers.
+
+    A count with no window cannot say whether it covers the work or a sample of
+    it: a hook that ran for seventeen minutes of a two-day Task still reports a
+    perfectly self-consistent total. Returns ``{first_at, last_at}`` per
+    (client, session), taken from each batch's own ``captured_at`` (the drain
+    time) and falling back to the event's ``created_at``. It is deliberately a
+    batch-resolution window, so it can only UNDERSTATE the coverage gap.
+    """
+
+    result: dict[tuple[str, str], dict[str, float]] = {}
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        if event.get("event_type") != TOOL_ACTIVITY_EVENT_TYPE:
+            continue
+        metadata = event.get("metadata")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        client = str(metadata.get("client") or "").strip()
+        session = str(metadata.get("client_session_id") or "").strip()
+        if not client or not session:
+            continue
+        at = metadata.get("captured_at")
+        if not isinstance(at, (int, float)) or isinstance(at, bool) or at <= 0:
+            at = event.get("created_at")
+        if not isinstance(at, (int, float)) or isinstance(at, bool) or at <= 0:
+            continue
+        window = result.setdefault((client, session), {"first_at": float(at), "last_at": float(at)})
+        window["first_at"] = min(window["first_at"], float(at))
+        window["last_at"] = max(window["last_at"], float(at))
+    return result
+
+
 def build_tool_names_by_session(
     events: Iterable[Mapping[str, Any]],
 ) -> dict[tuple[str, str], dict[str, int]]:

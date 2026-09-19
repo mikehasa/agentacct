@@ -30,6 +30,7 @@ final class ReceiptOutcomeSublineTests: XCTestCase {
               "decision_status": "inactive",
               "statement": "This Task has open steps and work has since continued elsewhere.",
               "asserted_by": "inferred",
+              "asserted_by_label": "Inferred",
               "quiet_since": \(quietSince),
               "newer_session_started_at": \(newerStart)
             }
@@ -38,7 +39,7 @@ final class ReceiptOutcomeSublineTests: XCTestCase {
         withFixedClock(now) {
             let summary = receiptOutcomeSummary(dim)
             // The decision word + statement still lead the block.
-            XCTAssertTrue(summary.contains("inactive · state inferred"))
+            XCTAssertTrue(summary.contains("inactive · Inferred"))
             XCTAssertTrue(summary.contains("This Task has open steps"))
             // The factual sub-line renders both timestamps, relative + app idiom.
             XCTAssertTrue(
@@ -54,13 +55,14 @@ final class ReceiptOutcomeSublineTests: XCTestCase {
             {
               "decision_status": "verified",
               "statement": "Task finished; checks passed.",
-              "asserted_by": "machine"
+              "asserted_by": "machine",
+              "asserted_by_label": "Machine check"
             }
             """
         )
         withFixedClock(Date(timeIntervalSince1970: 1_000_000)) {
             let summary = receiptOutcomeSummary(dim)
-            XCTAssertTrue(summary.contains("verified · machine checked"))
+            XCTAssertTrue(summary.contains("verified · Machine check"))
             XCTAssertFalse(
                 summary.contains("Quiet since"),
                 "No quiet fields means no sub-line, got: \(summary)"

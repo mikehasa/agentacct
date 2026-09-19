@@ -341,9 +341,9 @@ text sizes, and both appearances; transient states render at the standard viewpo
 | expanded check history | 760 × 1450 pt, light/dark | `work-session-steps-expanded-history-*.png` |
 | session load failure | 760 × 240 pt, light/dark | `work-session-steps-load-failure-*.png` |
 | in-place Retry progress | 760 × 240 pt, light/dark | `work-session-steps-retrying-*.png` |
-| compact check preview | 360 × 1600 pt, light/dark | `work-session-steps-compact-checks-*.png` |
+| compact check preview | 360 × 1700 pt, light/dark | `work-session-steps-compact-checks-*.png` |
 | Arabic RTL/mixed-text stress | 760 × 1250 pt, light/dark | `work-session-steps-rtl-stress-*.png` |
-| accessibility5 compact and Arabic RTL stress | 360 × 4000 pt, light/dark | `work-session-steps-{compact,rtl}-accessibility-*.png` |
+| accessibility5 compact and Arabic RTL stress | 360 × 7200 pt, light/dark | `work-session-steps-{compact,rtl}-accessibility-*.png` |
 
 For an ad-hoc render that does not compare or update references:
 
@@ -371,8 +371,8 @@ harness never depends on the current checkout, machine settings, or wall clock.
 
 | Artifact | Appearance | Pixel size |
 | --- | --- | --- |
-| `menu-connected-sparse-light.png` | sparse, light | 720 × 880 px |
-| `menu-connected-sparse-dark.png` | sparse, dark | 720 × 880 px |
+| `menu-connected-sparse-light.png` | sparse, light | 720 × 982 px |
+| `menu-connected-sparse-dark.png` | sparse, dark | 720 × 982 px |
 | `menu-connected-dense-light.png` | dense, light | 720 × 928 px |
 | `menu-connected-dense-dark.png` | dense, dark | 720 × 928 px |
 
@@ -447,8 +447,8 @@ diagnostics, recovery guidance, and retry controls.
 
 | Artifact | Appearance | Pixel size |
 | --- | --- | --- |
-| `setup-failure-light.png` | light | 920 × 1028 px |
-| `setup-failure-dark.png` | dark | 920 × 1028 px |
+| `setup-failure-light.png` | light | 920 × 1044 px |
+| `setup-failure-dark.png` | dark | 920 × 1044 px |
 
 Run the canonical pair with:
 
@@ -482,16 +482,54 @@ SnapshotTesting explicitly warns that image references must be created and
 compared in the same rendering environment. GitHub's hosted runner images are
 updated weekly, so an OS label alone is not sufficient.
 
-The CLI fails before comparing or recording reviewed pixels unless the exact
-renderer is:
+The CLI fails before comparing or recording reviewed pixels unless the renderer
+matches the pinned platform id:
 
 ```text
-macos-26.6-25G72-xcode-26.6-17F113-arm64-2x
+macos-26-xcode-26.6-arm64-2x
 ```
 
-That identity includes macOS product and build, Xcode version and build,
-architecture, and scale. A mismatch is an explicit baseline-platform migration,
-not a pixel failure. Never bypass it by copying references between platforms.
+Three axes are compared, and a mismatch on any of them is a hard failure:
+macOS **MAJOR** version, Xcode **MAJOR.MINOR**, and architecture. A mismatch is
+an explicit baseline-platform migration, not a pixel failure. Never bypass it by
+copying references between platforms.
+
+The macOS **minor** version and both build strings are deliberately **not**
+compared. That relaxation is paid for by measurement, not optimism: a full
+minor+build hop (26.5.1/25F80 rendering against references recorded on
+26.6/25G72, same Xcode, same arm64, TZ=UTC, at the commit that produced them)
+moved **at most one 8-bit channel step** on every one of the 98 references, with
+a worst changed-channel fraction of 0.001469 — comfortably inside the 0.003
+budget, and two orders of magnitude below the delta 139-232 that a real
+two-character text change produced in the same run.
+`VisualSnapshotTolerance.crossMinorRenderingNoise` documents the full
+distribution.
+
+Three inputs the old exact pin never mentioned are now fixed instead, because
+they caused every failure actually observed on a non-canonical host and none of
+them was a pixel regression:
+
+| Input | How it is fixed |
+| --- | --- |
+| timezone | `export TZ=UTC` in the CLI, plus the rendered dashboard reading the SwiftUI `\.timeZone` environment instead of `TimeZone.current` |
+| locale | `export LANG`/`LC_ALL=en_US.UTF-8` in the CLI |
+| raster scale | every harness rasterizes at an explicit scale 2, including the AppKit About panel, rather than inheriting the attached display's backing scale |
+
+Provenance moved out of the directory name and into
+`ReferenceImages/<platform-id>/PLATFORM.json`, written by `record`: the full
+observed macOS product and build version, Xcode version and build, architecture,
+raster scale, TZ, locale, and the commit recorded at. `verify` prints a
+non-fatal note when the running minor differs from the recorded one, so drift
+stays visible even while passing. Encoding uncompared provenance in the
+directory name is what orphaned the previous baseline set.
+
+This pin is a **bridge**, not a resting place. It is calibrated from a single
+minor-version hop on a single machine, because macOS 26.6 is no longer
+obtainable. When macOS 27 arrives, `platform-id` yields a directory that does
+not exist and the suite fails loudly on `missingReference` — a reviewed
+re-record, not a silent comparison against macOS 26 references. The durable
+answer is a pinned CI runner at a fixed macOS, Xcode, scale, TZ, and locale, at
+which point the pin can go back to exact and the tolerance back to 0.001.
 
 GitHub hosted images are mutable even under a versioned runner label. CI always
 runs the semantic suite, renders the matrix twice for deterministic comparison,
@@ -510,18 +548,71 @@ control:
 | locale and dates | `en_US_POSIX`, Gregorian calendar, and UTC in the process and SwiftUI environment |
 | geometry | fixed proposed size, viewport, 2x renderer and display scale, and exact pixel assertions |
 | appearance | explicit light/dark scheme and left-to-right layout |
-| host UI preferences | fixed dynamic type, control size, legibility weight, and active appearance; the exact OS build pins system fonts |
+| host UI preferences | fixed dynamic type, control size, legibility weight, and active appearance; the OS MAJOR pin plus the Xcode MAJOR.MINOR pin bound system-font drift to the measured one-channel-step budget |
 | animations and hover | animations disabled; no pointer enters the offscreen surface |
 | async and local state | snapshot mode suppresses polling, setup prompts, and daemon access |
 | map ordering | arrays remain ordered and dictionary-derived chart clients are sorted |
 | color profiles | renderer uses non-linear color mode; comparison normalizes both PNGs to sRGB RGBA8 |
-| raster rounding | at most one 8-bit channel step across 0.1% of normalized channels |
+| raster rounding | at most one 8-bit channel step across 0.3% of normalized channels — one unified budget, measured against a real macOS minor-version hop |
 | baseline churn | a within-budget recording retains the reviewed PNG byte-for-byte |
 | stale diagnostics | successful verify or record removes that snapshot's old failure files |
 | accidental approval | verify never writes; record is explicit, atomic, reruns verify, and is disabled in CI |
 
 Dimensions must match exactly. Do not loosen the pixel budget to make a real
 change pass.
+
+## Proving the budget still rejects things
+
+A visual test that cannot fail is worse than no visual test, and a tolerance is
+only a claim until something proves what it still catches. Run:
+
+```bash
+./Scripts/visual-snapshots falsify
+```
+
+It applies one deliberate mutation at a time, runs every visual suite, asserts
+both the outcome **and which axis the comparison failed on**, then reverts. The
+committed cases, with their measured results on macOS 26.5.1 / Xcode 26.6 /
+arm64:
+
+| Case | Required outcome | Observed |
+| --- | --- | --- |
+| negative control — two unmutated runs | both green, byte-identical | green twice |
+| `Space.l` 16 → 17 pt (1 pt reflow) | fail on delta | delta 255 |
+| `Space.l` 16 → 16.5 pt (one device pixel at 2x) | fail on delta | delta 255 |
+| body font `.regular` → `.medium` | fail on delta | delta 232 |
+| caption font 12 → 12.5 pt | fail on delta | delta 232 |
+| one element `.opacity(0.97)` | fail on delta | delta 5 |
+| one-character text change | fail on delta | delta 166 |
+| `canvas` token, one level per scheme, large region | fail on **area** | 89 images exceeded the area budget with every channel still within 1 (10.1%-11.6% of channels against 0.3%) |
+| `chipLine` token, one level per scheme, small region | **pass** — documented blind spot | green |
+
+The two axes are asked separate questions, because they are not exclusive: a
+mutation can trip the delta budget on one image and the area budget on another.
+`fail on delta` requires some image to exceed a channel delta of 1; `fail on
+area` requires some image to exceed the area budget **with every channel still
+within 1**, which is the only job the area budget has. The `canvas` case
+satisfies the second on 89 images — and incidentally reached delta 2 on one,
+which is a useful reminder that a one-level change to a token is not always a
+one-level change on screen once it is composited.
+
+The half-point case is the sharpest falsifier: one device pixel at 2x is the
+closest a real change can get to the measured noise signature, and it still
+fails by two orders of magnitude, because a shifted antialiased edge moves
+glyph-edge channels by tens to hundreds of levels while cross-minor noise never
+exceeded one. If that case ever passes, the area budget is too wide and must
+come down — do not tune around it.
+
+The last case is deliberately green. A one-level token change on a small element
+moves fewer channels than the area budget allows and never exceeds the delta
+ceiling either, so the pixel comparator cannot see it — and could not see it at
+the old 0.001 budget either. `PaletteValueLintTests` pins every
+`Theme.Palette` token to its exact value and fails on a one-level change in
+either scheme, host-independently. That is where colour precision now lives.
+
+`falsify` deliberately claims nothing about a different macOS major, a different
+macOS minor, or a different Xcode; it prints that disclaimer at the end of every
+run.
 
 The Dashboard deterministic test renders its four-image matrix twice. The Work
 test does the same for 16 full-page states and 12 focused Action Digest

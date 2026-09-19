@@ -1,5 +1,23 @@
+import CryptoKit
 import Foundation
 import SQLite3
+
+/// A cheap identity for one response body.
+///
+/// A poll that re-fetches a byte-identical payload has learned nothing, and
+/// republishing it into observable state costs a full rebuild of whatever is
+/// on screen. Comparing fingerprints lets a caller skip that: a refresh that
+/// finds no new fact costs nothing to render. The digest is over the raw
+/// bytes, so it can never disagree with the decoded value.
+struct PayloadFingerprint: Equatable {
+    private let byteCount: Int
+    private let digest: SHA256.Digest
+
+    init(_ data: Data) {
+        byteCount = data.count
+        digest = SHA256.hash(data: data)
+    }
+}
 
 // Finds and talks to the local agentacct daemon.
 //
@@ -367,14 +385,14 @@ final class GlanceClient {
     }
 
     private func fetchOnce(discovery: Discovery) async throws -> GlanceSnapshot {
-        let version: VersionInfo = try await get("/v1/version", discovery: discovery)
+        let version: VersionInfo = try await get("/v1/version", discovery: discovery).value
         guard version.glanceSchema == Self.supportedGlanceSchema else {
             // An incompatible daemon is a first-class state, never a parse error.
             throw GlanceClientError.incompatible(
                 daemonVersion: version.version, schema: version.glanceSchema
             )
         }
-        let glance: Glance = try await get("/v1/glance", discovery: discovery)
+        let glance: Glance = try await get("/v1/glance", discovery: discovery).value
         return GlanceSnapshot(glance: glance, daemonVersion: version.version)
     }
 
@@ -382,7 +400,17 @@ final class GlanceClient {
     /// (daemon restarted → re-read the discovery file once). The window's
     /// data lanes use this so ALL app traffic rides the authenticated lane.
     func getAuthed<T: Decodable>(_ path: String) async throws -> T {
-        if let savedWork { return try savedWork.value(path) }
+        try await getAuthedFingerprinted(path).value
+    }
+
+    /// `getAuthed`, plus a fingerprint of the raw response bytes so a repeating
+    /// poll can tell "nothing changed" from "new facts" without diffing the
+    /// decoded model. `nil` means the lane cannot fingerprint (a saved-work
+    /// snapshot), which callers must read as "assume it changed".
+    func getAuthedFingerprinted<T: Decodable>(
+        _ path: String
+    ) async throws -> (value: T, fingerprint: PayloadFingerprint?) {
+        if let savedWork { return (try savedWork.value(path), nil) }
         let store = try Self.storeDir().standardizedFileURL.resolvingSymlinksInPath()
         let requestStartedAt = Date()
         do {
@@ -459,7 +487,12 @@ final class GlanceClient {
         }
     }
 
-    private func get<T: Decodable>(_ path: String, discovery: Discovery, cacheStore: URL? = nil, requestStartedAt: Date = Date()) async throws -> T {
+    private func get<T: Decodable>(
+        _ path: String,
+        discovery: Discovery,
+        cacheStore: URL? = nil,
+        requestStartedAt: Date = Date()
+    ) async throws -> (value: T, fingerprint: PayloadFingerprint?) {
         let host = discovery.host ?? "127.0.0.1"
         guard let url = URL(string: "http://\(host):\(discovery.port)\(path)") else {
             throw GlanceClientError.transport("bad daemon URL")
@@ -484,7 +517,7 @@ final class GlanceClient {
             if !Task.isCancelled, SavedWorkSnapshot.accepts(path), let cacheStore {
                 await SavedWorkCache.shared.record(path: path, data: data, store: cacheStore, requestStartedAt: requestStartedAt)
             }
-            return decoded
+            return (decoded, PayloadFingerprint(data))
         } catch {
             throw GlanceClientError.transport("payload decode failed: \(error.localizedDescription)")
         }

@@ -16,9 +16,24 @@ struct DashboardWorkItem: Identifiable {
     let outcomeKey: String
     let evidence: String
     let evidenceQualifier: String
+    /// Whether `evidence` is a measured figure or a named state — the role
+    /// that decides its FACE, from the one coverage presentation (K10).
+    let evidenceIsMetric: Bool
     let evidenceIsInconsistent: Bool
-    let failedChecks: Int
+    /// The reducer's cost figure (`≈$4.82`) or its named absence
+    /// (`no usage recorded`, `unpriced`) — rendered as it arrives.
     let cost: String
+    /// The reducer's cost is a named absence, not a figure (K10: prose face).
+    let costIsAbsent: Bool
+    /// The cost line with its basis (`≈$4.82 · pricing estimate`) for
+    /// accessibility, where a cost must carry its basis.
+    let costWithBasis: String
+    /// The basis phrase on its own (`pricing estimate`), so the row can PRINT
+    /// it under the figure. It used to live only in a hover tooltip, and the
+    /// rule is that every cost carries its basis on screen (K75).
+    let costBasis: String?
+    /// The reducer's decision statement, shown as the badge's help (C71).
+    let decisionStatement: String?
     let gradeable: Bool
     let strongestTierKey: String?
 
@@ -32,17 +47,19 @@ struct DashboardWorkItem: Identifiable {
         client = task.primaryRoot?.client ?? "Unknown agent"
         lastActivityAt = task.lastActivityAt
         outcomeKey = task.decisionStatus.key
-        if let label = task.decisionStatus.label, !label.isEmpty {
-            outcome = label
-        } else {
-            outcome = Self.outcomeLabel(for: task.decisionStatus.key)
-        }
+        // The reducer owns the decision word; Swift never re-cases a key.
+        outcome = PayloadAbsence.text(task.decisionStatus.label) ?? DashboardVocabulary.decisionNotReported
+        decisionStatement = PayloadAbsence.text(task.decisionStatus.statement)
         let evidencePresentation = ReceiptCoveragePresentation(evidence: task.evidenceStrength)
         evidence = task.evidenceStrength.compactHeadline
         evidenceQualifier = evidencePresentation.qualifier
+        evidenceIsMetric = evidencePresentation.valueIsMetric
         evidenceIsInconsistent = evidencePresentation.isInconsistent
-        failedChecks = task.evidenceStrength.checksFailed ?? 0
-        cost = Self.compactCost(task.cost)
+        cost = PayloadAbsence.text(task.cost.displayText) ?? PayloadAbsence.cost
+        costIsAbsent = task.cost.isAbsent
+        costWithBasis = task.cost.text
+        // A named absence carries no basis; only a figure does.
+        costBasis = task.cost.isAbsent ? nil : PayloadAbsence.text(task.cost.basisLabel)
         gradeable = task.evidenceStrength.gradeable == true
         strongestTierKey = task.evidenceStrength.strongestTier
     }
@@ -56,35 +73,15 @@ struct DashboardWorkItem: Identifiable {
         gradeable ? (strongestTierKey ?? "unchecked") : nil
     }
 
-    private static func outcomeLabel(for key: String) -> String {
-        switch key {
-        case "verified": return "Verified"
-        case "reported": return "Agent reported"
-        case "finding", "failed": return "Open finding"
-        case "blocked": return "Blocked"
-        case "in_progress": return "In progress"
-        case "handed_off": return "Handed off"
-        case "inactive": return "Inactive"
-        default: return key.replacingOccurrences(of: "_", with: " ").capitalized
-        }
-    }
+}
 
-    private static func compactCost(_ cost: ReceiptCost) -> String {
-        guard let value = cost.estimatedCostUsd else { return "—" }
-        let prefix: String
-        // A complete reported OR billed figure is exact ("$"); everything else
-        // is an estimate. Matches Fmt.costDisplay and receiptCostDisplay so the
-        // same cost never reads exact on Usage and estimated on the Dashboard.
-        let reported = cost.costConfidence == "client_reported" || cost.costConfidence == "provider_billed"
-        if cost.costComplete == false {
-            prefix = "~$"
-        } else if cost.costComplete == true && reported {
-            prefix = "$"
-        } else {
-            prefix = "≈$"
-        }
-        return Fmt.dollars(value, prefix: prefix)
-    }
+/// Named absences the Dashboard shows when an older payload omits a reducer
+/// string. They name what is missing; they never re-derive the missing word.
+enum DashboardVocabulary {
+    static let decisionNotReported = "decision not reported"
+    static let reasonNotReported = "attention reason not reported"
+    static let sourceNotReported = "source not reported"
+    static let timeNotReported = "time not reported"
 }
 
 /// UI projection of one server-ranked attention row. It deliberately exposes
@@ -95,12 +92,24 @@ struct DashboardAttentionItem: Identifiable, Equatable {
     let title: String
     let project: String?
     let client: String?
+    /// Internal sort key only — never a display word.
     let reasonKind: String
+    /// The reducer's reason noun (`Failed check`, `Blocker`).
+    let reasonLabel: String
+    /// The reducer's full recorded reason naming the evidence it rests on
+    /// (`Failed test check · pytest · exit 2`, `Blocker · Deploy`).
+    let label: String
     let summary: String
     let nextStep: String?
     let observedAt: Double?
     let sourceLabel: String?
     let handedOff: Bool?
+    /// Decision axis for the attention card (C39): key drives the tint class,
+    /// label and statement are reducer text.
+    let decisionKey: String
+    let decisionLabel: String
+    let decisionStatement: String?
+    let verdictHeadline: String?
 
     init?(task: ReceiptSummary) {
         guard let reason = task.attention else { return nil }
@@ -113,33 +122,20 @@ struct DashboardAttentionItem: Identifiable, Equatable {
         project = task.project
         client = task.primaryRoot?.client
         reasonKind = reason.kind
+        let reasonWord = PayloadAbsence.text(reason.reasonLabel) ?? DashboardVocabulary.reasonNotReported
+        reasonLabel = reasonWord
+        label = PayloadAbsence.text(reason.label) ?? reasonWord
         summary = reason.summary
-        nextStep = reason.nextStep
+        nextStep = PayloadAbsence.text(reason.nextStep)
         observedAt = reason.observedAt
         handedOff = task.handedOff
-        switch reason.source {
-        case "mcp": sourceLabel = "MCP record"
-        case "client_log": sourceLabel = "Local client log"
-        case "machine": sourceLabel = "Machine check"
-        case "hook": sourceLabel = "Client hook"
-        case "transcript_scan": sourceLabel = "Transcript import"
-        case "ci": sourceLabel = "External CI or provider"
-        case "git": sourceLabel = "Git repository"
-        case "human": sourceLabel = "Human record"
-        case "inferred": sourceLabel = "agentacct inference"
-        case "none": sourceLabel = "No source recorded"
-        case .some(let source): sourceLabel = source.replacingOccurrences(of: "_", with: " ").capitalized
-        case nil: sourceLabel = nil
-        }
-    }
-
-    var reasonLabel: String {
-        switch reasonKind {
-        case "failed_check": return "Failed check"
-        case "failed_step": return "Failed step"
-        case "blocker": return "Recorded blocker"
-        default: return reasonKind.replacingOccurrences(of: "_", with: " ").capitalized
-        }
+        sourceLabel = PayloadAbsence.text(reason.sourceLabel)
+        decisionKey = task.decisionStatus.key
+        decisionLabel = PayloadAbsence.text(task.decisionStatus.label) ?? DashboardVocabulary.decisionNotReported
+        decisionStatement = PayloadAbsence.text(task.decisionStatus.statement)
+        // Beside the decision badge: the proof clause alone, so the decision
+        // word is never printed twice side by side.
+        verdictHeadline = task.verdict?.badgeClause
     }
 
     var recency: String? { agoText(observedAt) }
@@ -171,10 +167,12 @@ struct DashboardActionBrief: Equatable {
         if let client = focus.client, !client.isEmpty {
             lines.append("Agent: \(client)")
         }
-        lines.append("Recorded attention: \(focus.reasonLabel) — \(focus.summary)")
-        lines.append("Recorded next step: \(focus.nextStep ?? "None recorded")")
-        lines.append("Observed: \(Self.timestamp(focus.observedAt) ?? "Not recorded")")
-        lines.append("Provenance: \(focus.sourceLabel ?? "Not recorded")")
+        lines.append("Decision: \(focus.decisionLabel)")
+        lines.append("Recorded reason: \(focus.label)")
+        lines.append("Recorded summary: \(focus.summary)")
+        lines.append("Recorded next step: \(focus.nextStep ?? NextStepRow.absence)")
+        lines.append("Observed: \(Self.timestamp(focus.observedAt) ?? DashboardVocabulary.timeNotReported)")
+        lines.append("Provenance: \(focus.sourceLabel ?? DashboardVocabulary.sourceNotReported)")
         text = lines.joined(separator: "\n")
     }
 
@@ -274,6 +272,7 @@ enum DashboardAttentionPresentation: Equatable {
               payload.counts.failedCheck >= 0,
               payload.counts.failedStep >= 0,
               payload.counts.blocker >= 0,
+              payload.counts.checkNotRun >= 0,
               payload.items.count <= payload.limit,
               payload.items.count <= payload.total,
               taskIDs.allSatisfy({ !$0.isEmpty }),
@@ -289,7 +288,9 @@ enum DashboardAttentionPresentation: Equatable {
             payload.counts.failedStep
         )
         guard !first.overflow else { return false }
-        let total = first.partialValue.addingReportingOverflow(payload.counts.blocker)
+        let second = first.partialValue.addingReportingOverflow(payload.counts.blocker)
+        guard !second.overflow else { return false }
+        let total = second.partialValue.addingReportingOverflow(payload.counts.checkNotRun)
         return !total.overflow && total.partialValue == payload.total
     }
 
@@ -303,13 +304,16 @@ enum DashboardAttentionPresentation: Equatable {
         }
     }
 
-    var dashboardStatus: String {
+    /// The status caption: the queue's own count words (`4 in Attention`)
+    /// from the payload, or a neutral count when an older daemon sent none.
+    func dashboardStatus(queue: AttentionQueueCopy?) -> String {
         switch self {
         case .loading: return "Loading review projection"
         case .unavailable: return "Refresh to retry"
-        case .clear: return "0 review items"
+        case .clear:
+            return PayloadAbsence.text(queue?.countText) ?? "0 in queue"
         case .focus(_, let total), .inconsistent(let total):
-            return "\(total) review item\(total == 1 ? "" : "s")"
+            return PayloadAbsence.text(queue?.countText) ?? "\(total) in queue"
         }
     }
 
@@ -321,112 +325,147 @@ enum DashboardAttentionPresentation: Equatable {
     }
 }
 
+/// How one period bucket draws in the Dashboard chart (C48). Absence is a
+/// named state with its own mark, never a zero-height bar or a dash.
+enum DashboardPeriodBarState: Equatable {
+    /// A charted value. `partial` marks a known-partial cost subtotal.
+    case value(Double, partial: Bool)
+    /// No usage recorded for the period: a 1pt hairline stub.
+    case noUsage
+    /// Usage recorded, but this series has no figure (unpriced cost, or
+    /// fresh tokens not reported): a 3pt neutral stub.
+    case unpriced
+
+    var isPartial: Bool {
+        if case .value(_, let partial) = self { return partial }
+        return false
+    }
+}
+
+/// The Dashboard chart's measures — the SAME keys, order, labels and resting
+/// rule as the Usage chart (`UsageChartVocabulary`, from the payload).
 enum DashboardUsageSeries: String, CaseIterable, Identifiable {
-    case tokens = "Tokens"
-    case cost = "Cost"
+    case tokens
+    case cost
 
     var id: Self { self }
 
-    func value(for period: PeriodBucket) -> Double {
+    var chartSeries: UsageChartSeries { self == .tokens ? .tokens : .cost }
+
+    /// True when the cube recorded no usage for the bucket.
+    static func hasNoUsage(_ period: PeriodBucket) -> Bool {
+        period.costState == "none_recorded"
+            || period.usageAvailability == "unknown"
+            || period.rows == 0
+    }
+
+    /// The charted value, or nil when the series has no complete-or-partial
+    /// figure for this period. A missing figure is never charted as zero.
+    func value(for period: PeriodBucket) -> Double? {
         switch self {
         case .tokens:
-            guard let tokens = period.freshTokens, tokens >= 0 else { return 0 }
+            guard !Self.hasNoUsage(period),
+                  let tokens = period.freshTokens, tokens >= 0 else { return nil }
             return Double(tokens)
         case .cost:
-            guard let cost = period.estimatedCostUsd, cost.isFinite, cost >= 0 else { return 0 }
+            guard !Self.hasNoUsage(period) else { return nil }
+            let figure = period.costComplete == true
+                ? period.estimatedCostUsd
+                : (period.estimatedCostUsd ?? period.knownAdditiveCostUsd)
+            guard let cost = figure, cost.isFinite, cost >= 0 else { return nil }
             return cost
         }
     }
 
+    func barState(for period: PeriodBucket) -> DashboardPeriodBarState {
+        if let value = value(for: period) {
+            // The cube's own cost state names a partial bucket (no Swift rule).
+            return .value(value, partial: self == .cost && period.costState == "partial")
+        }
+        if Self.hasNoUsage(period) { return .noUsage }
+        return .unpriced
+    }
+
     func valueText(for period: PeriodBucket) -> String {
-        switch self {
-        case .tokens:
-            guard let value = period.freshTokens, value >= 0 else { return "—" }
-            return UsageTotals.compact(value)
-        case .cost:
-            guard let cost = period.estimatedCostUsd, cost.isFinite, cost >= 0 else { return "—" }
-            return period.costText
+        switch barState(for: period) {
+        case .noUsage:
+            return PayloadAbsence.noUsage
+        case .unpriced:
+            switch self {
+            case .tokens: return "fresh tokens \(PayloadAbsence.tokens)"
+            case .cost:
+                return usageCostAbsenceText(costState: period.costState, rows: period.rows, hasFigure: false)
+                    ?? PayloadAbsence.unpriced
+            }
+        case .value(let value, let partial):
+            switch self {
+            case .tokens: return "\(UsageTotals.compact(value)) fresh tokens"
+            case .cost:
+                return partial
+                    ? "\(period.costText) · \(PayloadAbsence.text(period.costTotalLabel) ?? PayloadAbsence.costLabel)"
+                    : period.costText
+            }
         }
     }
 
-    func totalText(for periods: [PeriodBucket]) -> String {
+    /// The range readout. With the cube's own totals it renders the reducer
+    /// grammar; otherwise it sums the charted buckets and names absence.
+    func totalText(for periods: [PeriodBucket], totals: UsageBucket? = nil) -> String {
+        let withUsage = periods.filter { !Self.hasNoUsage($0) }
+        guard !withUsage.isEmpty else { return PayloadAbsence.noUsage }
         switch self {
         case .tokens:
-            let available: [Int] = periods.compactMap { period -> Int? in
-                guard let tokens = period.freshTokens, tokens >= 0 else { return nil }
-                return tokens
+            if let tokens = totals?.freshTokens, tokens >= 0 {
+                return "\(UsageTotals.compact(tokens)) fresh tokens total"
             }
-            guard !available.isEmpty else { return "—" }
-            let prefix = available.count == periods.count ? "" : "~"
-            let total = available.reduce(0.0) { $0 + Double($1) }
-            return "\(prefix)\(UsageTotals.compact(total)) total"
-        case .cost:
-            let available = periods.compactMap { period -> Double? in
-                guard let cost = period.estimatedCostUsd, cost.isFinite, cost >= 0 else { return nil }
-                return cost
-            }
-            guard !available.isEmpty else { return "—" }
-            let complete = available.count == periods.count
-                && periods.allSatisfy { $0.costComplete == true }
-            let reported = complete && periods.allSatisfy {
-                ["client_reported", "provider_billed"].contains($0.costConfidence ?? "")
-            }
-            let prefix = reported ? "$" : (complete ? "≈$" : "~$")
+            let available = withUsage.compactMap { value(for: $0) }
+            guard !available.isEmpty else { return "fresh tokens \(PayloadAbsence.tokens)" }
+            let prefix = available.count == withUsage.count ? "" : "~"
             let total = available.reduce(0, +)
-            guard total.isFinite else { return "—" }
-            return "\(Fmt.dollars(total, prefix: prefix)) total"
+            guard total.isFinite else { return "fresh tokens total not charted" }
+            return "\(prefix)\(UsageTotals.compact(total)) fresh tokens total"
+        case .cost:
+            // The cube's range figure with the reducer's own label (`total`
+            // only when complete; `Partial subtotal · N of M usage records
+            // unpriced` otherwise). Swift never sums buckets into a "total"
+            // or appends the word itself (K105).
+            guard let totals else { return Self.costTotalNotReported }
+            let cost = UsageCostPresentation(bucket: totals)
+            guard let figure = cost.figure else { return cost.absence }
+            return "\(figure) \(cost.totalLabel)"
         }
     }
 
-    func subtitle(rangeDays: Int, periodPresentation: UsagePeriodPresentation) -> String {
+    static let costTotalNotReported = "cost total not reported"
+
+    /// Subtitle naming the measure, the range and the basis — every word from
+    /// the payload: the measure label (`usage_series`), the token basis
+    /// (`token_basis_label`) and the cube's `cost_confidence_display` (C21).
+    /// A cost subtitle opens with the unit (`USD`) since ticks carry no glyph.
+    func subtitle(
+        rangeDays: Int,
+        periodPresentation: UsagePeriodPresentation,
+        costBasis: String? = nil,
+        vocabulary: UsageChartVocabulary = UsageChartVocabulary()
+    ) -> String {
         let range = periodPresentation.historyRangeDescription(days: rangeDays)
-        switch self {
-        case .tokens: return "Fresh tokens · \(range) · client reported"
-        case .cost: return "Estimated cost · \(range) · pricing-table basis"
-        }
-    }
-
-    func axisText(for value: Double) -> String {
+        let label = vocabulary.label(for: chartSeries)
         switch self {
         case .tokens:
-            let compact = UsageTotals.compact(value)
-            guard compact.count > 5 else { return compact }
-            let whole = value.rounded(.towardZero)
-            let magnitude = abs(whole)
-            switch magnitude {
-            case 1_000_000_000_000_000...:
-                return String(format: "%.0e", whole)
-                    .replacingOccurrences(of: "e+", with: "e")
-            case 1_000_000_000_000...: return String(format: "%.0fT", whole / 1_000_000_000_000)
-            case 1_000_000_000...: return String(format: "%.0fB", whole / 1_000_000_000)
-            case 1_000_000...: return String(format: "%.0fM", whole / 1_000_000)
-            case 1_000...: return String(format: "%.0fk", whole / 1_000)
-            default: return compact
-            }
-        case .cost: return Self.costAxisText(value)
+            return "\(label) · \(range) · \(PayloadAbsence.text(vocabulary.tokenBasis) ?? PayloadAbsence.costBasis)"
+        case .cost:
+            let unit = PayloadAbsence.text(vocabulary.costUnit) ?? PayloadAbsence.measure
+            return "\(unit) · \(range) · \(PayloadAbsence.text(costBasis) ?? PayloadAbsence.costBasis)"
         }
     }
 
-    private static func costAxisText(_ value: Double) -> String {
-        guard value.isFinite, value >= 0 else { return "—" }
-        let whole = value.rounded(.towardZero)
-        let magnitude = abs(whole)
-        switch magnitude {
-        case 1_000_000_000_000_000...:
-            return "$" + String(format: "%.0e", whole)
-                .replacingOccurrences(of: "e+", with: "e")
-        case 1_000_000_000_000...:
-            return String(format: "$%.0fT", (whole / 1_000_000_000_000).rounded(.towardZero))
-        case 1_000_000_000...:
-            return String(format: "$%.0fB", (whole / 1_000_000_000).rounded(.towardZero))
-        case 1_000_000...:
-            return String(format: "$%.0fM", (whole / 1_000_000).rounded(.towardZero))
-        case 1_000...:
-            return String(format: "$%.0fk", (whole / 1_000).rounded(.towardZero))
-        case 10...: return String(format: "$%.0f", whole)
-        default:
-            let cents = (value * 100).rounded(.towardZero) / 100
-            return String(format: "$%.2f", cents)
+    /// The shared axis grammar (C44): `Fmt.axisTokens` / `Fmt.axisAmount`.
+    /// Cost ticks are plain rounded scale values sharing the axis maximum's
+    /// precision; they carry no cost glyph (K39).
+    func axisText(for value: Double, scale: Double? = nil) -> String {
+        switch self {
+        case .tokens: return Fmt.axisTokens(value)
+        case .cost: return Fmt.axisAmount(value, scale: scale)
         }
     }
 }
@@ -472,7 +511,7 @@ struct DashboardActiveWorkSignal: Equatable {
 
         guard !sessions.isEmpty else {
             title = "No recent agent activity"
-            detail = "Recorded activity will appear here when an agent session is observed."
+            detail = "Activity appears here once a session is observed."
             promotesInactivity = false
             hasConfirmedActiveWork = false
             return
@@ -575,9 +614,16 @@ struct DashboardUsagePulse: Equatable {
         isLoaded: Bool,
         rangeDays: Int,
         error: String?,
+        tokenBasis: String? = nil,
         now: Date = SnapshotMode.currentDate,
-        timeZone: TimeZone = .current
+        // No default. `TimeZone.current` used to be the default here, which made
+        // the rendered period label depend on the zone of whichever process did
+        // the rendering — the single largest source of false visual-snapshot
+        // failures on a non-canonical host. Callers must say which zone they
+        // mean; views read `\.timeZone` from the environment.
+        timeZone: TimeZone
     ) {
+        let basis = PayloadAbsence.text(tokenBasis) ?? PayloadAbsence.costBasis
         if let error {
             state = .unavailable
             title = "Usage comparison unavailable"
@@ -614,12 +660,16 @@ struct DashboardUsagePulse: Equatable {
             return
         }
 
-        let dated = periods.compactMap { period -> (String, Int?)? in
+        let dated = periods.compactMap { period -> DatedBucket? in
             guard let label = period.period, Self.isDateLabel(label) else { return nil }
-            return (label, period.freshTokens)
-        }.sorted { $0.0 < $1.0 }
+            return DatedBucket(
+                label: label,
+                tokens: period.freshTokens,
+                noUsage: DashboardUsageSeries.hasNoUsage(period)
+            )
+        }.sorted { $0.label < $1.label }
 
-        guard Set(dated.map(\.0)).count == dated.count else {
+        guard Set(dated.map(\.label)).count == dated.count else {
             state = .insufficient
             title = "Usage comparison ambiguous"
             detail = "Multiple fresh-token buckets share a date."
@@ -633,41 +683,57 @@ struct DashboardUsagePulse: Equatable {
             return
         }
 
-        let previousBucket = dated[dated.count - 2]
-        let latestBucket = dated[dated.count - 1]
-        guard let previousTokens = previousBucket.1, previousTokens >= 0,
-              let latestTokens = latestBucket.1, latestTokens >= 0 else {
+        let previous = dated[dated.count - 2]
+        let latest = dated[dated.count - 1]
+        guard previous.hasComparableValue, latest.hasComparableValue else {
             state = .insufficient
             title = "Usage comparison incomplete"
             detail = "The latest two dated buckets need fresh-token values."
             return
         }
 
-        let previous = (previousBucket.0, previousTokens)
-        let latest = (latestBucket.0, latestTokens)
         let weekly = rangeDays >= 90
         let currentPeriod = Self.currentPeriodLabel(now: now, weekly: weekly, timeZone: timeZone)
-        guard latest.0 <= currentPeriod else {
+        let priorPeriod = Self.currentPeriodLabel(
+            now: now.addingTimeInterval(weekly ? -7 * 86_400 : -86_400),
+            weekly: weekly,
+            timeZone: timeZone
+        )
+        guard latest.label <= currentPeriod else {
             state = .insufficient
             title = "Usage history is ahead of local time"
-            detail = "Latest recorded period: \(latest.0)."
+            detail = "Latest recorded period: \(latest.label)."
             return
         }
         state = .ready
-        if latest.0 == currentPeriod {
-            title = "\(weekly ? "This week" : "Today") so far · \(UsageTotals.compact(latest.1))"
-            detail = "\(Self.bucketDescription(previous, weekly: weekly)) · client reported"
+        if latest.label == currentPeriod {
+            // The reducer's availability is the primary state (C47): a period
+            // with no recorded usage is named, never shown as a numeric 0.
+            if latest.noUsage {
+                title = weekly ? "No usage recorded this week" : "No usage recorded today"
+            } else {
+                title = "\(weekly ? "This week" : "Today") so far · \(Self.tokenPhrase(latest.tokens ?? 0))"
+            }
+            detail = Self.detailWithBasis([previous], weekly: weekly, priorPeriod: priorPeriod, basis: basis)
             return
         }
 
-        if previous.1 == 0 {
-            title = latest.1 == 0
+        let previousTokens = previous.tokens ?? 0
+        let latestTokens = latest.tokens ?? 0
+        if previous.noUsage && latest.noUsage {
+            title = "No usage recorded in either period"
+        } else if latest.noUsage {
+            title = "No usage recorded in the latest period"
+        } else if previous.noUsage {
+            title = "Fresh tokens recorded after a period with no usage"
+        } else if previousTokens == 0 {
+            title = latestTokens == 0
                 ? "Fresh tokens unchanged at 0"
                 : "Fresh tokens rose from 0"
         } else {
-            let change = ((Double(latest.1) - Double(previous.1)) / Double(previous.1)) * 100
+            let change = ((Double(latestTokens) - Double(previousTokens)) / Double(previousTokens)) * 100
             let rounded = abs(change).rounded()
-            if latest.1 == previous.1 {
+            if latestTokens == previousTokens {
                 title = "Fresh tokens unchanged"
             } else if rounded < 1 {
                 title = "Fresh tokens roughly unchanged"
@@ -677,13 +743,54 @@ struct DashboardUsagePulse: Equatable {
                 title = "Fresh tokens \(String(format: "%.0f", rounded))% \(change > 0 ? "higher" : "lower")"
             }
         }
-        detail = "\(Self.bucketDescription(latest, weekly: weekly)) · "
-            + "\(Self.bucketDescription(previous, weekly: weekly)) · client reported"
+        detail = Self.detailWithBasis([latest, previous], weekly: weekly, priorPeriod: priorPeriod, basis: basis)
     }
 
-    private static func bucketDescription(_ bucket: (String, Int), weekly: Bool) -> String {
-        let interval = weekly ? "in week of \(bucket.0)" : "on \(bucket.0)"
-        return "\(UsageTotals.compact(bucket.1)) \(interval)"
+    /// Joins bucket descriptions and attaches the token basis ONLY to recorded
+    /// figures — an absence ("no usage recorded") never wears a basis. With
+    /// every bucket recorded the basis closes the line once; with one recorded
+    /// figure beside an absence, the basis rides directly on that figure.
+    private static func detailWithBasis(
+        _ buckets: [DatedBucket],
+        weekly: Bool,
+        priorPeriod: String,
+        basis: String
+    ) -> String {
+        let recorded = buckets.filter { !$0.noUsage }
+        let parts = buckets.map { bucketDescription($0, weekly: weekly, priorPeriod: priorPeriod) }
+        if recorded.isEmpty { return parts.joined(separator: " · ") }
+        if recorded.count == buckets.count { return (parts + [basis]).joined(separator: " · ") }
+        return zip(buckets, parts).map { bucket, part in
+            bucket.noUsage ? part : "\(part) · \(basis)"
+        }.joined(separator: " · ")
+    }
+
+    private struct DatedBucket {
+        let label: String
+        let tokens: Int?
+        let noUsage: Bool
+
+        /// A no-usage bucket is a named state and still comparable; a bucket
+        /// with usage needs a valid fresh-token count.
+        var hasComparableValue: Bool {
+            if noUsage { return true }
+            guard let tokens else { return false }
+            return tokens >= 0
+        }
+    }
+
+    private static func tokenPhrase(_ tokens: Int) -> String {
+        "\(UsageTotals.compact(tokens)) fresh tokens"
+    }
+
+    /// Names the period and the unit: `yesterday 121.1M fresh tokens`,
+    /// `last week no usage recorded`, `121.1M fresh tokens on 2026-09-13`.
+    private static func bucketDescription(_ bucket: DatedBucket, weekly: Bool, priorPeriod: String) -> String {
+        let value = bucket.noUsage ? PayloadAbsence.noUsage : tokenPhrase(bucket.tokens ?? 0)
+        if bucket.label == priorPeriod {
+            return "\(weekly ? "last week" : "yesterday") \(value)"
+        }
+        return "\(value) \(weekly ? "in week of \(bucket.label)" : "on \(bucket.label)")"
     }
 
     private static func isDateLabel(_ label: String) -> Bool {
@@ -728,6 +835,11 @@ struct DashboardPane: View {
     @Environment(GlanceState.self) var glance
     @Environment(AppSelection.self) var selection
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The zone the usage-period comparison is made in. The live app inherits
+    /// the system zone through this environment value, exactly as before; the
+    /// snapshot renderers set it to GMT, so the rendered period label no longer
+    /// depends on which zone the rendering process happens to be in.
+    @Environment(\.timeZone) private var timeZone
 
     private var presentedError: String? {
         dashboard.errorText ?? dashboard.receiptListError
@@ -769,6 +881,14 @@ struct DashboardPane: View {
         }
     }
 
+    /// The reducer's headline window (`headline_limit_key`) — the same limit
+    /// the menu hero and the TUI lead with.
+    private var capacityHeadline: DashboardCapacityHeadline? {
+        guard case .connected(let snapshot) = glance.phase,
+              let headline = snapshot.glance.headlineLimit else { return nil }
+        return DashboardCapacityHeadline(entry: headline.entry, window: headline.window)
+    }
+
     private var planRows: [DashboardAgentPlanRow] {
         DashboardAgentPlanRow.rows(
             limits: liveLimits,
@@ -781,15 +901,18 @@ struct DashboardPane: View {
     var body: some View {
         ScrollBox {
             VStack(alignment: .leading, spacing: Space.l) {
+                // The Dashboard reads the short attention PREVIEW, never the
+                // Work pane's loaded queue: the two now have their own state,
+                // so a refresh cannot trim one to fit the other (K87).
                 DashboardShiftBriefHeader(
-                    payload: dashboard.attention,
-                    error: dashboard.attentionError
+                    payload: dashboard.dashboardAttention,
+                    error: dashboard.dashboardAttentionError
                 )
 
                 splitRow {
                     DashboardAttentionBriefCard(
-                        payload: dashboard.attention,
-                        error: dashboard.attentionError
+                        payload: dashboard.dashboardAttention,
+                        error: dashboard.dashboardAttentionError
                     ) { destination in
                         selection.open(destination)
                     }
@@ -797,12 +920,15 @@ struct DashboardPane: View {
                     DashboardSignalRail(
                         sessions: recentSessions,
                         planRows: planRows,
+                        headline: capacityHeadline,
                         availability: glanceAvailability,
                         usagePulse: DashboardUsagePulse(
                             periods: dashboard.usage?.byPeriod,
                             isLoaded: dashboard.usage != nil,
                             rangeDays: dashboard.usageDays,
-                            error: dashboard.errorText
+                            error: dashboard.errorText,
+                            tokenBasis: dashboard.usage?.tokenBasisLabel,
+                            timeZone: timeZone
                         ),
                         ingestion: dashboard.ingestion,
                         ingestionError: dashboard.ingestionError
@@ -813,7 +939,8 @@ struct DashboardPane: View {
 
                 RecentWorkCard(
                     items: recentWork,
-                    totalCount: dashboard.totalReceiptTasks ?? dashboard.receiptTasks.count
+                    totalCount: dashboard.totalReceiptTasks ?? dashboard.receiptTasks.count,
+                    fieldLabels: dashboard.receiptFieldLabels ?? ReceiptFieldLabels()
                 ) { destination in
                     selection.open(destination)
                 }
@@ -824,12 +951,15 @@ struct DashboardPane: View {
                 {
                     DashboardUsageChart(
                         periods: periods,
+                        totals: usage.totals,
                         rangeDays: dashboard.usageDays,
-                        periodPresentation: UsagePeriodPresentation(usage: usage)
+                        periodPresentation: UsagePeriodPresentation(usage: usage),
+                        vocabulary: UsageChartVocabulary(usage: usage)
                     )
                 }
             }
             .padding(Space.gutter)
+            .pageFrame()
         }
         .overlay(alignment: .bottom) {
             if let error = presentedError {
@@ -853,25 +983,30 @@ struct DashboardPane: View {
         @ViewBuilder left: () -> Left,
         @ViewBuilder right: () -> Right
     ) -> some View {
-        ViewThatFits(in: .horizontal) {
-            DashboardSplitLayout(leftFraction: 7 / 12, spacing: Space.l) {
-                left()
-                right()
-            }
-            .frame(minWidth: 820)
-
-            VStack(spacing: Space.l) {
-                left()
-                right()
-            }
+        // The split is chosen by the width the pane actually offers, not by
+        // the cards' single-line ideal widths: a long reducer sentence in the
+        // signal rail wraps inside its column instead of silently collapsing
+        // the row into a stack that pushes Recent work out of the first
+        // viewport.
+        DashboardSplitLayout(leftFraction: 7 / 12, spacing: Space.l, minimumSplitWidth: 820) {
+            left()
+            right()
         }
     }
 
 }
 
+/// Two columns at `leftFraction` when the proposed width reaches
+/// `minimumSplitWidth`; otherwise the two cards stack at full width.
 private struct DashboardSplitLayout: Layout {
     let leftFraction: CGFloat
     let spacing: CGFloat
+    let minimumSplitWidth: CGFloat
+
+    private func splits(_ width: CGFloat?) -> Bool {
+        guard let width else { return false }
+        return width >= minimumSplitWidth
+    }
 
     func sizeThatFits(
         proposal: ProposedViewSize,
@@ -879,9 +1014,16 @@ private struct DashboardSplitLayout: Layout {
         cache: inout ()
     ) -> CGSize {
         guard subviews.count == 2 else { return .zero }
-        let width = proposal.width ?? subviews.reduce(0) {
-            $0 + $1.sizeThatFits(.unspecified).width
-        } + spacing
+        guard splits(proposal.width), let width = proposal.width else {
+            // Stacked: each card measures at the full offered width. Heights
+            // are intrinsic so flexible cards never consume the viewport.
+            let top = subviews[0].sizeThatFits(.init(width: proposal.width, height: nil))
+            let bottom = subviews[1].sizeThatFits(.init(width: proposal.width, height: nil))
+            return CGSize(
+                width: proposal.width ?? max(top.width, bottom.width),
+                height: top.height + spacing + bottom.height
+            )
+        }
         let usableWidth = max(0, width - spacing)
         let leftWidth = usableWidth * leftFraction
         let rightWidth = usableWidth - leftWidth
@@ -900,6 +1042,19 @@ private struct DashboardSplitLayout: Layout {
         cache: inout ()
     ) {
         guard subviews.count == 2 else { return }
+        guard splits(bounds.width) else {
+            let topHeight = subviews[0].sizeThatFits(.init(width: bounds.width, height: nil)).height
+            let bottomHeight = subviews[1].sizeThatFits(.init(width: bounds.width, height: nil)).height
+            subviews[0].place(
+                at: bounds.origin,
+                proposal: .init(width: bounds.width, height: topHeight)
+            )
+            subviews[1].place(
+                at: CGPoint(x: bounds.minX, y: bounds.minY + topHeight + spacing),
+                proposal: .init(width: bounds.width, height: bottomHeight)
+            )
+            return
+        }
         let usableWidth = max(0, bounds.width - spacing)
         let leftWidth = usableWidth * leftFraction
         let rightWidth = usableWidth - leftWidth
@@ -923,26 +1078,40 @@ private struct DashboardShiftBriefHeader: View {
     }
 
     var body: some View {
-        HStack(alignment: .lastTextBaseline, spacing: Space.xl) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("SHIFT BRIEF")
-                    .workFont(.labelCaps)
-                    .tracking(Type.labelCapsTracking)
-                    .foregroundStyle(Theme.accent)
-                Text(presentation.dashboardHeadline)
-                    .workFont(.titlePage)
-                    .tracking(Type.titlePageTracking)
-                    .foregroundStyle(Theme.ink)
-                    .lineLimit(2)
+        // The status caption stacks under the title before the title would
+        // truncate (C83): the row form is chosen only when both fit at their
+        // ideal widths.
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .lastTextBaseline, spacing: Space.xl) {
+                titleBlock
+                Spacer(minLength: Space.m)
+                statusText
+                    .multilineTextAlignment(.trailing)
             }
-            Spacer(minLength: Space.m)
-            Text(presentation.dashboardStatus)
-                .workFont(.dataSmall)
-                .foregroundStyle(presentation.dashboardStatusIsWarning ? Theme.amber : Theme.muted)
-                .multilineTextAlignment(.trailing)
+            VStack(alignment: .leading, spacing: Space.s) {
+                titleBlock
+                statusText
+            }
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("dashboard.shift-brief.header")
+    }
+
+    private var titleBlock: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            CapsLabel(text: "Shift brief")
+            Text(presentation.dashboardHeadline)
+                .workFont(.titlePage)
+                .tracking(Type.titlePageTracking)
+                .foregroundStyle(Theme.ink)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var statusText: some View {
+        Text(presentation.dashboardStatus(queue: payload?.queue))
+            .workFont(.dataSmall)
+            .foregroundStyle(presentation.dashboardStatusIsWarning ? Theme.amber : Theme.muted)
     }
 }
 
@@ -957,12 +1126,18 @@ private struct DashboardAttentionBriefCard: View {
         DashboardAttentionPresentation(payload: payload, error: error)
     }
 
+    /// The stem is a FILLED mark, so it takes fill weights (K47).
     private var tint: Color {
         switch presentation {
-        case .focus(let focus, _): return focus.reasonKind == "blocker" ? Theme.amber : Theme.coral
-        case .clear: return Theme.green
+        // One decision-to-tint lookup (C26): the stem wears the same class as
+        // the decision badge, so a blocked task is never amber here and coral
+        // on its badge.
+        case .focus(let focus, _): return DecisionTintClass.forKey(focus.decisionKey).fill
+        // A clear review projection is not externally verified evidence, so it
+        // is never green (C27).
+        case .clear: return Theme.ink
         case .loading: return Theme.muted
-        case .unavailable, .inconsistent: return Theme.amber
+        case .unavailable, .inconsistent: return Theme.amberFill
         }
     }
 
@@ -973,13 +1148,24 @@ private struct DashboardAttentionBriefCard: View {
                     .fill(tint)
                     .frame(width: 5)
                     .accessibilityHidden(true)
+                // Vertical padding matches the signal rail's 16pt rhythm so
+                // the brief row (whose height the taller card sets) leaves
+                // Recent work visible in the minimum first viewport.
                 content
-                    .padding(Space.xl)
+                    .padding(.horizontal, Space.xl)
+                    .padding(.vertical, Space.l)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
+        // A named group, not an anonymous one: VoiceOver announces what the
+        // card IS on entry, using its own visible caption (K121).
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Self.caption)
         .accessibilityIdentifier("dashboard.shift-brief.attention")
     }
+
+    /// The card's visible caption, and the name of its accessibility group.
+    static let caption = "Primary attention"
 
     @ViewBuilder
     private var content: some View {
@@ -996,7 +1182,8 @@ private struct DashboardAttentionBriefCard: View {
         case .unavailable(let error):
             DashboardBriefUnavailableState(
                 title: "Review status unavailable",
-                message: error
+                message: "The recorder didn't return the review projection. Refresh before acting on this brief.",
+                rawError: error
             )
         case .loading:
             HStack(spacing: Space.m) {
@@ -1018,12 +1205,9 @@ private struct DashboardAttentionBriefCard: View {
         let brief = DashboardActionBrief(focus: focus)
         let copySucceeded = copyFeedback == .copied(brief.text)
         let copyFailed = copyFeedback == .failed(brief.text)
-        return VStack(alignment: .leading, spacing: Space.l) {
+        return VStack(alignment: .leading, spacing: Space.m) {
             HStack(spacing: Space.s) {
-                Text("PRIMARY ATTENTION")
-                    .workFont(.labelCaps)
-                    .tracking(Type.labelCapsTracking)
-                    .foregroundStyle(tint)
+                CapsLabel(text: Self.caption)
                 Text("1 OF \(total)")
                     .workFont(.dataSmallSemibold)
                     .foregroundStyle(Theme.muted)
@@ -1032,7 +1216,7 @@ private struct DashboardAttentionBriefCard: View {
                     .background(Theme.tintNeutral, in: Capsule())
                 Spacer(minLength: Space.s)
                 if total > 1 {
-                    Button("View queue") { open(.reviewQueue) }
+                    Button(PayloadAbsence.text(payload?.queue?.openAction) ?? "Open queue") { open(.reviewQueue) }
                         .workFont(.captionSemibold)
                         .foregroundStyle(Theme.accent)
                         .buttonStyle(QuietButtonStyle())
@@ -1040,34 +1224,45 @@ private struct DashboardAttentionBriefCard: View {
                 }
             }
 
+            // Decision first (C39): the reducer's decision word and verdict
+            // headline, before any narrative.
             VStack(alignment: .leading, spacing: 7) {
-                let context = [focus.project, focus.client].compactMap { $0 }
+                HStack(alignment: .center, spacing: Space.s) {
+                    DecisionBadge(
+                        key: focus.decisionKey,
+                        label: focus.decisionLabel,
+                        help: focus.decisionStatement
+                    )
+                    if let headline = focus.verdictHeadline {
+                        Text(headline)
+                            .workFont(.rowLabel)
+                            .foregroundStyle(Theme.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                // One meta order everywhere: client, then project (K21).
+                let context = workMetaLine(client: focus.client, project: focus.project)
                 if !context.isEmpty {
-                    Text(context.joined(separator: " · "))
+                    Text(context)
                         .workFont(.dataSmall)
                         .foregroundStyle(Theme.muted)
                 }
-                Text(focus.summary)
-                    .workFont(.body)
-                    .foregroundStyle(Theme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
             }
+
+            // The shared attention block (K21): the reducer's reason noun as
+            // the eyebrow (C61), then the agent's sentence in body ink, then
+            // the identity of the evidence it rests on (C40). The compact next
+            // step keeps this card inside the minimum window's first viewport.
+            AttentionBlockBody(
+                reasonLabel: focus.reasonLabel,
+                summary: focus.summary,
+                label: focus.label,
+                nextStep: focus.nextStep,
+                variant: .dashboard
+            )
 
             DashboardProofline(focus: focus)
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text("RECORDED NEXT STEP")
-                    .workFont(.labelCaps)
-                    .tracking(Type.labelCapsTracking)
-                    .foregroundStyle(Theme.muted)
-                Text(focus.nextStep ?? "No next step recorded.")
-                    .workFont(.body)
-                    .foregroundStyle(focus.nextStep == nil ? Theme.muted : Theme.ink)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(Space.m)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
 
             if SnapshotMode.rendersStaticControls {
                 DashboardStaticBriefActions(copyTitle: brief.buttonTitle)
@@ -1077,10 +1272,8 @@ private struct DashboardAttentionBriefCard: View {
                     open(.attentionTask(focus.id))
                 } label: {
                     Label("Review evidence", systemImage: "doc.text.magnifyingglass")
-                        .workFont(.captionSemibold)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
+                .buttonStyle(PrimaryButtonStyle(height: Metrics.buttonHCompact))
                 .accessibilityHint("Opens this task in Work")
                 .accessibilityIdentifier("dashboard.shift-brief.review-evidence")
 
@@ -1141,61 +1334,54 @@ private struct DashboardStaticBriefActions: View {
 
     var body: some View {
         HStack(spacing: Space.s) {
-            pill("Review evidence", systemImage: "doc.text.magnifyingglass",
-                 foreground: .white, fill: Theme.accent)
-            pill(copyTitle, systemImage: "doc.on.doc",
-                 foreground: Theme.accent, fill: Theme.tintAccent)
+            // Same chrome as the live PrimaryButtonStyle: onAccent label on
+            // the accent fill, radius 4 (C36).
+            Label("Review evidence", systemImage: "doc.text.magnifyingglass")
+                .modifier(PrimaryButtonChrome(height: Metrics.buttonHCompact))
+            Label(copyTitle, systemImage: "doc.on.doc")
+                .workFont(.captionSemibold)
+                .foregroundStyle(Theme.accent)
+                .padding(.horizontal, 13)
+                .workScaledMinFrame(height: Metrics.buttonHCompact)
+                .background(Theme.tintAccent, in: RoundedRectangle(cornerRadius: Metrics.radius))
         }
         .accessibilityHidden(true)
-    }
-
-    private func pill(_ title: String, systemImage: String, foreground: Color, fill: Color) -> some View {
-        Label(title, systemImage: systemImage)
-            .workFont(.captionSemibold)
-            .foregroundStyle(foreground)
-            .padding(.horizontal, 13)
-            .padding(.vertical, 6)
-            .background(fill, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }
 
 private struct DashboardProofline: View {
     let focus: DashboardAttentionItem
 
+    private var observed: String { focus.recency ?? DashboardVocabulary.timeNotReported }
+    private var provenance: String { focus.sourceLabel ?? DashboardVocabulary.sourceNotReported }
+
     var body: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 0) {
-                fact(label: "RECORDED REASON", value: focus.reasonLabel)
+                fact(label: "Observed", value: observed)
                 proofRule
-                fact(label: "OBSERVED", value: focus.recency ?? "Time unavailable")
-                proofRule
-                fact(label: "PROVENANCE", value: focus.sourceLabel ?? "Source unavailable")
+                fact(label: "Provenance", value: provenance)
             }
             VStack(alignment: .leading, spacing: Space.s) {
-                fact(label: "RECORDED REASON", value: focus.reasonLabel)
-                fact(label: "OBSERVED", value: focus.recency ?? "Time unavailable")
-                fact(label: "PROVENANCE", value: focus.sourceLabel ?? "Source unavailable")
+                fact(label: "Observed", value: observed)
+                fact(label: "Provenance", value: provenance)
             }
         }
         .padding(.vertical, Space.s)
         .overlay(alignment: .top) { Divider().overlay(Theme.hairline) }
         .overlay(alignment: .bottom) { Divider().overlay(Theme.hairline) }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            "Recorded reason: \(focus.reasonLabel). Observed: \(focus.recency ?? "time unavailable"). Provenance: \(focus.sourceLabel ?? "unavailable")."
-        )
+        .accessibilityLabel("Observed: \(observed). Provenance: \(provenance).")
     }
 
     private func fact(label: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(label)
-                .workFont(.labelCaps)
-                .tracking(Type.labelCapsTracking)
-                .foregroundStyle(Theme.muted)
+            CapsLabel(text: label)
             Text(value)
                 .workFont(.dataSmallSemibold)
                 .foregroundStyle(Theme.ink)
                 .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -1209,13 +1395,13 @@ private struct DashboardBriefEmptyState: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.l) {
             HStack(spacing: Space.s) {
-                Image(systemName: "checkmark.seal.fill")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(Theme.green)
-                Text("COMPLETE REVIEW PROJECTION")
-                    .workFont(.labelCaps)
-                    .tracking(Type.labelCapsTracking)
-                    .foregroundStyle(Theme.green)
+                // Clear is ink/muted, never green (C27): an empty review queue
+                // is not externally verified evidence.
+                Image(systemName: "checkmark.seal")
+                    .workFont(.iconLarge)
+                    .foregroundStyle(Theme.muted)
+                    .accessibilityHidden(true)
+                CapsLabel(text: "Complete review projection")
             }
             Text("No recorded work needs review.")
                 .workFont(.titleSection)
@@ -1233,11 +1419,14 @@ private struct DashboardBriefEmptyState: View {
 private struct DashboardBriefUnavailableState: View {
     let title: String
     let message: String
+    /// The raw developer error, if there is one. It rides behind the same
+    /// disclosure every other state uses instead of being the message (K53).
+    var rawError: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.l) {
             Image(systemName: "questionmark.diamond.fill")
-                .font(.system(size: 20, weight: .semibold))
+                .workFont(.iconLarge)
                 .foregroundStyle(Theme.amber)
             Text(title)
                 .workFont(.titleSection)
@@ -1247,6 +1436,20 @@ private struct DashboardBriefUnavailableState: View {
                 .workFont(.body)
                 .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
+            if let rawError {
+                DisclosureGroup(EmptyStateView.detailsLabel) {
+                    Text(rawError)
+                        .workFont(.caption)
+                        .foregroundStyle(Theme.muted)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, Space.xs)
+                }
+                .workFont(.caption)
+                .foregroundStyle(Theme.muted)
+                .frame(maxWidth: Metrics.readingMeasure, alignment: .leading)
+                .accessibilityIdentifier("dashboard.brief.error-details")
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
@@ -1261,19 +1464,26 @@ enum DashboardIngestionTone: Equatable {
 struct DashboardIngestionPresentation: Equatable {
     let title: String
     let detail: String
+    /// The reducer's rail-length twin, when the payload carries one (K69).
+    var detailCompact: String? = nil
     let tone: DashboardIngestionTone
 
-    init(title: String, detail: String, tone: DashboardIngestionTone) {
+    init(title: String, detail: String, detailCompact: String? = nil, tone: DashboardIngestionTone) {
         self.title = title
         self.detail = detail
+        self.detailCompact = detailCompact
         self.tone = tone
     }
 
     init(snapshot: V1IngestionSnapshot?, error: String?) {
-        if let error {
+        if error != nil {
+            // The rail is one line: it states the CAUSE. The raw error stays
+            // available where this row leads — the Sources pane keeps it
+            // behind its "Error details" disclosure (K53).
             self.init(
                 title: "Source status unavailable",
-                detail: error,
+                detail: "The recorder didn't return source health.",
+                detailCompact: "The recorder didn't return source health.",
                 tone: .warning
             )
             return
@@ -1294,36 +1504,93 @@ struct DashboardIngestionPresentation: Equatable {
         } else if let last = agoText(snapshot.lastSuccessAt) {
             detail = "Last successful ingest \(last)"
         } else {
-            detail = "Open Sources for the current ingestion record."
+            // The reducer's state sentence is a fact; never an instruction.
+            detail = PayloadAbsence.text(snapshot.stateDetail) ?? "ingestion state detail not reported"
         }
 
-        if snapshot.state == "healthy" {
-            self.init(title: "Sources healthy", detail: detail, tone: .healthy)
-        } else if let state = snapshot.state, !state.isEmpty {
-            self.init(
-                title: state.replacingOccurrences(of: "_", with: " ").capitalized,
-                detail: detail,
-                tone: .warning
-            )
-        } else {
-            self.init(title: "Source status unavailable", detail: detail, tone: .warning)
+        // Title and detail are the reducer's state copy (C79); a state key is
+        // never capitalized into a title, and a daemon that predates the copy
+        // gets a named absence. Amber is rationed to a degraded source; an
+        // unknown or unrecorded import history is a neutral fact, not a
+        // threshold.
+        let title = PayloadAbsence.text(snapshot.stateTitle) ?? "Source status not reported"
+        // Only the state sentence has a reducer-written short form; a detail
+        // this initializer composed (issue count, last ingest) is already short.
+        let compact = issueCount > 0 || agoText(snapshot.lastSuccessAt) != nil
+            ? nil
+            : PayloadAbsence.text(snapshot.stateDetailCompact)
+        switch snapshot.state {
+        case "healthy":
+            self.init(title: title, detail: detail, detailCompact: compact, tone: .healthy)
+        case "degraded":
+            self.init(title: title, detail: detail, detailCompact: compact, tone: .warning)
+        default:
+            self.init(title: title, detail: detail, detailCompact: compact, tone: .muted)
         }
+    }
+}
+
+/// One signal row's detail, as the ordered payload phrases that compose it
+/// (K69).
+///
+/// The rail gives every row one line, so a long detail was simply cut with an
+/// ellipsis — and what fell off the end was the part that mattered most: the
+/// CAPACITY row lost "plan share unavailable · won't calibrate at current
+/// ratio", two NAMED ABSENCES a sighted reviewer could then read nowhere on
+/// the page. The rule here is the same one the receipt follows: an absence is
+/// a named state, so it leads the short form and is never dropped to make
+/// room for measured context.
+struct DashboardSignalDetail: Equatable {
+    /// Phrases naming something the payload could not report. Always shown.
+    var absences: [String] = []
+    /// Measured context, most important first. Trimmed from the tail.
+    var context: [String] = []
+    /// The reducer's OWN short form, when the payload carries one. A prose
+    /// sentence has no phrase to drop, so the short form has to be written
+    /// where the long one is — in Python — not abbreviated here.
+    var payloadCompact: String? = nil
+
+    /// Roughly one rail line at the default reading size.
+    static let compactBudget = 60
+
+    static let separator = " · "
+
+    /// A detail that is one sentence, with nothing to re-order.
+    static func sentence(_ text: String, compact: String? = nil) -> DashboardSignalDetail {
+        DashboardSignalDetail(context: [text], payloadCompact: compact)
+    }
+
+    var full: String {
+        (absences + context).joined(separator: Self.separator)
+    }
+
+    /// The reducer's short form when there is one; otherwise absences first,
+    /// then as much context as fits the budget. Never empty while the full
+    /// detail has words.
+    var compact: String {
+        if let payloadCompact, !payloadCompact.isEmpty { return payloadCompact }
+        var parts = absences
+        var length = parts.joined(separator: Self.separator).count
+        for phrase in context {
+            let added = (parts.isEmpty ? 0 : Self.separator.count) + phrase.count
+            if !parts.isEmpty, length + added > Self.compactBudget { break }
+            parts.append(phrase)
+            length += added
+        }
+        return parts.isEmpty ? full : parts.joined(separator: Self.separator)
     }
 }
 
 private struct DashboardSignalRail: View {
     let sessions: [RecentSession]
     let planRows: [DashboardAgentPlanRow]
+    var headline: DashboardCapacityHeadline? = nil
     let availability: DashboardSignalAvailability
     let usagePulse: DashboardUsagePulse
     let ingestion: V1IngestionSnapshot?
     let ingestionError: String?
     let open: (DashboardDestination) -> Void
 
-    private var capacity: DashboardAgentPlanRow? {
-        planRows.filter { $0.usedPercent != nil }
-            .max { ($0.usedPercent ?? 0) < ($1.usedPercent ?? 0) }
-    }
 
     private var rowsWithoutValidCapacity: [DashboardAgentPlanRow] {
         planRows.filter { $0.usedPercent == nil }
@@ -1340,15 +1607,16 @@ private struct DashboardSignalRail: View {
     var body: some View {
         Card(padding: 0, fillsHeight: true) {
             VStack(spacing: 0) {
-                DashboardCardHeader("Signal rail")
+                DashboardCardHeader("Signals")
                 Divider().overlay(Theme.hairline)
                 DashboardSignalRow(
                     eyebrow: "WORKING NOW",
                     title: active.title,
-                    detail: active.detail,
-                    tint: active.promotesInactivity
-                        ? Theme.amber
+                    detail: .sentence(active.detail),
+                    stem: active.promotesInactivity
+                        ? Theme.amberFill
                         : (active.hasConfirmedActiveWork ? Theme.accent : Theme.muted),
+                    destination: .work,
                     action: { open(.work) }
                 )
                 Divider().overlay(Theme.hairline).padding(.leading, Space.l)
@@ -1356,27 +1624,35 @@ private struct DashboardSignalRail: View {
                     eyebrow: "CAPACITY",
                     title: capacityTitle,
                     detail: capacityDetail,
-                    tint: capacityTint,
+                    stem: capacityTint,
+                    destination: .limits,
                     action: { open(.limits) }
                 )
                 Divider().overlay(Theme.hairline).padding(.leading, Space.l)
                 DashboardSignalRow(
                     eyebrow: "USAGE CHANGE",
                     title: usagePulse.title,
-                    detail: usagePulse.detail,
-                    tint: usagePulse.state == .ready ? Theme.accent : Theme.muted,
+                    detail: .sentence(usagePulse.detail),
+                    // A usage change is data, not a control: a neutral rule
+                    // stem, never cobalt (K04).
+                    stem: usagePulse.state == .ready ? Theme.rule : Theme.muted,
+                    destination: .limits,
                     action: { open(.limits) }
                 )
                 Divider().overlay(Theme.hairline).padding(.leading, Space.l)
                 DashboardSignalRow(
                     eyebrow: "EVIDENCE TRUST",
                     title: ingestionTitle,
-                    detail: ingestionDetail,
-                    tint: ingestionTint,
+                    detail: .sentence(ingestionDetail, compact: ingestionPresentation.detailCompact),
+                    stem: ingestionTint,
+                    destination: .sources,
                     action: { open(.sources) }
                 )
             }
         }
+        // `.contain` keeps the rail one group and lets each row keep its own
+        // identifier, instead of the card's id replacing all four (K125).
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("dashboard.shift-brief.signal-rail")
     }
 
@@ -1386,30 +1662,36 @@ private struct DashboardSignalRail: View {
         case .unavailable: return "Live allowance unavailable"
         case .connected: break
         }
-        if let capacity { return capacity.decisionTitle }
-        return rowsWithoutValidCapacity.isEmpty ? "No live allowance" : "No valid 7-day allowance"
+        if let headline { return headline.title }
+        return rowsWithoutValidCapacity.isEmpty ? "No live allowance" : "No valid live allowance"
     }
 
-    private var capacityDetail: String {
+    private var capacityDetail: DashboardSignalDetail {
         switch availability {
-        case .loading: return "Waiting for the local glance projection."
-        case .unavailable(let message): return message
+        case .loading: return .sentence("Waiting for the local glance projection.")
+        case .unavailable(let message): return .sentence(message)
         case .connected: break
         }
-        if let capacity { return capacity.detailText }
+        if let headline { return headline.signalDetail }
         if rowsWithoutValidCapacity.count == 1, let row = rowsWithoutValidCapacity.first {
-            return "\(row.client) · \(row.detailText)"
+            let detail = row.signalDetail
+            return DashboardSignalDetail(
+                absences: detail.absences,
+                context: [row.client] + detail.context
+            )
         }
         if !rowsWithoutValidCapacity.isEmpty {
-            return "\(rowsWithoutValidCapacity.count) recording clients lack a valid 7-day reading."
+            return .sentence("\(rowsWithoutValidCapacity.count) recording clients lack a valid 7-day reading.")
         }
-        return "Open Usage for recorded volume and provider limits."
+        return .sentence("Open Usage for recorded volume and provider limits.")
     }
 
     private var capacityTint: Color {
         guard case .connected = availability else { return Theme.muted }
-        guard let used = capacity?.usedPercent else { return Theme.muted }
-        return Theme.limitColor(usedPercent: used)
+        guard let used = headline?.usedPercent else { return Theme.muted }
+        // A stem is a filled mark: the limit FILL weight (K47), matching the
+        // Usage and menu meters.
+        return Theme.limitFillColor(usedPercent: used)
     }
 
     private var ingestionTitle: String {
@@ -1424,7 +1706,7 @@ private struct DashboardSignalRail: View {
         switch ingestionPresentation.tone {
         case .muted: return Theme.muted
         case .healthy: return Theme.green
-        case .warning: return Theme.amber
+        case .warning: return Theme.amberFill
         }
     }
 }
@@ -1438,18 +1720,29 @@ enum DashboardSignalAvailability: Equatable {
 private struct DashboardSignalRow: View {
     let eyebrow: String
     let title: String
-    let detail: String
-    let tint: Color
+    /// The ordered payload phrases for this signal (K69).
+    let detail: DashboardSignalDetail
+    /// FILL-weight color of the 3pt stem (K47): `amberFill`, never `amber`;
+    /// `limitFillColor`, never `limitTextColor`.
+    let stem: Color
+    /// Where the row leads. The hint names it, instead of saying every row
+    /// opens "the related detail" (K125).
+    let destination: DashboardDestination
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             HStack(alignment: .top, spacing: Space.m) {
                 RoundedRectangle(cornerRadius: 1, style: .continuous)
-                    .fill(tint)
+                    .fill(stem)
                     .frame(width: 3, height: 30)
                     .padding(.top, 2)
-                VStack(alignment: .leading, spacing: 4) {
+                // Eyebrow, title and ONE detail line: the rail is a scan of
+                // four signals, so each row keeps a fixed three-line rhythm
+                // and never pushes Recent work out of the first viewport.
+                // The full detail stays in the hover help and the
+                // accessibility label.
+                VStack(alignment: .leading, spacing: 2) {
                     Text(eyebrow)
                         .workFont(.labelCaps)
                         .tracking(Type.labelCapsTracking)
@@ -1458,11 +1751,14 @@ private struct DashboardSignalRow: View {
                         .workFont(.rowLabel)
                         .foregroundStyle(Theme.ink)
                         .lineLimit(1)
-                    Text(detail)
-                        .workFont(.caption)
-                        .foregroundStyle(Theme.muted)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
+                    // One line, but never a cut-off fact: the full detail if
+                    // it fits, otherwise the reducer's short form, which
+                    // leads with the named absences. Both are complete
+                    // sentences — neither ends in an ellipsis (K69).
+                    ViewThatFits(in: .horizontal) {
+                        detailLine(detail.full)
+                        detailLine(detail.compact)
+                    }
                 }
                 Spacer(minLength: Space.s)
                 DashboardDisclosureIndicator().padding(.top, 18)
@@ -1472,11 +1768,24 @@ private struct DashboardSignalRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
-        .buttonStyle(DashboardRowButtonStyle())
+        // Full-bleed card rows take the ONE shared interaction contract
+        // (idle/hover/pressed/disabled from ButtonFeedback), so a hovered
+        // Dashboard row no longer wears the evidence-tier tint that Work uses
+        // to mean "selected" (K76).
+        .buttonStyle(SurfaceButtonStyle(cornerRadius: 0, focusInset: 2))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(eyebrow), \(title), \(detail)")
-        .accessibilityHint("Opens the related detail")
+        // The FULL detail is the spoken value, whichever form the row drew.
+        .accessibilityLabel("\(eyebrow), \(title)")
+        .accessibilityValue(detail.full)
+        .accessibilityHint("Opens \(destination.paneName)")
         .accessibilityIdentifier("dashboard.signal.\(eyebrow.lowercased().replacingOccurrences(of: " ", with: "-"))")
+    }
+
+    private func detailLine(_ text: String) -> some View {
+        Text(text)
+            .workFont(.caption)
+            .foregroundStyle(Theme.muted)
+            .lineLimit(1)
     }
 }
 
@@ -1500,6 +1809,10 @@ private struct DashboardCardHeader<Action: View>: View {
             Text(title)
                 .workFont(.titleCard)
                 .foregroundStyle(Theme.muted)
+                // A card title is the section heading VoiceOver's heading
+                // rotor jumps to; without the trait the landing screen had no
+                // structure at all (K121).
+                .accessibilityAddTraits(.isHeader)
             if let count {
                 Text(String(count))
                     .workFont(.dataSmallSemibold)
@@ -1523,10 +1836,54 @@ private extension DashboardCardHeader where Action == EmptyView {
     }
 }
 
+/// Fixed columns of the Recent work table. Each is sized to the widest
+/// string it actually holds (header or cell), measured at the rendered font,
+/// so a fixed column never wraps its own text and never starves Task (C29).
+enum RecentWorkColumn: Hashable {
+    case outcome
+    case evidence
+    case cost
+}
+
+private struct RecentWorkColumnWidthsKey: PreferenceKey {
+    static let defaultValue: [RecentWorkColumn: CGFloat] = [:]
+
+    static func reduce(
+        value: inout [RecentWorkColumn: CGFloat],
+        nextValue: () -> [RecentWorkColumn: CGFloat]
+    ) {
+        value.merge(nextValue()) { max($0, $1) }
+    }
+}
+
+private extension View {
+    /// Reports this cell's ideal width for `column`, then takes the column's
+    /// shared width once measured.
+    func recentWorkColumn(
+        _ column: RecentWorkColumn,
+        widths: [RecentWorkColumn: CGFloat],
+        alignment: Alignment
+    ) -> some View {
+        fixedSize(horizontal: true, vertical: false)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: RecentWorkColumnWidthsKey.self,
+                        value: [column: proxy.size.width]
+                    )
+                }
+            )
+            .frame(width: widths[column], alignment: alignment)
+    }
+}
+
 private struct RecentWorkCard: View {
     let items: [DashboardWorkItem]
     let totalCount: Int
+    /// The vocabulary's field labels (`/v1/tasks` `field_labels`).
+    var fieldLabels = ReceiptFieldLabels()
     let open: (DashboardDestination) -> Void
+    @State private var columnWidths: [RecentWorkColumn: CGFloat] = [:]
 
     var body: some View {
         Card(padding: 0, fillsHeight: true) {
@@ -1552,33 +1909,50 @@ private struct RecentWorkCard: View {
                     workColumnLabels
                     Divider().overlay(Theme.hairline)
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        RecentWorkRow(item: item) { open(.task(item.id)) }
+                        RecentWorkRow(
+                            item: item,
+                            columnWidths: columnWidths,
+                            fieldLabels: fieldLabels
+                        ) { open(.task(item.id)) }
                         if index < items.count - 1 {
-                            Divider().overlay(Theme.hairline.opacity(0.72))
+                            Divider().overlay(Theme.hairline)
                         }
                     }
                 }
             }
+            .onPreferenceChange(RecentWorkColumnWidthsKey.self) { widths in
+                if columnWidths != widths { columnWidths = widths }
+            }
         }
     }
 
+    /// The one column-header style (K126): the caps-mono label species, the
+    /// same as the Work table header.
     private var workColumnLabels: some View {
         HStack(spacing: 12) {
-            Text("Task").frame(maxWidth: .infinity, alignment: .leading)
-            Text("Outcome").frame(width: 116, alignment: .leading)
-            Text("Evidence").frame(width: 118, alignment: .leading)
-            Text("Cost").frame(width: 68, alignment: .trailing)
-            Color.clear.frame(width: 10, height: 1)
+            CapsLabel(text: fieldLabels.taskLabel).frame(maxWidth: .infinity, alignment: .leading)
+            CapsLabel(text: fieldLabels.decisionLabel).recentWorkColumn(.outcome, widths: columnWidths, alignment: .leading)
+            CapsLabel(text: fieldLabels.coverageLabel).recentWorkColumn(.evidence, widths: columnWidths, alignment: .leading)
+            CapsLabel(text: fieldLabels.costLabel).recentWorkColumn(.cost, widths: columnWidths, alignment: .trailing)
+            DashboardDisclosureIndicator().hidden()
         }
-        .font(Face.sansFont(12, .medium))
-        .foregroundStyle(Theme.muted)
+        .lineLimit(1)
         .padding(.horizontal, Space.l)
-        .frame(height: 30)
+        .frame(minHeight: 30)
+        // One named group of column names, not four loose texts above the
+        // rows (K123).
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Column headers")
+        .accessibilityIdentifier("dashboard.recent-work.columns")
     }
 }
 
 private struct RecentWorkRow: View {
     let item: DashboardWorkItem
+    let columnWidths: [RecentWorkColumn: CGFloat]
+    /// The vocabulary's field labels, so a spoken fact is named by the same
+    /// word its column header prints.
+    var fieldLabels = ReceiptFieldLabels()
     let action: () -> Void
 
     var body: some View {
@@ -1595,37 +1969,59 @@ private struct RecentWorkRow: View {
                         .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
 
                 // Decision axis: a pip-less tinted badge (a filled dot here
-                // read as the independently-checked evidence pip).
-                DecisionBadge(key: item.outcomeKey, label: item.outcome, compact: true)
-                    .frame(width: 116, alignment: .leading)
+                // read as the independently-checked evidence pip). The
+                // reducer's decision statement is its help (C71).
+                DecisionBadge(
+                    key: item.outcomeKey,
+                    label: item.outcome,
+                    compact: true,
+                    help: item.decisionStatement
+                )
+                .recentWorkColumn(.outcome, widths: columnWidths, alignment: .leading)
 
                 // Evidence axis: the strongest tier's pip shape + the ratio.
                 HStack(spacing: 6) {
                     if item.evidenceIsInconsistent {
                         Image(systemName: "exclamationmark.triangle")
-                            .font(.system(size: 10, weight: .semibold))
+                            .workFont(.icon)
                             .foregroundStyle(Theme.amber)
                             .accessibilityHidden(true)
                     } else if let tier = item.strongestTier {
-                        let style = EvidenceTierStyle.forGrade(tier)
-                        EvidencePip(shape: style.pip, tint: style.tint)
+                        EvidencePip(grade: tier)
                     } else {
-                        EvidencePip(shape: .hollow, tint: Theme.muted)
+                        EvidencePip(grade: nil)
                     }
                     Text(item.evidence)
-                        .workFont(.dataSmall)
+                        // One face rule, one role source — never a condition
+                        // re-derived per surface (K10).
+                        .workFont(FieldFont.value(.dataSmall, isMetric: item.evidenceIsMetric))
                         .foregroundStyle(item.evidenceIsInconsistent ? Theme.amber : Theme.muted)
                         .lineLimit(1)
                 }
-                .frame(width: 118, alignment: .leading)
+                .recentWorkColumn(.evidence, widths: columnWidths, alignment: .leading)
                 .help(item.evidenceQualifier)
 
-                Text(item.cost == "—" ? "unpriced" : item.cost)
-                    .workFont(.dataSmall)
-                    .foregroundStyle(Theme.muted)
-                    .frame(width: 68, alignment: .trailing)
+                // The reducer's cost figure or named absence, as it arrives,
+                // with its basis PRINTED beneath it (C17/C20). The basis used
+                // to live only in `.help`, and hover help is not a place a
+                // required fact may hide (K75).
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(item.cost)
+                        .workFont(item.costIsAbsent ? FieldFont.absence : .dataSmall)
+                        .foregroundStyle(Theme.muted)
+                        .lineLimit(1)
+                    if let basis = item.costBasis {
+                        Text(basis)
+                            .workFont(.caption)
+                            .foregroundStyle(Theme.muted)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
+                    }
+                }
+                .recentWorkColumn(.cost, widths: columnWidths, alignment: .trailing)
 
                 DashboardDisclosureIndicator()
             }
@@ -1633,12 +2029,45 @@ private struct RecentWorkRow: View {
             .frame(minHeight: 64)
             .contentShape(Rectangle())
         }
-        .buttonStyle(DashboardRowButtonStyle())
-        .accessibilityLabel(
-            "\(item.title), \(item.outcome), \(item.evidence), \(item.cost)"
-        )
+        // Full-bleed card rows take the ONE shared interaction contract
+        // (idle/hover/pressed/disabled from ButtonFeedback), so a hovered
+        // Dashboard row no longer wears the evidence-tier tint that Work uses
+        // to mean "selected" (K76).
+        .buttonStyle(SurfaceButtonStyle(cornerRadius: 0, focusInset: 2))
+        // Every visible fact has a spoken twin: the subline's client and
+        // recency were on screen but missing from the label (K123). The
+        // measured fields ride as named custom content, as the Work rows do.
+        .accessibilityLabel("\(item.title), \(item.outcome)")
+        .workRowAccessibilityFields([
+            .init(label: fieldLabels.coverageLabel, value: item.evidence),
+            .init(label: fieldLabels.costLabel, value: item.costWithBasis),
+            .init(label: fieldLabels.clientLabel, value: item.client),
+            .init(label: fieldLabels.updatedLabel, value: item.recency ?? PayloadAbsence.activityTime),
+        ])
         .accessibilityHint("Opens this task in Work")
         .accessibilityIdentifier("dashboard.recent-work.task.\(item.id)")
+    }
+}
+
+/// The CAPACITY signal: the reducer's headline window, worded like every
+/// other surface (`codex · 99% used`), with its window, provenance, reset and
+/// data age — all payload words.
+struct DashboardCapacityHeadline: Equatable {
+    let title: String
+    /// The ordered payload phrases; the rail renders whichever form fits (K69).
+    let signalDetail: DashboardSignalDetail
+    let usedPercent: Double?
+
+    var detail: String { signalDetail.full }
+
+    init(entry: LimitEntry, window: LimitWindow) {
+        let client = entry.client ?? "Client name not reported"
+        title = "\(client) · \(window.valueLabelText)"
+        signalDetail = DashboardSignalDetail(
+            absences: [PayloadAbsence.text(entry.dataAgeText)].compactMap { $0 },
+            context: [window.windowLabelText, "provider reported", window.resetLabelText]
+        )
+        usedPercent = window.usedPercent.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
     }
 }
 
@@ -1657,23 +2086,27 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
 
     var id: String { client }
 
-    /// Conservative provider headroom derived from a valid live 7-day used
-    /// percentage. Rounds down so the compact title never overstates room.
+    /// The one capacity wording (`codex · 99% used`): the reducer's value
+    /// phrase, never a Swift-derived headroom figure (K11).
+    let valueText: String?
+
     var decisionTitle: String {
-        guard let usedPercent else { return client }
-        if usedPercent > 100 { return "\(client) · limit exceeded" }
-        if usedPercent == 100 { return "\(client) · no headroom" }
-        let headroom = 100 - usedPercent
-        if headroom < 1 { return "\(client) · <1% headroom" }
-        return "\(client) · \(Int(headroom.rounded(.down)))% headroom"
+        guard usedPercent != nil, let valueText else { return client }
+        return "\(client) · \(valueText)"
     }
 
-    /// Full capacity sentence: window, provenance, and reset when reported.
-    var detailText: String {
-        var parts = [meterCaption]
-        if usedPercent != nil { parts.append("provider reported") }
-        if let resetText { parts.append(resetText) }
-        return parts.joined(separator: " · ")
+    /// Full capacity sentence: window, provenance, reset, and the plan-share
+    /// state as its muted named state while it cannot be shown (C49).
+    var detailText: String { signalDetail.full }
+
+    /// The same phrases, ordered so the plan-share NAMED ABSENCE leads the
+    /// rail's short form instead of falling off the end of it (K69).
+    var signalDetail: DashboardSignalDetail {
+        var context = [meterCaption]
+        if usedPercent != nil { context.append("provider reported") }
+        if let resetText { context.append(resetText) }
+        let absences = (calibrating ? calibratingDetail : nil).map { [$0] } ?? []
+        return DashboardSignalDetail(absences: absences, context: context)
     }
 
     init(
@@ -1691,16 +2124,17 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
             value.isFinite && value >= 0 ? value : nil
         }
         self.usedPercent = validUsed
-        if let used = validUsed {
-            // Short and window-anchored; provenance + reset time remain in the
-            // signal detail sentence.
-            meterCaption = String(format: "%.0f%% of 7-day limit", used)
-            resetText = Theme.resetsIn(window?.resetsAt).map { "resets in \($0)" }
-        } else if reportedUsed != nil {
-            meterCaption = "invalid 7-day value reported"
+        valueText = window.map(\.valueLabelText)
+        if validUsed != nil, let window {
+            // The window name and reset phrase are the reducer's
+            // (C18/C55/C95); the value phrase rides decisionTitle.
+            meterCaption = window.windowLabelText
+            resetText = window.resetLabelText
+        } else if reportedUsed != nil, let window {
+            meterCaption = "invalid \(window.windowLabelText) value reported"
             resetText = nil
-        } else if window != nil {
-            meterCaption = "7-day usage not reported"
+        } else if let window {
+            meterCaption = "\(window.windowLabelText) usage not reported"
             resetText = nil
         } else if staleLimit {
             // A stale reading is hidden, not never-reported — say so.
@@ -1713,12 +2147,16 @@ struct DashboardAgentPlanRow: Equatable, Identifiable {
             meterCaption = "no limits reported"
             resetText = nil
         }
-        self.calibrating = plan?.calibrationState == "calibrating"
-        self.calibratingDetail = plan?.stateDetail
+        // A terminally out-of-band fit is not "warming up": it is included
+        // here and shown as the reducer's muted named state (C49).
+        let calibrationState = plan?.calibrationState ?? limit?.planShare?.calibrationState
+        self.calibrating = calibrationState == "calibrating" || calibrationState == "out_of_band"
+        self.calibratingDetail = PayloadAbsence.text(limit?.planShare?.headline)
+            ?? PayloadAbsence.text(plan?.stateDetail)
         if let usage {
             // "7d ·" anchors figures to the fixed signal-rail window; Usage
             // remains the full range-aware destination.
-            let cost = usage.costText ?? "unpriced"
+            let cost = usage.costText ?? usage.costAbsenceText ?? PayloadAbsence.cost
             let tokens = usage.freshTokens.map { UsageTotals.compact($0) }
             usageText = "7d · " + ([cost] + (tokens.map { [$0] } ?? [])).joined(separator: " · ")
         } else {
@@ -1804,17 +2242,36 @@ func staleSevenDayLimitClients(in limits: [LimitEntry]) -> Set<String> {
 
 private struct DashboardUsageChart: View {
     let periods: [PeriodBucket]
+    let totals: UsageBucket?
     let rangeDays: Int
     let periodPresentation: UsagePeriodPresentation
+    var vocabulary: UsageChartVocabulary = UsageChartVocabulary()
 
-    @State private var series: DashboardUsageSeries = .tokens
+    /// The persisted measure key ("" = never chosen: the payload default,
+    /// the same resting rule as the Usage chart).
+    @AppStorage("usage.series.dashboard") private var storedSeries: String = ""
+
+    private var series: DashboardUsageSeries {
+        vocabulary.resolvedSeries(stored: storedSeries, periods: periods) == .cost ? .cost : .tokens
+    }
     @State private var hoveredIndex: Int?
+    /// No bar is selected by default: the chart rests in full color and the
+    /// readout shows the range total (C25).
     @State private var pinnedIndex: Int?
     @FocusState private var focusedIndex: Int?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private let plotHeight: CGFloat = 110
+    private let dateBandSpacing: CGFloat = 5
+    private let dateBandHeight: CGFloat = 20
+
     private var activeIndex: Int? { hoveredIndex ?? focusedIndex ?? pinnedIndex }
-    private var maximum: Double { max(periods.map(series.value).max() ?? 0, 1) }
+    private var hasUserSelection: Bool {
+        pinnedIndex != nil || hoveredIndex != nil || focusedIndex != nil
+    }
+    private var maximum: Double {
+        max(periods.compactMap { series.value(for: $0) }.max() ?? 0, 1)
+    }
 
     var body: some View {
         Card(padding: 0) {
@@ -1824,37 +2281,40 @@ private struct DashboardUsageChart: View {
                         Text("Usage history")
                             .workFont(.titleCard)
                             .foregroundStyle(Theme.muted)
+                            .accessibilityAddTraits(.isHeader)
                         Text(
                             series.subtitle(
                                 rangeDays: rangeDays,
-                                periodPresentation: periodPresentation
+                                periodPresentation: periodPresentation,
+                                costBasis: totals?.costConfidenceDisplay,
+                                vocabulary: vocabulary
                             )
                         )
                             .workFont(.caption)
                             .foregroundStyle(Theme.muted)
                     }
                     Spacer(minLength: Space.s)
-                    Text(series.totalText(for: periods))
+                    Text(series.totalText(for: periods, totals: totals))
                         .workFont(.dataSmall)
                         .foregroundStyle(Theme.muted)
-                    HStack(spacing: 2) {
-                        ForEach(DashboardUsageSeries.allCases) { choice in
-                            Button {
-                                series = choice
+                    // The ONE app segmented control, shared with the Usage
+                    // pane's range and measure choices (K108).
+                    SegmentedChoice(
+                        options: vocabulary.orderedSeries.map { chartChoice in
+                            (chartChoice == .cost ? DashboardUsageSeries.cost : .tokens,
+                             vocabulary.label(for: chartChoice))
+                        },
+                        selection: Binding(
+                            get: { series },
+                            set: { choice in
+                                storedSeries = choice.rawValue
                                 hoveredIndex = nil
                                 pinnedIndex = nil
-                            } label: {
-                                Text(choice.rawValue).workFont(.captionSemibold)
-                                    .padding(.horizontal, 9)
-                                    .frame(height: 24)
                             }
-                            .buttonStyle(DashboardSeriesButtonStyle(selected: series == choice))
-                            .accessibilityAddTraits(series == choice ? .isSelected : [])
-                            .accessibilityIdentifier("dashboard.usage.\(choice.rawValue.lowercased())")
-                        }
-                    }
-                    .padding(2)
-                    .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
+                        ),
+                        accessibilityLabel: "Chart measure",
+                        accessibilityIdentifier: "dashboard.usage.measure"
+                    )
                 }
                 .padding(.horizontal, Space.l)
                 .frame(minHeight: 47)
@@ -1864,6 +2324,12 @@ private struct DashboardUsageChart: View {
                 chart
                     .padding(.horizontal, Space.l)
                     .padding(.vertical, 11)
+
+                if series == .cost, periods.contains(where: { series.barState(for: $0).isPartial }) {
+                    CostChartLegendRow(caption: nil, legend: vocabulary.costLegend)
+                        .padding(.horizontal, Space.l)
+                        .padding(.bottom, Space.m)
+                }
             }
         }
         .onChange(of: periods.map(\.period)) {
@@ -1873,247 +2339,181 @@ private struct DashboardUsageChart: View {
         }
     }
 
+    private var axisLabels: [String] {
+        [maximum, maximum / 2, 0].map { series.axisText(for: $0, scale: maximum) }
+    }
+
     private var chart: some View {
+        // The axis column is exactly the plot height and each label centers
+        // on its gridline; the date band sits below, outside it (C46). The
+        // readout band sits above the plot so the words never cover a bar.
         HStack(alignment: .top, spacing: Space.s) {
-            VStack(alignment: .trailing) {
-                Text(axisText(maximum))
-                Spacer()
-                Text(axisText(maximum / 2))
-                Spacer()
-                Text("0")
-            }
-            .workFont(.dataSmall)
-            .foregroundStyle(Theme.muted)
-            .frame(width: 38, height: 130)
+            PeriodChartAxis(labels: axisLabels, plotHeight: plotHeight)
+                .padding(.top, PeriodChartReadout.bandHeight)
 
             GeometryReader { proxy in
                 let count = max(periods.count, 1)
                 let gap: CGFloat = 6
                 let columnWidth = max(1, (proxy.size.width - gap * CGFloat(count - 1)) / CGFloat(count))
+                let stride = PeriodChartDateBand.stride(
+                    labelWidth: Self.dateLabelWidth(periods),
+                    count: periods.count,
+                    plotWidth: proxy.size.width
+                )
+                let labelled = PeriodChartDateBand.labelledIndices(count: periods.count, stride: stride)
 
-                ZStack(alignment: .bottomLeading) {
-                    VStack(spacing: 0) {
-                        Divider().overlay(Theme.hairline)
-                        Spacer()
-                        Divider().overlay(Theme.hairline.opacity(0.72))
-                        Spacer()
-                        Divider().overlay(Theme.hairline)
-                    }
-                    .padding(.bottom, 20)
+                VStack(alignment: .leading, spacing: dateBandSpacing) {
+                    readoutBand(columnWidth: columnWidth, gap: gap, plotWidth: proxy.size.width)
 
-                    HStack(alignment: .bottom, spacing: gap) {
-                        ForEach(Array(periods.enumerated()), id: \.offset) { index, period in
-                            VStack(spacing: 5) {
-                                Button {
-                                    pinnedIndex = pinnedIndex == index ? nil : index
-                                } label: {
-                                    VStack {
-                                        Spacer(minLength: 0)
-                                        RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                            .fill(barColor(index))
-                                            .frame(height: barHeight(for: period))
-                                    }
-                                    // Fixed plot height so the max bar tops at
-                                    // the gridline its axis label names.
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: 110)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(DashboardChartBarStyle(active: activeIndex == index))
-                                .focused($focusedIndex, equals: index)
-                                .onHover { inside in
-                                    withAnimation(Motion.hover) {
-                                        if inside {
-                                            hoveredIndex = index
-                                        } else if hoveredIndex == index {
-                                            hoveredIndex = nil
-                                        }
-                                    }
-                                }
-                                .accessibilityLabel(
-                                    "\(period.period ?? period.shortLabel), \(series.valueText(for: period))"
+                    ZStack(alignment: .topLeading) {
+                        ForEach(0..<axisLabels.count, id: \.self) { line in
+                            Rectangle()
+                                .fill(Theme.hairline)
+                                .frame(height: 1)
+                                .offset(
+                                    y: PeriodChartAxis.gridlineY(
+                                        index: line,
+                                        count: axisLabels.count,
+                                        plotHeight: plotHeight
+                                    ) - 0.5
                                 )
-                                .accessibilityHint(periodPresentation.pinAccessibilityHint)
-                                .accessibilityAddTraits(pinnedIndex == index ? .isSelected : [])
-                                .accessibilityIdentifier("dashboard.usage.day.\(index)")
+                        }
 
-                                Text(period.shortLabel)
-                                    .workFont(.dataSmall)
-                                    .foregroundStyle(Theme.muted)
-                                    .lineLimit(1)
+                        HStack(alignment: .bottom, spacing: gap) {
+                            ForEach(Array(periods.enumerated()), id: \.offset) { index, period in
+                                barButton(index: index, period: period)
+                                    .frame(width: columnWidth)
                             }
-                            .frame(width: columnWidth)
+                        }
+                        .frame(height: plotHeight, alignment: .bottom)
+                        .animation(
+                            Motion.animatesChartGeometry(
+                                bucketCount: periods.count,
+                                reduceMotion: reduceMotion
+                            ) ? Motion.contentUpdate : nil,
+                            value: series
+                        )
+                    }
+                    .frame(width: proxy.size.width, height: plotHeight, alignment: .topLeading)
+
+                    HStack(spacing: gap) {
+                        ForEach(Array(periods.enumerated()), id: \.offset) { index, period in
+                            Text(labelled.contains(index) ? period.displayLabel : "")
+                                .workFont(.dataSmall)
+                                .foregroundStyle(Theme.muted)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .frame(width: columnWidth)
                         }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                    .animation(
-                        Motion.animatesChartGeometry(
-                            bucketCount: periods.count,
-                            reduceMotion: reduceMotion
-                        ) ? Motion.contentUpdate : nil,
-                        value: series
-                    )
-
-                    if let index = activeIndex, periods.indices.contains(index) {
-                        DashboardChartTooltip(
-                            date: periods[index].period ?? periods[index].shortLabel,
-                            value: series.valueText(for: periods[index])
-                        )
-                        .position(
-                            x: min(
-                                max(58, columnWidth / 2 + CGFloat(index) * (columnWidth + gap)),
-                                proxy.size.width - 58
-                            ),
-                            y: 17
-                        )
-                        .transition(.opacity)
-                        .allowsHitTesting(false)
-                    }
+                    .frame(height: dateBandHeight)
+                    .accessibilityHidden(true)
                 }
             }
-            .frame(height: 130)
+            .frame(height: chartHeight)
         }
-        .frame(minHeight: 130)
+        .frame(minHeight: chartHeight)
     }
 
-    private func barColor(_ index: Int) -> Color {
-        if activeIndex == index || index == periods.count - 1 { return Theme.chartBar }
-        return Theme.chartBarDim
+    private var chartHeight: CGFloat {
+        PeriodChartReadout.bandHeight + dateBandSpacing + plotHeight + dateBandSpacing + dateBandHeight
     }
 
-    private func barHeight(for period: PeriodBucket) -> CGFloat {
-        let value = series.value(for: period)
-        guard value > 0 else { return 0 }
-        return max(3, 110 * value / maximum)
+    /// Widest date label plus breathing room, so the stride rule can be read
+    /// off the labels the band actually draws.
+    static func dateLabelWidth(_ periods: [PeriodBucket]) -> CGFloat {
+        let longest = periods.map(\.displayLabel.count).max() ?? 5
+        // `.dataSmall` is a 12pt mono face: ~7.2pt per advance. Round UP, and
+        // add a gutter, so the stride can never be one step too small and let
+        // two labels touch.
+        return CGFloat(longest) * 8 + 12
     }
 
-    private func axisText(_ value: Double) -> String {
-        series.axisText(for: value)
-    }
-}
-
-private struct DashboardChartTooltip: View {
-    let date: String
-    let value: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(date).workFont(.dataSmall).foregroundStyle(Theme.muted)
-            Text(value).workFont(.dataSmallSemibold).foregroundStyle(Theme.ink)
+    /// The ONE readout, anchored over the focused bar (K79).
+    @ViewBuilder
+    private func readoutBand(columnWidth: CGFloat, gap: CGFloat, plotWidth: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            Color.clear
+            if let index = activeIndex, periods.indices.contains(index) {
+                let center = columnWidth / 2 + CGFloat(index) * (columnWidth + gap)
+                let text = PeriodChartReadout.text(
+                    period: periods[index].displayLabel,
+                    value: series.valueText(for: periods[index])
+                )
+                PeriodChartReadout(text: text)
+                    .modifier(PeriodChartReadoutAnchor(
+                        columnCenter: center,
+                        plotWidth: plotWidth
+                    ))
+                    .transition(.opacity)
+            }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
-                .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW)
+        .frame(width: plotWidth, height: PeriodChartReadout.bandHeight, alignment: .topLeading)
+    }
+
+    private func barButton(index: Int, period: PeriodBucket) -> some View {
+        Button {
+            pinnedIndex = pinnedIndex == index ? nil : index
+        } label: {
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                bar(index: index, period: period)
+            }
+            // Fixed plot height so the max bar tops at the gridline its axis
+            // label names.
+            .frame(maxWidth: .infinity)
+            .frame(height: plotHeight)
+            .contentShape(Rectangle())
+        }
+        // The standard 2pt focus ring and press feedback (C106).
+        .buttonStyle(TransparentButtonStyle())
+        .focused($focusedIndex, equals: index)
+        .onHover { inside in
+            withAnimation(Motion.hover) {
+                if inside {
+                    hoveredIndex = index
+                } else if hoveredIndex == index {
+                    hoveredIndex = nil
+                }
+            }
+        }
+        .accessibilityLabel(
+            "\(period.displayLabel), \(series.valueText(for: period))"
         )
-        .fixedSize()
-    }
-}
-
-private struct DashboardSeriesButtonStyle: ButtonStyle {
-    let selected: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        DashboardSeriesButtonBody(configuration: configuration, selected: selected)
-    }
-}
-
-private struct DashboardSeriesButtonBody: View {
-    let configuration: ButtonStyleConfiguration
-    let selected: Bool
-    @State private var hovering = false
-    @Environment(\.isFocused) private var isFocused
-    @Environment(\.isEnabled) private var isEnabled
-
-    private var phase: ButtonInteractionPhase {
-        buttonInteractionPhase(
-            isEnabled: isEnabled,
-            isPressed: configuration.isPressed,
-            isHovering: hovering
-        )
+        .accessibilityHint(periodPresentation.pinAccessibilityHint)
+        .accessibilityAddTraits(pinnedIndex == index ? .isSelected : [])
+        .accessibilityIdentifier("dashboard.usage.day.\(index)")
     }
 
-    var body: some View {
-        configuration.label
-            .foregroundStyle(selected ? Theme.ink : Theme.muted)
-            .background {
-                RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
-                    .fill(selected ? Theme.card : Color.clear)
-                RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
-                    .fill(Theme.accent.opacity(ButtonFeedback.surfaceFillOpacity(for: phase)))
-            }
-            .opacity(ButtonFeedback.labelOpacity(for: phase, pressed: 0.82))
-            .overlay {
-                if isFocused && isEnabled {
-                    RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
-                        .strokeBorder(Theme.accent, lineWidth: Metrics.focusW)
-                }
-            }
-            .onHover { inside in
-                withAnimation(Motion.hover) {
-                    hovering = inside
-                }
-            }
-            .animation(Motion.feedback, value: phase)
-    }
-}
-
-private struct DashboardChartBarStyle: ButtonStyle {
-    let active: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .opacity(configuration.isPressed ? 0.72 : 1)
-            .overlay {
-                if active {
-                    RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
-                        .strokeBorder(Theme.accent.opacity(0.55), lineWidth: Metrics.borderW)
-                }
-            }
-            .animation(Motion.feedback, value: configuration.isPressed)
-    }
-}
-
-private struct DashboardRowButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        DashboardRowButtonBody(configuration: configuration)
-    }
-}
-
-private struct DashboardRowButtonBody: View {
-    let configuration: ButtonStyleConfiguration
-    @State private var hovering = false
-    @Environment(\.isFocused) private var isFocused
-
-    var body: some View {
-        configuration.label
-            .background(
-                Theme.accent.opacity(configuration.isPressed ? 0.10 : (hovering ? 0.055 : 0))
+    /// One mark per cube state (C48): a charted value in the shared bar
+    /// color, else the SHARED absence mark both period charts draw (K46).
+    @ViewBuilder
+    private func bar(index: Int, period: PeriodBucket) -> some View {
+        switch series.barState(for: period) {
+        case .value(let value, let partial):
+            // A partial-cost bucket wears the open cap at rest (K106).
+            PeriodValueBar(
+                color: Theme.periodBarColor(
+                    isActive: activeIndex == index,
+                    hasUserSelection: hasUserSelection
+                ),
+                height: value > 0 ? max(3, plotHeight * value / maximum) : 1,
+                partial: partial
             )
-            .overlay {
-                if isFocused {
-                    RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
-                        .strokeBorder(Theme.accent, lineWidth: Metrics.focusW)
-                        .padding(2)
-                }
-            }
-            .onHover { inside in
-                withAnimation(Motion.hover) {
-                    hovering = inside
-                }
-            }
-            .animation(Motion.feedback, value: configuration.isPressed)
+        case .noUsage:
+            PeriodAbsenceMark(kind: .noUsage)
+        case .unpriced:
+            PeriodAbsenceMark(kind: .unpriced)
+        }
     }
 }
 
 private struct DashboardDisclosureIndicator: View {
     var body: some View {
         Image(systemName: "chevron.forward")
-            .font(.system(size: 8.5, weight: .semibold))
+            .workFont(.icon)
             .foregroundStyle(Theme.muted)
-            .frame(width: 10)
+            .fixedSize()
             .accessibilityHidden(true)
     }
 }
@@ -2126,7 +2526,7 @@ private struct DashboardEmptyState: View {
     var body: some View {
         HStack(spacing: Space.m) {
             Image(systemName: icon)
-                .font(.system(size: 17, weight: .medium))
+                .workFont(.iconLarge)
                 .foregroundStyle(Theme.muted)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 3) {

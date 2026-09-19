@@ -8,9 +8,28 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from agentacct import cli as cli_module
 from agentacct.cli import app
 from agentacct.client_usage import ClientUsageEvent
 from agentacct.service import SentinelService
+
+
+def _pin_render_width(monkeypatch, columns: int) -> None:
+    """Pin the width `agentacct` renders at, for tests that assert on layout.
+
+    This has to be set on the Console OBJECT, because the obvious way does not
+    work: rich reads ``COLUMNS`` once inside ``Console.__init__`` and freezes it
+    in ``_width``, and ``agentacct.cli.console`` is constructed at import time —
+    long before any test body runs. A ``monkeypatch.setenv("COLUMNS", ...)`` is
+    therefore a silent no-op, and a test written that way really renders at
+    whatever width launched pytest. That is how the duplicate-``tokens`` header
+    below passed on wide developer terminals and failed only in CI at 80.
+
+    ``_width`` rather than the public ``width`` setter so that monkeypatch's undo
+    restores ``None`` as ``None``; going through the property would read back a
+    concrete number and pin it for every later test in the process.
+    """
+    monkeypatch.setattr(cli_module.console, "_width", columns)
 
 
 def _record_usage(
@@ -118,7 +137,12 @@ def test_now_client_filter(tmp_path):
     assert payload["windows"][1]["totals"]["total_tokens_including_cached"] == 100  # last 7d, codex only
 
 
-def test_now_human_render_smoke(tmp_path):
+def test_now_human_render_smoke(tmp_path, monkeypatch):
+    # Pinned for the same reason as the header test below: this asserts on
+    # rendered table cells ("last 7 days"), which a narrow terminal truncates to
+    # "last …". Unpinned, the test's verdict depends on the window size of
+    # whoever ran it.
+    _pin_render_width(monkeypatch, 80)
     service = SentinelService(tmp_path)
     now = time.time()
     _record_usage(
@@ -134,19 +158,56 @@ def test_now_human_render_smoke(tmp_path):
     assert "claude-opus-4-8" in out  # top models
 
 
+def test_now_headlines_fresh_tokens_with_cache_reads_named_apart(tmp_path, monkeypatch):
+    # 80 columns: the standard narrow terminal, and the width CI runs at. The
+    # header collapse this test guards against only happens when the table is
+    # squeezed, so asserting at a comfortable width would prove nothing.
+    _pin_render_width(monkeypatch, 80)
+    service = SentinelService(tmp_path)
+    now = time.time()
+    _record_usage(
+        service, client="codex", model="gpt-5", session_id="f1",
+        input_tokens=1_200_000, output_tokens=34_567, updated_at=int(now - 3600), estimated_cost_usd=1554.67,
+    )
+    result = CliRunner().invoke(app, ["now", "--store-dir", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    out = result.stdout
+    assert "fresh tokens" in out and "cache-read tokens" in out
+    assert "1,234,567" in out  # input + output, thousands-grouped
+    # Money keeps its magnitude at every width. A truncated figure ("≈$1,554…")
+    # is worse than no figure: it reads as a real number but could be $1,554.67
+    # or $1,554,000. The ellipsis check is separate from the equality check
+    # because a squeezed cost column fails it while the digits still "appear".
+    assert "≈$1,554.67" in out
+    assert "$1,554…" not in out and "1,554.6…" not in out
+    # No column header degrades to a bare, unqualified "tokens". Wrapping is the
+    # degradation that does this: both headers end in the same noun, so a split
+    # leaves two adjacent columns reading "tokens │ tokens" with the qualifier
+    # stranded on the line above.
+    header_cells = [cell.strip() for line in out.splitlines() if "window" in line for cell in line.split("┃")]
+    assert "tokens" not in header_cells
+    # ...and the qualifiers themselves survive the squeeze, in the vocabulary's
+    # exact wording — the point is that the reader can tell the two apart here,
+    # not merely that the word "tokens" is absent.
+    assert "fresh tokens" in out and "cache-read tokens" in out
+
+
 def test_now_cost_text_uses_cost_complete():
     # The cost cell logic now lives in the shared snapshot layer that `now`,
     # `limits`, and the TUI all consume.
     from agentacct.usage_snapshot import cost_text
 
-    # complete → plain $; the presence of estimated_cost_usd alone is NOT enough.
-    assert cost_text({"cost_complete": True, "estimated_cost_usd": 4.0, "known_additive_cost_usd": 4.0}) == "$4.00"
+    # complete → the complete figure ($ reported/billed, ≈$ estimate); the
+    # presence of estimated_cost_usd alone is NOT enough.
+    assert cost_text({"cost_complete": True, "estimated_cost_usd": 4.0, "known_additive_cost_usd": 4.0}) == "≈$4.00"
+    assert cost_text({"cost_complete": True, "estimated_cost_usd": 4.0, "known_additive_cost_usd": 4.0,
+                      "cost_confidence": "provider_billed"}) == "$4.00"
     # priced subtotal present but NOT complete (unpriced rows) → partial with ~.
     assert cost_text({"cost_complete": False, "estimated_cost_usd": 4.0, "known_additive_cost_usd": 4.0}) == "~$4.00"
-    # nothing priced → em-dash
-    assert cost_text({"cost_complete": False, "estimated_cost_usd": None, "known_additive_cost_usd": None}) == "—"
-    # non-finite degrades to em-dash (no $nan)
-    assert cost_text({"cost_complete": True, "estimated_cost_usd": float("nan"), "known_additive_cost_usd": float("inf")}) == "—"
+    # nothing priced → a named absence
+    assert cost_text({"rows": 1, "cost_complete": False, "estimated_cost_usd": None, "known_additive_cost_usd": None}) == "unpriced"
+    # non-finite degrades to the named absence (no $nan)
+    assert cost_text({"rows": 1, "cost_complete": True, "estimated_cost_usd": float("nan"), "known_additive_cost_usd": float("inf")}) == "unpriced"
 
 
 def test_now_client_all_is_no_filter(tmp_path):

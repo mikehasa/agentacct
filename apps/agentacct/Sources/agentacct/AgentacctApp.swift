@@ -30,6 +30,8 @@ struct AgentacctApp: App {
         .commands {
             NativeWindowCommands(id: "main", title: "agentacct", launch: windowLaunch)
             ReadingSizeCommands(selection: $readingSize)
+            SectionCommands()
+            RefreshCommands()
         }
 
         MenuBarExtra {

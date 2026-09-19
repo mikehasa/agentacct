@@ -202,7 +202,7 @@ RECORDING_ARGUMENT_NAMES = frozenset(
         "parent_client_session_id", "phase", "project_dir", "provider",
         "reasoning_output_tokens", "reporting_basis", "request_id",
         "resolution_scope", "resolution_summary", "resolves_blocked_event_id",
-        "result", "rubric", "run_id", "section_id", "section_status",
+        "rest_of_work", "result", "rubric", "run_id", "section_id", "section_status",
         "section_title", "source", "summary", "task_goal", "total_tokens",
         "turn_id", "turn_index", "usage_confidence", "work_id",
         "write_package",

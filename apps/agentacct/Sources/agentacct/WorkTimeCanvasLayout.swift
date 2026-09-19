@@ -15,6 +15,10 @@ struct WorkTimeCanvasLayout {
         let anchorX: Double
         let isAbove: Bool
         let timeBounds: WorkTimelineInterval
+        /// The x of the clear column this item's stem is routed through when a
+        /// nearer card sits over its anchor. `nil` is the common case: a plain
+        /// vertical stem from the dot to the card edge.
+        var stemDetourX: Double? = nil
 
         var count: Int { recordIDs.count }
         var isCluster: Bool { count > 1 }
@@ -25,6 +29,9 @@ struct WorkTimeCanvasLayout {
     let axisY: Double
     let cardWidth: Double
     let cardHeight: Double
+    /// The reserved strip under the axis (tick labels live here), so the stem
+    /// router can drop into it without crossing a time label.
+    let lowerAxisClearance: Double
     let bandCountPerSide: Int
     let visibleRecordCount: Int
     let undatedRecordIDs: [String]
@@ -32,12 +39,49 @@ struct WorkTimeCanvasLayout {
     private static let gap = 12.0
     private static let upperAxisClearance = 12.0
     private static let outerMargin = 8.0
+    /// How far outside an occluding card a routed stem runs. Cards in a band
+    /// are packed at least `gap` apart, so this column is always clear of the
+    /// occluder's neighbours.
+    private static let stemDetourInset = 8.0
 
-    /// The smallest time window the canvas will show. Below a few seconds the
-    /// axis cannot stay meaningful and the overview pill becomes ungrabbable;
-    /// dense bursts are still separable at this scale. The maximum window is
-    /// the full recorded domain.
+    /// The smallest time window the canvas will show — and why it is an
+    /// absolute number of seconds rather than a fraction of the task.
+    ///
+    /// The floor is THE AXIS'S OWN RESOLUTION. `WorkTimelineTimeAxis.tickSteps`
+    /// begins at one second: no window can be labelled more finely than that,
+    /// and an axis needs several labelled ticks to be a scale rather than a
+    /// single stamp. At the canvas's 140pt minimum label spacing, a 5-second
+    /// window in an 880pt plot draws 5 one-second ticks 176pt apart — the
+    /// smallest window that still reads as a scale. A narrower window is not
+    /// more zoom: it is the same one-second lattice with fewer labels in it,
+    /// ending at an axis with none.
+    ///
+    /// A RELATIVE floor — a fixed fraction of `full.span`, so every task can be
+    /// zoomed to the same proportion — was considered and rejected for exactly
+    /// that reason. On the measured 0.30-second task a 1/20 floor would map a
+    /// 0.015-second window onto an axis that can draw no tick inside it, while
+    /// spreading three cards so far apart that at most one is on screen with
+    /// nothing left to place it in time. Proportional zoom is not legible zoom,
+    /// because the axis does not scale with the task.
+    ///
+    /// The consequence is that a task shorter than this floor cannot be
+    /// narrowed AT ALL. That is a state every surface must NAME rather than
+    /// offer a dead control for — see `canNarrow`.
     static let minimumVisibleSpan = 5.0
+
+    /// Is there any window narrower than the whole recorded span?
+    ///
+    /// False for a task at or under the floor: `clampedWindow` then resolves
+    /// every requested window — zoomed, dragged, incremented — back to the
+    /// domain it was given, so no zoom, handle drag or adjustable step can
+    /// change what is on screen. A surface that keeps offering those controls
+    /// advertises something it cannot do; it must name the state instead
+    /// (`display_vocabulary.TIMELINE_WINDOW_NOT_NARROWABLE`).
+    static func canNarrow(_ full: WorkTimelineInterval, minimumSpan: Double = minimumVisibleSpan) -> Bool {
+        let full = normalizedDomain(full)
+        let minimum = minimumSpan.isFinite && minimumSpan > 0 ? minimumSpan : 1
+        return full.upper - full.lower > minimum
+    }
 
     /// Upper bound on the extra time the viewport may show beyond the recorded
     /// domain. Cards are centered on their timestamps, so the earliest and
@@ -72,6 +116,7 @@ struct WorkTimeCanvasLayout {
         self.axisY = axisY
         self.cardWidth = cardWidth
         self.cardHeight = cardHeight
+        self.lowerAxisClearance = lowerAxisClearance
         self.bandCountPerSide = bands
 
         // Placement packs every loaded dated record, not just the records
@@ -88,8 +133,13 @@ struct WorkTimeCanvasLayout {
                 continue
             }
             let end = max(start, WorkTimelineProjection.validTime(record.end) ?? start)
-            if start <= window.upper, end >= window.lower { visibleCount += 1 }
-            candidates.append(Group(recordIDs: [record.id], lower: start, upper: end))
+            // ONE membership rule for the canvas and the Activity heading that
+            // counts above it (F5): a record is in the window when its CARD's
+            // moment is, which is the moment this layout anchors it at. A span
+            // that merely crosses the window keeps its line (`crossingSpans`)
+            // without being counted as a record in view.
+            if window.contains(record) { visibleCount += 1 }
+            candidates.append(Group(recordIDs: [record.id], lower: start, upper: end, band: record.laneBand))
         }
         // The projection already orders records chronologically, so the sort
         // is a safety net for arbitrary callers. Verifying order costs O(n)
@@ -122,10 +172,31 @@ struct WorkTimeCanvasLayout {
     /// contains an invisible offscreen card. Culling is presentation-only:
     /// placement and grouping never depend on it, so panning cannot rearrange
     /// or regroup cards at the viewport edges.
+    ///
+    /// This is a RENDERING margin, not a membership rule. Whether a record is
+    /// IN a window is decided in one place for every surface —
+    /// `WorkTimelineInterval.contains` (F5) — and that is what
+    /// `visibleRecordCount` above, the Activity heading's count, the ordered
+    /// list and the canvas's named-empty state all ask. The margin here only
+    /// lets a card slide in during a pan instead of popping in, and the plot's
+    /// half-card edge reveal (K18) only keeps a boundary card whole; neither
+    /// adds a record to the window.
     func visibleCards(in width: Double) -> [Item] {
         guard width.isFinite else { return items }
         let margin = cardWidth + Self.gap
         return items.filter { $0.frame.maxX >= -margin && $0.frame.minX <= width + margin }
+    }
+
+    /// Does the clip actually show any of this card?
+    ///
+    /// `visibleCards` deliberately returns cards a full card-width OUTSIDE the
+    /// plot so an edge card is drawn whole; one that lies entirely in that
+    /// margin shows nothing at all, and must not be a keyboard stop (K130). A
+    /// non-finite width means "not measured yet": assume on screen rather than
+    /// silently dropping every card out of the key loop.
+    static func isOnScreen(_ frame: CGRect, in width: Double) -> Bool {
+        guard width.isFinite, width > 0, frame.minX.isFinite, frame.maxX.isFinite else { return true }
+        return frame.maxX > 0 && frame.minX < width
     }
 
     /// Items whose recorded extent crosses the window while their card sits
@@ -138,6 +209,47 @@ struct WorkTimeCanvasLayout {
             !($0.frame.maxX >= -margin && $0.frame.minX <= width + margin)
                 && $0.timeBounds.upper >= window.lower && $0.timeBounds.lower <= window.upper
         }
+    }
+
+    /// The polyline a card's stem follows, from its dot on the axis to the
+    /// card's axis-facing edge.
+    ///
+    /// Normally two points: straight up (or down) at the record's own time.
+    /// When a nearer card sits over that column the stem is ROUTED around it
+    /// — out through the clear column beside the occluder, along the gap
+    /// between the two bands, and back to the anchor — so the whole leader
+    /// stays visible and no reader has to guess which dot belongs to which
+    /// card (K18). The dot never moves: only the leader bends, so every
+    /// position stays time-true.
+    func stemPoints(for item: Item) -> [CGPoint] {
+        let edge = item.isAbove ? item.frame.maxY : item.frame.minY
+        let straight = [CGPoint(x: item.anchorX, y: axisY), CGPoint(x: item.anchorX, y: edge)]
+        guard let lane = item.stemDetourX, lane.isFinite else { return straight }
+        // Into the axis clearance on this side — under the tick labels below,
+        // inside the 12pt strip above — then along the inter-band gap.
+        let clearance = item.isAbove ? Self.upperAxisClearance - 2 : lowerAxisClearance - 4
+        let nearLaneY = item.isAbove ? axisY - clearance : axisY + clearance
+        let farLaneY = item.isAbove ? edge + Self.gap / 2 : edge - Self.gap / 2
+        // A band close enough that the two lanes would cross has no room to
+        // route through; the straight stem is then the honest drawing.
+        guard clearance > 0, abs(farLaneY - axisY) > abs(nearLaneY - axisY) else { return straight }
+        return [
+            CGPoint(x: item.anchorX, y: axisY),
+            CGPoint(x: item.anchorX, y: nearLaneY),
+            CGPoint(x: lane, y: nearLaneY),
+            CGPoint(x: lane, y: farLaneY),
+            CGPoint(x: item.anchorX, y: farLaneY),
+            CGPoint(x: item.anchorX, y: edge),
+        ]
+    }
+
+    /// Where the axis spine sits for a canvas of this height — the same value
+    /// the instance computes, exposed so the lane gutter beside the plot can
+    /// align its two captions to the split without re-deriving it.
+    static func axisY(height: Double, textScale: Double = 1) -> Double {
+        let height = height.isFinite ? max(0, height) : 0
+        let lowerAxisClearance = 44 * normalizedScale(textScale)
+        return min(height, max(0, (height - lowerAxisClearance + upperAxisClearance) / 2))
     }
 
     /// Enough height for one readable band per side plus the time-label strip.
@@ -178,6 +290,37 @@ struct WorkTimeCanvasLayout {
         return .init(lower: lower, upper: upper)
     }
 
+    /// The window a plot of `width` must MAP so a card centered on the
+    /// requested window's first and last record is drawn in full (K18).
+    ///
+    /// Cards are centered on their timestamps, so a window ending exactly on
+    /// the last record cuts that card in half — and the last record is often
+    /// the failed check or the handoff a reviewer came for. Buying half a card
+    /// of time at each edge solves `span' = span / (1 - cardWidth / width)`;
+    /// the reveal per side is capped at `maximumEdgeRevealFraction` of the
+    /// original span so an unknown or pathological geometry stays bounded.
+    /// Cards themselves are never clamped: only the mapped window grows, so
+    /// every position stays time-true and panning still only translates.
+    static func edgeRevealedWindow(
+        _ window: WorkTimelineInterval,
+        width: Double? = nil,
+        cardWidth: Double? = nil
+    ) -> WorkTimelineInterval {
+        let window = normalizedDomain(window)
+        let span = window.span
+        guard span.isFinite, span > 0 else { return window }
+        let cap = maximumEdgeRevealFraction * span
+        var reveal = cap
+        if let width, let cardWidth, width.isFinite, width > 0, cardWidth.isFinite, cardWidth > 0 {
+            let ratio = cardWidth / width
+            reveal = ratio < 1 ? min(ratio / 2 * span / (1 - ratio), cap) : cap
+        }
+        guard reveal.isFinite, reveal > 0 else { return window }
+        let lower = window.lower - reveal, upper = window.upper + reveal
+        guard lower.isFinite, upper.isFinite, lower < upper, (upper - lower).isFinite else { return window }
+        return .init(lower: lower, upper: upper)
+    }
+
     /// How far the viewport may pan beyond the recorded domain: half a card
     /// at the current scale, so a card centered on the first or last record
     /// fits in full at the extreme. Falls back to the capped fraction when
@@ -190,6 +333,28 @@ struct WorkTimeCanvasLayout {
         guard let width, let cardWidth,
               width.isFinite, width > 0, cardWidth.isFinite, cardWidth > 0 else { return fallback }
         return min(cardWidth / 2 / width, maximumEdgeRevealFraction) * span
+    }
+
+    /// Whether two windows are the same up to floating-point noise. Used to
+    /// tell a clamped (no-op) zoom or pan from a real move, so saturated
+    /// input is left to the page instead of being swallowed.
+    ///
+    /// TWO tolerances, because the span and the timestamps have different
+    /// scales. A proportion of the span covers coarse rounding in a long window;
+    /// a few representable steps of the BOUNDS covers the fact that these are
+    /// absolute epoch seconds, spaced about 0.24 microseconds apart near 2026.
+    /// A fully zoomed-out canvas re-derives its span from those numbers, so the
+    /// clamp lands a step or two from where it started — with only the
+    /// span-relative tolerance (1.4e-7 on a 138-second window, below one step)
+    /// every further zoom-out was reported as a real move, consumed the key and
+    /// shifted the window by 240 nanoseconds. That is a gesture that looks
+    /// handled and is not (C13).
+    static func sameWindow(_ lhs: WorkTimelineInterval, _ rhs: WorkTimelineInterval) -> Bool {
+        let spans = max(abs(lhs.upper - lhs.lower), abs(rhs.upper - rhs.lower), 1) * 1e-9
+        let steps = [lhs.lower, lhs.upper, rhs.lower, rhs.upper]
+            .filter { $0.isFinite }.map { $0.ulp }.max() ?? 0
+        let tolerance = max(spans, 4 * steps)
+        return abs(lhs.lower - rhs.lower) <= tolerance && abs(lhs.upper - rhs.upper) <= tolerance
     }
 
     /// Constrain a requested window to the domain, preserving its span where
@@ -284,6 +449,10 @@ struct WorkTimeCanvasLayout {
         var recordIDs: [String]
         var lower: Double
         var upper: Double
+        /// The reducer's lane for every member. Packing may merge two groups
+        /// only within one lane, so a card can never change what its side of
+        /// the axis says about its members.
+        var band: WorkTimelineLaneBand
     }
 
     /// Chronological packing order: by start time, then by first member ID so
@@ -298,6 +467,7 @@ struct WorkTimeCanvasLayout {
         let frame: CGRect
         let anchorX: Double
         let isAbove: Bool
+        var stemDetourX: Double?
     }
 
     private static func pack(
@@ -308,32 +478,104 @@ struct WorkTimeCanvasLayout {
         var ends = Array(repeating: -Double.infinity, count: slots)
         var lastPlaced = Array(repeating: -1, count: slots)
         var placed: [PlacedGroup] = []
+        /// The horizontal extent of the nearer cards that sit over `anchorX`,
+        /// or nil when the column down to the axis is clear.
+        ///
+        /// A farther band's stem crosses every nearer band on its side, so a
+        /// nearer card drawn over that stem makes the two cards' dots
+        /// ambiguous (K18). Cards that share an anchor are not occluders:
+        /// their stems coincide and the pair reads as one moment. Cards within
+        /// a band are placed left to right and anchors only grow, so the one
+        /// card that can contain this anchor is each nearer band's last: the
+        /// test is O(bands) and, like the rest of packing, depends on no
+        /// window position.
+        func occluders(slot: Int, anchorX: Double) -> (minX: Double, maxX: Double)? {
+            var minX = Double.infinity
+            var maxX = -Double.infinity
+            var nearer = slot - 2
+            while nearer >= 0 {
+                let index = lastPlaced[nearer]
+                if index >= 0 {
+                    let card = placed[index]
+                    if card.anchorX != anchorX, card.frame.minX <= anchorX, anchorX <= card.frame.maxX {
+                        minX = min(minX, card.frame.minX)
+                        maxX = max(maxX, card.frame.maxX)
+                    }
+                }
+                nearer -= 2
+            }
+            return minX <= maxX ? (minX, maxX) : nil
+        }
         for group in groups {
             let anchorX = anchor(group.lower, window: window, width: width)
             // Cards are not clamped to the viewport: a partially offscreen card
             // keeps its time-true position and slides under the edge while
             // panning, instead of jumping to or away from the boundary.
             let x = anchorX - cardWidth / 2
-            guard let slot = ends.indices.first(where: { x >= ends[$0] + gap }) else {
-                // All bands are occupied. Extend the nearest last card's
-                // membership without moving earlier cards or repacking them.
-                // This costs at most four comparisons per incoming record.
-                var target = lastPlaced[0]
-                for candidate in lastPlaced.dropFirst() {
-                    if anchorX - placed[candidate].anchorX < anchorX - placed[target].anchorX {
+            // THE LANE DECIDES THE SIDE. Even slots are the work lane above
+            // the axis, odd slots the check-evidence lane below it, so
+            // vertical position states the reducer's `lane` and nothing else.
+            // Collision packing then chooses only a BAND within that lane.
+            let above = group.band.isAbove
+            let laneSlots = ends.indices.filter { $0.isMultiple(of: 2) == above }
+            // A slot whose stem column is clear is always preferred. When none
+            // is, the record still gets its OWN named card in the first free
+            // band and its stem is routed around the occluder (see
+            // `stemPoints`) — refusing the band instead merged two named
+            // checks into an unlabelled group at the default viewport, which
+            // is exactly the evidence a reviewer opened the timeline for.
+            var slot = -1
+            var firstFree = -1
+            for candidate in laneSlots where x >= ends[candidate] + gap {
+                if firstFree < 0 { firstFree = candidate }
+                if occluders(slot: candidate, anchorX: anchorX) == nil {
+                    slot = candidate
+                    break
+                }
+            }
+            if slot < 0 { slot = firstFree }
+            guard slot >= 0 else {
+                // Every band IN THIS LANE is occupied at this x: genuinely
+                // dense. Extend the nearest last card's membership without
+                // moving earlier cards or repacking them. Only same-lane cards
+                // are candidates, so a dense group never mixes a work step
+                // with a check.
+                var target = -1
+                for candidate in laneSlots.map({ lastPlaced[$0] }) where candidate >= 0 {
+                    if target < 0 || anchorX - placed[candidate].anchorX < anchorX - placed[target].anchorX {
                         target = candidate
                     }
+                }
+                guard target >= 0 else {
+                    // Unreachable (an empty first band in the lane always
+                    // accepts). Placing is still the right answer: no record
+                    // may silently vanish, and it stays on its own side.
+                    let offset = above ? upperAxisClearance : lowerAxisClearance
+                    let frame = CGRect(x: x, y: above ? axisY - offset - cardHeight : axisY + offset,
+                                       width: cardWidth, height: cardHeight)
+                    placed.append(PlacedGroup(group: group, frame: frame, anchorX: anchorX,
+                                              isAbove: above, stemDetourX: nil))
+                    let home = above ? 0 : 1
+                    lastPlaced[home] = placed.count - 1
+                    ends[home] = frame.maxX
+                    continue
                 }
                 placed[target].group.recordIDs.append(contentsOf: group.recordIDs)
                 placed[target].group.upper = max(placed[target].group.upper, group.upper)
                 continue
             }
-            let above = slot.isMultiple(of: 2)
             let band = Double(slot / 2)
             let offset = (above ? upperAxisClearance : lowerAxisClearance) + band * (cardHeight + gap)
             let y = above ? axisY - offset - cardHeight : axisY + offset
             let frame = CGRect(x: x, y: y, width: cardWidth, height: cardHeight)
-            placed.append(PlacedGroup(group: group, frame: frame, anchorX: anchorX, isAbove: above))
+            // Route through whichever side of the occluding run is nearer, so
+            // the leader stays as short as the geometry allows.
+            let detour = occluders(slot: slot, anchorX: anchorX).map { covered in
+                anchorX - covered.minX <= covered.maxX - anchorX
+                    ? covered.minX - stemDetourInset : covered.maxX + stemDetourInset
+            }
+            placed.append(PlacedGroup(group: group, frame: frame, anchorX: anchorX,
+                                      isAbove: above, stemDetourX: detour))
             lastPlaced[slot] = placed.count - 1
             ends[slot] = frame.maxX
         }
@@ -341,7 +583,8 @@ struct WorkTimeCanvasLayout {
             Item(
                 id: stableID($0.group.recordIDs), recordIDs: $0.group.recordIDs,
                 frame: $0.frame, anchorX: $0.anchorX, isAbove: $0.isAbove,
-                timeBounds: .init(lower: $0.group.lower, upper: $0.group.upper)
+                timeBounds: .init(lower: $0.group.lower, upper: $0.group.upper),
+                stemDetourX: $0.stemDetourX
             )
         }
     }

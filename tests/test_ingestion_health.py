@@ -201,6 +201,9 @@ def test_scan_receipts_are_atomic_private_and_project_healthy_state(tmp_path: Pa
         "session_observation_conflicts": 0,
         "session_observation_conflict_reasons": {},
         "consecutive_failures": 0,
+        # The shared source copy (healthy + running watcher + parsed rows).
+        "state_title": "Reporting",
+        "state_detail": "The latest import parsed rows and the running watcher keeps this source current.",
     }
     assert _mode(store.health_root) == 0o700
     assert _mode(store.state_path) == 0o600
@@ -954,7 +957,11 @@ def test_empty_store_is_unknown_not_healthy(tmp_path: Path) -> None:
     snapshot = IngestionHealthStore(tmp_path / "state").snapshot(now=100.0)
     assert snapshot["state"] == "unknown"
     assert snapshot["sources"] == []
-    assert snapshot["watcher"] == {"state": "not_configured"}
+    assert snapshot["watcher"] == {
+        "state": "not_configured",
+        "state_title": "Not configured",
+        "state_detail": "No continuous sync is configured — imports happen only on manual scans.",
+    }
     assert snapshot["issues"] == []
 
 
@@ -1009,3 +1016,132 @@ def test_acquire_watcher_keeps_scans_owned_by_live_processes(tmp_path: Path) -> 
 
     state = json.loads(store.state_path.read_text(encoding="utf-8"))
     assert live_scan in state["active_scans"]
+
+
+def test_snapshot_carries_reducer_state_copy_never_a_bare_state_key(tmp_path: Path) -> None:
+    from agentacct.ingestion_health import ingestion_state_copy
+
+    fresh = health_module.IngestionHealthStore(tmp_path / "never-imported").snapshot()
+    assert fresh["state"] == "unknown"
+    assert fresh["state_title"] == "No import recorded yet"
+    assert fresh["state_detail"] == "agentacct has not completed an import from any source."
+
+    imported_unwatched = {"state": "unknown", "last_success_at": 10.0, "watcher": {"state": "not_configured"}}
+    assert ingestion_state_copy(imported_unwatched)["state_title"] == "Not continuously watched"
+    waiting = {"state": "unknown", "last_success_at": 10.0, "watcher": {"state": "running"}}
+    assert ingestion_state_copy(waiting)["state_title"] == "Import pending"
+    assert ingestion_state_copy({"state": "healthy", "last_success_at": 10.0})["state_title"] == "Sources healthy"
+    degraded = ingestion_state_copy({"state": "degraded", "issues": [{"code": "parse_error"}]})
+    assert degraded["state_title"] == "Sources degraded"
+    for copy in map(ingestion_state_copy, [imported_unwatched, waiting, {"state": "healthy"}, {"state": "degraded"}]):
+        assert copy["state_title"].lower() not in {"unknown", "healthy", "degraded"}
+        assert copy["state_detail"].endswith(".") and "Open Sources" not in copy["state_detail"]
+
+
+def test_every_state_carries_a_rail_length_twin_of_its_detail() -> None:
+    """A one-line signal row renders this instead of cutting the sentence, so
+    the short form is written here rather than abbreviated by a client (K69)."""
+
+    from agentacct.ingestion_health import INGESTION_STATE_COPY, ingestion_state_copy
+
+    cases = [
+        {"state": "healthy", "last_success_at": 10.0},
+        {"state": "degraded", "issues": [{"code": "parse_error"}]},
+        {"state": "unknown", "last_success_at": None, "watcher": {"state": "not_configured"}},
+        {"state": "unknown", "last_success_at": 10.0, "watcher": {"state": "not_configured"}},
+        {"state": "unknown", "last_success_at": 10.0, "watcher": {"state": "running"}},
+    ]
+    for projection in cases:
+        for sessions in (0, 336):
+            copy = ingestion_state_copy(projection, recorded_usage_sessions=sessions)
+            compact = copy["state_detail_compact"]
+            assert compact, copy
+            # Short enough for one rail line, and its own sentence — never the
+            # long detail with an ellipsis stuck on the end.
+            assert len(compact) <= 60, compact
+            assert "…" not in compact and not compact.endswith(".")
+    # An absence-state short form still NAMES the absence.
+    never = {"state": "unknown", "last_success_at": None, "watcher": {"state": "not_configured"}}
+    assert "No import" in ingestion_state_copy(never, recorded_usage_sessions=336)["state_detail_compact"]
+    # Every long-form state has a twin: a new state cannot ship without one.
+    from agentacct.ingestion_health import INGESTION_STATE_DETAIL_COMPACT
+
+    assert set(INGESTION_STATE_COPY) == set(INGESTION_STATE_DETAIL_COMPACT)
+
+
+def test_no_import_receipt_with_recorded_usage_never_claims_no_import(tmp_path: Path) -> None:
+    # Honesty: a store with usage rows but no import receipt must not say
+    # "agentacct has not completed an import" — it says the import history is
+    # not recorded while N sessions of usage are present.
+    from agentacct.ingestion_health import ingestion_state_copy
+
+    never = {"state": "unknown", "last_success_at": None, "watcher": {"state": "not_configured"}}
+    assert ingestion_state_copy(never)["state_title"] == "No import recorded yet"
+    with_usage = ingestion_state_copy(never, recorded_usage_sessions=336)
+    assert with_usage["state_title"] == "Import history not recorded"
+    assert "336 sessions" in with_usage["state_detail"]
+    assert "has not completed an import" not in with_usage["state_detail"]
+    assert "from 1 session recorded (all time)" in ingestion_state_copy(never, recorded_usage_sessions=1)["state_detail"]
+    assert with_usage["state_detail"].startswith("Usage from 336 sessions recorded (all time)")
+    # A real import receipt always wins over the usage fallback.
+    healthy = {"state": "healthy", "last_success_at": 5.0}
+    assert ingestion_state_copy(healthy, recorded_usage_sessions=3)["state_title"] == "Sources healthy"
+
+
+def test_store_ingestion_snapshot_reads_the_stores_usage(tmp_path: Path) -> None:
+    from agentacct.ingestion_health import store_ingestion_snapshot
+    from agentacct.usage_truth import LOCAL_USAGE_PROVENANCE, LOCAL_USAGE_SOURCE
+
+    empty = store_ingestion_snapshot(tmp_path / "empty", events=[])
+    assert empty["state_title"] == "No import recorded yet"
+
+    imported_usage = {
+        "event_id": "evt_usage_1", "created_at": 100.0, "source": "codex-local-session-import",
+        "event_type": "model_usage", "provider": "codex", "model": "gpt-5.5",
+        "estimated_input_tokens": 10, "estimated_output_tokens": 5,
+        "metadata": {
+            "client": "codex", "client_session_id": "s1",
+            "usage_source": LOCAL_USAGE_SOURCE, "usage_provenance": LOCAL_USAGE_PROVENANCE,
+        },
+    }
+    snapshot = store_ingestion_snapshot(tmp_path / "with-usage", events=[imported_usage])
+    assert snapshot["state"] == "unknown"
+    assert snapshot["state_title"] == "Import history not recorded"
+    assert "1 session" in snapshot["state_detail"]
+
+
+def test_sources_and_watcher_carry_their_display_copy() -> None:
+    from agentacct.ingestion_health import source_state_copy, watcher_state_copy
+
+    assert source_state_copy({"state": "healthy", "parsed": 3}, watcher_running=True)["state_title"] == "Reporting"
+    assert source_state_copy({"state": "healthy", "parsed": 0}, watcher_running=True)["state_title"] == (
+        "Watching · no data yet"
+    )
+    assert source_state_copy({"state": "healthy", "parsed": 3}, watcher_running=False)["state_title"] == "Idle"
+    assert source_state_copy({"state": "degraded"}, watcher_running=True)["state_title"] == "Degraded"
+    assert source_state_copy({"state": "pending"}, watcher_running=True)["state_title"] == "Pending"
+    assert source_state_copy({"state": "unknown"}, watcher_running=False)["state_title"] == "No import recorded yet"
+    assert source_state_copy({"state": "future"}, watcher_running=False)["state_title"] == "Unrecognized source state"
+    for state, title in (("running", "Running"), ("stale", "Stale"), ("stopped", "Stopped"),
+                         ("not_configured", "Not configured"), ("future", "Unrecognized watcher state")):
+        copy = watcher_state_copy({"state": state})
+        assert copy["state_title"] == title and copy["state_detail"].endswith(".")
+
+
+def test_cli_usage_health_text_prints_state_copy_never_raw_keys(tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from agentacct.cli import app
+
+    store_dir = tmp_path / "state"
+    result = CliRunner().invoke(app, ["usage", "health", "--store-dir", str(store_dir)])
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines[0].startswith("Ingestion: ") and " — " in lines[0]
+    assert lines[1] == "Watcher: Not configured — " + lines[1].split(" — ", 1)[1]
+    assert "not_configured" not in result.output
+    assert "Ingestion: unknown" not in result.output
+    # --json keeps the raw keys beside the same copy.
+    payload = json.loads(CliRunner().invoke(app, ["usage", "health", "--store-dir", str(store_dir), "--json"]).output)
+    assert payload["watcher"]["state"] == "not_configured"
+    assert payload["watcher"]["state_title"] == "Not configured"

@@ -115,6 +115,26 @@ final class ThemeContrastTests: XCTestCase {
         }
     }
 
+    /// The meter track (K44) is a visible denominator on the canvas (menu)
+    /// and on cards, and every fill a meter carries reads against it.
+    func testMeterTrackIsVisibleAndCarriesEveryFill() {
+        typealias P = Theme.Palette
+        for scheme in [ColorScheme.light, .dark] {
+            for (name, surface) in [("canvas", P.canvas), ("card", P.card)] {
+                assertContrast(
+                    P.meterTrack.hex(for: scheme), against: surface.hex(for: scheme), minimum: 1.3,
+                    context: "meterTrack on \(name) in \(scheme) mode"
+                )
+            }
+            for (name, fill) in [("amberFill", P.amberFill), ("coral", P.coral), ("chartBar", P.chartBar), ("chartNeutral", P.chartNeutral)] {
+                assertContrast(
+                    fill.hex(for: scheme), against: P.meterTrack.hex(for: scheme), minimum: minimumNonTextContrast,
+                    context: "\(name) on meterTrack in \(scheme) mode"
+                )
+            }
+        }
+    }
+
     private func assertContrast(
         _ foreground: UInt32,
         against background: UInt32,

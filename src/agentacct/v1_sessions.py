@@ -33,7 +33,20 @@ import time
 from threading import Lock
 from typing import Any, Callable
 
-from .task_outcome import step_evidence_grade
+from .display_vocabulary import (
+    ARTIFACT_PATH_NOT_SHOWN_TEXT,
+    ARTIFACT_URL_NOT_SHOWN_TEXT,
+    COMMAND_NOT_SHOWN_TEXT,
+    command_state_text,
+    check_result_key,
+    check_result_label,
+    check_result_note,
+    check_result_tone,
+    evidence_grade_label,
+    source_label,
+)
+from .task_outcome import step_evidence_grade, step_is_checkable
+from .task_timeline import check_source
 
 V1_SESSIONS_SCHEMA_VERSION = "agentacct.v1-sessions.v1"
 V1_SESSION_DETAIL_SCHEMA_VERSION = "agentacct.v1-session-detail.v1"
@@ -472,13 +485,64 @@ _STEP_CHECK_FIELDS = (
     "artifact_path",
     "artifact_url",
     "command_redacted",
+    # WHICH command state: the agent volunteered the command (it IS stored; the
+    # name is shown instead) or only a sha256 digest was ever kept. The two used
+    # to share one sentence, and "was not stored" was false for the first.
+    "command_state",
     "artifact_path_redacted",
     "artifact_url_redacted",
 )
 
 
 def _project_check(event: dict[str, Any]) -> dict[str, Any]:
-    return {name: event.get(name) for name in _STEP_CHECK_FIELDS}
+    projected = {name: event.get(name) for name in _STEP_CHECK_FIELDS}
+    # The display label for who recorded the check, from the ledger's trusted
+    # source type (never an agent-authored name) — the same label the receipt
+    # and timeline print, so no surface keeps its own source-label map.
+    projected["source_label"] = source_label(check_source(event))
+    # The shared result words, tone key and result/exit-code note — the same
+    # strings the receipt and timeline print; surfaces never switch on result.
+    projected["result_label"] = check_result_label(event.get("result"))
+    projected["result_tone"] = check_result_tone(event.get("result"))
+    projected["note_text"] = check_result_note(event.get("result"), event.get("exit_code"))
+    # The one redaction sentence per withheld field (the receipt prints the same).
+    projected["command_state_text"] = command_state_text(event.get("command_state")) or (
+        COMMAND_NOT_SHOWN_TEXT if event.get("command_redacted") is True else None
+    )
+    projected["artifact_path_state_text"] = (
+        ARTIFACT_PATH_NOT_SHOWN_TEXT if event.get("artifact_path_redacted") is True else None
+    )
+    projected["artifact_url_state_text"] = (
+        ARTIFACT_URL_NOT_SHOWN_TEXT if event.get("artifact_url_redacted") is True else None
+    )
+    return projected
+
+
+def step_check_tally_text(events: list[dict[str, Any]]) -> str:
+    """A step's (or a session's) check runs as one tally in the receipt's
+    grammar (``3/4 passed · 1 could not run · 1 superseded``), from the same
+    parts helper the receipt uses."""
+
+    from .receipt import check_tally_text
+
+    counts = {"passed": 0, "failed": 0, "error": 0, "skipped": 0, "unknown": 0}
+    superseded = 0
+    for event in events:
+        if str(event.get("supersession_state") or "").strip() == "superseded":
+            superseded += 1
+            continue
+        counts[check_result_key(event.get("result"))] += 1
+    return check_tally_text(
+        {
+            "checks_total": len(events),
+            "checks_passed": counts["passed"],
+            "checks_failed": counts["failed"],
+            "checks_not_run": counts["error"],
+            "checks_skipped": counts["skipped"],
+            "checks_result_not_recorded": counts["unknown"],
+            "checks_superseded": superseded,
+        }
+    )
 
 
 _REPORTED_COST_CONFIDENCES = frozenset({"client_reported", "provider_billed"})
@@ -519,6 +583,11 @@ def _project_step(item: dict[str, Any], models: list[dict[str, Any]]) -> dict[st
         # so a step tops out at self_checked until a hook / CI source lands.
         "evidence_grade": grade.get("grade"),
         "evidence_grade_reason": grade.get("reason"),
+        # The shared label for the grade key (the same words the timeline uses).
+        "evidence_grade_label": evidence_grade_label(
+            grade.get("grade"),
+            checkable=step_is_checkable(item, evidence_events if isinstance(evidence_events, list) else []),
+        ),
         "section_id": item.get("section_id"),
         "title": item.get("title"),
         "latest_status": item.get("latest_status"),
@@ -561,6 +630,10 @@ def _project_step(item: dict[str, Any], models: list[dict[str, Any]]) -> dict[st
         "evidence_status": item.get("evidence_status"),
         "models": models,
         "checks": checks,
+        # The step's check tally, worded by the receipt's one tally helper.
+        "check_tally_text": step_check_tally_text(
+            [event for event in (evidence_events if isinstance(evidence_events, list) else []) if isinstance(event, dict)]
+        ),
     }
 
 
@@ -769,6 +842,10 @@ def build_v1_session_detail(
         "generated_at": view.get("generated_at"),
         "session": session,
         "steps": steps,
+        # Every step's check runs in one tally, worded by the receipt's helper.
+        "check_tally_text": step_check_tally_text(
+            [check for step in steps for check in step.get("checks") or [] if isinstance(check, dict)]
+        ),
         "descendants": descendants,
         "plan": plan,
     }

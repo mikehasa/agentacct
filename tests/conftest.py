@@ -1,6 +1,8 @@
-"""Suite-wide store-safety net (Batch 4).
+"""Suite-wide store-safety net (Batch 4) and render determinism.
 
-Two protections against tests touching a REAL Agent Chronicle ledger:
+Two protections against tests touching a REAL Agent Chronicle ledger, plus a
+third fixture (``_deterministic_render_width``) that pins the width CLI tables
+render at, so a test's verdict never depends on the terminal that ran it:
 
 1. An autouse function-scoped fixture points ``AGENT_CHRONICLE_STORE_DIR`` at a
    per-test temporary directory. pytest's cwd is inside the development repo —
@@ -177,6 +179,50 @@ def _allow_test_client_host(monkeypatch: pytest.MonkeyPatch) -> None:
         real_install(app, (*tuple(extra_allowed_hosts), "testserver"))
 
     monkeypatch.setattr(api_module, "install_localhost_guard", _install_with_testserver)
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_render_width():
+    """Render CLI tables at a fixed 80 columns, whatever terminal ran pytest.
+
+    Without this, the suite's verdict depends on the window size of whoever ran
+    it. rich reads ``COLUMNS`` once inside ``Console.__init__`` and freezes it in
+    ``_width``; ``agentacct.cli.console`` is built at import, so the launching
+    terminal's width is baked in for the whole session and no amount of
+    ``monkeypatch.setenv("COLUMNS", ...)`` in a test body can move it.
+
+    That is not hypothetical. A header assertion in ``test_now_command.py``
+    passed on every wide developer terminal and failed only in CI, because at 80
+    columns two adjacent table headers wrapped and both tails read ``tokens``.
+    It was not an isolated case: before this fixture, running the suite at 60
+    columns failed fifteen tests across six files, and at 40 it failed nineteen.
+    With it, 40, 80 and 200 all return the same verdict.
+
+    80 rather than something roomy on purpose: it is the standard narrow
+    terminal and the width CI uses, so it keeps the layout under real pressure.
+    Pinning wide would have hidden the very defect that prompted this fixture.
+    ``_width`` rather than the public ``width`` setter so teardown restores
+    ``None`` as ``None`` instead of freezing a concrete number.
+
+    Typer's own help and usage-error output does not go through that console; it
+    builds its own from ``typer.rich_utils.MAX_WIDTH``, which is likewise read
+    from the environment at import. It is referenced as a module global at call
+    time, though, so unlike the console it can simply be reassigned.
+    """
+    from typer import rich_utils
+
+    from agentacct import cli as cli_module
+
+    console = cli_module.console
+    previous_width = console._width
+    previous_max = rich_utils.MAX_WIDTH
+    console._width = 80
+    rich_utils.MAX_WIDTH = 80
+    try:
+        yield
+    finally:
+        console._width = previous_width
+        rich_utils.MAX_WIDTH = previous_max
 
 
 @pytest.fixture(autouse=True, scope="session")

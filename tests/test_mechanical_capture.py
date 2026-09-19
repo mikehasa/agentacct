@@ -193,6 +193,27 @@ def test_link_skips_non_check_relevant_steps() -> None:
     assert not task["work_items"][1].get("current_check_events")  # w2 docs untouched
 
 
+def test_link_credits_a_review_step_that_already_carries_a_check() -> None:
+    # Evidence beats declared kind (step_is_checkable): a review step with an
+    # attached check is check-relevant, so the hook pass may land on it.
+    agent_check = {"event_id": "agent-1", "source_type": "mcp_agent_reported", "result": "passed",
+                   "client_session_id": "S", "created_at": 210.0, "evidence_type": "test",
+                   "check_identity": "check:agent", "check_identity_stable": True}
+    task = {
+        "task_id": "t1",
+        "work_items": [
+            {"work_id": "w1", "client_session_id": "S", "kind": "implementation", "latest_status": "completed", "started_at": 100.0, "current_check_events": []},
+            {"work_id": "w2", "client_session_id": "S", "kind": "review", "latest_status": "completed", "started_at": 200.0, "current_check_events": [agent_check]},
+            {"work_id": "w3", "client_session_id": "S", "kind": "review", "latest_status": "completed", "started_at": 220.0, "current_check_events": []},
+        ],
+        "current_check_events": [_hook_check("S", 250.0)],
+    }
+    _link_mechanical_checks_by_session_time({"tasks": [task]})
+    assert len(task["work_items"][1]["current_check_events"]) == 2  # w2: review step with a check
+    assert task["work_items"][0]["current_check_events"] == []
+    assert task["work_items"][2]["current_check_events"] == []  # w3: check-less review step skipped
+
+
 def test_link_does_not_attach_a_failing_hook_check() -> None:
     # A failing hook check is not guessed onto a step — no false demotion; it
     # stays task-level (visible on the decision axis).

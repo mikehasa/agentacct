@@ -13,11 +13,11 @@ final class ReceiptCheckPresentationTests: XCTestCase {
 
         let collection = ReceiptCheckCollectionPresentation(evidence: evidence)
 
-        XCTAssertEqual(
-            collection.rows(in: .attention).map(\.title),
-            ["error one", "failure one"]
-        )
-        XCTAssertEqual(collection.rows(in: .other).map(\.title), ["skip one"])
+        // Only a recorded failure needs you; a check that could not run is an
+        // "other" result beside the skipped one (the payload's tone key).
+        XCTAssertEqual(collection.rows(in: .attention).map(\.title), ["failure one"])
+        XCTAssertEqual(collection.rows(in: .other).map(\.title), ["error one", "skip one"])
+        XCTAssertEqual(collection.rows(in: .other).map(\.resultLabel), ["Could not run", "Skipped"])
         XCTAssertEqual(collection.rows(in: .passed).map(\.title), ["pass one", "pass two"])
     }
 
@@ -131,28 +131,32 @@ final class ReceiptCheckPresentationTests: XCTestCase {
     func testRowPresentationMakesStatusAndTrustMetadataReadable() {
         let check = makeCheck(
             name: "Ruff executable", result: "failed", exitCode: 127,
-            scope: "project:agentacct-gui:756ce2", source: "mcp"
+            scope: "project:agentacct-gui:756ce2", source: "mcp", sourceLabel: "Agent-reported"
         )
+        // Source labels come from the check's own payload `source_label`,
+        // never a Swift label table.
         let row = ReceiptCheckRowPresentation(check: check, occurrence: 0)
 
         XCTAssertEqual(row.resultLabel, "Failed")
-        XCTAssertEqual(row.sourceLabel, "Connected tool")
+        XCTAssertEqual(row.sourceLabel, "Agent-reported")
         XCTAssertEqual(row.collapsedExitText, "exit 127")
-        XCTAssertEqual(row.runDetailText, "Failed · exit 127 · Connected tool")
+        XCTAssertEqual(row.runDetailText, "Failed · exit 127 · Agent-reported")
         XCTAssertEqual(
             row.accessibilityValue(isExpanded: false),
-            "Failed, source Connected tool, exit 127, scope project:agentacct-gui:756ce2, collapsed"
+            "Failed, source Agent-reported, exit 127, scope project:agentacct-gui:756ce2, collapsed"
         )
     }
 
     func testRoutineZeroExitIsHiddenCollapsedButRetainedInExpandedRunDetail() {
         let row = ReceiptCheckRowPresentation(
-            check: makeCheck(name: "Swift suite", result: "passed", exitCode: 0, source: "ci"),
+            check: makeCheck(
+                name: "Swift suite", result: "passed", exitCode: 0, source: "ci", sourceLabel: "CI or provider"
+            ),
             occurrence: 0
         )
 
         XCTAssertNil(row.collapsedExitText)
-        XCTAssertEqual(row.runDetailText, "Passed · exit 0 · CI")
+        XCTAssertEqual(row.runDetailText, "Passed · exit 0 · CI or provider")
     }
 
     func testEmptyCopyDistinguishesNoRunsFromSummaryOnlyEvidence() {
@@ -178,7 +182,7 @@ final class ReceiptCheckPresentationTests: XCTestCase {
         )
         XCTAssertEqual(
             collection.itemizedNotice,
-            "1 itemized entry is available for 2 reported check runs."
+            "1 itemized entry is available for 2 reported checks."
         )
     }
 
@@ -190,8 +194,44 @@ final class ReceiptCheckPresentationTests: XCTestCase {
         let rows = ReceiptCheckCollectionPresentation(evidence: evidence).rows(in: .other)
 
         XCTAssertEqual(rows.map(\.title), ["Unnamed check", "future"])
-        XCTAssertEqual(rows.map(\.resultLabel), ["Unknown", "Unknown"])
-        XCTAssertEqual(rows.first?.sourceLabel, "Future Source")
+        // No result words in the payload is a named absence; an unmapped
+        // result is the reducer's own "Result not recorded".
+        XCTAssertEqual(rows.map(\.resultLabel), ["result not reported", "Result not recorded"])
+        // A source the payload did not label is a named absence, not a
+        // Swift-rewritten key.
+        XCTAssertEqual(rows.first?.sourceLabel, "source not reported")
+        XCTAssertNil(rows.last?.sourceLabel)
+    }
+
+    func testPayloadTitleAndSourceLabelWinOverKeys() throws {
+        let check = try JSONDecoder().decode(ReceiptCheck.self, from: Data("""
+        {
+          "kind": "test", "name": null, "title": "Agent summary as title",
+          "result": "passed", "source": "hook", "source_label": "Hook-captured",
+          "revision_label": "at 8a4e024 · main · uncommitted changes",
+          "command_state_text": "The agent's command argument was not stored; the title is the name the agent recorded.",
+          "runs_total": 2, "earlier_failed": 1
+        }
+        """.utf8))
+        let row = ReceiptCheckRowPresentation(check: check, occurrence: 0)
+
+        XCTAssertEqual(row.title, "Agent summary as title")
+        XCTAssertEqual(row.sourceLabel, "Hook-captured")
+        XCTAssertEqual(check.revisionText, "at 8a4e024 · main · uncommitted changes")
+        XCTAssertEqual(check.earlierFailed, 1)
+
+        let bare = makeCheck(name: "bare", result: "passed")
+        XCTAssertEqual(bare.revisionText, "revision not captured")
+    }
+
+    func testCollectionRowsRenderEachChecksPayloadSourceLabel() {
+        let evidence = makeEvidence(checks: [
+            makeCheck(name: "one", result: "passed", source: "mcp", sourceLabel: "Agent-reported"),
+            makeCheck(name: "two", result: "passed", source: "hook", sourceLabel: "Hook-captured"),
+        ])
+        let collection = ReceiptCheckCollectionPresentation(evidence: evidence)
+
+        XCTAssertEqual(collection.rows.map(\.sourceLabel), ["Agent-reported", "Hook-captured"])
     }
 
     private func makeEvidence(
@@ -224,9 +264,10 @@ final class ReceiptCheckPresentationTests: XCTestCase {
         commandRedacted: Bool? = nil,
         artifactRef: String? = nil,
         artifactUrl: String? = nil,
-        finding: ReceiptCheckFinding? = nil
+        finding: ReceiptCheckFinding? = nil,
+        sourceLabel: String? = nil
     ) -> ReceiptCheck {
-        ReceiptCheck(
+        var check = ReceiptCheck(
             kind: kind,
             name: name,
             result: result,
@@ -242,5 +283,12 @@ final class ReceiptCheckPresentationTests: XCTestCase {
             artifactUrl: artifactUrl,
             finding: finding
         )
+        check.sourceLabel = sourceLabel
+        if let result {
+            check.resultLabel = SnapshotCheckPayload.label(result)
+            check.resultTone = SnapshotCheckPayload.tone(result)
+            check.noteText = SnapshotCheckPayload.note(result: result, exitCode: exitCode)
+        }
+        return check
     }
 }

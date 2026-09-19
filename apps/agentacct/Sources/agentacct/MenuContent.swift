@@ -66,6 +66,9 @@ struct MenuContent: View {
                 .padding(.vertical, 7)
         }
         .frame(width: 360)
+        // The menu panel is the opaque canvas ground the snapshot harness
+        // already paints (K84): no system material bleeds through captions.
+        .background(Theme.canvas)
     }
 
     @ViewBuilder
@@ -173,41 +176,44 @@ struct MenuContent: View {
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline) {
-                    CapsLabel(text: "WEEKLY LIMIT")
+                    CapsLabel(text: limits.primary?.windowLabel ?? "Limit")
                     Spacer()
                     if state.isRefreshing {
                         ProgressView().controlSize(.mini)
                             .accessibilityLabel("Refreshing")
-                    } else if let updated = state.lastUpdated {
-                        Text("Updated \(lastUpdatedTextOverride ?? dashboardFreshnessText(updated))")
-                            .font(Type.dataSmall)
-                            .foregroundStyle(Theme.muted)
                     }
                 }
 
                 if let primary = limits.primary {
                     HStack(alignment: .lastTextBaseline, spacing: 7) {
-                        Text(primary.percentageText)
+                        Text(primary.valueText)
                             .font(Face.monoFont(28, .bold))
-                            .foregroundStyle(Theme.ink)
-                        Text("used")
-                            .font(Type.captionSemibold)
-                            .foregroundStyle(Theme.muted)
+                            .foregroundStyle(primary.usedPercent.map { Theme.limitTextColor(usedPercent: $0) } ?? Theme.muted)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.5)
                         Spacer()
                         Image(systemName: "chevron.forward")
-                            .font(.system(size: 10, weight: .semibold))
+                            .workFont(.icon)
                             .foregroundStyle(Theme.muted)
                     }
-                    MenuLimitMeter(usedPercent: primary.usedPercent)
-                    HStack(spacing: 8) {
-                        Text(primary.sourceLabel)
-                            .lineLimit(1)
+                    MenuLimitMeter(usedPercent: primary.usedPercent, resetPassed: primary.resetPassed)
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        MenuLimitSourceLabel(item: primary, emphasized: false)
                         Spacer(minLength: 8)
-                        Text(primary.resetText.map { "Resets in \($0)" } ?? "Reset not reported")
+                        Text(primary.resetText)
+                            .font(Type.caption)
+                            .lineLimit(1)
                             .layoutPriority(1)
                     }
-                    .font(Type.caption)
                     .foregroundStyle(Theme.muted)
+                    if let caption = freshnessCaption(primary) {
+                        // Data age first (from the provider capture time);
+                        // the poll time is the secondary fact (K32).
+                        Text(caption)
+                            .font(Type.caption)
+                            .foregroundStyle(Theme.muted)
+                            .lineLimit(1)
+                    }
                 } else {
                     HStack(alignment: .firstTextBaseline) {
                         Text("Unavailable")
@@ -215,11 +221,11 @@ struct MenuContent: View {
                             .foregroundStyle(Theme.ink)
                         Spacer()
                         Image(systemName: "chevron.forward")
-                            .font(.system(size: 10, weight: .semibold))
+                            .workFont(.icon)
                             .foregroundStyle(Theme.muted)
                     }
                     MenuLimitMeter(usedPercent: nil)
-                    Text(limits.hasStaleLimits ? "Live 7-day usage is stale" : "No live 7-day limit was reported")
+                    Text(limits.hasStaleLimits ? "Live limit readings are stale" : "No live limit was reported")
                         .font(Type.caption)
                         .foregroundStyle(Theme.muted)
                 }
@@ -227,31 +233,40 @@ struct MenuContent: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(QuietButtonStyle(horizontalPadding: 0, verticalPadding: 0))
-        .accessibilityElement(children: .ignore)
+        // NOT `.accessibilityElement(children: .ignore)`: a Button already
+        // speaks as ONE element, and that modifier REPLACES it — the
+        // control loses its button role and its press action with it
+        // (K118). The label below is simply what the button says.
         .accessibilityLabel(heroAccessibilityLabel(limits.primary))
         .accessibilityHint("Opens Usage and limits")
         .accessibilityIdentifier("menu.weekly-limit")
     }
 
+    /// `as of 1d 15h ago · checked just now`: the reading's age, then the poll.
+    private func freshnessCaption(_ primary: MenuLimitItem?) -> String? {
+        let checked = state.lastUpdated.map { "checked \(lastUpdatedTextOverride ?? dashboardFreshnessText($0))" }
+        let parts = [primary?.dataAgeText, checked].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
     private func heroAccessibilityLabel(_ primary: MenuLimitItem?) -> String {
         let limit: String
         if let primary {
-            let reset = primary.resetText.map { ", resets in \($0)" } ?? ", reset not reported"
-            limit = "Weekly limit, \(primary.percentageText) used, \(primary.sourceLabel)\(reset)"
+            limit = "\(primary.windowLabel), \(primary.valueText), \(primary.client), \(primary.resetText)"
         } else {
-            limit = "Weekly limit unavailable"
+            limit = "No live limit reported"
         }
         if state.isRefreshing {
             return "\(limit), refreshing"
         }
-        guard let updated = state.lastUpdated else { return limit }
-        return "\(limit), updated \(lastUpdatedTextOverride ?? dashboardFreshnessText(updated))"
+        guard let caption = freshnessCaption(primary) else { return limit }
+        return "\(limit), \(caption)"
     }
 
     private func usageLedger(_ usage: MenuUsagePresentation) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline) {
-                SectionCaption(text: "Tracked usage")
+                SectionCaption(text: RecordedUsageVocabulary.title)
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
                 Text("fresh tokens")
@@ -271,15 +286,26 @@ struct MenuContent: View {
                             .foregroundStyle(Theme.ink)
                             .frame(width: 82, alignment: .leading)
                         Spacer(minLength: 4)
+                        // A priced figure reads in ink; a named absence
+                        // ("no usage recorded", "unpriced") in the muted
+                        // absence style, keyed on the row's priced state.
                         Text(row.costText)
-                            .font(Type.dataSmallSemibold)
-                            .foregroundStyle(Theme.ink)
+                            .font(row.isPriced ? Type.dataSmallSemibold : Type.caption)
+                            .foregroundStyle(row.isPriced ? Theme.ink : Theme.muted)
                             .lineLimit(1)
-                        Text(row.tokenText)
-                            .font(Type.dataSmall)
-                            .foregroundStyle(Theme.muted)
-                            .frame(width: 96, alignment: .trailing)
-                            .lineLimit(1)
+                            .fixedSize()
+                            .layoutPriority(1)
+                        if let tokenText = row.tokenText {
+                            Text(tokenText)
+                                .font(Type.dataSmall)
+                                .foregroundStyle(Theme.muted)
+                                .frame(width: 96, alignment: .trailing)
+                                .lineLimit(1)
+                        } else {
+                            // No usage recorded: the absence above is the
+                            // whole fact; the token column stays empty.
+                            Color.clear.frame(width: 96, height: 1)
+                        }
                     }
                     .padding(.vertical, 5)
                     .accessibilityElement(children: .ignore)
@@ -288,7 +314,7 @@ struct MenuContent: View {
             }
 
             if let legend = usage.legendText {
-                Text("Client-token pricing · \(legend)")
+                Text(legend)
                     .font(Type.caption)
                     .foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -297,10 +323,12 @@ struct MenuContent: View {
     }
 
     private func usageAccessibilityLabel(_ row: MenuUsageRow) -> String {
-        let tokens = row.tokenText == "Not reported"
+        let cost = [row.costText, row.basisText].compactMap { $0 }.joined(separator: ", ")
+        guard let tokenText = row.tokenText else { return "\(row.label), \(cost)" }
+        let tokens = tokenText == PayloadAbsence.tokens
             ? "fresh tokens not reported"
-            : "\(row.tokenText) fresh tokens"
-        return "\(row.label), \(row.costText), \(tokens)"
+            : "\(tokenText) fresh tokens"
+        return "\(row.label), \(cost), \(tokens)"
     }
 
     private func otherLimits(_ limits: MenuLimitPresentation) -> some View {
@@ -327,28 +355,34 @@ struct MenuContent: View {
                     openMain(selecting: .limits)
                 } label: {
                     VStack(alignment: .leading, spacing: 5) {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text(item.sourceLabel)
-                                .font(Type.captionSemibold)
-                                .foregroundStyle(Theme.ink)
-                                .lineLimit(1)
-                            Spacer(minLength: 8)
-                            Text(item.percentageText)
-                                .font(Type.dataSmallSemibold)
-                                .foregroundStyle(Theme.ink)
+                        // ONE layout for every client: source and percent on
+                        // the title line, the reset caption on its own line,
+                        // then a full-width meter — so rows never switch
+                        // between inline and stacked resets, and the bars
+                        // stay comparable (C62).
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                MenuLimitSourceLabel(item: item, emphasized: true)
+                                Spacer(minLength: 8)
+                                otherLimitPercent(item)
+                            }
+                            otherLimitReset(item)
                         }
-                        HStack(spacing: 8) {
-                            MenuLimitMeter(usedPercent: item.usedPercent)
-                            Text(item.resetText.map { "Resets in \($0)" } ?? "Reset not reported")
-                                .font(Type.dataSmall)
-                                .foregroundStyle(Theme.muted)
-                                .fixedSize()
-                        }
+                        MenuLimitMeter(usedPercent: item.usedPercent, resetPassed: item.resetPassed)
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(QuietButtonStyle(horizontalPadding: 6, verticalPadding: 6))
-                .accessibilityElement(children: .ignore)
+                // A full-row quiet button pays for its own hit padding: the
+                // negative outer inset puts the row's text and meter back on
+                // the section's edge, so the secondary meters are as long as
+                // the hero's and their threshold ticks line up down the
+                // popover (K25).
+                .padding(.horizontal, -6)
+                // NOT `.accessibilityElement(children: .ignore)`: a Button already
+                // speaks as ONE element, and that modifier REPLACES it — the
+                // control loses its button role and its press action with it
+                // (K118). The label below is simply what the button says.
                 .accessibilityLabel(limitAccessibilityLabel(item))
                 .accessibilityHint("Opens Usage and limits")
                 .accessibilityIdentifier("menu.limit.\(item.id)")
@@ -356,9 +390,28 @@ struct MenuContent: View {
         }
     }
 
+    private func otherLimitReset(_ item: MenuLimitItem) -> some View {
+        Text(([item.resetText] + [item.dataAgeText].compactMap { $0 }).joined(separator: " · "))
+            .font(Type.caption)
+            .foregroundStyle(Theme.muted)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func otherLimitPercent(_ item: MenuLimitItem) -> some View {
+        // A passed-reset share is history: muted, never a threshold color.
+        Text(item.valueText)
+            .font(Type.dataSmallSemibold)
+            .foregroundStyle(
+                item.resetPassed
+                    ? Theme.muted
+                    : (item.usedPercent.map { Theme.limitTextColor(usedPercent: $0) } ?? Theme.muted)
+            )
+            .fixedSize()
+    }
+
     private func limitAccessibilityLabel(_ item: MenuLimitItem) -> String {
-        let reset = item.resetText.map { "resets in \($0)" } ?? "reset not reported"
-        return "\(item.sourceLabel), \(item.percentageText) used, \(reset)"
+        ([item.sourceLabel, item.valueText, item.resetText] + [item.dataAgeText].compactMap { $0 })
+            .joined(separator: ", ")
     }
 
     private func sessions(_ allSessions: [RecentSession], plan: [PlanEntry]) -> some View {
@@ -399,91 +452,179 @@ struct MenuContent: View {
             }
 
             if let calibration {
-                Label(calibration.summary, systemImage: "circle.dotted")
-                    .font(Type.caption)
-                    .foregroundStyle(Theme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .help("Share appears after enough stable weekly-limit history is recorded.")
-                    .accessibilityHint(calibration.detail ?? "More stable limit history is needed.")
+                calibrationNote(calibration)
                     .padding(.top, 2)
             }
         }
+    }
+
+    /// The client-level plan-share state, always muted (never amber): the
+    /// caveat marker (plan share is not an evidence tier, so no pip) and ONE
+    /// plain-language line (the
+    /// reducer headline). The reducer's technical detail (fit ratio, trusted
+    /// band) stays behind the help affordance rather than an always-visible
+    /// jargon paragraph.
+    private func calibrationNote(_ calibration: MenuCalibrationPresentation) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            CaveatMarker()
+                .padding(.top, 2)
+            (Text(calibration.client).font(Type.dataSmall)
+                + Text(" " + ([calibration.headline] + [calibration.progressText].compactMap { $0 })
+                    .joined(separator: " · "))
+                    .font(Type.caption))
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel(calibration.summary)
+            Spacer(minLength: 4)
+            if let detail = calibration.detail {
+                ContextHelp(
+                    title: "Plan share",
+                    message: detail,
+                    summary: "Why this plan share is not shown",
+                    identifier: "menu.calibration-help"
+                )
+                .padding(.top, -6)
+            }
+        }
+        .foregroundStyle(Theme.muted)
     }
 
     private func sessionRow(_ session: RecentSession) -> some View {
         Button {
             openMain(selecting: .session("\(session.client)::\(session.sessionId)"))
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: sessionStatusSymbol(session.status))
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Theme.statusColor(session.status))
-                    .frame(width: 14)
+            // The row's glyph aligns to the TITLE's baseline, not the middle
+            // of a two- or three-line block (K25).
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(session.title ?? "\(MenuLimitPresentation.clientLabel(session.client)) session")
-                            .font(Type.captionSemibold)
-                            .foregroundStyle(Theme.ink)
-                            .lineLimit(1)
-                        Spacer(minLength: 4)
-                        if let pct = session.planPctText {
-                            Text("\(pct) share")
-                                .font(Type.dataSmallSemibold)
-                                .foregroundStyle(Theme.muted)
-                                .fixedSize()
+                    sessionTitle(session)
+                    // The title keeps the full row; the plan share sits on
+                    // the metadata line, or its own line when both don't fit.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            sessionMetadataText(session)
+                            if let share = sessionShareText(session) {
+                                Spacer(minLength: 4)
+                                sessionShare(share)
+                            }
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            sessionMetadataText(session)
+                            if let share = sessionShareText(session) {
+                                sessionShare(share)
+                            }
                         }
                     }
-                    Text(sessionMetadata(session))
-                        .font(Type.dataSmall)
-                        .foregroundStyle(Theme.muted)
-                        .lineLimit(1)
                 }
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.forward")
-                    .font(.system(size: 9, weight: .semibold))
+                    .workFont(.icon)
                     .foregroundStyle(Theme.muted)
             }
             .frame(minHeight: 30)
             .contentShape(Rectangle())
         }
         .buttonStyle(QuietButtonStyle(horizontalPadding: 6, verticalPadding: 3))
-        .accessibilityElement(children: .ignore)
+        .padding(.horizontal, -6)
+        // NOT `.accessibilityElement(children: .ignore)`: a Button already
+        // speaks as ONE element, and that modifier REPLACES it — the
+        // control loses its button role and its press action with it
+        // (K118). The label below is simply what the button says.
         .accessibilityLabel(sessionAccessibilityLabel(session))
         .accessibilityHint("Opens this work session")
         .accessibilityIdentifier("menu.session.\(session.sessionId)")
     }
 
+    @ViewBuilder
+    private func sessionTitle(_ session: RecentSession) -> some View {
+        if let title = PayloadAbsence.text(session.title) {
+            Text(title)
+                .font(Type.captionSemibold)
+                .foregroundStyle(Theme.ink)
+                .lineLimit(1)
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(session.client)
+                    .font(Type.dataSmallSemibold)
+                Text("session")
+                    .font(Type.captionSemibold)
+            }
+            .foregroundStyle(Theme.ink)
+            .lineLimit(1)
+        }
+    }
+
+    /// The Task's decision word (coral only for danger decisions such as
+    /// Finding / Blocked), then the id stub for an untitled row and the age.
+    private func sessionMetadataText(_ session: RecentSession) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            if let word = sessionStatusWord(session) {
+                Text(word)
+                    .font(Type.captionSemibold)
+                    .foregroundStyle(sessionStatusTint(session))
+                if !sessionMetadata(session).isEmpty {
+                    Text(" · ").font(Type.dataSmall).foregroundStyle(Theme.muted)
+                }
+            }
+            Text(sessionMetadata(session))
+                .font(Type.dataSmall)
+                .foregroundStyle(Theme.muted)
+        }
+        .lineLimit(1)
+    }
+
+    /// The Task decision label when the daemon joined one, else the recorded
+    /// work status — both payload words.
+    private func sessionStatusWord(_ session: RecentSession) -> String? {
+        PayloadAbsence.text(session.decisionLabel) ?? PayloadAbsence.text(session.statusLabel)
+    }
+
+    private func sessionStatusTint(_ session: RecentSession) -> Color {
+        guard PayloadAbsence.text(session.decisionLabel) != nil else { return Theme.muted }
+        return DecisionTintClass.forKey(session.decisionKey) == .danger ? Theme.coral : Theme.ink
+    }
+
+    private func sessionShare(_ share: String) -> some View {
+        Text(share)
+            .font(Type.dataSmallSemibold)
+            .foregroundStyle(Theme.muted)
+            .lineLimit(1)
+            .fixedSize()
+    }
+
+    /// The reducer's plan-share headline (`≈0.2% of weekly plan`) for a
+    /// session whose client is calibrated. Uncalibrated states are named once
+    /// for the client by the calibration note, not repeated on every row.
+    /// A row with no share of its own (`row_no_share`) omits the share: the
+    /// menu names only a real calibrated share.
+    private func sessionShareText(_ session: RecentSession) -> String? {
+        guard let share = session.planShare, share.calibrationState == "calibrated", share.pct != nil else {
+            return nil
+        }
+        return share.headlineText
+    }
+
+    /// The id stub only identifies an UNTITLED row; a titled row never repeats it.
+    private func sessionIdStub(_ session: RecentSession) -> String? {
+        PayloadAbsence.text(session.title) == nil ? session.shortSessionId : nil
+    }
+
     private func sessionMetadata(_ session: RecentSession) -> String {
-        [session.shortSessionId, statusLabel(session.status), agoText(session.lastActivityAt)]
+        [sessionIdStub(session), agoText(session.lastActivityAt)]
             .compactMap { $0 }
             .joined(separator: " · ")
     }
 
     private func sessionAccessibilityLabel(_ session: RecentSession) -> String {
-        let title = session.title ?? "\(MenuLimitPresentation.clientLabel(session.client)) session"
+        let title = PayloadAbsence.text(session.title) ?? "\(session.client) session"
         return [
             title,
-            session.shortSessionId,
-            statusLabel(session.status),
+            sessionIdStub(session),
+            sessionStatusWord(session),
             agoText(session.lastActivityAt),
-            session.planPctText.map { "\($0) plan share" },
+            sessionShareText(session),
         ]
             .compactMap { $0 }
             .joined(separator: ", ")
-    }
-
-    private func statusLabel(_ status: String?) -> String? {
-        status?.replacingOccurrences(of: "_", with: " ")
-    }
-
-    private func sessionStatusSymbol(_ status: String?) -> String {
-        switch status {
-        case "blocked", "failed": return "exclamationmark.triangle.fill"
-        case "handed_off": return "arrow.up.right"
-        case "completed": return "checkmark"
-        case "in_progress", "started", "checkpoint": return "circle.fill"
-        default: return "circle"
-        }
     }
 
     // MARK: footer
@@ -574,7 +715,7 @@ struct MenuContent: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: 12, weight: .medium))
+                .workFont(.icon)
                 .foregroundStyle(Theme.muted)
                 .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
@@ -606,24 +747,58 @@ struct MenuContent: View {
 
 private struct MenuLimitMeter: View {
     let usedPercent: Double?
+    var resetPassed: Bool = false
+
+    static let height: CGFloat = 6
+    static let thresholds: [Double] = [0.75, 0.9]
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .leading) {
-                if let usedPercent {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(Theme.rule)
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(Theme.limitColor(usedPercent: usedPercent))
-                        .frame(width: proxy.size.width * max(0, min(usedPercent, 100)) / 100)
-                } else {
-                    RoundedRectangle(cornerRadius: 2)
-                        .strokeBorder(Theme.rule, style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                }
-            }
+        if let usedPercent, resetPassed {
+            // A share from before the window reset: drawn in the muted fill so
+            // it reads as history, never as a current threshold (K32).
+            Theme.MeterBar(
+                fraction: max(0, min(usedPercent, 100)) / 100,
+                tint: Theme.muted,
+                height: Self.height,
+                thresholds: Self.thresholds
+            )
+        } else if let usedPercent {
+            // The one meter component: quiet tintNeutral track, fill-weight
+            // limit tint, and the 75%/90% threshold ticks drawn outside the
+            // bar so they read on any fill (C43/C58/C78).
+            Theme.MeterBar(
+                fraction: max(0, min(usedPercent, 100)) / 100,
+                tint: Theme.limitFillColor(usedPercent: usedPercent),
+                height: Self.height,
+                thresholds: Self.thresholds
+            )
+        } else {
+            // Not reported: a dashed outline in the same geometry (including
+            // the tick allowance) so rows keep equal height and length.
+            RoundedRectangle(cornerRadius: 2)
+                .strokeBorder(Theme.rule, style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                .frame(height: Self.height)
+                .padding(.vertical, MeterBar.tickOverhang)
+                .accessibilityHidden(true)
         }
-        .frame(height: 6)
-        .accessibilityHidden(true)
+    }
+}
+
+/// `<client slug> · <window label>`: the slug in mono (the one client identity
+/// every surface shows, C54), the reducer's window name beside it.
+private struct MenuLimitSourceLabel: View {
+    let item: MenuLimitItem
+    let emphasized: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(item.client)
+                .font(emphasized ? Type.dataSmallSemibold : Type.dataSmall)
+            Text("· \(item.windowLabel)")
+                .font(emphasized ? Type.captionSemibold : Type.caption)
+        }
+        .foregroundStyle(emphasized ? Theme.ink : Theme.muted)
+        .lineLimit(1)
     }
 }
 

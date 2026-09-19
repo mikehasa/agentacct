@@ -221,11 +221,18 @@ struct NativeInteractiveReview: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Review scene", selection: $screen) {
-                ForEach(NativeReviewScreen.allCases) { Text($0.title).tag($0) }
+            HStack(spacing: Space.s) {
+                Text("Review scene")
+                    .workFont(.caption)
+                    .foregroundStyle(Theme.muted)
+                AppMenuPicker(
+                    title: "Review scene",
+                    selection: $screen,
+                    options: NativeReviewScreen.allCases.map { ($0, $0.title) },
+                    accessibilityIdentifier: "native-review.scene"
+                )
+                Spacer(minLength: 0)
             }
-            .pickerStyle(.menu)
-            .accessibilityIdentifier("native-review.scene")
             .padding(12)
             NativeReviewSurface(fixture: fixture, screen: screen).id(screen)
         }

@@ -7,6 +7,144 @@ import Foundation
 // Optional, and honesty semantics ride the payload (calibrated-or-nothing
 // plan numbers, None-never-$0 costs) rather than being re-derived here.
 
+/// The neutral named absences a model falls back to ONLY when a reducer
+/// display field is missing from the payload (an older daemon, a partial
+/// fixture). The reducer owns every present-value string; these never stand in
+/// for a value it sent, and no model ever renders a bare dash.
+enum PayloadAbsence {
+    static let cost = "cost not reported"
+    static let costBasis = "cost basis not reported"
+    static let noUsage = "no usage recorded"
+    static let unpriced = "unpriced"
+    static let coverage = "coverage not reported"
+    static let checks = "checks not reported"
+    static let planShare = "plan share not reported"
+    static let tokens = "not reported"
+    static let revision = "revision not captured"
+    /// The cost grammar legend when the payload did not carry one.
+    static let costLegend = "cost legend not reported"
+    /// A check or fact whose source label the payload did not carry.
+    static let source = "source not reported"
+    static let reset = "reset time not reported"
+    /// A Task whose last recorded activity carries no usable timestamp.
+    static let activityTime = "Activity time unavailable"
+    static let windowLabel = "limit window"
+    static let notGradeable = "not gradeable"
+    /// A check whose result words the payload did not carry.
+    static let checkResult = "result not reported"
+    /// A withheld command whose redaction sentence the payload did not carry.
+    static let command = "command redaction not described"
+    /// A withheld artifact whose redaction sentence the payload did not carry.
+    static let artifact = "artifact redaction not described"
+    /// A tool-call synopsis the payload did not carry.
+    static let toolCalls = "tool calls not reported"
+    /// A limit window whose value phrase the payload did not carry.
+    static let limitValue = "used percent not reported"
+    /// A cost figure whose total/partial label the payload did not carry.
+    static let costLabel = "cost label not reported"
+    /// A chart measure label the payload did not carry.
+    static let measure = "measure not reported"
+
+    /// A trimmed non-empty payload string, or nil.
+    static func text(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : value
+    }
+}
+
+/// A reducer-built `{value, absent, qualifier}` tile (`coverage_tile`,
+/// `checks_tile`): `value` is a measured figure only; a named state such as
+/// `not gradeable` arrives as `absent`, never in the metric face.
+struct ReceiptTileText: Decodable, Equatable {
+    let value: String?
+    var absent: String? = nil
+    let qualifier: String?
+
+    init(value: String?, absent: String? = nil, qualifier: String?) {
+        self.value = value
+        self.absent = absent
+        self.qualifier = qualifier
+    }
+}
+
+/// One row of the reducer's evidence-tier table: the tier key, its label and
+/// the sentence naming who ran the check and where.
+struct ReceiptTierDefinition: Decodable, Equatable, Identifiable {
+    let key: String
+    let label: String?
+    let definition: String?
+
+    var id: String { key }
+}
+
+/// One header per receipt field, shared by CLI, Markdown and the app. Missing
+/// labels fall back to the same words the reducer's table carries.
+struct ReceiptFieldLabels: Decodable, Equatable {
+    var decision: String? = nil
+    var coverage: String? = nil
+    var checks: String? = nil
+    var cost: String? = nil
+    var agents: String? = nil
+    var task: String? = nil
+    var actions: String? = nil
+    var weeklyPlan: String? = nil
+    var client: String? = nil
+    var updated: String? = nil
+    var attention: String? = nil
+    /// The four names that head a record-page SECTION rather than a receipt
+    /// dimension (`RECORD_SECTION_LABEL_KEYS`). Before these existed the record
+    /// page spelled its own headings, so a wording change in Python left the
+    /// app disagreeing with the CLI.
+    var goal: String? = nil
+    var outcomeSection: String? = nil
+    var evidenceSection: String? = nil
+    var nextSection: String? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case decision, coverage, checks, cost, agents, task, actions
+        case client, updated, attention, goal
+        case weeklyPlan = "weekly_plan"
+        case outcomeSection = "outcome_section"
+        case evidenceSection = "evidence_section"
+        case nextSection = "next_section"
+    }
+
+    var decisionLabel: String { PayloadAbsence.text(decision) ?? "Decision" }
+    var coverageLabel: String { PayloadAbsence.text(coverage) ?? "Coverage" }
+    var checksLabel: String { PayloadAbsence.text(checks) ?? "Checks" }
+    var costLabel: String { PayloadAbsence.text(cost) ?? "Cost" }
+    var agentsLabel: String { PayloadAbsence.text(agents) ?? "Agents" }
+    var taskLabel: String { PayloadAbsence.text(task) ?? "Task" }
+    var actionsLabel: String { PayloadAbsence.text(actions) ?? "Tool calls" }
+    var weeklyPlanLabel: String { PayloadAbsence.text(weeklyPlan) ?? "Weekly plan" }
+    var clientLabel: String { PayloadAbsence.text(client) ?? "Client" }
+    var updatedLabel: String { PayloadAbsence.text(updated) ?? "Updated" }
+    var attentionLabel: String { PayloadAbsence.text(attention) ?? "Attention" }
+    var goalLabel: String { PayloadAbsence.text(goal) ?? "Goal" }
+    var outcomeSectionLabel: String { PayloadAbsence.text(outcomeSection) ?? "Outcome" }
+    var evidenceSectionLabel: String { PayloadAbsence.text(evidenceSection) ?? "Evidence" }
+    var nextSectionLabel: String { PayloadAbsence.text(nextSection) ?? "Next" }
+}
+
+/// One provenance source as the reducer labels it: `{key, label, legend,
+/// tier_key, tier_label}`.
+struct ReceiptSourceEntry: Decodable, Equatable, Identifiable {
+    let key: String
+    let label: String?
+    let legend: String?
+    let tierKey: String?
+    let tierLabel: String?
+
+    var id: String { key }
+
+    enum CodingKeys: String, CodingKey {
+        case key, label, legend
+        case tierKey = "tier_key"
+        case tierLabel = "tier_label"
+    }
+}
+
 struct V1SessionsPayload: Decodable {
     let schema: String
     let generatedAt: Double?
@@ -80,7 +218,7 @@ struct V1SessionRow: Decodable, Identifiable {
 
     var displayTitle: String {
         if let title, !title.isEmpty { return title }
-        return "\(client) · \(clientSessionIdShort ?? String(clientSessionId.prefix(8)))"
+        return "\(client) · \(clientSessionIdShort ?? RecentSession.shortId(clientSessionId))"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -110,10 +248,13 @@ struct V1SessionDetail: Decodable {
     let steps: [V1Step]
     let descendants: [V1Descendant]
     let plan: V1SessionPlan?
+    /// Every step's check runs as the reducer's one tally.
+    var checkTallyText: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case schema, session, steps, descendants, plan
         case generatedAt = "generated_at"
+        case checkTallyText = "check_tally_text"
     }
 }
 
@@ -138,13 +279,26 @@ struct V1Step: Decodable, Identifiable {
     let models: [V1ModelLane]?
     let checks: [V1Check]?
     var latestEventId: String? = nil
+    /// The reducer's words for ``evidenceGrade`` (the timeline's same label).
+    var evidenceGradeLabel: String? = nil
+    /// The step's check tally in the receipt's grammar
+    /// (`3/4 passed · 1 could not run · 1 superseded`).
+    var checkTallyText: String? = nil
     private let fallbackId = UUID().uuidString
 
     var id: String { workId ?? sectionId ?? fallbackId }
 
+    /// The reducer's check tally for this step, or its named absence.
+    var checkTallyDisplay: String {
+        PayloadAbsence.text(checkTallyText)
+            ?? ((checks ?? []).isEmpty ? "no checks recorded" : PayloadAbsence.checks)
+    }
+
     enum CodingKeys: String, CodingKey {
         case title, kind, phase, summary, files, blocker, usage, models, checks
+        case checkTallyText = "check_tally_text"
         case latestEventId = "latest_event_id"
+        case evidenceGradeLabel = "evidence_grade_label"
         case workId = "work_id"
         case sectionId = "section_id"
         case latestStatus = "latest_status"
@@ -186,7 +340,11 @@ struct V1StepUsage: Decodable {
     /// only when its priced records are all reported/billed — an estimated
     /// (token-priced) step reads "≈$" rather than over-claiming exactness.
     var costText: String {
-        guard let cost = estimatedCostUsd else { return "—" }
+        guard let cost = estimatedCostUsd else {
+            // Named absence, never a dash: no linked rows vs rows none priced.
+            guard let linked = linkedUsageRecords else { return PayloadAbsence.cost }
+            return linked == 0 ? PayloadAbsence.noUsage : PayloadAbsence.unpriced
+        }
         if (unpricedUsageRecords ?? 0) > 0 { return Fmt.dollars(cost, prefix: "~$") }
         let reported = costConfidence == "client_reported" || costConfidence == "provider_billed"
         return Fmt.dollars(cost, prefix: reported ? "$" : "≈$")
@@ -227,23 +385,35 @@ struct V1Check: Decodable, Identifiable {
     let commandRedacted: Bool?
     let artifactPathRedacted: Bool?
     let artifactUrlRedacted: Bool?
+    /// The agent's own short check name (projected by the ledger).
+    var name: String? = nil
+    /// Who recorded the check, as the payload's display label (`Agent-reported`,
+    /// `Hook-captured`, `CI or provider`) — the one vocabulary every surface
+    /// prints. Swift never maps `source_type` keys itself.
+    var sourceLabel: String? = nil
+    /// The reducer's result words (`Passed`, `Failed`, `Could not run`).
+    var resultLabel: String? = nil
+    /// The reducer's tone key (`pass` / `failure` / `not_run`).
+    var resultTone: String? = nil
+    /// A named result/exit-code disagreement (nil when they agree).
+    var noteText: String? = nil
+    /// The reducer's redaction sentences (nil when nothing was withheld).
+    var commandStateText: String? = nil
+    var artifactPathStateText: String? = nil
+    var artifactUrlStateText: String? = nil
     private let fallbackId = UUID().uuidString
 
     var id: String { eventId ?? fallbackId }
 
-    /// How independent of the agent this check is — the honest counter to a
-    /// check whose free-text summary claims "CI green" while its source is only
-    /// the agent's own report.
-    var independence: String {
-        switch sourceType {
-        case "ci", "external", "provider": return "CI"
-        case "client_hook": return "hook"
-        default: return "agent-reported"
-        }
-    }
-
     enum CodingKeys: String, CodingKey {
-        case summary, files
+        case summary, files, name
+        case sourceLabel = "source_label"
+        case resultLabel = "result_label"
+        case resultTone = "result_tone"
+        case noteText = "note_text"
+        case commandStateText = "command_state_text"
+        case artifactPathStateText = "artifact_path_state_text"
+        case artifactUrlStateText = "artifact_url_state_text"
         case eventId = "event_id"
         case createdAt = "created_at"
         case evidenceType = "evidence_type"
@@ -380,11 +550,24 @@ struct V1PlanClient: Decodable, Identifiable {
     let daily: [V1PlanDay]?
     let byModel: [V1PlanModelShare]?
     let unknownTimePct: Double?
+    /// Plan-share words from the one vocabulary table: the chip, the row
+    /// sentence, the plain conclusion, and the technical fit detail that
+    /// stays behind a disclosure.
+    var chipText: String? = nil
+    var sentenceText: String? = nil
+    var headline: String? = nil
+    var basisText: String? = nil
+    /// The by-model token measure (`tokens incl. cache-read`).
+    var modelTokensLabel: String? = nil
 
     var id: String { client }
 
     enum CodingKeys: String, CodingKey {
-        case client, confidence, calibratable, basis, scale, alpha, daily
+        case client, confidence, calibratable, basis, scale, alpha, daily, headline
+        case chipText = "chip_text"
+        case sentenceText = "sentence_text"
+        case basisText = "basis_text"
+        case modelTokensLabel = "model_tokens_label"
         case calibrationState = "calibration_state"
         case intervalsUsed = "intervals_used"
         case intervalsNeeded = "intervals_needed"
@@ -429,6 +612,60 @@ struct ReceiptTasksPayload: Decodable {
     /// Exact all-store attention count plus a bounded Dashboard preview.
     /// Optional so the app can fail closed against an older daemon.
     let attention: ReceiptAttentionPayload?
+    /// The status legend (decision words and filter groups) from the vocabulary.
+    var decisionLegend: DecisionLegendPayload? = nil
+    /// The review queue's words (noun, count, open action, sort rule).
+    var queue: AttentionQueueCopy? = nil
+    /// One header per receipt field, for list tables.
+    var fieldLabels: ReceiptFieldLabels? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case schema, tasks, total, truncated, attention, queue
+        case decisionLegend = "decision_legend"
+        case fieldLabels = "field_labels"
+    }
+}
+
+/// The vocabulary's status legend: every decision word with its definition
+/// and filter group, and each group's definition. The app keeps no copy.
+struct DecisionLegendPayload: Decodable, Equatable {
+    struct Decision: Decodable, Equatable, Identifiable {
+        let key: String
+        let label: String
+        let definition: String
+        let groupKey: String?
+        var id: String { key }
+
+        enum CodingKeys: String, CodingKey {
+            case key, label, definition
+            case groupKey = "group_key"
+        }
+    }
+
+    struct Group: Decodable, Equatable, Identifiable {
+        let key: String
+        let label: String
+        let definition: String
+        var id: String { key }
+    }
+
+    let decisions: [Decision]
+    let groups: [Group]
+}
+
+/// The review queue's words: one noun for the tab, counts, links and effects.
+struct AttentionQueueCopy: Decodable, Equatable {
+    let noun: String?
+    let countText: String?
+    let openAction: String?
+    let sortText: String?
+
+    enum CodingKeys: String, CodingKey {
+        case noun
+        case countText = "count_text"
+        case openAction = "open_action"
+        case sortText = "sort_text"
+    }
 }
 
 struct ReceiptAttentionPayload: Decodable {
@@ -472,8 +709,11 @@ struct V1AttentionPayload: Decodable {
         self.truncated = truncated
     }
 
+    /// The queue's words for this count (absent on older daemons).
+    var queue: AttentionQueueCopy? = nil
+
     private enum CodingKeys: String, CodingKey {
-        case schema, items, total, counts, snapshot, offset, limit, truncated
+        case schema, items, total, counts, snapshot, offset, limit, truncated, queue
     }
 
     init(from decoder: Decoder) throws {
@@ -486,6 +726,7 @@ struct V1AttentionPayload: Decodable {
         offset = try container.decodeIfPresent(Int.self, forKey: .offset) ?? 0
         limit = try container.decode(Int.self, forKey: .limit)
         truncated = try container.decode(Bool.self, forKey: .truncated)
+        queue = try container.decodeIfPresent(AttentionQueueCopy.self, forKey: .queue)
     }
 }
 
@@ -493,11 +734,30 @@ struct V1AttentionCounts: Decodable, Equatable {
     let failedCheck: Int
     let failedStep: Int
     let blocker: Int
+    /// Tasks whose lead item is a check that could not run (absent on older
+    /// payloads, which never had that kind).
+    var checkNotRun: Int = 0
 
     enum CodingKeys: String, CodingKey {
         case failedCheck = "failed_check"
         case failedStep = "failed_step"
         case blocker
+        case checkNotRun = "check_not_run"
+    }
+
+    init(failedCheck: Int, failedStep: Int, blocker: Int, checkNotRun: Int = 0) {
+        self.failedCheck = failedCheck
+        self.failedStep = failedStep
+        self.blocker = blocker
+        self.checkNotRun = checkNotRun
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        failedCheck = try container.decode(Int.self, forKey: .failedCheck)
+        failedStep = try container.decode(Int.self, forKey: .failedStep)
+        blocker = try container.decode(Int.self, forKey: .blocker)
+        checkNotRun = try container.decodeIfPresent(Int.self, forKey: .checkNotRun) ?? 0
     }
 }
 
@@ -505,22 +765,75 @@ struct V1AttentionCounts: Decodable, Equatable {
 /// next step are recorded evidence; a missing `next_step` deliberately remains
 /// nil so the UI cannot turn a generic suggestion into an agent claim.
 struct ReceiptAttention: Decodable {
+    /// Internal sort key (`failed_check` / `blocker` / `failed_step`) — never a
+    /// display word; ``reasonLabel`` is.
     let kind: String
     let summary: String
     let nextStep: String?
     let observedAt: Double?
     let source: String?
+    // The ONE attention block's display and write fields (all additive).
+    let reasonLabel: String?
+    let checkName: String?
+    let evidenceType: String?
+    let result: String?
+    let exitCode: Int?
+    let sectionTitle: String?
+    /// `Failed build check · <name> · exit 0` / `Blocker · <step>`.
+    let label: String?
+    let sourceLabel: String?
+    let actionToken: String?
+    let targetDigest: String?
+    let revision: Int?
+    let dispositionState: String?
+    let dispositionNote: String?
+    /// The reducer's attention-open predicate: the only "still needs you" signal.
+    let open: Bool?
+    let effects: ReceiptDispositionEffects?
+    /// The reducer's tone key for a check item (`failure` / `not_run`); nil
+    /// for a blocker or failed step.
+    var resultTone: String? = nil
+    /// A named result/exit-code disagreement on the lead check.
+    var noteText: String? = nil
+    /// `1 more open finding` / `2 more open items`: every other open item
+    /// behind this lead one, as the reducer's count sentence.
+    var moreText: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case kind, summary, source
+        case kind, summary, source, result, label, revision, open, effects
+        case resultTone = "result_tone"
+        case noteText = "note_text"
+        case moreText = "more_text"
         case nextStep = "next_step"
         case observedAt = "observed_at"
+        case reasonLabel = "reason_label"
+        case checkName = "check_name"
+        case evidenceType = "evidence_type"
+        case exitCode = "exit_code"
+        case sectionTitle = "section_title"
+        case sourceLabel = "source_label"
+        case actionToken = "action_token"
+        case targetDigest = "target_digest"
+        case dispositionState = "disposition_state"
+        case dispositionNote = "disposition_note"
     }
+}
+
+/// The effect sentence of each disposition action, stated before the user
+/// takes it (nil for an action the attention kind does not offer).
+struct ReceiptDispositionEffects: Decodable, Equatable {
+    let reviewed: String?
+    let resolved: String?
+    /// What Reopen does (absent on older payloads).
+    var reopen: String? = nil
 }
 
 struct ReceiptSummary: Decodable, Identifiable {
     let taskId: String
     let title: String?
+    // The compact verdict (headline + gap; no health window on a list row).
+    // Optional so older `/v1/tasks` payloads still decode.
+    let verdict: ReceiptVerdict?
     /// Present on the attention projection; optional for older `/v1/tasks`
     /// payloads and older daemons.
     let project: String?
@@ -535,12 +848,25 @@ struct ReceiptSummary: Decodable, Identifiable {
     // Recency-aware handoff lifecycle marker (parallel to the decision word).
     // Optional so an older daemon payload without the field still decodes.
     let handedOff: Bool?
+    /// The reducer's attention-open predicate for this row (optional on older
+    /// payloads).
+    let attentionOpen: Bool?
+    /// The reducer's attention order class for an open item (nil otherwise).
+    var attentionOrder: Int? = nil
+    /// The vocabulary's filter group for this row.
+    var groupKey: String? = nil
+    /// The handoff marker's words, present only when they add to the decision.
+    var lifecycleMarkerText: String? = nil
 
     var id: String { taskId }
 
     enum CodingKeys: String, CodingKey {
         case taskId = "task_id"
-        case title, project, attention
+        case title, verdict, project, attention
+        case attentionOpen = "attention_open"
+        case attentionOrder = "attention_order"
+        case groupKey = "group_key"
+        case lifecycleMarkerText = "lifecycle_marker_text"
         case decisionStatus = "decision_status"
         case evidenceStrength = "evidence_strength"
         case cost
@@ -606,9 +932,12 @@ struct ReceiptSessionGroup: Decodable, Identifiable {
 
 struct ReceiptDecision: Decodable {
     let key: String
+    /// The sentence-case decision label from the reducer's one label table.
     let label: String?
     let statement: String?
     let assertedBy: String?
+    let assertedByLabel: String?
+    let findingAttentionState: String?
     // The newest blocker's own words (blocked/failed only; nil elsewhere and on
     // older daemon payloads). Daemon-computed — the app never re-derives it.
     let blocker: ReceiptBlocker?
@@ -616,6 +945,8 @@ struct ReceiptDecision: Decodable {
     enum CodingKeys: String, CodingKey {
         case key, label, statement, blocker
         case assertedBy = "asserted_by"
+        case assertedByLabel = "asserted_by_label"
+        case findingAttentionState = "finding_attention_state"
     }
 }
 
@@ -685,6 +1016,14 @@ struct ReceiptByTier: Decodable {
     let selfChecked: Int?
     let unchecked: Int?
 
+    /// How many tiers the record actually reached. The record page hoists its
+    /// tier pip to the Evidence heading only at exactly ONE: pip SHAPE carries
+    /// the tier, so a single pip must never stand for two.
+    var nonEmptyTierCount: Int {
+        [externallyVerified, independentlyChecked, selfChecked, unchecked]
+            .filter { ($0 ?? 0) > 0 }.count
+    }
+
     enum CodingKeys: String, CodingKey {
         case externallyVerified = "externally_verified"
         case independentlyChecked = "independently_checked"
@@ -695,9 +1034,9 @@ struct ReceiptByTier: Decodable {
 
 /// Evidence COVERAGE (M2): per-tier ratios over the checkable steps — the counts
 /// ARE the headline, never a single collapsed grade word. ``key`` is a coarse
-/// tier ordinal used only for colour. Mirrors the daemon's
-/// ``evidence_coverage_headline`` / ``evidence_coverage_ledger`` so no surface
-/// words the same evidence differently.
+/// tier ordinal used only for colour. Every display string (hero, row, tiles,
+/// tally, tier legend) is built by the daemon's reducer and rendered as-is, so
+/// no surface words the same evidence differently.
 struct ReceiptEvidence: Decodable {
     let key: String
     let gradeable: Bool?
@@ -714,9 +1053,37 @@ struct ReceiptEvidence: Decodable {
     let checksPassed: Int?
     let checksFailed: Int?
     let definition: String?
+    // Split ledger buckets: still open (started/checkpoint) vs named terminal
+    // stops, and each bucket's subagent share.
+    let stillOpen: Int?
+    let stoppedBlocked: Int?
+    let stoppedHandedOff: Int?
+    let stoppedFailed: Int?
+    let subagentsByBucket: [String: Int]?
+    let checksSuperseded: Int?
+    let checksEarlierFailed: Int?
+    // Reducer display strings.
+    let coverageHero: String?
+    let coverageRow: String?
+    let coverageTile: ReceiptTileText?
+    let checksTile: ReceiptTileText?
+    let checkTallyText: String?
+    /// `failed` / `passed` / `not_reported` / `none` — the one key a tint maps.
+    let checkRunsState: String?
+    let tierLegend: [ReceiptTierDefinition]?
+    /// `2 checks could not run` (nil when every check ran).
+    var checksNotRunText: String? = nil
+    /// What the ratio does not cover (`1 step handed off · 2 not
+    /// check-relevant`), owing no proof claim; nil when nothing is outside it.
+    var coverageLedger: String? = nil
+    /// The scope term's one definition (`Not check-relevant: review, …`).
+    var scopeDefinition: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case key, gradeable, definition
+        case checksNotRunText = "checks_not_run_text"
+        case coverageLedger = "coverage_ledger"
+        case scopeDefinition = "scope_definition"
         case strongestTier = "strongest_tier"
         case checkableTotal = "checkable_total"
         case checkedTotal = "checked_total"
@@ -729,61 +1096,63 @@ struct ReceiptEvidence: Decodable {
         case checksTotal = "checks_total"
         case checksPassed = "checks_passed"
         case checksFailed = "checks_failed"
+        case stillOpen = "still_open"
+        case stoppedBlocked = "stopped_blocked"
+        case stoppedHandedOff = "stopped_handed_off"
+        case stoppedFailed = "stopped_failed"
+        case subagentsByBucket = "subagents_by_bucket"
+        case checksSuperseded = "checks_superseded"
+        case checksEarlierFailed = "checks_earlier_failed"
+        case coverageHero = "coverage_hero"
+        case coverageRow = "coverage_row"
+        case coverageTile = "coverage_tile"
+        case checksTile = "checks_tile"
+        case checkTallyText = "check_tally_text"
+        case checkRunsState = "check_runs_state"
+        case tierLegend = "tier_legend"
     }
 
-    /// The coverage ratio, tier by tier. The one non-ratio case is
-    /// ``Not gradeable`` (no checkable step — a 0/0 ratio is meaningless).
+    /// The reducer's tier label for a tier key, from the payload's tier table.
+    func tierLabel(for tierKey: String?) -> String? {
+        guard let tierKey else { return nil }
+        return PayloadAbsence.text(tierLegend?.first(where: { $0.key == tierKey })?.label)
+    }
+
+    /// The strongest tier's label (nil when the task has no proven step or the
+    /// payload carries no tier table).
+    var strongestTierLabel: String? { tierLabel(for: strongestTier) }
+
+    /// The coverage headline (`coverage_hero`), tier by tier. A malformed count
+    /// set names its inconsistency; a payload without the hero names its absence.
     var headline: String {
         let presentation = ReceiptCoveragePresentation(evidence: self)
         if presentation.isInconsistent {
             return "\(presentation.value) (\(presentation.qualifier))"
         }
-        guard gradeable != false, let total = checkableTotal, total > 0 else {
-            return "\(presentation.value) (\(presentation.qualifier))"
-        }
-        var parts: [String] = []
-        if let value = byTier?.externallyVerified, value > 0 { parts.append("\(value)/\(total) externally-verified") }
-        if let value = byTier?.independentlyChecked, value > 0 { parts.append("\(value)/\(total) independently-checked") }
-        if let value = byTier?.selfChecked, value > 0 { parts.append("\(value)/\(total) self-checked") }
-        if let value = byTier?.unchecked, value > 0 { parts.append("\(value) unchecked") }
-        return parts.isEmpty
-            ? "\(presentation.value) \(presentation.qualifier)"
-            : parts.joined(separator: " · ")
-    }
-
-    /// A compact dashboard form. "Supported" names claim coverage without
-    /// conflating it with recorded check runs, while fitting the small column.
-    var compactHeadline: String {
-        let presentation = ReceiptCoveragePresentation(evidence: self)
-        if presentation.isInconsistent { return presentation.rowText }
-        if gradeable != false,
-           let checked = checkedTotal,
-           let total = checkableTotal,
-           total > 0 {
-            return "\(checked)/\(total) supported"
-        }
+        if let hero = PayloadAbsence.text(coverageHero) { return hero }
         return presentation.rowText
     }
 
-    /// The honest ledger: where the evidence is, and what the ratio does not cover.
-    var ledger: String? {
-        var bits: [String] = []
-        if let value = hiddenInSubagents, value > 0 { bits.append("\(value) step(s) ran in subagents") }
-        if let value = notCheckable, value > 0 { bits.append("\(value) non-verifiable (research/docs)") }
-        if let value = unattributedChecks, value > 0 { bits.append("\(value) check(s) attach to no step") }
-        if let value = openOrIncomplete, value > 0 { bits.append("\(value) step(s) still open") }
-        return bits.isEmpty ? nil : bits.joined(separator: " · ")
+    /// The compact one-line coverage form (`coverage_row`).
+    var compactHeadline: String {
+        ReceiptCoveragePresentation(evidence: self).rowText
     }
 }
 
-/// One honest rendering contract for claim coverage across summaries, Work,
-/// and Receipt detail. Only an explicit `gradeable: false` becomes "Not
-/// gradeable"; missing counts stay missing and supplied partial counts remain
-/// visible.
+/// One honest rendering contract for step coverage across summaries, Work,
+/// and Receipt detail. The reducer's `coverage_tile` / `coverage_row` are the
+/// values; a malformed count set still names its inconsistency, and a payload
+/// without the strings names what is missing rather than inventing a ratio.
 struct ReceiptCoveragePresentation {
     let value: String
     let qualifier: String
     let rowText: String
+    /// Whether this coverage reading is a MEASURED figure (a ratio the reader
+    /// tracks) or a named state — a named absence (`not gradeable`) or a named
+    /// conflict. The single source of the face rule (K10): every surface asks
+    /// `FieldFont.value(_:isMetric:)` with this, instead of re-deriving its own
+    /// `if gradeable` and disagreeing with the next surface.
+    let valueIsMetric: Bool
     let isInconsistent: Bool
     let tierBreakdownAvailable: Bool
     let tierBreakdownNotice: String?
@@ -825,80 +1194,116 @@ struct ReceiptCoveragePresentation {
             tierBreakdownNotice = "Evidence-tier breakdown contains invalid negative counts."
         } else if tierTotalConflict, let total, let tierTotal {
             tierBreakdownAvailable = false
-            tierBreakdownNotice = "Evidence-tier breakdown reports \(tierTotal) of \(total) checkable claims."
+            tierBreakdownNotice = "Evidence-tier breakdown reports \(tierTotal) of \(total) checkable steps."
         } else if checkedTierConflict, let checked, let checkedByTier {
             tierBreakdownAvailable = false
-            tierBreakdownNotice = "Evidence tiers report \(checkedByTier) supported claims; the summary reports \(checked)."
+            tierBreakdownNotice = "Evidence tiers report \(checkedByTier) checked steps; the summary reports \(checked)."
         } else {
             tierBreakdownAvailable = true
             tierBreakdownNotice = nil
         }
 
-        let supportedExceedsCheckable = if let total, let checked {
+        let checkedExceedsCheckable = if let total, let checked {
             checked > total
         } else {
             false
         }
         let primaryCountsConflict = total.map { $0 < 0 } == true
             || checked.map { $0 < 0 } == true
-            || supportedExceedsCheckable
+            || checkedExceedsCheckable
             || (evidence.gradeable == false && ((total ?? 0) > 0 || (checked ?? 0) > 0))
             || (evidence.gradeable == true && total == 0)
         let tierCountsConflict = evidence.byTier != nil
             && (negativeTierCounts || tierTotalConflict || checkedTierConflict)
         isInconsistent = primaryCountsConflict || tierCountsConflict
 
+        let gradeabilityNote = evidence.gradeable == nil ? " · gradeability not reported" : ""
         if primaryCountsConflict {
+            // A named conflict, not a figure.
+            valueIsMetric = false
             value = "Inconsistent counts"
             switch (checked, total) {
             case let (.some(checked), .some(total)):
-                qualifier = "\(checked) supported · \(total) checkable reported"
-                rowText = "inconsistent coverage · \(checked) supported of \(total) reported"
+                qualifier = "\(checked) checked · \(total) checkable reported"
+                rowText = "inconsistent coverage · \(checked) checked of \(total) reported"
             case let (.some(checked), .none):
-                qualifier = "\(checked) supported · checkable total unavailable"
-                rowText = "inconsistent coverage · \(checked) supported · total not reported"
+                qualifier = "\(checked) checked · checkable total unavailable"
+                rowText = "inconsistent coverage · \(checked) checked · total not reported"
             case let (.none, .some(total)):
-                qualifier = "support count unavailable · \(total) checkable reported"
-                rowText = "inconsistent coverage · support count missing · \(total) checkable"
+                qualifier = "checked count unavailable · \(total) checkable reported"
+                rowText = "inconsistent coverage · checked count missing · \(total) checkable"
             case (.none, .none):
                 qualifier = "coverage fields conflict"
                 rowText = "inconsistent coverage counts"
             }
         } else if tierCountsConflict {
+            valueIsMetric = false
             value = "Inconsistent counts"
             qualifier = "tier breakdown conflicts with reported coverage"
             rowText = "inconsistent coverage · tier breakdown conflicts"
-        } else if evidence.gradeable == false {
-            value = "Not gradeable"
-            qualifier = "no checkable claims recorded"
-            rowText = "not gradeable"
+        } else if let tileValue = PayloadAbsence.text(evidence.coverageTile?.value) {
+            // The reducer's own tile and row — rendered verbatim. The tile
+            // carries a value (never an absence) in this branch, so it is the
+            // measured figure.
+            valueIsMetric = true
+            value = tileValue
+            qualifier = PayloadAbsence.text(evidence.coverageTile?.qualifier) ?? ""
+            rowText = PayloadAbsence.text(evidence.coverageRow)
+                ?? [tileValue, qualifier].filter { !$0.isEmpty }.joined(separator: " ")
+        } else if let absent = PayloadAbsence.text(evidence.coverageTile?.absent) {
+            // The reducer's named absence and its reason — rendered verbatim.
+            valueIsMetric = false
+            value = absent
+            qualifier = PayloadAbsence.text(evidence.coverageTile?.qualifier) ?? ""
+            rowText = PayloadAbsence.text(evidence.coverageRow) ?? absent
+        } else if evidence.gradeable == false || total == 0 {
+            valueIsMetric = false
+            value = PayloadAbsence.notGradeable
+            qualifier = String(gradeabilityNote.dropFirst(3))
+            rowText = PayloadAbsence.text(evidence.coverageRow) ?? PayloadAbsence.notGradeable
+        } else if let row = PayloadAbsence.text(evidence.coverageRow) {
+            valueIsMetric = true
+            value = row
+            qualifier = gradeabilityNote.isEmpty ? "" : String(gradeabilityNote.dropFirst(3))
+            rowText = row
         } else if let total, total > 0, let checked {
-            value = "\(checked) of \(total)"
-            qualifier = evidence.gradeable == nil
-                ? "claims supported · gradeability not reported"
-                : "claims supported"
-            rowText = "\(checked)/\(total) claims supported"
+            // Counts without the reducer strings: the reducer's ratio grammar.
+            valueIsMetric = true
+            value = "\(checked)/\(total)"
+            qualifier = Self.tierWord(evidence) + gradeabilityNote
+            rowText = "\(checked)/\(total) \(Self.tierWord(evidence))"
         } else if let total, total > 0 {
+            valueIsMetric = false
             value = "Not reported"
-            qualifier = "support count unavailable · \(total) checkable claims"
-                + (evidence.gradeable == nil ? " · gradeability not reported" : "")
-            rowText = "support count not reported · \(total) checkable claims"
-        } else if total == 0 {
-            value = "No checkable claims"
-            qualifier = "zero checkable claims reported"
-                + (evidence.gradeable == nil ? " · gradeability not reported" : "")
-            rowText = "no checkable claims"
+            qualifier = "checked count unavailable · \(total) checkable steps" + gradeabilityNote
+            rowText = "checked count not reported · \(total) checkable steps"
         } else if let checked {
+            valueIsMetric = false
             value = "Total not reported"
-            qualifier = "\(checked) supported reported · checkable total unavailable"
-                + (evidence.gradeable == nil ? " · gradeability not reported" : "")
-            rowText = "\(checked) supported · checkable total not reported"
+            qualifier = "\(checked) checked reported · checkable total unavailable" + gradeabilityNote
+            rowText = "\(checked) checked · checkable total not reported"
         } else {
+            valueIsMetric = false
             value = "Not reported"
-            qualifier = "claim-coverage counts unavailable"
-                + (evidence.gradeable == nil ? " · gradeability not reported" : "")
-            rowText = "claim coverage not reported"
+            qualifier = "coverage counts unavailable" + gradeabilityNote
+            rowText = PayloadAbsence.coverage
         }
+    }
+
+    /// The one tier word a compact coverage form can carry: the tier's label
+    /// when every checked step sits at one tier, else plain `checked` (the
+    /// reducer's `_coverage_tier_word`, labels from the payload tier table).
+    private static func tierWord(_ evidence: ReceiptEvidence) -> String {
+        guard let tiers = evidence.byTier else { return "checked" }
+        let present = [
+            ("externally_verified", tiers.externallyVerified ?? 0),
+            ("independently_checked", tiers.independentlyChecked ?? 0),
+            ("self_checked", tiers.selfChecked ?? 0),
+        ].filter { $0.1 > 0 }
+        guard present.count == 1, let label = evidence.tierLabel(for: present[0].0) else {
+            return "checked"
+        }
+        return label
     }
 }
 
@@ -912,9 +1317,12 @@ struct ReceiptPlanShare: Decodable {
     let calibrationState: String?
     let coveredSessions: Int?
     let sessionCount: Int?
+    /// The reducer's one plan-share headline (`plan_share.headline`, or the
+    /// cost dimension's `plan_share_headline` injected by ``ReceiptCostDim``).
+    var headline: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case pct, client
+        case pct, client, headline
         case calibrationState = "calibration_state"
         case coveredSessions = "covered_sessions"
         case sessionCount = "session_count"
@@ -923,32 +1331,33 @@ struct ReceiptPlanShare: Decodable {
     /// "≈X.X% of weekly plan" — nil when not calibrated (absence stays named
     /// by the calibration state, never rendered as a number).
     var text: String? {
-        guard let formatted = Fmt.planPct(pct) else { return nil }
-        return "\(formatted) of weekly plan"
+        guard calibrationState == nil || calibrationState == "calibrated",
+              Fmt.planPct(pct) != nil else { return nil }
+        return PayloadAbsence.text(headline)
     }
 
-    /// The dedicated "Weekly plan" receipt row. Calibrated → the percentage
-    /// (≈0% when calibrated-but-negligible, never a bare "—"); otherwise a
-    /// named calibration state, never a fabricated number. Mirrors
-    /// receipt.plan_share_headline so every surface reads identically.
+    /// The dedicated "Weekly plan" receipt row: the reducer's headline, or
+    /// its named absence. Swift keeps no copy of the plan-share table.
     var rowSummary: String {
-        if calibrationState == "calibrated", let pct {
-            return (Fmt.planPct(pct) ?? "≈0%") + " of weekly plan"
-        }
-        switch calibrationState {
-        case "calibrating": return "calibrating — not enough 7-day history yet"
-        case "never": return "not applicable for this client"
-        default: return "—"
-        }
+        PayloadAbsence.text(headline) ?? PayloadAbsence.planShare
     }
 }
 
+/// A task-list row's cost: the raw figure plus the reducer's display strings.
 struct ReceiptCost: Decodable {
     let estimatedCostUsd: Double?
     let costBasis: String?
     let costConfidence: String?
     let costComplete: Bool?
     let planShare: ReceiptPlanShare?
+    /// `no_usage` / `unpriced` / `partial` / `complete`.
+    let state: String?
+    /// `$1,554.67` / `≈$10.77` / `~$1,635.57`, or the named absence
+    /// (`no usage recorded`, `unpriced`).
+    let displayText: String?
+    let basisLabel: String?
+    let legend: String?
+    let gapText: String?
 
     enum CodingKeys: String, CodingKey {
         case estimatedCostUsd = "estimated_cost_usd"
@@ -956,13 +1365,108 @@ struct ReceiptCost: Decodable {
         case costConfidence = "cost_confidence"
         case costComplete = "cost_complete"
         case planShare = "plan_share"
+        case state, legend
+        case displayText = "display_text"
+        case basisLabel = "basis_label"
+        case gapText = "gap_text"
     }
 
-    /// None-never-$0: an absent estimate is "—", never a fabricated zero.
+    /// True when the reducer names an absence rather than a priced figure.
+    var isAbsent: Bool {
+        state == "no_usage" || state == "unpriced" || PayloadAbsence.text(displayText) == nil
+    }
+
+    /// The cost line: the reducer's figure with its basis, or its named
+    /// absence. A payload without the display string names that absence.
     var text: String {
-        guard let estimatedCostUsd else { return "—" }
-        let basis = costBasis ?? "unknown basis"
-        return String(format: "$%.2f · %@", estimatedCostUsd, basis)
+        guard let display = PayloadAbsence.text(displayText) else { return PayloadAbsence.cost }
+        if state == "no_usage" || state == "unpriced" { return display }
+        return "\(display) · \(PayloadAbsence.text(basisLabel) ?? PayloadAbsence.costBasis)"
+    }
+}
+
+/// The one honest leading line the daemon computes once for every surface:
+/// what an agent claimed joined with how well it is proven, the typed gap, and
+/// a time-bounded proof claim. All optional so an older daemon payload without
+/// a verdict still decodes.
+struct ReceiptHealthWindow: Decodable {
+    let sinceAt: Double?
+    let sinceIso: String?
+    /// Local calendar day, e.g. `Sep 14`.
+    let sinceDate: String?
+    let proven: Int?
+    let checkable: Int?
+    let tierWord: String?
+    /// `Since Sep 14: 1 of 1 completed step self-checked`.
+    let text: String?
+
+    enum CodingKeys: String, CodingKey {
+        case sinceAt = "since_at"
+        case sinceIso = "since_iso"
+        case sinceDate = "since_date"
+        case tierWord = "tier_word"
+        case proven, checkable, text
+    }
+}
+
+struct ReceiptVerdict: Decodable {
+    let headline: String?
+    let decisionKey: String?
+    let decisionLabel: String?
+    let evidenceKey: String?
+    let assertedBy: String?
+    let assertedByLabel: String?
+    let gapEvidence: [String]?
+    let gapCost: [String]?
+    /// `Not yet proven` only for an unproven part; nil otherwise.
+    let gapLabel: String?
+    /// The unproven part (`1 completed step unchecked`), nil when none.
+    let gapText: String?
+    let healthWindow: ReceiptHealthWindow?
+    /// The proof clause without the decision prefix, for a surface that shows
+    /// the decision badge beside it (`0/1 checked`).
+    var proofClause: String? = nil
+    /// What the ratio does not cover, owing no proof claim (`1 step handed
+    /// off · 2 not check-relevant`); nil when nothing is outside it.
+    var ledgerText: String? = nil
+
+    enum CodingKeys: String, CodingKey {
+        // The payload's legacy joined `gap` is not decoded: the app renders
+        // `gap_label` + `gap_text` and leaves cost absence to the Cost row.
+        case headline
+        case decisionKey = "decision_key"
+        case decisionLabel = "decision_label"
+        case evidenceKey = "evidence_key"
+        case assertedBy = "asserted_by"
+        case assertedByLabel = "asserted_by_label"
+        case gapEvidence = "gap_evidence"
+        case gapCost = "gap_cost"
+        case gapLabel = "gap_label"
+        case gapText = "gap_text"
+        case healthWindow = "health_window"
+        case proofClause = "proof_clause"
+        case ledgerText = "ledger_text"
+    }
+
+    /// The proof clause beside a decision badge: the reducer's clause, or —
+    /// from an older payload — the full headline.
+    var badgeClause: String? {
+        PayloadAbsence.text(proofClause) ?? PayloadAbsence.text(headline)
+    }
+
+    /// The gap line as the reducer shapes it: `<gap_label> — <gap_text>` for an
+    /// evidence gap, the evidence text alone otherwise (nil when none).
+    var gapLine: String? {
+        guard let text = PayloadAbsence.text(gapText) else { return nil }
+        if let label = PayloadAbsence.text(gapLabel) { return "\(label) — \(text)" }
+        return text
+    }
+
+    /// Whether the gap is the reducer's typed unproven part: `gap_label` is
+    /// sent ONLY for an evidence gap (K05), so the key — never the copy —
+    /// decides whether a tier pip may mark it.
+    var gapIsUnproven: Bool {
+        PayloadAbsence.text(gapText) != nil && PayloadAbsence.text(gapLabel) != nil
     }
 }
 
@@ -970,6 +1474,8 @@ struct Receipt: Decodable {
     let schemaVersion: String
     let taskId: String
     let title: String?
+    // The one honest leading line (optional; older payloads omit it).
+    let verdict: ReceiptVerdict?
     let axes: ReceiptAxes
     let dimensions: ReceiptDimensions
     let sessions: [ReceiptSessionGroup]?
@@ -977,12 +1483,25 @@ struct Receipt: Decodable {
     /// Task wall-clock span as the daemon computed it (nil when the store
     /// cannot bound it — the record page names that absence).
     let durationSeconds: Double?
+    /// The ONE attention block for this Task (nil when nothing needs you).
+    let attention: ReceiptAttention?
+    let attentionOpen: Bool?
+    /// One header per receipt field (Decision / Coverage / Checks / Cost / Agents).
+    let fieldLabels: ReceiptFieldLabels?
+    /// The vocabulary's filter group for this Task.
+    var groupKey: String? = nil
+    /// The handoff marker's words, present only when they add to the decision.
+    var lifecycleMarkerText: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case taskId = "task_id"
         case durationSeconds = "duration_seconds"
-        case title, axes, dimensions, sessions, timeline
+        case title, verdict, axes, dimensions, sessions, timeline, attention
+        case attentionOpen = "attention_open"
+        case fieldLabels = "field_labels"
+        case groupKey = "group_key"
+        case lifecycleMarkerText = "lifecycle_marker_text"
     }
 }
 
@@ -1009,11 +1528,14 @@ struct ReceiptAxes: Decodable {
 struct ReceiptHandoff: Decodable {
     let handedOff: Bool?
     let statement: String?
+    /// The daemon-rendered one-line marker (`Handed off · <statement>`).
+    let markerLine: String?
     let assertedBy: String?
 
     enum CodingKeys: String, CodingKey {
         case handedOff = "handed_off"
         case statement
+        case markerLine = "marker_line"
         case assertedBy = "asserted_by"
     }
 }
@@ -1033,11 +1555,21 @@ struct ReceiptBoundary: Decodable {
     let project: String?
     let identityScope: String?
     let sessionCount: Int?
+    let projectIdentityState: String?
+    let rootCount: Int?
+    let isContinuation: Bool?
+    /// The project-binding gap sentence (nil when the project is declared and
+    /// consistent), e.g. `Sessions in this Task report different projects.`
+    let gapText: String?
 
     enum CodingKeys: String, CodingKey {
         case project
         case identityScope = "identity_scope"
         case sessionCount = "session_count"
+        case projectIdentityState = "project_identity_state"
+        case rootCount = "root_count"
+        case isContinuation = "is_continuation"
+        case gapText = "gap_text"
     }
 }
 
@@ -1046,6 +1578,18 @@ struct ReceiptTaskDim: Decodable {
     let boundary: ReceiptBoundary?
     let provenance: [String]?
     let gaps: [String]?
+    /// The task-level GOAL, recorded once by the agent (`task_goal`). It cannot
+    /// be derived from `objectives`, which are the recorded SECTION TITLES —
+    /// steps, and usually the Task title over again.
+    var goal: String? = nil
+    /// The reducer's named absence when no goal was recorded. One of the two
+    /// absences exempt from the record page's absence budget.
+    var goalAbsentText: String? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case objectives, boundary, provenance, gaps, goal
+        case goalAbsentText = "goal_absent_text"
+    }
 }
 
 struct ReceiptActorsDim: Decodable {
@@ -1056,6 +1600,14 @@ struct ReceiptActorsDim: Decodable {
     let provenance: [String]?
     let gaps: [String]?
 
+    /// The subagent count as a phrase. ONE composition, used by both the place
+    /// the count is written and the record page's meta line, so deleting the
+    /// `Agents` row does not take the subagent count off the resting page.
+    var subagentsText: String? {
+        guard let count = subagentSessionCount, count > 0 else { return nil }
+        return "\(count) subagent\(count == 1 ? "" : "s")"
+    }
+
     enum CodingKeys: String, CodingKey {
         case primaryAgent = "primary_agent"
         case models
@@ -1065,18 +1617,134 @@ struct ReceiptActorsDim: Decodable {
     }
 }
 
+/// One arithmetic shortfall the reducer found between what the ledger HOLDS
+/// and what the capture SAW (`captured < recorded`). The labels are the
+/// reducer's; the app never words the comparison itself.
+struct ReceiptActionsShortfall: Decodable, Equatable, Identifiable {
+    let callLabel: String?
+    let recordLabel: String?
+    let captured: Int?
+    let recorded: Int?
+
+    var id: String { callLabel ?? recordLabel ?? "shortfall" }
+
+    enum CodingKeys: String, CodingKey {
+        case captured, recorded
+        case callLabel = "call_label"
+        case recordLabel = "record_label"
+    }
+}
+
+/// What the hook capture actually covered (`dimensions.actions.capture_coverage`):
+/// the captured window, the task's own activity window, and the record
+/// shortfalls that downgrade an "exact" claim to partial coverage.
+struct ReceiptActionsCoverage: Decodable, Equatable {
+    let capturedFirstAt: Double?
+    let capturedLastAt: Double?
+    let activityFirstAt: Double?
+    let activityLastAt: Double?
+    var recordShortfalls: [ReceiptActionsShortfall] = []
+
+    enum CodingKeys: String, CodingKey {
+        case capturedFirstAt = "captured_first_at"
+        case capturedLastAt = "captured_last_at"
+        case activityFirstAt = "activity_first_at"
+        case activityLastAt = "activity_last_at"
+        case recordShortfalls = "record_shortfalls"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        capturedFirstAt = try container.decodeIfPresent(Double.self, forKey: .capturedFirstAt)
+        capturedLastAt = try container.decodeIfPresent(Double.self, forKey: .capturedLastAt)
+        activityFirstAt = try container.decodeIfPresent(Double.self, forKey: .activityFirstAt)
+        activityLastAt = try container.decodeIfPresent(Double.self, forKey: .activityLastAt)
+        recordShortfalls = try container.decodeIfPresent([ReceiptActionsShortfall].self, forKey: .recordShortfalls) ?? []
+    }
+}
+
 struct ReceiptActionsDim: Decodable {
     let toolCategoryCounts: [String: Int]?
     let toolCategoryTotal: Int?
     let touchedFileCount: Int?
     let provenance: [String]?
     let gaps: [String]?
+    /// The reducer's tool-call tile: a count, or its named absence.
+    let actionsTile: ReceiptTileText?
+    /// The reducer's full synopsis (headline, integrity, labelled metrics).
+    let actionsSynopsis: ReceiptActionSynopsis?
+    /// `3 related paths` / `no related paths recorded`.
+    let relatedPathsText: String?
+    let relatedPathsDefinition: String?
+    /// The capture sources behind the counts, in the reducer's words.
+    let actionSourcesText: String?
+    // The captured ledger the CLI already prints. Decoded here so the app can
+    // show the same evidence instead of only its totals (additive; memberwise
+    // defaults keep older call sites compiling).
+    /// Captured tool calls by TOOL NAME (`Bash: 25`), distinct from the
+    /// same-unit category partition `toolCategoryCounts` draws.
+    var toolNameCounts: [String: Int]? = nil
+    var toolNameTotal: Int? = nil
+    var toolNamesElided: Int? = nil
+    /// Captured command text, verbatim, and how many the reducer withheld.
+    var commands: [String]? = nil
+    var commandsPreview: [String]? = nil
+    var commandCount: Int? = nil
+    var commandsElided: Int? = nil
+    /// Paths the capture associated with this task, and how many it withheld.
+    var touchedFiles: [String]? = nil
+    var touchedFilesPreview: [String]? = nil
+    var touchedFilesElided: Int? = nil
+    /// The reducer's capture-coverage window and record shortfalls.
+    var captureCoverage: ReceiptActionsCoverage? = nil
 
     enum CodingKeys: String, CodingKey {
         case toolCategoryCounts = "tool_category_counts"
         case toolCategoryTotal = "tool_category_total"
         case touchedFileCount = "touched_file_count"
-        case provenance, gaps
+        case provenance, gaps, commands
+        case actionsTile = "actions_tile"
+        case actionsSynopsis = "actions_synopsis"
+        case relatedPathsText = "related_paths_text"
+        case relatedPathsDefinition = "related_paths_definition"
+        case actionSourcesText = "action_sources_text"
+        case toolNameCounts = "tool_name_counts"
+        case toolNameTotal = "tool_name_total"
+        case toolNamesElided = "tool_names_elided"
+        case commandsPreview = "commands_preview"
+        case commandCount = "command_count"
+        case commandsElided = "commands_elided"
+        case touchedFiles = "touched_files"
+        case touchedFilesPreview = "touched_files_preview"
+        case touchedFilesElided = "touched_files_elided"
+        case captureCoverage = "capture_coverage"
+    }
+
+    /// Tool names as a stable list: by descending count, then by name so two
+    /// equal counts never reorder between renders.
+    var toolNameRows: [(name: String, count: Int)] {
+        (toolNameCounts ?? [:]).map { (name: $0.key, count: $0.value) }
+            .sorted { $0.count == $1.count ? $0.name < $1.name : $0.count > $1.count }
+    }
+
+    /// The command text the payload carried, full list preferred over preview.
+    var commandLines: [String] {
+        let lines = (commands?.isEmpty == false ? commands : commandsPreview) ?? []
+        return lines.filter { PayloadAbsence.text($0) != nil }
+    }
+
+    /// The associated paths the payload carried, full list preferred.
+    var touchedFileLines: [String] {
+        let lines = (touchedFiles?.isEmpty == false ? touchedFiles : touchedFilesPreview) ?? []
+        return lines.filter { PayloadAbsence.text($0) != nil }
+    }
+
+    /// The payload synopsis, or the named absence when an older daemon sent none.
+    var synopsis: ReceiptActionSynopsis {
+        actionsSynopsis ?? ReceiptActionSynopsis(
+            state: nil, headline: nil,
+            tile: actionsTile ?? ReceiptTileText(value: nil, absent: PayloadAbsence.toolCalls, qualifier: nil)
+        )
     }
 }
 
@@ -1104,6 +1772,15 @@ struct ReceiptCostDim: Decodable {
     let tokens: ReceiptCostTokens?
     let provenance: [String]?
     let gaps: [String]?
+    /// `no_usage` / `unpriced` / `partial` / `complete`.
+    let state: String?
+    let displayText: String?
+    let basisLabel: String?
+    let legend: String?
+    /// The cost half of the verdict gap (nil when fully costed).
+    let gapText: String?
+    /// The reducer's weekly-plan headline, never a dash.
+    let planShareHeadline: String?
 
     enum CodingKeys: String, CodingKey {
         case estimatedCostUsd = "estimated_cost_usd"
@@ -1112,12 +1789,69 @@ struct ReceiptCostDim: Decodable {
         case costComplete = "cost_complete"
         case planShare = "plan_share"
         case tokens
-        case provenance, gaps
+        case provenance, gaps, state, legend
+        case displayText = "display_text"
+        case basisLabel = "basis_label"
+        case gapText = "gap_text"
+        case planShareHeadline = "plan_share_headline"
     }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        estimatedCostUsd = try container.decodeIfPresent(Double.self, forKey: .estimatedCostUsd)
+        costBasis = try container.decodeIfPresent(String.self, forKey: .costBasis)
+        costConfidence = try container.decodeIfPresent(String.self, forKey: .costConfidence)
+        costComplete = try container.decodeIfPresent(Bool.self, forKey: .costComplete)
+        tokens = try container.decodeIfPresent(ReceiptCostTokens.self, forKey: .tokens)
+        provenance = try container.decodeIfPresent([String].self, forKey: .provenance)
+        gaps = try container.decodeIfPresent([String].self, forKey: .gaps)
+        state = try container.decodeIfPresent(String.self, forKey: .state)
+        displayText = try container.decodeIfPresent(String.self, forKey: .displayText)
+        basisLabel = try container.decodeIfPresent(String.self, forKey: .basisLabel)
+        legend = try container.decodeIfPresent(String.self, forKey: .legend)
+        gapText = try container.decodeIfPresent(String.self, forKey: .gapText)
+        let headline = try container.decodeIfPresent(String.self, forKey: .planShareHeadline)
+        planShareHeadline = headline
+        // The dimension's headline rides on its plan share so the existing
+        // `planShare.rowSummary` renders the reducer's words.
+        var share = try container.decodeIfPresent(ReceiptPlanShare.self, forKey: .planShare)
+        if share != nil, PayloadAbsence.text(share?.headline) == nil {
+            share?.headline = headline
+        }
+        planShare = share
+    }
+
+    /// The Weekly plan row: the reducer's headline, even when no plan-share
+    /// object was stamped (older payloads fall back to the share's own row).
+    var planShareText: String {
+        PayloadAbsence.text(planShareHeadline) ?? planShare?.rowSummary ?? PayloadAbsence.planShare
+    }
+
+    /// True when the reducer names an absence rather than a priced figure.
+    var isAbsent: Bool {
+        state == "no_usage" || state == "unpriced" || PayloadAbsence.text(displayText) == nil
+    }
+
+    /// The cost line: the reducer's figure with its basis label, or the named
+    /// absence it sent (a payload without either names that absence).
+    var text: String {
+        guard let display = PayloadAbsence.text(displayText) else { return PayloadAbsence.cost }
+        if state == "no_usage" || state == "unpriced" { return display }
+        return "\(display) · \(PayloadAbsence.text(basisLabel) ?? PayloadAbsence.costBasis)"
+    }
+}
+
+/// The git revision a check ran at, read mechanically (never self-reported).
+struct ReceiptCheckRevision: Decodable, Equatable {
+    let commit: String?
+    let branch: String?
+    let dirty: Bool?
+    let basis: String?
 }
 
 struct ReceiptCheck: Decodable, Identifiable {
     let kind: String?
+    /// The agent's own short check name (nil when none was recorded).
     let name: String?
     let result: String?
     let exitCode: Int?
@@ -1126,25 +1860,190 @@ struct ReceiptCheck: Decodable, Identifiable {
     // Detail-on-expand fields; every one optional so an older payload decodes.
     let superseded: Bool?
     let at: Double?
+    /// The agent's summary, verbatim — nil when absent or only `<name>: <result>`.
     let summary: String?
     let files: [String]?
-    // The store NEVER records command text (privacy: names/categories yes,
-    // args no); true says a command existed but was deliberately not captured.
+    // True says a command was recorded; receipts never show its text.
     let commandRedacted: Bool?
     let artifactRef: String?
     let artifactUrl: String?
     // Present only on a failing check that is a surfaced finding episode —
     // the handle the disposition controls post with.
     let finding: ReceiptCheckFinding?
+    // Reducer fields (additive; memberwise defaults keep older call sites).
+    /// What every surface prints as the check's title: name, else summary,
+    /// else evidence type.
+    var title: String? = nil
+    var evidenceType: String? = nil
+    /// `The agent's command argument was not stored; the title is the name the agent recorded.` (nil when none).
+    var commandStateText: String? = nil
+    var artifactUrlRedacted: Bool? = nil
+    var artifactPath: String? = nil
+    var artifactPathRedacted: Bool? = nil
+    var revision: ReceiptCheckRevision? = nil
+    /// `at 8a4e024 · main · uncommitted changes` or `revision not captured`.
+    var revisionLabel: String? = nil
+    /// Every recorded run of this check identity, and how many earlier ones failed.
+    var runsTotal: Int? = nil
+    var earlierFailed: Int? = nil
+    var sectionId: String? = nil
+    /// The source's display label when the payload carries one.
+    var sourceLabel: String? = nil
+    /// What "superseded" means for this run (the reducer's one sentence);
+    /// nil when the run is current.
+    var supersededDefinition: String? = nil
+    /// The reducer's result words (`Passed`, `Failed`, `Could not run`).
+    var resultLabel: String? = nil
+    /// The reducer's tone key (`pass` / `failure` / `not_run`).
+    var resultTone: String? = nil
+    /// A named result/exit-code disagreement (nil when they agree).
+    var noteText: String? = nil
+    /// The reducer's redaction sentence for a withheld artifact path / URL.
+    var artifactPathStateText: String? = nil
+    var artifactUrlStateText: String? = nil
+    /// This run's own event identity — the handle every supersession pointer
+    /// below names, and what ties a receipt row to its timeline record.
+    var eventId: String? = nil
+    /// True for an EARLIER run of a check identity that a later run replaced.
+    /// The header tally counts only the frontier, so a surface that renders
+    /// history rows as peers would double-count them.
+    var historyRun: Bool? = nil
+    var supersededByEventId: String? = nil
+    /// The failed run this passing run names as fixed, and on whose authority
+    /// (`agent_declared` / `reciprocal_of_supersession`).
+    var supersedesCheckEventId: String? = nil
+    var supersedesBasis: String? = nil
+    /// `agent_recorded` / `digest_only` — two different facts about a command
+    /// that is not shown. `commandStateText` carries the reducer's sentence.
+    var commandState: String? = nil
+    /// Paths this check declared that the stamped revision cannot contain.
+    var revisionAbsentFiles: [String]? = nil
+    /// The reducer's sentence naming that contradiction (nil when none). The
+    /// reducer CLEARS it on every row a group banner covers, so a surface that
+    /// does not read `revision_groups[].contradiction_text` prints the sentence
+    /// nowhere at all.
+    var revisionContradictionText: String? = nil
+    /// The row's one meta line — `Failed · Exit 1 · test · Agent-reported`,
+    /// joined by the reducer on the single separator, with whichever fields are
+    /// uniform across every row already hoisted OUT of it and onto the section
+    /// heading. It replaces the four words a surface used to punctuate as four
+    /// sentences.
+    var metaLine: String? = nil
+    /// A run of WHOLE sentences from the start of `summary`: the first always,
+    /// then as many more as fit the reducer's budget. It never ends mid-clause
+    /// and carries no ellipsis, so it must not be clamped to a line count.
+    var summaryPreview: String? = nil
+    /// True when `summary` holds more than `summaryPreview` shows.
+    var summaryElided: Bool? = nil
+    /// Which of `dimensions.evidence.revision_groups` this row belongs to.
+    var revisionGroupIndex: Int? = nil
+    /// True when the group header prints this row's revision label, so the row
+    /// must not print it a second time.
+    var revisionLabelHoisted: Bool? = nil
 
-    var id: String { "\(name ?? "check")-\(result ?? "")-\(exitCode ?? 0)" }
+    /// A run whose own result failed but which a later run replaced: the
+    /// recovery half of a fail → pass story, and neither a live failure nor a
+    /// neutral record.
+    var isResolvedFailure: Bool {
+        (historyRun == true || superseded == true)
+            && CheckResultTone(payload: resultTone) == .failure
+    }
+
+    /// Event identity first: two runs of one check identity differ only by
+    /// event, and a name/result/exit triple collides across reruns.
+    var id: String {
+        PayloadAbsence.text(eventId)
+            ?? "\(name ?? "check")-\(result ?? "")-\(exitCode ?? 0)-\(at ?? 0)"
+    }
+
+    /// The revision line, or its named absence.
+    var revisionText: String {
+        PayloadAbsence.text(revisionLabel) ?? PayloadAbsence.revision
+    }
+
+    /// The row's ONE meta line. The reducer composes it and hoists whatever is
+    /// uniform across the rows; an older payload that carries no `meta_line`
+    /// falls back to the same four facts joined on the SAME separator every
+    /// surface uses, so there is never a second punctuation grammar — and never
+    /// again four fragments each ended with a full stop.
+    var metaLineText: String {
+        if let line = PayloadAbsence.text(metaLine) { return line }
+        return workMetaLine(
+            client: PayloadAbsence.text(resultLabel) ?? PayloadAbsence.checkResult,
+            project: exitCode.map { "Exit \($0)" },
+            trailing: [PayloadAbsence.text(evidenceType), PayloadAbsence.text(sourceLabel)]
+        )
+    }
 
     enum CodingKeys: String, CodingKey {
         case kind, name, result, scope, source, superseded, at, summary, files, finding
+        case title, revision
         case exitCode = "exit_code"
         case commandRedacted = "command_redacted"
         case artifactRef = "artifact_ref"
         case artifactUrl = "artifact_url"
+        case evidenceType = "evidence_type"
+        case commandStateText = "command_state_text"
+        case artifactUrlRedacted = "artifact_url_redacted"
+        case artifactPath = "artifact_path"
+        case artifactPathRedacted = "artifact_path_redacted"
+        case revisionLabel = "revision_label"
+        case runsTotal = "runs_total"
+        case earlierFailed = "earlier_failed"
+        case sectionId = "section_id"
+        case sourceLabel = "source_label"
+        case supersededDefinition = "superseded_definition"
+        case resultLabel = "result_label"
+        case resultTone = "result_tone"
+        case noteText = "note_text"
+        case artifactPathStateText = "artifact_path_state_text"
+        case artifactUrlStateText = "artifact_url_state_text"
+        case eventId = "event_id"
+        case historyRun = "history_run"
+        case supersededByEventId = "superseded_by_event_id"
+        case supersedesCheckEventId = "supersedes_check_event_id"
+        case supersedesBasis = "supersedes_basis"
+        case commandState = "command_state"
+        case revisionAbsentFiles = "revision_absent_files"
+        case revisionContradictionText = "revision_contradiction_text"
+        case metaLine = "meta_line"
+        case summaryPreview = "summary_preview"
+        case summaryElided = "summary_elided"
+        case revisionGroupIndex = "revision_group_index"
+        case revisionLabelHoisted = "revision_label_hoisted"
+    }
+}
+
+/// One run of adjacent check rows sharing a stamped revision
+/// (`dimensions.evidence.revision_groups[]`).
+///
+/// The grouping is the REDUCER'S decision, not a Swift heuristic: it falls back
+/// to strict time order whenever grouping by revision would split a
+/// supersession pair across two groups, because a fail → pass recovery has to
+/// stay legible as two adjacent rows. `revisionGroupingMode` says which choice
+/// it made; walking each group's `eventIds` in order yields every row exactly
+/// once, in time order, under either mode.
+struct ReceiptCheckRevisionGroup: Decodable, Identifiable {
+    let revision: ReceiptCheckRevision?
+    /// The stamped revision line, printed ONCE over the group. On the flagship
+    /// record this took `HEAD when recorded: c41d44f · main · uncommitted
+    /// changes` from four prints to one.
+    let label: String?
+    let eventIds: [String]?
+    let rowCount: Int?
+    /// The reducer's one contradiction sentence for this group, emitted only
+    /// when more than one row carried it byte-identically — and cleared from
+    /// those rows. When the rows' sentences differ this is nil and each row
+    /// keeps its own; no merged sentence is ever composed.
+    let contradictionText: String?
+
+    var id: String { (eventIds?.first).map { "group-\($0)" } ?? (label ?? "group") }
+
+    enum CodingKeys: String, CodingKey {
+        case revision, label
+        case eventIds = "event_ids"
+        case rowCount = "row_count"
+        case contradictionText = "contradiction_text"
     }
 }
 
@@ -1183,9 +2082,13 @@ struct ReceiptCheckRowPresentation: Identifiable {
 
     init(check: ReceiptCheck, occurrence: Int) {
         self.check = check
-        title = Self.nonEmpty(check.name) ?? Self.nonEmpty(check.kind) ?? "Unnamed check"
-        resultLabel = Self.resultLabel(check.result)
-        sourceLabel = Self.sourceLabel(check.source)
+        title = Self.nonEmpty(check.title)
+            ?? Self.nonEmpty(check.name)
+            ?? Self.nonEmpty(check.evidenceType)
+            ?? Self.nonEmpty(check.kind)
+            ?? "Unnamed check"
+        resultLabel = PayloadAbsence.text(check.resultLabel) ?? PayloadAbsence.checkResult
+        sourceLabel = Self.sourceLabel(check)
         group = Self.group(check)
 
         let fingerprint = Self.fingerprint(check)
@@ -1206,39 +2109,24 @@ struct ReceiptCheckRowPresentation: Identifiable {
         return parts.joined(separator: ", ")
     }
 
-    private static func resultLabel(_ result: String?) -> String {
-        switch result {
-        case "passed": return "Passed"
-        case "failed": return "Failed"
-        case "error": return "Error"
-        case "skipped": return "Skipped"
-        default: return "Unknown"
-        }
-    }
-
-    private static func sourceLabel(_ source: String?) -> String? {
-        guard let source = nonEmpty(source) else { return nil }
-        switch source {
-        case "ci": return "CI"
-        case "hook": return "Hook"
-        case "client_hook": return "Client hook"
-        case "mcp": return "Connected tool"
-        case "agent_report": return "Agent report"
-        case "external": return "External"
-        case "provider": return "Provider"
-        default:
-            return source.replacingOccurrences(of: "_", with: " ").capitalized
-        }
+    /// The payload's `source_label`, verbatim. No Swift label table: a check
+    /// that names a source the payload did not label reads as the named
+    /// absence, never a key rewritten in Swift.
+    private static func sourceLabel(_ check: ReceiptCheck) -> String? {
+        if let label = PayloadAbsence.text(check.sourceLabel) { return label }
+        return nonEmpty(check.source) == nil ? nil : PayloadAbsence.source
     }
 
     private static func group(_ check: ReceiptCheck) -> ReceiptCheckGroup {
         if check.superseded == true { return .history }
         if check.finding?.attentionOpen == false { return .history }
         if let state = nonEmpty(check.finding?.state), state != "open" { return .history }
-        switch check.result {
-        case "failed", "error": return .attention
-        case "passed": return .passed
-        default: return .other
+        // The reducer's tone key: only a recorded failure needs you; a check
+        // that could not run is an "other" result, never grouped with failures.
+        switch CheckResultTone(payload: check.resultTone) {
+        case .failure: return .attention
+        case .pass: return .passed
+        case .notRun: return .other
         }
     }
 
@@ -1295,7 +2183,7 @@ struct ReceiptCheckCollectionPresentation {
         aggregateNotice = Self.aggregateNotice(evidence)
         if let total = evidence.checksTotal, total > 0, !rows.isEmpty, total != rows.count {
             let noun = rows.count == 1 ? "entry is" : "entries are"
-            itemizedNotice = "\(rows.count) itemized \(noun) available for \(total) reported check runs."
+            itemizedNotice = "\(rows.count) itemized \(noun) available for \(total) reported checks."
         } else {
             itemizedNotice = nil
         }
@@ -1340,6 +2228,25 @@ struct ReceiptEvidenceDim: Decodable {
     let checksFailed: Int?
     let provenance: [String]?
     let gaps: [String]?
+    // Reducer tally fields (additive; memberwise defaults keep call sites).
+    var checksSuperseded: Int? = nil
+    var checksEarlierFailed: Int? = nil
+    var checksTile: ReceiptTileText? = nil
+    /// `150/156 passed · 4 failed · 2 superseded · 1 earlier run failed`.
+    var checkTallyText: String? = nil
+    /// `failed` / `passed` / `not_reported` / `none`.
+    var checkRunsState: String? = nil
+    /// The section's ONE heading line: the tally, the evidence tier stated here
+    /// and nowhere else on the page, then whichever meta fields were uniform
+    /// across every row. Composed by the reducer.
+    var headingLine: String? = nil
+    /// The uniform fields the heading line hoisted off the rows — present so a
+    /// surface can tell a hoisted fact from one that was never recorded.
+    var hoistedSourceLabel: String? = nil
+    var hoistedEvidenceType: String? = nil
+    /// `by_revision` or `time_order` — the reducer's grouping decision.
+    var revisionGroupingMode: String? = nil
+    var revisionGroups: [ReceiptCheckRevisionGroup]? = nil
 
     enum CodingKeys: String, CodingKey {
         case checks
@@ -1347,12 +2254,24 @@ struct ReceiptEvidenceDim: Decodable {
         case checksPassed = "checks_passed"
         case checksFailed = "checks_failed"
         case provenance, gaps
+        case checksSuperseded = "checks_superseded"
+        case checksEarlierFailed = "checks_earlier_failed"
+        case checksTile = "checks_tile"
+        case checkTallyText = "check_tally_text"
+        case checkRunsState = "check_runs_state"
+        case headingLine = "heading_line"
+        case hoistedSourceLabel = "hoisted_source_label"
+        case hoistedEvidenceType = "hoisted_evidence_type"
+        case revisionGroupingMode = "revision_grouping_mode"
+        case revisionGroups = "revision_groups"
     }
 }
 
-/// Recorded check runs are independent from claim coverage. This presentation
-/// preserves any passed/failed tally even when the total is absent or
-/// inconsistent, instead of silently converting missing values to zero.
+/// Recorded checks are independent from step coverage. The reducer's
+/// `checks_tile` / `check_tally_text` are the values; a malformed tally still
+/// names its conflict, and a payload without the strings keeps any supplied
+/// counts visible in the reducer's grammar instead of converting missing
+/// values to zero.
 struct ReceiptCheckRunsPresentation {
     let value: String
     let qualifier: String
@@ -1360,7 +2279,35 @@ struct ReceiptCheckRunsPresentation {
     let headerText: String
     let isInconsistent: Bool
 
-    init(total: Int?, passed: Int?, failed: Int?) {
+    /// The reducer's tile and tally for a receipt's evidence dimension.
+    init(evidence: ReceiptEvidenceDim) {
+        self.init(
+            total: evidence.checksTotal,
+            passed: evidence.checksPassed,
+            failed: evidence.checksFailed,
+            tile: evidence.checksTile,
+            tallyText: evidence.checkTallyText
+        )
+    }
+
+    /// The reducer's tile and tally for a task-list row's evidence strength.
+    init(strength: ReceiptEvidence) {
+        self.init(
+            total: strength.checksTotal,
+            passed: strength.checksPassed,
+            failed: strength.checksFailed,
+            tile: strength.checksTile,
+            tallyText: strength.checkTallyText
+        )
+    }
+
+    init(
+        total: Int?,
+        passed: Int?,
+        failed: Int?,
+        tile: ReceiptTileText? = nil,
+        tallyText: String? = nil
+    ) {
         let genericCountsConflict = Self.genericCountsConflict(
             total: total,
             passed: passed,
@@ -1368,46 +2315,64 @@ struct ReceiptCheckRunsPresentation {
         )
         let zeroTotalConflict = total == 0 && ((passed ?? 0) != 0 || (failed ?? 0) != 0)
         isInconsistent = genericCountsConflict || zeroTotalConflict
+        let tally = PayloadAbsence.text(tallyText)
         if genericCountsConflict {
             value = "Inconsistent counts"
             let tallies = Self.tallies(passed: passed, failed: failed)
             let totalText = total.map { "\($0) total reported" } ?? "total not reported"
             qualifier = "\(tallies) · \(totalText)"
-            rowText = "inconsistent check runs · \(tallies) · "
+            rowText = "inconsistent checks · \(tallies) · "
                 + (total.map { "\($0) total" } ?? "total not reported")
             headerText = "inconsistent · \(tallies) · "
                 + (total.map { "\($0) total" } ?? "total not reported")
-        } else if let total, total > 0 {
-            if let passed {
-                value = "\(passed) of \(total)"
-                qualifier = "check runs passed" + Self.failedSuffix(failed)
-                rowText = "\(passed)/\(total) check runs passed" + Self.failedSuffix(failed)
-                headerText = "\(passed)/\(total) passed" + Self.failedSuffix(failed)
-            } else {
-                value = "Not reported"
-                qualifier = "passes unavailable · \(total) runs" + Self.failedSuffix(failed)
-                rowText = "passes not reported · \(total) check runs" + Self.failedSuffix(failed)
-                headerText = "passes not reported · \(total) total" + Self.failedSuffix(failed)
-            }
-        } else if total == 0, (passed ?? 0) == 0, (failed ?? 0) == 0 {
-            value = "None"
-            qualifier = "no check runs recorded"
-            rowText = "no check runs"
-            headerText = "no check runs"
-        } else if total == 0 {
+        } else if zeroTotalConflict {
             value = "0 total reported"
             let tallies = Self.tallies(passed: passed, failed: failed)
             qualifier = tallies + " · tallies conflict with total"
             rowText = "0 total reported · \(tallies)"
             headerText = rowText
+        } else if let tileValue = PayloadAbsence.text(tile?.value) {
+            // The reducer's own tile and tally — rendered verbatim.
+            value = tileValue
+            qualifier = PayloadAbsence.text(tile?.qualifier) ?? ""
+            rowText = tally ?? [tileValue, qualifier].filter { !$0.isEmpty }.joined(separator: " ")
+            headerText = rowText
+        } else if let absent = PayloadAbsence.text(tile?.absent) {
+            // The reducer's named absence (`no checks recorded`) — verbatim.
+            value = absent
+            qualifier = PayloadAbsence.text(tile?.qualifier) ?? ""
+            rowText = tally ?? absent
+            headerText = rowText
+        } else if let tally {
+            value = tally
+            qualifier = ""
+            rowText = tally
+            headerText = tally
+        } else if let total, total > 0 {
+            if let passed {
+                value = "\(passed)/\(total)"
+                qualifier = "passed" + Self.failedSuffix(failed)
+                rowText = "\(passed)/\(total) passed" + Self.failedSuffix(failed)
+                headerText = rowText
+            } else {
+                value = "Not reported"
+                qualifier = "passes unavailable · \(Fmt.count(total, "check"))" + Self.failedSuffix(failed)
+                rowText = "passes not reported · \(Fmt.count(total, "check"))" + Self.failedSuffix(failed)
+                headerText = "passes not reported · \(total) total" + Self.failedSuffix(failed)
+            }
+        } else if total == 0 {
+            value = "none"
+            qualifier = "no checks recorded"
+            rowText = "no checks recorded"
+            headerText = rowText
         } else {
             value = "Total not reported"
             let tallies = Self.tallies(passed: passed, failed: failed)
             qualifier = tallies == "no tallies reported"
-                ? "check-run totals unavailable"
+                ? "check totals unavailable"
                 : tallies
             rowText = tallies == "no tallies reported"
-                ? "check runs not reported"
+                ? PayloadAbsence.checks
                 : "total not reported · \(tallies)"
             headerText = rowText
         }
@@ -1460,37 +2425,128 @@ struct ReceiptOutcomeDim: Decodable {
     // other decision key; older payloads omit them entirely (additive, tolerated).
     let quietSince: Double?
     let newerSessionStartedAt: Double?
+    let assertedByLabel: String?
+    /// The agent's own outcome words: the newest step summary, verbatim, with
+    /// the label naming it agent-reported (never a verified statement).
+    let summary: String?
+    let summaryLabel: String?
+    let summarySectionTitle: String?
+    /// The agent's recorded continuation point (withheld once the work reads done).
+    let nextStep: String?
+    let nextStepSectionTitle: String?
+    let nextAction: String?
 
     enum CodingKeys: String, CodingKey {
         case decisionStatus = "decision_status"
-        case statement
+        case statement, summary
         case assertedBy = "asserted_by"
         case provenance, gaps
         case quietSince = "quiet_since"
         case newerSessionStartedAt = "newer_session_started_at"
+        case assertedByLabel = "asserted_by_label"
+        case summaryLabel = "summary_label"
+        case summarySectionTitle = "summary_section_title"
+        case nextStep = "next_step"
+        case nextStepSectionTitle = "next_step_section_title"
+        case nextAction = "next_action"
     }
 }
 
 struct ReceiptGapItem: Decodable, Identifiable {
     let dimension: String
     let reason: String
+    /// The reducer's label for the dimension (`Agents`, `Tool calls`).
+    var dimensionLabel: String? = nil
+    /// `blocks_review` or `provenance` — whether this gap stops a reviewer or is
+    /// bookkeeping.
+    var kind: String? = nil
+    var kindLabel: String? = nil
+    /// The typed gap code, never a sentence to match on.
+    var code: String? = nil
+    /// The absence-budget noun that already carries this gap, when one does.
+    /// A gap WITH a key is spoken by the collapsed absence line and belongs in
+    /// its disclosure; a gap without one has no noun and stays a sentence.
+    var absenceKey: String? = nil
+    var rank: Int? = nil
     var id: String { "\(dimension)-\(reason)" }
+
+    /// The printed group name: the payload label, else the raw key de-snaked
+    /// (an older payload) — never the bare key.
+    var label: String {
+        PayloadAbsence.text(dimensionLabel) ?? dimension.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case dimension, reason, kind, code, rank
+        case dimensionLabel = "dimension_label"
+        case kindLabel = "kind_label"
+        case absenceKey = "absence_key"
+    }
+}
+
+/// One sentence behind the collapsed absence line: the noun the line printed,
+/// and the full sentence it stands for. Absence stays NAMED — the line is a
+/// summary of these, never a replacement for them.
+struct ReceiptNotCapturedDetail: Decodable, Identifiable {
+    let key: String
+    let noun: String?
+    let text: String?
+    var id: String { key }
+}
+
+/// The record page's whole absence budget, in one statement
+/// (`dimensions.gaps.not_captured`).
+///
+/// `line` is nil when nothing is missing, and an empty budget prints NOTHING —
+/// never a positive "everything was captured" claim, which no receipt can make.
+struct ReceiptNotCaptured: Decodable {
+    let line: String?
+    let keys: [String]?
+    let detail: [ReceiptNotCapturedDetail]?
+    let detailCount: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case line, keys, detail
+        case detailCount = "detail_count"
+    }
 }
 
 struct ReceiptGapsDim: Decodable {
     let items: [ReceiptGapItem]?
     let count: Int?
+    /// The collapsed absence statement. Every sentence it stands for is still
+    /// in its `detail`.
+    var notCaptured: ReceiptNotCaptured? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case items, count
+        case notCaptured = "not_captured"
+    }
 }
 
 struct ReceiptProvenanceDim: Decodable {
     let byDimension: [String: [String]]?
     let sourcesPresent: [String]?
     let legend: [String: String]?
+    /// Each present source with the reducer's label, legend sentence and tier.
+    let sources: [ReceiptSourceEntry]?
+    /// The named absence when no dimension recorded a source.
+    var sourcesAbsentText: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case byDimension = "by_dimension"
         case sourcesPresent = "sources_present"
-        case legend
+        case legend, sources
+        case sourcesAbsentText = "sources_absent_text"
+    }
+
+    /// The reducer's label for one source key; a key it did not label is
+    /// shown de-snaked, never renamed.
+    func sourceLabel(for key: String) -> String {
+        if let label = PayloadAbsence.text(sources?.first(where: { $0.key == key })?.label) {
+            return label
+        }
+        return key.replacingOccurrences(of: "_", with: " ")
     }
 }
 
@@ -1638,6 +2694,138 @@ struct WorksetCandidate: Decodable, Identifiable {
         case lastActivityAt = "last_activity_at"
         case existingWorksetId = "existing_workset_id"
     }
+}
+
+// MARK: - Receipt summary line items
+
+/// One receipt line item: a value with its qualifier, or a named absence —
+/// never a fabricated zero.
+struct ReceiptSummaryItem: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let value: String?
+    let qualifier: String?
+    let absent: String?
+    let isWarning: Bool
+}
+
+/// The receipt's line items, derived once from the receipt and its optional
+/// summary row. Every value, qualifier and field label is a reducer string;
+/// a missing string is a named absence. The derivation is split from the view
+/// so each state can be tested without rendering.
+struct RecordSummaryPresentation: Equatable {
+    struct Inputs: Equatable {
+        var fieldLabels: ReceiptFieldLabels?
+        /// The verdict's proof clause in tile form (`1/1` · `self-checked
+        /// completed steps`, or the named absence `not gradeable`).
+        var coverageTile: ReceiptTileText?
+        var checksTile: ReceiptTileText?
+        var toolCalls: ReceiptTileText?
+        var costDisplayText: String?
+        var costBasisLabel: String?
+        var costState: String?
+        var sessionCount: Int?
+        var sessionRoots: Int
+    }
+
+    let items: [ReceiptSummaryItem]
+
+    init(receipt: Receipt, summary: ReceiptSummary?) {
+        let dimensions = receipt.dimensions
+        let strength = receipt.axes.evidenceStrength
+        self.init(inputs: Inputs(
+            fieldLabels: receipt.fieldLabels,
+            coverageTile: strength.coverageTile,
+            checksTile: dimensions.evidence.checksTile ?? strength.checksTile,
+            toolCalls: dimensions.actions.actionsTile ?? dimensions.actions.synopsis.tile,
+            costDisplayText: dimensions.cost.displayText,
+            costBasisLabel: dimensions.cost.basisLabel,
+            costState: dimensions.cost.state,
+            sessionCount: summary?.sessionCount ?? dimensions.task.boundary?.sessionCount,
+            sessionRoots: receipt.sessions?.count ?? 0
+        ))
+    }
+
+    /// The tile strip states the figures, Coverage first. The proof clause
+    /// used to be the record's LARGEST string — `Not gradeable (only step
+    /// stopped: handed off)` set above the task title, so the page shouted the
+    /// grading system rather than the work (C1). The clause is a figure like
+    /// the others, so it is stated ONCE, here, at tile size; the hero keeps the
+    /// state word, the consequence and the bar that draws the same proportion.
+    /// An inconsistent count set is not lost: the payload's own tile text
+    /// carries it (`ReceiptEvidence.headline`).
+    init(inputs: Inputs) {
+        let labels = inputs.fieldLabels ?? ReceiptFieldLabels()
+        items = [
+            Self.coverage(inputs, label: labels.coverageLabel),
+            Self.checks(inputs, label: labels.checksLabel),
+            Self.toolCalls(inputs, label: labels.actionsLabel),
+            Self.cost(inputs, label: labels.costLabel),
+            Self.sessions(inputs),
+        ]
+    }
+
+    private static func coverage(_ inputs: Inputs, label: String) -> ReceiptSummaryItem {
+        guard let value = PayloadAbsence.text(inputs.coverageTile?.value) else {
+            return ReceiptSummaryItem(id: "coverage", label: label, value: nil,
+                                      qualifier: PayloadAbsence.text(inputs.coverageTile?.qualifier),
+                                      absent: PayloadAbsence.text(inputs.coverageTile?.absent) ?? PayloadAbsence.coverage,
+                                      isWarning: false)
+        }
+        return ReceiptSummaryItem(id: "coverage", label: label, value: value,
+                                  qualifier: PayloadAbsence.text(inputs.coverageTile?.qualifier),
+                                  absent: nil, isWarning: false)
+    }
+
+    private static func checks(_ inputs: Inputs, label: String) -> ReceiptSummaryItem {
+        guard let value = PayloadAbsence.text(inputs.checksTile?.value) else {
+            return ReceiptSummaryItem(id: "checks", label: label, value: nil,
+                                      qualifier: PayloadAbsence.text(inputs.checksTile?.qualifier),
+                                      absent: PayloadAbsence.text(inputs.checksTile?.absent) ?? PayloadAbsence.checks,
+                                      isWarning: false)
+        }
+        return ReceiptSummaryItem(id: "checks", label: label, value: value,
+                                  qualifier: PayloadAbsence.text(inputs.checksTile?.qualifier),
+                                  absent: nil, isWarning: false)
+    }
+
+    private static func toolCalls(_ inputs: Inputs, label: String) -> ReceiptSummaryItem {
+        guard let value = PayloadAbsence.text(inputs.toolCalls?.value) else {
+            return ReceiptSummaryItem(id: "actions", label: label, value: nil,
+                                      qualifier: PayloadAbsence.text(inputs.toolCalls?.qualifier),
+                                      absent: PayloadAbsence.text(inputs.toolCalls?.absent) ?? PayloadAbsence.toolCalls,
+                                      isWarning: false)
+        }
+        return ReceiptSummaryItem(id: "actions", label: label, value: value,
+                                  qualifier: PayloadAbsence.text(inputs.toolCalls?.qualifier),
+                                  absent: nil, isWarning: false)
+    }
+
+    private static func cost(_ inputs: Inputs, label: String) -> ReceiptSummaryItem {
+        guard let display = PayloadAbsence.text(inputs.costDisplayText) else {
+            return ReceiptSummaryItem(id: "cost", label: label, value: nil, qualifier: nil,
+                                      absent: PayloadAbsence.cost, isWarning: false)
+        }
+        // The reducer's display text IS the named absence for these states.
+        if inputs.costState == "no_usage" || inputs.costState == "unpriced" {
+            return ReceiptSummaryItem(id: "cost", label: label, value: nil, qualifier: nil,
+                                      absent: display, isWarning: false)
+        }
+        return ReceiptSummaryItem(id: "cost", label: label, value: display,
+                                  qualifier: PayloadAbsence.text(inputs.costBasisLabel) ?? PayloadAbsence.costBasis,
+                                  absent: nil, isWarning: false)
+    }
+
+    private static func sessions(_ inputs: Inputs) -> ReceiptSummaryItem {
+        guard let count = inputs.sessionCount else {
+            return ReceiptSummaryItem(id: "sessions", label: "Sessions", value: nil, qualifier: nil,
+                                      absent: "not recorded", isWarning: false)
+        }
+        return ReceiptSummaryItem(id: "sessions", label: "Sessions", value: "\(count)",
+                                  qualifier: inputs.sessionRoots > 1 ? "\(inputs.sessionRoots) roots" : nil,
+                                  absent: nil, isWarning: false)
+    }
+
 }
 
 struct WorksetCandidatesPayload: Decodable {

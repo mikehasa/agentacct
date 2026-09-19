@@ -61,46 +61,43 @@ enum WorkGroup: String, CaseIterable, Identifiable {
     case verified = "Verified"
     case reported = "Reported"
     case inProgress = "In progress"
-    case observed = "Observed"
+    // The reducer's decision word for a Task with no work steps recorded
+    // (`DECISION_LABELS["observed"]`), so the tab and its rows read alike.
+    case observed = "No work recorded"
     case stopped = "Stopped"
     case other = "Other"
 
     var id: String { rawValue }
 
-    /// Buckets never upgrade a claim: "Verified" holds only the machine-
-    /// asserted key; agent claims of done-ness group under their own word
-    /// ("Reported"); ambient activity stays "Observed". "Stopped" holds the
-    /// stop shapes — the deliberate handoff, the inferred ended-open, and the
-    /// inferred inactive (open, nothing finished, work moved on elsewhere) —
-    /// each row still wearing its own decision word.
-    static func forKey(_ key: String?) -> WorkGroup {
-        switch key {
-        case "finding", "failed", "blocked": return .attention
-        case "verified": return .verified
-        case "reported", "resolved", "mostly_done", "finding_superseded",
-             "finding_resolved_by_user", "blocker_resolved_by_user":
-            return .reported
-        case "in_progress", "started", "checkpoint": return .inProgress
-        case "observed": return .observed
-        case "handed_off", "ended_open", "inactive": return .stopped
-        default: return .other
+    /// The vocabulary's group key for this tab (`GROUP_DEFINITIONS`).
+    var payloadKey: String {
+        switch self {
+        case .attention: return "attention"
+        case .verified: return "verified"
+        case .reported: return "reported"
+        case .inProgress: return "in_progress"
+        case .observed: return "observed"
+        case .stopped: return "stopped"
+        case .other: return "other"
         }
     }
 
-    static func forTask(_ task: ReceiptSummary) -> WorkGroup {
-        workReceiptNeedsAttention(
-            decisionKey: task.decisionStatus.key,
-            checksFailed: task.evidenceStrength.checksFailed
-        ) ? .attention : forKey(task.decisionStatus.key)
+    init?(payloadKey: String?) {
+        guard let match = WorkGroup.allCases.first(where: { $0.payloadKey == payloadKey }) else { return nil }
+        self = match
     }
-}
 
-func workReceiptNeedsAttention(decisionKey: String?, checksFailed: Int?) -> Bool {
-    let settledFindingKeys: Set<String> = [
-        "finding_superseded", "finding_resolved_by_user",
-    ]
-    return ["finding", "failed", "blocked"].contains(decisionKey ?? "")
-        || ((checksFailed ?? 0) > 0 && !settledFindingKeys.contains(decisionKey ?? ""))
+    /// The payload's group label when the vocabulary legend carries one.
+    func label(in legend: DecisionLegendPayload?) -> String {
+        PayloadAbsence.text(legend?.groups.first(where: { $0.key == payloadKey })?.label) ?? rawValue
+    }
+
+    /// The reducer's filter group (`group_key`) — the vocabulary maps decision
+    /// words and the attention predicate to groups; the app re-derives
+    /// nothing. A row without a group key sits in "Other", never hidden.
+    static func forTask(_ task: ReceiptSummary) -> WorkGroup {
+        WorkGroup(payloadKey: task.groupKey) ?? .other
+    }
 }
 
 /// The Work surface's shared sort modes. One `WorkBrowseState` drives both the
@@ -109,9 +106,11 @@ enum WorkSort: String, CaseIterable, Identifiable {
     case attention, latest, cost
     var id: String { rawValue }
 
-    var footerText: String {
+    /// The sort rule shown in the footer. The attention rule is the
+    /// vocabulary's (`queue.sort_text`), stated from the reducer's order.
+    func footerText(queue: AttentionQueueCopy?) -> String {
         switch self {
-        case .attention: return "attention first, then recency"
+        case .attention: return PayloadAbsence.text(queue?.sortText) ?? "attention order not reported"
         case .latest: return "most recent first"
         case .cost: return "highest estimated cost first"
         }
@@ -193,12 +192,24 @@ func workReceiptCollectionIsPartial(loaded: Int, total: Int?, truncated: Bool?) 
     truncated == true || total.map { $0 > loaded } == true
 }
 
+/// Whether a receipts page has actually loaded. While the first request is
+/// still out — or after it failed with nothing retained — there is no page to
+/// count, and a lifecycle "0" would be a reported result rather than a named
+/// absence (K54). A refresh that fails over a loaded page keeps its counts.
+func workReceiptPageIsLoaded(loadedCount: Int, isLoading: Bool, error: String?) -> Bool {
+    loadedCount > 0 || !(isLoading || error != nil)
+}
+
 func workBrowseCountText(
     visible: Int,
     loaded: Int,
     total: Int?,
-    truncated: Bool?
+    truncated: Bool?,
+    pageIsLoaded: Bool = true
 ) -> String {
+    // No page has arrived yet (or the request failed with nothing retained):
+    // a count of 0 would claim a result the store never reported (K54).
+    guard pageIsLoaded else { return "tasks not loaded" }
     let loadedCount = visible == loaded ? "\(loaded) loaded" : "\(visible) of \(loaded) loaded"
     if workReceiptCollectionIsPartial(loaded: loaded, total: total, truncated: truncated) {
         guard let total else { return "\(loadedCount) · more may exist" }
@@ -241,6 +252,7 @@ func workLayoutMode(
 /// One semantic row contract for both the task collection and compact master.
 /// When the selected receipt has richer/fresher detail, its evidence, check, and
 /// cost values replace the compact summary so adjacent UI cannot disagree.
+/// Every display string is the reducer's; this only chooses which to show.
 struct WorkReceiptRowPresentation {
     let taskId: String
     let title: String
@@ -248,98 +260,229 @@ struct WorkReceiptRowPresentation {
     let decisionLabel: String
     let decisionHelp: String
     let evidence: ReceiptEvidence
-    let handedOff: Bool
+    /// The reducer's handoff marker words (nil when the decision already says it).
+    let lifecycleMarkerText: String?
     let coverageText: String
     let coverageQualifier: String
+    /// Whether `coverageText` is a measured figure or a named state — the
+    /// reducer-side role that decides its FACE (K10).
+    let coverageIsMetric: Bool
     let coverageIsInconsistent: Bool
+    /// The strongest evidence tier key and its label (nil when none is proven).
+    let strongestTier: String?
+    let strongestTierLabel: String?
     let checkRunsText: String
     let checkRunsValue: String
     let checkRunsQualifier: String
     let checkRunsAreInconsistent: Bool
     let compactCheckRunsText: String
+    /// Whether the check tally reads as a measured figure or a named state —
+    /// mapped ONCE from the payload's `check_runs_state` key, so every branch
+    /// of the cell (wrapped, stacked or single line) takes the same face (K10).
+    var checkRunsIsMetric: Bool {
+        !checkRunsAreInconsistent && !["none", "not_reported"].contains(checkRunsState ?? "")
+    }
+    /// `failed` / `passed` / `not_reported` / `none` — the one key the tint maps.
+    let checkRunsState: String?
     let clientText: String
+    /// The cost line with its basis (`≈$10.77 · pricing estimate`) or the
+    /// reducer's named absence.
     let costText: String
+    /// The bare cost figure for a table cell, or the named absence.
+    let costDisplayText: String
+    let costBasisLabel: String?
+    let costIsAbsent: Bool
+    /// The verdict's unproven part (`Not yet proven — …`), nil when none.
+    let gapLine: String?
+    /// What the ratio does not cover, owing no proof claim, nil when none.
+    let ledgerText: String?
     let updatedText: String
     let updatedAccessibilityText: String
     let attentionReason: String?
+    /// Coral for a recorded failure, blocker or failed step; muted for a
+    /// check that could not run (the reducer's `not_run` tone).
+    let attentionReasonTint: Color
+    let fieldLabels: ReceiptFieldLabels
 
-    init(task: ReceiptSummary, detail: Receipt? = nil) {
+    /// - Parameter listLabels: the field headers `/v1/tasks` ships for the LIST
+    ///   (`TASK_LIST_FIELD_LABELS`). A row without its detail receipt used to
+    ///   fall back to the Swift defaults in `ReceiptFieldLabels`, so the
+    ///   accessibility-size rows spoke the app's own words for Client, Updated
+    ///   and Attention while the visible column headers came from the payload.
+    init(task: ReceiptSummary, detail: Receipt? = nil, listLabels: ReceiptFieldLabels? = nil) {
         let selectedDetail = detail?.taskId == task.taskId ? detail : nil
         let decision = selectedDetail?.axes.decisionStatus ?? task.decisionStatus
         let resolvedEvidence = selectedDetail?.axes.evidenceStrength ?? task.evidenceStrength
-        let detailChecks = selectedDetail?.dimensions.evidence
-        let checksTotal = detailChecks?.checksTotal ?? resolvedEvidence.checksTotal
-        let checksPassed = detailChecks?.checksPassed ?? resolvedEvidence.checksPassed
-        let checksFailed = detailChecks?.checksFailed ?? resolvedEvidence.checksFailed
 
         taskId = task.taskId
         title = selectedDetail?.title ?? task.title ?? task.taskId
         decisionKey = decision.key
         decisionLabel = decision.label ?? decision.key
-        // A resolved blocker is surfaced (so it can be reopened) but must not
-        // colour the row or the badge tooltip as if the task still needs you.
-        let blockerIsStanding = (decision.blocker?.disposition?.state ?? "open") != "resolved"
-        decisionHelp = (blockerIsStanding ? decision.blocker?.text : nil) ?? decision.statement ?? ""
+        decisionHelp = decision.statement ?? ""
         evidence = resolvedEvidence
-        handedOff = selectedDetail?.axes.handoff?.handedOff ?? (task.handedOff == true)
+        lifecycleMarkerText = PayloadAbsence.text(selectedDetail?.lifecycleMarkerText ?? task.lifecycleMarkerText)
+        fieldLabels = selectedDetail?.fieldLabels ?? listLabels ?? ReceiptFieldLabels()
+
         let coveragePresentation = ReceiptCoveragePresentation(evidence: resolvedEvidence)
         coverageText = coveragePresentation.rowText
         coverageQualifier = coveragePresentation.qualifier
+        coverageIsMetric = coveragePresentation.valueIsMetric
         coverageIsInconsistent = coveragePresentation.isInconsistent
-        let checkRunsPresentation = ReceiptCheckRunsPresentation(
-            total: checksTotal,
-            passed: checksPassed,
-            failed: checksFailed
-        )
+        strongestTier = PayloadAbsence.text(resolvedEvidence.strongestTier)
+        strongestTierLabel = resolvedEvidence.strongestTierLabel
+            ?? strongestTier.map { EvidenceTierStyle.forGrade($0).label }
+
+        let checkRunsPresentation: ReceiptCheckRunsPresentation
+        if let detailChecks = selectedDetail?.dimensions.evidence,
+           detailChecks.checksTile != nil || detailChecks.checksTotal != nil {
+            checkRunsPresentation = ReceiptCheckRunsPresentation(evidence: detailChecks)
+            checkRunsState = detailChecks.checkRunsState ?? resolvedEvidence.checkRunsState
+        } else {
+            checkRunsPresentation = ReceiptCheckRunsPresentation(strength: resolvedEvidence)
+            checkRunsState = resolvedEvidence.checkRunsState
+        }
         checkRunsText = checkRunsPresentation.rowText
         checkRunsValue = checkRunsPresentation.value
         checkRunsQualifier = checkRunsPresentation.qualifier
         checkRunsAreInconsistent = checkRunsPresentation.isInconsistent
         compactCheckRunsText = checkRunsPresentation.headerText
+
         clientText = task.primaryRoot?.client ?? "unattributed"
-        if let cost = selectedDetail?.dimensions.cost.estimatedCostUsd {
-            costText = receiptCostDisplay(
-                cost,
-                complete: selectedDetail?.dimensions.cost.costComplete,
-                confidence: selectedDetail?.dimensions.cost.costConfidence
-            )
+        if let cost = selectedDetail?.dimensions.cost {
+            costText = cost.text
+            costDisplayText = PayloadAbsence.text(cost.displayText) ?? PayloadAbsence.cost
+            costBasisLabel = cost.isAbsent ? nil : PayloadAbsence.text(cost.basisLabel)
+            costIsAbsent = cost.isAbsent
         } else {
-            let compact = DashboardWorkItem(task: task).cost
-            costText = compact == "—" ? "cost unknown" : compact
+            costText = task.cost.text
+            costDisplayText = PayloadAbsence.text(task.cost.displayText) ?? PayloadAbsence.cost
+            costBasisLabel = task.cost.isAbsent ? nil : PayloadAbsence.text(task.cost.basisLabel)
+            costIsAbsent = task.cost.isAbsent
         }
-        updatedText = agoText(task.lastActivityAt) ?? "Activity time unavailable"
-        updatedAccessibilityText = task.lastActivityAt == nil ? "Activity time unavailable" : "updated \(updatedText)"
-        // Only a STANDING blocker states the (coral) attention reason; a resolved
-        // one is surfaced for reopen but must not read as needing attention.
-        if let blocker = decision.blocker?.text, !blocker.isEmpty, blockerIsStanding {
+        gapLine = (selectedDetail?.verdict ?? task.verdict)?.gapLine
+        ledgerText = PayloadAbsence.text((selectedDetail?.verdict ?? task.verdict)?.ledgerText)
+        updatedText = agoText(task.lastActivityAt) ?? PayloadAbsence.activityTime
+        updatedAccessibilityText = task.lastActivityAt == nil
+            ? PayloadAbsence.activityTime : "updated \(updatedText)"
+
+        // The reducer's one attention block states the reason. A DISPOSITION is
+        // a judgement about that finding, not a deletion of it: the row used to
+        // drop the reason entirely once a finding was marked reviewed, leaving
+        // the coral decision badge standing with no visible cause anywhere on
+        // the surface (C4). The facts stay; only the tone changes, because a
+        // reviewed item no longer needs you today.
+        let leadAttention = selectedDetail?.attention ?? task.attention
+        let attentionIsOpen = leadAttention?.open ?? true
+        let attentionIsFailure = leadAttention?.resultTone
+            .map { CheckResultTone(payload: $0) == .failure } != false
+        attentionReasonTint = attentionIsOpen && attentionIsFailure ? Theme.coral : Theme.muted
+        if let attention = leadAttention {
+            let reason = [PayloadAbsence.text(attention.reasonLabel), PayloadAbsence.text(attention.summary)]
+                .compactMap { $0 }
+                .joined(separator: " — ")
+            attentionReason = reason.isEmpty ? PayloadAbsence.text(attention.label) : reason
+        } else if (selectedDetail?.attentionOpen ?? task.attentionOpen) == nil,
+                  (decision.blocker?.disposition?.state ?? "open") != "resolved",
+                  let blocker = PayloadAbsence.text(decision.blocker?.text) {
+            // An older payload without the attention block: the standing
+            // blocker's own words are still a recorded fact.
             attentionReason = blocker
-        } else if let checksFailed, checksFailed > 0 {
-            attentionReason = "\(checksFailed) failed check run\(checksFailed == 1 ? "" : "s")"
-        } else if WorkGroup.forKey(decision.key) == .attention {
-            attentionReason = decision.statement
         } else {
             attentionReason = nil
         }
     }
 
+    /// What the row IS and what was decided — the two facts a reviewer needs
+    /// to decide whether to open it. The measured fields ride as named custom
+    /// content instead of one ~900-character sentence (K119); the self-naming
+    /// verdict lines stay here because they carry their own subject.
     var accessibilityLabel: String {
-        var parts = [title, decisionLabel]
-        if handedOff && decisionKey != "handed_off" { parts.append("handed off") }
-        if let attentionReason, !attentionReason.isEmpty { parts.append(attentionReason) }
-        parts.append(coverageText)
-        parts.append(checkRunsText.replacingOccurrences(of: " · ", with: ", "))
-        parts.append(clientText)
-        parts.append(costText)
-        parts.append(updatedAccessibilityText)
-        return parts.joined(separator: ". ")
+        joinedRecordedSentences([
+            title,
+            decisionLabel,
+            lifecycleMarkerText,
+            gapLine,
+            ledgerText,
+        ])
     }
 
-    var compactCoverageText: String {
-        coverageText.replacingOccurrences(of: " claims", with: "")
+    /// The row's remaining visible facts, each under the field name its column
+    /// header prints (the payload's `field_labels`, never a Swift word). Order
+    /// follows the row: why it needs review, then the two axes, then
+    /// provenance, cost and recency.
+    var accessibilityFields: [WorkRowAccessibilityField] {
+        var fields: [WorkRowAccessibilityField] = []
+        if let attentionReason, !attentionReason.isEmpty {
+            // The reason a row is in the queue is spoken with the row.
+            fields.append(.init(label: fieldLabels.attentionLabel, value: attentionReason, isPrimary: true))
+        }
+        // Shape-carried facts get their textual twin (the pip is hidden).
+        let coverage = strongestTierLabel.map { "\(coverageText), strongest evidence \($0)" } ?? coverageText
+        fields.append(.init(label: fieldLabels.coverageLabel, value: coverage))
+        fields.append(.init(
+            label: fieldLabels.checksLabel,
+            value: checkRunsText.replacingOccurrences(of: " · ", with: ", ")
+        ))
+        fields.append(.init(label: fieldLabels.clientLabel, value: clientText))
+        fields.append(.init(label: fieldLabels.costLabel, value: costText))
+        fields.append(.init(label: fieldLabels.updatedLabel, value: updatedAccessibilityText))
+        return fields
     }
+}
 
-    var compactCostText: String {
-        costText == "cost unknown" ? "unpriced" : costText
+/// One named fact of a list row, for assistive technology: the field name its
+/// column header prints and the value the cell shows.
+struct WorkRowAccessibilityField {
+    let label: String
+    let value: String
+    /// Spoken with the row rather than only on request.
+    var isPrimary = false
+}
+
+/// One custom-content slot. A missing field leaves the view untouched, so the
+/// chain below keeps a static view type (no AnyView in a scrolling table).
+private struct WorkRowAccessibilityFieldSlot: ViewModifier {
+    let field: WorkRowAccessibilityField?
+
+    func body(content: Content) -> some View {
+        if let field {
+            content.accessibilityCustomContent(
+                Text(field.label),
+                Text(field.value),
+                importance: field.isPrimary ? .high : .default
+            )
+        } else {
+            content
+        }
+    }
+}
+
+extension View {
+    /// Attach a row's named facts as accessibility custom content, so each one
+    /// is announced with its field name and none of them lengthen the label.
+    /// The slot count matches the row contract in `accessibilityFields`.
+    func workRowAccessibilityFields(_ fields: [WorkRowAccessibilityField]) -> some View {
+        func slot(_ index: Int) -> WorkRowAccessibilityFieldSlot {
+            WorkRowAccessibilityFieldSlot(field: index < fields.count ? fields[index] : nil)
+        }
+        return modifier(slot(0)).modifier(slot(1)).modifier(slot(2))
+            .modifier(slot(3)).modifier(slot(4)).modifier(slot(5))
+    }
+}
+
+/// Join recorded sentences into one spoken line. A part that already ends in
+/// terminal punctuation keeps its own full stop instead of collecting a second
+/// one — the doubled ".." VoiceOver read out on attention rows (K119).
+func joinedRecordedSentences(_ parts: [String?]) -> String {
+    let kept = parts
+        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    return kept.enumerated().reduce(into: "") { text, entry in
+        let (index, part) = entry
+        text += part
+        guard index < kept.count - 1 else { return }
+        text += part.hasSuffix(".") || part.hasSuffix("!") || part.hasSuffix("?") || part.hasSuffix(":")
+            ? " " : ". "
     }
 }
 
@@ -359,13 +502,13 @@ struct WorkReceiptDecisionPresentation {
         let decision = receipt.axes.decisionStatus
         let coverage = receipt.axes.evidenceStrength
         let checks = receipt.dimensions.evidence
-        isAttention = workReceiptNeedsAttention(
-            decisionKey: decision.key,
-            checksFailed: checks.checksFailed ?? coverage.checksFailed
-        )
+        // The reducer predicate is the only "needs you" signal; without it
+        // the decision word's own bucket decides (no Swift re-derivation).
+        isAttention = receipt.attentionOpen ?? receipt.attention?.open
+            ?? (receipt.groupKey == WorkGroup.attention.payloadKey)
         headline = isAttention ? "Why this needs attention" : "Current outcome"
         let statement = decision.statement ?? "No decision explanation was recorded."
-        if let assertedBy = assertedByLabel(decision.assertedBy) {
+        if let assertedBy = PayloadAbsence.text(decision.assertedByLabel) {
             explanation = "\(statement) — \(assertedBy)"
         } else {
             explanation = statement
@@ -375,11 +518,7 @@ struct WorkReceiptDecisionPresentation {
         coverageValue = coveragePresentation.value
         coverageQualifier = coveragePresentation.qualifier
 
-        let checksPresentation = ReceiptCheckRunsPresentation(
-            total: checks.checksTotal,
-            passed: checks.checksPassed,
-            failed: checks.checksFailed
-        )
+        let checksPresentation = ReceiptCheckRunsPresentation(evidence: checks)
         checksValue = checksPresentation.value
         checksQualifier = checksPresentation.qualifier
     }
@@ -395,28 +534,38 @@ struct WorkAttentionEmptyCopy: Equatable {
     let detail: String
 
     init(payload: V1AttentionPayload, query: String) {
+        let noun = PayloadAbsence.text(payload.queue?.noun) ?? "the review queue"
+        let count = PayloadAbsence.text(payload.queue?.countText) ?? "\(payload.total) in \(noun)"
         if payload.total == 0 {
-            title = "No current review items"
+            title = "Nothing in \(noun)"
             detail = "The complete attention projection reports no failed checks, failed steps, or unresolved blockers."
         } else if !query.isEmpty, !payload.items.isEmpty {
-            title = "No review items match this filter"
-            detail = "The bounded queue has \(payload.items.count) of \(payload.total) review items; adjust the filter to inspect them."
+            title = "Nothing in \(noun) matches this filter"
+            detail = "The bounded queue has \(payload.items.count) loaded of \(count); adjust the filter to inspect them."
         } else {
-            title = "Review queue details unavailable"
-            detail = "The complete projection reports \(payload.total) review items, but no bounded queue rows were returned. Refresh before acting."
+            title = "\(PayloadAbsence.text(payload.queue?.noun) ?? "Review queue") details unavailable"
+            detail = "The complete projection reports \(count), but no bounded queue rows were returned. Refresh before acting."
         }
     }
 }
 
 /// Shared ordering for the receipts table and master — one algorithm, so the
 /// two surfaces can never disagree. `.latest` is the daemon's own order
-/// (last_activity_at desc); `.attention` is a stable partition that keeps that
-/// recency inside each half.
+/// (last_activity_at desc); `.attention` sorts by the reducer's attention
+/// order class (`attention_order`; rows with none last), then most recent, so
+/// every filter shows a subsequence of the same order.
 func sortedReceipts(_ rows: [ReceiptSummary], by sort: WorkSort) -> [ReceiptSummary] {
     switch sort {
     case .attention:
-        let attention = rows.filter { WorkGroup.forTask($0) == .attention }
-        return attention + rows.filter { WorkGroup.forTask($0) != .attention }
+        return rows.enumerated().sorted { lhs, rhs in
+            let left = lhs.element.attentionOrder ?? Int.max
+            let right = rhs.element.attentionOrder ?? Int.max
+            if left != right { return left < right }
+            let leftTime = lhs.element.lastActivityAt ?? -Double.infinity
+            let rightTime = rhs.element.lastActivityAt ?? -Double.infinity
+            if leftTime != rightTime { return leftTime > rightTime }
+            return lhs.offset < rhs.offset
+        }.map(\.element)
     case .latest:
         return rows  // server order: recency
     case .cost:
@@ -424,104 +573,245 @@ func sortedReceipts(_ rows: [ReceiptSummary], by sort: WorkSort) -> [ReceiptSumm
     }
 }
 
-// MARK: - Decision-status legend
+/// Whether two PAYLOAD strings say the same thing to a reader: the same words,
+/// ignoring case, surrounding space and a trailing full stop.
+///
+/// This composes nothing — it only decides whether a second copy of a string
+/// the page already printed is worth printing again. A record page used to
+/// print its Task title three times: as the heading, again in the outcome
+/// byline (`Agent-reported · <title>`, because a one-section Task's section
+/// title IS the title), and again as the Recording ledger's TASK row (whose
+/// only objective is the title). Two of those carried no fact (F1).
+func restatesPayloadText(_ lhs: String, _ rhs: String?) -> Bool {
+    func normalized(_ text: String) -> String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
+    }
+    guard let rhs else { return false }
+    let left = normalized(lhs)
+    return !left.isEmpty && left == normalized(rhs)
+}
 
-/// One-line human definitions for every decision word, mirroring the daemon's
-/// own criteria (task_outcome/receipt statements). Presentation only — the
-/// words and their meanings stay the daemon's; this never re-derives a status.
-struct DecisionLegendEntry: Identifiable {
-    let key: String
+// MARK: - Agent outcome summary
+
+/// The agent's outcome summary under the verdict: its source label and the
+/// section it came from in a caption, the words in body ink (verbatim, never
+/// parsed as markdown), four lines with a disclosure for the rest.
+struct AgentOutcomeSummary: View {
+    let summary: String
     let label: String
-    let definition: String
-    var id: String { key }
+    let sectionTitle: String?
+    /// The reading role. The record header passes its ramp's CONSEQUENCE step,
+    /// so what the state meant for the work is the most prominent prose on the
+    /// page; every other surface keeps body. The clamp is what makes a hero
+    /// role safe for a 900-character handoff note — the words are all still
+    /// there, one disclosure away.
+    var role: WorkFontRole = .body
+    var tracking: CGFloat = 0
+    @State private var expanded = false
+
+    /// How many lines the summary keeps before its disclosure. A hero-weight
+    /// summary is a headline, so it holds fewer.
+    private var lineBudget: Int {
+        switch role {
+        case .titlePage, .titleSection: return 3
+        default: return 4
+        }
+    }
+
+    /// A summary long enough to exceed its line budget at the reading measure.
+    private var isLong: Bool {
+        let perLine = role == .body ? 80 : 60
+        return summary.count > perLine * lineBudget
+            || summary.split(separator: "\n", omittingEmptySubsequences: false).count > lineBudget
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text([label, sectionTitle].compactMap { $0 }.joined(separator: " · "))
+                .workFont(.captionSemibold).foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(verbatim: summary)
+                .workFont(role).tracking(tracking).foregroundStyle(Theme.ink)
+                .lineLimit(expanded ? nil : lineBudget)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if isLong {
+                Button(expanded ? "Show less" : "Show full summary") { expanded.toggle() }
+                    .buttonStyle(QuietButtonStyle(tint: Theme.accent))
+                    .workFont(.captionSemibold)
+                    .keyboardStop { expanded.toggle() }
+                    .hangingLeading()
+                    .accessibilityIdentifier("work.outcome-summary.toggle")
+            }
+        }
+        .frame(maxWidth: Metrics.readingMeasure, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("work.outcome-summary")
+    }
 }
 
-enum DecisionLegend {
-    /// Grouped by family: needs-you, live, proven, claimed, inferred, ambient.
-    static let entries: [DecisionLegendEntry] = [
-        .init(key: "blocked", label: "Blocked",
-              definition: "The agent recorded a blocker it never marked resolved."),
-        .init(key: "failed", label: "Failed",
-              definition: "The agent recorded a step as failed."),
-        .init(key: "finding", label: "Finding",
-              definition: "A machine check failed and no later run of it has passed."),
-        .init(key: "in_progress", label: "In progress",
-              definition: "Steps are still open and the session was not seen to end."),
-        .init(key: "verified", label: "Verified",
-              definition: "Recorded machine evidence verifies the latest outcome."),
-        .init(key: "reported", label: "Reported",
-              definition: "The agent says it finished; no check proves it."),
-        .init(key: "resolved", label: "Resolved",
-              definition: "A later passing check reports the blocker resolved — not a verified completion."),
-        .init(key: "mostly_done", label: "Mostly done",
-              definition: "Steps finished, some still open — later work moved elsewhere."),
-        .init(key: "handed_off", label: "Handed off",
-              definition: "The agent deliberately stopped and passed the work on."),
-        .init(key: "blocker_resolved_by_user", label: "Blocker resolved",
-              definition: "You marked the recorded blocker resolved — not a completion claim, not machine verification."),
-        .init(key: "finding_resolved_by_user", label: "Finding resolved",
-              definition: "You marked the finding resolved; the failing check stays in history — not machine verification."),
-        .init(key: "finding_superseded", label: "Finding superseded",
-              definition: "A check failed, but a later run of the same check passed."),
-        .init(key: "ended_open", label: "Ended open",
-              definition: "The session ended with steps still open; the stop is inferred, not stated."),
-        .init(key: "inactive", label: "Inactive",
-              definition: "Open with nothing finished; work has since continued elsewhere — agentacct inferred it went quiet, it never said done."),
-        .init(key: "observed", label: "Observed",
-              definition: "Activity was recorded; no outcome was ever stated."),
-    ]
+// MARK: - Lifecycle marker
+
+/// The deliberate-stop marker beside a different decision word: the reducer's
+/// words in the sans state-word style with the handoff glyph — never a chip
+/// (a chip reads as a provenance/client tag) and never a decision badge.
+struct LifecycleMarker: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Text("↗").accessibilityHidden(true)
+            Text(text)
+        }
+        .workFont(.captionSemibold)
+        .foregroundStyle(Theme.muted)
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(text)
+    }
 }
+
+// MARK: - Decision-status legend
 
 /// A small info affordance that opens the decision-word legend. Lives beside
 /// every surface that shows decision words (table controls, record title).
+/// The evidence-grade rows come from the payload tier table (`tier_legend`)
+/// and the coverage definition (`evidence.definition`) when a record carries them.
 struct DecisionLegendButton: View {
+    /// The vocabulary's status legend (`/v1/tasks` `decision_legend`).
+    var legend: DecisionLegendPayload? = nil
+    var tierLegend: [ReceiptTierDefinition]? = nil
+    var definition: String? = nil
+    /// The reducer's scope-term definition, shown once when the record uses it.
+    var scopeDefinition: String? = nil
     @State private var shown = false
 
     var body: some View {
         // Popovers need live interaction; the offscreen renderer draws the
         // trigger as noise, so snapshots omit the control entirely.
         if !SnapshotMode.enabled || SnapshotMode.interactiveFixture {
-            Button {
-                shown.toggle()
-            } label: {
-                Image(systemName: "info.circle")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Theme.muted)
-                    .frame(
-                        width: ButtonFeedback.minimumHitDimension,
-                        height: ButtonFeedback.minimumHitDimension
-                    )
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(QuietButtonStyle(
+            IconButton(
+                systemName: "info.circle",
+                label: "Status legend",
+                help: "What each status word means",
                 tint: Theme.muted,
-                horizontalPadding: 0,
-                verticalPadding: 0
-            ))
-            .help("What each status word means")
-            .accessibilityLabel("Status legend")
-            .accessibilityIdentifier("work.status-legend")
+                identifier: "work.status-legend"
+            ) {
+                shown.toggle()
+            }
             .popover(isPresented: $shown, arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: Space.s) {
                     CapsLabel(text: "Status words")
-                    ForEach(DecisionLegend.entries) { entry in
-                        HStack(alignment: .firstTextBaseline, spacing: Space.m) {
-                            DecisionBadge(key: entry.key, label: entry.label, compact: true)
-                                .frame(width: 132, alignment: .leading)
-                            Text(entry.definition)
-                                .workFont(.caption).foregroundStyle(Theme.ink)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                    if let legend, !legend.decisions.isEmpty {
+                        ForEach(legend.decisions) { entry in
+                            HStack(alignment: .firstTextBaseline, spacing: Space.m) {
+                                DecisionBadge(key: entry.key, label: entry.label, compact: true)
+                                    .frame(width: 132, alignment: .leading)
+                                Text(entry.definition)
+                                    .workFont(.caption).foregroundStyle(Theme.ink)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
+                        DisclosureGroup("Status groups") {
+                            VStack(alignment: .leading, spacing: Space.s) {
+                                ForEach(legend.groups) { group in
+                                    HStack(alignment: .firstTextBaseline, spacing: Space.m) {
+                                        Text(group.label).workFont(.captionSemibold).foregroundStyle(Theme.ink)
+                                            .frame(width: 132, alignment: .leading)
+                                        Text(group.definition)
+                                            .workFont(.caption).foregroundStyle(Theme.ink)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                }
+                            }
+                            .padding(.top, Space.xs)
+                        }.workFont(.caption)
+                    } else {
+                        Text("Status definitions not reported.")
+                            .workFont(.caption).foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let scopeDefinition = PayloadAbsence.text(scopeDefinition) {
+                        Text(scopeDefinition)
+                            .workFont(.caption).foregroundStyle(Theme.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
                     }
                     DisclosureGroup("Evidence grades") {
-                        Text("Externally verified: external evidence. Independently checked: an independent check. Self checked: the agent checked its own work. Unchecked or claimed: no supporting check. Not gradeable: no meaningful grade is available. Counts describe captured evidence, not the probability that a task is correct.")
-                            .workFont(.caption).textSelection(.enabled)
+                        VStack(alignment: .leading, spacing: Space.s) {
+                            if let rows = tierLegend, !rows.isEmpty {
+                                ForEach(rows) { row in
+                                    VStack(alignment: .leading, spacing: Space.xs) {
+                                        TierBadge(
+                                            grade: row.key,
+                                            text: PayloadAbsence.text(row.label)
+                                                ?? EvidenceTierStyle.forGrade(row.key).label
+                                        )
+                                        Text(PayloadAbsence.text(row.definition) ?? "Definition not reported.")
+                                            .workFont(.caption).foregroundStyle(Theme.ink)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                            .textSelection(.enabled)
+                                    }
+                                }
+                            } else {
+                                Text("Evidence tier definitions arrive with a task record.")
+                                    .workFont(.caption).foregroundStyle(Theme.muted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            if let definition = PayloadAbsence.text(definition) {
+                                Text(definition)
+                                    .workFont(.caption).foregroundStyle(Theme.muted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        .padding(.top, Space.xs)
                     }.workFont(.caption)
                 }
                 .padding(Space.l)
                 .frame(width: 440)
+                // An opaque card surface: card text never shows through (K84).
+                .popoverSurface()
             }
+        }
+    }
+}
+
+/// The record header's type ramp (C1). It used to put the computed PROOF
+/// CLAUSE one step above the task title, so the largest string on the page was
+/// the grading system's verdict on the work — `Not gradeable (only step
+/// stopped: handed off)` set over a Task that had, in fact, shipped and tested
+/// a function. The ramp now reads work-first: the task title takes the top
+/// step, the agent's own outcome sentence — the CONSEQUENCE — takes the next,
+/// and the proof clause is a tile figure like every other (`RecordSummary‑
+/// Presentation`), never the loudest thing on the record.
+struct VerdictHeroTypeRamp {
+    let title: WorkFontRole
+    /// What the state MEANT for the work, one ramp step under the title.
+    let consequence: WorkFontRole
+    let titleTracking: CGFloat
+    let consequenceTracking: CGFloat
+    /// The source monogram beside the heading tracks the title's step.
+    let monogramSize: CGFloat
+
+    init(dense: Bool) {
+        if dense {
+            title = .titleSection
+            consequence = .titleCard
+            titleTracking = Type.titleSectionTracking
+            consequenceTracking = 0
+            monogramSize = 28
+        } else {
+            title = .titlePage
+            consequence = .titleSection
+            titleTracking = Type.titlePageTracking
+            consequenceTracking = Type.titleSectionTracking
+            monogramSize = 40
         }
     }
 }
@@ -586,7 +876,11 @@ struct WorkPane: View {
             Group {
                 switch timelineFocused && selection.taskId != nil ? .pushDetail : mode {
                 case .table:
-                    WorkTablePage(browse: selection.workBrowse)
+                    WorkTablePage(
+                        browse: selection.workBrowse,
+                        narrow: proxy.size.width < 1_080,
+                        paneWidth: proxy.size.width
+                    )
                         .transition(listTransition)
                 case .split:
                     splitLayout(size: proxy.size)
@@ -597,7 +891,9 @@ struct WorkPane: View {
                         .transition(detailTransition)
                 }
             }
-            .environment(\.workCompactViewport, proxy.size.height < 720)
+            // Density follows width — the same 1080 threshold as the layout
+            // mode. A breakpoint rearranges facts; it never removes them.
+            .environment(\.workCompactViewport, proxy.size.width < 1_080)
         }
         .animation(
             reduceMotion ? Motion.reducedCrossfade : Motion.detailNavigation,
@@ -691,7 +987,6 @@ struct WorkPane: View {
                             errorTaskId: dashboard.receiptErrorTaskId,
                             error: dashboard.receiptError
                         ),
-                        isRefreshing: dashboard.receiptLoadingTaskId == receipt.taskId,
                         autoFocusEntry: autoFocusEntry,
                         timelineFocused: timelineFocused,
                         onToggleTimelineFocus: { timelineFocused.toggle() }
@@ -779,7 +1074,7 @@ private struct WorkRecordPlaceholder: View {
                         .workFont(.body).foregroundStyle(Theme.muted)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: 420)
+                        .frame(maxWidth: min(420, Metrics.readingMeasure))
                     if let retryTitle, let retry {
                         Button(retryTitle, action: retry)
                             .buttonStyle(QuietButtonStyle(tint: Theme.accent))
@@ -824,14 +1119,21 @@ private struct WorkRecordPlaceholder: View {
             selection.taskId = nil
             selection.sessionId = nil
         } label: {
-            Label("All receipts", systemImage: "chevron.left")
-                .workFont(.captionSemibold)
-                .foregroundStyle(Theme.accent)
+            HStack(spacing: 4) {
+                Image(systemName: "chevron.left")
+                    .workFont(.icon)
+                    .accessibilityHidden(true)
+                Text("All tasks").workFont(.captionSemibold)
+            }
+            .foregroundStyle(Theme.accent)
+            .minimumHitTarget(alignment: .leading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(QuietButtonStyle(horizontalPadding: 6, verticalPadding: 3))
-        .frame(minHeight: 24)
         .focused($backFocused)
         .keyboardShortcut(.cancelAction)
+        .help("Back to all tasks (Esc)")
+        .accessibilityLabel("All tasks")
         .accessibilityIdentifier("work.placeholder.back")
     }
 }
@@ -845,14 +1147,17 @@ struct WorkTaskPresentation {
     init(
         tasks: [ReceiptSummary],
         attention: V1AttentionPayload? = nil,
+        attentionTotal: Int? = nil,
         group: WorkGroup?,
         query: String,
         sort: WorkSort
     ) {
         var counts = Dictionary(grouping: tasks, by: WorkGroup.forTask).mapValues(\.count)
         // Attention is complete across the store and can exceed the loaded
-        // receipts page; other lifecycle counts still describe that page.
-        if let total = attention?.total { counts[.attention] = total }
+        // receipts page; other lifecycle counts still describe that page. The
+        // total comes from whichever attention page is loaded (K87); the queue
+        // ITEMS below come only from the queue page the Work pane asked for.
+        if let total = attentionTotal ?? attention?.total { counts[.attention] = total }
         groupCounts = counts
 
         // The endpoint has already classified and operationally ordered a
@@ -872,10 +1177,20 @@ private struct WorkTablePage: View {
     @Environment(DashboardStore.self) var dashboard
     @Environment(AppSelection.self) var selection
     @ObservedObject var browse: WorkBrowseState
+    /// Below the 1080 layout threshold the table folds Client into the title
+    /// meta line and stacks Cost over Updated (same facts, fewer columns).
+    var narrow = false
+    /// The pane's proposed width; the table allocates its columns from it.
+    var paneWidth: CGFloat? = nil
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .caption) private var captionScaledSize: CGFloat = 12
     @FocusState private var searchFocused: Bool
-    @FocusState private var focusedTaskId: String?
+    /// The table is ONE keyboard stop that owns a roving row, the way a native
+    /// list behaves. Rows stay Buttons (pointer and VoiceOver keep their press
+    /// action); Tab never has to walk 66 of them (K77).
+    @FocusState private var tableFocused: Bool
+    @State private var focusedTaskId: String?
     @AccessibilityFocusState private var searchAccessibilityFocused: Bool
     @AccessibilityFocusState private var accessibilityFocusedTaskId: String?
 
@@ -883,38 +1198,45 @@ private struct WorkTablePage: View {
         let presentation = WorkTaskPresentation(
             tasks: dashboard.receiptTasks,
             attention: dashboard.attention,
+            attentionTotal: dashboard.attentionTotal,
             group: browse.group,
             query: browse.query,
             sort: browse.sort
         )
         ScrollViewReader { scrollProxy in
-            ScrollBox {
-                VStack(alignment: .leading, spacing: 0) {
-                    header
-                    tabs(
-                        groupCounts: presentation.groupCounts,
-                        visibleCount: presentation.visibleTasks.count
-                    )
-                    .padding(.top, Space.xl)
-                    filterRow.padding(.top, Space.m)
-                    if browse.group != .attention, let error = dashboard.receiptListError {
-                        listStatusBanner(error).padding(.top, Space.m)
-                    }
-                    tableCard(visibleTasks: presentation.visibleTasks)
-                        .padding(
-                            .top,
-                            browse.group != .attention && dashboard.receiptListError != nil
-                                ? Space.m : Space.l
+            VStack(spacing: 0) {
+                ScrollBox {
+                    VStack(alignment: .leading, spacing: 0) {
+                        header
+                        tabs(
+                            groupCounts: presentation.groupCounts,
+                            visibleCount: presentation.visibleTasks.count
                         )
-                    footer(visibleTasks: presentation.visibleTasks).padding(.top, Space.m)
+                        .padding(.top, Space.xl)
+                        filterRow.padding(.top, Space.m)
+                        // The banner is for RETAINED data: it says the rows below
+                        // are the last loaded set. With no rows the card states
+                        // the same failure itself, so showing both said one thing
+                        // twice (K53).
+                        let showsBanner = browse.group != .attention
+                            && dashboard.receiptListError != nil
+                            && !presentation.visibleTasks.isEmpty
+                        if showsBanner, let error = dashboard.receiptListError {
+                            listStatusBanner(error).padding(.top, Space.m)
+                        }
+                        tableCard(visibleTasks: presentation.visibleTasks, scrollProxy: scrollProxy)
+                            .padding(.top, showsBanner ? Space.m : Space.l)
+                    }
+                    .padding(Space.gutter)
+                    .pageFrame()
                 }
-                .padding(Space.gutter)
-                .frame(maxWidth: 1172 + Space.gutter * 2, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                footerBar(visibleTasks: presentation.visibleTasks)
             }
-            .onMoveCommand {
-                moveTableFocus($0, visibleTasks: presentation.visibleTasks, scrollProxy: scrollProxy)
-            }
+            // ⌘F is the standard way into this pane's search field (K114).
+            .focusedSceneValue(\.focusSearch, FocusSearchAction {
+                searchFocused = true
+                searchAccessibilityFocused = true
+            })
             .onAppear {
                 restoreReturnFocus(visibleTasks: presentation.visibleTasks, scrollProxy: scrollProxy)
             }
@@ -937,7 +1259,11 @@ private struct WorkTablePage: View {
             browse.pendingFocusRestorationTaskId = nil
             scrollProxy.scrollTo(taskId, anchor: .center)
             DispatchQueue.main.async {
+                // Returning from a record lands ON the table, with its roving
+                // focus back on the row just left — a visible, ringed target
+                // instead of the window (K116).
                 focusedTaskId = taskId
+                tableFocused = true
                 accessibilityFocusedTaskId = taskId
             }
             return
@@ -978,6 +1304,14 @@ private struct WorkTablePage: View {
         }
     }
 
+    /// The Work pane's ONE name for each of its states. The tab strip, the
+    /// search field and the footer all call the object a "task", so these do
+    /// too — the pane used to mix "receipts" and "tasks" inside one screen.
+    static let taskListUnavailableTitle = "Task list unavailable"
+    static let taskListUnavailableCause = "The recorder didn't return tasks."
+    static let noTasksRecordedTitle = "No tasks recorded yet"
+    static let retryLabel = "Retry"
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             // The receipts collection's tab is "Sessions" (MainPane.work); the
@@ -995,64 +1329,143 @@ private struct WorkTablePage: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             if dynamicTypeSize.isAccessibilitySize {
-                HStack(spacing: Space.m) {
-                    if SnapshotMode.enabled {
-                        Chip(text: browse.group?.rawValue ?? "All statuses", tint: Theme.accent)
-                    } else {
-                        Picker("Lifecycle", selection: $browse.group) {
-                            Text("All statuses").tag(nil as WorkGroup?)
-                            ForEach(WorkGroup.allCases) { group in
-                                Text(group.rawValue).tag(Optional(group))
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .accessibilityIdentifier("work.table.status")
-                    }
+                // Type size changes arrangement, never the set of facts: the
+                // picker items keep every per-status count the tabs carry.
+                WrappingRowLayout(horizontalSpacing: Space.m, verticalSpacing: Space.xs) {
+                    Text("Lifecycle").workFont(.caption).foregroundStyle(Theme.muted)
+                    AppMenuPicker(
+                        title: "Lifecycle",
+                        selection: $browse.group,
+                        options: lifecycleOptions(groupCounts: groupCounts),
+                        accessibilityIdentifier: "work.table.status"
+                    )
                     Text("\(visibleCount) shown")
                         .workFont(.dataSmall).foregroundStyle(Theme.muted)
-                    Spacer(minLength: 0)
+                    if let note = lifecycleCountsNote {
+                        Text(note).workFont(.dataSmall).foregroundStyle(Theme.muted)
+                    }
                 }
                 .padding(.bottom, Space.s)
             } else {
+                // Tabs hug their labels; Space.xl is the only gap between them.
                 HStack(spacing: Space.xl) {
-                    let partialOrUnknown = workReceiptCollectionIsPartial(
-                        loaded: dashboard.receiptTasks.count,
-                        total: dashboard.totalReceiptTasks,
-                        truncated: dashboard.receiptTasksTruncated
-                    ) || dashboard.totalReceiptTasks == nil
-                    tabButton(nil, label: partialOrUnknown ? "Loaded" : "All", count: dashboard.receiptTasks.count)
+                    tabButton(nil, label: allTabLabel, count: loadedTabCount)
                     ForEach(WorkGroup.allCases) { candidate in
-                        let count: Int? = candidate == .attention
-                            ? dashboard.attention?.total
-                            : (groupCounts[candidate] ?? 0)
-                        // Attention is complete across the store and can exceed
-                        // Loaded; other lifecycle counts describe that page.
+                        let count = tabCount(candidate, groupCounts: groupCounts)
                         // "Other" appears only for an unmapped decision key.
                         if candidate != .other || (count ?? 0) > 0 {
-                            tabButton(candidate, label: candidate.rawValue, count: count)
+                            tabButton(candidate, label: candidate.label(in: dashboard.decisionLegend), count: count)
                         }
                     }
+                    // The absence is named ONCE for the strip rather than on
+                    // every tab: seven "not loaded" labels overran the row and
+                    // read as "Loaded not loaded" (K54).
+                    if let note = lifecycleCountsNote {
+                        Text(note)
+                            .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                            .padding(.bottom, 10)
+                            .fixedSize()
+                    }
+                    Spacer(minLength: 0)
                 }
             }
             Rectangle().fill(Theme.hairline).frame(height: 1)
         }
     }
 
+    private var receiptPageIsLoaded: Bool {
+        workReceiptPageIsLoaded(
+            loadedCount: dashboard.receiptTasks.count,
+            isLoading: dashboard.isLoadingReceipts,
+            error: dashboard.receiptListError
+        )
+    }
+
+    /// The tab count for one lifecycle group. Attention is complete across
+    /// the store and can exceed Loaded; other counts describe that page, and
+    /// are absent until it loads.
+    private func tabCount(_ candidate: WorkGroup, groupCounts: [WorkGroup: Int]) -> Int? {
+        if candidate == .attention { return dashboard.attentionTotal }
+        guard receiptPageIsLoaded else { return nil }
+        return groupCounts[candidate] ?? 0
+    }
+
+    /// The Loaded/All tab's own count: the size of the loaded page, or the
+    /// same named absence while there is no page.
+    private var loadedTabCount: Int? {
+        receiptPageIsLoaded ? dashboard.receiptTasks.count : nil
+    }
+
+    /// What the strip says instead of per-tab numbers while no receipts page
+    /// has loaded. Attention keeps its own live total: it comes from its own
+    /// complete projection, not from this page (K54).
+    private var lifecycleCountsNote: String? {
+        receiptPageIsLoaded ? nil : "lifecycle counts not loaded"
+    }
+
+    private func tabCountText(_ count: Int?) -> String {
+        count.map(String.init) ?? "not loaded"
+    }
+
+    private var allTabLabel: String {
+        let partialOrUnknown = workReceiptCollectionIsPartial(
+            loaded: dashboard.receiptTasks.count,
+            total: dashboard.totalReceiptTasks,
+            truncated: dashboard.receiptTasksTruncated
+        ) || dashboard.totalReceiptTasks == nil
+        return partialOrUnknown ? "Loaded" : "All"
+    }
+
+    private func lifecycleOptions(groupCounts: [WorkGroup: Int]) -> [(WorkGroup?, String)] {
+        // While no page has loaded there are no per-status counts to print:
+        // the row's note names that once, so an option is its label alone
+        // rather than "Verified (not loaded)" seven times (K54).
+        func option(_ label: String, _ count: Int?, showsCount: Bool) -> String {
+            showsCount ? "\(label) (\(tabCountText(count)))" : label
+        }
+        var options: [(WorkGroup?, String)] = [
+            (nil, option(allTabLabel, loadedTabCount, showsCount: receiptPageIsLoaded))
+        ]
+        for candidate in WorkGroup.allCases {
+            let count = tabCount(candidate, groupCounts: groupCounts)
+            if candidate != .other || (count ?? 0) > 0 {
+                options.append((
+                    candidate,
+                    option(
+                        candidate.label(in: dashboard.decisionLegend),
+                        count,
+                        showsCount: receiptPageIsLoaded || candidate == .attention
+                    )
+                ))
+            }
+        }
+        return options
+    }
+
     private func tabButton(_ candidate: WorkGroup?, label: String, count: Int?) -> some View {
         let active = browse.group == candidate
+        // Attention is the one tab whose count comes from its own complete
+        // projection, so it keeps its own named absence; the rest fall under
+        // the strip's single note while no page has loaded.
+        let showsCount = count != nil || candidate == .attention
         return Button {
             browse.group = candidate
         } label: {
-            VStack(spacing: 0) {
-                HStack(spacing: 6) {
-                    Text(label)
-                        .workFont(size: 13, weight: active ? .semibold : .medium, relativeTo: .body)
-                        .foregroundStyle(active ? Theme.accent : Theme.ink)
-                    Text(count.map(String.init) ?? "—")
+            HStack(spacing: 6) {
+                Text(label)
+                    .workFont(size: 13, weight: active ? .semibold : .medium, relativeTo: .body)
+                    .foregroundStyle(active ? Theme.accent : Theme.ink)
+                if showsCount {
+                    Text(tabCountText(count))
                         .workFont(.dataSmall)
                         .foregroundStyle(candidate == .attention && (count ?? 0) > 0 ? Theme.coral : Theme.muted)
                 }
-                .padding(.bottom, 10)
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            .padding(.bottom, 10)
+            // The underline rides on the label, so a tab never claims more
+            // width than its own words.
+            .overlay(alignment: .bottom) {
                 Rectangle()
                     .fill(active ? Theme.accent : .clear)
                     .frame(height: 2)
@@ -1066,47 +1479,51 @@ private struct WorkTablePage: View {
 
     private var filterRow: some View {
         HStack(spacing: Space.m) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 11)).foregroundStyle(Theme.muted)
-                if SnapshotMode.enabled {
-                    // ImageRenderer draws a TextField / .menu Picker as a yellow
-                    // placeholder; a snapshot shows plain stand-ins instead.
-                    Text("Search tasks").workFont(.caption).foregroundStyle(Theme.muted)
-                } else {
-                    TextField("Search tasks", text: $browse.query)
-                        .textFieldStyle(.plain).workFont(.caption)
-                        .focused($searchFocused)
-                        .accessibilityFocused($searchAccessibilityFocused)
-                        .accessibilityIdentifier("work.table.search")
-                }
-            }
-            .padding(.horizontal, Space.m)
-            .frame(width: 300, height: 32)
-            .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
-            .overlay(
-                RoundedRectangle(cornerRadius: Metrics.radius)
-                    .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW)
+            // The shared app-chrome field (K15). No fixed height: a scaled
+            // minimum lets large text reflow, and the width grows only at
+            // accessibility sizes.
+            AppTextField(
+                placeholder: "Search tasks",
+                text: $browse.query,
+                systemImage: "magnifyingglass",
+                focus: $searchFocused,
+                accessibilityFocus: $searchAccessibilityFocused,
+                accessibilityIdentifier: "work.table.search"
             )
-            if SnapshotMode.enabled {
-                Chip(text: "sort: \(browse.sort.rawValue)", tint: Theme.accent)
-            } else {
-                Picker("Sort", selection: $browse.sort) {
-                    ForEach(WorkSort.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.menu)
-                .fixedSize()
+            .frame(width: dynamicTypeSize.isAccessibilitySize ? 420 : 300, alignment: .leading)
+            // Down from the search field enters the results, as a native
+            // search-and-list pairing does (K77). Return is left alone: it
+            // would open a row the reviewer never chose.
+            .onKeyPress(.downArrow) {
+                guard searchFocused else { return .ignored }
+                tableFocused = true
+                return .handled
             }
-            DecisionLegendButton()
+            Text("Sort").workFont(.caption).foregroundStyle(Theme.muted)
+            AppMenuPicker(
+                title: "Sort",
+                selection: $browse.sort,
+                options: WorkSort.allCases.map { ($0, $0.rawValue) },
+                accessibilityIdentifier: "work.table.sort"
+            )
+            DecisionLegendButton(
+                legend: dashboard.decisionLegend,
+                tierLegend: dashboard.receipt?.axes.evidenceStrength.tierLegend,
+                definition: dashboard.receipt?.axes.evidenceStrength.definition
+            )
             Spacer()
         }
     }
 
-    private func tableCard(visibleTasks: [ReceiptSummary]) -> some View {
+    private func tableCard(
+        visibleTasks: [ReceiptSummary],
+        scrollProxy: ScrollViewProxy
+    ) -> some View {
         Card(padding: 0) {
+            let columns = tableColumns(visibleTasks: visibleTasks)
             VStack(spacing: 0) {
                 if !dynamicTypeSize.isAccessibilitySize {
-                    columnHeader
+                    columnHeader(columns)
                     Rectangle().fill(Theme.hairline).frame(height: 1).padding(.horizontal, Space.xl)
                 }
                 if browse.group != .attention,
@@ -1131,21 +1548,25 @@ private struct WorkTablePage: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel("Loading receipts from the local store")
                 } else if let error = visibleError, visibleTasks.isEmpty {
-                    if browse.group == .attention {
-                        Text(error).workFont(.body).foregroundStyle(Theme.muted)
-                            .padding(Space.xl)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("No receipt data available")
-                                .workFont(.rowLabel).foregroundStyle(Theme.ink)
-                            Text("The collection will return after a successful refresh.")
-                                .workFont(.caption).foregroundStyle(Theme.muted)
-                                .help(error)
-                        }
-                        .padding(Space.xl)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    // One state template: a true title, a short human cause,
+                    // the raw error behind a disclosure, one cobalt action
+                    // that names the exact retry (K53).
+                    EmptyStateView(
+                        title: browse.group == .attention
+                            ? "Review queue unavailable"
+                            : Self.taskListUnavailableTitle,
+                        cause: browse.group == .attention
+                            ? "The recorder didn't return the review queue."
+                            : Self.taskListUnavailableCause,
+                        detailDisclosure: error,
+                        action: .init(
+                            label: Self.retryLabel,
+                            identifier: "work.table.retry",
+                            perform: { Task { await dashboard.fetchReceipts() } }
+                        ),
+                        identifier: "work.table.unavailable"
+                    )
+                    .padding(Space.xl)
                 } else if browse.group == .attention, dashboard.attention == nil {
                     HStack(spacing: Space.m) {
                         if SnapshotMode.enabled {
@@ -1164,25 +1585,22 @@ private struct WorkTablePage: View {
                     let attentionCopy = dashboard.attention.map {
                         WorkAttentionEmptyCopy(payload: $0, query: browse.query)
                     }
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(
-                            browse.group == .attention
-                                ? attentionCopy?.title ?? "Review status unavailable"
-                                : dashboard.receiptTasks.isEmpty
-                                    ? "No receipts recorded yet" : "No receipts match"
-                        )
-                        .workFont(.rowLabel).foregroundStyle(Theme.ink)
-                        Text(
-                            browse.group == .attention
-                                ? attentionCopy?.detail ?? "Refresh before acting on the review queue."
-                                : dashboard.receiptTasks.isEmpty
-                                    ? "Recorded coding work will appear here when the local store receives it."
-                                    : filteredEmptyMessage
-                        )
-                        .workFont(.caption).foregroundStyle(Theme.muted)
-                    }
+                    // ONE noun for this pane's object: the tab, the search
+                    // field and the footer all say "tasks", so the empty
+                    // state does too (K53).
+                    EmptyStateView(
+                        title: browse.group == .attention
+                            ? attentionCopy?.title ?? "Review status unavailable"
+                            : dashboard.receiptTasks.isEmpty
+                                ? Self.noTasksRecordedTitle : "No tasks match",
+                        cause: browse.group == .attention
+                            ? attentionCopy?.detail ?? "Refresh before acting on the review queue."
+                            : dashboard.receiptTasks.isEmpty
+                                ? "Recorded coding work will appear here when the local store receives it."
+                                : filteredEmptyMessage,
+                        identifier: "work.table.empty"
+                    )
                     .padding(Space.xl)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     // Offscreen full-content renders cap the rows and name the
                     // overflow; the live app scrolls the full set.
@@ -1194,9 +1612,9 @@ private struct WorkTablePage: View {
                                     .padding(.horizontal, Space.xl)
                             }
                             if SnapshotMode.enabled {
-                                tableRow(task).id(task.taskId)
+                                tableRow(task, columns: columns).id(task.taskId)
                             } else {
-                                tableRow(task)
+                                tableRow(task, columns: columns)
                                     .id(task.taskId)
                                     .accessibilityFocused(
                                         $accessibilityFocusedTaskId,
@@ -1216,22 +1634,88 @@ private struct WorkTablePage: View {
                 }
             }
         }
+        // ONE keyboard stop for the whole table (K77). With macOS keyboard
+        // navigation off — the default — plain Buttons are not in the key
+        // loop, so before this the arrow-key code below could never run and
+        // there was no keyboard path from the search field into the results.
+        .focusable(!visibleTasks.isEmpty)
+        .focused($tableFocused)
+        // The app draws its own ring below, at the design system's weight.
+        .focusEffectDisabled()
+        .focusRing(tableFocused)
+        .onMoveCommand {
+            moveTableFocus($0, visibleTasks: visibleTasks, scrollProxy: scrollProxy)
+        }
+        .onKeyPress(.return) { openFocusedRow(visibleTasks: visibleTasks) }
+        .onKeyPress(.space) { openFocusedRow(visibleTasks: visibleTasks) }
+        .onChange(of: tableFocused) { _, focused in
+            // Entering the table lands on a row, so the first arrow key moves
+            // from somewhere visible.
+            guard focused, focusedTaskId == nil || !visibleTasks.contains(where: { $0.taskId == focusedTaskId }) else { return }
+            focusedTaskId = visibleTasks.first?.taskId
+        }
+        // A container id must not become every child's id: `.contain` keeps
+        // the table one group and leaves headers and rows their own (K123).
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("work.table")
     }
 
+    /// Open the row the table's roving focus is on (Return or Space), the
+    /// same action a click on that row performs.
+    private func openFocusedRow(visibleTasks: [ReceiptSummary]) -> KeyPress.Result {
+        guard tableFocused,
+              let taskId = focusedTaskId ?? visibleTasks.first?.taskId,
+              visibleTasks.contains(where: { $0.taskId == taskId }) else { return .ignored }
+        selection.sessionId = nil
+        selection.taskId = taskId
+        return .handled
+    }
+
     @ViewBuilder
-    private func tableRow(_ task: ReceiptSummary) -> some View {
+    private func tableRow(_ task: ReceiptSummary, columns: WorkTableColumns) -> some View {
+        let roving = tableFocused && focusedTaskId == task.taskId
         if dynamicTypeSize.isAccessibilitySize {
-            WorkAccessibleTableRow(task: task, focus: $focusedTaskId) {
+            WorkAccessibleTableRow(
+                task: task, listLabels: dashboard.receiptFieldLabels, isRovingRow: roving
+            ) {
                 selection.sessionId = nil
                 selection.taskId = task.taskId
             }
         } else {
-            WorkTableRow(task: task, focus: $focusedTaskId) {
+            WorkTableRow(
+                task: task, columns: columns,
+                listLabels: dashboard.receiptFieldLabels, isRovingRow: roving
+            ) {
                 selection.sessionId = nil
                 selection.taskId = task.taskId
             }
         }
+    }
+
+    /// The caption data face's point size at the current reading size (the
+    /// same resolution `workFont(.dataSmall)` applies).
+    private var dataFontSize: CGFloat {
+        if dynamicTypeSize == .medium || dynamicTypeSize == .large { return 12 }
+        return max(12, WorkTypeScale.resolved(
+            base: 12,
+            systemScaled: captionScaledSize,
+            dynamicTypeSize: dynamicTypeSize
+        ))
+    }
+
+    /// Fixed data columns sized from the longest string the rows will print
+    /// (and the header label) at the data face, so no cell ever wraps.
+    private func tableColumns(visibleTasks: [ReceiptSummary]) -> WorkTableColumns {
+        let labels = dashboard.receiptFieldLabels
+        let rows = (SnapshotMode.enabled ? Array(visibleTasks.prefix(9)) : visibleTasks)
+            .map { WorkReceiptRowPresentation(task: $0, listLabels: labels) }
+        return WorkTableColumns(
+            rows: rows,
+            labels: labels ?? rows.first?.fieldLabels ?? ReceiptFieldLabels(),
+            fontSize: dataFontSize,
+            narrow: narrow,
+            rowWidth: paneWidth.map(WorkTableColumns.rowWidth(forPaneWidth:))
+        )
     }
 
     private func listStatusBanner(_ error: String) -> some View {
@@ -1240,47 +1724,104 @@ private struct WorkTablePage: View {
                 ProgressView().controlSize(.small)
             } else {
                 Image(systemName: "exclamationmark.triangle")
-                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.amber)
+                    .workFont(.icon).foregroundStyle(Theme.amber)
                     .accessibilityHidden(true)
             }
-            Text(
-                dashboard.isLoadingReceipts
-                    ? "Retrying the receipt list · showing the last loaded data when available"
-                    : dashboard.receiptTasks.isEmpty
-                    ? "Receipt list unavailable · \(error)"
-                    : "Showing the last loaded receipt list · refresh failed: \(error)"
-            )
-            .workFont(.caption).foregroundStyle(Theme.muted)
-            .fixedSize(horizontal: false, vertical: true)
+            // The banner states the CAUSE in words; the raw error rides in
+            // the same disclosure the empty states use, so it is copyable
+            // without being the message (K53).
+            VStack(alignment: .leading, spacing: Space.xs) {
+                Text(
+                    dashboard.isLoadingReceipts
+                        ? "Retrying the task list · showing the last loaded data when available"
+                        : dashboard.receiptTasks.isEmpty
+                        ? "\(Self.taskListUnavailableTitle) · \(Self.taskListUnavailableCause)"
+                        : "Showing the last loaded task list · the refresh failed."
+                )
+                .workFont(.caption).foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: Metrics.readingMeasure, alignment: .leading)
+                if !dashboard.isLoadingReceipts {
+                    DisclosureGroup(EmptyStateView.detailsLabel) {
+                        Text(error)
+                            .workFont(.caption).foregroundStyle(Theme.muted)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: Metrics.readingMeasure, alignment: .leading)
+                            .padding(.top, Space.xs)
+                    }
+                    .workFont(.caption).foregroundStyle(Theme.muted)
+                    .accessibilityIdentifier("work.list.status.details")
+                }
+            }
             Spacer(minLength: Space.m)
-            if !SnapshotMode.enabled, !dashboard.isLoadingReceipts {
-                Button("Retry") { Task { await dashboard.fetchReceipts() } }
+            if !dashboard.isLoadingReceipts {
+                Button(Self.retryLabel) { Task { await dashboard.fetchReceipts() } }
                     .buttonStyle(QuietButtonStyle(tint: Theme.accent))
                     .accessibilityIdentifier("work.list.retry")
             }
         }
         .padding(.horizontal, Space.m)
         .padding(.vertical, Space.s)
-        .background(Theme.amber.opacity(0.08), in: RoundedRectangle(cornerRadius: Metrics.radius))
+        .background(Theme.tintAmberOnCanvas, in: RoundedRectangle(cornerRadius: Metrics.radius))
         .overlay(
             RoundedRectangle(cornerRadius: Metrics.radius)
-                .strokeBorder(Theme.amber.opacity(0.32), lineWidth: Metrics.borderW)
+                .strokeBorder(Theme.rule, lineWidth: Metrics.borderW)
         )
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("work.list.status")
     }
 
-    private var columnHeader: some View {
+    private func columnHeader(_ columns: WorkTableColumns) -> some View {
         HStack(spacing: Space.l) {
-            CapsLabel(text: "Task").frame(maxWidth: .infinity, alignment: .leading)
-            CapsLabel(text: "Claims supported").frame(width: 150, alignment: .leading)
-            CapsLabel(text: "Client").frame(width: 124, alignment: .leading)
-            CapsLabel(text: "Check runs").frame(width: 130, alignment: .trailing)
-            CapsLabel(text: "Est. cost").frame(width: 76, alignment: .trailing)
-            CapsLabel(text: "Updated").frame(width: 72, alignment: .trailing)
+            CapsLabel(text: columns.labels.taskLabel).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+            CapsLabel(text: columns.labels.coverageLabel).lineLimit(1)
+                .frame(width: columns.evidence, alignment: .leading)
+            if !columns.narrow {
+                CapsLabel(text: columns.labels.clientLabel).lineLimit(1)
+                    .frame(width: WorkTableColumns.clientWidth, alignment: .leading)
+            }
+            CapsLabel(text: columns.labels.checksLabel).lineLimit(1)
+                .frame(width: columns.checks, alignment: .trailing)
+            if columns.narrow {
+                VStack(alignment: .trailing, spacing: 2) {
+                    CapsLabel(text: columns.labels.costLabel).lineLimit(1)
+                    CapsLabel(text: columns.labels.updatedLabel).lineLimit(1)
+                }
+                .frame(width: columns.stacked, alignment: .trailing)
+            } else {
+                CapsLabel(text: columns.labels.costLabel).lineLimit(1)
+                    .frame(width: columns.cost, alignment: .trailing)
+                CapsLabel(text: columns.labels.updatedLabel).lineLimit(1)
+                    .frame(width: columns.updated, alignment: .trailing)
+            }
         }
         .padding(.horizontal, Space.xl)
-        .frame(height: Metrics.rowHeader)
+        .frame(minHeight: Metrics.rowHeader)
+        // The header row is one named group: its labels are column names, not
+        // stray text between rows, and they stop inheriting the table's id.
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Column headers")
+        .accessibilityIdentifier("work.table.columns")
+    }
+
+    /// The count, pinned under the scrolling list.
+    ///
+    /// At the minimum window this page is taller than the viewport, so the
+    /// list scrolls. Inside the scroll region the count scrolled away with it:
+    /// a reviewer at the minimum size saw a row cut by the window edge and no
+    /// statement of how many tasks there are (K57). Pinned, the count is
+    /// readable at every window size, and its hairline is the edge the rows
+    /// pass under — the honest affordance that the list continues.
+    private func footerBar(visibleTasks: [ReceiptSummary]) -> some View {
+        VStack(spacing: 0) {
+            Rectangle().fill(Theme.hairline).frame(height: Metrics.borderW)
+            footer(visibleTasks: visibleTasks)
+                .padding(.horizontal, Space.gutter)
+                .padding(.vertical, Space.m)
+                .pageFrame()
+        }
+        .background(Theme.canvas)
     }
 
     private func footer(visibleTasks: [ReceiptSummary]) -> some View {
@@ -1310,16 +1851,19 @@ private struct WorkTablePage: View {
     }
 
     private func footerText(visibleTasks: [ReceiptSummary]) -> String {
+        let order = browse.sort.footerText(queue: dashboard.attentionQueue)
         if browse.group == .attention, let attention = dashboard.attention {
             let scope = attention.truncated ? "bounded operational queue" : "complete queue"
-            return "\(visibleTasks.count) of \(attention.total) review items · \(scope)"
+            let count = PayloadAbsence.text(attention.queue?.countText) ?? "\(attention.total) in queue"
+            return "\(visibleTasks.count) of \(count) · \(scope) · \(order)"
         }
         return workBrowseCountText(
             visible: visibleTasks.count,
             loaded: dashboard.receiptTasks.count,
             total: dashboard.totalReceiptTasks,
-            truncated: dashboard.receiptTasksTruncated
-        )
+            truncated: dashboard.receiptTasksTruncated,
+            pageIsLoaded: receiptPageIsLoaded
+        ) + " · \(order)"
     }
 
     private var filteredEmptyMessage: String {
@@ -1340,199 +1884,487 @@ private struct WorkTablePage: View {
 
 }
 
-/// One receipts-table row (52pt): task + decision badge, evidence tier pip and
-/// ratio, client chip, check runs, cost, and recency.
-private struct WorkTableRow: View {
-    let task: ReceiptSummary
-    let focus: FocusState<String?>.Binding
-    let action: () -> Void
-
-    private var presentation: WorkReceiptRowPresentation { .init(task: task) }
-
-    init(
-        task: ReceiptSummary,
-        focus: FocusState<String?>.Binding,
-        action: @escaping () -> Void
-    ) {
-        self.task = task
-        self.focus = focus
-        self.action = action
+/// Widths already measured, keyed by exactly the inputs that determine one.
+///
+/// The table sizes every data column from the strings its rows will print, so
+/// one body pass measures every cell of every visible row — and the same
+/// handful of strings ("no usage recorded", "1d ago", a named absence) repeat
+/// down dozens of rows. Text layout is not cheap, and the table re-measures on
+/// every keystroke in the filter field. The same inputs always give the same
+/// width, so measuring them twice is pure waste; nothing about the result
+/// changes, no cell wraps differently.
+private final class WorkDataTextWidthCache: @unchecked Sendable {
+    struct Key: Hashable {
+        let text: String
+        let size: CGFloat
+        let bold: Bool
+        let tracking: CGFloat
     }
 
+    static let shared = WorkDataTextWidthCache()
+    private let lock = NSLock()
+    private var widths: [Key: CGFloat] = [:]
+
+    func width(_ key: Key, measure: (Key) -> CGFloat) -> CGFloat {
+        lock.lock()
+        let cached = widths[key]
+        lock.unlock()
+        if let cached { return cached }
+        let measured = measure(key)
+        lock.lock()
+        // The font face and sizes are fixed by the theme and the reading-size
+        // ramp, so this set is naturally bounded by the strings on screen. The
+        // cap is a backstop against an unbounded store of one-off values.
+        if widths.count >= 8_192 { widths.removeAll(keepingCapacity: true) }
+        widths[key] = measured
+        lock.unlock()
+        return measured
+    }
+}
+
+/// The width, in points, of `text` set in the Work data face (mono) at `size`.
+func workDataTextWidth(_ text: String, size: CGFloat, bold: Bool = false, tracking: CGFloat = 0) -> CGFloat {
+    WorkDataTextWidthCache.shared.width(
+        .init(text: text, size: size, bold: bold, tracking: tracking),
+        measure: workDataTextWidthUncached
+    )
+}
+
+private func workDataTextWidthUncached(_ key: WorkDataTextWidthCache.Key) -> CGFloat {
+    let text = key.text
+    let size = key.size
+    let bold = key.bold
+    let tracking = key.tracking
+    var font: NSFont = Face.mono.flatMap { NSFont(name: $0, size: size) }
+        ?? NSFont.monospacedSystemFont(ofSize: size, weight: bold ? .bold : .regular)
+    if bold, Face.mono != nil {
+        font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
+    }
+    var attributes: [NSAttributedString.Key: Any] = [.font: font]
+    if tracking != 0 { attributes[.kern] = tracking }
+    return ceil((text as NSString).size(withAttributes: attributes).width)
+}
+
+/// The receipts table's data columns. Task is the flexible, dominant column:
+/// each data column is sized from the strings its rows print (and its header
+/// label) at the data face. When the one-line widths would leave the task
+/// column below `taskMinimum`, the widest columns switch — in order — to their
+/// wrapped width (a tally stacks at its " · " segments; a named absence wraps
+/// onto two lines at a word break), so titles keep the room they need and no
+/// cell is ever truncated.
+struct WorkTableColumns {
+    static let clientWidth: CGFloat = 124
+    /// Upper bounds keep one pathological string from starving the title.
+    static let dataColumnCap: CGFloat = 260
+    static let pipAndGap: CGFloat = Metrics.pipR * 2 + 7
+    static let slack: CGFloat = 4
+    /// Gap between cells (the row HStack spacing).
+    static let cellSpacing: CGFloat = Space.l
+    /// The task column never gives up more than this to one-line data cells.
+    static let taskMinimumWidth: CGFloat = 320
+    static let taskMinimumShare: CGFloat = 0.42
+
+    let labels: ReceiptFieldLabels
+    let narrow: Bool
+    let evidence: CGFloat
+    let checks: CGFloat
+    let cost: CGFloat
+    let updated: CGFloat
+    /// The check tally stacks its " · " segments instead of one line.
+    let wrapsChecks: Bool
+    /// The cost cell may wrap a named absence onto two lines.
+    let wrapsCost: Bool
+
+    /// Narrow rows stack Cost over Updated in one column.
+    var stacked: CGFloat { max(cost, updated) }
+
+    /// The row's content width inside the table card for a pane width: the
+    /// page is capped at `Metrics.pageMaxWidth`, inset by the page gutter, and
+    /// each row is inset by `Space.xl`.
+    static func rowWidth(forPaneWidth width: CGFloat) -> CGFloat {
+        min(width, Metrics.pageMaxWidth) - 2 * Space.gutter - 2 * Space.xl
+    }
+
+    /// The segments a check tally stacks into when its column wraps.
+    static func checkSegments(_ text: String) -> [String] {
+        text.components(separatedBy: " · ").filter { !$0.isEmpty }
+    }
+
+    init(
+        rows: [WorkReceiptRowPresentation],
+        labels: ReceiptFieldLabels,
+        fontSize: CGFloat,
+        narrow: Bool,
+        rowWidth: CGFloat? = nil
+    ) {
+        self.labels = labels
+        self.narrow = narrow
+        func width(_ text: String) -> CGFloat { workDataTextWidth(text, size: fontSize) }
+        func header(_ text: String) -> CGFloat {
+            workDataTextWidth(text.uppercased(), size: fontSize, bold: true, tracking: Type.labelCapsTracking)
+        }
+        func widest(_ strings: [String]) -> CGFloat {
+            strings.map(width).max() ?? 0
+        }
+        func clamp(_ value: CGFloat) -> CGFloat {
+            min(Self.dataColumnCap, value + Self.slack)
+        }
+        /// The narrowest width that sets `text` on at most two lines, breaking
+        /// only at spaces (greedy wrapping at this width finds that split).
+        func twoLineWidth(_ text: String) -> CGFloat {
+            let words = text.split(separator: " ").map(String.init)
+            guard words.count > 1 else { return width(text) }
+            return (1..<words.count).map { split in
+                max(
+                    width(words[..<split].joined(separator: " ")),
+                    width(words[split...].joined(separator: " "))
+                )
+            }.min() ?? width(text)
+        }
+
+        evidence = clamp(max(
+            header(labels.coverageLabel),
+            Self.pipAndGap + widest(rows.map(\.coverageText))
+        ))
+        let checksOneLine = clamp(max(
+            header(labels.checksLabel),
+            widest(rows.flatMap { row in
+                row.checkRunsAreInconsistent
+                    ? [row.checkRunsValue, row.checkRunsQualifier]
+                    : [row.compactCheckRunsText]
+            })
+        ))
+        let checksWrapped = clamp(max(
+            header(labels.checksLabel),
+            widest(rows.flatMap { row in
+                row.checkRunsAreInconsistent
+                    ? [row.checkRunsValue, row.checkRunsQualifier]
+                    : Self.checkSegments(row.compactCheckRunsText)
+            })
+        ))
+        let costOneLine = clamp(max(header(labels.costLabel), widest(rows.map(\.costDisplayText))))
+        let costWrapped = clamp(max(
+            header(labels.costLabel),
+            rows.map { row in
+                row.costIsAbsent ? twoLineWidth(row.costDisplayText) : width(row.costDisplayText)
+            }.max() ?? 0
+        ))
+        updated = clamp(max(header(labels.updatedLabel), widest(rows.map(\.updatedText))))
+
+        var useWrappedChecks = false
+        var useWrappedCost = false
+        if let rowWidth {
+            let taskMinimum = max(Self.taskMinimumWidth, rowWidth * Self.taskMinimumShare)
+            let evidence = self.evidence
+            let updated = self.updated
+            func taskWidth(checks: CGFloat, cost: CGFloat) -> CGFloat {
+                let cells: [CGFloat] = narrow
+                    ? [evidence, checks, max(cost, updated)]
+                    : [evidence, Self.clientWidth, checks, cost, updated]
+                return rowWidth - cells.reduce(0, +) - CGFloat(cells.count) * Self.cellSpacing
+            }
+            if taskWidth(checks: checksOneLine, cost: costOneLine) < taskMinimum {
+                useWrappedChecks = checksWrapped < checksOneLine
+                if taskWidth(checks: useWrappedChecks ? checksWrapped : checksOneLine, cost: costOneLine) < taskMinimum {
+                    useWrappedCost = costWrapped < costOneLine
+                }
+            }
+        }
+        wrapsChecks = useWrappedChecks
+        wrapsCost = useWrappedCost
+        checks = useWrappedChecks ? checksWrapped : checksOneLine
+        cost = useWrappedCost ? costWrapped : costOneLine
+    }
+}
+
+/// One receipts-table row (52pt): task + decision badge (with the attention
+/// reason and evidence gap beneath), evidence tier pip and coverage, client
+/// chip, checks, cost, and recency.
+private struct WorkTableRow: View {
+    let task: ReceiptSummary
+    let columns: WorkTableColumns
+    /// The list's field headers from `/v1/tasks`, so a row names its fields in
+    /// the payload's words even before its detail receipt is loaded.
+    let listLabels: ReceiptFieldLabels?
+    /// The table's roving focus is on this row (the table itself holds the
+    /// keyboard focus, K77), so it wears the selection cue at reduced weight.
+    let isRovingRow: Bool
+    let action: () -> Void
+
+    private var presentation: WorkReceiptRowPresentation { .init(task: task, listLabels: listLabels) }
+
     var body: some View {
+        let presentation = self.presentation
         Button(action: action) {
-            HStack(spacing: Space.l) {
-                HStack(spacing: Space.m) {
-                    Text(presentation.title)
-                        .workFont(.rowLabel).foregroundStyle(Theme.ink)
-                        .lineLimit(1).truncationMode(.tail)
-                        .help(presentation.title)
-                    DecisionBadge(
-                        key: presentation.decisionKey,
-                        label: presentation.decisionLabel,
-                        compact: true
-                    )
-                    // Hover says WHY: the blocker's own words when blocked,
-                    // otherwise the daemon's one-line statement.
-                    .help(presentation.decisionHelp)
-                    // Parallel deliberate-stop marker, only when it adds info the
-                    // decision word does not already state.
-                    if presentation.handedOff && presentation.decisionKey != "handed_off" {
-                        Chip(text: "↗ handed off", tint: Theme.muted)
+            // Cells sit on the TITLE's first baseline, not centred on a task
+            // cell that may run three lines: a row's coverage, checks and cost
+            // read on the line that names the task (K20).
+            HStack(alignment: .firstTextBaseline, spacing: Space.l) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: Space.m) {
+                        // The task's name is how a reviewer tells rows apart,
+                        // so it wraps to a second line before it truncates —
+                        // the lines beneath it already get two (K20).
+                        Text(presentation.title)
+                            .workFont(.rowLabel).foregroundStyle(Theme.ink)
+                            .lineLimit(2).truncationMode(.tail)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .help(presentation.title)
+                        DecisionBadge(
+                            key: presentation.decisionKey,
+                            label: presentation.decisionLabel,
+                            compact: true,
+                            help: presentation.decisionHelp
+                        )
+                        // Parallel deliberate-stop marker, only when it adds info the
+                        // decision word does not already state.
+                        if let marker = presentation.lifecycleMarkerText {
+                            LifecycleMarker(text: marker)
+                        }
+                    }
+                    // The standing attention reason is a row fact, not a tooltip.
+                    if let reason = presentation.attentionReason, !reason.isEmpty {
+                        Text(verbatim: reason)
+                            .workFont(.caption).foregroundStyle(presentation.attentionReasonTint)
+                            .lineLimit(2)
+                    }
+                    // What is NOT yet proven, then what the ratio does not
+                    // cover — facts no column carries, each on its own line so
+                    // the proof label never spans a stop or scope count.
+                    if let gap = presentation.gapLine {
+                        Text(gap)
+                            .workFont(FieldFont.gapLine).foregroundStyle(Theme.muted)
+                            .lineLimit(2).truncationMode(.tail)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .help(gap)
+                    }
+                    if let ledger = presentation.ledgerText {
+                        Text(ledger)
+                            .workFont(FieldFont.gapLine).foregroundStyle(Theme.muted)
+                            .lineLimit(1).truncationMode(.tail)
+                            .help(ledger)
+                    }
+                    if columns.narrow {
+                        Text(presentation.clientText)
+                            .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                            .lineLimit(1)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                evidenceCell.frame(width: 150, alignment: .leading)
-                clientCell.frame(width: 124, alignment: .leading)
-                checksCell.frame(width: 130, alignment: .trailing)
-                costCell.frame(width: 76, alignment: .trailing)
-                Text(presentation.updatedText)
-                    .workFont(.dataSmall).foregroundStyle(Theme.muted)
-                    .frame(width: 72, alignment: .trailing)
+                evidenceCell(presentation).frame(width: columns.evidence, alignment: .leading)
+                if !columns.narrow {
+                    clientCell(presentation).frame(width: WorkTableColumns.clientWidth, alignment: .leading)
+                }
+                checksCell(presentation).frame(width: columns.checks, alignment: .trailing)
+                if columns.narrow {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        costCell(presentation)
+                        updatedCell(presentation)
+                    }
+                    .frame(width: columns.stacked, alignment: .trailing)
+                } else {
+                    costCell(presentation).frame(width: columns.cost, alignment: .trailing)
+                    updatedCell(presentation).frame(width: columns.updated, alignment: .trailing)
+                }
             }
             .padding(.horizontal, Space.xl)
+            .padding(.vertical, Space.s)
             .frame(minHeight: Metrics.rowTable)
+            .background(isRovingRow ? Theme.selected.opacity(0.5) : .clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(SurfaceButtonStyle(
             cornerRadius: 0,
-            focusInset: 2
+            focusInset: 2,
+            // The TABLE is the keyboard stop, not the row (K77): it draws one
+            // ring around itself and marks the roving row with the selection
+            // cue above. Left to the ambient environment, the container's focus
+            // ringed every visible row at once (K130).
+            isFocused: false
         ))
-        .focused(focus, equals: task.taskId)
         .accessibilityIdentifier("work.table.task.\(task.taskId)")
         .accessibilityLabel(presentation.accessibilityLabel)
+        .workRowAccessibilityFields(presentation.accessibilityFields)
     }
 
-    /// Checked/checkable ratio + the strongest tier's pip shape. The pip is a
-    /// ceiling marker (best evidence present), the ratio is the coverage.
+    /// The reducer's coverage row + the strongest tier's pip shape. The pip is
+    /// a ceiling marker (best evidence present), the ratio is the coverage.
     @ViewBuilder
-    private var evidenceCell: some View {
-        let coverage = ReceiptCoveragePresentation(evidence: presentation.evidence)
-        if presentation.evidence.gradeable != false,
-           let checkable = presentation.evidence.checkableTotal,
-           checkable > 0 {
-            HStack(spacing: 7) {
-                let style = EvidenceTierStyle.forGrade(presentation.evidence.strongestTier ?? "unchecked")
-                EvidencePip(shape: style.pip, tint: style.tint)
-                Text(coverage.rowText)
-                    .workFont(.dataSmall)
-                    .foregroundStyle(coverage.isInconsistent ? Theme.amber : Theme.ink)
-                    .lineLimit(2)
-                    .help(coverage.qualifier)
+    private func evidenceCell(_ presentation: WorkReceiptRowPresentation) -> some View {
+        let gradeable = presentation.evidence.gradeable != false
+            && (presentation.evidence.checkableTotal ?? 0) > 0
+        HStack(spacing: 7) {
+            if gradeable {
+                EvidencePip(grade: presentation.strongestTier ?? "unchecked")
+            } else {
+                // The named "none / not gradeable" tier.
+                EvidencePip(grade: nil)
             }
-        } else {
-            HStack(spacing: 7) {
-                EvidencePip(shape: .hollow, tint: Theme.muted)
-                Text(coverage.rowText).workFont(.dataSmall).foregroundStyle(Theme.muted)
-                    .lineLimit(2)
-            }
-            .help(coverage.qualifier)
+            Text(presentation.coverageText)
+                // The face follows the ROLE the reducer gave this reading, not
+                // a condition re-derived here: a ratio is a metric, "not
+                // gradeable" is a named state and reads as prose (K10).
+                .workFont(FieldFont.value(.dataSmall, isMetric: presentation.coverageIsMetric))
+                .foregroundStyle(gradeable && !presentation.coverageIsInconsistent ? Theme.ink : Theme.muted)
+                .lineLimit(1)
         }
+        .modifier(OptionalHelp(text: presentation.coverageQualifier))
     }
 
     @ViewBuilder
-    private var clientCell: some View {
+    private func clientCell(_ presentation: WorkReceiptRowPresentation) -> some View {
         if presentation.clientText != "unattributed" {
-            ProvenanceChip(text: presentation.clientText)
+            // A client slug is an identifier: the one mono chip (K10).
+            ProvenanceChip(text: presentation.clientText, mono: true)
         } else {
-            Text("unattributed").workFont(.dataSmall).foregroundStyle(Theme.muted)
+            // A named absence, not an identifier: prose face (K10).
+            Text("unattributed").workFont(FieldFont.value(.dataSmall, isMetric: false))
+                .foregroundStyle(Theme.muted)
         }
     }
 
-    /// Cost with the ~/≈ prefix grammar; a task with no priced usage is a
-    /// named state, never a dash.
-    @ViewBuilder
-    private var costCell: some View {
-        let planText = Fmt.planPct(task.cost.planShare?.pct).map { "\($0) of weekly plan" }
-        if presentation.costText == "cost unknown" {
-            Text("unpriced").workFont(.dataSmall).foregroundStyle(Theme.muted)
-        } else {
-            Text(presentation.costText).workFont(.dataSmall).foregroundStyle(Theme.ink)
-                .help(planText ?? "")
-        }
+    /// The reducer's cost figure with its prefix grammar, or its named absence;
+    /// the basis rides as help so the figure never stands without it.
+    private func costCell(_ presentation: WorkReceiptRowPresentation) -> some View {
+        Text(presentation.costDisplayText)
+            // A figure is a metric (mono); a named absence is prose (K10).
+            .workFont(FieldFont.value(.dataSmall, isMetric: !presentation.costIsAbsent))
+            .foregroundStyle(presentation.costIsAbsent ? Theme.muted : Theme.ink)
+            .lineLimit(columns.wrapsCost && presentation.costIsAbsent ? 2 : 1)
+            .multilineTextAlignment(.trailing)
+            .fixedSize(horizontal: false, vertical: true)
+            .modifier(OptionalHelp(text: presentation.costBasisLabel))
     }
 
-    /// The standard table uses the same honest compact presentation as the
-    /// master list, including missing and contradictory tally states.
+    private func updatedCell(_ presentation: WorkReceiptRowPresentation) -> some View {
+        Text(presentation.updatedText)
+            .workFont(.dataSmall).foregroundStyle(Theme.muted)
+            .lineLimit(1)
+    }
+
+    /// The reducer's check tally, tinted from its `check_runs_state` key —
+    /// never by inspecting the copy.
     @ViewBuilder
-    private var checksCell: some View {
+    private func checksCell(_ presentation: WorkReceiptRowPresentation) -> some View {
         if presentation.checkRunsAreInconsistent {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(presentation.checkRunsValue)
-                    .workFont(.dataSmall).foregroundStyle(Theme.amber)
+                    .workFont(FieldFont.value(.dataSmall, isMetric: presentation.checkRunsIsMetric))
+                    .foregroundStyle(Theme.ink)
                 Text(presentation.checkRunsQualifier)
-                    .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                    .workFont(FieldFont.value(.dataSmall, isMetric: presentation.checkRunsIsMetric))
+                    .foregroundStyle(Theme.muted)
             }
             .lineLimit(1)
             .help(presentation.checkRunsText)
             .frame(maxWidth: .infinity, alignment: .trailing)
+        } else if columns.wrapsChecks {
+            // Stacked at its " · " segments: each segment stays whole.
+            VStack(alignment: .trailing, spacing: 2) {
+                ForEach(Array(WorkTableColumns.checkSegments(presentation.compactCheckRunsText).enumerated()), id: \.offset) { _, segment in
+                    Text(segment).lineLimit(1)
+                }
+            }
+            // The stacked branch used to be unconditionally mono, so a wrapped
+            // "no checks recorded" wore the metric face while the same string
+            // on one line did not (K10).
+            .workFont(FieldFont.value(.dataSmall, isMetric: presentation.checkRunsIsMetric))
+            .foregroundStyle(workCheckRunsTint(presentation.checkRunsState))
+            // The tooltip rides on the COMBINED cell, never on the stacked
+            // segments: a help on the VStack is inherited by every segment
+            // Text, and the row then repeated the tally once per segment (K119).
+            .accessibilityElement(children: .combine)
+            .help(presentation.compactCheckRunsText)
+            .frame(maxWidth: .infinity, alignment: .trailing)
         } else {
-            let text = presentation.compactCheckRunsText
-            Text(text)
-                .workFont(.dataSmall)
-                .foregroundStyle(
-                    text.contains("failed")
-                        ? Theme.coral
-                        : (text.contains("not reported")
-                            ? Theme.amber
-                            : text == "no check runs" ? Theme.muted : Theme.ink)
-                )
-                .lineLimit(2)
-                .multilineTextAlignment(.trailing)
+            Text(presentation.compactCheckRunsText)
+                // A tally is a metric; "no checks recorded" is an absence (K10).
+                .workFont(FieldFont.value(.dataSmall, isMetric: presentation.checkRunsIsMetric))
+                .foregroundStyle(workCheckRunsTint(presentation.checkRunsState))
+                .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 }
 
-/// Accessibility text sizes trade the fixed six-column task table for a
-/// complete vertical record summary. No fact disappears; labels and values can
-/// wrap without colliding with neighboring columns.
+/// The one tint lookup for a check-runs state key.
+func workCheckRunsTint(_ state: String?) -> Color {
+    switch state {
+    case "failed": return Theme.coral
+    case "not_run", "not_reported", "none": return Theme.muted
+    default: return Theme.ink
+    }
+}
+
+/// Accessibility text sizes trade the fixed task table for a complete
+/// vertical record summary. No fact disappears — the tier badge and evidence
+/// gap included; labels and values wrap without colliding.
 private struct WorkAccessibleTableRow: View {
     let task: ReceiptSummary
-    let focus: FocusState<String?>.Binding
+    /// The list's field headers from `/v1/tasks` — this layout PRINTS them
+    /// beside each value, so they must be the payload's words, not the app's.
+    let listLabels: ReceiptFieldLabels?
+    let isRovingRow: Bool
     let action: () -> Void
-    private var presentation: WorkReceiptRowPresentation { .init(task: task) }
+    private var presentation: WorkReceiptRowPresentation { .init(task: task, listLabels: listLabels) }
 
     var body: some View {
+        let presentation = self.presentation
         Button(action: action) {
             VStack(alignment: .leading, spacing: Space.s) {
                 Text(presentation.title)
                     .workFont(.rowLabel).foregroundStyle(Theme.ink)
                     .fixedSize(horizontal: false, vertical: true)
-                DecisionBadge(
-                    key: presentation.decisionKey,
-                    label: presentation.decisionLabel,
-                    compact: true
-                )
+                WrappingRowLayout(horizontalSpacing: Space.s, verticalSpacing: Space.xs) {
+                    DecisionBadge(
+                        key: presentation.decisionKey,
+                        label: presentation.decisionLabel,
+                        compact: true,
+                        help: presentation.decisionHelp
+                    )
+                    if let tier = presentation.strongestTier, let label = presentation.strongestTierLabel {
+                        TierBadge(grade: tier, text: "strongest: \(label)")
+                    }
+                }
                 if let reason = presentation.attentionReason, !reason.isEmpty {
-                    Text(reason).workFont(.caption).foregroundStyle(Theme.coral)
+                    Text(verbatim: reason).workFont(.caption).foregroundStyle(presentation.attentionReasonTint)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                labelledValue("Claims supported", presentation.coverageText)
-                labelledValue("Check runs", presentation.checkRunsText)
-                labelledValue("Client", presentation.clientText)
-                labelledValue("Estimated cost", presentation.costText)
-                labelledValue("Updated", presentation.updatedText)
-                if presentation.handedOff {
-                    Text("Handed off").workFont(.captionSemibold).foregroundStyle(Theme.muted)
+                if let gap = presentation.gapLine {
+                    Text(gap).workFont(FieldFont.gapLine).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let ledger = presentation.ledgerText {
+                    Text(ledger).workFont(FieldFont.gapLine).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                labelledValue(presentation.fieldLabels.coverageLabel, presentation.coverageText)
+                labelledValue(presentation.fieldLabels.checksLabel, presentation.checkRunsText)
+                labelledValue(presentation.fieldLabels.clientLabel, presentation.clientText)
+                labelledValue(presentation.fieldLabels.costLabel, presentation.costText, absent: presentation.costIsAbsent)
+                labelledValue(presentation.fieldLabels.updatedLabel, presentation.updatedText)
+                if let marker = presentation.lifecycleMarkerText {
+                    LifecycleMarker(text: marker)
                 }
             }
             .padding(Space.l)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(focus.wrappedValue == task.taskId ? Theme.selected.opacity(0.5) : .clear)
+            .background(isRovingRow ? Theme.selected.opacity(0.5) : .clear)
             .contentShape(Rectangle())
         }
-        .buttonStyle(SurfaceButtonStyle(cornerRadius: 0, focusInset: 2))
-        .focused(focus, equals: task.taskId)
+        // As in the fixed table: the container is the one keyboard stop, so the
+        // row never draws its own ring (K130).
+        .buttonStyle(SurfaceButtonStyle(cornerRadius: 0, focusInset: 2, isFocused: false))
         .accessibilityIdentifier("work.table.task.\(task.taskId)")
         .accessibilityLabel(presentation.accessibilityLabel)
+        .workRowAccessibilityFields(presentation.accessibilityFields)
     }
 
-    private func labelledValue(_ label: String, _ value: String) -> some View {
+    private func labelledValue(_ label: String, _ value: String, absent: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             CapsLabel(text: label)
-            Text(value).workFont(.caption).foregroundStyle(Theme.ink)
+            Text(value).workFont(.caption).foregroundStyle(absent ? Theme.muted : Theme.ink)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -1549,6 +2381,7 @@ private struct WorkMasterList: View {
     @ObservedObject var browse: WorkBrowseState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var focusedTaskId: String?
+    @FocusState private var searchFocused: Bool
     @State private var isRetryingAttention = false
 
     private var visibleTasks: [ReceiptSummary] {
@@ -1573,18 +2406,24 @@ private struct WorkMasterList: View {
     private var collectionCount: String {
         if browse.group == .attention {
             guard let attention = dashboard.attention else {
-                return collectionError == nil ? "Loading review items…" : "Review status unavailable"
+                return collectionError == nil ? "Loading \(dashboard.attentionQueue?.noun ?? "the review queue")…" : "Review status unavailable"
             }
+            let count = PayloadAbsence.text(attention.queue?.countText) ?? "\(attention.total) in queue"
             if attention.truncated {
-                return "\(visibleTasks.count) of \(attention.items.count) loaded · \(attention.total) review items"
+                return "\(visibleTasks.count) of \(attention.items.count) loaded · \(count)"
             }
-            return "\(visibleTasks.count) of \(attention.total) review items"
+            return "\(visibleTasks.count) of \(count)"
         }
         return workBrowseCountText(
             visible: visibleTasks.count,
             loaded: dashboard.receiptTasks.count,
             total: dashboard.totalReceiptTasks,
-            truncated: dashboard.receiptTasksTruncated
+            truncated: dashboard.receiptTasksTruncated,
+            pageIsLoaded: workReceiptPageIsLoaded(
+                loadedCount: dashboard.receiptTasks.count,
+                isLoading: isLoadingCollection,
+                error: collectionError
+            )
         )
     }
 
@@ -1636,7 +2475,7 @@ private struct WorkMasterList: View {
                         ProgressView().controlSize(.mini)
                     } else {
                         Image(systemName: "exclamationmark.triangle")
-                            .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.amber)
+                            .workFont(.icon).foregroundStyle(Theme.amber)
                             .accessibilityHidden(true)
                     }
                     Text(isLoadingCollection ? "Retrying · showing saved list" : "Showing saved list · refresh failed")
@@ -1660,46 +2499,63 @@ private struct WorkMasterList: View {
                     ScrollContentStack(spacing: 0) {
                     if isLoadingCollection, sourceTasks.isEmpty {
                         masterEmpty(
-                            title: browse.group == .attention ? "Loading review items" : "Loading receipts",
+                            title: browse.group == .attention ? "Loading \(dashboard.attentionQueue?.noun ?? "the review queue")" : "Loading receipts",
                             message: nil
                         )
                     } else if let error = collectionError, sourceTasks.isEmpty {
-                        VStack(alignment: .leading, spacing: Space.s) {
-                            masterEmpty(
-                                title: browse.group == .attention ? "Review items unavailable" : "Receipts unavailable",
-                                message: error
-                            )
-                            if !SnapshotMode.enabled {
-                                Button("Retry", action: retryCollection)
-                                    .buttonStyle(QuietButtonStyle(tint: Theme.accent))
-                                    .padding(.horizontal, Space.l)
-                                    .accessibilityIdentifier("work.master.retry")
-                            }
-                        }
+                        EmptyStateView(
+                            title: browse.group == .attention
+                                ? "Review queue unavailable"
+                                : WorkTablePage.taskListUnavailableTitle,
+                            cause: browse.group == .attention
+                                ? "The recorder didn't return the review queue."
+                                : WorkTablePage.taskListUnavailableCause,
+                            detailDisclosure: error,
+                            action: .init(
+                                label: WorkTablePage.retryLabel,
+                                identifier: "work.master.retry",
+                                perform: retryCollection
+                            ),
+                            identifier: "work.master.unavailable"
+                        )
+                        .padding(.horizontal, Space.l)
+                        .padding(.vertical, Space.xl)
                     } else if visibleTasks.isEmpty {
                         if browse.group == .attention, let attention = dashboard.attention {
                             let copy = WorkAttentionEmptyCopy(payload: attention, query: browse.query)
-                            masterEmpty(title: copy.title, message: copy.detail)
-                            if attention.total > 0, attention.items.isEmpty, !SnapshotMode.enabled {
-                                Button("Retry", action: retryCollection)
-                                    .buttonStyle(QuietButtonStyle(tint: Theme.accent))
-                                    .padding(.horizontal, Space.l)
-                                    .accessibilityIdentifier("work.master.retry")
-                            }
-                        } else {
-                            masterEmpty(
-                                title: dashboard.receiptTasks.isEmpty ? "No receipts recorded yet" : "No matching receipts",
-                                message: dashboard.receiptTasks.isEmpty
-                                    ? "Recorded work will appear here."
-                                    : "Clear the filter or choose another status."
+                            EmptyStateView(
+                                title: copy.title,
+                                cause: copy.detail,
+                                action: attention.total > 0 && attention.items.isEmpty
+                                    ? .init(
+                                        label: WorkTablePage.retryLabel,
+                                        identifier: "work.master.retry",
+                                        perform: retryCollection
+                                    )
+                                    : nil,
+                                identifier: "work.master.empty"
                             )
+                            .padding(.horizontal, Space.l)
+                            .padding(.vertical, Space.xl)
+                        } else {
+                            EmptyStateView(
+                                title: dashboard.receiptTasks.isEmpty
+                                    ? WorkTablePage.noTasksRecordedTitle : "No matching tasks",
+                                cause: dashboard.receiptTasks.isEmpty
+                                    ? "Recorded work will appear here."
+                                    : "Clear the filter or choose another status.",
+                                identifier: "work.master.empty"
+                            )
+                            .padding(.horizontal, Space.l)
+                            .padding(.vertical, Space.xl)
                         }
                     } else {
                         ForEach(renderedTasks) { task in
                             WorkMasterRow(
                                 presentation: .init(
                                     task: task,
-                                    detail: task.taskId == selection.taskId ? dashboard.receipt : nil
+                                    detail: task.taskId == selection.taskId ? dashboard.receipt : nil,
+                                    listLabels: dashboard.receiptFieldLabels
                                 ),
                                 selected: task.taskId == selection.taskId,
                                 focus: $focusedTaskId
@@ -1733,54 +2589,54 @@ private struct WorkMasterList: View {
             }
         }
         .background(Theme.chrome)
+        .focusedSceneValue(\.focusSearch, FocusSearchAction { searchFocused = true })
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("work.master")
     }
 
     private var masterControls: some View {
         VStack(spacing: Space.s) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 11)).foregroundStyle(Theme.muted)
-                if SnapshotMode.enabled {
-                    Text(browse.query.isEmpty ? "Search tasks" : browse.query)
-                        .workFont(.caption).foregroundStyle(Theme.muted)
-                } else {
-                    TextField("Search tasks", text: $browse.query)
-                        .textFieldStyle(.plain).workFont(.caption)
-                        .accessibilityIdentifier("work.master.search")
-                }
-            }
-            .padding(.horizontal, Space.m)
-            .frame(maxWidth: .infinity, minHeight: 32)
-            .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
-            .overlay(
-                RoundedRectangle(cornerRadius: Metrics.radius)
-                    .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW)
+            AppTextField(
+                placeholder: "Search tasks",
+                text: $browse.query,
+                systemImage: "magnifyingglass",
+                focus: $searchFocused,
+                accessibilityIdentifier: "work.master.search"
             )
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            HStack(spacing: Space.s) {
-                if SnapshotMode.enabled {
-                    Chip(text: browse.group?.rawValue ?? "All statuses", tint: Theme.accent)
-                    Chip(text: browse.sort.rawValue, tint: Theme.muted)
-                } else {
-                    Picker("Status", selection: $browse.group) {
-                        Text("All statuses").tag(nil as WorkGroup?)
-                        ForEach(WorkGroup.allCases) { group in
-                            Text(group.rawValue).tag(Optional(group))
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .accessibilityIdentifier("work.master.status")
-                    Picker("Sort", selection: $browse.sort) {
-                        ForEach(WorkSort.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.menu)
-                    .accessibilityIdentifier("work.master.sort")
+            // The same caption + app-owned picker form as the table controls.
+            HStack(spacing: 0) {
+                WrappingRowLayout(horizontalSpacing: Space.s, verticalSpacing: Space.xs) {
+                    Text("Status").workFont(.caption).foregroundStyle(Theme.muted)
+                    AppMenuPicker(
+                        title: "Status",
+                        selection: $browse.group,
+                        options: statusOptions,
+                        accessibilityIdentifier: "work.master.status"
+                    )
+                    Text("Sort").workFont(.caption).foregroundStyle(Theme.muted)
+                    AppMenuPicker(
+                        title: "Sort",
+                        selection: $browse.sort,
+                        options: WorkSort.allCases.map { ($0, $0.rawValue) },
+                        accessibilityIdentifier: "work.master.sort"
+                    )
+                    DecisionLegendButton(
+                        legend: dashboard.decisionLegend,
+                        tierLegend: dashboard.receipt?.axes.evidenceStrength.tierLegend,
+                        definition: dashboard.receipt?.axes.evidenceStrength.definition
+                    )
                 }
-                DecisionLegendButton()
                 Spacer(minLength: 0)
             }
         }
+    }
+
+    private var statusOptions: [(WorkGroup?, String)] {
+        var options: [(WorkGroup?, String)] = [(nil, "All statuses")]
+        for group in WorkGroup.allCases { options.append((group, group.label(in: dashboard.decisionLegend))) }
+        return options
     }
 
     private func retryCollection() {
@@ -1856,14 +2712,14 @@ private struct WorkMasterRow: View {
                     DecisionBadge(
                         key: presentation.decisionKey,
                         label: presentation.decisionLabel,
-                        compact: true
+                        compact: true,
+                        help: presentation.decisionHelp
                     )
-                    .help(presentation.decisionHelp)
                 }
 
                 if let reason = presentation.attentionReason, !reason.isEmpty {
                     Text(verbatim: reason)
-                        .workFont(.caption).foregroundStyle(Theme.coral)
+                        .workFont(.caption).foregroundStyle(presentation.attentionReasonTint)
                         .lineLimit(2)
                 }
 
@@ -1890,8 +2746,13 @@ private struct WorkMasterRow: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(Theme.hairline).frame(height: 1).padding(.leading, Space.l)
         }
-        .accessibilityElement(children: .ignore)
+        // NOT `.accessibilityElement(children: .ignore)`: that replaces the
+        // Button's own element, and the split list's rows lost their button
+        // role and their press action with it — VoiceOver could not open a
+        // task from the default layout (K118). The Button already speaks as
+        // one element; the label below is what it says.
         .accessibilityLabel(presentation.accessibilityLabel)
+        .workRowAccessibilityFields(presentation.accessibilityFields)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("work.master.task.\(presentation.taskId)")
     }
@@ -1901,11 +2762,61 @@ private struct WorkMasterRow: View {
 
 /// A task prioritizes current status and recorded activity. Supporting ledgers
 /// open only after the user asks for that category of detail.
+/// What Escape should close first inside a record. The timeline publishes a
+/// dismissal while it holds a transient layer open (the inspector, a dense
+/// group's chooser); the record page runs that instead of leaving the record,
+/// so Escape closes ONE layer at a time wherever the focus happens to sit —
+/// it used to depend on which control had focus, and from the overview strip
+/// a single Escape threw away the open inspector and the record with it (K116).
+@MainActor
+@Observable
+final class WorkRecordLayers {
+    /// Set by whichever layer is open. Observation must NOT track it: the
+    /// timeline writes it from an `onChange`, and a tracked write there would
+    /// invalidate the record page on every selection.
+    @ObservationIgnored var dismissInnermost: (() -> Void)?
+    /// A request from elsewhere on the record page — the Checks table — to
+    /// select one recorded event in the activity surface. The counter makes a
+    /// repeat request for the SAME event observable.
+    private(set) var selectEventID: String?
+    private(set) var selectRequest = 0
+
+    func selectEvent(_ eventID: String) {
+        selectEventID = eventID
+        selectRequest += 1
+    }
+}
+
+/// The retry affordance inside the saved-copy notice.
+///
+/// It owns its own read of the in-flight refresh rather than taking it from
+/// the record page, because the record page is rebuilt whenever anything it
+/// stores changes and the refresh flag flips on every three-second poll. Only
+/// this control needs to react to it, so only this control observes it.
+private struct WorkReceiptRefreshControl: View {
+    let taskId: String
+    @Environment(DashboardStore.self) private var dashboard
+
+    var body: some View {
+        if dashboard.receiptLoadingTaskId == taskId {
+            ProgressView()
+                .controlSize(.small)
+                .accessibilityLabel("Retrying receipt refresh")
+        } else {
+            Button("Retry") {
+                Task { await dashboard.fetchReceipt(taskId: taskId) }
+            }
+            .buttonStyle(QuietButtonStyle(tint: Theme.accent))
+            .workFont(.captionSemibold)
+            .accessibilityIdentifier("work.receipt.stale.retry")
+        }
+    }
+}
+
 struct WorkRecordPage: View {
     let receipt: Receipt
     let summary: ReceiptSummary?
     let refreshError: String?
-    let isRefreshing: Bool
     let autoFocusEntry: Bool
     var timelineFocused = false
     var onToggleTimelineFocus: (() -> Void)? = nil
@@ -1915,8 +2826,19 @@ struct WorkRecordPage: View {
     @Environment(\.savedWorkReconnect) private var reconnectSavedWork
     @FocusState private var backFocused: Bool
     @AccessibilityFocusState private var backAccessibilityFocused: Bool
-    // The primary session's steps power both the outcome bars and the spine, so
-    // the page owns the one load and hands the detail to both.
+    @AccessibilityFocusState private var headingAccessibilityFocused: Bool
+    @State private var layers = WorkRecordLayers()
+
+    private var denseHeader: Bool { timelineFocused || compactViewport }
+    /// Section names come from the reducer's `field_labels` (C39).
+    private var labels: ReceiptFieldLabels { receipt.fieldLabels ?? ReceiptFieldLabels() }
+    /// The anchor a freshly opened record scrolls to: the top of the page.
+    static let topAnchor = "work.record.top"
+
+    // The primary session's steps power the step spine, so the page owns the
+    // one load and hands the detail to it. (No page-level claim is drawn from
+    // this load: the verdict hero's coverage meter is computed from the
+    // payload already in hand, so the record's headline proof stands offline.)
     @State private var sessionDetail: V1SessionDetail?
     @State private var sessionLoading = false
     @State private var sessionFailed = false
@@ -1925,50 +2847,53 @@ struct WorkRecordPage: View {
         ScrollViewReader { proxy in
             ScrollBox {
                 VStack(alignment: .leading, spacing: 0) {
-                    breadcrumb
-                    if timelineFocused || compactViewport {
-                        HStack(spacing: Space.s) {
-                            Text(receipt.title ?? receipt.taskId).workFont(.titleCard).lineLimit(1)
-                            DecisionBadge(key: receipt.axes.decisionStatus.key, label: receipt.axes.decisionStatus.label ?? receipt.axes.decisionStatus.key)
-                        }.padding(.top, Space.s)
-                    } else { titleBlock.padding(.top, Space.m) }
-                    if let refreshError {
-                        staleDetailBanner(refreshError).padding(.top, Space.m)
-                    }
-                    // The outcome leads: the honest gradient (proven → claimed →
-                    // failed) as two segmented bars — did it succeed, and how
-                    // strong is the proof — replacing the old flat metric strip.
-                    // Rendered once the primary session's steps load.
-                    outcomeBars.padding(.top, compactViewport ? Space.s : Space.l)
-                    // Then what needs a human, if anything.
-                    let decision = WorkReceiptDecisionPresentation(receipt: receipt)
-                    if decision.isAttention, receipt.axes.decisionStatus.blocker?.text == nil {
-                        Text(decision.explanation)
-                            .workFont(.body).foregroundStyle(Theme.coral)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.top, Space.m)
-                    }
-                    if let blocker = receipt.axes.decisionStatus.blocker, blocker.text != nil {
-                        BlockerCallout(blocker: blocker, taskId: receipt.taskId)
-                            .padding(.top, Space.m)
-                    }
-                    // The step-by-step is the record's readable core, so it leads
-                    // — what happened, and what passed or failed, without leaving
-                    // the page. The activity timeline stays inline right below it
-                    // (never behind a tab); "Focus timeline" only lifts the
-                    // timeline to the top. Both orderings render the SAME four
-                    // sections keyed by a stable id, so the toggle reorders them
-                    // in place: it never tears down the loaded steps or the
-                    // reader's expansion/scroll state (which a plain if/else,
-                    // giving each branch its own identity, would discard).
-                    VStack(alignment: .leading, spacing: Space.xl) {
+                    breadcrumb.id(Self.topAnchor)
+                    // A breakpoint changes arrangement and padding, never the
+                    // set of facts: the dense header is the same verdict stack.
+                    // SS1 + SS2. The page head (title and the recorded goal) and
+                    // the answer to "did it work" share one card: the decision
+                    // word, what it meant, and ONE exhibit. Everything that
+                    // answers a different question has moved out of it.
+                    verdictHero(dense: denseHeader)
+                        .padding(.top, denseHeader ? Space.s : Space.m)
+                    // SS3 — "can I trust it". The evidence tier stated once, the
+                    // coverage it grades, the runs themselves, and the whole
+                    // absence budget in one line.
+                    evidenceAnswer
+                        .padding(.top, denseHeader ? Space.m : Space.l)
+                    // Below the verdict and the runs that prove it, the record
+                    // body: the step spine, the activity timeline inline (never
+                    // behind a tab), the other sessions, then the supporting
+                    // ledgers. "Focus timeline" only lifts the timeline to the
+                    // top. Both orderings render the SAME sections keyed by a
+                    // stable id, so the toggle reorders them in place: it never
+                    // tears down the loaded steps or the reader's expansion /
+                    // scroll state (which a plain if/else, giving each branch
+                    // its own identity, would discard).
+                    // Lazy: the four sections below are the heavy half of the
+                    // page and only the first is on screen when a record
+                    // opens. The ids stay stable, so the reorder above still
+                    // moves sections in place rather than tearing them down.
+                    ScrollContentStack(alignment: .leading, spacing: Space.xl) {
                         ForEach(orderedSections(proxy: proxy)) { $0.view }
                     }
                     .padding(.top, compactViewport ? Space.l : Space.xl)
+                    // SS4 — "what do I do now". Last, because it is what a
+                    // reviewer leaves with, and persistent, because the one line
+                    // that says what happens next must not depend on whether
+                    // something still needs attention.
+                    nextAnswer
+                        .padding(.top, compactViewport ? Space.l : Space.xl)
                 }
-                .padding(timelineFocused || compactViewport ? Space.m : Space.gutter)
-                .frame(maxWidth: timelineFocused ? .infinity : 1172 + Space.gutter * 2, alignment: .leading)
+                .padding(denseHeader ? Space.m : Space.gutter)
+                .modifier(WorkRecordPageFrame(unbounded: timelineFocused))
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // The Task id left the resting page for SS3's disclosure — it is
+                // inert to read and was 124 px on every record. It keeps its copy
+                // button there, and the page carries it as its own value, so a
+                // screen-reader user is not the one who has to go hunting.
+                .accessibilityElement(children: .contain)
+                .accessibilityValue(receipt.taskId)
                 .task(id: primaryKey) {
                     // Load the primary session's steps, re-keyed on the member so
                     // a primary-session change (role enrichment during live
@@ -1984,8 +2909,21 @@ struct WorkRecordPage: View {
                 }
             }
             .id(receipt.taskId)  // reset the drill-down's expansion state per Task
+            // One Escape route for the whole record, layer by layer (K116).
+            .background { if !SnapshotMode.enabled { escapeKeyHandler } }
+            .onKeyPress(.escape) { escapePressed(); return .handled }
             .onAppear {
-                guard autoFocusEntry, !SnapshotMode.enabled else { return }
+                guard !SnapshotMode.enabled else { return }
+                if selection.workEntry == .navigate {
+                    // A record OPENS at its verdict. Landing part-way down the
+                    // activity canvas — which is where a restored inspector
+                    // used to pull the page — hid the decision, the attention
+                    // callout and the recorded next step the reviewer came
+                    // for (K104). A deliberate return keeps its position.
+                    proxy.scrollTo(Self.topAnchor, anchor: .top)
+                    DispatchQueue.main.async { headingAccessibilityFocused = true }
+                }
+                guard autoFocusEntry else { return }
                 DispatchQueue.main.async {
                     backFocused = true
                     backAccessibilityFocused = true
@@ -1994,12 +2932,24 @@ struct WorkRecordPage: View {
         }
     }
 
+    /// The Recording section's definition, from the payload: what the coverage
+    /// counts mean, then how the two axes relate.
+    private var recordingHelp: String? {
+        let parts = [
+            PayloadAbsence.text(receipt.axes.evidenceStrength.definition),
+            PayloadAbsence.text(receipt.axes.orthogonalityNote),
+        ].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
+    }
+
     /// The activity timeline band, inline (never tabbed). Kept as a function so
     /// both orderings (steps-first, or timeline-first under "Focus timeline")
     /// share the one scroll proxy that drives its reveal callbacks.
     private func timelineView(proxy: ScrollViewProxy) -> some View {
         WorkTimelineView(receipt: receipt,
-            onRevealInspector: { proxy.scrollTo("work.timeline.inspector", anchor: .top) },
+            layers: layers,
+            // Reveal the inspector without pushing the canvas off-screen.
+            onRevealInspector: { proxy.scrollTo("work.timeline.inspector", anchor: .bottom) },
             onRevealRecords: { proxy.scrollTo("work.timeline.records", anchor: .top) },
             onRevealHeading: { proxy.scrollTo("work.timeline.heading", anchor: .top) })
     }
@@ -2058,14 +3008,6 @@ struct WorkRecordPage: View {
         }
     }
 
-    /// The two colored outcome bars — shown once the primary session's steps
-    /// have loaded (nothing to summarize before then).
-    @ViewBuilder private var outcomeBars: some View {
-        if let detail = effectiveSessionDetail, !detail.steps.isEmpty {
-            RecordOutcomeBars(steps: detail.steps)
-        }
-    }
-
     /// The step spine, or an honest load / empty / failed / offline state.
     @ViewBuilder private var stepsContent: some View {
         if primarySessionMember == nil {
@@ -2078,7 +3020,8 @@ struct WorkRecordPage: View {
                     .workFont(.caption).foregroundStyle(Theme.muted)
             } else {
                 let items = SessionStepItem.make(detail.steps)
-                SessionStepSpine(items: items, openedIDs: openedStepIDs(items))
+                SessionStepSpine(items: items, openedIDs: openedStepIDs(items),
+                                 taskNextStep: recordedNextStep)
             }
         } else if dashboard.isOfflineSnapshot {
             stepsOfflineNotice
@@ -2157,30 +3100,29 @@ struct WorkRecordPage: View {
         let steps = OrderedSection(id: "steps", view: AnyView(stepsSection))
         let timeline = OrderedSection(id: "timeline", view: AnyView(timelineView(proxy: proxy)))
         let subagents = OrderedSection(id: "subagents", view: AnyView(subagentsSection))
-        let supporting = OrderedSection(id: "supporting", view: AnyView(supportingSections))
         return timelineFocused
-            ? [timeline, steps, subagents, supporting]
-            : [steps, timeline, subagents, supporting]
+            ? [timeline, steps, subagents]
+            : [steps, timeline, subagents]
     }
 
-    /// Supporting captured detail, below the steps and the timeline: each fact
-    /// once, no duplication of the summary strip above.
-    private var supportingSections: some View {
-        VStack(alignment: .leading, spacing: Space.xl) {
-            ReceiptSection(
-                title: "Usage", identifier: "usage",
-                help: "Counts describe captured tool calls, not progress or success. Related paths are recorded associations, not modified files. Current receipts have no ordered action ledger, so captured call counts cannot be linked to results or timing."
-            ) {
-                RecordDimensionsCard(receipt: receipt, included: [.actions, .cost],
-                                     showsProvenance: false, compactDigest: true)
-            }
-            ReceiptSection(title: "Recording", identifier: "recording",
-                           help: receipt.axes.orthogonalityNote) {
-                recordingDetails
-            }
-        }
-        .accessibilityIdentifier("work.all-captured-details")
-    }
+    // The `Usage` and `Recording` sections are GONE — together a near-constant
+    // 1 073–1 249 px tail on every record, of which the flagship's was 43 %
+    // named absence, 25 % restatement and 10 % an inert identifier, leaving two
+    // file paths and a count as its only facts about the work.
+    //
+    // Nothing they carried was dropped without a new home:
+    // * TOOL CALLS / COST / WEEKLY PLAN absences → nouns in SS3's one absence
+    //   line, each sentence still readable in its disclosure.
+    // * related paths, and a recorded token or cost figure → SS3's captured
+    //   facts, where a figure survives even though an absence does not.
+    // * TASK (the title's third print) → deleted; SS1's recorded goal takes the
+    //   slot, and the section titles it printed are in SS3's disclosure.
+    // * AGENTS → the hero meta line, subagent count included.
+    // * SOURCES → SS3's heading line, which states the tier and its source.
+    // * GAPS → split by the reducer: the ones that stop a reviewer stay as
+    //   sentences in SS3, the bookkeeping collapses into the absence line.
+    // * TASK ID → SS3's disclosure, copy button intact, plus the page's own
+    //   accessibility value.
 
     /// An unmistakable back control (the old caps "WORK" read as a static path
     /// label, not a button) + the path itself. Esc triggers the same return.
@@ -2191,7 +3133,9 @@ struct WorkRecordPage: View {
             if let onToggleTimelineFocus, !compactViewport || timelineFocused {
                 Button(action: onToggleTimelineFocus) {
                     Label(timelineFocused ? "Show task list" : "Focus timeline", systemImage: timelineFocused ? "sidebar.left" : "arrow.up.left.and.arrow.down.right")
+                        .workFont(.captionSemibold)
                 }.buttonStyle(QuietButtonStyle(horizontalPadding: 8))
+                .keyboardStop(activate: onToggleTimelineFocus)
                 .accessibilityIdentifier("work.focus-timeline")
             }
         }
@@ -2208,217 +3152,770 @@ struct WorkRecordPage: View {
         }
     }
 
+    /// Leave the record for the task collection, restoring the row's focus.
+    private func leaveRecord() {
+        selection.workBrowse.prepareReturnFocus(
+            from: receipt.taskId,
+            in: dashboard.receiptTasks,
+            attention: dashboard.attention
+        )
+        selection.taskId = nil
+        selection.sessionId = nil
+    }
+
+    /// Escape, from anywhere in the record: close the innermost open layer if
+    /// there is one, else leave the record (K116).
+    private func escapePressed() {
+        if let dismiss = layers.dismissInnermost {
+            dismiss()
+            return
+        }
+        leaveRecord()
+    }
+
+    /// The window-level Escape key equivalent. It lives on its own zero-sized
+    /// button rather than on the back button: a key equivalent is handled
+    /// before the focused view's own key press, so the back button used to
+    /// claim Escape even while an inner layer was open — but keeping the
+    /// equivalent is what makes Escape work when focus has fallen back to the
+    /// window, so it is routed through the layer check instead of removed.
+    private var escapeKeyHandler: some View {
+        Button("Back to all tasks", action: escapePressed)
+            .keyboardShortcut(.cancelAction)
+            .buttonStyle(QuietButtonStyle())
+            .frame(width: 0, height: 0)
+            .opacity(0)
+            // It carries a key equivalent, nothing else: never a Tab stop
+            // (an invisible one is exactly what K115 found), never hit-
+            // testable, and not in the accessibility tree — the visible
+            // "All tasks" button is the control that does this job.
+            .focusable(false)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+
     private var backButtonBase: some View {
-        Button {
-            selection.workBrowse.prepareReturnFocus(
-                from: receipt.taskId,
-                in: dashboard.receiptTasks,
-                attention: dashboard.attention
-            )
-            selection.taskId = nil
-            selection.sessionId = nil
-        } label: {
+        Button(action: leaveRecord) {
             HStack(spacing: 4) {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 10, weight: .semibold))
+                    .workFont(.icon)
+                    .accessibilityHidden(true)
                 Text("All tasks").workFont(.captionSemibold)
             }
             .foregroundStyle(Theme.accent)
+            .minimumHitTarget(alignment: .leading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(QuietButtonStyle(horizontalPadding: 6, verticalPadding: 3))
-        .frame(minHeight: 24)
+        .keyboardStop(activate: leaveRecord)
         .focused($backFocused)
-        .keyboardShortcut(.cancelAction)
         .help("Back to all tasks (Esc)")
+        .accessibilityLabel("All tasks")
         .accessibilityIdentifier("work.breadcrumb.back")
     }
 
-    private var titleBlock: some View {
-        HStack(alignment: .top, spacing: Space.m) {
-            SourceMonogram(client: primarySessionMember?.client ?? summary?.primaryRoot?.client, size: 40)
-                .padding(.top, 2)
-            VStack(alignment: .leading, spacing: Space.s) {
-                HStack(alignment: .center, spacing: Space.m) {
-                    Text(receipt.title ?? receipt.taskId)
-                        .workFont(.titlePage).tracking(Type.titlePageTracking)
-                        .foregroundStyle(Theme.ink)
-                        .lineLimit(2)
-                        .accessibilityAddTraits(.isHeader)
-                    DecisionBadge(
-                        key: receipt.axes.decisionStatus.key,
-                        label: receipt.axes.decisionStatus.label ?? receipt.axes.decisionStatus.key
-                    )
-                    if let handoff = receipt.axes.handoff, handoff.handedOff == true,
-                       receipt.axes.decisionStatus.key != "handed_off" {
-                        Chip(text: "↗ handed off", tint: Theme.muted)
-                    }
-                    DecisionLegendButton()
-                    Spacer()
-                }
-                if !metaLine.isEmpty {
-                    Text(metaLine).workFont(.dataSmall).foregroundStyle(Theme.muted)
-                }
+    // A human-review-first header: the decision badge with the proof clause
+    // beside it (never the decision word twice), the evidence coverage made
+    // visual (a counted legend only when 2+ tiers need telling apart), the
+    // unproven part called out, and what the ratio does not cover beneath it.
+    // The ratio appears once, in the clause; its date bound rides the meta
+    // line. The two axes stay two colours — the decision badge on the
+    // decision palette, the coverage meter on the evidence ramp. `dense`
+    // tightens type and padding; every fact stays.
+    @ViewBuilder
+    private func verdictHero(dense: Bool) -> some View {
+        let decision = receipt.axes.decisionStatus
+        let evidence = receipt.axes.evidenceStrength
+        VStack(alignment: .leading, spacing: dense ? Space.s : Space.m) {
+            let ramp = VerdictHeroTypeRamp(dense: dense)
+            // Provenance before the claim (K55): a verdict a reviewer reads as
+            // current must not appear above the notice that it is a saved
+            // copy. The notice carries WHEN the copy was taken, because the
+            // receipt's own "updated 2m ago" froze at that moment.
+            if let refreshError {
+                staleCopyNotice(refreshError)
             }
+            // ImageRenderer blanks views carrying AccessibilityFocusState, so
+            // only the live path takes the entry focus (as `backButton` does).
+            heroTitle(ramp: ramp)
+            // SS1 — "what was this for". The task-level goal the agent recorded,
+            // in one sentence directly under the title: body size, muted, no
+            // caps label, no card and no rule of its own, because it is the page
+            // head rather than a titled section. It takes the slot the dead
+            // `Recording → TASK` row used to occupy, which printed the title a
+            // third time on every record.
+            //
+            // When no goal was recorded the reducer's own sentence says so. That
+            // absence is exempt from the page's absence budget on purpose: a
+            // record with no stated purpose is one a reviewer should distrust,
+            // so it is worth a line of its own.
+            if let goal = PayloadAbsence.text(receipt.dimensions.task.goal) {
+                Text(verbatim: goal)
+                    .workFont(.body).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: Metrics.readingMeasure, alignment: .leading)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("work.record.goal")
+            } else if let absent = PayloadAbsence.text(receipt.dimensions.task.goalAbsentText) {
+                Text(verbatim: absent)
+                    .workFont(.body).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("work.record.goal.absent")
+            }
+            // ONE state row. The decision badge is the primary state; the
+            // handoff marker is sent only when it ADDS to that word, so the two
+            // read as one state, not as competing chips. The proof clause used
+            // to sit here at the largest size on the page — it is a figure, and
+            // it now rides the tile strip with the other figures.
+            WrappingRowLayout(horizontalSpacing: dense ? Space.s : Space.m, verticalSpacing: Space.xs) {
+                DecisionBadge(
+                    key: decision.key,
+                    label: decision.label ?? decision.key,
+                    compact: dense,
+                    help: decision.statement
+                )
+                if let marker = PayloadAbsence.text(receipt.lifecycleMarkerText) {
+                    LifecycleMarker(text: marker)
+                }
+                DecisionLegendButton(
+                    legend: dashboard.decisionLegend,
+                    tierLegend: evidence.tierLegend,
+                    definition: evidence.definition,
+                    scopeDefinition: (evidence.notCheckable ?? 0) > 0 ? evidence.scopeDefinition : nil
+                )
+            }
+            // What the state MEANT for the work, directly under it: the agent's
+            // own outcome words, at the ramp's consequence step and still
+            // labelled as its report — a claim, never a verified statement.
+            if let summary = PayloadAbsence.text(receipt.dimensions.outcome.summary) {
+                AgentOutcomeSummary(
+                    summary: summary,
+                    label: PayloadAbsence.text(receipt.dimensions.outcome.summaryLabel) ?? PayloadAbsence.source,
+                    // The byline says WHO reported this and, when it helps,
+                    // which section it came from. On a one-section Task the
+                    // section IS the Task, so the byline printed the page
+                    // heading back at the reader a line below itself (F1). A
+                    // section title that only repeats the heading carries
+                    // nothing, so the byline drops to the source alone.
+                    sectionTitle: sectionTitleBeyondTheHeading,
+                    role: ramp.consequence,
+                    tracking: ramp.consequenceTracking
+                )
+            }
+            // ONE exhibit, inside the card. This used to be a separate band
+            // below it — 326 px on the flagship record — which republished the
+            // tier in prose, the meta line, the pip, the stamped revision and
+            // the contradiction sentence, every one of them a verbatim copy of a
+            // single row of the Checks table. The slot still fills both ways: an
+            // open attention item when something needs you, the standing proof
+            // reduced to its identity line when nothing does.
+            exhibit
+            if !metaLine.isEmpty {
+                Text(metaLine).workFont(.dataSmall).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // MOVED OUT of this card, each to the one question it answers: the
+            // coverage meter, its ledger, its definition and the proving run's
+            // revision line to SS3 (they answer "can I trust it"); the recorded
+            // next step to SS4; the verdict gap line and the project-boundary
+            // gap to SS3, the first as its own caveat and the second as one noun
+            // in the absence line.
+        }
+        .padding(dense ? Space.m : Space.l)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
+        .overlay(RoundedRectangle(cornerRadius: Metrics.radius).strokeBorder(Theme.cardLine))
+    }
+
+    /// The receipt's standing proof — the passing run a `Verified` hero rests
+    /// on. Nil when no check passed, which is itself why a hero has no proof
+    /// qualifier to show.
+    private var standingProof: ReceiptStandingProof? { ReceiptStandingProof(receipt: receipt) }
+
+    /// The outcome byline's section title, kept ONLY when it says something the
+    /// page heading above it does not. Two payload strings compared — no
+    /// wording is composed here.
+    private var sectionTitleBeyondTheHeading: String? {
+        guard let section = PayloadAbsence.text(receipt.dimensions.outcome.summarySectionTitle) else { return nil }
+        let heading = PayloadAbsence.text(receipt.title) ?? receipt.taskId
+        return restatesPayloadText(section, heading) ? nil : section
+    }
+
+    /// The recorded next step this record shows. The Task's own outcome field
+    /// is the record's answer; an older payload that carried the step only on
+    /// the attention item still has one to show. A missing one is NAMED by
+    /// `NextStepRow`, never left as an empty slot.
+    private var recordedNextStep: String? {
+        PayloadAbsence.text(receipt.dimensions.outcome.nextStep)
+            ?? PayloadAbsence.text(receipt.attention?.nextStep)
+    }
+
+    // MARK: - SS2's one exhibit
+
+    /// The hero's single exhibit slot. It used to be a page-level band below the
+    /// card, and on a record with a standing pass it was a VERBATIM duplicate of
+    /// one Checks row plus a prose restatement of the tier — the tier's fourth
+    /// print, in its third register.
+    ///
+    /// Filled both ways, as the reserved slot always was (C3): an open attention
+    /// item, with the controls that act on it, when something needs you; the
+    /// standing proof's own identity line when nothing does. The controls stay
+    /// here rather than in SS4 because they act on the exhibit, not on the next
+    /// step.
+    @ViewBuilder
+    private var exhibit: some View {
+        if let attention = receipt.attention {
+            AttentionCallout(
+                attention: attention,
+                taskId: receipt.taskId,
+                blocker: receipt.axes.decisionStatus.blocker
+            )
+        } else if let proof = standingProof {
+            HStack(alignment: .top, spacing: Space.m) {
+                RecordCheckResultGlyph(check: proof.check).padding(.top, 2)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(verbatim: PayloadAbsence.text(proof.check.title)
+                         ?? PayloadAbsence.text(proof.check.name)
+                         ?? PayloadAbsence.checkResult)
+                        .workFont(.rowLabel).foregroundStyle(Theme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                    // One line, one separator — never the four fragments this
+                    // slot used to punctuate as four sentences. The tier is NOT
+                    // repeated here: SS3's heading states it, once.
+                    Text(verbatim: proof.check.metaLineText)
+                        .workFont(.caption).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(Space.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // Neutral, never green: green is reserved for externally-verified
+            // evidence and the live connection, and this renders whatever tier
+            // the receipt actually reached.
+            .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius))
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("receipt.evidence-standing")
         }
     }
 
-    private func staleDetailBanner(_ error: String) -> some View {
+    // MARK: - SS3 · can I trust it
+
+    /// Everything that bears on whether the record can be believed, in one
+    /// section and each fact in it exactly once.
+    ///
+    /// It absorbs the coverage meter and its ledger from the hero, the COVERAGE
+    /// and CHECKS tiles from the deleted tile strip, the whole Checks section
+    /// regrouped by revision, what survives of `Usage`, and what survives of
+    /// `Recording` — and it closes with the page's ENTIRE absence budget as one
+    /// line, every collapsed sentence still readable behind its disclosure.
+    private var evidenceAnswer: some View {
+        ReceiptSection(
+            title: labels.evidenceSectionLabel, identifier: "evidence",
+            help: recordingHelp
+        ) {
+            VStack(alignment: .leading, spacing: Space.l) {
+                evidenceHeadingLine
+                coverageMeter(evidence: receipt.axes.evidenceStrength)
+                // The reducer's typed gap on the verdict itself (`Not yet proven
+                // — …`), which belongs with the evidence rather than over the
+                // decision word.
+                if let verdict = receipt.verdict, let gapLine = verdict.gapLine {
+                    verdictGapCallout(gapLine, unproven: verdict.gapIsUnproven)
+                }
+                RecordChecksSection(receipt: receipt, layers: layers)
+                capturedFacts
+                blocksReviewGaps
+                notCapturedLine
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// The tier, stated ONCE on the whole page.
+    ///
+    /// The reducer's `heading_line` carries the tally, the tier word and
+    /// whichever check facts were uniform across every row. The tier used to be
+    /// stated three times in three registers — a prose sentence in the callout,
+    /// a bare qualifier under the COVERAGE tile, and a pip, twice.
+    ///
+    /// The pip is hoisted with it only when the record reached exactly ONE tier:
+    /// pip SHAPE carries the tier, so a record with two non-empty buckets keeps
+    /// its counted legend and its per-row pips instead.
+    @ViewBuilder
+    private var evidenceHeadingLine: some View {
+        // A record with no recorded run has one thing to say about its checks,
+        // and the empty checks row says it. The heading line then carries the
+        // same words — the tally counts task-level rows while the tier grades
+        // step coverage, so a record with neither produces a heading that IS the
+        // empty state — and printing both is one fact twice. Two payload strings
+        // compared; no wording is composed here.
+        if let line = PayloadAbsence.text(receipt.dimensions.evidence.headingLine),
+           !restatesPayloadText(line, ReceiptCheckRunsPresentation(
+               evidence: receipt.dimensions.evidence).rowText) {
+            let strength = receipt.axes.evidenceStrength
+            HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                if let tier = hoistableTierKey {
+                    EvidencePip(grade: tier, radius: Type.icon / 2)
+                }
+                Text(verbatim: line)
+                    .workFont(FieldFont.qualifier).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: Metrics.readingMeasure, alignment: .leading)
+                // The sentence the deleted callout carried in prose — "the agent
+                // reported a check passed (…) — the agent's own, not
+                // independent" — is the clearest words on the page for a reader
+                // who does not know what `self-checked` means. It is not deleted:
+                // it becomes the tier's own context help, here, where the tier is
+                // stated.
+                if let reason = PayloadAbsence.text(standingProof?.gradeReason)
+                    ?? PayloadAbsence.text(strength.definition) {
+                    ContextHelp(
+                        title: "About \(labels.evidenceSectionLabel.lowercased())",
+                        message: reason,
+                        identifier: "work.record.evidence.tier.help"
+                    )
+                }
+                Spacer(minLength: 0)
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("work.record.evidence.heading")
+        }
+    }
+
+    /// The tier key the heading may wear as a pip: only when the receipt reached
+    /// exactly one tier, because one pip on the page must not stand for two.
+    private var hoistableTierKey: String? {
+        let strength = receipt.axes.evidenceStrength
+        guard let tier = PayloadAbsence.text(strength.strongestTier) else { return nil }
+        guard let buckets = strength.byTier else { return tier }
+        return buckets.nonEmptyTierCount == 1 ? tier : nil
+    }
+
+    /// What the capture actually holds about the work: the related-path count
+    /// with the paths behind a disclosure, and the token or cost figure when one
+    /// was recorded.
+    ///
+    /// This is all that survives the deleted `Usage` section — but it must
+    /// survive: on the thinnest record in the set the token line is the ONLY
+    /// fact about the work anywhere on the page. A cost row with nothing but a
+    /// named absence is dropped, because the absence line below states it.
+    @ViewBuilder
+    private var capturedFacts: some View {
+        let actions = receipt.dimensions.actions
+        let paths = actions.touchedFiles ?? actions.touchedFilesPreview ?? []
+        VStack(alignment: .leading, spacing: Space.s) {
+            if !paths.isEmpty, let scope = PayloadAbsence.text(actions.relatedPathsText) {
+                // The count states itself ONCE, as the disclosure's own counted
+                // trigger — the page's established idiom for a list that folds.
+                // Printing it above the trigger as well would be the same two
+                // words twice, a line apart.
+                HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                    OverflowDisclosure(
+                        label: scope, identifier: "work.overflow.related-paths"
+                    ) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(paths, id: \.self) { path in
+                                Text(verbatim: path)
+                                    .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                    if let definition = PayloadAbsence.text(actions.relatedPathsDefinition) {
+                        ContextHelp(
+                            title: "About \(labels.actionsLabel.lowercased())",
+                            message: definition,
+                            identifier: "work.record.related-paths.help"
+                        )
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+            RecordDimensionsCard(
+                receipt: receipt, included: [.cost],
+                showsProvenance: false, showsGaps: false, compactDigest: true,
+                showsPlanShare: false, dropsAbsentValues: true
+            )
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The gaps that STOP a reviewer, as sentences.
+    ///
+    /// The split is the reducer's, not a guess here: a gap it could pair with an
+    /// absence-budget noun (`absence_key`) is already spoken by the collapsed
+    /// line below and lives in its disclosure; a gap no noun can carry has no
+    /// shorter form, so it stays a sentence on the resting page. That keeps the
+    /// content the thickest record's tail was actually carrying — "3 supporting
+    /// sessions spent 3,733,638 tokens and recorded no work, so what they did is
+    /// unreviewable." — while the bookkeeping collapses.
+    @ViewBuilder
+    private var blocksReviewGaps: some View {
+        let items = (receipt.dimensions.gaps.items ?? []).filter {
+            PayloadAbsence.text($0.absenceKey) == nil
+        }
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                // Index-stable identity: two gaps sharing a dimension and reason
+                // must both render, never collapse into one row.
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in gapRow(item) }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("work.record.gaps")
+        }
+    }
+
+    /// The page's whole absence budget: ONE line, composed by the reducer, with
+    /// every sentence it stands for behind one disclosure.
+    ///
+    /// Absence stays NAMED — that rule is not weakened. What changes is that it
+    /// may no longer occupy more space than the facts it is absent from: this
+    /// replaces a near-constant 1 073–1 249 px tail that was 43 % named absence
+    /// and said the same seven things on every record however much work was
+    /// done. An empty budget prints NOTHING: no receipt can claim everything was
+    /// captured.
+    @ViewBuilder
+    private var notCapturedLine: some View {
+        let budget = receipt.dimensions.gaps.notCaptured
+        if let line = PayloadAbsence.text(budget?.line) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: line)
+                    .workFont(FieldFont.gapLine).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: Metrics.readingMeasure, alignment: .leading)
+                    .accessibilityIdentifier("work.record.not-captured")
+                recordFootnotes(budget: budget)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            recordFootnotes(budget: nil)
+        }
+    }
+
+    /// Everything the record page prints exactly once, and never at rest: the
+    /// collapsed absence sentences, the recorded objectives, the facts that were
+    /// byte-identical on every check row, and the Task's own id.
+    @ViewBuilder
+    private func recordFootnotes(budget: ReceiptNotCaptured?) -> some View {
+        let details = budget?.detail ?? []
+        let objectives = receipt.dimensions.task.objectives ?? []
+        let uniform = uniformCheckFacts
+        let count = details.count + (objectives.isEmpty ? 0 : 1) + uniform.count + 1
+        OverflowDisclosure(
+            label: "\(count) detail\(count == 1 ? "" : "s")",
+            identifier: "work.overflow.not-captured"
+        ) {
+            VStack(alignment: .leading, spacing: Space.s) {
+                // Each collapsed absence, in the order the line named its nouns,
+                // worded byte-identically to the gap sentence it came from.
+                ForEach(details) { item in
+                    if let text = PayloadAbsence.text(item.text) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            CaveatMarker()
+                            Text(verbatim: text)
+                                .workFont(.caption).foregroundStyle(Theme.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: Metrics.readingMeasure, alignment: .leading)
+                        }
+                    }
+                }
+                // The recorded section titles, as a plain list. They used to
+                // print as `<first> · +43 more objectives`, where the first was
+                // the page heading over again on three of five records.
+                if !objectives.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        CapsLabel(text: labels.taskLabel)
+                        ForEach(objectives, id: \.self) { objective in
+                            Text(verbatim: objective)
+                                .workFont(.caption).foregroundStyle(Theme.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: Metrics.readingMeasure, alignment: .leading)
+                        }
+                    }
+                }
+                // One print each of the facts that were identical on every check
+                // row: how the command was handled, what supersession means
+                // here, and the checks' scope.
+                ForEach(uniform, id: \.self) { fact in
+                    Text(verbatim: fact)
+                        .workFont(.caption).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: Metrics.readingMeasure, alignment: .leading)
+                }
+                // The Task id keeps its copy button. It leaves the resting page —
+                // it is inert to read — but anyone pasting it into a bug report
+                // is one disclosure away, and the page announces it too.
+                HStack(alignment: .firstTextBaseline, spacing: Space.l) {
+                    CapsLabel(text: labels.taskLabel)
+                    CopyableValue(text: receipt.taskId, announce: "task ID")
+                }
+            }
+            .padding(.top, 4)
+        }
+        .padding(.top, 2)
+    }
+
+    /// The check facts that are byte-identical on every recorded run, so each is
+    /// printed once for the record rather than once per row. On the flagship
+    /// record `command_state_text` was printed four times and `scope` was
+    /// byte-identical on all four rows.
+    private var uniformCheckFacts: [String] {
+        let checks = receipt.dimensions.evidence.checks ?? []
+        guard !checks.isEmpty else { return [] }
+        func shared(_ value: (ReceiptCheck) -> String?) -> String? {
+            let texts = checks.map { PayloadAbsence.text(value($0)) }
+            guard let first = texts.first ?? nil else { return nil }
+            return texts.allSatisfy { $0 == first } ? first : nil
+        }
+        return [
+            shared(\.commandStateText),
+            shared(\.supersededDefinition),
+            shared(\.scope),
+        ].compactMap { $0 }
+    }
+
+    // MARK: - SS4 · what do I do now
+
+    /// The recorded next step, and nothing else that could be built.
+    ///
+    /// The exits this section is meant to offer — open the commit, the project,
+    /// the PR — CANNOT be built from this payload: `artifact_url`,
+    /// `artifact_path` and `artifact_ref` are null on every check measured, and
+    /// no repo, remote or origin field of any kind exists in the receipt schema.
+    /// `revision.commit` carries a full 40-character sha and `boundary.project`
+    /// carries a name, but nothing maps either to a location. Three new payload
+    /// fields (`boundary.repo_url`, `checks[].revision.commit_url`,
+    /// `outcome.pr_url`) would fill it; until they exist this section is the next
+    /// step alone, and inventing a URL in Swift would be inventing a fact.
+    private var nextAnswer: some View {
+        ReceiptSection(title: labels.nextSectionLabel, identifier: "next") {
+            // The heading already says what this is, so the row drops its own
+            // caps label: one fact, one name for it. A missing next step is
+            // still NAMED — the second absence exempt from the budget.
+            NextStepRow(text: recordedNextStep, showsLabel: false)
+        }
+    }
+
+
+    /// The coverage meter and everything a reader needs to read it (C2).
+    ///
+    /// The bar had no caption, no legend, no scale and no denominator: it drew
+    /// `checked / checkable`, so `1/1 self-checked` filled the whole track on a
+    /// five-step Task with two steps still open. It is now drawn over EVERY
+    /// recorded step, with the open and out-of-scope spans visually distinct,
+    /// so a partial record physically cannot fill it. Beneath it: the reducer's
+    /// ledger line naming those spans, its definition of what the ratio
+    /// measures, and — when the proving run was recorded on a dirty tree — the
+    /// revision label that qualifies the proof (C5).
+    @ViewBuilder
+    private func coverageMeter(evidence: ReceiptEvidence) -> some View {
+        let bar = CoverageBar(evidence: evidence)
+        let ledger = PayloadAbsence.text(receipt.verdict?.ledgerText)
+            ?? PayloadAbsence.text(evidence.coverageLedger)
+        // The proving run's revision line is NOT drawn here any more. It is the
+        // same string the checks block now prints once as a group header,
+        // directly over the runs it stamps — which took `HEAD when recorded:
+        // c41d44f · main · uncommitted changes` from four prints to one. The
+        // qualifier a record owes a reader has not been dropped: it has moved to
+        // where the evidence is, inside this same section.
+        VStack(alignment: .leading, spacing: Space.s) {
+            // A Task with no recorded step has no meter to caption: the
+            // Coverage tile carries its named absence and the ledger, if the
+            // reducer sent one, still names what is outside the ratio.
+            if bar.denominator > 0 {
+                CapsLabel(text: labels.coverageLabel)
+                bar.frame(maxWidth: 460, alignment: .leading)
+            }
+            if let ledger {
+                // The bar's legend: the payload's own sentence for the spans
+                // that own no proof claim. Composing "2 steps still open" per
+                // segment in Swift would be a second vocabulary, so the
+                // reducer's one sentence names them together.
+                Text(ledger).workFont(FieldFont.gapLine).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: Metrics.readingMeasure, alignment: .leading)
+                    .modifier(OptionalHelp(
+                        text: (evidence.notCheckable ?? 0) > 0 ? PayloadAbsence.text(evidence.scopeDefinition) : nil
+                    ))
+            }
+            if bar.denominator > 0, let definition = PayloadAbsence.text(evidence.definition) {
+                // What the meter measures, in the reducer's words. A meter with
+                // no caption at all was the state this replaces.
+                Text(definition).workFont(FieldFont.qualifier).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: Metrics.readingMeasure, alignment: .leading)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(joinedRecordedSentences([
+            labels.coverageLabel,
+            PayloadAbsence.text(evidence.coverageRow),
+            ledger,
+        ]))
+        .accessibilityIdentifier("work.record.coverage")
+    }
+
+    /// The reducer's gap line as it arrives (`Not yet proven — …` only for an
+    /// evidence gap). The glyph is chosen from the TYPED gap (K05): only a
+    /// reducer-labelled unproven part (`gap_label` present) wears the hollow
+    /// unchecked pip; any other gap (open steps, scope counts) is caveat
+    /// prose with the caveat marker, never a tier shape. Prose stays muted.
+    @ViewBuilder
+    private func verdictGapCallout(_ gapLine: String, unproven: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+            if unproven {
+                EvidencePip(grade: "unchecked", radius: Type.icon / 2)
+            } else {
+                CaveatMarker()
+            }
+            Text(gapLine)
+                .workFont(FieldFont.gapLine).foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: Metrics.readingMeasure, alignment: .leading)
+        }
+        .padding(.horizontal, Space.m).padding(.vertical, Space.s)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius))
+    }
+
+    @ViewBuilder
+    private func heroTitle(ramp: VerdictHeroTypeRamp) -> some View {
+        let title = Text(receipt.title ?? receipt.taskId)
+            .workFont(ramp.title)
+            .tracking(ramp.titleTracking)
+            .foregroundStyle(Theme.ink).lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityAddTraits(.isHeader)
+        // The recording client's monogram beside the heading (from main's
+        // title block): identity at a glance, in the neutral fill — it is a
+        // label, not a data mark, and the meta line still spells the client.
+        HStack(alignment: .top, spacing: Space.m) {
+            SourceMonogram(
+                client: primarySessionMember?.client ?? summary?.primaryRoot?.client,
+                size: ramp.monogramSize
+            )
+            .padding(.top, 2)
+            if SnapshotMode.enabled {
+                title
+            } else {
+                title.accessibilityFocused($headingAccessibilityFocused)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// The saved-copy line inside the verdict header. It names the copy's
+    /// absolute age with `Fmt.savedAt`, the same spelling the offline banner
+    /// uses, so the one fact reads the same on both surfaces.
+    private var staleCopyText: String {
+        guard let copiedAt = dashboard.currentReceiptCopiedAt else {
+            return "Saved copy · refresh failed · copy time not recorded"
+        }
+        return "Saved copy from \(Fmt.savedAt(copiedAt)) · refresh failed"
+    }
+
+    private func staleCopyNotice(_ error: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: Space.s) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 11, weight: .semibold))
+                .workFont(.icon)
                 .foregroundStyle(Theme.amber)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                Text("Showing saved receipt · refresh failed")
+                Text(staleCopyText)
                     .workFont(.rowLabel).foregroundStyle(Theme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(error).workFont(.caption).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: Metrics.readingMeasure, alignment: .leading)
             }
             Spacer(minLength: Space.m)
-            if isRefreshing {
-                ProgressView()
-                    .controlSize(.small)
-                    .accessibilityLabel("Retrying receipt refresh")
-            } else {
-                Button("Retry") {
-                    Task { await dashboard.fetchReceipt(taskId: receipt.taskId) }
-                }
-                .buttonStyle(QuietButtonStyle(tint: Theme.accent))
-                .workFont(.captionSemibold)
-                .accessibilityIdentifier("work.receipt.stale.retry")
-            }
+            WorkReceiptRefreshControl(taskId: receipt.taskId)
         }
         .padding(Space.m)
-        .background(Theme.amber.opacity(0.08), in: RoundedRectangle(cornerRadius: Metrics.radius))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // Amber: the state is unverified, not a failure — and it sits INSIDE
+        // the header card, so the wash keeps its own rule (C42).
+        .background(Theme.tintAmberOnCanvas, in: RoundedRectangle(cornerRadius: Metrics.radius))
         .overlay(
             RoundedRectangle(cornerRadius: Metrics.radius)
-                .strokeBorder(Theme.amber.opacity(0.32), lineWidth: Metrics.borderW)
+                .strokeBorder(Theme.rule, lineWidth: Metrics.borderW)
         )
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Showing a saved receipt because refresh failed. \(error)")
+        .accessibilityLabel("\(staleCopyText). \(error)")
         .accessibilityIdentifier("work.receipt.stale")
     }
 
     private var metaLine: String {
-        var parts: [String] = []
-        if let client = primarySessionMember?.client ?? summary?.primaryRoot?.client { parts.append(client) }
-        if let model = receipt.dimensions.actors.models?.first, !model.isEmpty { parts.append(model) }
-        if let secs = receipt.durationSeconds, secs > 0 { parts.append("ran \(durationText(secs))") }
-        if let ago = agoText(summary?.lastActivityAt) { parts.append("updated \(ago)") }
-        return parts.joined(separator: " · ")
+        // The project is meta, so it lives here beside the client — not
+        // appended into the Task objective sentence. The boundary's own name
+        // wins, so the meta line and the boundary gap below agree. The order
+        // itself comes from the one helper every surface calls (K21).
+        let project = PayloadAbsence.text(receipt.dimensions.task.boundary?.project)
+            ?? PayloadAbsence.text(summary?.project)
+        return workMetaLine(
+            client: summary?.primaryRoot?.client,
+            project: project,
+            trailing: [
+                // Two facts main's meta line carried that ours did not: the
+                // model the work ran on, and how long it ran. They sit before
+                // the recency, so the line reads identity → run → recency.
+                PayloadAbsence.text(receipt.dimensions.actors.models?.first),
+                // The `Agents` row's one fact this line did not already hold.
+                // That row is deleted, and its string had to MOVE rather than
+                // merely go: on the thickest record it read `claude-code ·
+                // claude-opus-4-8 · 3 subagents`, and the subagent count
+                // appeared nowhere else at rest once the Sessions tile — which
+                // read `1` on four of five records — went with it.
+                receipt.dimensions.actors.subagentsText,
+                receipt.durationSeconds.flatMap { (secs: Double) -> String? in
+                    secs > 0 ? "ran \(durationText(secs))" : nil
+                },
+                agoText(summary?.lastActivityAt).map { "updated \($0)" },
+                // The date bound on the counts (`Counts since Sep 14`) — meta,
+                // not a second statement of the ratio.
+                PayloadAbsence.text(receipt.verdict?.healthWindow?.text),
+            ]
+        )
     }
 
-    private var topicDivider: some View {
-        Rectangle().fill(Theme.hairline).frame(height: 1)
+    /// The reducer's boundary gap sentence (`Sessions in this Task report
+    /// different projects.`), nil — and hidden — when the project is declared.
+    private var boundaryGapText: String? {
+        PayloadAbsence.text(receipt.dimensions.task.boundary?.gapText)
     }
 
-    /// Identity and provenance in one place: task and agent facts, evidence
-    /// coverage, sources and gaps. Each fact appears once on the page.
-    private var recordingDetails: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            RecordDimensionsCard(receipt: receipt, included: [.task, .agents],
-                                 showsProvenance: false, showsGaps: false)
-            receiptFactRow("Coverage") {
-                let presentation = ReceiptCoveragePresentation(evidence: receipt.axes.evidenceStrength)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(presentation.value).workFont(.body)
-                        .foregroundStyle(presentation.isInconsistent ? Theme.amber : Theme.ink)
-                    Text(presentation.qualifier).workFont(.caption).foregroundStyle(Theme.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                // Definition on hover — never permanent teaching copy.
-                .help("Evidence coverage: the share of checkable claims that carry recorded evidence. A claim is not the same as an independent machine check.")
-            }
-            receiptFactRow("Sources") {
-                let sources = receipt.dimensions.provenance.sourcesPresent ?? []
-                if sources.isEmpty {
-                    Text("not recorded").workFont(.body).foregroundStyle(Theme.muted)
-                } else {
-                    HStack(spacing: 6) {
-                        // Each chip's legend sentence is the daemon's own, shown
-                        // on hover; the chip alone still names the source.
-                        ForEach(sources, id: \.self) { source in
-                            if let definition = receipt.dimensions.provenance.legend?[source],
-                               !definition.isEmpty {
-                                ProvenanceChip(text: source).help(definition)
-                            } else {
-                                ProvenanceChip(text: source)
-                            }
-                        }
-                    }
-                }
-            }
-            let gapsDim = receipt.dimensions.gaps
-            receiptFactRow("Gaps") {
-                let items = gapsDim.items ?? []
-                let count = gapsDim.count ?? items.count
-                if count == 0 {
-                    Text("no recorded gaps").workFont(.body).foregroundStyle(Theme.muted)
-                } else if items.isEmpty {
-                    Text("\(count) recorded gap\(count == 1 ? "" : "s") · details not included")
-                        .workFont(.caption).foregroundStyle(Theme.amber)
-                } else {
-                    // Detailed gaps beyond the third fold into one counted
-                    // trigger; any gaps counted without detail are named too, so
-                    // the remaining total is honest whichever form the extras take.
-                    let undetailed = max(count - items.count, 0)
-                    VStack(alignment: .leading, spacing: 4) {
-                        // Index-stable identity: two gaps sharing a dimension and
-                        // reason must both render, never collapse into one row.
-                        ForEach(Array(items.prefix(3).enumerated()), id: \.offset) { _, item in gapRow(item) }
-                        if items.count > 3 {
-                            let remaining = (items.count - 3) + undetailed
-                            OverflowDisclosure(
-                                label: "\(remaining) more gap\(remaining == 1 ? "" : "s")",
-                                identifier: "work.overflow.gaps"
-                            ) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    ForEach(Array(items.dropFirst(3).enumerated()), id: \.offset) { _, item in gapRow(item) }
-                                    if undetailed > 0 {
-                                        Text("\(undetailed) more recorded gap\(undetailed == 1 ? "" : "s") · details not included")
-                                            .workFont(.caption).foregroundStyle(Theme.amber)
-                                    }
-                                }
-                                .padding(.top, 4)
-                            }
-                            .padding(.top, 2)
-                        } else if undetailed > 0 {
-                            // Same amber as every other gap fact: a counted-but-
-                            // undetailed gap is still a gap.
-                            Text("\(undetailed) more recorded gap\(undetailed == 1 ? "" : "s") · details not included")
-                                .workFont(.caption).foregroundStyle(Theme.amber)
-                        }
-                    }
-                }
-            }
-            receiptFactRow("Task ID") {
-                CopyableValue(text: receipt.taskId, announce: "task ID")
-            }
-        }
-    }
 
-    /// One recorded gap: the hollow amber pip carries the tier, the dimension
-    /// names where the blind spot is, and the reason states it.
+    /// One recorded gap: the caveat marker (a gap is not an evidence tier, so
+    /// it never wears a pip shape), the dimension naming where the blind spot
+    /// is, and the reason stating it.
     private func gapRow(_ item: ReceiptGapItem) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            EvidencePip(shape: .hollow, tint: Theme.amber)
-            Text(item.dimension).workFont(.captionSemibold).foregroundStyle(Theme.muted)
-                .frame(width: 70, alignment: .leading)
-            Text(item.reason).workFont(.caption).foregroundStyle(Theme.amber)
+            CaveatMarker()
+            Text(item.label).workFont(.captionSemibold).foregroundStyle(Theme.muted)
+                .frame(width: 76, alignment: .leading)
+            Text(item.reason).workFont(.caption).foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: Metrics.readingMeasure, alignment: .leading)
         }
+        // The dimension names where the blind spot is and the sentence states
+        // it: one fact, one element (K124).
+        .accessibilityElement(children: .combine)
     }
+}
 
-    private func receiptFactRow<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
-        HStack(alignment: .top, spacing: Space.l) {
-            CapsLabel(text: label)
-                .frame(width: 104, alignment: .leading)
-                .padding(.top, 3)
-            content()
-                .frame(maxWidth: .infinity, alignment: .leading)
+/// The record page's width rule: the one page cap, except while the timeline
+/// is focused and deliberately takes the whole window.
+private struct WorkRecordPageFrame: ViewModifier {
+    let unbounded: Bool
+
+    func body(content: Content) -> some View {
+        if unbounded {
+            content.frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            content.pageFrame()
         }
-        .padding(.vertical, Space.m)
-        .overlay(alignment: .top) { topicDivider }
     }
 }
 
@@ -2473,8 +3970,13 @@ private struct SectionHeader: View {
 
     var body: some View {
         HStack(spacing: Space.m) {
+            // A section head outranks the caps field labels in its rows
+            // (K126): the card-title role in ink, keeping the hairline.
             HStack(spacing: Space.m) {
-                CapsLabel(text: title)
+                Text(title)
+                    .workFont(.titleCard)
+                    .foregroundStyle(Theme.ink)
+                    .fixedSize(horizontal: true, vertical: false)
                 Rectangle().fill(Theme.hairline).frame(height: 1)
             }
             .accessibilityElement(children: .combine)
@@ -2521,12 +4023,10 @@ struct OverflowDisclosure<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
-            Button {
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) { expanded.toggle() }
-            } label: {
+            Button(action: toggle) {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
+                        .workFont(.icon)
                         .rotationEffect(.degrees(expanded ? 90 : 0))
                         .offset(x: hovering && !expanded ? 1 : 0)
                     Text(expanded ? "Show less" : label)
@@ -2538,6 +4038,7 @@ struct OverflowDisclosure<Content: View>: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(SurfaceButtonStyle())
+            .keyboardStop { toggle() }
             .onHover { inside in
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.12)) { hovering = inside }
             }
@@ -2547,10 +4048,17 @@ struct OverflowDisclosure<Content: View>: View {
             if expanded { content() }
         }
     }
+
+    /// Named so the click and the Return key run the SAME fold, animation
+    /// included; a keyboard path that skipped the animation would be a second
+    /// behaviour for one control.
+    private func toggle() {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) { expanded.toggle() }
+    }
 }
 
-/// A monospaced identifier the reader can copy. The value stays selectable; a
-/// copy glyph fades in on hover and is a keyboard focus stop of its own,
+/// A monospaced identifier the reader can copy. The value stays selectable; the
+/// copy glyph is always visible and is a keyboard focus stop of its own,
 /// turning to a checkmark for 1.5 s with a VoiceOver announcement on copy.
 private struct CopyableValue: View {
     let text: String
@@ -2567,20 +4075,21 @@ private struct CopyableValue: View {
                 .workFont(.dataSmall)
                 .foregroundStyle(Theme.muted)
                 .textSelection(.enabled)
-            Button(action: copy) {
-                Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(copied ? Theme.green : Theme.accent)
-                    .frame(minWidth: 24, minHeight: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(SurfaceButtonStyle())
+            // Green is reserved for live connection and external evidence; the
+            // checkmark glyph alone says "copied".
+            // No control is invisible at rest (K85): the glyph is drawn muted
+            // and rises to ink on hover, on focus and after a copy — the same
+            // quiet-to-ink grammar as the document's folds. An opacity-0
+            // affordance was undiscoverable for a pointer user, and reachable
+            // only with Full Keyboard Access, which is off by default.
+            IconButton(
+                systemName: copied ? "checkmark" : "doc.on.doc",
+                label: copied ? "Copied \(announce)" : "Copy \(announce)",
+                help: "Copy \(announce)",
+                tint: hovering || focused || copied ? Theme.ink : Theme.muted,
+                action: copy
+            )
             .focused($focused)
-            // Revealed on hover, while focused (a sighted keyboard user must
-            // see the stop they landed on and its checkmark), and after a copy.
-            .opacity(hovering || focused || copied ? 1 : 0)
-            .help("Copy \(announce)")
-            .accessibilityLabel(copied ? "Copied \(announce)" : "Copy \(announce)")
             Spacer(minLength: 0)
         }
         .onHover { inside in
@@ -2714,9 +4223,9 @@ struct SessionDrillRow: View {
 
     private var detailSummary: String? {
         guard let detail = effectiveDetail else { return nil }
-        let checkDigest = StepCheckDigest(checks: detail.steps.flatMap { $0.checks ?? [] })
+        let hasChecks = detail.steps.contains { !($0.checks ?? []).isEmpty }
         var parts = ["\(detail.steps.count) step\(detail.steps.count == 1 ? "" : "s")"]
-        if !checkDigest.all.isEmpty { parts.append(checkDigest.summary) }
+        if hasChecks { parts.append(PayloadAbsence.text(detail.checkTallyText) ?? PayloadAbsence.checks) }
         return parts.joined(separator: " · ")
     }
 
@@ -2752,9 +4261,9 @@ struct SessionDrillRow: View {
                 VStack(alignment: .leading, spacing: Space.xs) {
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: expanded ? "chevron.down" : "chevron.forward")
-                            .font(.system(size: 8, weight: .semibold))
+                            .workFont(.icon)
                             .foregroundStyle(Theme.muted)
-                            .frame(width: 10, height: 18)
+                            .workScaledMinFrame(width: 12, height: 18)
                         Text(label)
                             .workFont(.body)
                             .foregroundStyle(Theme.ink)
@@ -2785,7 +4294,10 @@ struct SessionDrillRow: View {
                 .padding(.horizontal, 10).padding(.vertical, 7).contentShape(Rectangle())
             }
             .buttonStyle(SurfaceButtonStyle(focusInset: 2))
-            .accessibilityElement(children: .ignore)
+            // NOT `.accessibilityElement(children: .ignore)`: a Button already
+            // speaks as ONE element, and that modifier REPLACES it — the
+            // control loses its button role and its press action with it
+            // (K118). The label below is simply what the button says.
             .accessibilityLabel(accessibilityPresentation.label)
             .accessibilityValue(accessibilityPresentation.value)
             .accessibilityHint(expanded ? "Hides session steps" : "Shows session steps")
@@ -2827,14 +4339,11 @@ struct SessionDrillRow: View {
                     let opened: Set<String> = SnapshotMode.enabled
                         ? SessionStepItem.snapshotOpenedIDs(stepItems)
                         : []
+                    // The SAME spine the record page's Steps section renders, so
+                    // a step reads identically on both surfaces (one row, one
+                    // tally wording, one tier grammar).
                     ScrollContentStack(alignment: .leading, spacing: 6) {
-                        ForEach(stepItems) { item in
-                            StepCard(
-                                step: item.step,
-                                initiallyExpanded: opened.contains(item.id),
-                                accessibilityContext: item.id
-                            )
-                        }
+                        SessionStepSpine(items: stepItems, openedIDs: opened)
                     }
                 }
                 // The Task's subagents are already listed once, flat and
@@ -2846,7 +4355,9 @@ struct SessionDrillRow: View {
         } else if dashboard.isOfflineSnapshot {
             VStack(alignment: .leading, spacing: Space.s) {
                 Text("This session detail was not saved on this Mac. Reconnect the recorder to load it.")
-                    .workFont(.caption).foregroundStyle(Theme.amber)
+                    .workFont(.caption).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: Metrics.readingMeasure, alignment: .leading)
                 if let reconnectSavedWork {
                     Button("Back to recovery", action: reconnectSavedWork)
                         .buttonStyle(QuietButtonStyle(horizontalPadding: 8))
@@ -2856,7 +4367,7 @@ struct SessionDrillRow: View {
             HStack(spacing: Space.s) {
                 Text(loading ? "Retrying session steps…" : "Session steps couldn't be loaded.")
                     .workFont(.caption)
-                    .foregroundStyle(Theme.amber)
+                    .foregroundStyle(Theme.muted)
                 Button {
                     if !loading { Task { await load() } }
                 } label: {

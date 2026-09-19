@@ -247,10 +247,15 @@ final class SetupModel: ObservableObject {
     /// Display advice only. Rendering must not traverse/hash recorder payloads.
     /// Operations continue to use the fresh checks below, never this snapshot.
     struct Presentation: Equatable {
+        /// The reason placeholder that means "the recorder check has not
+        /// answered yet". A pending check is NOT an unavailable feature, and
+        /// the recovery page must not title it as one (K53).
+        static let pendingRecorderCheckReason = "Checking the installed recorder…"
+
         var canSetUp = false
         var needsSetup = false
         var canRunInteractiveSetup = false
-        var reconnectUnavailableReason: String? = "Checking the installed recorder…"
+        var reconnectUnavailableReason: String? = Presentation.pendingRecorderCheckReason
     }
     @Published private(set) var presentation = Presentation()
 

@@ -280,14 +280,50 @@ GLOBAL_INSTALL_NOTES = (
 
 # The per-task directive bullets, shared verbatim by every recording surface.
 _RECORDING_CONTRACT_LINES = (
+    # Budget: the guide test caps this block at 14 non-blank lines and the
+    # session-start variant at 10, because a long directive competes with the
+    # user's actual request for the agent's attention. So every line here earns
+    # its place: one idea, reason first.
+    #
     # `section_title`, not `title`: the MCP tool's own argument name. The old
     # `title` wording named a parameter agentacct_record_section rejected
     # outright ("unexpected argument(s): title"), so the instruction shipped a
     # call that could not succeed. mcp.py now also accepts `title` as an alias,
     # which is what keeps already-rendered CLAUDE.md/AGENTS.md files working.
-    "- Open a section with `agentacct_record_section` BEFORE your first other tool call, and again before each meaningful task. REQUIRED args: `source` (your client name, e.g. \"codex\" or \"claude-code\"), a stable `section_id` (reuse the SAME id across this section's started/checkpoint/terminal calls), and `section_status`; also set `section_title` to a short human goal. Start with `section_status=started`; normally finish with `completed` or `blocked`. Example: agentacct_record_section(source=\"codex\", section_id=\"add-rate-limit\", section_status=\"started\", section_title=\"add rate-limit to login\").",
-    "- For a long task, send `section_status=checkpoint` updates rather than one giant section.",
-    "- When the user hands the work off or says they are continuing in a new session, record the section as `section_status=handed_off` (a clean stop) — do not leave it `started`/`checkpoint`.",
+    "- Open a section with `agentacct_record_section` BEFORE your first other tool "
+    "call, and again before each meaningful task: it is the only thing that groups "
+    "your actions, files, checks and cost into one readable unit. Use `source` (your "
+    "client name), a stable `section_id` (the SAME id for this section's "
+    "started/checkpoint/terminal calls), `section_status=started`, a short "
+    "`section_title`, and `kind`. On the FIRST section of a task also pass `task_goal`: "
+    "what you were asked to ACHIEVE, in the requester's terms, not what you are about to "
+    "do — without it nobody can judge what finishing the task would mean, and section "
+    "titles are steps, not goals. Name the paths you change in `files` — they are the "
+    "only anchor for WHAT changed, they stick to the section, and a terminal section "
+    "without them is refused unless its `kind` is review/research/planning/docs. Long "
+    "task: send `section_status=checkpoint` updates rather than one giant section.",
+    "- Pass `client_session_id` when you know it — the only key that links this work to "
+    "the session's token and cost usage. Never guess it: an installed hook bridge fills "
+    "it in, and a wrong id is worse than a missing one. Add `turn_id` when your client "
+    "exposes it, so usage attributes per turn rather than per session, and "
+    "`parent_client_session_id` when you are a subagent, so your work stays under the "
+    "parent's task instead of appearing as its own.",
+    "- Finish with `section_status=completed` and a `summary` that opens with the "
+    "CONSEQUENCE — what a reader should now believe or do — and only then the mechanism. "
+    "A list of what changed and how many tests passed is a changelog entry: every clause "
+    "true, nothing a reader can decide from. Weak: 'Added parse_amount(); 6 of 7 parse "
+    "tests pass, uncommitted.' Strong: 'Bank-CSV money strings now parse, except a bare "
+    "\"($12.34\", which returns a positive value instead of raising — so the importer must "
+    "not run on unvalidated input yet. parse_amount() in moneyutil/core.py; 6 of 7 parse "
+    "tests pass.' A terminal section without a summary is refused. Call "
+    "`agentacct_work_status` before you finish: it lists sections you left open and "
+    "completed work that still has no check behind it.",
+    "- Blocked or handing off: `section_status=blocked` with `blocker` (what stopped "
+    "you), or `section_status=handed_off` with `summary` when the user continues in a "
+    "new session — both also require `next_step`, the concrete action that resumes the "
+    "work. Say what the stop COSTS: `rest_of_work=usable|unusable|unknown` (can a reader "
+    "still use everything else?), and when it is unusable name what it blocks in the "
+    "`blocker` you are already writing. Never leave a section at `started`/`checkpoint`.",
     # The whole-job-done capstone. The per-task bullet above closes each task,
     # but nothing cued a SESSION-level close when the user signals the whole
     # deliverable is finished ("ship it" / a merge). Without it a finished session
@@ -298,8 +334,26 @@ _RECORDING_CONTRACT_LINES = (
     # below owns the evidence. Triggers stay unambiguous (a mid-task "looks good"
     # must not fire it).
     "- When the user signals the whole job is done (\"ship it\", or after a merge), record a final `section_status=completed` summarizing the whole deliverable, and leave no section on `started`/`checkpoint`.",
-    "- After running tests or a build, record the objective result with `agentacct_record_machine_check`.",
-    "- Keep MCP/event evidence separate from token/cost claims: MCP events prove what work happened; a token or cost figure is only real if it comes from actual client usage the importer read — never fabricate one.",
+    "- After tests, a build, a lint, a smoke test or a browser check, call "
+    "`agentacct_record_machine_check` with the `section_id` it belongs to (a check with "
+    "none is not attached to any step), `command` (what you ran) or `files` (what it "
+    "covered) plus `exit_code`; a check naming neither cannot be audited and is "
+    "refused. `name` is a short label for what the check PROVES, not the command — "
+    "e.g. name=\"percentage() rounds half-up\", command=\"python -m pytest "
+    "tests/test_percent.py\". `result` is the verdict on the work: failed = the check "
+    "shows a defect, not_reproduced = the probe ran and the problem did not appear.",
+    "- A failed or error check must carry a `summary` saying what failed and what was "
+    "observed versus expected. Add `rest_of_work=usable|unusable|unknown` so a reviewer "
+    "knows whether the failure blocks them — you already know, and 'one case still red' "
+    "does not say. Re-run a check with the same `command` and `section_id` (or the same "
+    "`check_key`) so a pass supersedes the earlier failure; error means it could not "
+    "run, skipped means you chose not to run it.",
+    # The ONE skip rule. Two bullets used to pull opposite ways when unsure ("a
+    # short section beats a gap" vs "recording nothing is better than noise").
+    "- Record every meaningful step; skip only trivial throwaway commands.",
+    "- Keep MCP/event evidence separate from token/cost claims: MCP events prove what "
+    "work happened; a token or cost figure is only real if it comes from actual client "
+    "usage the importer read — never fabricate one.",
 )
 
 # The load-if-deferred hint. This is the KEY line for Claude Code, whose client
@@ -311,14 +365,6 @@ _LOAD_IF_DEFERRED_LINE = (
     "(they may be provided as searchable/deferred tools) before recording."
 )
 
-# The low-friction escape hatch — deliberately narrow so real work is never
-# skipped. Directive by omission: everything that is not a genuinely trivial
-# throwaway session should be recorded.
-_LOW_FRICTION_LINE = (
-    "- Low-friction: skip recording only for a genuinely trivial throwaway "
-    "session — recording nothing is better than recording noise, but do record "
-    "real work."
-)
 
 
 # --- MCP server instructions (returned in the `initialize` result) -------------
@@ -332,7 +378,6 @@ MCP_SERVER_INSTRUCTIONS = "\n".join(
         "agentacct records what this session actually did — the work, not just tokens — so the local work views can show it. Record your work as you go:",
         _LOAD_IF_DEFERRED_LINE,
         *_RECORDING_CONTRACT_LINES,
-        _LOW_FRICTION_LINE,
     )
 )
 
@@ -359,7 +404,6 @@ SESSION_START_ADDITIONAL_CONTEXT = "\n".join(
         "agentacct is installed on this machine: it records what each session actually did — the work, not just tokens — for the local work views. Record your work in this session:",
         _LOAD_IF_DEFERRED_LINE,
         *_RECORDING_CONTRACT_LINES,
-        _LOW_FRICTION_LINE,
     )
 )
 
@@ -432,12 +476,11 @@ INSTRUCTIONS_END_MARKERS = (
 # client-agnostic); the surrounding heading differs only in the target filename.
 # Shares the directive bullets with MCP_SERVER_INSTRUCTIONS so the two surfaces
 # cannot drift on the contract; adds the load-if-deferred hint (Claude Code defers
-# MCP tools) and a narrow low-friction note without inviting a blanket skip.
+# MCP tools); the shared contract's one skip rule never invites a blanket skip.
 WORKFLOW_INSTRUCTION_LINES = (
     "Record what this session does so the local work views can show it, not just tokens:",
     _LOAD_IF_DEFERRED_LINE,
     *_RECORDING_CONTRACT_LINES,
-    _LOW_FRICTION_LINE,
 )
 
 WORKFLOW_INSTRUCTION_HEADING = "## agentacct — record your work"

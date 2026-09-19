@@ -137,11 +137,8 @@ struct SetupSheet: View {
                     .buttonStyle(QuietButtonStyle(tint: Theme.muted))
                     .foregroundStyle(Theme.muted)
                 Spacer()
-                Button(action: startSetup) {
-                    Text("Set up recording").font(Face.sansFont(13, .semibold))
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
+                Button("Set up recording", action: startSetup)
+                    .buttonStyle(PrimaryButtonStyle())
             }
         case .working(let status):
             HStack(spacing: 8) {
@@ -152,13 +149,13 @@ struct SetupSheet: View {
         case .done:
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 7) {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.green)
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.ink)
                     Text("Recording is configured.").font(Face.sansFont(14, .medium)).foregroundStyle(Theme.ink)
                 }
                 Text("Open a NEW agent session (in any project) so it picks up the tools and hooks — the session that ran setup can't see them yet.")
                     .font(Type.caption).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
-                HStack { Spacer(); Button("Done", action: onClose).buttonStyle(.borderedProminent).tint(Theme.accent) }
+                HStack { Spacer(); Button("Done", action: onClose).buttonStyle(PrimaryButtonStyle()) }
             }
         case .failed(let message):
             VStack(alignment: .leading, spacing: 10) {
@@ -181,7 +178,7 @@ struct SetupSheet: View {
                     Button("Try again") {
                         startSetup()
                     }
-                    .buttonStyle(.borderedProminent).tint(Theme.accent)
+                    .buttonStyle(PrimaryButtonStyle())
                 }
             }
         }
@@ -197,7 +194,7 @@ private struct SetupBullet: View {
     let text: String
     var body: some View {
         HStack(alignment: .top, spacing: 7) {
-            Circle().fill(Theme.accent.opacity(0.7)).frame(width: 4, height: 4).padding(.top, 6)
+            Circle().fill(Theme.muted).frame(width: 4, height: 4).padding(.top, 6)
             Text(text).font(Type.caption).foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
         }

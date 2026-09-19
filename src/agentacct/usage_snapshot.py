@@ -36,6 +36,16 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Mapping, Optional
 
+from .display_vocabulary import (
+    COST_LEGEND,
+    ORIGIN_LABELS,
+    WINDOW_SHORT_LABELS,
+    cost_display,
+    humanize_seconds,
+    limit_value_text,
+    window_label_for,
+)
+
 
 # ---------------------------------------------------------------------------
 # window vocabulary (shared by `now` and the TUI)
@@ -59,14 +69,9 @@ NOW_WINDOW_ALIASES: dict[str, str] = {
 }
 NOW_WINDOW_DAYS: dict[str, Optional[int]] = {label: days for label, days in NOW_WINDOWS}
 
-# Origin → a short human label distinguishing the Claude feeds.
-ORIGIN_LABELS: dict[str, str] = {
-    "claude_plan_usage": "desktop app",
-    "claude_statusline": "CLI",
-}
-
-# Short labels for the two canonical rate-limit windows.
-WINDOW_KIND_LABELS: dict[str, str] = {"5h": "5h", "7d": "7d"}
+# Origin labels and the short window-kind tokens are owned by
+# :mod:`agentacct.display_vocabulary` (re-exported here for existing importers).
+WINDOW_KIND_LABELS = WINDOW_SHORT_LABELS
 
 
 # ---------------------------------------------------------------------------
@@ -90,25 +95,74 @@ def format_tokens(value: Any) -> str:
     return "—"
 
 
-def cost_text(bucket: Mapping[str, Any]) -> str:
-    """A cost cell for a cube bucket.
+def cost_basis_caption(bucket: Mapping[str, Any], fallback: str) -> str:
+    """The basis caption under a bucket's cost cell — ONLY beside a priced
+    figure. An absence (``no usage recorded`` / ``unpriced``) is the whole fact
+    and never wears a basis, so this returns ``""`` for it."""
 
-    The complete estimate (``$X.XX``) is shown ONLY when the cube vouches for
-    completeness via ``cost_complete`` (every additive row priced, none held) —
-    the mere presence of ``estimated_cost_usd`` does NOT imply completeness, since
-    it is a priced-rows-only sum that ignores unpriced additive rows. Otherwise
-    the priced subtotal is shown as partial (``~$``), or an em-dash when nothing
-    is priced. Non-finite values degrade to an em-dash.
+    if not any(
+        isinstance(bucket.get(key), (int, float)) and not isinstance(bucket.get(key), bool)
+        for key in ("estimated_cost_usd", "known_additive_cost_usd")
+    ):
+        return ""
+    return str(bucket.get("cost_confidence_display") or fallback)
+
+
+def cost_text(bucket: Mapping[str, Any]) -> str:
+    """A cost cell for a cube bucket, in the shared cost grammar
+    (:func:`agentacct.display_vocabulary.cost_display`).
+
+    The complete figure (``$`` reported/billed, ``≈$`` estimate) is shown ONLY
+    when the cube vouches for completeness via ``cost_complete`` (every additive
+    row priced, none held) — the mere presence of ``estimated_cost_usd`` does NOT
+    imply completeness, since it is a priced-rows-only sum that ignores unpriced
+    additive rows. Otherwise the priced subtotal is shown as partial (``~$``).
+    When nothing is priced the absence is named: ``no usage recorded`` for a
+    bucket with zero rows, else ``unpriced``. Non-finite values count as unpriced.
     """
 
-    if bucket.get("cost_complete"):
-        complete = finite(bucket.get("estimated_cost_usd"))
-        if complete is not None:
-            return f"${complete:.2f}"
-    known = finite(bucket.get("known_additive_cost_usd"))
-    if known is not None:
-        return f"~${known:.2f}"
-    return "—"
+    rows = bucket.get("rows")
+    has_usage = not (isinstance(rows, int) and not isinstance(rows, bool) and rows <= 0)
+    return str(
+        cost_display(
+            bucket.get("estimated_cost_usd"),
+            bool(bucket.get("cost_complete")),
+            bucket.get("cost_confidence"),
+            partial_amount=bucket.get("known_additive_cost_usd"),
+            has_usage=has_usage,
+        )["display_text"]
+    )
+
+
+def window_reset_passed(resets_at: Any, now: float) -> bool:
+    """True when a limit window reported a reset instant that is already past:
+    its last share no longer describes the current window."""
+
+    value = finite(resets_at)
+    return value is not None and value > 0 and value < float(now)
+
+
+def headline_limit_choice(candidates: Any, now: float) -> Any:
+    """THE headline-limit rule every glance surface leads with.
+
+    ``candidates`` yields ``(key, stale, used_percent, window_minutes,
+    resets_at)``. The headline is the most constrained LIVE reading: the
+    highest valid ``used_percent`` among windows whose stream is not stale and
+    whose reset has not passed; ties go to the shorter window, then the first
+    candidate. Returns the chosen key, or ``None`` when nothing qualifies.
+    """
+
+    best: tuple[float, float, int] | None = None
+    chosen: Any = None
+    for order, (key, stale, used, minutes, resets_at) in enumerate(candidates):
+        value = finite(used)
+        if stale or value is None or value < 0 or window_reset_passed(resets_at, now):
+            continue
+        span = finite(minutes)
+        rank = (-value, span if span is not None else math.inf, order)
+        if best is None or rank < best:
+            best, chosen = rank, key
+    return chosen
 
 
 def usage_bar(used_percent: float, width: int = 20) -> str:
@@ -132,33 +186,11 @@ def ratio_bar(value: Any, max_value: Any, width: int = 20) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
-def humanize_seconds(seconds: float) -> str:
-    """A compact ``2d 3h`` / ``4h 5m`` / ``6m`` / ``<1m`` duration string."""
-
-    total = int(max(0, seconds))
-    days, rem = divmod(total, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes, _ = divmod(rem, 60)
-    if days:
-        return f"{days}d {hours}h"
-    if hours:
-        return f"{hours}h {minutes}m"
-    if minutes:
-        return f"{minutes}m"
-    return "<1m"
-
-
 def window_label(window: Mapping[str, Any]) -> str:
-    """A human label for a rate-limit window (``5-hour`` / ``7-day`` / ``Nm``)."""
+    """The display name for a rate-limit window (``5-hour limit`` / ``7-day
+    limit`` / ``Nm limit``), from the shared vocabulary."""
 
-    labels = {"5h": "5-hour", "7d": "7-day"}
-    kind = str(window.get("kind") or "")
-    if kind in labels:
-        return labels[kind]
-    minutes = finite(window.get("window_minutes"))
-    if minutes is not None:
-        return f"{int(minutes)}m"
-    return "window"
+    return window_label_for(window.get("kind"), window.get("window_minutes"))
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +279,11 @@ def limit_teaser_lines(
             if not isinstance(used, (int, float)) or isinstance(used, bool):
                 continue
             label = WINDOW_KIND_LABELS.get(str(window.get("kind") or ""), "win")
-            parts.append(f"{label} {float(used):.0f}%")
+            if window_reset_passed(window.get("resets_at"), time.time()):
+                # The share predates the window's reset: past tense, never current.
+                parts.append(f"{label} {limit_value_text(used, reset_passed=True)}")
+            else:
+                parts.append(f"{label} {float(used):.0f}%")
         if parts:
             lines.append(f"{metadata.get('client') or '?'}: " + " · ".join(parts))
     return lines
@@ -614,6 +650,7 @@ __all__ = [
     "NOW_WINDOWS",
     "NOW_WINDOW_ALIASES",
     "NOW_WINDOW_DAYS",
+    "COST_LEGEND",
     "ORIGIN_LABELS",
     "WINDOW_KIND_LABELS",
     "finite",
@@ -626,6 +663,8 @@ __all__ = [
     "latest_limit_events",
     "limit_json_entry",
     "limit_teaser_lines",
+    "headline_limit_choice",
+    "window_reset_passed",
     "UsageWindow",
     "UsageSnapshot",
     "UsagePage",

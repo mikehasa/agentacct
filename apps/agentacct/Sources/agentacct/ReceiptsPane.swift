@@ -43,44 +43,9 @@ func receiptSourceTint(_ source: String) -> Color {
     Theme.muted
 }
 
-/// The app-wide cost prefix grammar, applied wherever a receipt cost renders:
-/// bare `$` only for a complete figure whose confidence is reported OR billed,
-/// `~$` for a knowingly partial one, `≈$` for every other estimate. One prefix
-/// per basis — the same number never appears with and without its estimate
-/// marker, and the same figure never reads exact on one pane and estimated on
-/// another. Mirrors `Fmt.costDisplay`'s `reported` set (the single source of
-/// truth for the grammar).
-func receiptCostDisplay(_ usd: Double, complete: Bool?, confidence: String?) -> String {
-    let reported = confidence == "client_reported" || confidence == "provider_billed"
-    if complete == true && reported { return Fmt.dollars(usd) }
-    if complete == false { return Fmt.dollars(usd, prefix: "~$") }
-    return Fmt.dollars(usd, prefix: "≈$")
-}
-
-/// Human phrasing for a cost basis key (raw keys stay in provenance chips).
-func costBasisLabel(_ basis: String?) -> String {
-    switch basis {
-    case "pricing_table": return "pricing estimate"
-    case "local_client_session": return "client-reported"
-    case "provider_invoice": return "provider billed"
-    case "user_subscription": return "subscription equivalent"
-    case "mixed": return "mixed basis"
-    case nil, "none": return "basis unknown"
-    case .some(let other): return other.replacingOccurrences(of: "_", with: " ")
-    }
-}
-
-/// Human phrasing for an asserted-by key (same map the dashboard uses).
-func assertedByLabel(_ raw: String?) -> String? {
-    switch raw {
-    case "agent_report": return "agent reported"
-    case "machine": return "machine checked"
-    case "human": return "human reviewed"
-    case "inferred": return "state inferred"
-    case nil: return nil
-    case .some(let other): return other.replacingOccurrences(of: "_", with: " ")
-    }
-}
+// Cost grammar, basis words and asserted-by words are reducer-owned
+// (`cost.display_text`, `cost.basis_label`, `asserted_by_label`); this file
+// renders those strings and keeps no label map of its own (C17/C20/C38).
 
 /// Builds the verbatim Outcome-row text for the Receipt DETAIL: the daemon's
 /// decision word + who asserted it, the honest statement quoted beneath, and —
@@ -90,7 +55,12 @@ func assertedByLabel(_ raw: String?) -> String? {
 /// only shows the timestamps the daemon already decided to attach. `quietSince`
 /// absent means "no quiet fact", never a completion signal.
 func receiptOutcomeSummary(_ dim: ReceiptOutcomeDim) -> String {
-    var line = "\(dim.decisionStatus ?? "unknown") · \(assertedByLabel(dim.assertedBy) ?? "unattested")"
+    // The reducer's asserted-by label; a key it did not label is shown
+    // de-snaked (never renamed), and a missing assertion is named.
+    let assertedBy = PayloadAbsence.text(dim.assertedByLabel)
+        ?? PayloadAbsence.text(dim.assertedBy)?.replacingOccurrences(of: "_", with: " ")
+        ?? PayloadAbsence.source
+    var line = "\(dim.decisionStatus ?? "unknown") · \(assertedBy)"
     if let statement = dim.statement, !statement.isEmpty {
         line += "\n“\(statement)”"
     }
@@ -156,21 +126,36 @@ func receiptEmptyCheckDetailsCopy(
     )
 }
 
-enum ReceiptActionIntegrity: Equatable {
-    case unavailable
-    case captureUnknown
-    case totalOnly
+/// The reducer's tool-call integrity state (`actions_synopsis.state`). The app
+/// maps the key to a tone only; every word it shows rides the payload.
+enum ReceiptActionIntegrity: String, Equatable {
+    case notInstrumented = "not_instrumented"
+    case noToolCalls = "no_tool_calls"
+    case captureUnknown = "capture_unknown"
+    case totalOnly = "total_only"
     case exact
-    case totalUnavailable
-    case unrecognizedCategories
+    /// The capture ran, but the reducer proved it did not cover the whole
+    /// task (it holds records the capture never saw). Counted evidence, not a
+    /// named absence — without this arm the state fell through to
+    /// `captureUnknown` and a real count was drawn as if nothing was captured.
+    case partial
+    case totalUnavailable = "total_unavailable"
+    case unrecognizedCategories = "unrecognized_categories"
     case mismatch
     case invalid
+
+    init(payload: String?) {
+        self = payload.flatMap(ReceiptActionIntegrity.init(rawValue:)) ?? .captureUnknown
+    }
+
+    /// A named absence: nothing counted, so the headline reads muted.
+    var isAbsence: Bool { [.notInstrumented, .noToolCalls, .captureUnknown].contains(self) }
 }
 
-/// One same-unit tool-call category in the Actions dimension. Labels describe
-/// only the observed category; they never imply success, effect, importance,
-/// or risk. Unknown future categories stay visible as one bounded aggregate.
-struct ReceiptActionMetric: Equatable, Identifiable {
+/// One same-unit tool-call category in the Actions dimension, labelled by the
+/// reducer (`TOOL_CATEGORY_LABELS`). Labels describe only the observed
+/// category; they never imply success, effect, importance, or risk.
+struct ReceiptActionMetric: Decodable, Equatable, Identifiable {
     let key: String
     let label: String
     let detail: String
@@ -179,311 +164,167 @@ struct ReceiptActionMetric: Equatable, Identifiable {
     var id: String { key }
 }
 
-struct ReceiptActionSynopsis: Equatable {
-    let integrity: ReceiptActionIntegrity
-    let metrics: [ReceiptActionMetric]
-    let headline: String
+/// The reducer's tool-call synopsis (`dimensions.actions.actions_synopsis`):
+/// the headline, integrity detail, labelled metrics, whether a proportional
+/// distribution is honest, the capture boundary and the tile. The app renders
+/// these strings; it never recounts, reconciles or words a state itself.
+struct ReceiptActionSynopsis: Decodable, Equatable {
+    let state: String?
+    let headline: String?
     let integrityDetail: String?
+    let metrics: [ReceiptActionMetric]
+    let canShowDistribution: Bool
+    let captureBoundary: String?
     let storedTotal: Int?
     let categorizedTotal: Int?
-    let shareDenominator: Int?
-    let captureBoundary: String?
+    let tile: ReceiptTileText?
 
-    /// A quantitative distribution is honest only when the displayed types
-    /// reconcile to a positive stored total. Other integrity states keep the
-    /// exact counts but omit proportions rather than drawing a misleading
-    /// chart against a missing or conflicting denominator.
-    var canShowDistribution: Bool {
-        guard let shareDenominator, shareDenominator > 0, !metrics.isEmpty else {
-            return false
+    enum CodingKeys: String, CodingKey {
+        case state, headline, metrics, tile
+        case integrityDetail = "integrity_detail"
+        case canShowDistribution = "can_show_distribution"
+        case captureBoundary = "capture_boundary"
+        case storedTotal = "stored_total"
+        case categorizedTotal = "categorized_total"
+    }
+
+    init(state: String?, headline: String?, integrityDetail: String? = nil,
+         metrics: [ReceiptActionMetric] = [], canShowDistribution: Bool = false,
+         captureBoundary: String? = nil, storedTotal: Int? = nil, categorizedTotal: Int? = nil,
+         tile: ReceiptTileText? = nil) {
+        self.state = state
+        self.headline = headline
+        self.integrityDetail = integrityDetail
+        self.metrics = metrics
+        self.canShowDistribution = canShowDistribution
+        self.captureBoundary = captureBoundary
+        self.storedTotal = storedTotal
+        self.categorizedTotal = categorizedTotal
+        self.tile = tile
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        state = try container.decodeIfPresent(String.self, forKey: .state)
+        headline = try container.decodeIfPresent(String.self, forKey: .headline)
+        integrityDetail = try container.decodeIfPresent(String.self, forKey: .integrityDetail)
+        metrics = try container.decodeIfPresent([ReceiptActionMetric].self, forKey: .metrics) ?? []
+        canShowDistribution = try container.decodeIfPresent(Bool.self, forKey: .canShowDistribution) ?? false
+        captureBoundary = try container.decodeIfPresent(String.self, forKey: .captureBoundary)
+        storedTotal = try container.decodeIfPresent(Int.self, forKey: .storedTotal)
+        categorizedTotal = try container.decodeIfPresent(Int.self, forKey: .categorizedTotal)
+        tile = try container.decodeIfPresent(ReceiptTileText.self, forKey: .tile)
+    }
+
+    var integrity: ReceiptActionIntegrity { ReceiptActionIntegrity(payload: state) }
+
+    /// The headline, or the tile's named absence, or the generic absence.
+    var headlineText: String {
+        PayloadAbsence.text(headline) ?? PayloadAbsence.text(tile?.absent) ?? PayloadAbsence.toolCalls
+    }
+
+    /// The share denominator exists only when the reducer says the displayed
+    /// types reconcile to a positive stored total.
+    var shareDenominator: Int? {
+        guard canShowDistribution, let storedTotal, storedTotal > 0, !metrics.isEmpty else { return nil }
+        return storedTotal
+    }
+}
+
+// MARK: - Record summary strip
+
+/// The record page's tile strip is DELETED, and with it `RecordSummaryStrip`.
+///
+/// Five tiles, 198 px on every record, and each one answered a question that
+/// already had a better home: COVERAGE and CHECKS are the Evidence section's
+/// heading line, TOOL CALLS and COST are two nouns in its one absence line, and
+/// SESSIONS read `1` on four of the five records measured — a figure set in the
+/// metric face for a number that never varied.
+///
+/// `RecordSummaryPresentation` (V1Model.swift) is NOT deleted: it is the model
+/// the task list still reads, and its tests still pin it.
+
+
+/// Equal-width tile columns. The column count is the largest that gives every
+/// tile at least its minimum width (its unbreakable value and longest
+/// qualifier word); tiles then share one height. Hairline dividers sit between
+/// tiles of the same row and collapse at a row break.
+struct RecordSummaryTileGrid: Layout {
+    struct IsDivider: LayoutValueKey { static let defaultValue = false }
+
+    var columnGap: CGFloat
+    var rowGap: CGFloat
+
+    struct Plan {
+        var columns: Int
+        var columnWidth: CGFloat
+        var tileHeight: CGFloat
+        var rows: Int
+    }
+
+    private func tiles(_ subviews: Subviews) -> [LayoutSubview] {
+        subviews.filter { !$0[IsDivider.self] }
+    }
+
+    private func plan(width proposed: CGFloat?, subviews: Subviews) -> Plan {
+        let tiles = tiles(subviews)
+        guard !tiles.isEmpty else { return Plan(columns: 1, columnWidth: 0, tileHeight: 0, rows: 0) }
+        let minimum = tiles.map { $0.sizeThatFits(ProposedViewSize(width: 0, height: nil)).width }.max() ?? 0
+        let ideal = tiles.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
+        let count = tiles.count
+        let width = proposed ?? (CGFloat(count) * ideal + CGFloat(count - 1) * columnGap)
+        var columns = count
+        while columns > 1, CGFloat(columns) * minimum + CGFloat(columns - 1) * columnGap > width {
+            columns -= 1
         }
-        return integrity == .exact
+        let columnWidth = max(minimum, (width - CGFloat(columns - 1) * columnGap) / CGFloat(columns))
+        let tileHeight = tiles.map {
+            $0.sizeThatFits(ProposedViewSize(width: columnWidth, height: nil)).height
+        }.max() ?? 0
+        let rows = (count + columns - 1) / columns
+        return Plan(columns: columns, columnWidth: columnWidth, tileHeight: tileHeight, rows: rows)
     }
-}
 
-struct ReceiptActionKPI: Equatable {
-    let value: String?
-    let qualifier: String?
-    let absent: String?
-}
-
-private struct ReceiptActionMetricDerivation {
-    let metrics: [ReceiptActionMetric]
-    let overflowed: Bool
-    let invalidCategoryCount: Int
-    let unrecognizedCategoryCount: Int
-}
-
-private func deriveReceiptActionMetrics(_ counts: [String: Int]?) -> ReceiptActionMetricDerivation {
-    let known: [(key: String, label: String, detail: String)] = [
-        ("read", "Read", "File or context read tool calls"),
-        ("edit", "Edit", "Edit or write tool calls"),
-        ("execute", "Execute", "Command or process tool calls"),
-        ("search", "Search", "File or text search tool calls"),
-        ("network", "Network", "Network access tool calls"),
-        ("agent", "Agent", "Agent coordination tool calls"),
-        ("plan", "Plan", "Planning tool calls"),
-        ("mcp", "Connected tools", "Connected-tool calls"),
-        ("other", "Other", "Tool calls outside named categories"),
-    ]
-    let knownKeys = Set(known.map(\.key))
-    let familiar = known.compactMap { item -> ReceiptActionMetric? in
-        guard let count = counts?[item.key], count > 0 else { return nil }
-        return ReceiptActionMetric(
-            key: item.key,
-            label: item.label,
-            detail: item.detail,
-            count: count
-        )
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let plan = plan(width: proposal.width, subviews: subviews)
+        let width = CGFloat(plan.columns) * plan.columnWidth + CGFloat(plan.columns - 1) * columnGap
+        let height = CGFloat(plan.rows) * plan.tileHeight + CGFloat(max(0, plan.rows - 1)) * rowGap
+        return CGSize(width: width, height: height)
     }
-    var invalidCategoryCount = 0
-    var unrecognizedCategoryCount = 0
-    var unknownTotal = 0
-    var overflowed = false
-    for (key, count) in counts ?? [:] {
-        if count < 0 || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            invalidCategoryCount += 1
-            continue
-        }
-        guard count > 0, !knownKeys.contains(key) else { continue }
-        unrecognizedCategoryCount += 1
-        guard !overflowed else { continue }
-        let result = unknownTotal.addingReportingOverflow(count)
-        if result.overflow {
-            overflowed = true
-        } else {
-            unknownTotal = result.partialValue
-        }
-    }
-    guard unrecognizedCategoryCount > 0, !overflowed else {
-        return ReceiptActionMetricDerivation(
-            metrics: familiar,
-            overflowed: overflowed,
-            invalidCategoryCount: invalidCategoryCount,
-            unrecognizedCategoryCount: unrecognizedCategoryCount
-        )
-    }
-    let categoryWord = unrecognizedCategoryCount == 1 ? "category" : "categories"
-    return ReceiptActionMetricDerivation(
-        metrics: familiar + [
-            ReceiptActionMetric(
-                key: "__unknown_types__",
-                label: "Unrecognized types",
-                detail: "\(unrecognizedCategoryCount) unrecognized \(categoryWord)",
-                count: unknownTotal
-            )
-        ],
-        overflowed: false,
-        invalidCategoryCount: invalidCategoryCount,
-        unrecognizedCategoryCount: unrecognizedCategoryCount
-    )
-}
 
-func receiptActionMetrics(_ counts: [String: Int]?) -> [ReceiptActionMetric] {
-    deriveReceiptActionMetrics(counts).metrics
-}
-
-func receiptActionSynopsis(
-    counts: [String: Int]?,
-    storedTotal: Int?
-) -> ReceiptActionSynopsis {
-    let derivation = deriveReceiptActionMetrics(counts)
-    let metrics = derivation.metrics
-    var categorizedTotal = 0
-    var categorizedOverflow = derivation.overflowed
-    if !categorizedOverflow {
-        for metric in metrics {
-            let result = categorizedTotal.addingReportingOverflow(metric.count)
-            if result.overflow {
-                categorizedOverflow = true
-                break
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let plan = plan(width: bounds.width, subviews: subviews)
+        var tileIndex = 0
+        for subview in subviews {
+            if subview[IsDivider.self] {
+                // The divider precedes tile `tileIndex`; it shows only when
+                // that tile continues the same row.
+                guard tileIndex % plan.columns != 0 else {
+                    subview.place(at: bounds.origin, proposal: .zero)
+                    continue
+                }
+                let row = tileIndex / plan.columns
+                let column = tileIndex % plan.columns
+                let x = bounds.minX + CGFloat(column) * (plan.columnWidth + columnGap) - (columnGap + 1) / 2
+                let y = bounds.minY + CGFloat(row) * (plan.tileHeight + rowGap)
+                subview.place(
+                    at: CGPoint(x: x, y: y),
+                    proposal: ProposedViewSize(width: 1, height: plan.tileHeight)
+                )
+            } else {
+                let row = tileIndex / plan.columns
+                let column = tileIndex % plan.columns
+                subview.place(
+                    at: CGPoint(
+                        x: bounds.minX + CGFloat(column) * (plan.columnWidth + columnGap),
+                        y: bounds.minY + CGFloat(row) * (plan.tileHeight + rowGap)
+                    ),
+                    proposal: ProposedViewSize(width: plan.columnWidth, height: plan.tileHeight)
+                )
+                tileIndex += 1
             }
-            categorizedTotal = result.partialValue
         }
     }
-    let invalidCategoryCount = derivation.invalidCategoryCount
-    let invalidStoredTotal = (storedTotal ?? 0) < 0
-    let captureBoundary = "No ordered action ledger; captured tool-call counts cannot be linked to results or timing."
-
-    if invalidCategoryCount > 0 || invalidStoredTotal || categorizedOverflow {
-        var details: [String] = []
-        if invalidCategoryCount > 0 {
-            details.append(
-                "\(invalidCategoryCount) invalid \(invalidCategoryCount == 1 ? "category was" : "categories were") omitted"
-            )
-        }
-        if invalidStoredTotal { details.append("the stored total is invalid") }
-        if categorizedOverflow {
-            details.append("the categorized tool-call sum overflowed")
-        } else if categorizedTotal > 0 {
-            details.append("\(categorizedTotal) valid \(categorizedTotal == 1 ? "tool call remains" : "tool calls remain") categorized")
-        }
-        if let storedTotal, storedTotal >= 0 { details.append("stored total is \(storedTotal)") }
-        return ReceiptActionSynopsis(
-            integrity: .invalid,
-            metrics: metrics,
-            headline: "Tool-call data incomplete",
-            integrityDetail: details.joined(separator: " · "),
-            storedTotal: storedTotal,
-            categorizedTotal: categorizedOverflow ? nil : categorizedTotal,
-            shareDenominator: nil,
-            captureBoundary: categorizedTotal > 0 || (storedTotal ?? 0) > 0 || categorizedOverflow
-                ? captureBoundary : nil
-        )
-    }
-
-    guard let storedTotal else {
-        if categorizedTotal > 0 {
-            let hasUnrecognizedCategories = derivation.unrecognizedCategoryCount > 0
-            return ReceiptActionSynopsis(
-                integrity: hasUnrecognizedCategories ? .unrecognizedCategories : .totalUnavailable,
-                metrics: metrics,
-                headline: "\(categorizedTotal) categorized \(categorizedTotal == 1 ? "tool call" : "tool calls")",
-                integrityDetail: hasUnrecognizedCategories
-                    ? "\(derivation.unrecognizedCategoryCount) unrecognized tool-call \(derivation.unrecognizedCategoryCount == 1 ? "type" : "types") · stored total unavailable"
-                    : "Stored tool-call total unavailable",
-                storedTotal: nil,
-                categorizedTotal: categorizedTotal,
-                shareDenominator: nil,
-                captureBoundary: captureBoundary
-            )
-        }
-        return ReceiptActionSynopsis(
-            integrity: counts == nil ? .unavailable : .totalUnavailable,
-            metrics: [],
-            headline: counts == nil ? "not instrumented" : "stored total unavailable",
-            integrityDetail: counts == nil ? nil : "No categorized tool-call counts",
-            storedTotal: nil,
-            categorizedTotal: 0,
-            shareDenominator: nil,
-            captureBoundary: nil
-        )
-    }
-
-    if storedTotal == 0, categorizedTotal == 0 {
-        return ReceiptActionSynopsis(
-            integrity: .captureUnknown,
-            metrics: [],
-            headline: "No captured tool calls",
-            integrityDetail: "Capture coverage unknown",
-            storedTotal: 0,
-            categorizedTotal: 0,
-            shareDenominator: nil,
-            captureBoundary: nil
-        )
-    }
-
-    if storedTotal > 0, counts == nil {
-        return ReceiptActionSynopsis(
-            integrity: .totalOnly,
-            metrics: [],
-            headline: "\(storedTotal) \(storedTotal == 1 ? "tool call" : "tool calls") in stored total",
-            integrityDetail: "Tool-call type breakdown unavailable",
-            storedTotal: storedTotal,
-            categorizedTotal: 0,
-            shareDenominator: nil,
-            captureBoundary: captureBoundary
-        )
-    }
-
-    if storedTotal != categorizedTotal {
-        var detail = "category counts sum to \(categorizedTotal) · stored total is \(storedTotal)"
-        if derivation.unrecognizedCategoryCount > 0 {
-            detail += " · \(derivation.unrecognizedCategoryCount) unrecognized tool-call \(derivation.unrecognizedCategoryCount == 1 ? "type" : "types")"
-        }
-        return ReceiptActionSynopsis(
-            integrity: .mismatch,
-            metrics: metrics,
-            headline: "Tool-call totals conflict",
-            integrityDetail: detail,
-            storedTotal: storedTotal,
-            categorizedTotal: categorizedTotal,
-            shareDenominator: nil,
-            captureBoundary: captureBoundary
-        )
-    }
-    if derivation.unrecognizedCategoryCount > 0 {
-        return ReceiptActionSynopsis(
-            integrity: .unrecognizedCategories,
-            metrics: metrics,
-            headline: "\(storedTotal) \(storedTotal == 1 ? "tool call" : "tool calls") captured",
-            integrityDetail: "\(derivation.unrecognizedCategoryCount) unrecognized tool-call \(derivation.unrecognizedCategoryCount == 1 ? "type was" : "types were") aggregated · update the app to interpret \(derivation.unrecognizedCategoryCount == 1 ? "it" : "them")",
-            storedTotal: storedTotal,
-            categorizedTotal: categorizedTotal,
-            shareDenominator: nil,
-            captureBoundary: captureBoundary
-        )
-    }
-    return ReceiptActionSynopsis(
-        integrity: .exact,
-        metrics: metrics,
-        headline: "\(storedTotal) \(storedTotal == 1 ? "tool call" : "tool calls") captured",
-        integrityDetail: nil,
-        storedTotal: storedTotal,
-        categorizedTotal: categorizedTotal,
-        shareDenominator: storedTotal,
-        captureBoundary: captureBoundary
-    )
-}
-
-func receiptActionKPI(_ synopsis: ReceiptActionSynopsis) -> ReceiptActionKPI {
-    switch synopsis.integrity {
-    case .captureUnknown:
-        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "capture unknown")
-    case .totalOnly, .exact:
-        return ReceiptActionKPI(
-            value: synopsis.storedTotal.map(String.init),
-            qualifier: "tool calls",
-            absent: nil
-        )
-    case .totalUnavailable:
-        if let categorized = synopsis.categorizedTotal, categorized > 0 {
-            return ReceiptActionKPI(value: "\(categorized)", qualifier: "categorized calls", absent: nil)
-        }
-        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "stored total unavailable")
-    case .unrecognizedCategories:
-        if let stored = synopsis.storedTotal {
-            return ReceiptActionKPI(value: "\(stored)", qualifier: "tool calls · types changed", absent: nil)
-        }
-        if let categorized = synopsis.categorizedTotal, categorized > 0 {
-            return ReceiptActionKPI(value: "\(categorized)", qualifier: "categorized calls · types changed", absent: nil)
-        }
-        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "tool-call types changed")
-    case .mismatch:
-        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "tool-call totals conflict")
-    case .invalid:
-        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "tool-call data incomplete")
-    case .unavailable:
-        return ReceiptActionKPI(value: nil, qualifier: nil, absent: "not instrumented")
-    }
-}
-
-func receiptActionScope(relatedPathCount: Int?) -> String {
-    guard let pathCount = relatedPathCount, pathCount >= 0 else { return "" }
-    return "\(pathCount) unique \(pathCount == 1 ? "path" : "paths") from recorded work, machine checks, or captured edit tool calls"
-}
-
-func receiptActionSourceText(_ sources: [String]?) -> String {
-    var labels: [String] = []
-    var seen = Set<String>()
-    for source in sources ?? [] {
-        let label: String
-        switch source {
-        case "", "none": continue
-        case "mcp": label = "MCP"
-        case "transcript_scan": label = "Transcript scan"
-        case "client_log": label = "Client log"
-        case "agent_report": label = "Agent report"
-        case "pricing_table": label = "Pricing table"
-        case "ci": label = "CI"
-        case "hook": label = "Client hook"
-        default:
-            let words = source.replacingOccurrences(of: "_", with: " ")
-            label = words.prefix(1).uppercased() + words.dropFirst()
-        }
-        if seen.insert(label).inserted { labels.append(label) }
-    }
-    return labels.joined(separator: ", ")
 }
 
 // MARK: - Receipt dimensions
@@ -494,12 +335,21 @@ func receiptActionSourceText(_ sources: [String]?) -> String {
 /// one deterministic two-column-to-one-column transition.
 struct ReceiptActionsDigest: View {
     let synopsis: ReceiptActionSynopsis
-    let relatedPathCount: Int?
-    let provenance: [String]?
+    /// The reducer's related-path scope (`related_paths_text`): a count, or
+    /// its named absence.
+    let relatedPathsText: String?
+    /// The reducer's capture-source words for the counts (`action_sources_text`).
+    let sourceText: String?
     let gaps: [String]?
     /// Topic use: keep the facts, drop the explanatory copy — the definitions
     /// live in the topic's help instead of under every bar.
     var compact = false
+    /// The dimension's label (`field_labels.actions`).
+    var label: String = "Tool calls"
+    /// The captured ledger itself — tool names, command text and associated
+    /// paths. The CLI has always printed these and the app could not see them
+    /// (they were absent from `ReceiptActionsDim`'s coding keys entirely).
+    var ledger: ReceiptActionsDim? = nil
 
     // The app's fixed type ramp keeps dense dashboard geometry stable. This
     // focused digest still has to honor accessibility text sizes, so its four
@@ -507,10 +357,8 @@ struct ReceiptActionsDigest: View {
     // changing the surrounding receipt ledger.
     @ScaledMetric(relativeTo: .body) private var bodyTypeSize: CGFloat = 14
     @ScaledMetric(relativeTo: .caption) private var captionTypeSize: CGFloat = 12
-    @ScaledMetric(relativeTo: .caption) private var captionIconSize: CGFloat = 10
 
-    private var scope: String { receiptActionScope(relatedPathCount: relatedPathCount) }
-    private var sourceText: String { receiptActionSourceText(provenance) }
+    private var scope: String { PayloadAbsence.text(relatedPathsText) ?? "" }
     private var bodyFont: Font { Face.sansFont(bodyTypeSize, .regular) }
     private var rowLabelFont: Font { Face.sansFont(bodyTypeSize, .semibold) }
     private var captionFont: Font { Face.sansFont(captionTypeSize, .regular) }
@@ -531,7 +379,7 @@ struct ReceiptActionsDigest: View {
                 // Work page: a caps label matching the sibling rows, and a
                 // full-width content column so the 100% bar spans its track.
                 HStack(alignment: .top, spacing: Space.l) {
-                    CapsLabel(text: "Tool calls")
+                    CapsLabel(text: label)
                         .frame(width: 104, alignment: .leading)
                         .padding(.top, 3)
                         .accessibilityHidden(true)
@@ -554,12 +402,12 @@ struct ReceiptActionsDigest: View {
         }
         .padding(.vertical, Space.m)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Tool calls")
+        .accessibilityLabel(label)
         .accessibilityIdentifier("receipt.actions.summary")
     }
 
     private var actionsLabel: some View {
-        Text("Tool calls")
+        Text(label)
             .font(rowLabelFont)
             .foregroundStyle(Theme.ink)
             .accessibilityHidden(true)
@@ -567,9 +415,9 @@ struct ReceiptActionsDigest: View {
 
     private var digestContent: some View {
         VStack(alignment: .leading, spacing: Space.s) {
-            Text(synopsis.headline)
+            Text(synopsis.headlineText)
                 .font(bodyFont)
-                .foregroundStyle(synopsis.integrity == .unavailable ? Theme.muted : Theme.ink)
+                .foregroundStyle(synopsis.integrity.isAbsence ? Theme.muted : Theme.ink)
                 .fixedSize(horizontal: false, vertical: true)
             if let detail = synopsis.integrityDetail {
                 Text(detail)
@@ -578,7 +426,7 @@ struct ReceiptActionsDigest: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !synopsis.metrics.isEmpty {
-                if synopsis.canShowDistribution {
+                if synopsis.shareDenominator != nil {
                     // Work page: one 100% stacked bar + a wrapping legend, with
                     // the full itemized list one click away. The multi-row
                     // shared-scale chart stays the full-receipt presentation.
@@ -601,8 +449,12 @@ struct ReceiptActionsDigest: View {
                     }
                 }
             }
+            capturedLedger
             if !scope.isEmpty {
-                metadataLine(label: "Related paths", value: scope)
+                Text(scope)
+                    .font(dataSmallFont)
+                    .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             // On the Work page these facts already have a home elsewhere: the
             // source identities in the Recording section's Sources row (the
@@ -610,17 +462,84 @@ struct ReceiptActionsDigest: View {
             // and the actions dimension's gaps in the Recording Gaps row (the
             // daemon rolls every dimension's gaps into that list). Repeating
             // them would duplicate facts, so the compact digest omits them.
-            if !compact, !sourceText.isEmpty {
+            if !compact, let sourceText = PayloadAbsence.text(sourceText) {
                 metadataLine(label: "Action sources", value: sourceText)
             }
             if !compact, let boundary = synopsis.captureBoundary {
                 metadataLine(label: "Detail", value: boundary)
             }
             ForEach(Array((compact ? [] : (gaps ?? [])).enumerated()), id: \.offset) { _, gap in
-                noticeLine(prefix: "Evidence gap", text: gap, tone: Theme.amber)
+                // Caveat prose is muted (C24); amber stays rationed.
+                noticeLine(prefix: "Evidence gap", text: gap, tone: Theme.muted)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The captured ledger, in three parts: which TOOLS ran and how often,
+    /// the command text that was kept, and the paths the capture associated
+    /// with the task. Each part names what the reducer withheld rather than
+    /// showing a shorter list as if it were the whole one.
+    @ViewBuilder private var capturedLedger: some View {
+        if let ledger {
+            let toolRows = ledger.toolNameRows
+            let commands = ledger.commandLines
+            let files = ledger.touchedFileLines
+            if !toolRows.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Tools").font(captionSemiboldFont).foregroundStyle(Theme.ink)
+                    ForEach(toolRows, id: \.name) { tool in
+                        HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                            Text(tool.name).font(dataSmallFont).foregroundStyle(Theme.ink)
+                                .lineLimit(1).truncationMode(.middle)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Text("\(tool.count)").font(dataSmallSemiboldFont).foregroundStyle(Theme.ink)
+                        }
+                    }
+                    if let elided = ledger.toolNamesElided, elided > 0 {
+                        Text("\(elided) more tool \(elided == 1 ? "name" : "names") not shown")
+                            .font(captionFont).foregroundStyle(Theme.muted)
+                    }
+                }
+                .padding(.top, Space.xs)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("receipt.actions.tools")
+            }
+            if !commands.isEmpty {
+                OverflowDisclosure(label: "Commands · \(ledger.commandCount ?? commands.count)",
+                                   identifier: "receipt.actions.commands") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(commands.enumerated()), id: \.offset) { _, command in
+                            Text(command).font(dataSmallFont).foregroundStyle(Theme.ink)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        if let elided = ledger.commandsElided, elided > 0 {
+                            Text("\(elided) more \(elided == 1 ? "command" : "commands") not shown")
+                                .font(captionFont).foregroundStyle(Theme.muted)
+                        }
+                    }
+                }
+            }
+            if !files.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(files, id: \.self) { file in
+                        Text(file).font(dataSmallFont).foregroundStyle(Theme.muted)
+                            .lineLimit(1).truncationMode(.middle)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if let elided = ledger.touchedFilesElided, elided > 0 {
+                        Text("\(elided) more \(elided == 1 ? "path" : "paths") not shown")
+                            .font(captionFont).foregroundStyle(Theme.muted)
+                    }
+                }
+                .padding(.top, Space.xs)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("receipt.actions.touched-files")
+            }
+        }
     }
 
     // MARK: compact stacked bar (Work page)
@@ -636,39 +555,38 @@ struct ReceiptActionsDigest: View {
         let axValue: String
     }
 
-    /// Accent, tinted by share rank — the bar's only colors. "Other" is muted.
-    private var accentRamp: [Double] { [1.0, 0.82, 0.66, 0.52, 0.4, 0.32] }
+    /// Identity hue per tool-call category — fixed by ENTITY, never by share
+    /// rank, so a category keeps its color whether it is the largest slice or
+    /// the smallest. Three validated hues (see `Theme.chartCat*`); every other
+    /// named type folds into the neutral "Other" slice, with its exact count
+    /// one click away in the full type list.
+    private static let categoryTint: [String: Color] = [
+        "read": Theme.chartCatRead,
+        "execute": Theme.chartCatExecute,
+        "edit": Theme.chartCatEdit,
+    ]
 
-    /// The displayed segments: every type when few, else the five largest plus
-    /// a muted "Other" carrying the exact remainder. Callers guarantee a
-    /// reconciled positive denominator (`canShowDistribution`).
+    /// The displayed segments: one slice per category that owns a validated
+    /// identity hue, plus a muted "Other" carrying the exact remainder. Callers
+    /// guarantee a reconciled positive denominator (`canShowDistribution`).
     private var barSegments: [BarSegment] {
         guard let denom = synopsis.shareDenominator, denom > 0 else { return [] }
         func pct(_ count: Int) -> String {
             (Double(count) / Double(denom)).formatted(.percent.precision(.fractionLength(0...1)))
         }
-        // One descending-count order serves both decisions: which five types
-        // stay visible when there are many, and each visible slice's tint rank.
-        let byCountDesc = synopsis.metrics.sorted { $0.count > $1.count }
-        let visibleKeys = synopsis.metrics.count > 6 ? Set(byCountDesc.prefix(5).map(\.key)) : nil
-        var tintRank: [String: Int] = [:]
-        for metric in byCountDesc where visibleKeys?.contains(metric.key) ?? true {
-            tintRank[metric.key] = tintRank.count
-        }
         var otherCount = 0
         var segments: [BarSegment] = []
         for metric in synopsis.metrics {  // taxonomy order, matching the legend
-            guard visibleKeys?.contains(metric.key) ?? true else {
+            guard let tint = Self.categoryTint[metric.key] else {
                 otherCount += metric.count
                 continue
             }
-            let opacity = accentRamp[min(tintRank[metric.key] ?? accentRamp.count - 1, accentRamp.count - 1)]
             segments.append(BarSegment(
                 id: metric.key,
                 label: metric.label,
                 count: metric.count,
                 fraction: Double(metric.count) / Double(denom),
-                color: Theme.accent.opacity(opacity),
+                color: tint,
                 tooltip: "\(metric.label) · \(metric.count) call\(metric.count == 1 ? "" : "s") · \(pct(metric.count)) — \(metric.detail)",
                 axValue: "\(metric.count) call\(metric.count == 1 ? "" : "s"), \(pct(metric.count)). \(metric.detail)"
             ))
@@ -679,7 +597,9 @@ struct ReceiptActionsDigest: View {
                 label: "Other",
                 count: otherCount,
                 fraction: Double(otherCount) / Double(denom),
-                color: Theme.muted.opacity(0.55),
+                // Neutral chart token for the "Other" slot — no alpha-derived
+                // color, so it reads the same weight in both modes (C42).
+                color: Theme.chartNeutral,
                 tooltip: "Other · \(otherCount) call\(otherCount == 1 ? "" : "s") · \(pct(otherCount)) — remaining captured tool-call types",
                 axValue: "\(otherCount) call\(otherCount == 1 ? "" : "s"), \(pct(otherCount)). Remaining captured tool-call types"
             ))
@@ -691,7 +611,9 @@ struct ReceiptActionsDigest: View {
         let segments = barSegments
         return VStack(alignment: .leading, spacing: Space.s) {
             GeometryReader { proxy in
-                HStack(spacing: 0) {
+                // A 2 pt surface gap between segments so adjacent categories
+                // are separated by geometry as well as hue (secondary encoding).
+                HStack(spacing: 2) {
                     ForEach(segments) { segment in
                         // A 2 pt floor keeps a tiny nonzero share visible; it
                         // bends strict proportionality by at most ~2 pt per
@@ -699,39 +621,35 @@ struct ReceiptActionsDigest: View {
                         segment.color
                             .frame(width: max(proxy.size.width * segment.fraction, segment.fraction > 0 ? 2 : 0))
                             .help(segment.tooltip)
-                            .accessibilityElement()
-                            .accessibilityLabel(segment.label)
-                            .accessibilityValue(segment.axValue)
                     }
                 }
             }
             .frame(height: 6)
             .clipShape(RoundedRectangle(cornerRadius: 2))
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Tool calls by type")
+            // The legend entries below are the accessible proxy for each
+            // slice (C35), so the 6 pt bar is not read a second time.
+            .accessibilityHidden(true)
 
             legend(segments)
 
-            // The full itemized list — with exact percents — is one click away
-            // only when the bar collapsed types into "Other".
-            if synopsis.metrics.count > 6 {
-                OverflowDisclosure(
-                    label: "Show all \(synopsis.metrics.count) tool types",
-                    identifier: "work.overflow.tool-types"
-                ) {
-                    fullTypeList
-                }
+            // The full itemized list — with exact counts, shares and each
+            // type's definition — is always one click away, so no fact is
+            // tooltip-only (C35).
+            OverflowDisclosure(
+                label: "All tool types",
+                identifier: "work.overflow.tool-types"
+            ) {
+                fullTypeList
             }
         }
     }
 
     /// A swatch + label + exact count per displayed slice; wraps at any width.
-    /// The bar segments already carry each type's VoiceOver label and share, so
-    /// the legend is a visual key only — hidden from assistive tech to avoid
-    /// reading every type twice.
+    /// Each entry is the largest visual proxy of its datum, so it carries the
+    /// type's definition as help and is one accessibility element (C35).
     private func legend(_ segments: [BarSegment]) -> some View {
         LazyVGrid(
-            columns: [GridItem(.adaptive(minimum: 116), spacing: Space.m, alignment: .leading)],
+            columns: [GridItem(.adaptive(minimum: 150), spacing: Space.m, alignment: .leading)],
             alignment: .leading,
             spacing: 6
         ) {
@@ -740,14 +658,23 @@ struct ReceiptActionsDigest: View {
                     RoundedRectangle(cornerRadius: 1.5)
                         .fill(segment.color)
                         .frame(width: 8, height: 8)
+                    // One line per key: a wrapped label ("Connected\ntools")
+                    // misaligns every count in the row.
                     Text(segment.label).font(dataSmallFont).foregroundStyle(Theme.muted)
+                        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                     Text("\(segment.count)").font(dataSmallSemiboldFont)
                         .foregroundStyle(Theme.ink).monospacedDigit()
                     Spacer(minLength: 0)
                 }
+                .contentShape(Rectangle())
+                .help(segment.tooltip)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(segment.label)
+                .accessibilityValue(segment.axValue)
             }
         }
-        .accessibilityHidden(true)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Tool calls by type")
     }
 
     /// Every captured type with its exact count and share — the overflow body.
@@ -838,7 +765,9 @@ struct ReceiptActionsDigest: View {
             }
             GeometryReader { proxy in
                 Rectangle()
-                    .fill(Theme.accent)
+                    // One series, one chart bar token — never the interactive
+                    // accent, which would read as a control (K04).
+                    .fill(Theme.chartBar)
                     .frame(width: proxy.size.width * fraction, height: 4)
                     .frame(maxHeight: .infinity, alignment: .center)
             }
@@ -925,9 +854,8 @@ struct ReceiptActionsDigest: View {
     private func noticeLine(prefix: String, text: String, tone: Color) -> some View {
         HStack(alignment: .top, spacing: Space.s) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: captionIconSize, weight: .semibold))
+                .workFont(.icon)
                 .foregroundStyle(tone)
-                .frame(width: captionIconSize + 2, alignment: .center)
                 .padding(.top, 2)
                 .accessibilityHidden(true)
             Text("\(prefix): \(text)")
@@ -958,8 +886,44 @@ struct RecordDimensionsCard: View {
     var showsGaps = true
     /// Topic use drops the digest's explanatory copy into help.
     var compactDigest = false
+    /// The record page deletes the WEEKLY PLAN row: its absence is one noun in
+    /// the collapsed absence line, and its figure rides the cost row.
+    var showsPlanShare = true
+    /// When true a dimension whose only value is a named absence is dropped —
+    /// the record page's absence budget states it once instead, in one line for
+    /// the whole page. Off by default, so every other caller is unchanged.
+    var dropsAbsentValues = false
 
-    private var ordered: [Dimension] { Dimension.allCases.filter(included.contains) }
+    private var ordered: [Dimension] { Dimension.allCases.filter(included.contains).filter(carriesAFact) }
+
+    /// Whether a dimension row has anything to say that the page does not
+    /// already say louder.
+    ///
+    /// The TASK row prints the recorded objectives. On a Task whose single
+    /// objective IS its title, that row restated the page heading word for word
+    /// at the very bottom of the record — the heading's third printing (F1).
+    /// The row is dropped ONLY when it would carry nothing else: a second
+    /// objective, a recorded gap or a provenance chip all keep it, because each
+    /// of those is a fact the heading does not hold.
+    private func carriesAFact(_ dimension: Dimension) -> Bool {
+        // A cost row whose only content is "we recorded no usage" is an ABSENCE,
+        // and the record page states its absences once, together. A recorded
+        // token volume or a priced figure is a FACT about the work — often the
+        // only one on a thin record — so the row stays whenever either exists.
+        if dropsAbsentValues, dimension == .cost {
+            let dim = receipt.dimensions.cost
+            if (dim.tokens?.total ?? 0) > 0 { return true }
+            return dim.estimatedCostUsd != nil
+        }
+        guard dimension == .task else { return true }
+        let objectives = receipt.dimensions.task.objectives ?? []
+        guard objectives.count == 1, restatesPayloadText(objectives[0], receipt.title) else { return true }
+        if showsGaps, !(receipt.dimensions.task.gaps ?? []).isEmpty { return true }
+        if showsProvenance, !(receipt.dimensions.task.provenance ?? []).isEmpty { return true }
+        return false
+    }
+    /// Row names come from the reducer's `field_labels` (C39).
+    private var labels: ReceiptFieldLabels { receipt.fieldLabels ?? ReceiptFieldLabels() }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -974,29 +938,33 @@ struct RecordDimensionsCard: View {
     private func row(for dimension: Dimension) -> some View {
         switch dimension {
         case .task:
-            dimensionRow("Task", taskSummary,
+            dimensionRow(labels.taskLabel, taskSummary,
                          provenance: receipt.dimensions.task.provenance,
                          gaps: receipt.dimensions.task.gaps)
         case .agents:
-            dimensionRow("Agents", actorsSummary,
+            dimensionRow(labels.agentsLabel, actorsSummary,
                          provenance: receipt.dimensions.actors.provenance,
                          gaps: receipt.dimensions.actors.gaps)
         case .actions:
             actionsRow
         case .cost:
-            dimensionRow("Cost", costSummary,
+            dimensionRow(labels.costLabel, costSummary,
                          provenance: receipt.dimensions.cost.provenance,
                          gaps: receipt.dimensions.cost.gaps)
-            if let planShare = receipt.dimensions.cost.planShare {
+            if showsPlanShare,
+               receipt.dimensions.cost.planShare != nil
+                || PayloadAbsence.text(receipt.dimensions.cost.planShareHeadline) != nil {
                 hairline
-                dimensionRow("Weekly plan", planShare.rowSummary, provenance: nil, gaps: nil)
+                // The reducer's plan-share headline, or its named absence —
+                // never a dash (C17).
+                dimensionRow(labels.weeklyPlanLabel, receipt.dimensions.cost.planShareText, provenance: nil, gaps: nil)
             }
         case .checks:
-            dimensionRow("Checks", evidenceSummary,
+            dimensionRow(labels.checksLabel, evidenceSummary,
                          provenance: receipt.dimensions.evidence.provenance,
                          gaps: receipt.dimensions.evidence.gaps)
         case .outcome:
-            dimensionRow("Outcome", outcomeSummary,
+            dimensionRow(labels.decisionLabel, outcomeSummary,
                          provenance: receipt.dimensions.outcome.provenance,
                          gaps: receipt.dimensions.outcome.gaps,
                          verbatimValue: true)
@@ -1030,16 +998,23 @@ struct RecordDimensionsCard: View {
                 if showsProvenance, let provenance, !provenance.isEmpty {
                     HStack(spacing: 6) {
                         ForEach(provenance, id: \.self) { source in
-                            ProvenanceChip(text: source)
+                            // The reducer's source label, never the raw key (C38).
+                            ProvenanceChip(text: receipt.dimensions.provenance.sourceLabel(for: source))
                         }
                     }
                 }
                 if showsGaps {
-                    ForEach(gaps ?? [], id: \.self) { gap in
+                    // A gap sentence that only restates this row's own value
+                    // (`no usage recorded` beside `No usage was recorded…`) is
+                    // not drawn twice.
+                    ForEach((gaps ?? []).filter { !gapRestatesValue($0, summary) }, id: \.self) { gap in
                         // A dimension's own blind spot, named where the value lives.
+                        // Caveat prose is muted; a gap is not a tier, so it
+                        // carries the caveat marker, never a pip (C24/K05).
                         HStack(spacing: 6) {
-                            EvidencePip(shape: .hollow, tint: Theme.amber)
-                            Text(gap).workFont(.caption).foregroundStyle(Theme.amber)
+                            CaveatMarker()
+                            Text(gap).workFont(.caption).foregroundStyle(Theme.muted)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
@@ -1047,6 +1022,25 @@ struct RecordDimensionsCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, Space.m)
+        // A field name and its value are one fact, as the summary tiles above
+        // already are: two loose siblings left VoiceOver users to pair "COST"
+        // with "no usage recorded" themselves (K124).
+        .accessibilityElement(children: .combine)
+    }
+
+    /// True when a gap sentence carries no word beyond the row's value (case
+    /// and filler words aside): it restates the value rather than adding a fact.
+    private func gapRestatesValue(_ gap: String, _ value: String) -> Bool {
+        let filler: Set<String> = ["a", "an", "the", "was", "were", "is", "for", "this", "task", "of", "no", "not"]
+        func words(_ text: String) -> Set<String> {
+            Set(text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+        }
+        let valueWords = words(value.components(separatedBy: "\n").first ?? value)
+        let gapWords = words(gap).subtracting(filler)
+        guard !gapWords.isEmpty, !valueWords.isEmpty else { return false }
+        // `recorded` / `record` share a stem with the value's absence word.
+        let stems = Set(valueWords.map { String($0.prefix(6)) })
+        return gapWords.allSatisfy { valueWords.contains($0) || stems.contains(String($0.prefix(6))) }
     }
 
     // V1 carries aggregates, independently collected path scope, and row-wide
@@ -1055,25 +1049,27 @@ struct RecordDimensionsCard: View {
     private var actionsRow: some View {
         let dim = receipt.dimensions.actions
         return ReceiptActionsDigest(
-            synopsis: receiptActionSynopsis(
-                counts: dim.toolCategoryCounts,
-                storedTotal: dim.toolCategoryTotal
-            ),
-            relatedPathCount: dim.touchedFileCount,
-            provenance: dim.provenance,
+            synopsis: dim.synopsis,
+            relatedPathsText: dim.relatedPathsText,
+            sourceText: dim.actionSourcesText,
             gaps: dim.gaps,
-            compact: compactDigest
+            compact: compactDigest,
+            label: labels.actionsLabel,
+            ledger: dim
         )
     }
 
     // MARK: dimension summaries
 
+    /// The primary objective as one clean sentence. Further objectives are
+    /// counted, not concatenated — a semicolon-joined run-on reads as a wall,
+    /// not a summary. The project is meta (it rides the header meta line),
+    /// never appended into the objective sentence.
     private var taskSummary: String {
-        let dim = receipt.dimensions.task
-        var parts = (dim.objectives ?? []).prefix(2).joined(separator: "; ")
-        if parts.isEmpty { parts = "no objective recorded" }
-        if let project = dim.boundary?.project { parts += " · project \(project)" }
-        return parts
+        let objectives = receipt.dimensions.task.objectives ?? []
+        guard let first = objectives.first, !first.isEmpty else { return "no objective recorded" }
+        let more = objectives.count - 1
+        return more > 0 ? "\(first)  ·  +\(Fmt.count(more, "more objective"))" : first
     }
 
     private var actorsSummary: String {
@@ -1081,9 +1077,7 @@ struct RecordDimensionsCard: View {
         var parts: [String] = []
         if let agent = dim.primaryAgent { parts.append(agent) }
         if let models = dim.models, !models.isEmpty { parts.append(models.joined(separator: ", ")) }
-        if let subagents = dim.subagentSessionCount, subagents > 0 {
-            parts.append("\(subagents) subagent\(subagents == 1 ? "" : "s")")
-        }
+        if let subagents = dim.subagentsText { parts.append(subagents) }
         return parts.isEmpty ? "no agent recorded" : parts.joined(separator: " · ")
     }
 
@@ -1108,25 +1102,19 @@ struct RecordDimensionsCard: View {
             }
             tokensLine = "tokens: " + parts.joined(separator: " · ")
         }
-        guard let cost = dim.estimatedCostUsd else {
-            let absent = "no priced usage"
-            guard let tokensLine else { return absent }
-            return absent + "\n" + tokensLine
-        }
-        let display = receiptCostDisplay(cost, complete: dim.costComplete, confidence: dim.costConfidence)
-        var line = "\(display) · \(costBasisLabel(dim.costBasis))\((dim.costComplete ?? true) ? "" : " (partial)")"
-        // The Task's weekly-plan share has its own "Weekly plan" row below.
-        if let tokensLine { line += "\n" + tokensLine }
-        return line
+        // The reducer's cost line: `display_text · basis_label`, or the named
+        // absence it sent (C17/C20). Recorded token volume stays a fact
+        // beside it, priced or not.
+        let line = dim.text
+        guard let tokensLine else { return line }
+        return line + "\n" + tokensLine
     }
 
+    /// The reducer's check tally (`check_tally_text`), with supersession and
+    /// earlier failures named (C10); an older payload keeps its supplied
+    /// counts in the reducer's grammar.
     private var evidenceSummary: String {
-        let dim = receipt.dimensions.evidence
-        return receiptCheckSummary(
-            total: dim.checksTotal,
-            passed: dim.checksPassed,
-            failed: dim.checksFailed
-        )
+        ReceiptCheckRunsPresentation(evidence: receipt.dimensions.evidence).rowText
     }
 
     private var outcomeSummary: String {
@@ -1141,6 +1129,10 @@ struct RecordDimensionsCard: View {
 /// verification), Reopen. Posts the append-only disposition through the
 /// daemon and surfaces its own conflict copy verbatim ("blocker changed…"),
 /// so optimistic-concurrency refusals read as facts, not mystery failures.
+///
+/// Each action states its effect BEFORE it is taken: the reducer's
+/// `attention.effects` sentence rides the button's help and the resolve
+/// popover (C86). No sentence is invented here when the payload has none.
 struct DispositionControls: View {
     let kind: String
     let state: String
@@ -1148,11 +1140,17 @@ struct DispositionControls: View {
     let taskId: String
     var targetDigest: String? = nil
     var blockedEventId: String? = nil
+    /// The reducer's effect sentence for each action (nil on older payloads).
+    var effects: ReceiptDispositionEffects? = nil
     @Environment(DashboardStore.self) var dashboard
     @State private var resolvePopoverShown = false
     @State private var note = ""
     @State private var busy = false
     @State private var errorText: String?
+
+    private var reviewedEffect: String? { PayloadAbsence.text(effects?.reviewed) }
+    private var resolvedEffect: String? { PayloadAbsence.text(effects?.resolved) }
+    private var reopenEffect: String? { PayloadAbsence.text(effects?.reopen) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -1161,7 +1159,7 @@ struct DispositionControls: View {
                     ProgressView().controlSize(.small)
                 } else {
                     if state == "open" {
-                        actionButton("Mark reviewed") { post("mark_reviewed", note: nil) }
+                        actionButton("Mark reviewed", effect: reviewedEffect) { post("mark_reviewed", note: nil) }
                     }
                     if state != "resolved" {
                         Button {
@@ -1170,16 +1168,22 @@ struct DispositionControls: View {
                             Text("Resolve…").workFont(.captionSemibold).foregroundStyle(Theme.accent)
                         }
                         .buttonStyle(QuietButtonStyle())
+                        .keyboardStop { resolvePopoverShown = true }
+                        .modifier(OptionalHelp(text: resolvedEffect))
+                        .accessibilityHint(resolvedEffect ?? "")
                         .accessibilityIdentifier("disposition.resolve.\(kind)")
                         .popover(isPresented: $resolvePopoverShown, arrowEdge: .bottom) {
                             resolveSheet
                         }
                     }
                     if state != "open" {
-                        actionButton("Reopen") { post("reopen", note: nil) }
+                        actionButton("Reopen", effect: reopenEffect) { post("reopen", note: nil) }
                     }
                 }
             }
+            // The quiet actions start this text column: their labels sit on
+            // the text edge and the hover wash hangs into the margin (K27).
+            .hangingLeading()
             if let errorText {
                 Text(verbatim: errorText)
                     .workFont(.dataSmall).foregroundStyle(Theme.coral)
@@ -1187,27 +1191,43 @@ struct DispositionControls: View {
             }
         }
         .disabled(dashboard.isOfflineSnapshot)
-        .help(dashboard.isOfflineSnapshot ? "Saved work is read-only. Reconnect to change a finding." : "")
+        // Offline only: the read-only reason. Online, each button carries its
+        // own effect sentence instead of an empty container help.
+        .modifier(OptionalHelp(
+            text: dashboard.isOfflineSnapshot ? "Saved work is read-only. Reconnect to change a finding." : nil
+        ))
     }
 
-    private func actionButton(_ label: String, action: @escaping () -> Void) -> some View {
+    private func actionButton(_ label: String, effect: String?, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(label).workFont(.captionSemibold).foregroundStyle(Theme.accent)
         }
         .buttonStyle(QuietButtonStyle())
+        .keyboardStop(activate: action)
+        .modifier(OptionalHelp(text: effect))
+        .accessibilityHint(effect ?? "")
         .accessibilityIdentifier("disposition.\(label.lowercased().replacingOccurrences(of: " ", with: "-")).\(kind)")
     }
 
     private var resolveSheet: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             CapsLabel(text: "Resolve \(kind)")
+            if let resolvedEffect {
+                // The same effect sentence the button's help states.
+                Text(verbatim: resolvedEffect)
+                    .workFont(.body).foregroundStyle(Theme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Text("Say what resolved it — recorded as your assertion, never machine verification.")
                 .workFont(.caption).foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
-            TextField("e.g. fixed by hand in a later commit", text: $note, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .workFont(.body)
-                .lineLimit(2...4)
+            AppTextField(
+                placeholder: "e.g. fixed by hand in a later commit",
+                text: $note,
+                font: .body,
+                axis: .vertical,
+                lineLimit: 2...4
+            )
             HStack {
                 Spacer()
                 Button {
@@ -1229,6 +1249,8 @@ struct DispositionControls: View {
         // a fixed width holds it at a stable ~130pt. Mirrors the status legend
         // popover, which pins .frame(width: 440) for the same reason.
         .frame(width: 340)
+        // Opaque card ground: tile text never bleeds behind the field (K84).
+        .popoverSurface()
     }
 
     private func post(_ action: String, note: String?) {
@@ -1253,97 +1275,217 @@ struct DispositionControls: View {
     }
 }
 
-// MARK: - Blocker callout
+// MARK: - Attention callout
 
-/// WHY a Task is blocked, in the agent's own words, right under the headline —
-/// previously this lived three clicks deep in an expanded step card. Shows the
-/// newest blocker (text, next step, when), and states staleness as a fact when
-/// later steps completed after it (never re-grading the sticky blocked word).
-struct BlockerCallout: View {
-    let blocker: ReceiptBlocker
+/// The ONE attention callout for the whole danger family — a failed check, a
+/// blocker, a failed step — right under the verdict (C03). Everything it
+/// says is the reducer's attention block: the eyebrow is `reason_label`, the
+/// body is the verbatim `summary`, the mono identity line is `label`
+/// (`Failed test check · pytest · exit 2`), then the recorded next step, when
+/// it was last updated, and the disposition controls posting with the block's
+/// own `action_token` and `revision`. `attention.kind` is only the internal
+/// key that picks which disposition endpoint to post to; it is never shown.
+///
+/// A dispositioned or closed item keeps showing (so the change is auditable
+/// and reopenable) but drops the coral "needs you" tone for a neutral wash.
+struct AttentionCallout: View {
+    let attention: ReceiptAttention
     let taskId: String
+    /// Blocker-only facts the attention block does not carry (later completed
+    /// steps, more blocked steps). Optional; nil renders none of them.
+    var blocker: ReceiptBlocker? = nil
 
-    // A blocker the user resolved must not keep wearing the coral "blocked"
-    // tone — in this app coral means "needs you". It still shows here (so the
-    // resolve is auditable and reopenable), but in a calm, neutral treatment.
-    private var isResolved: Bool {
-        (blocker.disposition?.state ?? "open") == "resolved"
+    private var dispositionState: String {
+        PayloadAbsence.text(attention.dispositionState)
+            ?? PayloadAbsence.text(blocker?.disposition?.state)
+            ?? "open"
+    }
+
+    /// Whether the item is still open for you.
+    private var needsYou: Bool {
+        if let open = attention.open { return open }
+        return dispositionState == "open"
+    }
+
+    /// Coral means a recorded failure that still needs you. A check that
+    /// could not run (the reducer's `not_run` tone) proved nothing, so it
+    /// stays muted even while open — never the failure color.
+    private var failureTone: Bool {
+        needsYou && CheckResultTone(payload: attention.resultTone ?? "failure") == .failure
+    }
+
+    /// The disposition endpoint's kind for this attention key: a check item
+    /// (a failed check, or one that could not run) posts to the finding
+    /// endpoint with its target digest; a blocker or failed step to the blocker one.
+    private var dispositionKind: String {
+        ["failed_check", "check_not_run"].contains(attention.kind) ? "finding" : "blocker"
+    }
+
+    /// The id the disposition endpoint keys on, when the block carries one.
+    private var dispositionHandle: String? {
+        dispositionKind == "finding"
+            ? PayloadAbsence.text(attention.targetDigest)
+            : PayloadAbsence.text(attention.actionToken)
+    }
+
+    private var tone: Color { failureTone ? Theme.coral : Theme.muted }
+
+    private var icon: String {
+        if !needsYou {
+            // A REVIEWED finding is still unresolved — a checkmark would read
+            // as fixed, and the decision badge beside it still says Finding.
+            // Only a RESOLVED disposition wears the check (C4).
+            return dispositionState == "resolved" ? "checkmark.circle" : "eye.circle"
+        }
+        return failureTone ? "hand.raised" : CheckResultTone.notRun.symbol
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: isResolved ? "checkmark.circle" : "hand.raised")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(isResolved ? Theme.muted : Theme.coral)
-                    .accessibilityHidden(true)
-                Text(blocker.stepTitle ?? (isResolved ? "Resolved blocker" : "Blocked step"))
-                    .workFont(.rowLabel).foregroundStyle(Theme.ink)
-                    .lineLimit(2)
-                Spacer(minLength: Space.s)
-                // "last updated": the projection carries the step's last-activity
-                // time, which later non-terminal events can bump past the moment
-                // the blocker itself was recorded.
-                if let ago = agoText(blocker.updatedAt) {
-                    Text("last updated \(ago)").workFont(.dataSmall).foregroundStyle(Theme.muted)
-                }
-            }
-            if let text = blocker.text {
-                // verbatim: the blocker is agent-authored text, never markdown.
-                Text(verbatim: text)
-                    .workFont(.body).foregroundStyle(Theme.ink)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-            }
-            if let next = blocker.nextStep {
-                Text(verbatim: "next: \(next)")
-                    .workFont(.caption).foregroundStyle(Theme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-            }
-            if let later = blocker.laterCompletedSteps, later > 0 {
+        VStack(alignment: .leading, spacing: Space.s) {
+            // The shared attention block: the same order and weights the
+            // Dashboard's card uses (K21). "last updated" is the recorded time
+            // of the attention item, which later non-terminal events can bump
+            // past the moment it was first recorded.
+            AttentionBlockBody(
+                reasonLabel: PayloadAbsence.text(attention.reasonLabel),
+                summary: PayloadAbsence.text(attention.summary),
+                label: PayloadAbsence.text(attention.label),
+                noteText: PayloadAbsence.text(attention.noteText),
+                nextStep: attention.nextStep,
+                variant: .record,
+                tone: tone,
+                icon: icon,
+                recency: agoText(attention.observedAt ?? blocker?.updatedAt).map { "last updated \($0)" }
+            )
+            if let later = blocker?.laterCompletedSteps, later > 0 {
                 // The count IS the fact; whether it cleared the blocker is not
-                // in the data, so the copy never speculates.
+                // in the data, so the copy never speculates. Caveat prose is
+                // muted with the caveat marker, never a pip (C24/K05).
                 HStack(spacing: 6) {
-                    EvidencePip(shape: .hollow, tint: Theme.amber)
+                    CaveatMarker()
                     Text("\(later) step\(later == 1 ? "" : "s") completed after this blocker's last update.")
-                        .workFont(.caption).foregroundStyle(Theme.amber)
+                        .workFont(.caption).foregroundStyle(Theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            if let count = blocker.blockedStepCount, count > 1 {
-                // "steps with recorded blockers": sticky blocker text keeps a
-                // step in this count even when its latest status moved on.
-                Text("\(count - 1) more step\(count == 2 ? "" : "s") with recorded blockers")
+            if let more = PayloadAbsence.text(attention.moreText) {
+                // The reducer's count of every other open item behind this
+                // lead one (findings, blockers, checks that could not run).
+                Text(verbatim: more)
                     .workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
-            if let state = blocker.disposition?.state, state != "open" {
-                Text(verbatim: "marked \(state) by you"
-                     + (blocker.disposition?.note.map { " — \($0)" } ?? ""))
+            if dispositionState != "open" {
+                let note = PayloadAbsence.text(attention.dispositionNote)
+                    ?? PayloadAbsence.text(blocker?.disposition?.note)
+                Text(verbatim: "marked \(dispositionState) by you" + (note.map { " — \($0)" } ?? ""))
                     .workFont(.dataSmall).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            // Resolve/review this exact blocker. Snapshots skip the controls
-            // (the offscreen renderer cannot drive popovers or POSTs).
-            if !SnapshotMode.enabled, let blockedEventId = blocker.blockedEventId {
+            // Review or resolve this exact item. A finding posts with its
+            // target digest, a blocker with its event (`action_token`); an
+            // item without that handle offers no controls.
+            if let handle = dispositionHandle {
                 DispositionControls(
-                    kind: "blocker",
-                    state: blocker.disposition?.state ?? "open",
-                    revision: blocker.dispositionRevision ?? 0,
+                    kind: dispositionKind,
+                    state: dispositionState,
+                    revision: attention.revision ?? blocker?.dispositionRevision ?? 0,
                     taskId: taskId,
-                    blockedEventId: blockedEventId
+                    targetDigest: dispositionKind == "finding" ? handle : nil,
+                    blockedEventId: dispositionKind == "blocker" ? handle : nil,
+                    effects: attention.effects
                 )
             }
         }
         .padding(Space.l)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            isResolved ? Theme.tintNeutral : Theme.tintCoral,
+            failureTone ? Theme.tintCoral : Theme.tintNeutral,
             in: RoundedRectangle(cornerRadius: Metrics.radius)
         )
-        .accessibilityIdentifier("receipt.blocker")
+        // A named group: its own caption (the reducer's reason noun) tells a
+        // VoiceOver user what this block is on entry, instead of an unnamed
+        // container between the verdict and the evidence (K121).
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(PayloadAbsence.text(attention.reasonLabel) ?? "Attention")
+        .accessibilityIdentifier("receipt.attention")
     }
 }
+
+// MARK: - Standing proof
+
+/// The strongest STANDING proof on a receipt — the passing run a reviewer
+/// would point at, with the reducer's own sentence for why that grade is the
+/// grade. A history run proves nothing standing (a later run replaced it) and
+/// a check that could not run proved nothing at all, so neither can be it.
+///
+/// Every string here is the reducer's; this only chooses which to show.
+struct ReceiptStandingProof {
+    let check: ReceiptCheck
+    /// `evidence_grade_reason` — the reducer's sentence for the graded step
+    /// ("the agent reported a check passed (…) — the agent's own, not
+    /// independent"). Nil when the payload carried none.
+    let gradeReason: String?
+    /// The receipt's strongest tier key and the payload's word for it.
+    let tierKey: String?
+    let tierLabel: String?
+
+    /// Whether a recorded run is a standing pass. `result_tone` is the
+    /// reducer's key; an older payload without one falls back to `result`.
+    static func isStandingPass(_ check: ReceiptCheck) -> Bool {
+        guard check.historyRun != true, check.superseded != true else { return false }
+        if PayloadAbsence.text(check.resultTone) != nil {
+            return CheckResultTone(payload: check.resultTone) == .pass
+        }
+        return check.result == "passed"
+    }
+
+    init?(receipt: Receipt) {
+        let passes = (receipt.dimensions.evidence.checks ?? []).filter(Self.isStandingPass)
+        guard let newest = passes.max(by: { ($0.at ?? 0) < ($1.at ?? 0) }) else { return nil }
+        check = newest
+        let strength = receipt.axes.evidenceStrength
+        tierKey = PayloadAbsence.text(strength.strongestTier)
+        tierLabel = PayloadAbsence.text(
+            strength.tierLegend?.first(where: { $0.key == strength.strongestTier })?.label
+        )
+        // The grade sentence belongs to a graded STEP, not to the check row.
+        gradeReason = receipt.timeline?.events
+            .compactMap { PayloadAbsence.text($0.evidenceGradeReason) }
+            .first
+    }
+
+    /// The recorded identity of the proving run, its own facts joined in the
+    /// order the checks table prints them.
+    var identityLine: String {
+        joinedRecordedSentences([
+            PayloadAbsence.text(check.title) ?? PayloadAbsence.text(check.name),
+            PayloadAbsence.text(check.resultLabel),
+            check.exitCode.map { "Exit \($0)" },
+            PayloadAbsence.text(check.evidenceType),
+            PayloadAbsence.text(check.sourceLabel),
+        ])
+    }
+
+    /// The revision line for the proving run, when it ran on a tree with
+    /// uncommitted changes — the qualifier a `Verified` hero owes (C5). The
+    /// wording is the reducer's `revision_label`, never assembled here.
+    var dirtyRevisionLabel: String? {
+        guard check.revision?.dirty == true else { return nil }
+        return PayloadAbsence.text(check.revisionLabel)
+    }
+}
+
+/// The standing-proof callout is DELETED, and with it `EvidenceCallout`.
+///
+/// The slot it filled is not gone — the record's hero card carries ONE exhibit,
+/// filled by an open attention item or, when nothing needs you, by the standing
+/// proof's own identity line. What is gone is this block's duplication: on the
+/// flagship record it was a verbatim copy of one Checks row (the same headline,
+/// the same meta line, the same pip, the same stamped revision and the same
+/// contradiction sentence) plus a prose restatement of the tier. That prose is
+/// not lost either: it is now the tier's context help, on the Evidence heading
+/// where the tier is stated.
+
 
 // MARK: - Evidence coverage
 
@@ -1353,30 +1495,31 @@ struct BlockerCallout: View {
 // MARK: - Checks
 
 /// Every check the store holds for this receipt, with its result mark and
-/// source. A pass wears green only when a machine observed it (hook/CI);
-/// an agent-reported pass stays ink — the source chip says why.
+/// source. A pass takes its source's evidence-tier color (the reducer's
+/// `tier_key`), never green by source name (C27); the source chip says why.
 struct RecordChecksCard: View {
     let evidence: ReceiptEvidenceDim
     let taskId: String
     private let initiallyExpandedCheckIDs: Set<String>
     private let initiallyShowsRoutineGroups: Bool?
     private let collection: ReceiptCheckCollectionPresentation
+    /// Source key → the reducer's evidence-tier key for checks from it.
+    private let sourceTiers: [String: String]
 
     @State private var passedExpansionOverride: Bool?
     @State private var historyExpansionOverride: Bool?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// The reducer's tally (`check_tally_text`): supersession and earlier
+    /// failures are named remainders, so the counts add up (C10).
     private var presentation: ReceiptCheckRunsPresentation {
-        .init(
-            total: evidence.checksTotal,
-            passed: evidence.checksPassed,
-            failed: evidence.checksFailed
-        )
+        ReceiptCheckRunsPresentation(evidence: evidence)
     }
 
     init(
         evidence: ReceiptEvidenceDim,
         taskId: String,
+        sources: [ReceiptSourceEntry]? = nil,
         initiallyShowsRoutineGroups: Bool? = nil,
         initiallyExpandedCheckIDs: Set<String> = []
     ) {
@@ -1385,6 +1528,11 @@ struct RecordChecksCard: View {
         self.initiallyExpandedCheckIDs = initiallyExpandedCheckIDs
         self.initiallyShowsRoutineGroups = initiallyShowsRoutineGroups
         self.collection = ReceiptCheckCollectionPresentation(evidence: evidence)
+        var tiers: [String: String] = [:]
+        for entry in sources ?? [] {
+            if let tier = PayloadAbsence.text(entry.tierKey) { tiers[entry.key] = tier }
+        }
+        self.sourceTiers = tiers
         _passedExpansionOverride = State(initialValue: nil)
         _historyExpansionOverride = State(initialValue: nil)
     }
@@ -1467,7 +1615,9 @@ struct RecordChecksCard: View {
                     }
                     if !other.isEmpty {
                         if !attention.isEmpty { sectionDivider }
-                        fixedGroup(title: "Other results", rows: other, tone: Theme.amber)
+                        // Checks that proved nothing either way: muted, never
+                        // the amber reserved for tiers and thresholds.
+                        fixedGroup(title: "Other results", rows: other, tone: Theme.muted)
                     }
                     if !passed.isEmpty {
                         if !attention.isEmpty || !other.isEmpty { sectionDivider }
@@ -1549,7 +1699,7 @@ struct RecordChecksCard: View {
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: Space.s) {
                     Image(systemName: "chevron.right")
-                        .font(.caption2.weight(.semibold))
+                        .workFont(.icon)
                         .foregroundStyle(Theme.muted)
                         .rotationEffect(.degrees(expanded.wrappedValue ? 90 : 0))
                         .accessibilityHidden(true)
@@ -1597,6 +1747,7 @@ struct RecordChecksCard: View {
             row: row,
             taskId: taskId,
             showsScope: collection.sharedScope == nil,
+            tierKey: row.check.source.flatMap { sourceTiers[$0] },
             initiallyExpanded: initiallyExpandedCheckIDs.contains(row.id)
         )
     }
@@ -1609,44 +1760,51 @@ private struct RecordCheckRow: View {
     let row: ReceiptCheckRowPresentation
     let taskId: String
     let showsScope: Bool
+    /// The reducer's evidence-tier key for this check's source, when known.
+    let tierKey: String?
 
     @State private var expanded: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var check: ReceiptCheck { row.check }
 
+    /// The check's short recorded name is its title (C08); the presentation
+    /// title (the reducer's name-first `title`) covers a check without one.
+    private var title: String { PayloadAbsence.text(check.name) ?? row.title }
+
     init(
         row: ReceiptCheckRowPresentation,
         taskId: String,
         showsScope: Bool,
+        tierKey: String? = nil,
         initiallyExpanded: Bool = false
     ) {
         self.row = row
         self.taskId = taskId
         self.showsScope = showsScope
+        self.tierKey = tierKey
         _expanded = State(initialValue: initiallyExpanded)
     }
 
+    /// The reducer's tone key picks the mark: a pass wears its evidence
+    /// tier's color (green only for externally verified; an unknown tier stays
+    /// ink, C27), a recorded failure is a coral cross, and a check that could
+    /// not run is a muted minus — never a failure mark.
     private var mark: (symbol: String, tint: Color) {
-        let machineObserved = ["hook", "ci"].contains(check.source ?? "")
-        switch check.result {
-        case "passed": return ("checkmark", machineObserved ? Theme.green : Theme.ink)
-        case "failed", "error": return ("xmark", Theme.coral)
-        case "skipped": return ("chevron.right.2", Theme.amber)
-        default: return ("circle.fill", Theme.muted)
-        }
+        let tone = CheckResultTone(payload: check.resultTone)
+        return (tone.symbol, tone.tint(pass: tierKey.map { EvidenceTierStyle.forGrade($0).tint } ?? Theme.ink))
     }
 
     private var headerLine: some View {
         HStack(alignment: .top, spacing: Space.s) {
             Image(systemName: "chevron.right")
-                .font(.caption2.weight(.semibold))
+                .workFont(.icon)
                 .foregroundStyle(Theme.muted)
                 .frame(minWidth: 12, minHeight: 20)
                 .rotationEffect(.degrees(expanded ? 90 : 0))
                 .accessibilityHidden(true)
             Image(systemName: mark.symbol)
-                .font(.caption.weight(.bold))
+                .workFont(.icon)
                 .foregroundStyle(mark.tint)
                 .frame(minWidth: 16, minHeight: 20)
                 .accessibilityHidden(true)  // the row label names the result
@@ -1657,7 +1815,7 @@ private struct RecordCheckRow: View {
                         .workFont(.dataSmallSemibold)
                         .foregroundStyle(mark.tint)
                         .fixedSize(horizontal: true, vertical: false)
-                    Text(verbatim: row.title)
+                    Text(verbatim: title)
                         .workFont(.body)
                         .foregroundStyle(Theme.ink)
                         .lineLimit(expanded ? nil : 2)
@@ -1695,7 +1853,7 @@ private struct RecordCheckRow: View {
         }
         .padding(.vertical, Space.m)
         .contentShape(Rectangle())
-        .help(row.title)
+        .help(title)
     }
 
     private var hasCollapsedMetadata: Bool {
@@ -1720,11 +1878,12 @@ private struct RecordCheckRow: View {
                 .help(sourceLabel)
         }
         if check.superseded == true {
-            Chip(text: "Superseded", tint: Theme.muted)
-                .help("A later run of the same-scope check passed; kept in history.")
+            // The definition is keyboard-reachable in the expanded detail
+            // (ContextHelp), never hover-only on this chip (C75).
+            Chip(text: "superseded", tint: Theme.muted)
         }
         if let state = check.finding?.state, state != "open" {
-            Chip(text: state.capitalized, tint: Theme.muted)
+            Chip(text: state, tint: Theme.muted)
         }
     }
 
@@ -1736,7 +1895,7 @@ private struct RecordCheckRow: View {
                 headerLine
             }
             .buttonStyle(SurfaceButtonStyle(focusInset: 2))
-            .accessibilityLabel(row.title)
+            .accessibilityLabel(title)
             .accessibilityValue(row.accessibilityValue(isExpanded: expanded))
             .accessibilityHint(expanded ? "Hides full check details" : "Shows full check details")
             .accessibilityIdentifier(row.accessibilityIdentifier)
@@ -1751,11 +1910,24 @@ private struct RecordCheckRow: View {
         .animation(reduceMotion ? nil : Motion.contentUpdate, value: expanded)
     }
 
+    /// One Artifact row: url, else ref, else path; a withheld pointer is a
+    /// named state, never silently dropped (C69).
+    private var artifactText: String? {
+        if let url = PayloadAbsence.text(check.artifactUrl) { return url }
+        if let ref = PayloadAbsence.text(check.artifactRef) { return ref }
+        if let path = PayloadAbsence.text(check.artifactPath) { return path }
+        if check.artifactUrlRedacted == true || check.artifactPathRedacted == true {
+            return PayloadAbsence.text(check.artifactUrlStateText) ?? PayloadAbsence.text(check.artifactPathStateText)
+                ?? PayloadAbsence.artifact
+        }
+        return nil
+    }
+
     @ViewBuilder
     private var expandedBody: some View {
         VStack(alignment: .leading, spacing: Space.m) {
-            CheckDetailField(label: "Check") {
-                Text(verbatim: row.title)
+            CheckDetailField(label: "Check name") {
+                Text(verbatim: title)
                     .workFont(.caption)
                     .foregroundStyle(Theme.ink)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1768,24 +1940,50 @@ private struct RecordCheckRow: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
-            if let reportedResult = check.result,
-               !["passed", "failed", "error", "skipped"].contains(reportedResult) {
-                CheckDetailField(label: "Reported result") {
-                    Text(verbatim: reportedResult)
+            CheckDetailField(label: "Revision") {
+                // `at <sha> · <branch> · uncommitted changes`, or its named
+                // absence (C11).
+                Text(verbatim: check.revisionText)
+                    .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            if check.superseded == true {
+                CheckDetailField(label: "History") {
+                    HStack(alignment: .center, spacing: Space.xs) {
+                        Chip(text: "superseded", tint: Theme.muted)
+                        // The reducer's definition (`superseded_definition`);
+                        // Swift keeps no copy of the sentence.
+                        if let meaning = PayloadAbsence.text(check.supersededDefinition) {
+                            ContextHelp(
+                                title: "Superseded check",
+                                message: meaning,
+                                identifier: "receipt.check.superseded-help"
+                            )
+                        }
+                    }
+                }
+            }
+            if let note = PayloadAbsence.text(check.noteText) {
+                // The reducer's named disagreement between the recorded result
+                // and the exit code (display only; the result is not re-graded).
+                CheckDetailField(label: "Result") {
+                    Text(verbatim: note)
                         .workFont(.dataSmall).foregroundStyle(Theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
             }
-            if let source = check.source {
+            if let sourceLabel = row.sourceLabel {
                 CheckDetailField(label: "Source") {
-                    Text(verbatim: source)
+                    Text(verbatim: sourceLabel)
                         .workFont(.dataSmall).foregroundStyle(Theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
             }
-            if let summary = check.summary {
+            // The summary shows once, as the body — never a repeat of the title.
+            if let summary = PayloadAbsence.text(check.summary), summary != title {
                 CheckDetailField(label: "Summary") {
                     // verbatim: agent/hook-authored text, never markdown.
                     Text(verbatim: summary)
@@ -1819,16 +2017,16 @@ private struct RecordCheckRow: View {
                     .textSelection(.enabled)
                 }
             }
-            if check.commandRedacted == true {
-                CheckDetailField(label: "Privacy") {
-                    // Absence is a named state: a command ran, and agentacct
-                    // deliberately never records command text for checks.
-                    Text("Command text was intentionally not captured; agentacct records the check name, result, and files.")
+            if let commandState = PayloadAbsence.text(check.commandStateText) {
+                CheckDetailField(label: "Command") {
+                    // The reducer's sentence for what happened to the command
+                    // text (C07); hidden when it sent none.
+                    Text(verbatim: commandState)
                         .workFont(.dataSmall).foregroundStyle(Theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            if let artifact = check.artifactUrl ?? check.artifactRef {
+            if let artifact = artifactText {
                 CheckDetailField(label: "Artifact") {
                     Text(verbatim: artifact)
                         .workFont(.dataSmall).foregroundStyle(Theme.muted)
@@ -1837,7 +2035,7 @@ private struct RecordCheckRow: View {
                 }
             }
             if check.summary == nil, check.at == nil, (check.files ?? []).isEmpty,
-               check.commandRedacted != true, check.artifactUrl == nil, check.artifactRef == nil {
+               PayloadAbsence.text(check.commandStateText) == nil, artifactText == nil {
                 Text("No additional detail was recorded for this check.")
                     .workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
@@ -1851,6 +2049,8 @@ private struct RecordCheckRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let digest = finding.targetDigest {
+                    // No per-check effect sentence rides the check row; the
+                    // attention callout carries the reducer's effects.
                     DispositionControls(
                         kind: "finding",
                         state: finding.state ?? "open",

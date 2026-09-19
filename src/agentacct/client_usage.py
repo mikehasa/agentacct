@@ -98,8 +98,16 @@ USAGE_EVENT_CLIENTS: tuple[str, ...] = (
     "dsh",
 )
 _MAX_SESSION_TITLE_LENGTH = 240
-_CLAUDE_IDENTITY_SCAN_MAX_BYTES = 256 * 1024
-_CLAUDE_IDENTITY_SCAN_MAX_LINES = 256
+# Identity scan budget. Measured over the 6,595 transcripts in
+# ~/.claude/projects: a normal transcript carries `sessionId` at roughly byte
+# 4,000 on its FIRST line, so 256 KiB resolved 94.87% of files and the 41 that
+# failed were the genuinely large ones. Raising the budget to 2 MiB resolves 17
+# of those 41 and costs no measurable time (0.8s for the whole corpus either
+# way, because the scan stops at the first match). The remainder are files that
+# contain no `sessionId` at all -- workflow journals, not transcripts -- which
+# this cannot fix and must not guess at.
+_CLAUDE_IDENTITY_SCAN_MAX_BYTES = 2 * 1024 * 1024
+_CLAUDE_IDENTITY_SCAN_MAX_LINES = 512
 _CLAUDE_WORKFLOW_JOURNAL_MAX_BYTES = 8 * 1024 * 1024
 _CLAUDE_WORKFLOW_JOURNAL_MAX_LINES = 8_192
 # The Workflow tool writes one metadata row per agent lifecycle transition.
@@ -1458,6 +1466,17 @@ def _discover_codex_usage_from_home(
                 ),
                 started_at=_optional_int(row.get("created_at")),
                 updated_at=_optional_int(row.get("updated_at")),
+                # Per-session revision watermark. Codex's threads.updated_at is a
+                # WHOLE SECOND, and the refreshable lane orders revisions by
+                # source_order: two real revisions inside one displayed second
+                # compare equal, and equal order plus a different content hash is
+                # not provenance-only drift, so it parks as a conflict that can
+                # never clear -- there is no reconcile path for refreshable usage
+                # (evidence_store only ever appends). Both sides of this merge
+                # fixed that; the ONE implementation kept is `rollout_revision_at`
+                # computed once above, so the usage event and its sibling
+                # observation carry the SAME value in the SAME unit (mtime_ns).
+                # It is set once, below, beside `source_revision_basis`.
                 turn_count=_safe_nonnegative_int(usage.get("turn_count")),
                 client_session_kind=session_kind,
                 # Task-grouping parent, mirroring the observation above: the

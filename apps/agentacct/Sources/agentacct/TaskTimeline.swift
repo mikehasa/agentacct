@@ -11,6 +11,9 @@ struct TaskTimelineEvent: Codable, Equatable {
     var startedAt: Double?
     var updatedAt: Double?
     var occurredAt: Double?
+    /// When the reducer says a terminal status (completed, blocked, handed off)
+    /// was reported. Nil for a section still running and for older payloads.
+    var terminalStatusAt: Double?
     var timeNote: String?
     var timeWarning: String?
     var sourceLabel: String?
@@ -36,9 +39,50 @@ struct TaskTimelineEvent: Codable, Equatable {
     var commandRedacted: Bool?
     var identityNote: String?
     var disposition: String?
+    // Reducer fields (additive; older recorders omit them).
+    /// A check's own short name (nil when none was recorded).
+    var name: String? = nil
+    /// A work step's declared kind (`kind` stays the event kind).
+    var sectionKind: String? = nil
+    /// A work step's recorded continuation point, verbatim.
+    var nextStep: String? = nil
+    var evidenceGrade: String? = nil
+    /// The reducer's words for the step's evidence grade.
+    var evidenceGradeLabel: String? = nil
+    var evidenceGradeReason: String? = nil
+    /// `at 8a4e024 · main · uncommitted changes` or `revision not captured`.
+    var revisionLabel: String? = nil
+    /// The failed run this passing run names as fixed.
+    var supersedesCheckEventID: String? = nil
+    /// `The agent's command argument was not stored; the title is the name the agent recorded.` (nil when none).
+    var commandStateText: String? = nil
+    /// The reducer's attention-open predicate for a failing check.
+    var isCurrentFailure: Bool? = nil
+    /// The reducer's result words, tone key and result/exit-code note.
+    var statusLabel: String? = nil
+    var resultTone: String? = nil
+    var noteText: String? = nil
+    var artifactPathStateText: String? = nil
+    var artifactURLStateText: String? = nil
+    /// The reducer's two-lane grammar: `primary` / `supporting` work versus
+    /// `evidence` (recorded checks). This is the canvas's vertical meaning —
+    /// without it the axis split carried no fact at all.
+    var lane: String? = nil
+    /// The reducer's words for that lane (`Primary session`, `Check evidence`).
+    var laneLabel: String? = nil
+    /// Why this record is worth a reviewer's eye, decided by the reducer and
+    /// never re-derived here: the strongest reason key, its sentence, every
+    /// reason that applied, and the derived restatement. A record the reducer
+    /// left unranked carries nothing and is drawn quiet.
+    var salience: String? = nil
+    var salienceReason: String? = nil
+    var salienceKeys: [String]? = nil
+    var important: Bool? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, title, status, lineage, scope, summary, files, superseded, resolution, disposition
+        case id, kind, title, status, lineage, scope, summary, files, superseded, resolution, disposition, name, lane
+        case salience, important
+        case salienceReason = "salience_reason", salienceKeys = "salience_keys"
         case eventID = "event_id", startedAt = "started_at", updatedAt = "updated_at", occurredAt = "occurred_at"
         case timeNote = "time_note", timeWarning = "time_warning", sourceLabel = "source_label"
         case sessionKey = "session_key", sessionTitle = "session_title", exitCode = "exit_code"
@@ -47,13 +91,24 @@ struct TaskTimelineEvent: Codable, Equatable {
         case artifactRef = "artifact_ref", artifactPath = "artifact_path", artifactURL = "artifact_url"
         case artifactPathRedacted = "artifact_path_redacted", artifactURLRedacted = "artifact_url_redacted"
         case commandRedacted = "command_redacted", identityNote = "identity_note"
+        case sectionKind = "section_kind", nextStep = "next_step", evidenceGrade = "evidence_grade"
+        case evidenceGradeLabel = "evidence_grade_label", evidenceGradeReason = "evidence_grade_reason"
+        case revisionLabel = "revision_label", supersedesCheckEventID = "supersedes_check_event_id"
+        case commandStateText = "command_state_text", isCurrentFailure = "is_current_failure"
+        case statusLabel = "status_label", resultTone = "result_tone", noteText = "note_text"
+        case artifactPathStateText = "artifact_path_state_text", artifactURLStateText = "artifact_url_state_text"
+        case terminalStatusAt = "terminal_status_at", laneLabel = "lane_label"
     }
 
     func record(taskID: String) -> WorkTimelineRecord? {
         guard let id, !id.isEmpty else { return nil }
         return WorkTimelineRecord(id: id, eventID: eventID,
             laneID: sessionKey ?? "task:\(taskID)", laneTitle: sessionTitle ?? "Task evidence",
-            lineage: lineage ?? "Session attribution unavailable", kind: kind == "work" ? .step : kind == "check" ? .check : .activity,
+            lineage: lineage ?? "Session attribution unavailable",
+            // A `beat` is the reducer's progress-note kind: narration the
+            // section recorded while it was still open. It is NOT a step, so
+            // it never falls through to `.activity` beside one.
+            kind: kind == "work" ? .step : kind == "check" ? .check : kind == "beat" ? .beat : .activity,
             title: title, start: WorkTimelineProjection.validTime(startedAt ?? occurredAt), end: WorkTimelineProjection.validTime(updatedAt),
             timeNote: timeNote ?? "Source time unavailable", timeWarning: timeWarning,
             result: status, source: sourceLabel ?? "Source unavailable", scope: scope, summary: summary, files: files ?? [],
@@ -62,7 +117,28 @@ struct TaskTimelineEvent: Codable, Equatable {
             artifact: artifactRef, artifactPath: artifactPathRedacted == true ? nil : artifactPath,
             artifactURL: artifactURLRedacted == true ? nil : artifactURL,
             artifactPathRedacted: artifactPathRedacted, artifactURLRedacted: artifactURLRedacted,
-            commandRedacted: commandRedacted == true, identityNote: identityNote, disposition: disposition, sectionTitle: sectionTitle)
+            commandRedacted: commandRedacted == true, identityNote: identityNote, disposition: disposition, sectionTitle: sectionTitle,
+            name: PayloadAbsence.text(name), evidenceGrade: evidenceGrade,
+            evidenceGradeLabel: PayloadAbsence.text(evidenceGradeLabel),
+            evidenceGradeReason: PayloadAbsence.text(evidenceGradeReason),
+            revisionLabel: PayloadAbsence.text(revisionLabel),
+            supersedesCheckEventID: PayloadAbsence.text(supersedesCheckEventID),
+            commandStateText: PayloadAbsence.text(commandStateText),
+            attentionOpenFailure: isCurrentFailure,
+            resultText: PayloadAbsence.text(statusLabel), resultTone: PayloadAbsence.text(resultTone),
+            noteText: PayloadAbsence.text(noteText),
+            artifactPathStateText: PayloadAbsence.text(artifactPathStateText),
+            artifactURLStateText: PayloadAbsence.text(artifactURLStateText),
+            terminalStatusAt: WorkTimelineProjection.validTime(terminalStatusAt),
+            lane: PayloadAbsence.text(lane), laneLabel: PayloadAbsence.text(laneLabel),
+            sectionKind: PayloadAbsence.text(sectionKind), nextStep: PayloadAbsence.text(nextStep),
+            salience: PayloadAbsence.text(salience),
+            salienceReason: PayloadAbsence.text(salienceReason),
+            salienceKeys: salienceKeys ?? [],
+            // `important` is the reducer's own restatement of "salience is not
+            // None". Read it when the payload sent it; otherwise fall back to
+            // the key rather than inventing a second rule here.
+            important: important ?? (PayloadAbsence.text(salience) != nil))
     }
 }
 
@@ -77,10 +153,17 @@ struct TaskTimelinePage: Codable, Equatable {
     var total: Int
     var truncated: Bool
     var nextCursor: String?
+    /// How many of these records are progress notes, and the reducer's own
+    /// sentence for what a progress note IS. The receipt carries both; the
+    /// paged task-timeline route does not, so both stay optional and a surface
+    /// that has only the page simply has no definition to show.
+    var beatCount: Int?
+    var beatDefinition: String?
 
     enum CodingKeys: String, CodingKey {
         case events, offset, shown, total, truncated
         case schemaVersion = "schema_version", taskID = "task_id", snapshotID = "snapshot_id", nextCursor = "next_cursor"
+        case beatCount = "beat_count", beatDefinition = "beat_definition"
     }
 
     func projection(taskID: String) -> WorkTimelineProjection {

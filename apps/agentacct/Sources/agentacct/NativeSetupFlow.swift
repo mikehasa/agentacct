@@ -185,17 +185,28 @@ struct NativeSetupLayout: DynamicProperty {
 
 /// Keep setup action labels and targets scalable on macOS, where the native
 /// bordered styles can replace an inherited font with a fixed control size.
+///
+/// The prominent variant is folded into `PrimaryButtonStyle` (C36): the one
+/// accent-filled control with an `onAccent` label. `prominent: true` remains
+/// only as a forwarding spelling so existing call sites render identically.
 struct NativeSetupActionStyle: ButtonStyle {
     var prominent = false
 
+    @ViewBuilder
     func makeBody(configuration: Configuration) -> some View {
-        NativeSetupActionBody(configuration: configuration, prominent: prominent)
+        if prominent {
+            PrimaryButtonStyle().makeBody(configuration: configuration)
+        } else {
+            NativeSetupActionBody(configuration: configuration)
+        }
     }
 }
 
 private struct NativeSetupActionBody: View {
     let configuration: ButtonStyleConfiguration
-    let prominent: Bool
+    /// Hover and press feedback follows the shared `ButtonFeedback` ramp, the
+    /// same interaction wash `QuietButtonStyle` applies to its tint.
+    private let feedbackTint = Theme.accent
     @State private var hovering = false
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.isFocused) private var isFocused
@@ -204,9 +215,8 @@ private struct NativeSetupActionBody: View {
     @ScaledMetric(relativeTo: .body) private var verticalPadding: CGFloat = 8
     @ScaledMetric(relativeTo: .body) private var minimumHeight: CGFloat = 36
 
-    init(configuration: ButtonStyleConfiguration, prominent: Bool) {
+    init(configuration: ButtonStyleConfiguration) {
         self.configuration = configuration
-        self.prominent = prominent
     }
 
     private var phase: ButtonInteractionPhase {
@@ -217,22 +227,20 @@ private struct NativeSetupActionBody: View {
         configuration.label
             .workFont(.body)
             .fixedSize(horizontal: false, vertical: true)
-            .foregroundStyle(prominent ? Theme.onAccent : Theme.ink)
+            .foregroundStyle(Theme.ink)
             .padding(.horizontal, WorkTypeScale.resolved(base: 16, systemScaled: horizontalPadding, dynamicTypeSize: dynamicTypeSize))
             .padding(.vertical, WorkTypeScale.resolved(base: 8, systemScaled: verticalPadding, dynamicTypeSize: dynamicTypeSize))
             .frame(minHeight: WorkTypeScale.resolved(base: 36, systemScaled: minimumHeight, dynamicTypeSize: dynamicTypeSize))
             .background {
                 RoundedRectangle(cornerRadius: Metrics.radius)
-                    .fill(prominent ? Theme.accent : Theme.card)
+                    .fill(Theme.thumb)
                     .overlay {
                         RoundedRectangle(cornerRadius: Metrics.radius)
-                            .fill((prominent ? Theme.onAccent : Theme.accent).opacity(ButtonFeedback.surfaceFillOpacity(for: phase)))
+                            .fill(feedbackTint.opacity(ButtonFeedback.surfaceFillOpacity(for: phase)))
                     }
                     .overlay {
-                        if !prominent {
-                            RoundedRectangle(cornerRadius: Metrics.radius)
-                                .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW)
-                        }
+                        RoundedRectangle(cornerRadius: Metrics.radius)
+                            .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW)
                     }
             }
             .opacity(ButtonFeedback.labelOpacity(for: phase))
@@ -351,6 +359,21 @@ struct NativeSetupFlow: View {
         if recoveryKind == .connection { return setup.presentation.reconnectUnavailableReason }
         return setup.presentation.canRunInteractiveSetup ? nil
             : "This build has no validated recorder payload for update recovery. Open the packaged agentacct app that owns this installation to resume the update."
+    }
+    /// True while the reason is only the placeholder the recorder check
+    /// leaves behind before it answers.
+    private var recoveryCheckIsPending: Bool {
+        recoveryUnavailableReason == SetupModel.Presentation.pendingRecorderCheckReason
+    }
+    /// Why the Reconnect button is disabled, in the same words the page shows
+    /// above it — a disabled action always says why (K53).
+    private var disabledRecoveryReason: String? {
+        guard !canAttemptRecovery, !isReconnecting else { return nil }
+        if let recoveryUnavailableReason { return recoveryUnavailableReason }
+        if onReconnect == nil {
+            return "Recovery is unavailable in this window. Reopen Connections from the main app."
+        }
+        return nil
     }
     private var canAttemptRecovery: Bool {
         !isReconnecting && !isWorking && setup.reconnectPhase != .working
@@ -548,7 +571,18 @@ struct NativeSetupFlow: View {
                                detail: recoveryFailureMessage ?? "The recovery check did not succeed. Review the output, then try again.", tint: Theme.coral)
             }
             if reconnectResult != true, let unavailable = recoveryUnavailableReason {
-                informationRow(symbol: "shippingbox", title: "Recovery unavailable here", detail: unavailable, tint: Theme.amber)
+                // A check still in flight is a PENDING state, not a missing
+                // feature: "Recovery unavailable here" used to sit directly
+                // above "Checking the installed recorder…" (K53).
+                if recoveryCheckIsPending {
+                    informationRow(
+                        symbol: "clock",
+                        title: "Checking recorder…",
+                        detail: unavailable
+                    )
+                } else {
+                    informationRow(symbol: "shippingbox", title: "Recovery unavailable here", detail: unavailable, tint: Theme.amber)
+                }
             } else if reconnectResult != true {
                 informationRow(symbol: "gearshape",
                                title: recoveryKind == .synchronization ? "Resume the protected update" : "Reconnect the recorder only",
@@ -575,19 +609,21 @@ struct NativeSetupFlow: View {
 
     private var recoveryFooter: some View {
         layout.row(spacing: Space.l) {
+            // "View saved work" already sits in this page's header and stays
+            // there through every recovery state, so the footer repeated it
+            // on the same screen (K53). The footer keeps the way out and the
+            // one primary action.
             Button("Back to app", action: onClose).buttonStyle(NativeSetupActionStyle())
-            if canViewSavedWork && reconnectResult != true {
-                Button("View saved work", action: onOpenWork).buttonStyle(NativeSetupActionStyle())
-            }
             if !layout.stacksControls { Spacer() }
             if reconnectResult == true {
                 Button(canViewSavedWork ? "Open Work" : "Back to app", action: openSavedWork)
-                    .buttonStyle(NativeSetupActionStyle(prominent: true))
+                    .buttonStyle(PrimaryButtonStyle())
             } else {
                 Button(recoveryActionTitle, action: startReconnect)
-                    .buttonStyle(NativeSetupActionStyle(prominent: true))
+                    .buttonStyle(PrimaryButtonStyle())
                     .disabled(!canAttemptRecovery)
                     .keyboardShortcut(.defaultAction)
+                    .modifier(OptionalAccessibilityHint(hint: disabledRecoveryReason))
                     .accessibilityIdentifier("reconnect-recorder")
             }
         }
@@ -807,7 +843,7 @@ struct NativeSetupFlow: View {
             }
             .padding(.top, Space.m)
         } label: {
-            Text("\(isRecovery ? (recoveryKind == .synchronization ? "Recovery" : "Reconnect") : "Setup") output · \(activeLog.count) lines").workFont(.rowLabel).foregroundStyle(Theme.ink)
+            Text("\(isRecovery ? (recoveryKind == .synchronization ? "Recovery" : "Reconnect") : "Setup") output · \(Fmt.count(activeLog.count, "line"))").workFont(.rowLabel).foregroundStyle(Theme.ink)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("setup-output")
@@ -840,7 +876,7 @@ struct NativeSetupFlow: View {
                 case .idle:
                     if reviewing {
                         Button("Install and connect", action: startSetup)
-                            .buttonStyle(NativeSetupActionStyle(prominent: true))
+                            .buttonStyle(PrimaryButtonStyle())
                             .disabled(!setup.presentation.canRunInteractiveSetup || isWorking)
                             .keyboardShortcut(.defaultAction)
                             .accessibilityIdentifier("setup-install-and-connect")
@@ -849,14 +885,14 @@ struct NativeSetupFlow: View {
                             reviewing = true
                             headingFocused = true
                         }
-                        .buttonStyle(NativeSetupActionStyle(prominent: true))
+                        .buttonStyle(PrimaryButtonStyle())
                         .keyboardShortcut(.defaultAction)
                     }
                 case .working:
                     Button(savedWorkLabel, action: openSavedWork).buttonStyle(NativeSetupActionStyle())
                 case .failed:
                     Button("Retry setup", action: startSetup)
-                        .buttonStyle(NativeSetupActionStyle(prominent: true))
+                        .buttonStyle(PrimaryButtonStyle())
                         .disabled(!setup.presentation.canRunInteractiveSetup || isWorking)
                         .keyboardShortcut(.defaultAction)
                 case .done:
@@ -868,11 +904,11 @@ struct NativeSetupFlow: View {
                     .buttonStyle(NativeSetupActionStyle())
                     if canViewSavedWork, captureConfirmed, let taskID = capture?.taskID, let onOpenCapture {
                         Button("Open captured work") { onOpenCapture(taskID) }
-                            .buttonStyle(NativeSetupActionStyle(prominent: true))
+                            .buttonStyle(PrimaryButtonStyle())
                             .keyboardShortcut(.defaultAction)
                     } else {
                         Button(canViewSavedWork ? "Open Work" : "Back to app", action: openSavedWork)
-                            .buttonStyle(NativeSetupActionStyle(prominent: true))
+                            .buttonStyle(PrimaryButtonStyle())
                             .keyboardShortcut(.defaultAction)
                     }
                 }

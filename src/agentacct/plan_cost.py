@@ -804,6 +804,11 @@ def build_v1_plan_payload(
         records = usage_records(events, client=client)
         weights = calibrate_plan_weights(events, client=client, records=records)
         entry: dict[str, Any] = plan_status_entry(weights)
+        # The by_model token figure includes cache reads (the estimate weighs
+        # them): its measure is named so it never reads as fresh tokens.
+        from .display_vocabulary import PLAN_SHARE_TOKENS_SUFFIX
+
+        entry["model_tokens_label"] = PLAN_SHARE_TOKENS_SUFFIX
         if weights.confidence == "calibrated":
             entry.update(plan_pct_aggregates(records, weights, client=client, days=days, today=today))
         else:
@@ -819,27 +824,44 @@ def build_v1_plan_payload(
     }
 
 
+def _fit_beyond_stability_ceiling(weights: PlanWeights) -> bool:
+    """An uncalibrated fit on enough intervals whose raw scale sits outside the
+    hard stability ceiling: no further history calibrates it at this ratio."""
+
+    raw = weights.raw_scale
+    return (
+        weights.intervals_used >= _MIN_SCALE_INTERVALS
+        and raw is not None
+        and not (_STABILITY_HARD_BAND[0] <= raw <= _STABILITY_HARD_BAND[1])
+    )
+
+
 def calibration_state(weights: PlanWeights) -> str:
-    """Three-state display semantic for one client's plan estimate.
+    """Four-state display semantic for one client's plan estimate.
 
     ``calibrated`` — per-session percentages are grounded in this account's own
     recorded limit history and may be shown. ``calibrating`` — the client CAN
     calibrate but hasn't yet (not enough clean intervals, or the fit fell outside
-    the trusted band); an honest "warming up", not a missing feature.  ``never``
-    — the client's meter cannot yield a weekly plan %% (see
+    the trusted band but may still prove split-half stable); an honest "warming
+    up", not a missing feature. ``out_of_band`` — a terminal state, not a
+    spinner: the fit is beyond the stability ceiling, so it will not calibrate at
+    the current ratio and shells must not show warming-up progress for it.
+    ``never`` — the client's meter cannot yield a weekly plan %% (see
     :data:`CALIBRATABLE_CLIENTS`); shells must not show "calibrating" for it.
     """
 
     if weights.confidence == "calibrated":
         return "calibrated"
-    return "calibrating" if weights.client in CALIBRATABLE_CLIENTS else "never"
+    if weights.client not in CALIBRATABLE_CLIENTS:
+        return "never"
+    return "out_of_band" if _fit_beyond_stability_ceiling(weights) else "calibrating"
 
 
 def plan_status_entry(weights: PlanWeights) -> dict[str, Any]:
     """The per-client plan payload entry shared by glance and the /v1 lane.
 
     Additive superset of the original ``{client, confidence}`` shape: the
-    three-state ``calibration_state`` (so no shell has to hard-code which
+    four-state ``calibration_state`` (so no shell has to hard-code which
     clients can calibrate), ``calibratable``, the why-this-number disclosure
     fields (``basis``/``scale``/``alpha``/``intervals_used``), and the
     calibration-PROGRESS fields (``raw_scale``/``trusted_band``/
@@ -854,7 +876,7 @@ def plan_status_entry(weights: PlanWeights) -> dict[str, Any]:
         detail = weights.basis
     elif state == "never":
         detail = weights.basis
-    elif weights.intervals_used < _MIN_SCALE_INTERVALS:
+    elif state == "calibrating" and weights.intervals_used < _MIN_SCALE_INTERVALS:
         detail = (
             f"{weights.intervals_used} of {_MIN_SCALE_INTERVALS} clean weekly-% intervals "
             "recorded — keep working with tracked clients to calibrate"
@@ -866,10 +888,7 @@ def plan_status_entry(weights: PlanWeights) -> dict[str, Any]:
             + (f" (x{raw:.2f})" if raw is not None else "")
             + f" is outside the trusted band [{_TRUSTED_SCALE_BAND[0]}, {_TRUSTED_SCALE_BAND[1]}]"
         )
-        beyond_ceiling = raw is not None and not (
-            _STABILITY_HARD_BAND[0] <= raw <= _STABILITY_HARD_BAND[1]
-        )
-        if beyond_ceiling:
+        if state == "out_of_band":
             # Honest terminal state, not a spinner: past the stability ceiling
             # no amount of history calibrates this ratio.
             detail += (
@@ -881,16 +900,30 @@ def plan_status_entry(weights: PlanWeights) -> dict[str, Any]:
                 " — it calibrates once it holds split-half stable across "
                 f"{_STABILITY_MIN_INTERVALS}+ intervals spanning a week or more"
             )
+    from .display_vocabulary import plan_share_state_text
+
+    text = plan_share_state_text(state)
+    technical = [part for part in (detail, weights.basis) if part]
     return {
         "client": weights.client,
         "confidence": weights.confidence,
         "calibration_state": state,
+        # Display text from the one plan-share table: a short chip, the
+        # sentence a row prints, and the plain-language conclusion a detail
+        # view leads with. ``basis_text`` is the technical fit detail, shown
+        # only behind a disclosure.
+        "chip_text": text["chip_text"],
+        "sentence_text": text["sentence_text"],
+        "headline": text["headline"],
+        "basis_text": " · ".join(dict.fromkeys(technical)),
         "calibratable": weights.client in CALIBRATABLE_CLIENTS,
         "basis": weights.basis,
         "scale": weights.scale,
         "alpha": weights.alpha,
-        "intervals_used": weights.intervals_used,
-        "intervals_needed": _MIN_SCALE_INTERVALS,
+        # Progress toward calibration; null once the state is out_of_band (a
+        # used/needed fraction like "160/3" is meaningless for a terminal fit).
+        "intervals_used": None if state == "out_of_band" else weights.intervals_used,
+        "intervals_needed": None if state == "out_of_band" else _MIN_SCALE_INTERVALS,
         "raw_scale": weights.raw_scale,
         "trusted_band": list(_TRUSTED_SCALE_BAND),
         # The stability-acceptance ceiling for out-of-band fits, so a shell can

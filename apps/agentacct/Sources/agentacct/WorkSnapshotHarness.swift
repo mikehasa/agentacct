@@ -223,11 +223,11 @@ struct SessionStepsSnapshotConfiguration {
         (.expandedHistory, 760, 1_450),
         (.loadFailure, 760, 240),
         (.retrying, 760, 240),
-        (.compactChecks, 360, 1_600),
+        (.compactChecks, 360, 1_700),
         (.rtlStress, 760, 1_250),
         // Full-content exports, not window viewports: allow the explicit large-text ramp.
-        (.compactAccessibility, 360, 5_400),
-        (.rtlAccessibility, 360, 5_400),
+        (.compactAccessibility, 360, 7_200),
+        (.rtlAccessibility, 360, 7_200),
     ].flatMap { kind, width, height in
         [
             Self(kind: kind, width: width, height: height, colorScheme: .light),
@@ -468,6 +468,13 @@ struct SessionStepsSnapshotScene: View {
         case 11: nil
         default: "mcp_agent_reported"
         }
+        // The payload's display label for that source (receipt vocabulary).
+        let sourceLabel: String? = switch source {
+        case "ci": "CI or provider"
+        case "client_hook": "Hook-captured"
+        case nil: nil
+        default: "Agent-reported"
+        }
         let summaries = kind == .rtlStress
             ? [
                 "تطابق مرجعا الوضع الفاتح والداكن على عارض macOS المثبت.",
@@ -522,8 +529,43 @@ struct SessionStepsSnapshotScene: View {
             artifactUrl: nil,
             commandRedacted: index == 5,
             artifactPathRedacted: index == 5,
-            artifactUrlRedacted: index == 6
+            artifactUrlRedacted: index == 6,
+            sourceLabel: sourceLabel,
+            resultLabel: SnapshotCheckPayload.label(result),
+            resultTone: SnapshotCheckPayload.tone(result),
+            noteText: SnapshotCheckPayload.note(result: result, exitCode: exitCode)
         )
+    }
+}
+
+/// Snapshot FIXTURE data only: the result fields the daemon's reducer
+/// (`display_vocabulary.CHECK_RESULT_LABELS` / `CHECK_RESULT_TONES` /
+/// `check_result_note`) stamps on every check payload, so hand-built snapshot
+/// checks look like real payloads. The app's views never call this — they
+/// render the payload's `result_label` / `result_tone` / `note_text`.
+enum SnapshotCheckPayload {
+    private static let labels = [
+        "passed": "Passed", "failed": "Failed", "error": "Could not run",
+        "skipped": "Skipped", "unknown": "Result not recorded",
+    ]
+    private static let tones = [
+        "passed": "pass", "failed": "failure", "error": "not_run", "skipped": "not_run", "unknown": "not_run",
+    ]
+
+    private static func key(_ result: String?) -> String {
+        let text = result?.lowercased() ?? ""
+        return labels[text] == nil ? "unknown" : text
+    }
+
+    static func label(_ result: String?) -> String { labels[key(result)]! }
+    static func tone(_ result: String?) -> String { tones[key(result)]! }
+    static func note(result: String?, exitCode: Int?) -> String? {
+        guard let exitCode else { return nil }
+        if key(result) == "failed" && exitCode == 0 { return "Recorded as failed although the command exited 0." }
+        if key(result) == "passed" && exitCode != 0 {
+            return "Recorded as passed although the command exited \(exitCode)."
+        }
+        return nil
     }
 }
 
@@ -658,18 +700,15 @@ private struct ReceiptActionSnapshotScene: View {
     }
 
     private var exactSynopsis: ReceiptActionSynopsis {
-        receiptActionSynopsis(
-            counts: ["edit": 7, "execute": 24, "read": 38, "search": 11],
-            storedTotal: 80
-        )
+        ActionSynopsisSnapshotFixtures.synopsis("exact")
     }
 
     private var exactCard: some View {
         Card(padding: Space.xl) {
             ReceiptActionsDigest(
                 synopsis: exactSynopsis,
-                relatedPathCount: 18,
-                provenance: ["client_log"],
+                relatedPathsText: "18 related paths",
+                sourceText: "Hook-captured",
                 gaps: []
             )
         }
@@ -700,8 +739,8 @@ private struct ReceiptActionSnapshotScene: View {
                 stressCard(title: "320 pt · long translated content") {
                     ReceiptActionsDigest(
                         synopsis: germanSynopsis,
-                        relatedPathCount: 1_234,
-                        provenance: ["lokales_client_protokoll_mit_langer_bezeichnung"],
+                        relatedPathsText: "1234 related paths",
+                        sourceText: "Hook-captured",
                         gaps: ["Die Abdeckung einzelner Aktionen ist unvollständig und kann nicht rekonstruiert werden."]
                     )
                     .frame(width: 320)
@@ -709,8 +748,8 @@ private struct ReceiptActionSnapshotScene: View {
                 stressCard(title: "560 pt · RTL") {
                     ReceiptActionsDigest(
                         synopsis: exactSynopsis,
-                        relatedPathCount: 18,
-                        provenance: ["سجل_العميل"],
+                        relatedPathsText: "18 related paths",
+                        sourceText: "Hook-captured",
                         gaps: ["تفاصيل كل إجراء غير مسجلة"]
                     )
                     .frame(width: 500)
@@ -726,8 +765,8 @@ private struct ReceiptActionSnapshotScene: View {
             stressCard(title: "360 pt · accessibility 3 · RTL · exact totals") {
                 ReceiptActionsDigest(
                     synopsis: exactSynopsis,
-                    relatedPathCount: 18,
-                    provenance: ["transcript_scan", "mcp"],
+                    relatedPathsText: "18 related paths",
+                    sourceText: "Hook-captured",
                     gaps: []
                 )
                 .frame(width: 360)
@@ -736,23 +775,9 @@ private struct ReceiptActionSnapshotScene: View {
             }
             stressCard(title: "840 pt · accessibility 3 · maximum taxonomy") {
                 ReceiptActionsDigest(
-                    synopsis: receiptActionSynopsis(
-                        counts: [
-                            "read": 38,
-                            "edit": 7,
-                            "execute": 24,
-                            "search": 11,
-                            "network": 5,
-                            "agent": 4,
-                            "plan": 3,
-                            "mcp": 2,
-                            "other": 1,
-                            "future_category": 6,
-                        ],
-                        storedTotal: 101
-                    ),
-                    relatedPathCount: 18,
-                    provenance: ["client_log"],
+                    synopsis: ActionSynopsisSnapshotFixtures.synopsis("max-taxonomy"),
+                    relatedPathsText: "18 related paths",
+                    sourceText: "Hook-captured",
                     gaps: []
                 )
                 .frame(width: 840)
@@ -762,23 +787,21 @@ private struct ReceiptActionSnapshotScene: View {
     }
 
     private var semanticExamples: [ReceiptActionSnapshotExample] {
-        var highCardinality: [String: Int] = ["read": 20, "edit": 5]
-        for index in 1...40 { highCardinality["plugin_type_\(index)"] = 1 }
         return [
             .init(
                 id: "absent", title: "Absent instrumentation",
-                synopsis: receiptActionSynopsis(counts: nil, storedTotal: nil),
+                synopsis: ActionSynopsisSnapshotFixtures.synopsis("absent"),
                 pathCount: nil, provenance: nil, gaps: []
             ),
             .init(
                 id: "zero", title: "Zero records · capture unknown",
-                synopsis: receiptActionSynopsis(counts: [:], storedTotal: 0),
+                synopsis: ActionSynopsisSnapshotFixtures.synopsis("zero"),
                 pathCount: nil, provenance: nil,
                 gaps: ["Tool categories were not instrumented for this session."]
             ),
             .init(
                 id: "total-only", title: "Total only",
-                synopsis: receiptActionSynopsis(counts: nil, storedTotal: 80),
+                synopsis: ActionSynopsisSnapshotFixtures.synopsis("total-only"),
                 pathCount: 18, provenance: ["client_log"], gaps: []
             ),
             .init(
@@ -788,27 +811,27 @@ private struct ReceiptActionSnapshotScene: View {
             ),
             .init(
                 id: "partial", title: "Conflicting total · stored total higher",
-                synopsis: receiptActionSynopsis(counts: ["read": 7], storedTotal: 10),
+                synopsis: ActionSynopsisSnapshotFixtures.synopsis("partial"),
                 pathCount: 2, provenance: ["client_log"], gaps: []
             ),
             .init(
                 id: "mismatch", title: "Conflicting total · categorized higher",
-                synopsis: receiptActionSynopsis(counts: ["read": 8, "edit": 4], storedTotal: 10),
+                synopsis: ActionSynopsisSnapshotFixtures.synopsis("mismatch"),
                 pathCount: 4, provenance: ["client_log"], gaps: []
             ),
             .init(
                 id: "invalid", title: "Invalid category",
-                synopsis: receiptActionSynopsis(counts: ["read": 8, "edit": -2], storedTotal: 8),
+                synopsis: ActionSynopsisSnapshotFixtures.synopsis("invalid"),
                 pathCount: 1, provenance: ["client_log"], gaps: []
             ),
             .init(
                 id: "legacy", title: "Stored total unavailable",
-                synopsis: receiptActionSynopsis(counts: ["read": 3, "execute": 2], storedTotal: nil),
+                synopsis: ActionSynopsisSnapshotFixtures.synopsis("legacy"),
                 pathCount: 2, provenance: ["client_log"], gaps: []
             ),
             .init(
                 id: "high-cardinality", title: "High-cardinality future taxonomy",
-                synopsis: receiptActionSynopsis(counts: highCardinality, storedTotal: 65),
+                synopsis: ActionSynopsisSnapshotFixtures.synopsis("high-cardinality"),
                 pathCount: 7, provenance: ["client_log"], gaps: []
             ),
             .init(
@@ -822,7 +845,8 @@ private struct ReceiptActionSnapshotScene: View {
 
     private var germanSynopsis: ReceiptActionSynopsis {
         ReceiptActionSynopsis(
-            integrity: .exact,
+            state: "exact",
+            headline: "66 erfasste Werkzeugaufrufe",
             metrics: [
                 ReceiptActionMetric(
                     key: "read", label: "Lesen",
@@ -840,12 +864,10 @@ private struct ReceiptActionSnapshotScene: View {
                     count: 4
                 ),
             ],
-            headline: "66 erfasste Werkzeugaufrufe",
-            integrityDetail: nil,
+            canShowDistribution: true,
+            captureBoundary: "Kein geordnetes Aktionsprotokoll; die erfassten Werkzeugaufrufzahlen lassen sich nicht mit Ergebnissen oder Zeitangaben verknüpfen.",
             storedTotal: 66,
-            categorizedTotal: 66,
-            shareDenominator: 66,
-            captureBoundary: "Kein geordnetes Aktionsprotokoll; die erfassten Werkzeugaufrufzahlen lassen sich nicht mit Ergebnissen oder Zeitangaben verknüpfen."
+            categorizedTotal: 66
         )
     }
 
@@ -856,8 +878,8 @@ private struct ReceiptActionSnapshotScene: View {
                 Rectangle().fill(Theme.hairline).frame(height: 1)
                 ReceiptActionsDigest(
                     synopsis: example.synopsis,
-                    relatedPathCount: example.pathCount,
-                    provenance: example.provenance,
+                    relatedPathsText: example.pathCount.map { Fmt.count($0, "related path") },
+                    sourceText: example.provenance == nil ? nil : "Hook-captured",
                     gaps: example.gaps
                 )
             }
@@ -1264,7 +1286,10 @@ private struct ReceiptCheckSnapshotScene: View {
             commandRedacted: commandRedacted,
             artifactRef: artifactRef,
             artifactUrl: nil,
-            finding: finding
+            finding: finding,
+            resultLabel: SnapshotCheckPayload.label(result),
+            resultTone: SnapshotCheckPayload.tone(result),
+            noteText: SnapshotCheckPayload.note(result: result, exitCode: exitCode)
         )
     }
 }

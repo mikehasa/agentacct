@@ -64,6 +64,9 @@ struct RecordingHealthToolbarButton: View {
     var onActivateClient: ((String) -> Void)? = nil
     let onSources: () -> Void
     let onRefresh: () -> Void
+    /// The top bar's compact alternative: the same title and glyph on one
+    /// line that may truncate, never an icon-only control (C81).
+    var compact = false
     @State private var isPresented = false
 
     var body: some View {
@@ -73,6 +76,7 @@ struct RecordingHealthToolbarButton: View {
             Label(snapshot.title, systemImage: snapshot.tone.symbol)
                 .foregroundStyle(snapshot.tone.color)
                 .workFont(.caption)
+                .lineLimit(compact ? 1 : nil)
         }
         .buttonStyle(NativeSetupActionStyle())
         .help("Inspect recorder connection, client capture, and coverage")
@@ -106,6 +110,8 @@ struct RecordingHealthToolbarButton: View {
                     { id in isPresented = false; callback(id) }
                 }
             )
+            // The popover lays out its own cards on the canvas ground.
+            .popoverSurface(Theme.canvas)
         }
     }
 
@@ -148,7 +154,7 @@ struct RecordingHealthPopover: View {
                                     .workFont(.rowLabel).foregroundStyle(cause.tone.color)
                                 Text(cause.detail).workFont(.caption).foregroundStyle(Theme.muted)
                                 if !cause.affectedSources.isEmpty {
-                                    Text("Affected summaries: \(cause.affectedSources.map(recordingHealthClientName).joined(separator: ", "))")
+                                    Text("Affected summaries: \(cause.affectedSources.joined(separator: ", "))")
                                         .workFont(.caption).foregroundStyle(Theme.muted)
                                 }
                                 if let restart, cause.isRecorderUnreachable {
@@ -175,7 +181,7 @@ struct RecordingHealthPopover: View {
                         Divider()
                         ForEach(snapshot.clients) { client in
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(client.title).workFont(.rowLabel)
+                                Text(client.title).workFont(size: 14, weight: .semibold, relativeTo: .body, monospaced: true)
                                 Label(client.status, systemImage: client.confirmed ? "checkmark.circle" : "clock")
                                     .workFont(.caption)
                                     .foregroundStyle(client.confirmed ? Theme.green : Theme.muted)
@@ -294,14 +300,17 @@ struct RecordingHealthNoticeStack: View {
                     noticeRow(notice)
                 }
                 if visible.count > 1 {
-                    Button(showsAll ? "Show fewer notices" : "Show \(visible.count - 1) more recording \(visible.count == 2 ? "notice" : "notices")") {
+                    SnapshotSafeBorderlessButton {
                         showsAll.toggle()
+                    } label: {
+                        Text(showsAll ? "Show fewer notices" : "Show \(visible.count - 1) more recording \(visible.count == 2 ? "notice" : "notices")")
                     }
-                    .buttonStyle(.borderless)
                     .workFont(.caption)
                 }
             }
-            .frame(width: 400, alignment: .leading)
+            // Full page width: the stack is a banner in the page flow now,
+            // not a floating 400pt card pinned to the window's corner (K09).
+            .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: !showsAll)
             .workFont(.body)
             .accessibilityElement(children: .contain)
@@ -334,12 +343,11 @@ struct RecordingHealthNoticeStack: View {
                 }
             }
             Spacer(minLength: 0)
-            Button {
+            SnapshotSafeBorderlessButton {
                 coordinator.dismiss(notice.id)
             } label: {
                 Image(systemName: "xmark")
             }
-            .buttonStyle(.borderless)
             .help("Dismiss this notice; recording status remains available")
             .accessibilityLabel("Dismiss notice: \(notice.title)")
         }

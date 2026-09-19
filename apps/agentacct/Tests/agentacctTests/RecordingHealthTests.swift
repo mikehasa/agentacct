@@ -203,3 +203,60 @@ final class RecordingHealthTests: XCTestCase {
         ])
     }
 }
+
+/// The top bar's freshness claim (K02). Green is reserved for live-connection
+/// facts, so the dot may only be green while the recorder is reachable AND
+/// the last refresh succeeded; every other state names itself and keeps its
+/// age instead of dropping to a dash.
+@MainActor
+final class TopBarFreshnessTests: XCTestCase {
+    func testGreenOnlyWhenReachableAndTheLastRefreshSucceeded() {
+        let live = TopBarFreshness(reachable: true, lastRefreshFailed: false)
+        XCTAssertEqual(live.state, .live)
+        XCTAssertTrue(live.isLive)
+        XCTAssertEqual(live.caption(age: "just now", compact: false), "Local data · just now")
+    }
+
+    func testAFailedRefreshIsNotLiveAndKeepsItsAge() {
+        let failed = TopBarFreshness(reachable: true, lastRefreshFailed: true)
+        XCTAssertEqual(failed.state, .refreshFailed)
+        XCTAssertFalse(failed.isLive)
+        XCTAssertEqual(failed.caption(age: "4m ago", compact: false), "refresh failed · 4m ago")
+        // The failure words survive the compact form: only the "Local data ·"
+        // prefix of the live state may be dropped (C81).
+        XCTAssertEqual(failed.caption(age: "4m ago", compact: true), "refresh failed · 4m ago")
+    }
+
+    func testAnUnreachableRecorderIsNeverLiveEvenWithNoLaneError() {
+        let unreachable = TopBarFreshness(reachable: false, lastRefreshFailed: false)
+        XCTAssertEqual(unreachable.state, .notReachable)
+        XCTAssertFalse(unreachable.isLive)
+        XCTAssertEqual(unreachable.caption(age: "12m ago", compact: false), "recorder unreachable · 12m ago")
+        XCTAssertTrue(unreachable.accessibilityLabel(age: "12m ago").contains("12m ago"))
+    }
+
+    func testTheLiveCompactCaptionDropsOnlyThePrefix() {
+        let live = TopBarFreshness(reachable: true, lastRefreshFailed: false)
+        XCTAssertEqual(live.caption(age: "27s ago", compact: true), "27s ago")
+    }
+
+    func testProjectionReportsEndpointReachability() throws {
+        let glance = try JSONDecoder().decode(Glance.self, from: Data("""
+        {"schema":"agentacct.glance.v1","usage":{"windows":[]},"limits":[],"plan":[],"recent_sessions":[]}
+        """.utf8))
+        let reachable = RecordingHealthSnapshot.project(
+            glancePhase: .connected(.init(glance: glance, daemonVersion: "test")),
+            setupPhase: .idle,
+            ingestion: nil,
+            ingestionError: nil
+        )
+        XCTAssertTrue(reachable.endpointReachable)
+        let unreachable = RecordingHealthSnapshot.project(
+            glancePhase: .disconnected("no answer"),
+            setupPhase: .idle,
+            ingestion: nil,
+            ingestionError: nil
+        )
+        XCTAssertFalse(unreachable.endpointReachable)
+    }
+}

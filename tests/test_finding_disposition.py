@@ -33,6 +33,7 @@ def _record_failure(service: SentinelService, *, name: str = "Boundary probe") -
                 "name": name,
                 "result": "failed",
                 "summary": f"{name} failed.",
+                "exit_code": 0,
             },
         }
     )
@@ -235,6 +236,7 @@ def test_later_same_check_pass_rejects_stale_failure_but_unrelated_pass_does_not
                 "evidence_type": "lint",
                 "name": "Unrelated lint",
                 "result": "passed",
+                "exit_code": 0,
             },
         }
     )
@@ -257,6 +259,7 @@ def test_later_same_check_pass_rejects_stale_failure_but_unrelated_pass_does_not
                 "evidence_type": "security",
                 "name": "Boundary probe",
                 "result": "passed",
+                "exit_code": 0,
             },
         }
     )
@@ -292,6 +295,7 @@ def test_new_failure_is_a_distinct_open_episode(tmp_path: Path) -> None:
                 "name": "Boundary probe",
                 "result": "failed",
                 "summary": "A new regression appeared.",
+                "exit_code": 0,
             },
         }
     )

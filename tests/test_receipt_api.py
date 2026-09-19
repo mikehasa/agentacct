@@ -91,9 +91,12 @@ def _record_section(service: SentinelService, *, session_id: str, section_id: st
                 "identity_scope_state": "explicit",
                 "section_id": section_id,
                 "section_status": status,
+                "next_step": "Re-run the focused suite and close the section",
                 "section_title": "Add rate limit to login",
                 "kind": "implementation",
                 "files": ["src/login.py"],
+                "summary": "Recorded outcome for this fixture section." if status in {"completed", "handed_off"} else None,
+                "blocker": "The staging migration needs an owner role this account does not have." if status == "blocked" else None,
             },
         }
     )
@@ -113,6 +116,35 @@ def _record_passing_check(service: SentinelService, *, session_id: str, section_
                 "summary": "pytest passed",
                 "name": "pytest",
                 "exit_code": 0,
+                "section_id": section_id,
+                "client": "claude-code",
+                "client_session_id": session_id,
+                "session_namespace_fingerprint": NS,
+                "identity_scope_state": "explicit",
+                "project_dir": "/tmp/project",
+            },
+        }
+    )
+
+
+def _record_errored_check(service: SentinelService, *, session_id: str, section_id: str, at: float) -> None:
+    """A check whose recorded result is ``error``: it COULD NOT RUN, so it
+    proves nothing either way — a named evidence gap, never a Finding."""
+
+    service.record_event(
+        {
+            "event_id": f"evt_check_error_{session_id}_{section_id}",
+            "created_at": at,
+            "source": "claude-code",
+            "event_type": "machine_check",
+            "run_id": None,
+            "metadata": {
+                "sentinel_semantic_kind": "evidence",
+                "result": "error",
+                "evidence_type": "typecheck",
+                "summary": "No module named mypy",
+                "name": "mypy",
+                "exit_code": 1,
                 "section_id": section_id,
                 "client": "claude-code",
                 "client_session_id": session_id,
@@ -169,6 +201,7 @@ def _record_blocked_section(
                 "project_dir": "/tmp/project",
                 "section_id": section_id,
                 "section_status": "blocked",
+                "files": ["src/agentacct/mcp.py"],
                 "section_title": "Publish the site",
                 "blocker": "waiting for approval",
                 "next_step": "ask the user",
@@ -289,10 +322,16 @@ def test_attention_empty_state_and_query_bounds(tmp_path: Path) -> None:
         "schema": V1_ATTENTION_SCHEMA_VERSION,
         "items": [],
         "total": 0,
-        "counts": {"failed_check": 0, "failed_step": 0, "blocker": 0},
+        "counts": {"failed_check": 0, "failed_step": 0, "blocker": 0, "check_not_run": 0},
         "offset": 0,
         "limit": 5,
         "truncated": False,
+        "queue": {
+            "noun": "Attention",
+            "count_text": "0 in Attention",
+            "open_action": "Open Attention",
+            "sort_text": "failed checks and steps, then blockers, then checks that could not run, then most recent",
+        },
     }
     assert client.get(
         "/v1/attention", headers=_auth(), params={"limit": 0}
@@ -344,11 +383,11 @@ def test_attention_is_complete_bounded_and_operationally_ordered(
 
     attention = client.get("/v1/attention", headers=_auth(), params={"limit": 1}).json()
     assert set(attention) == {
-        "schema", "items", "total", "counts", "snapshot", "offset", "limit", "truncated"
+        "schema", "items", "total", "counts", "snapshot", "offset", "limit", "truncated", "queue"
     }
     assert attention["schema"] == V1_ATTENTION_SCHEMA_VERSION
     assert attention["total"] == 2
-    assert attention["counts"] == {"failed_check": 1, "failed_step": 0, "blocker": 1}
+    assert attention["counts"] == {"failed_check": 1, "failed_step": 0, "blocker": 1, "check_not_run": 0}
     assert attention["limit"] == 1
     assert attention["truncated"] is True
     assert attention["offset"] == 0
@@ -360,12 +399,41 @@ def test_attention_is_complete_bounded_and_operationally_ordered(
     assert leading["evidence_strength"]["checks_failed"] == 1
     assert leading["attention"] == {
         "kind": "failed_check",
+        "reason_label": "Failed check",
         "summary": "pytest found a regression",
-        "next_step": None,
+        "check_name": "pytest",
+        "evidence_type": "test",
+        "result": "failed",
+        "result_label": "Failed",
+        "result_tone": "failure",
+        "exit_code": 1,
+        "section_title": "Add rate limit to login",
+        "label": "Failed test check · pytest · exit 1",
+        "note_text": None,
+        "next_step": "Re-run the focused suite and close the section",
         "observed_at": leading["attention"]["observed_at"],
         "source": "mcp",
+        "source_label": "Agent-reported",
+        "action_token": leading["attention"]["action_token"],
+        "target_digest": leading["attention"]["target_digest"],
+        "revision": 0,
+        "disposition_state": "open",
+        "disposition_note": None,
+        "open": True,
+        "effects": {
+            "reviewed": "Leaves Attention; the badge stays Finding until resolved.",
+            "resolved": (
+                "Leaves Attention and records your resolution; the badge becomes Finding resolved. "
+                "The failing check stays in history."
+            ),
+            "reopen": "Returns to Attention with its original badge.",
+        },
+        "more_text": None,
     }
     assert leading["attention"]["observed_at"] is not None
+    # The disposition handle a write names rides the block.
+    assert leading["attention"]["action_token"]
+    assert leading["attention"]["target_digest"]
 
     next_attention = client.get(
         "/v1/attention",
@@ -387,10 +455,38 @@ def test_attention_is_complete_bounded_and_operationally_ordered(
     blocker = all_attention["items"][1]["attention"]
     assert blocker == {
         "kind": "blocker",
+        "reason_label": "Blocker",
         "summary": "waiting for approval",
+        "check_name": None,
+        "evidence_type": None,
+        "result": None,
+        "result_label": None,
+        "result_tone": None,
+        "exit_code": None,
+        "section_title": "Publish the site",
+        # The step title equals the Task title the surface already shows, and
+        # the reason noun rides in reason_label: nothing left to repeat.
+        "label": "",
+        "note_text": None,
         "next_step": "ask the user",
         "observed_at": blocker["observed_at"],
         "source": "mcp",
+        "source_label": "Agent-reported",
+        "action_token": blocker["action_token"],
+        "target_digest": None,
+        "revision": blocker["revision"],
+        "disposition_state": "open",
+        "disposition_note": None,
+        "open": True,
+        "effects": blocker["effects"],
+        "more_text": None,
+    }
+    # A disposable blocker names its write handle and the effect of each action.
+    assert blocker["action_token"]
+    assert blocker["effects"] == {
+        "reviewed": "Leaves Attention; the badge stays Blocked until resolved.",
+        "resolved": "Leaves Attention and records your resolution; the badge becomes Blocker resolved.",
+        "reopen": "Returns to Attention with its original badge.",
     }
     assert blocker["observed_at"] is not None
     # The second poll changes only the response limit. Classification, complete
@@ -513,24 +609,60 @@ def test_tasks_attention_summary_includes_actionable_work_beyond_recent_window(
     )
 
 
-def test_receipt_attention_priority_matches_dashboard_review_contract() -> None:
-    cases = [
-        ("reported", 1, 0),
-        ("finding", 0, 0),
-        ("failed", 0, 0),
-        ("blocked", 0, 1),
-        ("finding_superseded", 1, None),
-        ("finding_resolved_by_user", 1, None),
-        ("verified", 0, None),
-    ]
+def test_receipt_attention_priority_is_the_reducers_own_class() -> None:
+    """The Dashboard's attention block carries NO predicate of its own: a
+    summary is in the queue exactly when the reducer's ``group_key`` says so,
+    and it sorts by the reducer's ``attention_order``.
 
-    for decision, failed_checks, expected in cases:
-        assert _receipt_attention_priority(
-            {
-                "decision_status": {"key": decision},
-                "evidence_strength": {"checks_failed": failed_checks},
-            }
-        ) == expected
+    The rule this replaces was re-derived from the decision key and the
+    failed-check count, so it could not see order class 2 (a check that could
+    not run) and silently undercounted the queue.
+    """
+
+    def priority(group: str | None, order: int | None, **extra: object) -> int | None:
+        row: dict[str, object] = {"group_key": group, "attention_order": order}
+        row.update(extra)
+        return _receipt_attention_priority(row)
+
+    assert priority("attention", 0) == 0   # failed checks and failed steps
+    assert priority("attention", 1) == 1   # blockers
+    assert priority("attention", 2) == 2   # checks that could not run
+    # Out of the queue: a settled finding, a verified Task, anything reviewed.
+    assert priority("reported", None) is None
+    assert priority("verified", None) is None
+    assert priority("other", None) is None
+    # Open but from a payload with no order class: ranked last, never dropped.
+    assert priority("attention", None) == 2
+    assert priority("attention", 99) == 2
+    # No group key at all (an older payload): the explicit predicate, then the
+    # attention block's own `open` flag.
+    assert priority(None, 0, attention_open=True) == 0
+    assert priority(None, 1, attention_open=False) is None
+    assert priority(None, None, attention={"open": True}) == 2
+    assert priority(None, None) is None
+
+
+def test_tasks_attention_total_matches_the_attention_endpoint(tmp_path: Path) -> None:
+    """The count `/v1/tasks` ships and the queue `/v1/attention` serves are the
+    same queue. A check that could not run is an open attention item (a named
+    evidence gap, order class 2) and used to be missing from the first."""
+
+    service = SentinelService(tmp_path)
+    _record_usage(service, session_id="s-error", at=100.0)
+    _record_section(service, session_id="s-error", section_id="sec-1", status="completed", at=110.0)
+    _record_errored_check(service, session_id="s-error", section_id="sec-1", at=120.0)
+    _record_usage(service, session_id="s-blocked", at=200.0)
+    _record_section(service, session_id="s-blocked", section_id="sec-2", status="blocked", at=210.0)
+
+    client = _app(tmp_path)
+    listing = client.get("/v1/tasks", headers=_auth(), params={"limit": 50}).json()
+    queue = client.get("/v1/attention", headers=_auth(), params={"limit": 50}).json()
+
+    in_group = [row for row in listing["tasks"] if row["group_key"] == "attention"]
+    assert len(in_group) == 2, [row["decision_status"]["key"] for row in listing["tasks"]]
+    assert listing["attention"]["total"] == queue["total"] == len(in_group)
+    # And the queue count the surfaces print is built from that same number.
+    assert listing["queue"]["count_text"] == f"{len(in_group)} in Attention"
 
 
 def test_unknown_task_is_a_404_not_an_empty_fabrication(tmp_path: Path) -> None:
@@ -900,3 +1032,99 @@ def test_plan_share_stamp_is_client_scoped_and_names_never_for_plan_less_clients
     assert hermes["pct"] is None and hermes["calibration_state"] == "never"
     assert cc["pct"] is not None and cc["pct"] > 0
     assert cc["covered_sessions"] == 1  # the codex member never counted
+
+
+def test_glance_recent_sessions_carry_the_task_decision_from_the_task_reducers(tmp_path: Path) -> None:
+    """K37: a menu row shows its Task's decision (the same reducers /v1/tasks
+    uses), kept apart from the agent's recorded work status."""
+
+    import time as _time
+
+    now = _time.time()
+    service = SentinelService(tmp_path)
+    _record_usage(service, session_id="s-recent", at=now - 60)
+    _record_section(service, session_id="s-recent", section_id="sec-1", status="completed", at=now - 30)
+    client = _app(tmp_path)
+
+    task_row = client.get("/v1/tasks", headers=_auth()).json()["tasks"][0]
+    glance = client.get("/v1/glance", headers=_auth()).json()
+    row = next(item for item in glance["recent_sessions"] if item["session_id"] == "s-recent")
+    assert row["status_label"] == "Completed"  # the agent's work-status report
+    assert row["decision_key"] == task_row["decision_status"]["key"]
+    assert row["decision_label"] == task_row["decision_status"]["label"]
+    assert row["attention_open"] == task_row["attention_open"]
+    assert row["task_id"] == task_row["task_id"]
+
+
+def test_receipt_keeps_the_failing_run_of_a_recovered_check(tmp_path: Path) -> None:
+    """End to end: a fail→pass recovery must be readable from /v1/receipt.
+
+    The failing run used to be dropped from ``dimensions.evidence.checks`` while
+    the surviving row still said ``runs_total: 2, earlier_failed: 1`` — the
+    receipt counted a recovery it could not show.
+    """
+
+    service = SentinelService(tmp_path)
+    _record_usage(service, session_id="s1", at=100.0)
+    _record_section(service, session_id="s1", section_id="sec-1", status="completed", at=101.0)
+    for suffix, result, exit_code, at in (("fail", "failed", 1, 102.0), ("pass", "passed", 0, 103.0)):
+        service.record_event(
+            {
+                "event_id": f"evt_run_{suffix}",
+                "created_at": at,
+                "source": "claude-code",
+                "event_type": "machine_check",
+                "metadata": {
+                    "result": result,
+                    "evidence_type": "test",
+                    "summary": f"pytest {result}: assert total == 42 got 41 (one row dropped)",
+                    "name": "pytest tests/test_percent.py",
+                    "command": "pytest tests/test_percent.py",
+                    "exit_code": exit_code,
+                    "section_id": "sec-1",
+                    "client": "claude-code",
+                    "client_session_id": "s1",
+                    "session_namespace_fingerprint": NS,
+                    "identity_scope_state": "explicit",
+                    "project_dir": "/tmp/project",
+                },
+            }
+        )
+    client = _app(tmp_path)
+    task_id = client.get("/v1/tasks", headers=_auth()).json()["tasks"][0]["task_id"]
+    receipt = client.get(f"/v1/receipt?task={task_id}", headers=_auth()).json()
+
+    rows = receipt["dimensions"]["evidence"]["checks"]
+    assert [row["result"] for row in rows] == ["failed", "passed"]
+    assert rows[0]["history_run"] is True and rows[0]["superseded"] is True
+    # The store assigns its own event ids, so the link is asserted between the
+    # rows themselves — which is exactly what a surface has to follow.
+    assert rows[0]["superseded_by_event_id"] == rows[1]["event_id"]
+    assert rows[1]["supersedes_check_event_id"] == rows[0]["event_id"]
+    assert rows[1]["supersedes_basis"] == "reciprocal_of_supersession"
+    assert rows[1]["runs_total"] == 2 and rows[1]["earlier_failed"] == 1
+    # The tally still counts the frontier, so the recovery is not double-counted.
+    assert receipt["dimensions"]["evidence"]["checks_total"] == 1
+    assert receipt["dimensions"]["evidence"]["checks_failed"] == 0
+    # The agent supplied the command, so the receipt says it was RECORDED.
+    assert rows[1]["command_state"] == "agent_recorded"
+    assert "was not stored" not in rows[1]["command_state_text"]
+
+
+def test_receipt_gap_items_carry_their_rank_and_lead_with_review_blockers(
+    tmp_path: Path,
+) -> None:
+    service = SentinelService(tmp_path)
+    _record_usage(service, session_id="s1", at=100.0)
+    _record_section(service, session_id="s1", section_id="sec-1", status="completed", at=101.0)
+    _record_passing_check(service, session_id="s1", section_id="sec-1", at=102.0)
+    client = _app(tmp_path)
+    task_id = client.get("/v1/tasks", headers=_auth()).json()["tasks"][0]["task_id"]
+    gaps = client.get(f"/v1/receipt?task={task_id}", headers=_auth()).json()["dimensions"]["gaps"]
+
+    assert gaps["count"] == len(gaps["items"])
+    assert gaps["blocks_review_count"] + gaps["bookkeeping_count"] == gaps["count"]
+    kinds = [item["kind"] for item in gaps["items"]]
+    assert kinds == sorted(kinds, key=lambda kind: 0 if kind == "blocks_review" else 1)
+    for item in gaps["items"]:
+        assert item["kind_label"] in {"Blocks review", "Provenance bookkeeping"}

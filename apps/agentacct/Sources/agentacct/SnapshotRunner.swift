@@ -11,7 +11,10 @@ enum SnapshotRunner {
         // Pump the main run loop while the MainActor task works — a semaphore
         // wait on the main thread would deadlock the very actor doing the
         // rendering.
-        SnapshotMode.enabled = true
+        // SnapshotMode stays OFF until every pane's payload has loaded: the
+        // store deliberately skips network lanes (e.g. /v1/ingestion) while it
+        // is on, so enabling it first would render Sources before its data
+        // exists (C65). It is switched on just before the first render.
         // These docs screenshots run on whatever machine builds the app, not the
         // pinned golden toolchain, so draw native button chrome as static
         // primitives. The fixture renderers (golden path) deliberately do NOT set
@@ -69,6 +72,15 @@ enum SnapshotRunner {
                     }
                 }
 
+                // Await each pane's model load (bounded) before any render, so
+                // no pane is captured in its loading state.
+                for pane in MainPane.allCases {
+                    await SnapshotRunner.waitForLoad(of: pane) {
+                        SnapshotRunner.paneIsLoaded(pane, dashboard: dashboard, taskId: selection.taskId)
+                    }
+                }
+                SnapshotMode.enabled = true
+
                 // Light AND dark of every surface: the theme is adaptive, so
                 // a design pass must see both. SnapshotScheme pins the Theme
                 // tokens; the environment pins the system styles.
@@ -119,29 +131,22 @@ enum SnapshotRunner {
                     // for the README hero. Same record, wider canvas.
                     selection.pane = .work
                     // The Work pane's body is a GeometryReader, which takes the
-                    // proposed height rather than growing to its content (the
-                    // record detail is a full-height ScrollBox in snapshot mode).
-                    // Propose a tall canvas so the whole record — summary strip,
-                    // the two-column dimensions + evidence rail, and Sessions &
-                    // steps — renders; the docs pipeline trims trailing canvas.
-                    // The height must sit at the record's natural height: the
-                    // offscreen ScrollBox pins content to the top, so a taller
-                    // frame stretches the flexible timeline card into an empty
-                    // band and a shorter one clips the supporting sections. The
-                    // docs pipeline owns the value (next to its crop table) and
-                    // passes it as AGENTACCT_SNAPSHOT_WIDE_HEIGHT (points).
-                    let wideHeight = ProcessInfo.processInfo.environment["AGENTACCT_SNAPSHOT_WIDE_HEIGHT"]
-                        .flatMap(Double.init) ?? 1500
-                    let wideWork = MainWindow()
-                        .environment(glance)
-                        .environment(dashboard)
-                        .environment(selection)
-                        .frame(width: 1520, height: wideHeight, alignment: .top)
-                        .environment(\.colorScheme, scheme)
-                    try SnapshotImageWriter.render(
-                        wideWork,
+                    // proposed height rather than growing to its content, so a
+                    // width-only frame would collapse it to the window minimum.
+                    // The ScrollBox never offers that proposed height to the
+                    // record content (C66); the image is then cut to the record's
+                    // own content height — never a fixed tall canvas with slack.
+                    try SnapshotRunner.renderFittingContentHeight(
+                        width: 1520,
                         to: out.appendingPathComponent("window-work-wide-\(suffix).png")
-                    )
+                    ) { height in
+                        MainWindow()
+                            .environment(glance)
+                            .environment(dashboard)
+                            .environment(selection)
+                            .frame(width: 1520, height: height, alignment: .top)
+                            .environment(\.colorScheme, scheme)
+                    }
 
                     let menu = MenuContent()
                         .environment(glance)
@@ -163,6 +168,146 @@ enum SnapshotRunner {
             RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
         }
         exit(0)
+    }
+
+    /// Polls `isLoaded` on the main actor until it holds or `timeout` passes.
+    /// A timeout is reported, not fatal: the pane then renders its own named
+    /// loading or error state.
+    @MainActor
+    private static func waitForLoad(
+        of pane: MainPane,
+        timeout: TimeInterval = 30,
+        until isLoaded: @MainActor () -> Bool
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !isLoaded() {
+            guard Date() < deadline else {
+                FileHandle.standardError.write(Data(
+                    "snapshot: \(pane.rawValue) data did not load within \(Int(timeout))s; rendering its current state\n".utf8
+                ))
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    /// A pane is loaded once each lane it renders has either data or an error.
+    @MainActor
+    private static func paneIsLoaded(_ pane: MainPane, dashboard: DashboardStore, taskId: String?) -> Bool {
+        let usageSettled = dashboard.usage != nil || dashboard.errorText != nil
+        switch pane {
+        case .dashboard:
+            return !dashboard.isRefreshing && usageSettled
+                && (dashboard.dashboardAttention != nil || dashboard.dashboardAttentionError != nil)
+                && (dashboard.ingestion != nil || dashboard.ingestionError != nil)
+        case .work:
+            guard !dashboard.isLoadingReceipts else { return false }
+            guard let taskId else { return true }
+            return dashboard.receipt?.taskId == taskId || dashboard.receiptError != nil
+        case .usage:
+            return !dashboard.isRefreshing && usageSettled
+        case .sources:
+            return !dashboard.isRefreshingIngestion
+                && (dashboard.ingestion != nil || dashboard.ingestionError != nil)
+        case .worksets:
+            // The groupings lane has one fetch and an empty list is a settled
+            // state (no groups recorded yet), so the in-flight flag is the whole
+            // condition — `worksetsLastUpdated` is deliberately nil under
+            // SnapshotMode and would never settle here.
+            return !dashboard.isLoadingWorksets
+        }
+    }
+
+    /// Renders a view whose height must be proposed (a GeometryReader root) and
+    /// crops the image to its content. Content is measured across the FULL row
+    /// width: the record's label/value columns (e.g. the last TASK ID row) sit
+    /// left of centre, so a right-half probe would stop at the last hairline
+    /// and cut them off. The trailing zone is still uniform row-to-row (master
+    /// list ground, its rule, and the detail canvas).
+    ///
+    /// Trailing canvas alone does not prove the content ended: a proposal that
+    /// clips the record between two rows (e.g. the gap between session rows)
+    /// also ends in blank canvas. So the proposal doubles until two successive
+    /// proposals measure the SAME content height with canvas to spare; only
+    /// then is the content known to be fully laid out, and the image keeps the
+    /// content plus one gutter.
+    @MainActor
+    private static func renderFittingContentHeight<Content: View>(
+        width: CGFloat,
+        to url: URL,
+        initialHeight: CGFloat = 1600,
+        maximumHeight: CGFloat = 8000,
+        content: (CGFloat) -> Content
+    ) throws {
+        let scale: CGFloat = 2
+        let marginRows = Int(Space.gutter * scale)
+        var height = initialHeight
+        var previousContentRows: Int?
+        while true {
+            let renderer = ImageRenderer(content: content(height))
+            renderer.scale = scale
+            renderer.colorMode = .nonLinear
+            guard let image = renderer.cgImage else {
+                throw SnapshotError.renderProducedNoImage
+            }
+            let contentRows = contentRowCount(image)
+            let hasTrailingCanvas = image.height - contentRows >= marginRows
+            let contentIsStable = hasTrailingCanvas && previousContentRows == contentRows
+            if contentIsStable || height >= maximumHeight {
+                if !contentIsStable {
+                    FileHandle.standardError.write(Data(
+                        "snapshot: \(url.lastPathComponent) content height not confirmed within \(Int(maximumHeight))pt; image may be clipped\n".utf8
+                    ))
+                }
+                let keptRows = min(image.height, contentRows + marginRows)
+                let cropped = image.cropping(to: CGRect(x: 0, y: 0, width: image.width, height: keptRows)) ?? image
+                let representation = NSBitmapImageRep(cgImage: cropped)
+                guard let png = representation.representation(using: .png, properties: [:]) else {
+                    throw SnapshotError.pngEncodingFailed
+                }
+                try png.write(to: url)
+                return
+            }
+            previousContentRows = contentRows
+            height = min(height * 2, maximumHeight)
+        }
+    }
+
+    /// Rows from the top through the last row that differs from the bottom
+    /// row (the uniform trailing canvas), compared across the full width.
+    private static func contentRowCount(_ image: CGImage) -> Int {
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 1 else { return height }
+        let bytesPerRow = width * 4
+        var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return height }
+        // Bitmap memory is stored top row first.
+        let startByte = 0
+        let lastRowOffset = (height - 1) * bytesPerRow
+        let comparedBytes = bytesPerRow - startByte
+        return pixels.withUnsafeBytes { buffer -> Int in
+            guard let base = buffer.baseAddress else { return height }
+            let bottom = base + lastRowOffset + startByte
+            var row = height - 1
+            while row > 0, memcmp(base + (row - 1) * bytesPerRow + startByte, bottom, comparedBytes) == 0 {
+                row -= 1
+            }
+            return row
+        }
     }
 
     static func runDashboardFixture(fixturePath: String, outputDir: String) {

@@ -99,9 +99,11 @@ def _record_section(
         "sentinel_semantic_kind": "section",
         "section_id": section_id,
         "section_status": "completed",
+        "files": ["src/agentacct/mcp.py"],
         "section_title": f"Section {section_id}",
         "client": client,
         "client_session_id": session,
+        "summary": "Recorded outcome for this fixture section.",
     }
     if transcript is not None:
         metadata["client_transcript_id"] = transcript

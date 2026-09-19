@@ -32,7 +32,7 @@ def test_shared_receipt_contract_keeps_detail_and_one_exact_check():
     assert check["id"] == "event:check-1"
     assert check["section_record_ids"] == [work["id"]]
     assert check["session_key"] == work["session_key"] == "codex::root"
-    assert check["source_label"] == "Agent-reported check"
+    assert check["source_label"] == "Agent-reported"
     assert check["status"] == "failed" and check["exit_code"] == 1
     assert check["artifact_path"] is None and check["artifact_url"] is None
     assert check["artifact_path_redacted"] and check["artifact_url_redacted"]
@@ -179,3 +179,110 @@ def test_receipt_retains_older_important_records_in_canonical_order():
     timeline = build_task_intelligence(task, public_task_id="task", title="Task", timeline_limit=5)["timeline"]
     assert timeline["total"] == 69 and timeline["shown"] == 10 and timeline["truncated"]
     assert [row["occurred_at"] for row in timeline["events"]] == [5, 6, 7, 8, 9, 75, 76, 77, 78, 79]
+
+
+def test_work_events_carry_section_kind_next_step_and_evidence_grade():
+    task = task_with_evidence()
+    item = task["work_items"][0]
+    item.update(kind="review", next_step="Re-run the login tests", latest_status="handed_off")
+    work = build_timeline_events(task)[0]
+    assert work["kind"] == "work" and work["section_kind"] == "review"
+    assert work["next_step"] == "Re-run the login tests"
+    assert work["evidence_grade"] == "none"
+    assert work["evidence_grade_label"] == "not graded"
+    # The status label, never the raw key.
+    assert work["evidence_grade_reason"] == "Handed off before completion — not graded"
+
+    item.update(latest_status="completed", evidence_events=[
+        {"event_id": "pass-1", "created_at": 18, "result": "passed", "name": "Login tests"}])
+    task["task_evidence_events"] = []
+    work = build_timeline_events(task)[0]
+    assert work["evidence_grade"] == "self_checked"
+    assert work["evidence_grade_label"] == "self-checked"
+    assert "agent reported a check passed" in work["evidence_grade_reason"]
+
+    item.update(evidence_events=[])
+    work = build_timeline_events(task)[0]
+    assert work["evidence_grade"] == "claimed"
+    assert work["evidence_grade_label"] == "not check-relevant"
+    item.update(kind="implementation")
+    assert build_timeline_events(task)[0]["evidence_grade_label"] == "unchecked"
+    item.pop("next_step"); item.pop("kind")
+    work = build_timeline_events(task)[0]
+    assert work["next_step"] is None and work["section_kind"] is None
+
+
+def test_terminal_status_time_is_the_latest_update_not_the_section_start():
+    """A stop is reported at the section's latest update, and only Python
+    decides which statuses are terminal."""
+    task = task_with_evidence()
+    item = task["work_items"][0]
+
+    item.update(latest_status="handed_off")
+    work = build_timeline_events(task)[0]
+    assert work["started_at"] == 10 and work["updated_at"] == 20
+    assert work["terminal_status_at"] == 20
+
+    for status in ("blocked", "completed"):
+        item.update(latest_status=status)
+        assert build_timeline_events(task)[0]["terminal_status_at"] == 20
+
+    # Still running: no terminal moment to mark.
+    item.update(latest_status="checkpoint")
+    assert build_timeline_events(task)[0]["terminal_status_at"] is None
+
+    # A point section stops where it started; an inconsistent clock does not
+    # invent a mark before the start.
+    item.update(latest_status="handed_off")
+    item.pop("updated_at")
+    assert build_timeline_events(task)[0]["terminal_status_at"] == 10
+    item.update(updated_at=5)
+    assert build_timeline_events(task)[0]["terminal_status_at"] == 10
+
+
+def test_check_events_carry_name_revision_reciprocal_link_and_command_state():
+    task = task_with_evidence()
+    failed = task["task_evidence_events"][0]
+    failed.update(command_redacted=True, command_state="digest_only", git_commit="8a4e0240abcdef",
+                  git_branch="main", git_dirty=True, git_revision_basis="server_captured_at_record")
+    task["task_evidence_events"].append({"event_id": "rerun", "result": "passed", "created_at": 25,
+                                         "name": "Login tests", "summary": "Login tests: passed",
+                                         "supersedes_check_event_id": "check-1"})
+    checks = {row["event_id"]: row for row in build_timeline_events(task) if row["kind"] == "check"}
+    first, rerun = checks["check-1"], checks["rerun"]
+    assert first["name"] == "Login tests" and first["title"] == "Login tests"
+    # The label states its BASIS. HEAD was read when the record arrived, which
+    # is not a claim that this commit ran the check.
+    assert first["revision_label"] == "HEAD when recorded: 8a4e024 · main · uncommitted changes"
+    assert first["command_state_text"] == (
+        "The agent's command argument was not stored; the title is the name the agent recorded."
+    )
+    assert rerun["supersedes_check_event_id"] == "check-1"
+    assert rerun["revision_label"] == "revision not captured"
+    assert rerun["command_state_text"] is None
+    # A server-synthesized "<name>: <result>" summary is not the agent's prose.
+    assert rerun["summary"] is None
+    # The placeholder "check" is no name; the title falls back to the summary.
+    task["task_evidence_events"][1].update(name="check", summary="Retried the suite")
+    rerun = next(row for row in build_timeline_events(task) if row["event_id"] == "rerun")
+    assert rerun["name"] is None and rerun["title"] == "Retried the suite"
+
+
+def test_current_failure_follows_the_attention_open_predicate():
+    from agentacct.finding_disposition import finding_target_digest
+
+    task = task_with_evidence()
+    failure = [row for row in build_timeline_events(task) if row["kind"] == "check"][0]
+    assert failure["is_current_failure"] is True
+    digest = finding_target_digest(task["task_evidence_events"][0])
+    # Reviewed but still open: still needs you.
+    task["finding_episodes"] = [{"target_digest": digest, "disposition_state": "reviewed", "attention_open": True}]
+    failure = [row for row in build_timeline_events(task) if row["kind"] == "check"][0]
+    assert failure["is_current_failure"] is True and failure["disposition"] is None
+    task["finding_episodes"] = [{"target_digest": digest, "disposition_state": "resolved", "attention_open": False}]
+    failure = [row for row in build_timeline_events(task) if row["kind"] == "check"][0]
+    assert failure["is_current_failure"] is False and failure["status"] == "failed"
+    task["finding_episodes"] = []
+    task["task_evidence_events"][0].update(supersession_state="superseded")
+    failure = [row for row in build_timeline_events(task) if row["kind"] == "check"][0]
+    assert failure["is_current_failure"] is False

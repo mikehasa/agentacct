@@ -906,6 +906,10 @@ def test_work_ledger_redacts_public_derived_paths_and_commands() -> None:
     assert item["files"] == ["src/agentacct/api.py"]
     assert evidence["command"] is None
     assert evidence["command_redacted"] is True
+    # The agent VOLUNTEERED this command, so it is recorded — a different fact
+    # from a hook check that only ever held a sha256 digest, and the one the
+    # "was not stored" sentence used to state falsely.
+    assert evidence["command_state"] == "agent_recorded"
     assert evidence["artifact_path"] is None
     assert evidence["artifact_path_redacted"] is True
     assert evidence["artifact_url"] is None
@@ -1783,6 +1787,59 @@ def test_evidence_link_index_matches_a_full_scan_byte_for_byte() -> None:
     assert statuses.get("sec-3") == "strong"
     assert statuses.get("sec-2") not in (None, "none")  # evidenced (fail + pass both attached)
 
+
+def test_work_item_clock_ignores_terminal_status_transitions() -> None:
+    ledger = build_work_ledger(
+        [
+            _section_event(session="codex-session", status="started", created_at=20),
+            _section_event(session="codex-session", status="checkpoint", created_at=25),
+            _section_event(session="codex-session", status="completed", created_at=40),
+        ]
+    )
+
+    item = ledger["work_items"][0]
+    assert item["updated_at"] == 40
+    assert item["last_nonterminal_update_at"] == 25
+
+
+def test_work_item_with_only_terminal_updates_has_no_work_clock() -> None:
+    ledger = build_work_ledger([_section_event(session="codex-session", status="completed", created_at=40)])
+
+    assert ledger["work_items"][0]["last_nonterminal_update_at"] is None
+
+
+def test_evidence_event_projects_check_name_without_folding_it_into_summary() -> None:
+    named = _evidence_event()
+    named["metadata"]["name"] = "pytest tests/test_work_ledger.py"
+    unsummarized = _evidence_event(section_id="other")
+    unsummarized["metadata"]["name"] = "ruff check"
+    unsummarized["metadata"].pop("summary")
+
+    ledger = build_work_ledger([named, unsummarized])
+    by_section = {event["section_id"]: event for event in ledger["evidence_events"]}
+
+    assert by_section["mcp-v1"]["name"] == "pytest tests/test_work_ledger.py"
+    assert by_section["mcp-v1"]["summary"] == "Tests passed."
+    assert by_section["other"]["name"] == "ruff check"
+    assert by_section["other"]["summary"] is None
+    assert by_section["other"]["command"] is None
+
+
+def test_a_check_with_no_command_carries_no_command_state() -> None:
+    """Absence is a named state, not a sentence about a command that never was."""
+
+    event = {
+        "event_id": "evt_no_command",
+        "event_type": "machine_check",
+        "created_at": 10.0,
+        "source": "claude-code",
+        "metadata": {"sentinel_semantic_kind": "evidence", "name": "swift build",
+                     "result": "passed", "evidence_type": "build"},
+    }
+    ledger = build_work_ledger([event])
+    evidence = ledger["evidence_events"][0]
+    assert evidence["command_state"] is None
+    assert evidence["command_redacted"] is False
 
 def _nearest_usage_row(client, created_at, total_tokens):
     return {

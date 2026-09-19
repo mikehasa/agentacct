@@ -69,10 +69,13 @@ final class DashboardInteractionTests: XCTestCase {
               "cost": {},
               "attention": {
                 "kind": "failed_check",
+                "reason_label": "Failed check",
+                "label": "Failed check",
                 "summary": "The reference image changed unexpectedly",
                 "next_step": null,
                 "observed_at": 1000,
-                "source": "mcp"
+                "source": "mcp",
+                "source_label": "Agent-reported"
               }
             }
             """
@@ -83,7 +86,7 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(focus.summary, "The reference image changed unexpectedly")
         XCTAssertNil(focus.nextStep)
         XCTAssertEqual(focus.project, "agentacct-gui")
-        XCTAssertEqual(focus.sourceLabel, "MCP record")
+        XCTAssertEqual(focus.sourceLabel, "Agent-reported")
     }
 
     func testReviewBriefContainsOnlyRecordedFactsAndNamesMissingNextStep() throws {
@@ -94,16 +97,19 @@ final class DashboardInteractionTests: XCTestCase {
               "task_id": "task-finding",
               "title": "Verify dashboard hierarchy",
               "project": "agentacct-gui",
-              "decision_status": { "key": "finding" },
+              "decision_status": { "key": "finding", "label": "Finding" },
               "evidence_strength": { "key": "unchecked" },
               "cost": {},
               "primary_root": { "client": "codex", "client_session_id": "session-1" },
               "attention": {
                 "kind": "failed_check",
+                "reason_label": "Failed check",
+                "label": "Failed test check · pytest · exit 2",
                 "summary": "The reference image changed unexpectedly",
                 "next_step": null,
                 "observed_at": 1787889600,
-                "source": "ci"
+                "source": "ci",
+                "source_label": "CI or provider"
               }
             }
             """
@@ -123,10 +129,12 @@ final class DashboardInteractionTests: XCTestCase {
             Task ID: task-finding
             Project: agentacct-gui
             Agent: codex
-            Recorded attention: Failed check — The reference image changed unexpectedly
-            Recorded next step: None recorded
+            Decision: Finding
+            Recorded reason: Failed test check · pytest · exit 2
+            Recorded summary: The reference image changed unexpectedly
+            Recorded next step: No next step recorded.
             Observed: 2026-08-28T04:00:00Z
-            Provenance: External CI or provider
+            Provenance: CI or provider
             """
         )
         XCTAssertFalse(brief.text.localizedCaseInsensitiveContains("rerun"))
@@ -145,15 +153,38 @@ final class DashboardInteractionTests: XCTestCase {
               "attention": {
                 "kind": "failed_check",
                 "summary": "Snapshot verification failed",
-                "source": "machine"
+                "source": "hook",
+                "source_label": "Hook-captured"
               }
             }
             """
         )
 
         let focus = try XCTUnwrap(DashboardAttentionItem(task: task))
-        XCTAssertEqual(focus.sourceLabel, "Machine check")
-        XCTAssertTrue(DashboardActionBrief(focus: focus).text.contains("Provenance: Machine check"))
+        XCTAssertEqual(focus.sourceLabel, "Hook-captured")
+        XCTAssertTrue(DashboardActionBrief(focus: focus).text.contains("Provenance: Hook-captured"))
+
+        // Without the reducer's label the source is a named absence; the raw
+        // key is never re-labelled in Swift.
+        let unlabelled = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-machine-check",
+              "decision_status": { "key": "finding" },
+              "evidence_strength": { "key": "unchecked" },
+              "cost": {},
+              "attention": {
+                "kind": "failed_check",
+                "summary": "Snapshot verification failed",
+                "source": "hook"
+              }
+            }
+            """
+        )
+        let unlabelledFocus = try XCTUnwrap(DashboardAttentionItem(task: unlabelled))
+        XCTAssertNil(unlabelledFocus.sourceLabel)
+        XCTAssertTrue(DashboardActionBrief(focus: unlabelledFocus).text.contains("Provenance: source not reported"))
     }
 
     func testUnknownHandoffStateDoesNotImplyRecoveryOrContinuation() throws {
@@ -189,9 +220,12 @@ final class DashboardInteractionTests: XCTestCase {
               "handed_off": true,
               "attention": {
                 "kind": "blocker",
+                "reason_label": "Blocker",
+                "label": "Blocker",
                 "summary": "Canonical renderer is offline",
                 "next_step": "Retry when the renderer is available",
-                "source": "mcp"
+                "source": "mcp",
+                "source_label": "Agent-reported"
               }
             }
             """
@@ -204,9 +238,10 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(brief.buttonTitle, "Copy continuation brief")
         XCTAssertEqual(brief.copiedAccessibilityLabel, "Continuation brief copied")
         XCTAssertTrue(brief.text.hasPrefix("Continuation brief\n"))
-        XCTAssertTrue(brief.text.contains("Recorded attention: Recorded blocker — Canonical renderer is offline"))
+        XCTAssertTrue(brief.text.contains("Recorded reason: Blocker"))
+        XCTAssertTrue(brief.text.contains("Recorded summary: Canonical renderer is offline"))
         XCTAssertTrue(brief.text.contains("Recorded next step: Retry when the renderer is available"))
-        XCTAssertTrue(brief.text.contains("Observed: Not recorded"))
+        XCTAssertTrue(brief.text.contains("Observed: time not reported"))
     }
 
     @MainActor
@@ -416,7 +451,14 @@ final class DashboardInteractionTests: XCTestCase {
 
         let presentation = DashboardAttentionPresentation(payload: payload, error: nil)
         XCTAssertEqual(presentation.dashboardHeadline, "Verify dashboard hierarchy")
-        XCTAssertEqual(presentation.dashboardStatus, "2 review items")
+        // The queue's count words ride the payload; an older daemon without
+        // them reads a neutral count, never a Swift copy of the queue noun.
+        XCTAssertEqual(
+            presentation.dashboardStatus(queue: AttentionQueueCopy(noun: "Attention", countText: "2 in Attention",
+                                                                   openAction: "Open Attention", sortText: nil)),
+            "2 in Attention"
+        )
+        XCTAssertEqual(presentation.dashboardStatus(queue: nil), "2 in queue")
         XCTAssertFalse(presentation.dashboardStatusIsWarning)
     }
 
@@ -427,19 +469,26 @@ final class DashboardInteractionTests: XCTestCase {
             {
               "state": "healthy",
               "last_success_at": 1000,
+              "state_title": "Sources healthy",
               "issues": []
             }
             """
         )
 
+        // A refresh error supersedes the retained snapshot, and the one-line
+        // rail states the CAUSE rather than the raw transport error — which
+        // stays reachable on the Sources pane this row opens (K53).
+        let unavailable = DashboardIngestionPresentation(snapshot: healthy, error: "source refresh failed")
         XCTAssertEqual(
-            DashboardIngestionPresentation(snapshot: healthy, error: "source refresh failed"),
+            unavailable,
             DashboardIngestionPresentation(
                 title: "Source status unavailable",
-                detail: "source refresh failed",
+                detail: "The recorder didn't return source health.",
+                detailCompact: "The recorder didn't return source health.",
                 tone: .warning
             )
         )
+        XCTAssertFalse(unavailable.detail.contains("source refresh failed"))
         XCTAssertEqual(
             DashboardIngestionPresentation(snapshot: healthy, error: nil).title,
             "Sources healthy"
@@ -452,6 +501,32 @@ final class DashboardInteractionTests: XCTestCase {
                 tone: .muted
             )
         )
+    }
+
+    func testEvidenceTrustRendersThePayloadCopyAndKeepsUnknownNeutral() throws {
+        let unrecorded = try decode(
+            V1IngestionSnapshot.self,
+            from: """
+            {
+              "state": "unknown",
+              "last_success_at": null,
+              "state_title": "Import history not recorded",
+              "state_detail": "Usage from 336 sessions is stored, but no import run was recorded for this store.",
+              "issues": []
+            }
+            """
+        )
+        XCTAssertEqual(
+            DashboardIngestionPresentation(snapshot: unrecorded, error: nil),
+            DashboardIngestionPresentation(
+                title: "Import history not recorded",
+                detail: "Usage from 336 sessions is stored, but no import run was recorded for this store.",
+                tone: .muted
+            )
+        )
+        let bare = try decode(V1IngestionSnapshot.self, from: #"{ "state": "degraded", "issues": [] }"#)
+        XCTAssertEqual(DashboardIngestionPresentation(snapshot: bare, error: nil).title, "Source status not reported")
+        XCTAssertEqual(DashboardIngestionPresentation(snapshot: bare, error: nil).tone, .warning)
     }
 
     func testWorkAttentionEmptyCopyRequiresAnAuthoritativeZero() throws {
@@ -496,15 +571,19 @@ final class DashboardInteractionTests: XCTestCase {
             """
         )
 
-        XCTAssertEqual(WorkAttentionEmptyCopy(payload: clear, query: "").title, "No current review items")
+        // Without the payload's queue words the copy names the queue generically.
+        XCTAssertEqual(WorkAttentionEmptyCopy(payload: clear, query: "").title, "Nothing in the review queue")
         XCTAssertEqual(
             WorkAttentionEmptyCopy(payload: filtered, query: "visual").title,
-            "No review items match this filter"
+            "Nothing in the review queue matches this filter"
         )
         XCTAssertEqual(
             WorkAttentionEmptyCopy(payload: inconsistent, query: "visual").title,
             "Review queue details unavailable"
         )
+        var named = filtered
+        named.queue = AttentionQueueCopy(noun: "Attention", countText: "2 in Attention", openAction: nil, sortText: nil)
+        XCTAssertEqual(WorkAttentionEmptyCopy(payload: named, query: "visual").title, "Nothing in Attention matches this filter")
     }
 
     @MainActor
@@ -647,7 +726,10 @@ final class DashboardInteractionTests: XCTestCase {
                 "estimated_cost_usd": 4.82,
                 "cost_basis": "pricing_table",
                 "cost_confidence": "estimated",
-                "cost_complete": true
+                "cost_complete": true,
+                "state": "complete",
+                "display_text": "≈$4.82",
+                "basis_label": "pricing estimate"
               },
               "primary_root": { "client": "codex", "client_session_id": "session-1" },
               "last_activity_at": 1000
@@ -660,25 +742,33 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(item.title, "Build reusable snapshot harness")
         XCTAssertEqual(item.client, "codex")
         XCTAssertEqual(item.outcome, "Verified")
-        XCTAssertEqual(item.evidence, "4/4 supported")
+        XCTAssertEqual(item.evidence, "4/4 checked")
         XCTAssertEqual(item.cost, "≈$4.82")
+        XCTAssertEqual(item.costWithBasis, "≈$4.82 · pricing estimate")
     }
 
     func testRecentWorkCostLabelsDoNotClaimUnknownCompleteness() throws {
+        // The row renders the reducer's cost grammar verbatim; with no display
+        // string it names the absence instead of re-deriving a figure.
         let cases = [
             (
-                cost: #"{"estimated_cost_usd": 4.82, "cost_confidence": "client_reported", "cost_complete": true}"#,
+                cost: #"{"estimated_cost_usd": 4.82, "cost_confidence": "client_reported", "cost_complete": true, "state": "complete", "display_text": "$4.82"}"#,
                 expected: "$4.82"
             ),
             (
-                cost: #"{"estimated_cost_usd": 4.82, "cost_confidence": "client_reported", "cost_complete": false}"#,
+                cost: #"{"estimated_cost_usd": 4.82, "cost_confidence": "client_reported", "cost_complete": false, "state": "partial", "display_text": "~$4.82"}"#,
                 expected: "~$4.82"
             ),
             (
-                cost: #"{"estimated_cost_usd": 4.82, "cost_confidence": "client_reported"}"#,
+                cost: #"{"estimated_cost_usd": 4.82, "cost_confidence": "estimated", "cost_complete": true, "state": "complete", "display_text": "≈$4.82"}"#,
                 expected: "≈$4.82"
             ),
-            (cost: #"{}"#, expected: "—"),
+            (
+                cost: #"{"state": "no_usage", "display_text": "no usage recorded"}"#,
+                expected: "no usage recorded"
+            ),
+            (cost: #"{"estimated_cost_usd": 4.82, "cost_complete": true}"#, expected: "cost not reported"),
+            (cost: #"{}"#, expected: "cost not reported"),
         ]
 
         for (index, testCase) in cases.enumerated() {
@@ -713,16 +803,50 @@ final class DashboardInteractionTests: XCTestCase {
         )
         let completePeriods = Array(periods.prefix(2))
 
-        XCTAssertEqual(DashboardUsageSeries.tokens.valueText(for: periods[0]), "1.2M")
+        XCTAssertEqual(DashboardUsageSeries.tokens.valueText(for: periods[0]), "1.2M fresh tokens")
         XCTAssertEqual(DashboardUsageSeries.cost.valueText(for: periods[0]), "≈$2.50")
-        XCTAssertEqual(DashboardUsageSeries.cost.valueText(for: periods[2]), "—")
-        XCTAssertEqual(DashboardUsageSeries.tokens.valueText(for: periods[2]), "—")
-        XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: completePeriods), "1.5M total")
-        XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: completePeriods), "≈$3.75 total")
-        XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: periods), "~1.5M total")
-        XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: periods), "~$3.75 total")
-        XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: [periods[2]]), "—")
-        XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: [periods[2]]), "—")
+        XCTAssertEqual(DashboardUsageSeries.cost.valueText(for: periods[2]), "unpriced")
+        XCTAssertEqual(DashboardUsageSeries.tokens.valueText(for: periods[2]), "fresh tokens not reported")
+        XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: completePeriods), "1.5M fresh tokens total")
+        XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: periods), "~1.5M fresh tokens total")
+        XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: [periods[2]]), "fresh tokens not reported")
+        // K105: the cost readout is the cube's range figure with the reducer's
+        // own label. Swift never sums buckets into a "total" nor appends it.
+        XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: periods), "cost total not reported")
+        let totals = try decode([UsageBucket].self, from: """
+        [
+          {"rows":4,"priced_rows":4,"unpriced_rows":0,"cost_state":"complete","cost_complete":true,
+           "estimated_cost_usd":3.75,"known_additive_cost_usd":3.75,"cost_confidence":"estimated_from_tokens",
+           "cost_total_label":"total"},
+          {"rows":50,"priced_rows":16,"unpriced_rows":34,"cost_state":"partial","cost_complete":false,
+           "known_additive_cost_usd":1635.57,"cost_confidence":"estimated_from_tokens",
+           "cost_total_label":"Partial subtotal · 34 of 50 usage records unpriced"},
+          {"rows":3,"priced_rows":0,"unpriced_rows":3,"cost_state":"unpriced","cost_complete":false,
+           "cost_total_label":"no priced usage · 3 of 3 usage records unpriced"}
+        ]
+        """)
+        XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: periods, totals: totals[0]), "≈$3.75 total")
+        XCTAssertEqual(
+            DashboardUsageSeries.cost.totalText(for: periods, totals: totals[1]),
+            "~$1,635.57 Partial subtotal · 34 of 50 usage records unpriced"
+        )
+        XCTAssertFalse(DashboardUsageSeries.cost.totalText(for: periods, totals: totals[1]).hasSuffix(" total"))
+        XCTAssertEqual(
+            DashboardUsageSeries.cost.totalText(for: periods, totals: totals[2]),
+            "no priced usage · 3 of 3 usage records unpriced"
+        )
+
+        // A bucket the cube recorded no usage for names that state and is
+        // never charted as a zero.
+        let empty = try decode(
+            PeriodBucket.self,
+            from: #"{ "period": "2026-08-27", "rows": 0, "cost_state": "none_recorded" }"#
+        )
+        XCTAssertNil(DashboardUsageSeries.tokens.value(for: empty))
+        XCTAssertNil(DashboardUsageSeries.cost.value(for: empty))
+        XCTAssertEqual(DashboardUsageSeries.tokens.valueText(for: empty), "no usage recorded")
+        XCTAssertEqual(DashboardUsageSeries.cost.valueText(for: empty), "no usage recorded")
+        XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: [empty]), "no usage recorded")
     }
 
     func testUsageSeriesDescribesTheSelectedRangeAndEffectiveGranularity() throws {
@@ -733,30 +857,43 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(
             DashboardUsageSeries.tokens.subtitle(
                 rangeDays: 7,
-                periodPresentation: daily
+                periodPresentation: daily,
+                vocabulary: chartVocabulary
             ),
-            "Fresh tokens · last 7 days · client reported"
+            "Fresh tokens · last 7 days · client-reported"
         )
         XCTAssertEqual(
             DashboardUsageSeries.tokens.subtitle(
                 rangeDays: 90,
-                periodPresentation: weekly
+                periodPresentation: weekly,
+                vocabulary: chartVocabulary
             ),
-            "Fresh tokens · last 90 days · weekly buckets · client reported"
+            "Fresh tokens · last 90 days · weekly buckets · client-reported"
         )
         XCTAssertEqual(
             DashboardUsageSeries.cost.subtitle(
                 rangeDays: 90,
-                periodPresentation: weekly
+                periodPresentation: weekly,
+                vocabulary: chartVocabulary
             ),
-            "Estimated cost · last 90 days · weekly buckets · pricing-table basis"
+            "USD · last 90 days · weekly buckets · cost basis not reported"
+        )
+        XCTAssertEqual(
+            DashboardUsageSeries.cost.subtitle(
+                rangeDays: 90,
+                periodPresentation: weekly,
+                costBasis: "pricing estimate",
+                vocabulary: chartVocabulary
+            ),
+            "USD · last 90 days · weekly buckets · pricing estimate"
         )
         XCTAssertEqual(
             DashboardUsageSeries.tokens.subtitle(
                 rangeDays: 30,
-                periodPresentation: unknown
+                periodPresentation: unknown,
+                vocabulary: chartVocabulary
             ),
-            "Fresh tokens · last 30 days · period buckets · client reported"
+            "Fresh tokens · last 30 days · period buckets · client-reported"
         )
         XCTAssertEqual(weekly.pinAccessibilityHint, "Pins or clears this week's value")
     }
@@ -772,13 +909,14 @@ final class DashboardInteractionTests: XCTestCase {
             """
         )
 
-        XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: periods), "2e19 total")
+        XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: periods), "2e19 fresh tokens total")
         let axisText = DashboardUsageSeries.tokens.axisText(for: Double(Int.max))
         XCTAssertEqual(axisText, "9e18")
         XCTAssertLessThanOrEqual(axisText.count, 5)
         XCTAssertEqual(
             DashboardUsageSeries.tokens.axisText(for: 999_900_000_000_000),
-            "1000T"
+            "999T",
+            "axis labels truncate toward zero so a tick never overstates its value"
         )
         XCTAssertEqual(UsageTotals.compact(Int.min), "-9e18")
         XCTAssertEqual(UsageTotals.compact(999.9), "999")
@@ -796,9 +934,9 @@ final class DashboardInteractionTests: XCTestCase {
             """
         )
 
-        XCTAssertEqual(DashboardUsageSeries.tokens.value(for: periods[0]), 0)
-        XCTAssertEqual(DashboardUsageSeries.tokens.valueText(for: periods[0]), "—")
-        XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: periods), "~1.5M total")
+        XCTAssertNil(DashboardUsageSeries.tokens.value(for: periods[0]))
+        XCTAssertEqual(DashboardUsageSeries.tokens.valueText(for: periods[0]), "fresh tokens not reported")
+        XCTAssertEqual(DashboardUsageSeries.tokens.totalText(for: periods), "~1.5M fresh tokens total")
         XCTAssertEqual(usagePulse(periods: periods).state, .insufficient)
         XCTAssertEqual(usagePulse(periods: periods).title, "Usage comparison incomplete")
     }
@@ -814,13 +952,13 @@ final class DashboardInteractionTests: XCTestCase {
             """
         )
 
-        XCTAssertEqual(DashboardUsageSeries.cost.value(for: periods[0]), 0)
-        XCTAssertEqual(DashboardUsageSeries.cost.valueText(for: periods[0]), "—")
-        XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: periods), "~$12.34 total")
-        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 9.999), "$9.99")
-        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 12.34), "$12")
-        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 999_999), "$999k")
-        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 9e18), "$9e18")
+        XCTAssertNil(DashboardUsageSeries.cost.value(for: periods[0]))
+        XCTAssertEqual(DashboardUsageSeries.cost.valueText(for: periods[0]), "unpriced")
+        // K39: plain rounded ticks, no cost glyph.
+        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 9.994), "9.99")
+        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 12.34), "12")
+        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 999_999), "999k")
+        XCTAssertEqual(DashboardUsageSeries.cost.axisText(for: 9e18), "9e18")
 
         let overflowingTotal = try decode(
             [PeriodBucket].self,
@@ -831,7 +969,7 @@ final class DashboardInteractionTests: XCTestCase {
             ]
             """
         )
-        XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: overflowingTotal), "—")
+        XCTAssertEqual(DashboardUsageSeries.cost.totalText(for: overflowingTotal), "cost total not reported")
     }
 
     func testActiveWorkIncludesOnlyRunningStates() {
@@ -967,7 +1105,7 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(signal.title, "Work status unavailable")
         XCTAssertEqual(
             signal.detail,
-            "codex · usage-on · activity 10s ago · 2/2 shown with no work status"
+            "codex · usage · activity 10s ago · 2/2 shown with no work status"
         )
         XCTAssertFalse(signal.promotesInactivity)
         XCTAssertFalse(signal.hasConfirmedActiveWork)
@@ -1044,7 +1182,7 @@ final class DashboardInteractionTests: XCTestCase {
             {
               "client": "codex",
               "plan_type": "pro",
-              "windows": [{ "kind": "7d", "used_percent": 39 }]
+              "windows": [{ "kind": "7d", "window_label": "7-day limit", "used_percent": 39, "value_text": "39% used" }]
             }
             """
         )
@@ -1067,19 +1205,25 @@ final class DashboardInteractionTests: XCTestCase {
 
         let available = DashboardAgentPlanRow(client: "codex", limit: sevenDay, plan: nil, usage: nil)
         XCTAssertEqual(available.usedPercent, 39)
-        XCTAssertEqual(available.meterCaption, "39% of 7-day limit")
-        XCTAssertNil(available.resetText, "no reset time was reported — never fabricated")
-        XCTAssertEqual(available.detailText, "39% of 7-day limit · provider reported")
-        XCTAssertEqual(available.decisionTitle, "codex · 61% headroom")
+        XCTAssertEqual(available.meterCaption, "7-day limit")
+        XCTAssertEqual(
+            available.resetText,
+            "reset time not reported",
+            "no reset time was reported — named, never fabricated"
+        )
+        XCTAssertEqual(available.detailText, "7-day limit · provider reported · reset time not reported")
+        // K11: one capacity wording on every surface — the reducer's value
+        // phrase, never a Swift-derived "headroom" figure.
+        XCTAssertEqual(available.decisionTitle, "codex · 39% used")
 
         let exceeded = try decode(
             LimitEntry.self,
             from: """
-            { "client": "codex", "windows": [{ "kind": "7d", "used_percent": 104 }] }
+            { "client": "codex", "windows": [{ "kind": "7d", "used_percent": 104, "value_text": "104% used · limit exceeded" }] }
             """
         )
         let exceededRow = DashboardAgentPlanRow(client: "codex", limit: exceeded, plan: nil, usage: nil)
-        XCTAssertEqual(exceededRow.decisionTitle, "codex · limit exceeded")
+        XCTAssertEqual(exceededRow.decisionTitle, "codex · 104% used · limit exceeded")
 
         let invalid = try decode(
             LimitEntry.self,
@@ -1094,11 +1238,11 @@ final class DashboardInteractionTests: XCTestCase {
         let missingPercent = try decode(
             LimitEntry.self,
             from: """
-            { "client": "codex", "windows": [{ "kind": "7d" }] }
+            { "client": "codex", "windows": [{ "kind": "7d", "window_label": "7-day limit" }] }
             """
         )
         let missingRow = DashboardAgentPlanRow(client: "codex", limit: missingPercent, plan: nil, usage: nil)
-        XCTAssertEqual(missingRow.meterCaption, "7-day usage not reported")
+        XCTAssertEqual(missingRow.meterCaption, "7-day limit usage not reported")
     }
 
     func testUsagePulseComparesCompletedRecordedBucketsWithoutAnomalyLanguage() throws {
@@ -1118,7 +1262,7 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertEqual(pulse.title, "Fresh tokens 86% higher")
         XCTAssertEqual(
             pulse.detail,
-            "22.5M on 2026-08-25 · 12.1M on 2026-08-24 · client reported"
+            "yesterday 22.5M fresh tokens · 12.1M fresh tokens on 2026-08-24 · client-reported"
         )
         XCTAssertFalse(pulse.title.localizedCaseInsensitiveContains("anomaly"))
         XCTAssertFalse(pulse.title.localizedCaseInsensitiveContains("caused"))
@@ -1210,8 +1354,8 @@ final class DashboardInteractionTests: XCTestCase {
             periods: daily,
             now: Date(timeIntervalSince1970: 1_787_659_200)
         )
-        XCTAssertEqual(dailyPulse.title, "Today so far · 22.5M")
-        XCTAssertEqual(dailyPulse.detail, "12.1M on 2026-08-24 · client reported")
+        XCTAssertEqual(dailyPulse.title, "Today so far · 22.5M fresh tokens")
+        XCTAssertEqual(dailyPulse.detail, "yesterday 12.1M fresh tokens · client-reported")
 
         let weekly = try decode(
             [PeriodBucket].self,
@@ -1227,10 +1371,10 @@ final class DashboardInteractionTests: XCTestCase {
             rangeDays: 90,
             now: Date(timeIntervalSince1970: 1_787_832_000)
         )
-        XCTAssertEqual(weeklyPulse.title, "This week so far · 22.5M")
+        XCTAssertEqual(weeklyPulse.title, "This week so far · 22.5M fresh tokens")
         XCTAssertEqual(
             weeklyPulse.detail,
-            "12.1M in week of 2026-08-17 · client reported"
+            "last week 12.1M fresh tokens · client-reported"
         )
     }
 
@@ -1477,12 +1621,14 @@ final class DashboardInteractionTests: XCTestCase {
             [
               {
                 "task_id": "finding",
+                "group_key": "attention",
                 "decision_status": { "key": "finding" },
                 "evidence_strength": { "key": "unchecked" },
                 "cost": {}
               },
               {
                 "task_id": "verified",
+                "group_key": "verified",
                 "decision_status": { "key": "verified" },
                 "evidence_strength": { "key": "independently_checked" },
                 "cost": {}
@@ -1533,6 +1679,67 @@ final class DashboardInteractionTests: XCTestCase {
     }
 
     @MainActor
+    func testARefreshNeverShrinksAQueueTheWorkPaneLoaded() {
+        // Nothing has opened the Work queue: the window refresh publishes the
+        // Dashboard's short preview and leaves the queue alone (K87).
+        XCTAssertEqual(AttentionRefreshPlan(loadedExtent: nil), .previewOnly)
+        XCTAssertEqual(AttentionRefreshPlan(loadedExtent: 0), .previewOnly)
+        // Once it has, the refresh re-requests the SAME extent — never the
+        // preview's five, which is what dropped the Blocked row off a loaded
+        // six-item queue on a timer.
+        XCTAssertEqual(
+            AttentionRefreshPlan(loadedExtent: DashboardStore.attentionPageLimit),
+            .reloadQueue(extent: 50)
+        )
+        XCTAssertNotEqual(DashboardStore.attentionPreviewLimit, DashboardStore.attentionPageLimit)
+        // Pages the reviewer added with "Load more" are reloaded too, one
+        // whole page at a time and then the remainder.
+        XCTAssertEqual(AttentionRefreshPlan(loadedExtent: 120), .reloadQueue(extent: 120))
+        XCTAssertEqual(attentionReloadPageLimit(loaded: 0, extent: 50, pageLimit: 50), 50)
+        XCTAssertEqual(attentionReloadPageLimit(loaded: 50, extent: 120, pageLimit: 50), 50)
+        XCTAssertEqual(attentionReloadPageLimit(loaded: 100, extent: 120, pageLimit: 50), 20)
+        XCTAssertEqual(attentionReloadPageLimit(loaded: 120, extent: 120, pageLimit: 50), 1)
+    }
+
+    @MainActor
+    func testTheDashboardReadsItsOwnAttentionLane() throws {
+        let fixtureURL = try XCTUnwrap(
+            Bundle.module.url(forResource: "dashboard", withExtension: "json")
+        )
+        let fixture = try DashboardSnapshotFixture.load(from: fixtureURL)
+        let store = DashboardStore(preloaded: fixture)
+
+        // With no preview published yet the card falls back to the loaded
+        // queue, so the Dashboard is never blank while the two lanes differ.
+        XCTAssertEqual(store.dashboardAttention?.total, store.attention?.total)
+        XCTAssertNil(store.dashboardAttentionError)
+        XCTAssertNil(store.attentionPreview)
+    }
+
+    func testLifecycleCountsAreAbsentUntilAPageLoads() {
+        // Pending, nothing loaded: no counts (K54).
+        XCTAssertFalse(workReceiptPageIsLoaded(loadedCount: 0, isLoading: true, error: nil))
+        // Failed, nothing retained: still no counts.
+        XCTAssertFalse(workReceiptPageIsLoaded(loadedCount: 0, isLoading: false, error: "receipts fetch failed"))
+        // A refresh that fails OVER a loaded page keeps that page's real counts.
+        XCTAssertTrue(workReceiptPageIsLoaded(loadedCount: 12, isLoading: true, error: "receipts fetch failed"))
+        // Loaded and genuinely empty: zero is a result, and is shown.
+        XCTAssertTrue(workReceiptPageIsLoaded(loadedCount: 0, isLoading: false, error: nil))
+    }
+
+    func testWorkBrowseCountNamesAnUnloadedPageInsteadOfCountingZero() {
+        // No page has arrived: "0 loaded" would be a reported result (K54).
+        XCTAssertEqual(
+            workBrowseCountText(visible: 0, loaded: 0, total: nil, truncated: nil, pageIsLoaded: false),
+            "tasks not loaded"
+        )
+        XCTAssertEqual(
+            workBrowseCountText(visible: 0, loaded: 0, total: nil, truncated: nil, pageIsLoaded: true),
+            "0 loaded · total not reported"
+        )
+    }
+
+    @MainActor
     func testWorkReturnFocusFallsBackWhenReceiptIsOutsideFilters() throws {
         let visible = try decode(
             ReceiptSummary.self,
@@ -1540,6 +1747,7 @@ final class DashboardInteractionTests: XCTestCase {
             {
               "task_id": "visible",
               "title": "Visible task",
+              "group_key": "reported",
               "decision_status": { "key": "reported" },
               "evidence_strength": { "key": "unchecked" },
               "cost": {}
@@ -1552,6 +1760,7 @@ final class DashboardInteractionTests: XCTestCase {
             {
               "task_id": "hidden",
               "title": "Hidden task",
+              "group_key": "attention",
               "decision_status": { "key": "finding" },
               "evidence_strength": { "key": "unchecked" },
               "cost": {}
@@ -1657,6 +1866,10 @@ final class DashboardInteractionTests: XCTestCase {
             from: """
             {
               "task_id": "reported-failure",
+              "attention_open": true,
+              "attention_order": 0,
+              "group_key": "attention",
+              "last_activity_at": 10,
               "decision_status": { "key": "reported" },
               "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
               "cost": {}
@@ -1668,13 +1881,32 @@ final class DashboardInteractionTests: XCTestCase {
             from: """
             {
               "task_id": "resolved",
+              "attention_open": false,
+              "group_key": "reported",
+              "last_activity_at": 20,
               "decision_status": { "key": "finding_resolved_by_user" },
               "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
               "cost": {}
             }
             """
         )
+        // The same failing tally WITHOUT the reducer predicate re-derives
+        // nothing in Swift: the row stays in its decision word's bucket.
+        let reportedFailureWithoutPredicate = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "legacy",
+              "decision_status": { "key": "reported" },
+              "evidence_strength": { "key": "unchecked", "checks_failed": 1 },
+              "cost": {}
+            }
+            """
+        )
 
+        // The reducer's group key is the only group signal: a row without one
+        // re-derives nothing in Swift and sits in Other (never hidden).
+        XCTAssertEqual(WorkGroup.forTask(reportedFailureWithoutPredicate), .other)
         XCTAssertEqual(WorkGroup.forTask(reportedFailure), .attention)
         XCTAssertEqual(WorkGroup.forTask(findingResolved), .reported)
         XCTAssertEqual(
@@ -1749,9 +1981,10 @@ final class DashboardInteractionTests: XCTestCase {
         )
 
         let presentation = WorkReceiptRowPresentation(task: task)
-        XCTAssertEqual(presentation.coverageText, "support count not reported · 3 checkable claims")
-        XCTAssertEqual(presentation.checkRunsText, "passes not reported · 2 check runs")
+        XCTAssertEqual(presentation.coverageText, "checked count not reported · 3 checkable steps")
+        XCTAssertEqual(presentation.checkRunsText, "passes not reported · 2 checks")
         XCTAssertFalse(presentation.accessibilityLabel.contains("0/"))
+        XCTAssertFalse(presentation.accessibilityFields.contains { $0.value.contains("0/") })
     }
 
     func testCompactCheckRunCopyDoesNotCollapseNoRunsToNo() throws {
@@ -1777,7 +2010,7 @@ final class DashboardInteractionTests: XCTestCase {
 
         XCTAssertEqual(
             WorkReceiptRowPresentation(task: task).compactCheckRunsText,
-            "no check runs"
+            "no checks recorded"
         )
     }
 
@@ -1800,14 +2033,14 @@ final class DashboardInteractionTests: XCTestCase {
 
         XCTAssertEqual(coverage.value, "Inconsistent counts")
         XCTAssertTrue(coverage.isInconsistent)
-        XCTAssertEqual(coverage.qualifier, "2 supported · 0 checkable reported")
-        XCTAssertEqual(coverage.rowText, "inconsistent coverage · 2 supported of 0 reported")
+        XCTAssertEqual(coverage.qualifier, "2 checked · 0 checkable reported")
+        XCTAssertEqual(coverage.rowText, "inconsistent coverage · 2 checked of 0 reported")
         XCTAssertEqual(evidence.compactHeadline, coverage.rowText)
-        XCTAssertEqual(evidence.headline, "Inconsistent counts (2 supported · 0 checkable reported)")
+        XCTAssertEqual(evidence.headline, "Inconsistent counts (2 checked · 0 checkable reported)")
         XCTAssertEqual(checks.value, "Inconsistent counts")
         XCTAssertTrue(checks.isInconsistent)
         XCTAssertEqual(checks.qualifier, "2 passed · 1 failed · 1 total reported")
-        XCTAssertEqual(checks.rowText, "inconsistent check runs · 2 passed · 1 failed · 1 total")
+        XCTAssertEqual(checks.rowText, "inconsistent checks · 2 passed · 1 failed · 1 total")
         XCTAssertEqual(checks.headerText, "inconsistent · 2 passed · 1 failed · 1 total")
     }
 
@@ -1874,7 +2107,7 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertFalse(conflictingPresentation.tierBreakdownAvailable)
         XCTAssertEqual(
             conflictingPresentation.tierBreakdownNotice,
-            "Evidence tiers report 2 supported claims; the summary reports 1."
+            "Evidence tiers report 2 checked steps; the summary reports 1."
         )
     }
 
@@ -1884,6 +2117,7 @@ final class DashboardInteractionTests: XCTestCase {
             from: """
             {
               "schema_version": "agentacct.receipt.v1",
+              "group_key": "attention",
               "task_id": "blocked",
               "axes": {
                 "decision_status": {
@@ -1891,6 +2125,7 @@ final class DashboardInteractionTests: XCTestCase {
                   "label": "Blocked",
                   "statement": "A representative window is required.",
                   "asserted_by": "agent_report",
+                  "asserted_by_label": "Agent-reported",
                   "blocker": { "text": "The sample is too short." }
                 },
                 "evidence_strength": {
@@ -1910,10 +2145,10 @@ final class DashboardInteractionTests: XCTestCase {
         )
 
         let presentation = WorkReceiptDecisionPresentation(receipt: receipt)
-        XCTAssertTrue(presentation.isAttention)
-        XCTAssertEqual(presentation.explanation, "A representative window is required. — agent reported")
-        XCTAssertEqual(presentation.coverageValue, "1 of 2")
-        XCTAssertEqual(presentation.checksValue, "1 of 2")
+        XCTAssertTrue(presentation.isAttention, "the reducer's group key places it in Attention")
+        XCTAssertEqual(presentation.explanation, "A representative window is required. — Agent-reported")
+        XCTAssertEqual(presentation.coverageValue, "1/2")
+        XCTAssertEqual(presentation.checksValue, "1/2")
         XCTAssertTrue(presentation.checksQualifier.contains("1 failed"))
         XCTAssertFalse(presentation.explanation.contains("The sample is too short"))
     }
@@ -1942,26 +2177,125 @@ final class DashboardInteractionTests: XCTestCase {
               "cost": {
                 "estimated_cost_usd": 7.66,
                 "cost_confidence": "estimated_from_tokens",
-                "cost_complete": false
+                "cost_complete": false,
+                "state": "partial",
+                "display_text": "~$7.66",
+                "basis_label": "pricing estimate"
               },
               "primary_root": { "client": "codex", "client_session_id": "session-1" },
               "last_activity_at": 1000,
-              "handed_off": true
+              "handed_off": true,
+              "lifecycle_marker_text": "Handed off"
             }
             """
         )
 
         let row = WorkReceiptRowPresentation(task: task)
 
-        XCTAssertEqual(row.coverageText, "0/1 claims supported")
-        XCTAssertEqual(row.checkRunsText, "2/3 check runs passed · 1 failed")
-        XCTAssertEqual(row.costText, "~$7.66")
+        XCTAssertEqual(row.coverageText, "0/1 checked")
+        XCTAssertEqual(row.checkRunsText, "2/3 passed · 1 failed")
+        XCTAssertEqual(row.costText, "~$7.66 · pricing estimate")
         XCTAssertTrue(row.accessibilityLabel.contains("Finding"))
-        XCTAssertTrue(row.accessibilityLabel.contains("handed off"))
-        XCTAssertTrue(row.accessibilityLabel.contains("0/1 claims supported"))
-        XCTAssertTrue(row.accessibilityLabel.contains("2/3 check runs passed, 1 failed"))
-        XCTAssertTrue(row.accessibilityLabel.contains("codex"))
-        XCTAssertTrue(row.accessibilityLabel.contains("~$7.66"))
+        XCTAssertEqual(row.lifecycleMarkerText, "Handed off")
+        XCTAssertTrue(row.accessibilityLabel.contains("Handed off"))
+        // The label says what the row IS and what was decided; every measured
+        // fact is still there, under the field name its column header prints
+        // (K119), instead of one long unlabelled sentence.
+        let fields = Dictionary(
+            uniqueKeysWithValues: row.accessibilityFields.map { ($0.label, $0.value) }
+        )
+        XCTAssertEqual(fields["Coverage"], "0/1 checked")
+        XCTAssertEqual(fields["Checks"], "2/3 passed, 1 failed")
+        XCTAssertEqual(fields["Client"], "codex")
+        XCTAssertEqual(fields["Cost"], "~$7.66 · pricing estimate")
+        XCTAssertNotNil(fields["Updated"])
+        XCTAssertFalse(row.accessibilityLabel.contains("0/1 checked"))
+    }
+
+    func testWorkRowLabelNeverDoublesATrailingPeriod() {
+        // A recorded reason that already ends in a full stop must not collect
+        // a second one from the joiner (the ".." VoiceOver read out, K119).
+        XCTAssertEqual(
+            joinedRecordedSentences(["Fix the rounding bug", "Finding", "Refresh and validate."]),
+            "Fix the rounding bug. Finding. Refresh and validate."
+        )
+        XCTAssertEqual(
+            joinedRecordedSentences(["A title", nil, "", "Verified"]),
+            "A title. Verified"
+        )
+    }
+
+    func testWorkRowFieldsPutTheAttentionReasonFirstAndSpeakItWithTheRow() throws {
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-attention",
+              "title": "Add live FX conversion",
+              "decision_status": { "key": "blocked", "label": "Blocked" },
+              "evidence_strength": { "key": "unchecked", "gradeable": true, "checkable_total": 1 },
+              "cost": {},
+              "attention": {
+                "kind": "blocker",
+                "label": "Blocker",
+                "reason_label": "Blocker",
+                "summary": "Waiting on a provider key.",
+                "open": true
+              }
+            }
+            """
+        )
+
+        let row = WorkReceiptRowPresentation(task: task)
+        let first = try XCTUnwrap(row.accessibilityFields.first)
+
+        XCTAssertEqual(first.label, "Attention")
+        XCTAssertTrue(first.value.contains("Waiting on a provider key."))
+        XCTAssertTrue(first.isPrimary)
+        XCTAssertFalse(row.accessibilityLabel.contains("Waiting on a provider key."))
+    }
+
+    func testWorkRowFieldLabelsComeFromTheListPayloadNotTheAppsDefaults() throws {
+        // A row without its detail receipt used to fall back to the Swift
+        // defaults in `ReceiptFieldLabels`, so the accessibility-size layout —
+        // which PRINTS a label beside every value — spoke the app's own words
+        // for Client, Updated and Attention while the visible column headers
+        // came from `/v1/tasks` `field_labels`. Both now read the payload.
+        let task = try decode(
+            ReceiptSummary.self,
+            from: """
+            {
+              "task_id": "task-labels",
+              "title": "Add live FX conversion",
+              "decision_status": { "key": "blocked", "label": "Blocked" },
+              "evidence_strength": { "key": "unchecked", "gradeable": true, "checkable_total": 1 },
+              "cost": {},
+              "attention": {
+                "kind": "blocker", "label": "Blocker", "reason_label": "Blocker",
+                "summary": "Waiting on a provider key.", "open": true
+              }
+            }
+            """
+        )
+        let listLabels = try decode(
+            ReceiptFieldLabels.self,
+            from: """
+            { "client": "Recorder", "updated": "Last seen", "attention": "Needs you",
+              "coverage": "Proof", "checks": "Runs", "cost": "Spend" }
+            """
+        )
+
+        let appDefaults = WorkReceiptRowPresentation(task: task)
+        XCTAssertEqual(appDefaults.fieldLabels.clientLabel, "Client")
+
+        let row = WorkReceiptRowPresentation(task: task, listLabels: listLabels)
+        XCTAssertEqual(row.fieldLabels.clientLabel, "Recorder")
+        XCTAssertEqual(row.fieldLabels.updatedLabel, "Last seen")
+        XCTAssertEqual(row.fieldLabels.attentionLabel, "Needs you")
+        // The printed accessibility fields carry the payload's words.
+        XCTAssertEqual(row.accessibilityFields.map(\.label).first, "Needs you")
+        XCTAssertTrue(row.accessibilityFields.contains { $0.label == "Recorder" })
+        XCTAssertTrue(row.accessibilityFields.contains { $0.label == "Last seen" })
     }
 
     func testWorkReceiptRowPresentationPrefersFreshDetailHandoffState() throws {
@@ -2000,8 +2334,8 @@ final class DashboardInteractionTests: XCTestCase {
 
         let row = WorkReceiptRowPresentation(task: task, detail: detail)
 
-        XCTAssertFalse(row.handedOff)
-        XCTAssertFalse(row.accessibilityLabel.contains("handed off"))
+        XCTAssertNil(row.lifecycleMarkerText)
+        XCTAssertFalse(row.accessibilityLabel.contains("Handed off"))
     }
 
     func testWorkDecisionSummaryKeepsClaimCoverageSeparateFromCheckRuns() throws {
@@ -2013,13 +2347,14 @@ final class DashboardInteractionTests: XCTestCase {
         let presentation = WorkReceiptDecisionPresentation(receipt: receipt)
 
         XCTAssertEqual(presentation.headline, "Current outcome")
-        XCTAssertEqual(presentation.coverageValue, "4 of 4")
-        XCTAssertEqual(presentation.coverageQualifier, "claims supported")
-        XCTAssertEqual(presentation.checksValue, "6 of 6")
-        XCTAssertEqual(presentation.checksQualifier, "check runs passed")
+        XCTAssertEqual(presentation.coverageValue, "4/4")
+        // Each qualifier names its unit: steps for coverage, check runs for checks.
+        XCTAssertEqual(presentation.coverageQualifier, "independently checked completed steps")
+        XCTAssertEqual(presentation.checksValue, "6/6")
+        XCTAssertEqual(presentation.checksQualifier, "6 passed")
         XCTAssertFalse(presentation.isAttention)
-        XCTAssertTrue(presentation.accessibilityLabel.contains("Coverage: 4 of 4"))
-        XCTAssertTrue(presentation.accessibilityLabel.contains("Checks: 6 of 6"))
+        XCTAssertTrue(presentation.accessibilityLabel.contains("Coverage: 4/4"))
+        XCTAssertTrue(presentation.accessibilityLabel.contains("Checks: 6/6"))
     }
 
     func testReceiptPresentationsPreservePartialCountsWithoutInventingZeroes() throws {
@@ -2051,8 +2386,8 @@ final class DashboardInteractionTests: XCTestCase {
         let checks = ReceiptCheckRunsPresentation(total: nil, passed: 2, failed: 1)
 
         XCTAssertEqual(decision.coverageValue, "Not reported")
-        XCTAssertEqual(decision.coverageQualifier, "support count unavailable · 4 checkable claims")
-        XCTAssertEqual(coverage.rowText, "support count not reported · 4 checkable claims")
+        XCTAssertEqual(decision.coverageQualifier, "checked count unavailable · 4 checkable steps")
+        XCTAssertEqual(coverage.rowText, "checked count not reported · 4 checkable steps")
         XCTAssertEqual(decision.checksValue, "Total not reported")
         XCTAssertEqual(decision.checksQualifier, "2 passed · 1 failed")
         XCTAssertEqual(checks.rowText, "total not reported · 2 passed · 1 failed")
@@ -2074,7 +2409,7 @@ final class DashboardInteractionTests: XCTestCase {
         let presentation = ReceiptCoveragePresentation(evidence: evidence)
 
         XCTAssertEqual(presentation.value, "Total not reported")
-        XCTAssertEqual(presentation.rowText, "2 supported · checkable total not reported")
+        XCTAssertEqual(presentation.rowText, "2 checked · checkable total not reported")
         XCTAssertFalse(presentation.rowText.contains("not gradeable"))
     }
 
@@ -2140,6 +2475,19 @@ final class DashboardInteractionTests: XCTestCase {
         return UsagePeriodPresentation(usage: usage)
     }
 
+    /// The payload chart vocabulary as `/usage/summary` serves it.
+    private var chartVocabulary: UsageChartVocabulary {
+        var vocabulary = UsageChartVocabulary()
+        vocabulary.options = [
+            UsageSeriesOption(key: "tokens", label: "Fresh tokens"),
+            UsageSeriesOption(key: "cost", label: "Cost"),
+        ]
+        vocabulary.tokenBasis = "client-reported"
+        vocabulary.costUnit = "USD"
+        vocabulary.costLegend = "~$ partial subtotal · open cap = partial"
+        return vocabulary
+    }
+
     private func usagePulse(
         periods: [PeriodBucket]?,
         isLoaded: Bool = true,
@@ -2152,6 +2500,7 @@ final class DashboardInteractionTests: XCTestCase {
             isLoaded: isLoaded,
             rangeDays: rangeDays,
             error: error,
+            tokenBasis: "client-reported",
             now: now,
             timeZone: TimeZone(secondsFromGMT: 0)!
         )

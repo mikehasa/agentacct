@@ -26,6 +26,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import uuid
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -39,6 +40,88 @@ CHECK_KINDS = {"test", "build", "lint", "typecheck"}
 # would not survive projection is dropped at drain time rather than written.
 _SAFE_RUNNER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,159}$")
 _SHA256 = re.compile(r"^sha256:[a-f0-9]{64}$")
+# A git commit is 7-64 lowercase hex. Anything else is dropped, never repaired —
+# the same discipline the runner/digest validators above follow. A commit is
+# NEVER accepted from a caller argument (that invites an invented SHA); it is
+# only ever read from `git` by capture_git_revision below.
+_GIT_SHA = re.compile(r"^[0-9a-f]{7,64}$")
+
+
+def capture_git_revision(path: Any) -> dict[str, Any] | None:
+    """Read the current git revision from the working tree at ``path`` — the ONE
+    mechanical revision capture, shared by the hook and the record paths. Returns
+    ``{"git_commit", "git_branch", "git_dirty"}`` (commit validated, or None when
+    unreadable) or ``None`` when ``path`` is not a git repository or git is
+    unavailable. Fail-open and bounded (3s): it must never raise or block a hook
+    or a record. Callers stamp the provenance basis; this function only reads."""
+
+    if not path:
+        return None
+    root = Path(str(path))
+    try:
+        if not (root / ".git").exists():
+            return None
+    except OSError:
+        return None
+
+    def run(*args: str) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(root), *args],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    head = run("rev-parse", "HEAD")
+    commit = head.lower() if head and _GIT_SHA.match(head.lower()) else None
+    status = run("status", "--porcelain=v1")
+    return {
+        "git_commit": commit,
+        "git_branch": run("branch", "--show-current") or None,
+        "git_dirty": None if status is None else bool(status),
+    }
+
+def absent_paths_at_revision(path: Any, commit: Any, files: Any) -> list[str]:
+    """Which of ``files`` do NOT exist in the tree of ``commit`` — the cheap,
+    mechanical contradiction test behind a check's revision stamp.
+
+    A check that declares ``tests/test_subtract.py`` while its stamped commit
+    contains no such path cannot have run at that commit. One ``git ls-tree``
+    per check answers it. Fail-open and bounded like every capture here: an
+    unreadable repo, a missing git, or a bad SHA returns ``[]`` (nothing
+    contradicted), never a raised error and never a fabricated absence.
+    """
+
+    commit = str(commit or "").strip().lower()
+    wanted = [str(item).strip() for item in (files if isinstance(files, (list, tuple)) else []) if str(item).strip()]
+    if not path or not commit or not _GIT_SHA.match(commit) or not wanted:
+        return []
+    root = Path(str(path))
+    try:
+        if not (root / ".git").exists():
+            return []
+    except OSError:
+        return []
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-tree", "-r", "--name-only", "-z", commit, "--", *wanted],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    present = {name for name in result.stdout.split("\0") if name}
+    return [item for item in wanted if item not in present]
+
 
 # Leading tokens that are environment assignments or bare command wrappers to
 # skip before the real runner (e.g. ``FOO=bar sudo pytest``, ``time pytest``).
@@ -472,6 +555,7 @@ def ingest_mechanical_check_spool(
 
 __all__ = [
     "CHECK_KINDS",
+    "capture_git_revision",
     "classify_command",
     "command_digest",
     "mechanical_check_spool_path",

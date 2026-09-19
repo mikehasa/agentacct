@@ -161,6 +161,12 @@ class WorkEvent:
     summary: str | None = None
     blocker: str | None = None
     next_step: str | None = None
+    #: The task-level GOAL, recorded once on a task's first section. It rides
+    #: the work event because nothing downstream can derive it: `objective` is
+    #: a SECTION TITLE, which is a step, and on most records it is the Task
+    #: title again. Dropping it here is what made the record page say no goal
+    #: was recorded for tasks whose agent had recorded one.
+    task_goal: str | None = None
     client: str | None = None
     client_session_id: str | None = None
     client_transcript_id: str | None = None
@@ -201,6 +207,7 @@ class WorkEvent:
             ("summary", _MAX_SUMMARY),
             ("blocker", _MAX_SUMMARY),
             ("next_step", _MAX_SUMMARY),
+            ("task_goal", _MAX_SUMMARY),
             ("client", 80),
             ("original_event_type", 80),
         ):
@@ -233,6 +240,7 @@ class WorkEvent:
             summary=_limited(metadata.get("summary"), maximum=_MAX_SUMMARY),
             blocker=_limited(metadata.get("blocker"), maximum=_MAX_SUMMARY),
             next_step=_limited(metadata.get("next_step"), maximum=_MAX_SUMMARY),
+            task_goal=_limited(metadata.get("task_goal"), maximum=_MAX_SUMMARY),
             client=_limited(metadata.get("client"), maximum=80),
             client_session_id=_identifier(metadata.get("client_session_id")),
             client_transcript_id=_identifier(metadata.get("client_transcript_id")),
@@ -261,6 +269,7 @@ class WorkEvent:
             "summary": self.summary,
             "blocker": self.blocker,
             "next_step": self.next_step,
+            "task_goal": self.task_goal,
             "client": self.client,
             "client_session_id": self.client_session_id,
             "client_transcript_id": self.client_transcript_id,
@@ -285,6 +294,7 @@ class WorkEvent:
             "summary": self.summary,
             "blocker": self.blocker,
             "next_step": self.next_step,
+            "task_goal": self.task_goal,
             "client": self.client,
             "client_session_id": self.client_session_id,
             "client_transcript_id": self.client_transcript_id,

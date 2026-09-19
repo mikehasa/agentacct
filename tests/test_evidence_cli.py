@@ -101,8 +101,12 @@ def test_evidence_work_event_preserves_v1_and_adds_v2(tmp_path) -> None:
         "codex",
         "--client-session-id",
         "session-1",
+        "--title",
+        "Implement the Evidence v2 shadow layer",
         "--summary",
-        "Implemented the Evidence v2 shadow layer.",
+        "Implemented the Evidence v2 shadow layer and verified both write paths.",
+        "--files",
+        "src/agentacct/evidence.py",
         "--json",
     ]
     result = runner.invoke(app, args)

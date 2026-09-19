@@ -93,8 +93,10 @@ def _record_section(
         "sentinel_semantic_kind": "section",
         "section_id": section_id,
         "section_status": "completed",
+        "files": ["src/agentacct/mcp.py"],
         "section_title": title,
         "client": client,
+        "summary": "Recorded outcome for this fixture section.",
     }
     if session is not None:
         metadata["client_session_id"] = session
@@ -265,7 +267,14 @@ def test_untrusted_or_redacted_session_title_never_reaches_task_surfaces(tmp_pat
     control_payload = client.get("/api/control")
     assert control_payload.status_code == 200
     assert secret not in control_payload.text
-    assert _observed_task_titles(client) == ["Untitled Claude Code chat"]
+    # The fallback no longer invents an identity label ("Untitled ... chat"),
+    # which four Tasks shared verbatim in the installed store. It names the
+    # session and its day, so two unnamed sessions are distinguishable -- and it
+    # still never leaks the client-side title.
+    titles = _observed_task_titles(client)
+    assert len(titles) == 1
+    assert titles[0].startswith("Claude Code session")
+    assert "Untitled" not in titles[0]
 
 
 def test_run_id_steps_in_one_root_group_as_nested_work_in_one_task(tmp_path: Path) -> None:

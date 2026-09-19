@@ -7,7 +7,18 @@ import json
 import math
 from typing import Any, Mapping
 
+from .display_vocabulary import (
+    CHECK_NOT_RUN_WORDS,
+    FAILED_CHECK_RESULTS,
+    NOT_RUN_CHECK_RESULTS,
+    work_status_label,
+    step_not_graded_reason,
+)
 from .finding_disposition import finding_target_digest
+
+# Result keys a check series is reduced over: a pass, a recorded failure, or a
+# check that could not run. ``skipped`` / ``unknown`` never enter a series.
+CHECK_SERIES_RESULTS: frozenset[str] = frozenset({"passed"}) | FAILED_CHECK_RESULTS | NOT_RUN_CHECK_RESULTS
 
 
 _SUCCESS_STATUSES = {"completed", "passed"}
@@ -79,6 +90,24 @@ _GRADE_SUCCESS_STATUSES = {"completed", "passed", "resolved"}
 # Every other kind — including ``unknown``/``other`` — is check-relevant: an
 # unlabeled step does not get a free pass. See the M2 spec (owner decision Q2).
 NON_CHECK_RELEVANT_KINDS = {"research", "review", "planning", "docs"}
+
+
+def step_is_checkable(step: Mapping[str, Any], attached_checks: Any = None) -> bool:
+    """Does this step owe (or carry) check evidence? Evidence beats declared kind.
+
+    A step with ANY attached check, whatever its result, is checkable: the check
+    disproves the "produces no machine-verifiable artifact" premise behind
+    ``NON_CHECK_RELEVANT_KINDS``, and counting failures too keeps a review step
+    from entering coverage only when the news is good. Without an attached
+    check, a step is checkable unless its declared ``kind`` is one of the
+    non-check-relevant kinds (an unlabeled step never gets a free pass).
+    """
+
+    checks = attached_checks if isinstance(attached_checks, (list, tuple)) else []
+    if any(isinstance(check, Mapping) for check in checks):
+        return True
+    kind = _text(step.get("kind") or "unknown").lower()
+    return kind not in NON_CHECK_RELEVANT_KINDS
 
 
 def _text(value: Any) -> str:
@@ -173,8 +202,10 @@ def step_evidence_grade(item: Mapping[str, Any]) -> dict[str, Any]:
 
     status = _text(item.get("latest_status")).lower()
     if status not in _GRADE_SUCCESS_STATUSES:
-        detail = status or "no status"
-        return {"grade": GRADE_NONE, "reason": f"{detail}: not a terminal success — nothing proven", "checks": 0}
+        # The status LABEL, never the raw key (``Handed off before completion —
+        # not graded``): a step is ``not graded``; only a Task is ``not gradeable``.
+        status_label = work_status_label(status) if status else "No status recorded"
+        return {"grade": GRADE_NONE, "reason": step_not_graded_reason(status_label), "checks": 0}
     raw = (
         item.get("current_check_events")
         if isinstance(item.get("current_check_events"), list)
@@ -212,10 +243,16 @@ def step_evidence_grade(item: Mapping[str, Any]) -> dict[str, Any]:
     evidence_strong = _text(item.get("evidence_status")).lower() == "strong"
     if evidence_strong and not checks and not projected_checks:
         return {"grade": GRADE_SELF_CHECKED, "reason": "agent-reported evidence, no linked check series", "checks": 0}
-    if any(_text(event.get("result")).lower() in {"failed", "error"} for event in checks):
+    if any(_text(event.get("result")).lower() in FAILED_CHECK_RESULTS for event in checks):
         return {
             "grade": GRADE_CLAIMED,
             "reason": "marked done, but a recorded check is currently failing (see the decision axis)",
+            "checks": len(checks),
+        }
+    if any(_text(event.get("result")).lower() in NOT_RUN_CHECK_RESULTS for event in checks):
+        return {
+            "grade": GRADE_CLAIMED,
+            "reason": f"marked done, but a recorded check {CHECK_NOT_RUN_WORDS}, so nothing proves it",
             "checks": len(checks),
         }
     return {"grade": GRADE_CLAIMED, "reason": "marked done; no passing machine check for this step", "checks": 0}
@@ -389,12 +426,20 @@ def latest_check_events(
     *,
     task_scoped: bool = False,
 ) -> list[Mapping[str, Any]]:
-    """Newest result per source-scoped stable check, using receipt order for ties."""
+    """The standing result per source-scoped stable check, receipt order for ties.
 
-    latest: dict[str, tuple[float, int, int, Mapping[str, Any]]] = {}
+    Normally the newest run. One exception keeps a real failure from vanishing:
+    a later run that could not run (``error``) proves nothing, so it never
+    displaces a standing failed run — only a later pass supersedes a failure.
+    A series whose newest run is not a pass is therefore never read as passing.
+    """
+
+    newest: dict[str, tuple[float, int, int, Mapping[str, Any]]] = {}
+    newest_failure: dict[str, tuple[float, int, int, Mapping[str, Any]]] = {}
+    newest_pass: dict[str, tuple[float, int, int, Mapping[str, Any]]] = {}
     for index, event in enumerate(events):
         result = _text(event.get("result")).lower()
-        if result not in {"passed", "failed", "error"}:
+        if result not in CHECK_SERIES_RESULTS:
             continue
         candidate = (
             _number(event.get("created_at") or event.get("occurred_at") or event.get("time")),
@@ -403,9 +448,23 @@ def latest_check_events(
             event,
         )
         identity = finding_check_key(event, task_scoped=task_scoped)
-        if identity not in latest or candidate[:3] > latest[identity][:3]:
-            latest[identity] = candidate
-    return [value[3] for _identity, value in sorted(latest.items())]
+        for bucket, wanted in (
+            (newest, True),
+            (newest_failure, result in FAILED_CHECK_RESULTS),
+            (newest_pass, result == "passed"),
+        ):
+            if wanted and (identity not in bucket or candidate[:3] > bucket[identity][:3]):
+                bucket[identity] = candidate
+    standing: dict[str, Mapping[str, Any]] = {}
+    for identity, value in newest.items():
+        chosen = value
+        if _text(value[3].get("result")).lower() in NOT_RUN_CHECK_RESULTS and identity in newest_failure:
+            failure = newest_failure[identity]
+            passed = newest_pass.get(identity)
+            if passed is None or failure[:3] > passed[:3]:
+                chosen = failure
+        standing[identity] = chosen[3]
+    return [standing[identity] for identity in sorted(standing)]
 
 
 def latest_task_checks(task: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -592,6 +651,66 @@ def task_went_quiet_elsewhere(
     )
 
 
+def _section_work_clock(item: Mapping[str, Any]) -> float:
+    """When this section's WORK last changed, ignoring terminal transitions.
+
+    The ledger stamps ``last_nonterminal_update_at`` (the newest started /
+    checkpoint update). Marking a section completed / blocked / handed off only
+    closes it, so it does not move this clock. A section that recorded no
+    non-terminal update falls back to its first record (``started_at``): a check
+    can never predate the section's existence. An item projected without the
+    ledger field keeps the conservative ``updated_at``.
+    """
+
+    if "last_nonterminal_update_at" in item:
+        clock = _number(item.get("last_nonterminal_update_at"))
+        if clock > 0:
+            return clock
+        return _number(item.get("started_at") or item.get("updated_at"))
+    return _number(item.get("updated_at") or item.get("started_at"))
+
+
+def _check_section_item(
+    event: Mapping[str, Any], items: list[Mapping[str, Any]]
+) -> Mapping[str, Any] | None:
+    """The one work step this check is linked to by ``section_id``, if any.
+
+    Linked only when exactly one step carries the check's ``section_id``; an
+    ambiguous or missing link leaves the check task-scoped.
+    """
+
+    section_id = _text(event.get("section_id"))
+    if not section_id:
+        return None
+    matches = [item for item in items if _text(item.get("section_id")) == section_id]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _check_is_current(event: Mapping[str, Any], items: list[Mapping[str, Any]]) -> bool:
+    """Was this check recorded after the work it speaks for? Older checks
+    cannot prove code changed later.
+
+    A check linked by ``section_id`` must be at or after its own section's work
+    clock (terminal transitions of that section do not stale it: run the check,
+    then report the section completed) AND at or after every OTHER section's
+    newest update. A check linked to no single section must be at or after every
+    section's newest update.
+    """
+
+    checked_at = _number(event.get("created_at") or event.get("occurred_at") or event.get("time"))
+    if checked_at <= 0:
+        return False
+    linked = _check_section_item(event, items)
+    for item in items:
+        if linked is not None and item is linked:
+            required = _section_work_clock(item)
+        else:
+            required = _number(item.get("updated_at") or item.get("started_at"))
+        if checked_at < required:
+            return False
+    return True
+
+
 def reduce_task_outcome(
     task: Mapping[str, Any],
     *,
@@ -601,8 +720,9 @@ def reduce_task_outcome(
     """Reduce work status and checks into one honest current Task outcome.
 
     A Task-level passing check verifies terminal work only when every current
-    work step succeeded and every latest check was recorded at or after the
-    newest work update. Older checks cannot prove code changed later.
+    work step succeeded and every latest check was recorded after the work it
+    speaks for (see ``_check_is_current``). Older checks cannot prove code
+    changed later, but a section's own completion transition is not new work.
 
     ``latest_store_activity_at`` (seconds) is the DECISION 3a cross-session
     signal: the newest activity timestamp anywhere in the store (all
@@ -772,7 +892,7 @@ def reduce_task_outcome(
     current_failures = [
         event
         for event in checks
-        if _text(event.get("result")).lower() in {"failed", "error"}
+        if _text(event.get("result")).lower() in FAILED_CHECK_RESULTS
     ]
     if current_failures:
         # A superseded failure is contradicted by a later same-scope pass. It is
@@ -995,12 +1115,9 @@ def reduce_task_outcome(
                 "handoff_current": handoff_current,
                 **step_counts,
             }
-        passing_checks = [event for event in checks if _text(event.get("result")).lower() == "passed"]
         checks_are_current = bool(checks) and all(
             _text(event.get("result")).lower() == "passed"
-            and _number(event.get("created_at") or event.get("occurred_at") or event.get("time"))
-            >= max_work_updated_at
-            and _number(event.get("created_at") or event.get("occurred_at") or event.get("time")) > 0
+            and _check_is_current(event, items)
             for event in checks
         )
         strong_without_checks = not isinstance(task.get("current_check_events"), list) and not checks and all(
@@ -1045,6 +1162,7 @@ def reduce_task_outcome(
 
 
 __all__ = [
+    "CHECK_SERIES_RESULTS",
     "evidence_event_key",
     "finding_check_key",
     "step_verification_counts",
@@ -1063,4 +1181,5 @@ __all__ = [
     "GRADE_INDEPENDENTLY_CHECKED",
     "GRADE_EXTERNALLY_VERIFIED",
     "NON_CHECK_RELEVANT_KINDS",
+    "step_is_checkable",
 ]

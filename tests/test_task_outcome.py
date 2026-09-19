@@ -75,6 +75,147 @@ def test_passing_check_must_not_predate_the_work_it_verifies(
     assert _surface_states(task) == (expected_outcome, expected_detail)
 
 
+def _ledger_section(status: str, created_at: float, *, section_id: str = "fix-pct") -> dict[str, Any]:
+    return {
+        "event_id": f"evt_section_{section_id}_{status}_{created_at}",
+        "created_at": created_at,
+        "source": "codex",
+        "event_type": f"section_{status}",
+        "metadata": {
+            "sentinel_semantic_kind": "section",
+            "client": "codex",
+            "client_session_id": "codex-session",
+            "client_context_keys_authored": ["client_session_id"],
+            "project_dir": "/tmp/project",
+            "section_id": section_id,
+            "section_status": status,
+            "section_title": "Fix percentage()",
+            "summary": "Fixed rounding.",
+            "kind": "implementation",
+        },
+    }
+
+
+def _ledger_check(created_at: float, *, section_id: str | None = "fix-pct") -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "sentinel_semantic_kind": "evidence",
+        "client": "codex",
+        "client_session_id": "codex-session",
+        "project_dir": "/tmp/project",
+        "evidence_type": "test",
+        "name": "python -m pytest tests/test_percent.py",
+        "result": "passed",
+        "exit_code": 0,
+    }
+    if section_id:
+        metadata["section_id"] = section_id
+    return {
+        "event_id": f"evt_check_{created_at}",
+        "created_at": created_at,
+        "source": "codex",
+        "event_type": "machine_check",
+        "metadata": metadata,
+    }
+
+
+def _ledger_task(events: list[dict[str, Any]]) -> dict[str, Any]:
+    from agentacct.work_ledger import build_work_ledger
+
+    ledger = build_work_ledger(events)
+    return {
+        "work_items": ledger["work_items"],
+        "task_evidence_events": [],
+        "sessions": [],
+        "usage": {"rows": 0},
+    }
+
+
+def test_check_just_before_its_own_section_completes_is_verified() -> None:
+    # The natural flow: start the section, run the check, then report the
+    # section completed 30 ms later. The completion transition is not new work.
+    t = 1789441995.24246
+    task = _ledger_task(
+        [
+            _ledger_section("started", t - 10.0),
+            _ledger_check(t),
+            _ledger_section("completed", t + 0.03),
+        ]
+    )
+
+    assert _surface_states(task) == ("verified", "verified")
+
+
+def test_later_checkpoint_in_the_section_makes_the_check_stale() -> None:
+    t = 1789441995.24246
+    task = _ledger_task(
+        [
+            _ledger_section("started", t - 10.0),
+            _ledger_check(t),
+            _ledger_section("checkpoint", t + 1.0),
+            _ledger_section("completed", t + 2.0),
+        ]
+    )
+
+    assert _surface_states(task) == ("reported", "reported")
+
+
+def test_another_sections_later_update_still_stales_a_linked_check() -> None:
+    t = 1789441995.24246
+    task = _ledger_task(
+        [
+            _ledger_section("started", t - 10.0),
+            _ledger_check(t),
+            _ledger_section("completed", t + 0.03),
+            _ledger_section("started", t - 5.0, section_id="docs"),
+            _ledger_section("completed", t + 5.0, section_id="docs"),
+        ]
+    )
+
+    assert _surface_states(task) == ("reported", "reported")
+
+
+def test_unlinked_check_before_the_completion_transition_stays_reported() -> None:
+    # A check linked to no section cannot claim any section's work clock, so it
+    # must postdate every section's newest update.
+    t = 1789441995.24246
+    task = _ledger_task(
+        [
+            _ledger_section("started", t - 10.0),
+            _ledger_check(t, section_id=None),
+            _ledger_section("completed", t + 0.03),
+        ]
+    )
+    task["task_evidence_events"] = [
+        {
+            "event_id": "evt_task_check",
+            "check_identity": "check:unlinked",
+            "result": "passed",
+            "created_at": t,
+        }
+    ]
+
+    assert _surface_states(task) == ("reported", "reported")
+
+
+def test_one_shot_completed_section_does_not_accept_a_check_that_predates_it() -> None:
+    t = 1789441995.24246
+    task = _ledger_task([_ledger_check(t), _ledger_section("completed", t + 0.03)])
+
+    assert _surface_states(task) == ("reported", "reported")
+
+
+def test_step_is_checkable_evidence_beats_declared_kind() -> None:
+    from agentacct.task_outcome import step_is_checkable
+
+    assert step_is_checkable({"kind": "implementation"}, []) is True
+    assert step_is_checkable({}, []) is True
+    assert step_is_checkable({"kind": "Review"}, []) is False
+    assert step_is_checkable({"kind": "research"}, None) is False
+    assert step_is_checkable({"kind": "review"}, [{"result": "passed"}]) is True
+    # Any result counts, so coverage cannot admit review steps only on good news.
+    assert step_is_checkable({"kind": "docs"}, [{"result": "failed"}]) is True
+
+
 def test_failed_work_status_cannot_be_overridden_by_task_level_pass() -> None:
     task = _task(
         status="failed",

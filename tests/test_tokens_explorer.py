@@ -19,6 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import agentacct.api as api_module
+from agentacct import display_vocabulary as vocab
 from agentacct.api import create_local_api_app
 from agentacct.usage_view import DashboardUsageRecord, _usage_record_time
 from agentacct.service import SentinelService
@@ -334,7 +335,21 @@ def test_usage_summary_shape_totals_and_periods(tmp_path):
         "by_client",
         "by_model",
         "by_period",
+        "cost_legend",
+        # The chart's words (K39/K74/K106/K109), additive.
+        "cost_chart_legend",
+        "cost_chart_unit",
+        "token_basis_label",
+        "by_model_sessions_footnote",
+        "usage_series",
+        "usage_series_default",
     }
+    # Each glyph is bound to its definition with NO-BREAK SPACE, so a wrapping
+    # legend can only break at " · " (K25).
+    assert payload["cost_legend"] == vocab.COST_LEGEND
+    assert all(" " not in pair for pair in payload["cost_legend"].split(" · "))
+    assert [entry["label"] for entry in payload["usage_series"]] == ["Fresh tokens", "Cost"]
+    assert payload["token_basis_label"] == "client-reported"
     assert payload["schema_version"] == "agent-sentinel.usage-summary.v1"
     assert payload["filters_echo"] == {
         "client": "all",
@@ -952,6 +967,52 @@ def test_confidence_single_bucket_labels_plain():
     totals = _cube(records, days=30, granularity="daily")["totals"]
 
     assert totals["cost_confidence_label"] == "estimated_from_tokens confidence"
+
+
+def test_confidence_display_uses_the_shared_basis_vocabulary():
+    majority = _cube([
+        _cube_record(session="m-a", day=TODAY, cost=0.99, cost_confidence="estimated_from_tokens"),
+        _cube_record(session="m-b", day=TODAY, cost=0.01, cost_confidence="client_reported"),
+    ], days=30, granularity="daily")["totals"]
+    assert majority["cost_confidence_display"] == "mixed · mostly pricing estimate"
+    # The raw label stays for its existing consumers.
+    assert majority["cost_confidence_label"] == "mixed confidence (mostly estimated_from_tokens)"
+
+    tie = _cube([
+        _cube_record(session="t-a", day=TODAY, cost=0.05, cost_confidence="provider_billed"),
+        _cube_record(session="t-b", day=TODAY, cost=0.05, cost_confidence="estimated_from_tokens"),
+    ], days=30, granularity="daily")["totals"]
+    assert tie["cost_confidence_display"] == "mixed"
+
+    solo = _cube([_cube_record(session="s", day=TODAY, cost=0.1, cost_confidence="client_reported")],
+                 days=30, granularity="daily")["totals"]
+    assert solo["cost_confidence_display"] == "client-reported"
+
+    unpriced = _cube([_cube_record(session="u", day=TODAY, cost=None)], days=30, granularity="daily")["totals"]
+    assert unpriced["cost_confidence_display"] == "cost basis not reported"
+
+
+def test_cost_state_names_each_bucket_and_never_calls_nothing_partial():
+    records = [
+        _cube_record(session="priced", day=TODAY, cost=0.10),
+        _cube_record(session="unpriced", day=TODAY - timedelta(days=1), cost=None),
+        _cube_record(session="mix-a", day=TODAY - timedelta(days=2), cost=0.10),
+        _cube_record(session="mix-b", day=TODAY - timedelta(days=2), cost=None),
+    ]
+    cube = _cube(records, days=4, granularity="daily")
+    by_period = {row["period"]: row["cost_state"] for row in cube["by_period"]}
+    assert by_period == {
+        (TODAY - timedelta(days=3)).isoformat(): "none_recorded",
+        (TODAY - timedelta(days=2)).isoformat(): "partial",
+        (TODAY - timedelta(days=1)).isoformat(): "unpriced",
+        TODAY.isoformat(): "complete",
+    }
+    assert cube["totals"]["cost_state"] == "partial"
+
+    from dataclasses import replace
+
+    held = replace(_cube_record(session="held", day=TODAY, cost=0.10), usage_additive=False)
+    assert _cube([held], days=1, granularity="daily")["totals"]["cost_state"] == "held"
 
 
 # ---------------------------------------------------------------------------

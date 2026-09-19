@@ -984,6 +984,11 @@ def build_task_projection(
         # scan, or both across its sessions — so the Receipt names Actions provenance
         # honestly instead of assuming a hook.
         capture_bases: set[str] = set()
+        # The window the capture actually covered, unioned across the Task's
+        # sessions. Carried so the Receipt can compare it against the Task's own
+        # activity window instead of asserting the count is complete.
+        captured_window_first: float | None = None
+        captured_window_last: float | None = None
         for key in ordered_members:
             counts = sessions[key].get("tool_category_counts")
             if isinstance(counts, Mapping):
@@ -1005,6 +1010,18 @@ def build_task_projection(
                     token = _text(basis)
                     if token:
                         capture_bases.add(token)
+            window = sessions[key].get("tool_activity_window")
+            if isinstance(window, Mapping):
+                first = _number(window.get("first_at"))
+                last = _number(window.get("last_at"))
+                if first:
+                    captured_window_first = (
+                        first if captured_window_first is None else min(captured_window_first, first)
+                    )
+                if last:
+                    captured_window_last = (
+                        last if captured_window_last is None else max(captured_window_last, last)
+                    )
         touched_files: list[str] = []
         seen_touched_files: set[str] = set()
         # (a) agent-reported section/check files, and (b) the paths a file-edit tool
@@ -1048,6 +1065,8 @@ def build_task_projection(
             "commands": commands,
             "command_count": len(commands),
             "capture_bases": sorted(capture_bases),
+            "captured_first_at": captured_window_first,
+            "captured_last_at": captured_window_last,
         }
         tasks.append(
             {

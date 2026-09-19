@@ -79,6 +79,12 @@ final class UsageSnapshotHarnessTests: XCTestCase {
             let representation = try XCTUnwrap(image.representations.first, artifact.filename)
             XCTAssertEqual(representation.pixelsWide, artifact.pixelsWide)
             XCTAssertEqual(representation.pixelsHigh, artifact.pixelsHigh)
+            // No review render may show an unsupported-view placeholder in
+            // place of a control the live app draws (K68).
+            XCTAssertEqual(
+                try VisualSnapshotImage(contentsOf: firstURL).unsupportedControlPlaceholderPixels, 0,
+                "\(artifact.filename) draws the renderer's #FFCC00 placeholder where a control belongs."
+            )
             let difference = try VisualSnapshotHarness.compare(
                 expectedURL: firstURL,
                 actualURL: secondDirectory.appendingPathComponent(artifact.filename)
@@ -97,6 +103,65 @@ final class UsageSnapshotHarnessTests: XCTestCase {
         XCTAssertNil(SnapshotScheme.override)
     }
 
+    /// The range and measure choices use the app's ONE segmented control, so a
+    /// render shows the shipped control with every option instead of a single
+    /// Chip, and the selected segment speaks the app's cobalt rather than the
+    /// system control accent (K108). The control still takes the visible
+    /// caption as its accessibility label (no "Usage range" beside
+    /// "Recorded usage range").
+    func testUsageChoicesUseTheAppSegmentedControlWithTheVisibleCaption() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/agentacct/UsagePane.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let identifier = try XCTUnwrap(source.range(of: "\"usage.history.range\""))
+        let controlStart = try XCTUnwrap(
+            source.range(of: "SegmentedChoice(", options: .backwards, range: source.startIndex..<identifier.lowerBound)
+        )
+        let control = source[controlStart.lowerBound..<identifier.lowerBound]
+
+        XCTAssertTrue(control.contains("accessibilityLabel: Self.rangeCaption"))
+        XCTAssertEqual(UsagePane.rangeCaption, "Recorded usage range")
+        XCTAssertFalse(source.contains("\"Usage range\""))
+        // No native segmented picker survives on this pane: it paints its
+        // selection in the system accent and cannot be retinted.
+        XCTAssertFalse(source.contains(".pickerStyle(.segmented)"))
+        // The measure choice is the same control, not a Chip stand-in.
+        XCTAssertTrue(source.contains("\"usage.history.measure\""))
+    }
+
+    func testPeriodChartNamesNoUsageUnpricedPartialAndHeldPeriodsDistinctly() throws {
+        let periods = try JSONDecoder().decode([PeriodBucket].self, from: Data("""
+        [
+          {"period":"2026-09-14","rows":0,"priced_rows":0,"unpriced_rows":0,"fresh_tokens":0,
+           "cost_state":"none_recorded","cost_complete":false},
+          {"period":"2026-09-13","rows":5,"priced_rows":0,"unpriced_rows":5,"fresh_tokens":121100000,
+           "cost_state":"unpriced","cost_complete":false,
+           "cost_total_label":"no priced usage · 5 of 5 usage records unpriced"},
+          {"period":"2026-09-12","rows":5,"priced_rows":3,"unpriced_rows":2,"fresh_tokens":900,
+           "cost_state":"partial","cost_complete":false,"known_additive_cost_usd":69.97,
+           "cost_total_label":"Partial subtotal · 2 of 5 usage records unpriced"},
+          {"period":"2026-09-11","rows":2,"priced_rows":0,"unpriced_rows":0,"fresh_tokens":10,
+           "cost_state":"held","cost_complete":false,
+           "cost_total_label":"excluded usage records · not totaled"}
+        ]
+        """.utf8))
+
+        XCTAssertEqual(UsagePeriodChart.costValueText(periods[0]), "no recorded usage")
+        XCTAssertTrue(UsagePeriodChart.hasNoRecordedUsage(periods[0]))
+        // Every named state is the reducer's cost_total_label (K105/K113).
+        XCTAssertEqual(UsagePeriodChart.costValueText(periods[1]), "no priced usage · 5 of 5 usage records unpriced")
+        XCTAssertFalse(UsagePeriodChart.hasNoRecordedUsage(periods[1]))
+        XCTAssertEqual(
+            UsagePeriodChart.costValueText(periods[2]),
+            "~$69.97 · Partial subtotal · 2 of 5 usage records unpriced"
+        )
+        XCTAssertEqual(UsagePeriodChart.pricedAmount(periods[2]), 69.97)
+        XCTAssertEqual(UsagePeriodChart.costValueText(periods[3]), "excluded usage records · not totaled")
+    }
+
     @MainActor
     func testLimitMeterThresholdMarkersAreCenteredOnTheTrack() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -109,9 +174,11 @@ final class UsageSnapshotHarnessTests: XCTestCase {
         }
 
         SnapshotScheme.override = .light
+        // LimitMeter is the shared MeterBar: an 8pt track plus 2pt ink ticks
+        // above and below it (outside the bar), 12pt tall in total.
         let view = LimitMeter(usedPercent: 0)
             .frame(width: 200)
-            .padding(.vertical, 4)
+            .padding(.vertical, 2)
             .background(Theme.card)
             .environment(\.colorScheme, .light)
             .environment(\.displayScale, 2)
@@ -128,7 +195,8 @@ final class UsageSnapshotHarnessTests: XCTestCase {
         let secondMarkerColumns = darkPixelColumns(in: image, xRange: 340...380)
 
         XCTAssertEqual(image.height, 32)
-        XCTAssertEqual(markerRows.count, 24)
+        // 2pt above + 2pt below the track at 2x; the tick never crosses the fill.
+        XCTAssertEqual(markerRows.count, 8)
         XCTAssertEqual(trackRows.count, 16)
         XCTAssertEqual(try pixelCenter(of: markerRows), try pixelCenter(of: trackRows), accuracy: 0.25)
         // Pixel indices describe samples centered at n + 0.5. At 2×, the

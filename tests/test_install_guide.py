@@ -377,8 +377,8 @@ def test_workflow_instruction_block_is_sections_only_and_concise() -> None:
     # Concise: it loads into every session. Keep it short (bounded line count).
     body_lines = [line for line in block.splitlines() if line.strip()]
     assert len(body_lines) <= 14, f"instruction block grew to {len(body_lines)} non-blank lines; keep it short"
-    # Honest low-friction escape hatch: recording nothing is allowed.
-    assert "recording nothing" in block or "record nothing" in block
+    # One narrow skip rule (K63): trivial throwaway commands only.
+    assert "skip only trivial throwaway commands" in block
 
 
 def test_workflow_instruction_lines_are_directive_and_beat_deferral() -> None:
@@ -394,10 +394,10 @@ def test_workflow_instruction_lines_are_directive_and_beat_deferral() -> None:
     assert "deferred" in block
     # Honesty guardrail present and explicit about NOT fabricating figures.
     assert "never fabricate" in block
-    # Low-friction stays NARROW: only a genuinely trivial throwaway session skips,
-    # and it still tells the agent to record real work.
-    assert "genuinely trivial throwaway session" in block
-    assert "do record real work" in block
+    # Low-friction stays NARROW (K63): one skip rule, no contradicting bullet.
+    assert "Record every meaningful step; skip only trivial throwaway commands." in block
+    assert "beats a gap" not in block
+    assert "recording nothing is better" not in block
     # The old easy-opt-out framing is gone.
     assert "If the Agent Chronicle MCP tools are available" not in block
     assert "skip all of this for trivial throwaway sessions" not in block
@@ -427,10 +427,24 @@ def test_mcp_server_instructions_are_directive_honest_and_deferral_aware() -> No
     assert "task_started" not in text
     assert "task_completed" not in text
     # Concise: it costs context tokens every session. Bound the line count.
+    # Raised 10 -> 11 when the whole-job-done capstone bullet (#259) joined the
+    # readable-records contract: 1 header + 1 deferral hint + 9 contract bullets.
     lines = [line for line in text.splitlines() if line.strip()]
-    assert 6 <= len(lines) <= 10, f"MCP instructions have {len(lines)} lines; keep them ~6-10"
-    # Low-friction stays narrow (no blanket opt-out).
-    assert "genuinely trivial throwaway session" in text
+    assert 6 <= len(lines) <= 11, f"MCP instructions have {len(lines)} lines; keep them ~6-11"
+    # Low-friction stays narrow (no blanket opt-out), stated once (K63).
+    assert "Record every meaningful step; skip only trivial throwaway commands." in text
+    assert "beats a gap" not in text and "recording nothing is better" not in text
+    # The supersession and not-run rules reach the tool layer, not only schemas.
+    # D1: supersession keys on the command/check_key, not on the display label,
+    # so the tool-layer text must not send agents back to reusing the name.
+    assert "same `command` and `section_id` (or the same `check_key`) so a pass supersedes" in text
+    assert "error means it could not run, skipped means you chose not to run it" in text
+    # D2(a)/D4: the two rules an agent most often gets wrong reach the tool layer.
+    assert "A failed or error check must carry a `summary`" in text
+    assert "not_reproduced = the probe ran and the problem did not appear" in text
+    # D5: the fields the contract never used to mention at all.
+    assert "`files`" in text and "`section_id` it belongs to" in text
+    assert "parent_client_session_id" in text
 
 
 def test_recording_surfaces_share_one_contract_core() -> None:
@@ -539,9 +553,10 @@ def test_session_start_additional_context_is_directive_honest_and_concise() -> N
     assert "task_started" not in text
     assert "task_completed" not in text
     # Concise: it is injected into every session's context.
+    # Raised 10 -> 11 alongside the MCP bound: same shared contract, one more bullet.
     lines = [line for line in text.splitlines() if line.strip()]
-    assert 6 <= len(lines) <= 10, f"session-start context has {len(lines)} lines; keep it ~6-10"
-    assert "genuinely trivial throwaway session" in text
+    assert 6 <= len(lines) <= 11, f"session-start context has {len(lines)} lines; keep it ~6-11"
+    assert "Record every meaningful step; skip only trivial throwaway commands." in text
 
 
 def test_workflow_instruction_block_is_wrapped_in_idempotency_markers() -> None:

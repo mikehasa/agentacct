@@ -51,10 +51,12 @@ def _seed_task(store_root: Path) -> tuple[TestClient, str]:
                 "sentinel_semantic_kind": "section",
                 "section_id": "implementation",
                 "section_status": "completed",
+                "files": ["src/agentacct/mcp.py"],
                 "section_title": "Implement the vertical slice",
                 "section_summary": "The agent reported completing the implementation.",
                 "client": "codex",
                 "client_session_id": session_id,
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )

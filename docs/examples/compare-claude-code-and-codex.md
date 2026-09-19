@@ -16,23 +16,29 @@ The same task — **"Add retry-with-backoff to the payments HTTP client"**, from
 
 `task_cc_retry`
 
-- **Decision status — `VERIFIED`** · asserted by `machine`
+- **Verified — 1/2 self-checked**
+  Not yet proven: 1 completed step unchecked
+  Counts since May 28
+
+- **Decision — Verified** · asserted by a machine check
   Recorded machine evidence verifies the latest outcome.
-- **Evidence coverage — 1/2 self-checked · 1 unchecked**
-  1 non-verifiable (research/docs)
-  X of Y checkable steps carry a passing check; the tiers show how independent that check is. These are counts, not a probability of correctness.
+  Outcome (agent-reported): Implemented the backoff wrapper; the 8 tests pass.
+- **Coverage — 1/2 self-checked · 1 unchecked**
+  1 not check-relevant
+  Not check-relevant: review, research, planning, docs
+  Counts are passing checks over checkable steps, split by how independent each check is. These are counts, not a probability of correctness.
 
 > Evidence coverage and decision status are separate axes: an agent reporting 'done' never adds a passing check, and a human review or approval never counts as machine verification.
 
 | Dimension | Summary | Source |
 | --- | --- | --- |
-| Task | Plan the retry policy; Write the retry tests · project payments-svc | client_log, mcp |
-| Actors | claude-code · claude-opus-4-8 | client_log |
-| Actions | edit×5 execute×6 read×12 search×3 · touched 2 files · ran 2 commands | hook, mcp |
-| Cost | $27.40 · pricing_table | client_log |
+| Task | Plan the retry policy; Write the retry tests · project payments-svc | Client log, Agent-reported |
+| Agents | claude-code · claude-opus-4-8 | Client log |
+| Tool calls | 26 tool calls captured · edit×5 execute×6 read×12 search×3 · 2 related paths · ran 2 commands | Hook-captured, Agent-reported |
+| Cost | ≈$27.40 · pricing estimate | Client log |
 | Weekly plan | calibrating — not enough 7-day history yet |  |
-| Evidence | 1 checks · 1 passed · 0 failed | mcp |
-| Outcome | verified · asserted by machine | mcp |
+| Checks | 1/1 passed | Agent-reported |
+| Decision | Verified · asserted by a machine check | Agent-reported |
 
 **What ran**
 
@@ -40,15 +46,18 @@ The same task — **"Add retry-with-backoff to the payments HTTP client"**, from
 - **Files touched:** `src/payments/client.py`, `tests/test_client.py`
 - **Commands run:** `pytest tests/test_client.py -q`, `ruff check src/`
 
-**Gaps (1)** — what could not be proven
+**Gaps (4)** — what could not be proven
 
-- **evidence** — 1 completed step has no linked passing check.
+- **Tool calls** — Tool-call capture did not cover this Task: captured 26 calls covering May 28 20:37 of a May 28 20:26–20:34 task · the ledger holds 3 recorded sections but capture saw no record_section call · the ledger holds 1 recorded check but capture saw no record_machine_check call.
+- **Checks** — 1 completed step has no linked passing check.
+- **Checks** — No commit was recorded with this work, so it cannot be located in the repository.
+- **Tool calls** — File operations were not ordered, so the recorded paths cannot be read as a sequence of edits.
 
 **Provenance**
 
-- `client_log` — Observed in the agent's own local session / usage log.
-- `hook` — Captured by an agentacct client hook (tool categories, mechanical checks).
-- `mcp` — Recorded by the agent through agentacct's MCP tools (sections, files, checks).
+- **Client log** — Observed in the agent's own local session / usage log.
+- **Hook-captured** — Captured by an agentacct client hook (tool categories, mechanical checks).
+- **Agent-reported** — Recorded by the agent through agentacct's MCP tools (sections, files, checks).
 
 ## Codex
 
@@ -58,22 +67,27 @@ The same task — **"Add retry-with-backoff to the payments HTTP client"**, from
 
 `task_cx_retry`
 
-- **Decision status — `VERIFIED`** · asserted by `machine`
+- **Verified — 1/2 self-checked**
+  Not yet proven: 1 completed step unchecked
+  Counts since May 28
+
+- **Decision — Verified** · asserted by a machine check
   Recorded machine evidence verifies the latest outcome.
-- **Evidence coverage — 1/2 self-checked · 1 unchecked**
-  X of Y checkable steps carry a passing check; the tiers show how independent that check is. These are counts, not a probability of correctness.
+  Outcome (agent-reported): Ran the suite; recorded the result via the MCP check.
+- **Coverage — 1/2 self-checked · 1 unchecked**
+  Counts are passing checks over checkable steps, split by how independent each check is. These are counts, not a probability of correctness.
 
 > Evidence coverage and decision status are separate axes: an agent reporting 'done' never adds a passing check, and a human review or approval never counts as machine verification.
 
 | Dimension | Summary | Source |
 | --- | --- | --- |
-| Task | Add backoff to the HTTP client; Run the payment tests · project payments-svc | client_log, mcp |
-| Actors | codex · gpt-5.6-sol | client_log |
-| Actions | edit×3 execute×4 read×9 search×2 · touched 2 files · ran 1 command | mcp, transcript_scan |
-| Cost | $3.10 · pricing_table | client_log |
+| Task | Add backoff to the HTTP client; Run the payment tests · project payments-svc | Client log, Agent-reported |
+| Agents | codex · gpt-5.6-sol | Client log |
+| Tool calls | 18 tool calls captured · edit×3 execute×4 read×9 search×2 · 2 related paths · ran 1 command | Agent-reported, Transcript scan |
+| Cost | ≈$3.10 · pricing estimate | Client log |
 | Weekly plan | calibrating — not enough 7-day history yet |  |
-| Evidence | 1 checks · 1 passed · 0 failed | mcp |
-| Outcome | verified · asserted by machine | mcp |
+| Checks | 1/1 passed | Agent-reported |
+| Decision | Verified · asserted by a machine check | Agent-reported |
 
 **What ran**
 
@@ -81,15 +95,18 @@ The same task — **"Add retry-with-backoff to the payments HTTP client"**, from
 - **Files touched:** `src/payments/client.py`, `tests/test_client.py`
 - **Commands run:** `pytest tests/test_client.py -q`
 
-**Gaps (1)** — what could not be proven
+**Gaps (4)** — what could not be proven
 
-- **evidence** — 1 completed step has no linked passing check.
+- **Tool calls** — Tool-call capture did not cover this Task: captured 18 calls covering May 28 20:34 of a May 28 20:26–20:31 task · the ledger holds 2 recorded sections but capture saw no record_section call · the ledger holds 1 recorded check but capture saw no record_machine_check call.
+- **Checks** — 1 completed step has no linked passing check.
+- **Checks** — No commit was recorded with this work, so it cannot be located in the repository.
+- **Tool calls** — File operations were not ordered, so the recorded paths cannot be read as a sequence of edits.
 
 **Provenance**
 
-- `client_log` — Observed in the agent's own local session / usage log.
-- `mcp` — Recorded by the agent through agentacct's MCP tools (sections, files, checks).
-- `transcript_scan` — Derived by agentacct from the client's own transcript / session store on disk (no live hook).
+- **Client log** — Observed in the agent's own local session / usage log.
+- **Agent-reported** — Recorded by the agent through agentacct's MCP tools (sections, files, checks).
+- **Transcript scan** — Derived by agentacct from the client's own transcript / session store on disk (no live hook).
 
 ## Reading the difference
 

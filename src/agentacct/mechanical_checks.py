@@ -8,6 +8,8 @@ import re
 from datetime import UTC, datetime
 from typing import Any, Iterable, Mapping
 
+from .display_vocabulary import COMMAND_STATE_DIGEST_ONLY
+
 
 _CHECK_KINDS = {"test", "build", "lint", "typecheck"}
 _SAFE_RUNNER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,159}$")
@@ -154,6 +156,10 @@ def build_mechanical_check_events(envelopes: Iterable[Any]) -> list[dict[str, An
                 "result": "passed" if exit_code == 0 else "failed",
                 "summary": f"{name} exited with code {exit_code}.",
                 "command": None,
+                # The hook sent a sha256 DIGEST of the command and nothing else:
+                # no command text was ever stored, here or anywhere. This is the
+                # only case the "was not stored" sentence describes truthfully.
+                "command_state": COMMAND_STATE_DIGEST_ONLY,
                 "command_redacted": True,
                 "exit_code": exit_code,
                 "artifact_ref": None,

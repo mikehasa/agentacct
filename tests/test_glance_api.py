@@ -162,6 +162,8 @@ def _record_section(
                 "section_id": resolved_section,
                 "section_status": status,
                 "section_title": title,
+                "summary": "Recorded outcome for this fixture section." if status in {"completed", "handed_off"} else None,
+                "blocker": "The staging migration needs an owner role this account does not have." if status == "blocked" else None,
             },
         }
     ])
@@ -345,8 +347,20 @@ def test_glance_payload_shape_and_agreement(tmp_path):
     sessions = payload["recent_sessions"]
     assert [row["session_id"] for row in sessions] == ["sess-a"]
     assert sessions[0]["status"] == "completed"
+    assert sessions[0]["status_label"] == "Completed"
+    # The cost-prefix legend ships with usage so no shell keeps a copy.
+    from agentacct.display_vocabulary import COST_LEGEND
+
+    assert payload["usage"]["cost_legend"] == COST_LEGEND
     assert sessions[0]["title"] == "fix the login bug"
     assert sessions[0]["plan_pct"] is None
+    assert sessions[0]["plan_share"] == {
+        "pct": None,
+        "calibration_state": "calibrating",
+        "chip_text": "calibrating",
+        "sentence_text": "calibrating — not enough 7-day history yet",
+        "headline": "calibrating — not enough 7-day history yet",
+    }
 
 
 def test_glance_cache_rebuilds_only_on_event_change(tmp_path, monkeypatch):
@@ -543,8 +557,10 @@ def test_usage_only_sessions_appear_and_stay_recent(tmp_path):
     rows = {row["session_id"]: row for row in payload["recent_sessions"]}
     assert "sess-usage-only" in rows
     assert rows["sess-usage-only"]["status"] is None and rows["sess-usage-only"]["title"] is None
+    assert rows["sess-usage-only"]["status_label"] is None
     assert "sess-mixed" in rows  # fresh usage keeps it recent despite the old section
     assert rows["sess-mixed"]["status"] == "in_progress"
+    assert rows["sess-mixed"]["status_label"] == "In progress"
 
 
 def _dead_pid() -> int:
@@ -847,3 +863,80 @@ def test_serve_writes_discovery_before_run_and_removes_after(tmp_path, monkeypat
     assert during["token"]
     # And it must be gone once the server loop exits (pid-gated cleanup).
     assert read_discovery_file(store) is None
+
+
+def test_glance_limits_carry_reducer_reset_window_and_plan_share_text(tmp_path):
+    """C18/C95: the limits payload carries its display text — one reset phrase
+    with three named states, one window-name map and the shared plan-share
+    headline — so no shell builds its own."""
+
+    from agentacct.display_vocabulary import display_clock, display_date
+
+    now = 1_789_400_000.0
+    past = now - 3600
+    windows = [
+        {"kind": "7d", "used_percent": 26.0, "window_minutes": 10080, "resets_at": now + 4 * 86400 + 3 * 3600},
+        {"kind": "5h", "used_percent": 12.0, "window_minutes": 300, "resets_at": past},
+        {"kind": "90m", "used_percent": 1.0, "window_minutes": 90},
+    ]
+    service = SentinelService(tmp_path)
+    service.record_event({
+        "event_id": "evt_rl_codex_windows", "created_at": now - 60, "source": "codex",
+        "run_id": "test-limit:codex", "event_type": "rate_limit_observed",
+        "metadata": {"client": "codex", "captured_at": now - 60, "windows": windows},
+    })
+    _record_7d_limit(service, captured=now - 30, pct=37.5)
+    events = service.list_all_events()
+    snapshot = glance_module.build_glance_snapshot(events, store_dir=tmp_path, version="t", now=now)
+    by_client = {limit["client"]: limit for limit in snapshot["limits"]}
+    claude = by_client["claude-code"]
+    assert claude["plan_share"] == {
+        "calibration_state": "calibrating",
+        "chip_text": "calibrating",
+        "sentence_text": "calibrating — not enough 7-day history yet",
+        "headline": "Calibrating: not enough 7-day limit history recorded yet",
+    }
+    for window in claude["windows"]:
+        assert window["window_label"] == "7-day limit"
+        assert window["reset_text"]
+    shown = {window["kind"]: window for window in by_client["codex"]["windows"]}
+    assert shown["7d"]["reset_text"] == "resets in 4d 3h"
+    assert shown["7d"]["window_label"] == "7-day limit"
+    assert shown["5h"]["reset_text"] == f"reset passed {display_date(past)}, {display_clock(past)}"
+    assert shown["5h"]["window_label"] == "5-hour limit"
+    assert shown["90m"]["reset_text"] == "reset time not reported"
+    assert shown["90m"]["window_label"] == "90m limit"
+    # K32: a passed reset is a named past-tense value, never a current share;
+    # data age comes from the provider capture time (the CLI's phrase).
+    assert shown["5h"]["reset_passed"] is True
+    assert shown["5h"]["value_text"] == "last reported 12%"
+    assert shown["7d"]["reset_passed"] is False
+    assert shown["7d"]["value_text"] == "26% used"
+    assert shown["90m"]["reset_passed"] is False
+    assert by_client["codex"]["data_age_text"] == "as of 1m ago"
+    # K11: the headline is the most constrained LIVE window (claude 37.5% 7d
+    # beats codex 26% 7d; the passed-reset 5h window never leads).
+    assert snapshot["headline_limit_key"] == claude["windows"][0]["limit_key"]
+    # The raw event windows are never mutated (limits --json stays byte-stable).
+    raw = [e for e in service.list_all_events() if (e.get("metadata") or {}).get("windows")]
+    assert raw and all("reset_text" not in window for e in raw for window in e["metadata"]["windows"])
+    plan = {entry["client"]: entry for entry in snapshot["plan"]}
+    assert plan["codex"]["chip_text"] == "calibrating"
+    assert plan["codex"]["sentence_text"] == "calibrating — not enough 7-day history yet"
+    assert plan["codex"]["headline"] == "Calibrating: not enough 7-day limit history recorded yet"
+
+
+def test_headline_limit_prefers_most_constrained_live_window_and_shorter_ties():
+    from agentacct.usage_snapshot import headline_limit_choice
+
+    now = 1_000_000.0
+    candidates = [
+        ("claude-7d", False, 3.0, 10080, now + 100),
+        ("codex-7d", False, 99.0, 10080, now + 100),
+        ("stale-5h", True, 100.0, 300, now + 100),
+        ("passed-5h", False, 100.0, 300, now - 1),
+    ]
+    assert headline_limit_choice(candidates, now) == "codex-7d"
+    tie = [("long", False, 50.0, 10080, None), ("short", False, 50.0, 300, None)]
+    assert headline_limit_choice(tie, now) == "short"
+    assert headline_limit_choice([("only-passed", False, 9.0, 300, now - 5)], now) is None

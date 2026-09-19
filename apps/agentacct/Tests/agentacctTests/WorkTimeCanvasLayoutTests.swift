@@ -5,18 +5,43 @@ import XCTest
 final class WorkTimeCanvasLayoutTests: XCTestCase {
     private let full = WorkTimelineInterval(lower: 100, upper: 200)
 
-    func testTimeSetsAnchorsAndFourCoincidentRecordsUseBothSides() {
-        let records = ["d", "c", "b", "a"].map { record($0, start: 125) }
+    /// THE LANE decides the side of the axis, and packing only chooses a band
+    /// within that lane. Before this, vertical position was an arbitrary
+    /// packing slot: a work step and a check could swap sides between renders,
+    /// so the axis split carried no fact at all.
+    func testTheLaneDecidesTheSideAndPackingOnlyChoosesABandWithinIt() {
+        let records = ["d", "c"].map { record($0, start: 125) }
+            + ["b", "a"].map { checkRecord($0, start: 125) }
         let layout = WorkTimeCanvasLayout(records: records, window: full, width: 1000, height: 420)
 
         XCTAssertEqual(layout.items.count, 4)
         XCTAssertEqual(layout.bandCountPerSide, 2)
-        XCTAssertEqual(layout.items.filter(\.isAbove).count, 2)
-        XCTAssertEqual(layout.items.filter { !$0.isAbove }.count, 2)
+        XCTAssertEqual(Set(layout.items.filter(\.isAbove).flatMap(\.recordIDs)), ["c", "d"],
+                       "the work lane is above the axis")
+        XCTAssertEqual(Set(layout.items.filter { !$0.isAbove }.flatMap(\.recordIDs)), ["a", "b"],
+                       "the check-evidence lane is below it")
         XCTAssertTrue(layout.items.allSatisfy { $0.anchorX == 250 && !$0.isCluster })
         assertReadable(layout, width: 1000, height: 420)
         for item in layout.items where !item.isAbove {
             XCTAssertGreaterThanOrEqual(item.frame.minY, layout.axisY + 44)
+        }
+    }
+
+    /// Density inside one lane never borrows the other lane's bands, and a
+    /// dense group never mixes the two: a card's side always says the same
+    /// thing about every record on it.
+    func testDensityNeverSpillsAcrossTheAxisOrMixesLanesInOneCard() {
+        let records = (0..<6).map { record("step-\($0)", start: 125) }
+            + [checkRecord("check", start: 125)]
+        let layout = WorkTimeCanvasLayout(records: records, window: full, width: 1000, height: 420)
+
+        XCTAssertEqual(Set(layout.items.flatMap(\.recordIDs)), Set(records.map(\.id)),
+                       "no record is dropped when one lane is full")
+        XCTAssertEqual(layout.items.filter { !$0.isAbove }.flatMap(\.recordIDs), ["check"],
+                       "the lone check keeps its own lane while the work lane is crowded")
+        for item in layout.items {
+            let lanes = Set(item.recordIDs.map { $0.hasPrefix("check") })
+            XCTAssertEqual(lanes.count, 1, "a group mixed two lanes onto one card")
         }
     }
 
@@ -39,7 +64,15 @@ final class WorkTimeCanvasLayoutTests: XCTestCase {
         // instead of regrouping them at the viewport edges.
         XCTAssertEqual(Set(layout.items.flatMap(\.recordIDs)),
             ["after", "before", "crossing", "far", "farAfter", "left", "right"])
-        XCTAssertEqual(layout.visibleRecordCount, 3)
+        // The window's record count asks the SAME question the Activity
+        // heading asks — "is this record's card drawn in this window?" (F5).
+        // `crossing` starts half a window before the lower bound, so its card
+        // is not in view; only its span line is, and `crossingSpans` below is
+        // what accounts for it.
+        XCTAssertEqual(layout.visibleRecordCount, 2)
+        XCTAssertEqual(layout.visibleRecordCount,
+                       records.filter { full.contains($0) && $0.start != nil && $0.start!.isFinite }.count,
+                       "the canvas tally and the shared window rule are one rule")
         XCTAssertEqual(layout.undatedRecordIDs, ["invalid", "undated"])
         let crossing = layout.items.first { $0.recordIDs.contains("crossing") }
         XCTAssertEqual(crossing?.timeBounds, .init(lower: 50, upper: 250))
@@ -74,7 +107,11 @@ final class WorkTimeCanvasLayoutTests: XCTestCase {
     }
 
     func testSixThousandCoincidentRecordsRemainBoundedAndFullyInspectable() {
-        let records = (0..<6000).map { record("event-\($0)", start: 125) }
+        // Half in each lane, so both lanes' bands are exercised: six thousand
+        // coincident records still resolve to the four cards the two lanes can
+        // hold, and every one of them stays reachable through a group.
+        let records = (0..<6000).map { $0.isMultiple(of: 2) ? record("event-\($0)", start: 125)
+                                                            : checkRecord("event-\($0)", start: 125) }
         let layout = WorkTimeCanvasLayout(records: records, window: full, width: 1000, height: 420)
 
         XCTAssertEqual(layout.items.count, 4)
@@ -92,7 +129,8 @@ final class WorkTimeCanvasLayoutTests: XCTestCase {
         let broad = WorkTimeCanvasLayout(records: sparse, window: full, width: 1000, height: 420)
         XCTAssertEqual(broad.items.count, sparse.count)
         XCTAssertFalse(broad.items.contains(where: \.isCluster))
-        let simultaneous = (0..<4).map { record("same-\($0)", start: 150) }
+        let simultaneous = (0..<2).map { record("same-\($0)", start: 150) }
+            + (0..<2).map { checkRecord("same-check-\($0)", start: 150) }
         let narrow = WorkTimeCanvasLayout(records: simultaneous, window: full, width: 180, height: 420)
         XCTAssertEqual(narrow.items.count, simultaneous.count)
         XCTAssertFalse(narrow.items.contains(where: \.isCluster))
@@ -240,6 +278,76 @@ final class WorkTimeCanvasLayoutTests: XCTestCase {
         XCTAssertEqual(WorkTimeCanvasLayout.zoomedWindow(window, factor: .nan, anchorFraction: 0, within: full), window)
     }
 
+    /// The three measured task shapes, and what the window floor does to each.
+    ///
+    /// A task at or under the floor has NO narrower window, so every zoom, pan
+    /// and handle drag resolves back to the domain it was given: the control is
+    /// not slow or fiddly, it is absent, and `canNarrow` is what the surfaces
+    /// ask before drawing one. Above the floor the range is real and stated in
+    /// numbers here, so a later change to the floor cannot quietly make the
+    /// canvas unzoomable without this failing.
+    func testCanNarrowIsFalseExactlyWhenNoZoomCanChangeTheWindow() {
+        // task_7bb028c1 — 3 events, 0.30s: shorter than the floor.
+        let brief = WorkTimelineInterval(lower: 1_789_483_454, upper: 1_789_483_454.30)
+        XCTAssertFalse(WorkTimeCanvasLayout.canNarrow(brief))
+        let briefWindow = WorkTimeCanvasLayout.clampedWindow(brief, to: brief)
+        for factor in [1.25, 2.0, 1_000_000.0, 0.8, 0.001] {
+            let zoomed = WorkTimeCanvasLayout.zoomedWindow(briefWindow, factor: factor,
+                anchorFraction: 0.5, within: brief)
+            XCTAssertTrue(WorkTimeCanvasLayout.sameWindow(zoomed, briefWindow),
+                          "factor \(factor) moved a window that has nowhere to go")
+        }
+        for delta in [-1_000.0, -0.05, 0.05, 1_000] {
+            XCTAssertTrue(WorkTimeCanvasLayout.sameWindow(
+                WorkTimeCanvasLayout.pannedWindow(briefWindow, by: delta, within: brief), briefWindow),
+                "a window covering its whole domain cannot pan by \(delta)")
+        }
+        // A task exactly AT the floor is still not narrowable: the clamp floors
+        // the span at the same 5 seconds it already shows.
+        let atFloor = WorkTimelineInterval(lower: 0, upper: WorkTimeCanvasLayout.minimumVisibleSpan)
+        XCTAssertFalse(WorkTimeCanvasLayout.canNarrow(atFloor))
+
+        // task_5f7dbea9 — 9 events, 138.61s — and task_ef6818aa — 65 events,
+        // 24,954.83s: both narrowable, to the same 5-second floor.
+        for span in [138.61, 24_954.83] {
+            let recorded = WorkTimelineInterval(lower: 1_789_483_454, upper: 1_789_483_454 + span)
+            XCTAssertTrue(WorkTimeCanvasLayout.canNarrow(recorded), "span \(span)")
+            let narrowest = WorkTimeCanvasLayout.zoomedWindow(recorded, factor: .greatestFiniteMagnitude,
+                anchorFraction: 0.5, within: recorded)
+            XCTAssertEqual(narrowest.span, WorkTimeCanvasLayout.minimumVisibleSpan, accuracy: 0.000_001)
+            XCTAssertFalse(WorkTimeCanvasLayout.sameWindow(narrowest, recorded))
+        }
+
+        // Degenerate domains are never narrowable, and never crash the test.
+        for broken in [WorkTimelineInterval(lower: 5, upper: 5),
+                       .init(lower: .nan, upper: 1),
+                       .init(lower: -.greatestFiniteMagnitude, upper: .greatestFiniteMagnitude)] {
+            XCTAssertFalse(WorkTimeCanvasLayout.canNarrow(broken))
+        }
+    }
+
+    /// The floor is the AXIS's resolution, not a taste — so pin it to the axis.
+    /// At the floor the canvas still draws several one-second ticks; below it,
+    /// the axis cannot divide further, which is the whole reason the floor is
+    /// absolute rather than a fraction of the task (see `minimumVisibleSpan`).
+    func testTheWindowFloorIsTheSmallestSpanTheAxisCanStillLabel() {
+        let spacing = 140.0  // the canvas's own minimumSpacing at text scale 1
+        for width in [880.0, 1_000, 1_400] {
+            let floorWindow = WorkTimelineInterval(lower: 0, upper: WorkTimeCanvasLayout.minimumVisibleSpan)
+            let ticks = WorkTimelineTimeAxis.ticks(in: floorWindow, width: width, minimumSpacing: spacing)
+            XCTAssertEqual(ticks.step, 1, "the floor sits on the axis's finest step at width \(width)")
+            XCTAssertGreaterThanOrEqual(ticks.times.count, 3,
+                "an axis needs several labelled ticks to be a scale (width \(width))")
+            // A window a fifth of the 0.30s task — what a relative floor would
+            // allow — cannot be labelled at all: the axis has no finer step.
+            let proportional = WorkTimelineTimeAxis.ticks(in: .init(lower: 0, upper: 0.30 / 5),
+                width: width, minimumSpacing: spacing)
+            XCTAssertEqual(proportional.step, 1)
+            XCTAssertLessThanOrEqual(proportional.times.count, 1,
+                "a proportional floor would zoom into an axis with nothing on it")
+        }
+    }
+
     func testWindowSpanNeverShrinksBelowTheReadableMinimum() {
         let window = WorkTimelineInterval(lower: 120, upper: 140)
         let zoomed = WorkTimeCanvasLayout.zoomedWindow(window, factor: 1_000_000, anchorFraction: 0.5, within: full)
@@ -285,6 +393,124 @@ final class WorkTimeCanvasLayoutTests: XCTestCase {
         for invalid in invalidLatest {
             XCTAssertEqual(WorkTimeCanvasLayout.latestWindow(within: domain, latest: invalid).upper, domain.upper)
         }
+    }
+
+    func testEveryComputedWindowShowsItsFirstAndLastCardInFull() throws {
+        // A task shorter than the 30-minute default window opens on exactly
+        // [first record, last record]: without the edge reveal the two cards a
+        // reviewer most needs — the section and the terminal failed check —
+        // open half off-canvas (K18).
+        let first = 1_789_483_454.0
+        let last = first + 36  // a 36-second task
+        let recorded = WorkTimelineInterval(lower: first, upper: last)
+        let records = [record("section", start: first, end: last), record("failed-check", start: last)]
+
+        for width in [880.0, 1000, 1400, 2000] {
+            let cardWidth = min(200, width)
+            for requested in [
+                WorkTimeCanvasLayout.latestWindow(within: recorded, latest: last, span: 1800),  // initial
+                WorkTimeCanvasLayout.latestWindow(within: recorded, latest: last, span: 60),    // follow
+                WorkTimeCanvasLayout.zoomedWindow(.init(lower: first + 10, upper: first + 20),
+                    factor: 0.001, anchorFraction: 0.5, within: recorded),                      // zoom-out
+                WorkTimeCanvasLayout.clampedWindow(
+                    try XCTUnwrap(WorkTimelineRangeNavigation.focused(on: records[1])),
+                    to: recorded),                                                              // focus
+            ] {
+                let window = WorkTimeCanvasLayout.edgeRevealedWindow(requested, width: width, cardWidth: cardWidth)
+                let layout = WorkTimeCanvasLayout(records: records, window: window,
+                    width: width, height: 420)
+                for item in layout.items where item.timeBounds.lower >= requested.lower
+                    && item.timeBounds.lower <= requested.upper {
+                    XCTAssertGreaterThanOrEqual(item.frame.minX, -0.000_001,
+                        "\(item.id) is cut at the left edge at width \(width)")
+                    XCTAssertLessThanOrEqual(item.frame.maxX, width + 0.000_001,
+                        "\(item.id) is cut at the right edge at width \(width)")
+                }
+                XCTAssertLessThanOrEqual(window.span, requested.span * 2 + 0.000_001,
+                    "the reveal stays inside the capped fraction")
+            }
+        }
+    }
+
+    func testEdgeRevealedWindowIsBoundedForDegenerateGeometry() {
+        let window = WorkTimelineInterval(lower: 100, upper: 200)
+        // Unknown geometry falls back to the cap: half the span on each side.
+        XCTAssertEqual(WorkTimeCanvasLayout.edgeRevealedWindow(window), .init(lower: 50, upper: 250))
+        // A card at least as wide as the plot cannot be solved for; it caps.
+        XCTAssertEqual(WorkTimeCanvasLayout.edgeRevealedWindow(window, width: 100, cardWidth: 200),
+                       .init(lower: 50, upper: 250))
+        // Half a 200pt card in a 1000pt plot: span / (1 - 0.2) = 125.
+        let solved = WorkTimeCanvasLayout.edgeRevealedWindow(window, width: 1000, cardWidth: 200)
+        XCTAssertEqual(solved.span, 125, accuracy: 0.000_001)
+        XCTAssertEqual(solved.lower, 87.5, accuracy: 0.000_001)
+        for broken in [WorkTimelineInterval(lower: .nan, upper: 1), .init(lower: 5, upper: 5)] {
+            XCTAssertTrue(WorkTimeCanvasLayout.edgeRevealedWindow(broken, width: 1000, cardWidth: 200).span.isFinite)
+        }
+    }
+
+    func testAFartherBandNeverHidesANearerCardsStem() {
+        // Three records close enough that their cards overlap horizontally.
+        // The third lands in a second band whose stem column is covered by a
+        // card in the first — a reader could not match that card to its dot
+        // (K18). Each record still keeps its OWN named card; the covered stem
+        // is ROUTED around the occluder instead, so nothing is hidden and
+        // nothing is merged into an unnamed group.
+        // Two work-lane records whose cards overlap horizontally: the second
+        // lands in the lane's farther band, whose stem column the nearer card
+        // covers. (Three would no longer fit: a lane has two bands, and
+        // packing may not borrow the other lane's — that is the lane rule.)
+        let records = (0..<2).map { record("event-\($0)", start: 120 + Double($0)) }
+        let layout = WorkTimeCanvasLayout(records: records, window: full, width: 1000, height: 420)
+
+        XCTAssertEqual(Set(layout.items.flatMap(\.recordIDs)), Set(records.map(\.id)),
+                       "no record is dropped by the stem rule")
+        XCTAssertEqual(layout.items.count, 2, "two separable records keep two named cards")
+        XCTAssertFalse(layout.items.contains(where: \.isCluster))
+        for item in layout.items {
+            let covering = layout.items.filter { other in
+                guard other.id != item.id, other.isAbove == item.isAbove,
+                      other.anchorX != item.anchorX,
+                      abs(other.frame.midY - layout.axisY) < abs(item.frame.midY - layout.axisY)
+                else { return false }
+                return other.frame.minX <= item.anchorX && item.anchorX <= other.frame.maxX
+            }
+            guard !covering.isEmpty else {
+                XCTAssertNil(item.stemDetourX, "\(item.id) has a clear column and needs no detour")
+                continue
+            }
+            guard let lane = item.stemDetourX else {
+                XCTFail("\(item.id)'s covered stem is not routed")
+                continue
+            }
+            for other in covering {
+                XCTAssertFalse(other.frame.minX <= lane && lane <= other.frame.maxX,
+                    "\(item.id)'s routed stem still runs behind \(other.id)")
+            }
+            // The whole leader stays on screen: the dot, the routed column and
+            // the return to the card edge.
+            let route = layout.stemPoints(for: item)
+            XCTAssertGreaterThan(route.count, 2, "\(item.id) draws a routed leader")
+            XCTAssertEqual(Double(route[0].y), layout.axisY, "the leader starts on the axis dot")
+            XCTAssertEqual(Double(route[0].x), item.anchorX, "the dot stays at the record's own time")
+            XCTAssertEqual(Double(route[route.count - 1].x), item.anchorX,
+                           "the leader meets the card at that time")
+            XCTAssertEqual(route[route.count - 1].y, item.isAbove ? item.frame.maxY : item.frame.minY)
+        }
+        // Coincident records still stack: their stems coincide exactly, so a
+        // farther card cannot make its neighbour's dot ambiguous.
+        let coincident = (0..<2).map { record("same-\($0)", start: 125) }
+            + (0..<2).map { checkRecord("same-check-\($0)", start: 125) }
+        let stacked = WorkTimeCanvasLayout(records: coincident, window: full, width: 1000, height: 420)
+        XCTAssertEqual(stacked.items.count, 4)
+        XCTAssertFalse(stacked.items.contains(where: \.isCluster))
+        XCTAssertTrue(stacked.items.allSatisfy { $0.stemDetourX == nil },
+                      "a shared anchor needs no detour")
+        // Only genuine density groups: more records at one instant than the
+        // bands can hold still merge, and the group keeps every member.
+        let dense = (0..<9).map { record("dense-\($0)", start: 130 + Double($0) * 0.01) }
+        let packed = WorkTimeCanvasLayout(records: dense, window: full, width: 1000, height: 420)
+        XCTAssertTrue(packed.items.contains(where: \.isCluster), "a genuinely dense burst still groups")
+        XCTAssertEqual(Set(packed.items.flatMap(\.recordIDs)), Set(dense.map(\.id)))
     }
 
     func testCrossingClusterSpansAreRetainedForDrawing() {
@@ -333,5 +559,13 @@ final class WorkTimeCanvasLayoutTests: XCTestCase {
 
     private func record(_ id: String, start: Double?, end: Double? = nil) -> WorkTimelineRecord {
         .init(id: id, laneID: "session", laneTitle: "Session", lineage: "Recorded session", kind: .step, title: id, start: start, end: end)
+    }
+
+    /// A record in the reducer's CHECK-EVIDENCE lane. The canvas's vertical
+    /// axis states that lane, so the two builders place cards on opposite
+    /// sides of the axis no matter how packing resolves collisions.
+    private func checkRecord(_ id: String, start: Double?, end: Double? = nil) -> WorkTimelineRecord {
+        .init(id: id, laneID: "session", laneTitle: "Session", lineage: "Recorded session",
+              kind: .check, title: id, start: start, end: end, lane: "evidence", laneLabel: "Check evidence")
     }
 }

@@ -924,6 +924,13 @@ class IngestionHealthStore:
         return refreshed, current.get("state") == "running"
 
     def snapshot(self, *, now: float | None = None) -> dict[str, Any]:
+        """The ingestion-health projection plus its reducer-owned display copy
+        (``state_title`` / ``state_detail``): no shell renders a state key."""
+
+        projection = self._snapshot(now=now)
+        return with_ingestion_state_copy(projection)
+
+    def _snapshot(self, *, now: float | None = None) -> dict[str, Any]:
         timestamp = _now(now)
         # A health read must stay read-only on a store that has never run an
         # importer.  The locked path creates the private directory and lock
@@ -1499,8 +1506,210 @@ class IngestionHealthStore:
         }
 
 
+INGESTION_STATE_COPY: dict[str, tuple[str, str]] = {
+    "healthy": (
+        "Sources healthy",
+        "Every configured source completed its latest import and the watcher is running.",
+    ),
+    "degraded": (
+        "Sources degraded",
+        "At least one source recorded an import issue; its latest data may be missing or stale.",
+    ),
+    "no_import": (
+        "No import recorded yet",
+        "agentacct has not completed an import from any source.",
+    ),
+    "import_history_not_recorded": (
+        "Import history not recorded",
+        # Formatted with the recorded usage (see ingestion_state_copy).
+        "{usage}, but no import run was recorded for this store.",
+    ),
+    "not_watched": (
+        "Not continuously watched",
+        "An import completed, but no running watcher keeps sources current.",
+    ),
+    "pending": (
+        "Import pending",
+        "The watcher is running, but not every configured source has completed an import yet.",
+    ),
+}
+
+# The rail-length twin of each detail above: the SHORT form a one-line signal
+# row renders when the full sentence does not fit. Each one leads with the
+# named absence, so a narrow row can never cut the fact that nothing was
+# recorded (K69). Never an abbreviation of the long sentence — its own words.
+INGESTION_STATE_DETAIL_COMPACT: dict[str, str] = {
+    "healthy": "Every source imported · watcher running",
+    "degraded": "A source recorded an import issue",
+    "no_import": "No import completed yet",
+    "import_history_not_recorded": "No import run recorded for this store",
+    "not_watched": "No running watcher keeps sources current",
+    "pending": "A configured source has no import yet",
+}
+
+# Per-source lozenge copy. "Reporting" is a live-connection fact: a healthy
+# source, a running watcher, and rows actually parsed.
+SOURCE_STATE_COPY: dict[str, tuple[str, str]] = {
+    "reporting": (
+        "Reporting",
+        "The latest import parsed rows and the running watcher keeps this source current.",
+    ),
+    "watching": (
+        "Watching · no data yet",
+        "The running watcher scans this source, but no import has parsed a row yet.",
+    ),
+    "idle": (
+        "Idle",
+        "The latest import completed, but no running watcher keeps this source current.",
+    ),
+    "degraded": (
+        "Degraded",
+        "The latest import recorded an issue; this source's data may be missing or stale.",
+    ),
+    "pending": (
+        "Pending",
+        "The running watcher has not completed an import of this source since it started.",
+    ),
+    "unknown": (
+        "No import recorded yet",
+        "No import of this source has completed.",
+    ),
+    "unrecognized": (
+        "Unrecognized source state",
+        "The importer reported a source state this version does not name.",
+    ),
+}
+
+WATCHER_STATE_COPY: dict[str, tuple[str, str]] = {
+    "running": ("Running", "The importer keeps the store current in the background."),
+    "stale": ("Stale", "The importer's heartbeat is overdue."),
+    "stopped": ("Stopped", "The importer stopped; open recording health to reconnect."),
+    "not_configured": (
+        "Not configured",
+        "No continuous sync is configured — imports happen only on manual scans.",
+    ),
+    "unrecognized": (
+        "Unrecognized watcher state",
+        "The importer reported a watcher state this version does not name.",
+    ),
+}
+
+
+def recorded_usage_session_count(events: list[dict[str, Any]]) -> int:
+    """How many distinct client sessions this store holds usage rows for — the
+    fact that keeps a store with no import receipts from claiming nothing was
+    ever imported."""
+
+    from .usage_snapshot import usage_records
+
+    return len(
+        {
+            (getattr(record, "client", None), getattr(record, "session_id", None))
+            for record in usage_records(events)
+        }
+    )
+
+
+def ingestion_state_copy(
+    projection: Mapping[str, Any],
+    *,
+    recorded_usage_sessions: int = 0,
+) -> dict[str, str]:
+    """``{state_title, state_detail}`` for an ingestion-health projection: a
+    title that states the fact (never the capitalized state key) and one
+    sentence of detail. ``unknown`` splits by what is actually known — no
+    completed import, an import with no live watcher, or a running watcher
+    still waiting on a source. When no import receipt exists but the store
+    already holds usage (``recorded_usage_sessions`` > 0), the copy says the
+    import history is not recorded — never that no import happened."""
+
+    state = str(projection.get("state") or "")
+    if state in {"healthy", "degraded"}:
+        key = state
+    elif projection.get("last_success_at") is None:
+        key = "import_history_not_recorded" if recorded_usage_sessions > 0 else "no_import"
+    else:
+        watcher = projection.get("watcher") if isinstance(projection.get("watcher"), Mapping) else {}
+        key = "pending" if watcher.get("state") == "running" else "not_watched"
+    title, detail = INGESTION_STATE_COPY[key]
+    if key == "import_history_not_recorded":
+        from .display_vocabulary import recorded_usage_sessions_text
+
+        detail = detail.format(usage=recorded_usage_sessions_text(recorded_usage_sessions))
+    return {
+        "state_title": title,
+        "state_detail": detail,
+        "state_detail_compact": INGESTION_STATE_DETAIL_COMPACT[key],
+    }
+
+
+def source_state_copy(source: Mapping[str, Any], *, watcher_running: bool) -> dict[str, str]:
+    """``{state_title, state_detail}`` for one source row, from its state, the
+    watcher's liveness and whether an import parsed any rows."""
+
+    state = str(source.get("state") or "unknown")
+    parsed = _nonnegative_int(source.get("parsed"))
+    if state == "healthy":
+        key = ("reporting" if parsed > 0 else "watching") if watcher_running else "idle"
+    elif state in SOURCE_STATE_COPY:
+        key = state
+    else:
+        key = "unrecognized"
+    title, detail = SOURCE_STATE_COPY[key]
+    return {"state_title": title, "state_detail": detail}
+
+
+def watcher_state_copy(watcher: Mapping[str, Any]) -> dict[str, str]:
+    """``{state_title, state_detail}`` for the continuous-sync watcher."""
+
+    state = str(watcher.get("state") or "")
+    title, detail = WATCHER_STATE_COPY.get(state, WATCHER_STATE_COPY["unrecognized"])
+    return {"state_title": title, "state_detail": detail}
+
+
+def store_ingestion_snapshot(
+    store_dir: str | Path,
+    *,
+    events: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """The store's ingestion-health snapshot with its display copy. With no
+    import receipt on record the store's own usage decides the wording (see
+    :func:`ingestion_state_copy`); events load only in that case."""
+
+    snapshot = IngestionHealthStore(store_dir).snapshot()
+    if snapshot.get("last_success_at") is None:
+        if events is None:
+            from .service import SentinelService
+
+            events = SentinelService(store_dir, create=False).list_all_events()
+        with_ingestion_state_copy(snapshot, recorded_usage_sessions=recorded_usage_session_count(events))
+    return snapshot
+
+
+def with_ingestion_state_copy(
+    projection: dict[str, Any],
+    *,
+    recorded_usage_sessions: int = 0,
+) -> dict[str, Any]:
+    """The projection with every display string attached: the store-wide
+    ``state_title``/``state_detail``, the watcher's, and each source's."""
+
+    watcher = projection.get("watcher") if isinstance(projection.get("watcher"), dict) else None
+    if watcher is not None:
+        watcher.update(watcher_state_copy(watcher))
+    watcher_running = bool(watcher and watcher.get("state") == "running")
+    for source in projection.get("sources") or []:
+        if isinstance(source, dict):
+            source.update(source_state_copy(source, watcher_running=watcher_running))
+    projection.update(ingestion_state_copy(projection, recorded_usage_sessions=recorded_usage_sessions))
+    return projection
+
+
 __all__ = [
     "EVIDENCE_REFRESHABLE_USAGE_ERROR_CODE",
+    "INGESTION_STATE_COPY",
+    "SOURCE_STATE_COPY",
+    "WATCHER_STATE_COPY",
     "INGESTION_HEALTH_DIRNAME",
     "INGESTION_HEALTH_FILENAME",
     "INGESTION_HEALTH_SCHEMA_VERSION",
@@ -1511,5 +1720,11 @@ __all__ = [
     "evidence_refreshable_usage_failed",
     "health_scan_results",
     "importer_build_id",
+    "ingestion_state_copy",
+    "recorded_usage_session_count",
+    "source_state_copy",
+    "store_ingestion_snapshot",
+    "watcher_state_copy",
+    "with_ingestion_state_copy",
     "session_observation_conflict_error_code",
 ]

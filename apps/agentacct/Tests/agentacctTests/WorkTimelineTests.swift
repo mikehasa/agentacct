@@ -62,6 +62,7 @@ final class WorkTimelineTests: XCTestCase {
     func testLaterPassDoesNotClearUnrelatedFailure() {
         var failure = record("failed", time: 10)
         failure.result = "failed"
+        failure.resultTone = "failure"
         failure.eventID = "failure-event"
         var passed = record("passed", time: 20)
         passed.result = "passed"

@@ -53,6 +53,7 @@ final class LargeDataPerformanceTests: XCTestCase {
             {
               "task_id":"task-\(index)",
               "title":"\(title)",
+              "group_key":"\(status == "blocked" ? "attention" : "verified")",
               "decision_status":{"key":"\(status)"},
               "evidence_strength":{"key":"none"},
               "cost":{},

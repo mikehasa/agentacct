@@ -98,6 +98,29 @@ struct MainWindow: View {
                 .disabled(showSetup || offlineDashboard != nil || activationClient != nil)
                 .fixedSize(horizontal: false, vertical: true)
             Rectangle().fill(Theme.rule).frame(height: 1)
+            // Recording notices sit IN the page flow, above the pane, and
+            // push its content down. As a top-trailing overlay they covered
+            // the Signal rail's own title with a card that used the very same
+            // fill and hairline as the card beneath it — and the design
+            // language has no elevation to tell the two layers apart (K09).
+            if !showSetup && offlineDashboard == nil && activationClient == nil {
+                RecordingHealthNoticeStack(
+                    coordinator: healthCoordinator,
+                    // Carried over when #292's top-trailing overlay was dropped
+                    // in favour of this in-flow placement: `restart` defaults to
+                    // nil, so omitting it would have silently lost the in-app
+                    // recorder restart rather than failing to build.
+                    restart: recorderRestart,
+                    onSetup: { openRecordingSetup() },
+                    onSetupCause: { openRecordingSetup(cause: $0) },
+                    onSources: { selection.open(.sources) },
+                    onRefresh: { refreshHealthAndWork() }
+                )
+                .padding(.horizontal, Space.gutter)
+                .padding(.top, Space.l)
+                .pageFrame()
+                .fixedSize(horizontal: false, vertical: true)
+            }
             // Keep the window's content slot stable while old and new panes
             // overlap for the fade. Replacing the VStack child itself lets
             // both heavy pane trees participate in parent layout mid-flight,
@@ -172,7 +195,7 @@ struct MainWindow: View {
                                 Button("View saved work") { openSavedOrLiveWork() }.buttonStyle(.bordered)
                             }
                             Button("Open recording setup") { showSetup = true }
-                                .buttonStyle(.borderedProminent)
+                                .buttonStyle(PrimaryButtonStyle())
                         } else {
                             ProgressView("Preparing the local recorder…")
                                 .controlSize(.small)
@@ -193,20 +216,6 @@ struct MainWindow: View {
         }
         .background(WindowSurfaceBackground(role: .canvas))
         .frame(minWidth: 960, minHeight: 560)
-        .overlay(alignment: .topTrailing) {
-            if !showSetup && offlineDashboard == nil && activationClient == nil {
-                RecordingHealthNoticeStack(
-                    coordinator: healthCoordinator,
-                    restart: recorderRestart,
-                    onSetup: { openRecordingSetup() },
-                    onSetupCause: { openRecordingSetup(cause: $0) },
-                    onSources: { selection.open(.sources) },
-                    onRefresh: { refreshHealthAndWork() }
-                )
-                .padding(.top, 58)
-                .padding(.trailing, Space.m)
-            }
-        }
         .onChange(of: health, initial: true) { _, snapshot in
             healthCoordinator.update(snapshot)
         }
@@ -503,6 +512,21 @@ struct TopBar: View {
         dashboard.isRefreshing || glance.isRefreshing
     }
 
+    /// The ONE way this window changes section, shared by the tabs, the
+    /// destination picker and the View menu's ⌘1–⌘4 (K114).
+    ///
+    /// The Sessions tab (case `.work`) always lands on the receipts table:
+    /// without clearing, a stale taskId makes the tab a no-op while a record
+    /// is open and resurrects the last record on the next visit. Row/deep
+    /// links still open records via open(.task).
+    private func openSection(_ pane: MainPane) {
+        if pane == .work {
+            selection.open(.work)
+        } else {
+            selection.pane = pane
+        }
+    }
+
     private func paneTabs(iconOnly: Bool) -> some View {
         HStack(spacing: 3) {
             ForEach(MainPane.allCases) { pane in
@@ -512,52 +536,51 @@ struct TopBar: View {
                     iconOnly: iconOnly,
                     selectionNamespace: paneSelection
                 ) {
-                    // The Sessions tab (case `.work`) always lands on the
-                    // receipts table: without clearing, a stale taskId makes the
-                    // tab a no-op while a record is open and resurrects the last
-                    // record on the next visit. Row/deep links still open records
-                    // via open(.task).
-                    if pane == .work {
-                        selection.open(.work)
-                    } else {
-                        selection.pane = pane
-                    }
+                    openSection(pane)
                 }
             }
         }
         .padding(3)
-        .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
+        .background(Theme.tintNeutralOnCanvas, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
         .animation(reduceMotion ? nil : Motion.selection, value: selection.pane)
     }
 
-    var body: some View {
-        HStack(spacing: 14) {
-            BrandLockup()
-                // Four destinations fit with full labels at the minimum
-                // window once the old Limits tab is removed.
-                .padding(.trailing, 8)
-
-            // Destination names are functional content. Keep them available
-            // in a labeled picker when the full tab row cannot fit.
-            ViewThatFits(in: .horizontal) {
-                paneTabs(iconOnly: false)
-                Picker("Destination", selection: Binding(
-                    get: { selection.pane },
-                    set: { pane in
-                        if pane == .work { selection.open(.work) }
-                        else { selection.pane = pane }
-                    }
-                )) {
-                    ForEach(MainPane.allCases) { pane in Text(pane.rawValue).tag(pane) }
+    /// The one refresh action shared by the top-bar glyph and the app menu's
+    /// Refresh command (⌘R).
+    private func refreshLocalData() {
+        Task {
+            await performAfterRecorderSynchronization(
+                awaitReady: awaitRecorderSynchronization,
+                operation: {
+                    glance.refreshNow()
+                    await refreshDashboardAndSelectedWork(
+                        dashboardRefresh: { await dashboard.refresh() },
+                        selectedTaskId: { selection.taskId },
+                        receiptRefresh: { await dashboard.fetchReceipt(taskId: $0) }
+                    )
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .workFont(.body)
-                .accessibilityIdentifier("dashboard.destination-picker")
-            }
+            )
+        }
+    }
 
-            Spacer()
+    private var destinationPicker: some View {
+        AppMenuPicker(
+            title: "Destination",
+            selection: Binding(
+                get: { selection.pane },
+                set: { openSection($0) }
+            ),
+            options: MainPane.allCases.map { ($0, $0.rawValue) },
+            accessibilityIdentifier: "dashboard.destination-picker"
+        )
+    }
 
+    /// The trailing status cluster. Its compact form keeps every word that
+    /// carries meaning (the health title and the freshness value) and drops
+    /// only the "Local data ·" prefix; it is never icon-only or dot-only.
+    @ViewBuilder
+    private func trailingCluster(compact: Bool) -> some View {
+        HStack(spacing: 14) {
             if let health {
                 RecordingHealthToolbarButton(
                     snapshot: health,
@@ -577,14 +600,17 @@ struct TopBar: View {
                                 }
                             )
                         }
-                    }
+                    },
+                    compact: compact
                 )
             } else if canSetUp {
                 Button(action: onSetUp) {
                     HStack(spacing: 4) {
                         Image(systemName: "record.circle")
-                            .font(.system(size: 12, weight: .medium))
-                        Text("Set up recording").workFont(.captionSemibold)
+                            .workFont(.icon)
+                        Text("Set up recording")
+                            .workFont(.captionSemibold)
+                            .lineLimit(1)
                     }
                     .foregroundStyle(Theme.accent)
                 }
@@ -593,16 +619,127 @@ struct TopBar: View {
                 .accessibilityIdentifier("dashboard.setup-recording")
             }
             if let updated = dashboard.lastUpdated {
-                let freshness = dashboardFreshnessText(updated)
-                HStack(spacing: 5) {
-                    Circle().fill(Theme.green).frame(width: 5, height: 5)
-                    Text("Local data · \(freshness)")
-                }
-                .workFont(.dataSmall)
-                .foregroundStyle(Theme.muted)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Local data updated \(freshness)")
+                // The ticking caption is its own view, so the age changing
+                // does not re-evaluate the health button and refresh glyph
+                // beside it — the leading suspect for their `.help` tooltips
+                // never appearing in the header while the same components'
+                // tooltips work inside the panes (K75).
+                TopBarFreshnessLabel(
+                    updated: updated,
+                    reachable: health?.endpointReachable ?? false,
+                    lastRefreshFailed: dashboard.errorText != nil || dashboard.receiptListError != nil,
+                    compact: compact
+                )
             }
+        }
+    }
+}
+
+/// The top bar's freshness dot and caption, isolated from its neighbours.
+///
+/// Two rules live here. The dot is `Theme.green` ONLY while the recorder is
+/// reachable and the last refresh succeeded (K02); otherwise it is a hollow
+/// muted ring beside a named state that keeps its age. And the caption
+/// reserves the width of a typical value, so the health button to its left
+/// stops sliding ~7px sideways whenever the age changes length (K95).
+struct TopBarFreshnessLabel: View {
+    let updated: Date
+    let reachable: Bool
+    let lastRefreshFailed: Bool
+    let compact: Bool
+
+    /// The width the caption reserves. A longer value still grows the label;
+    /// nothing is ever truncated to fit, and the rare long states
+    /// ("time unavailable") are not reserved for.
+    static let widthTemplate = "Local data · 59m ago"
+    static let compactWidthTemplate = "59m ago"
+
+    var body: some View {
+        let age = dashboardFreshnessText(updated)
+        let freshness = TopBarFreshness(reachable: reachable, lastRefreshFailed: lastRefreshFailed)
+        HStack(spacing: 5) {
+            Group {
+                if freshness.isLive {
+                    Circle().fill(Theme.green)
+                } else {
+                    Circle().strokeBorder(Theme.muted, lineWidth: 1)
+                }
+            }
+            .workScaledFrame(width: 5, height: 5, relativeTo: .caption)
+            ZStack(alignment: .trailing) {
+                Text(compact ? Self.compactWidthTemplate : Self.widthTemplate)
+                    .hidden()
+                    .accessibilityHidden(true)
+                Text(freshness.caption(age: age, compact: compact)).lineLimit(1)
+            }
+        }
+        .workFont(.dataSmall)
+        .foregroundStyle(Theme.muted)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(freshness.accessibilityLabel(age: age))
+        .accessibilityIdentifier("dashboard.freshness")
+    }
+}
+
+extension TopBar {
+    /// Destination names are functional content, so the tabs claim space
+    /// first and fall back to a labeled picker only when they cannot fit.
+    @ViewBuilder
+    private func destinations(asPicker: Bool) -> some View {
+        if asPicker { destinationPicker } else { paneTabs(iconOnly: false) }
+    }
+
+    /// One top-bar row: brand, destinations, then the status cluster.
+    private func topBarRow(asPicker: Bool, compactCluster: Bool) -> some View {
+        HStack(spacing: 14) {
+            BrandLockup()
+                // Four destinations fit with full labels at the minimum
+                // window once the old Limits tab is removed.
+                .padding(.trailing, 8)
+            destinations(asPicker: asPicker).layoutPriority(1)
+            Spacer(minLength: 0)
+            trailingCluster(compact: compactCluster)
+            refreshControl
+        }
+    }
+
+    var body: some View {
+        // Every branch keeps the same facts; only the arrangement changes.
+        // The last one stacks the destinations over the status cluster, so at
+        // accessibility reading sizes the recorder's title and the freshness
+        // value stay words instead of collapsing to a bare glyph and "just…"
+        // (K26, honouring C81's "never icon-only or dot-only").
+        ViewThatFits(in: .horizontal) {
+            topBarRow(asPicker: false, compactCluster: false)
+            topBarRow(asPicker: false, compactCluster: true)
+            topBarRow(asPicker: true, compactCluster: true)
+            VStack(alignment: .leading, spacing: Space.s) {
+                HStack(spacing: 14) {
+                    BrandLockup().padding(.trailing, 8)
+                    destinations(asPicker: false)
+                    Spacer(minLength: 0)
+                }
+                HStack(spacing: 14) {
+                    Spacer(minLength: 0)
+                    trailingCluster(compact: false)
+                    refreshControl
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 4)
+        .frame(minHeight: 46)
+        .background(WindowSurfaceBackground(role: .chrome))
+        .focusedSceneValue(
+            \.refreshLocalData,
+            RefreshLocalDataAction(isRefreshing: isRefreshing, perform: refreshLocalData)
+        )
+        // The View menu's ⌘1–⌘4 run the same closure as the tabs (K114).
+        .focusedSceneValue(\.openSection, OpenSectionAction(open: openSection))
+    }
+
+    private var refreshControl: some View {
+        Group {
             ZStack {
                 if showsRefreshProgress {
                     ProgressView()
@@ -611,40 +748,19 @@ struct TopBar: View {
                         .accessibilityLabel("Refreshing local data")
                         .transition(.opacity)
                 } else {
-                    Button {
-                        Task {
-                            await performAfterRecorderSynchronization(
-                                awaitReady: awaitRecorderSynchronization,
-                                operation: {
-                                    glance.refreshNow()
-                                    await refreshDashboardAndSelectedWork(
-                                        dashboardRefresh: { await dashboard.refresh() },
-                                        selectedTaskId: { selection.taskId },
-                                        receiptRefresh: { await dashboard.fetchReceipt(taskId: $0) }
-                                    )
-                                }
-                            )
-                        }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(Theme.muted)
-                            .frame(width: 28, height: 28)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(QuietButtonStyle(
+                    IconButton(
+                        systemName: "arrow.clockwise",
+                        label: "Refresh local data",
+                        help: RefreshCommandText.help,
                         tint: Theme.muted,
-                        horizontalPadding: 0,
-                        verticalPadding: 0
-                    ))
+                        identifier: "dashboard.refresh",
+                        action: refreshLocalData
+                    )
                     .disabled(isRefreshing)
-                    .help("Refresh local data")
-                    .accessibilityLabel("Refresh local data")
-                    .accessibilityIdentifier("dashboard.refresh")
                     .transition(.opacity)
                 }
             }
-            .frame(width: 28, height: 28)
+            .minimumHitTarget()
             .animation(
                 reduceMotion ? Motion.reducedCrossfade : Motion.phaseCrossfade,
                 value: showsRefreshProgress
@@ -662,9 +778,6 @@ struct TopBar: View {
                 )
             }
         }
-        .padding(.horizontal, 14)
-        .frame(minHeight: 46)
-        .background(WindowSurfaceBackground(role: .chrome))
     }
 }
 
@@ -747,9 +860,9 @@ struct PaneTab: View {
         Button(action: action) {
             HStack(spacing: 5) {
                 Image(systemName: pane.icon(selected: selected))
-                    .font(.system(size: 12, weight: selected ? .semibold : .medium))
+                    .workFont(size: Type.icon, weight: selected ? .semibold : .medium, relativeTo: .caption)
                     .symbolRenderingMode(.monochrome)
-                    .frame(width: 14, height: 14)
+                    .workScaledFrame(width: 14, height: 14, relativeTo: .caption)
                 if !iconOnly {
                     Text(pane.rawValue)
                         .workFont(
@@ -766,11 +879,11 @@ struct PaneTab: View {
             .background {
                 if selected {
                     RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
-                        .fill(Theme.card)
+                        .fill(Theme.thumb)
                         .matchedGeometryEffect(id: "selected-pane", in: selectionNamespace)
                 } else if hovering {
                     RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous)
-                        .fill(Theme.card.opacity(0.55))
+                        .fill(Theme.thumbHoverOnCanvas)
                 }
             }
             .contentShape(Rectangle())
@@ -824,13 +937,13 @@ extension MainPane {
 
 // MARK: - Shared bits used by several panes
 
-/// The evidence four-state enum, in the product's confidence colors — strong
-/// proof green, failure red, weak amber, nothing muted. This chip IS the
-/// product (what did the agent prove?), so it never renders as an
-/// undifferentiated gray.
+/// The evidence four-state enum. Strong evidence settles in ink, failure is
+/// coral, weak is amber (the unverified tier), nothing is muted. Green is
+/// reserved for `EvidenceTierStyle.forGrade("externally_verified")` and the
+/// live connection dot (C27), so "strong" never maps to green here.
 func evidenceTint(_ status: String?) -> Color {
     switch status {
-    case "strong": return Theme.green
+    case "strong": return Theme.ink
     case "failed": return Theme.coral
     case "weak": return Theme.amber
     default: return Theme.muted
@@ -839,7 +952,7 @@ func evidenceTint(_ status: String?) -> Color {
 
 func joinTint(_ state: String?) -> Color {
     switch state {
-    case "attributed": return Theme.green
+    case "attributed": return Theme.ink
     case "ambiguous": return Theme.amber
     case "sections_only": return Theme.accent
     default: return Theme.muted
@@ -865,7 +978,23 @@ func agoText(_ epoch: Double?) -> String? {
     return "\(total / 86400)d ago"
 }
 
+/// The relative-time words every freshness stamp shares. The threshold and
+/// phrase are `display_vocabulary.FRESHNESS_JUST_NOW_SECONDS` /
+/// `FRESHNESS_JUST_NOW_TEXT` (a Python test pins these two lines to them); the
+/// age itself must be computed at render time, so only these words mirror.
+enum FreshnessVocabulary {
+    static let justNowSeconds = 5
+    static let justNowText = "just now"
+    static let capacityCheckedLabel = "capacity checked"
+    static let recordedUsageRefreshedLabel = "recorded usage refreshed"
+    static let separator = " · "
+}
+
 func dashboardFreshnessText(_ date: Date) -> String {
+    let delta = SnapshotMode.currentDate.timeIntervalSince1970 - date.timeIntervalSince1970
+    if delta >= 0, delta < Double(FreshnessVocabulary.justNowSeconds) {
+        return FreshnessVocabulary.justNowText
+    }
     guard let text = agoText(date.timeIntervalSince1970) else { return "time unavailable" }
-    return text == "0s ago" ? "just now" : text
+    return text
 }

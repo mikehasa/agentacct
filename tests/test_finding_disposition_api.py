@@ -70,7 +70,8 @@ def _record_check(
         "evidence_type": "security",
         "name": name,
         "result": result,
-        "summary": summary or f"{name}: {result}",
+        "summary": summary or f"{name}: {result} — assert total == 42 got 41 (one row dropped)",
+        "exit_code": 0,
     }
     if session_id is not None:
         metadata["client_session_id"] = session_id
@@ -382,7 +383,10 @@ def test_unresolved_work_finding_controls_round_trip(tmp_path: Path) -> None:
                 "identity_scope_state": "explicit",
                 "section_id": "unresolved-review",
                 "section_status": "completed",
+                "next_step": "Re-run the focused suite and close the section",
+                "files": ["src/agentacct/mcp.py"],
                 "section_title": "Review unresolved namespace work",
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )

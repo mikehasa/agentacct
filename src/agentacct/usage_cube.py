@@ -12,15 +12,22 @@ caller omits ``today``. This module is what `/tokens`, the Overview Theme A
 cluster, and `GET /usage/summary` all render — one aggregation, three surfaces.
 
 Honesty contract carried in every bucket (PRD §10):
-- ``fresh_tokens`` remains the compatibility/efficiency field for input +
-  output, while product views lead with ``total_tokens_including_cached``.
+- ``fresh_tokens`` (input + output) is the headline measure on every surface
+  (app, CLI, TUI). ``total_tokens_including_cached`` stays a separately named
+  field and is never captioned as the headline.
 - Cache-creation and cache-read tokens ride in their own fields. A bucket also
   says whether each counter was reported, partially reported, not reported,
   or remains unknown for a historical row; unsupported/unknown fields are
   never presented as measured zeroes.
 - ``estimated_cost_usd`` is None (never $0.00) when no row in the bucket
   carried a cost estimate; ``cost_confidence`` is the dominant priced-row
-  confidence with an explicit ``cost_confidence_mixed`` flag.
+  confidence with an explicit ``cost_confidence_mixed`` flag;
+  ``cost_confidence_display`` is the one human basis label
+  (``mixed · mostly pricing estimate``) every surface renders.
+- ``cost_state`` names the bucket's cost coverage, mutually exclusive:
+  ``none_recorded`` (no rows), ``held`` (rows exist but none are additive),
+  ``unpriced`` (additive rows, none priced), ``partial`` (a priced subtotal
+  with unpriced or held rows beside it) or ``complete``.
 - ``sessions`` counts DISTINCT (client, base session id) pairs — per-model
   lane rows of one session never double-count it.
 - Rows whose timestamps fail the bad-timestamp guard are excluded from
@@ -34,6 +41,8 @@ from __future__ import annotations
 import math
 from datetime import date, timedelta
 from typing import Any, Callable, Iterable
+
+from .display_vocabulary import cost_confidence_display, cost_total_label, period_label
 
 # frozen: historical stores/logs/files carry this schema string forever.
 USAGE_SUMMARY_SCHEMA_VERSION = "agent-sentinel.usage-summary.v1"
@@ -54,6 +63,8 @@ UNKNOWN_PERIOD = "unknown"
 # absurd-but-parseable ancient timestamp cannot balloon by_period into
 # thousands of zero rows; real sparse buckets outside the fill are kept.
 MAX_FILLED_PERIODS = 730
+
+COST_STATES = ("none_recorded", "unpriced", "partial", "held", "complete")
 
 _COST_CONFIDENCE_ORDER = ("provider_billed", "client_reported", "estimated_from_tokens", "unknown")
 
@@ -289,6 +300,19 @@ def dominant_cost_confidence(
     return dominant, True, f"mixed confidence ({' + '.join(ordered)})"
 
 
+def usage_cost_state(*, rows: int, additive_rows: int, priced_rows: int, cost_complete: bool) -> str:
+    """One bucket's cost coverage state (see the module docstring). Absence and
+    partial coverage never co-occur: ``partial`` needs a priced subtotal."""
+
+    if not rows:
+        return "none_recorded"
+    if not additive_rows:
+        return "held"
+    if not priced_rows:
+        return "unpriced"
+    return "complete" if cost_complete else "partial"
+
+
 def _finalize(accumulator: dict[str, Any]) -> dict[str, Any]:
     confidence, mixed, confidence_label = dominant_cost_confidence(
         accumulator["confidence_costs"], accumulator["confidence_rows"]
@@ -306,6 +330,12 @@ def _finalize(accumulator: dict[str, Any]) -> dict[str, Any]:
     excluded_rows = int(accumulator["excluded_non_additive_rows"])
     additive_rows = int(accumulator["additive_rows"])
     cost_complete = bool(additive_rows and not excluded_rows and not accumulator["unpriced_rows"])
+    state = usage_cost_state(
+        rows=int(accumulator["rows"]),
+        additive_rows=additive_rows,
+        priced_rows=int(accumulator["priced_rows"]),
+        cost_complete=cost_complete,
+    )
     return {
         "rows": accumulator["rows"],
         "additive_rows": additive_rows,
@@ -343,6 +373,20 @@ def _finalize(accumulator: dict[str, Any]) -> dict[str, Any]:
         # /tokens, the Overview, and JSON consumers can never disagree on
         # how a mixed bucket is labeled.
         "cost_confidence_label": confidence_label,
+        # The shared human basis label (display_vocabulary), e.g.
+        # 'mixed · mostly pricing estimate' or 'cost basis not reported'.
+        # "mostly X" only when X is strictly dominant (the same rule as the label).
+        "cost_confidence_display": cost_confidence_display(
+            mixed,
+            confidence if not mixed or str(confidence_label or "").startswith("mixed confidence (mostly") else None,
+        ),
+        "cost_state": state,
+        # What this bucket's cost figure may call itself (display_vocabulary):
+        # ``total`` only when complete, ``Partial subtotal · N of M usage
+        # records unpriced`` when partial, else the named absence.
+        "cost_total_label": cost_total_label(
+            state, rows=int(accumulator["rows"]), unpriced_rows=int(accumulator["unpriced_rows"])
+        ),
         "priced_rows": accumulator["priced_rows"],
         "unpriced_rows": accumulator["unpriced_rows"],
         "models": sorted(accumulator["models"]),
@@ -416,8 +460,8 @@ def build_usage_cube(
     Every bucket: rows, sessions (distinct base session ids), input/output/
     fresh tokens, cache_creation/cache_read tokens,
     total_tokens_including_cached, estimated_cost_usd (None when nothing
-    priced), dominant cost_confidence + cost_confidence_mixed,
-    priced/unpriced_rows, models.
+    priced), dominant cost_confidence + cost_confidence_mixed +
+    cost_confidence_display, cost_state, priced/unpriced_rows, models.
     """
 
     if granularity not in USAGE_CUBE_GRANULARITY_CHOICES:
@@ -535,7 +579,14 @@ def build_usage_cube(
     dated_keys = sorted(key for key in by_period if key != UNKNOWN_PERIOD)
     period_keys = dated_keys + ([UNKNOWN_PERIOD] if UNKNOWN_PERIOD in by_period else [])
     period_entries = [
-        {"period": key, "by_client": period_lanes.get(key, {}), **_finalize(by_period[key])}
+        {
+            "period": key,
+            # The bucket's DISPLAY name, owned here so no chart, axis or
+            # readout slices the key itself: "Sep 12", "week of Sep 12" (K79).
+            "period_label": period_label(key, granularity),
+            "by_client": period_lanes.get(key, {}),
+            **_finalize(by_period[key]),
+        }
         for key in period_keys
     ]
 

@@ -1022,6 +1022,7 @@ def test_local_api_derived_work_ledger_endpoints_do_not_count_usage_debug_cost(t
                 "sentinel_semantic_kind": "section",
                 "section_id": "mcp-v1",
                 "section_status": "completed",
+                "files": ["src/agentacct/mcp.py"],
                 "section_title": "MCP v1 convergence",
                 "summary": "Converged MCP fields into the work ledger.",
                 "client": "codex",
@@ -1040,6 +1041,7 @@ def test_local_api_derived_work_ledger_endpoints_do_not_count_usage_debug_cost(t
                 "evidence_type": "test",
                 "result": "passed",
                 "summary": "Tests passed.",
+                "exit_code": 0,
             },
         },
     )
@@ -1109,6 +1111,7 @@ def test_local_api_public_work_items_redact_paths_and_commands(tmp_path):
                     "..\\secret.py",
                     "C:\\Users\\alice\\private-repo\\secret.py",
                 ],
+                "summary": "Recorded outcome for this fixture section.",
             },
         },
     )
@@ -1459,9 +1462,11 @@ def test_local_api_payloads_carry_additive_cache_triple_keys(tmp_path):
                 "sentinel_semantic_kind": "section",
                 "section_id": "batcha-work",
                 "section_status": "completed",
+                "files": ["src/agentacct/mcp.py"],
                 "section_title": "Batch A work",
                 "client": "codex",
                 "client_session_id": "codex-batcha-session",
+                "summary": "Recorded outcome for this fixture section.",
             },
         },
     )

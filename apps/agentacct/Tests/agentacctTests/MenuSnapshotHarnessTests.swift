@@ -33,9 +33,10 @@ final class MenuSnapshotHarnessTests: XCTestCase {
         let pixelsHigh: Int
     }
 
+    // Sparse grew one caption line (K32: the hero states data age, then poll time).
     private let expectedArtifacts = [
-        ExpectedArtifact(filename: "menu-connected-sparse-light.png", pixelsWide: 720, pixelsHigh: 880),
-        ExpectedArtifact(filename: "menu-connected-sparse-dark.png", pixelsWide: 720, pixelsHigh: 880),
+        ExpectedArtifact(filename: "menu-connected-sparse-light.png", pixelsWide: 720, pixelsHigh: 990),
+        ExpectedArtifact(filename: "menu-connected-sparse-dark.png", pixelsWide: 720, pixelsHigh: 990),
         ExpectedArtifact(filename: "menu-connected-dense-light.png", pixelsWide: 720, pixelsHigh: 928),
         ExpectedArtifact(filename: "menu-connected-dense-dark.png", pixelsWide: 720, pixelsHigh: 928),
     ]

@@ -51,8 +51,10 @@ struct WorksetsPane: View {
                 Text("Work")
                     .workFont(.titlePage).tracking(Type.titlePageTracking)
                     .foregroundStyle(Theme.ink)
+                // Prose takes the subtitle face, never the metric mono one —
+                // the same correction the Diagnostics header carries.
                 Text("Group a folder's sessions across every agent you run")
-                    .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                    .workFont(FieldFont.subtitle).foregroundStyle(Theme.muted)
             }
             Spacer(minLength: Space.m)
             if openWorksetId == nil && (!dashboard.worksets.isEmpty || isCreating) {
@@ -791,12 +793,17 @@ private struct WorksetTimeline: View {
                     RoundedRectangle(cornerRadius: 5).fill(Theme.chrome)
                         .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Theme.hairline, lineWidth: Metrics.borderW))
                     ForEach(Array(scrubberTicks.enumerated()), id: \.offset) { _, frac in
-                        Rectangle().fill(Theme.muted.opacity(0.4))
+                        // A positional tick is a data mark, so it takes the
+                        // chart-neutral token rather than an alpha-derived
+                        // semantic colour (ColorTokenLintTests).
+                        Rectangle().fill(Theme.chartNeutral)
                             .frame(width: 1.5, height: 9)
                             .offset(x: CGFloat(frac) * (w - 1.5), y: (Self.scrubberHeight - 9) / 2)
                     }
                     RoundedRectangle(cornerRadius: 5)
-                        .fill(Theme.accent.opacity(0.16))
+                        // The named accent wash — the same token the Work
+                        // timeline's window thumb uses — not an ad-hoc alpha.
+                        .fill(Theme.tintAccent)
                         .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Theme.accent, lineWidth: 1.5))
                         .frame(width: windowWidth, height: Self.scrubberHeight)
                         .offset(x: windowLeft)
@@ -1216,7 +1223,10 @@ enum WorksetOutcome {
         }
         var segments: [OutcomeSegment] = []
         if completed > 0 { segments.append(.init(count: completed, color: Theme.ink, label: "completed")) }
-        if active > 0 { segments.append(.init(count: active, color: Theme.accent, label: "active")) }
+        // `active` takes the chart-bar token, not the cobalt accent: this bar is
+        // a proportional data mark, and the accent is reserved for the
+        // interactive voice (K04, AccentReservationTests).
+        if active > 0 { segments.append(.init(count: active, color: Theme.chartBar, label: "active")) }
         if blocked > 0 { segments.append(.init(count: blocked, color: Theme.coral, label: "blocked")) }
         if handedOff > 0 { segments.append(.init(count: handedOff, color: Theme.amber, label: "handed off")) }
         if other > 0 { segments.append(.init(count: other, color: Theme.muted, label: "other")) }

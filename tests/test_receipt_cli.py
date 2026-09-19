@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -67,10 +68,12 @@ def _seed(store: Path, *, title: str = "Add rate limit to login") -> None:
                 "identity_scope_state": "explicit",
                 "section_id": "sec-1",
                 "section_status": "completed",
+                "next_step": "Re-run the focused suite and close the section",
                 "section_title": title,
                 "objective": title,
                 "kind": "implementation",
                 "files": ["src/login.py"],
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )
@@ -94,9 +97,13 @@ def _add_section(store: Path, *, section_id: str, status: str, at: float) -> Non
                 "identity_scope_state": "explicit",
                 "section_id": section_id,
                 "section_status": status,
+                "files": ["src/agentacct/mcp.py"],
+                "next_step": "Re-run the focused suite and close the section",
                 "section_title": "handoff task",
                 "objective": "handoff task",
                 "kind": "implementation",
+                "summary": "Recorded outcome for this fixture section." if status in {"completed", "handed_off"} else None,
+                "blocker": "The staging migration needs an owner role this account does not have." if status == "blocked" else None,
             },
         }
     )
@@ -119,7 +126,8 @@ def test_receipts_show_handoff_marker_beside_a_hard_problem(tmp_path: Path) -> N
     )["tasks"][0]["task_id"]
     detail = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
     assert detail.exit_code == 0, detail.output
-    assert "BLOCKED" in detail.output  # the hard problem is the decision word
+    # the hard problem is the decision word, printed as its shared label
+    assert re.search(r"Decision\s+Blocked", detail.output), detail.output
     assert "Handed off" in detail.output  # the parallel marker is still shown
 
 
@@ -133,7 +141,8 @@ def test_receipts_pure_handoff_shows_no_duplicate_marker(tmp_path: Path) -> None
 
     listing = runner.invoke(app, ["receipts", "--store-dir", str(tmp_path)])
     assert listing.exit_code == 0, listing.output
-    assert "handed_off" in listing.output  # the decision word itself
+    assert "Handed off" in listing.output  # the decision word itself (its label)
+    assert "handed_off" not in listing.output  # raw keys only appear under --json
     assert "↗" not in listing.output  # but NOT the parallel marker glyph
 
     task_id = json.loads(
@@ -141,7 +150,7 @@ def test_receipts_pure_handoff_shows_no_duplicate_marker(tmp_path: Path) -> None
     )["tasks"][0]["task_id"]
     detail = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
     assert detail.exit_code == 0, detail.output
-    assert "HANDED_OFF" in detail.output
+    assert re.search(r"Decision\s+Handed off", detail.output), detail.output
     assert "Lifecycle" not in detail.output  # no duplicate marker row
 
 
@@ -383,10 +392,48 @@ def test_receipt_text_render_is_scannable(tmp_path: Path) -> None:
     )["tasks"][0]["task_id"]
     result = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
     assert result.exit_code == 0, result.output
-    for marker in ("Work Receipt", "Decision status", "Evidence coverage", "Weekly plan", "Provenance"):
+    for marker in ("Work Receipt", "Decision", "Checks", "Coverage", "Weekly plan", "Provenance"):
         assert marker in result.output
     # The evidence line is a coverage RATIO, not a categorical grade word.
     assert "unchecked" in result.output or "checked" in result.output
+
+
+def test_receipt_text_prints_the_payload_vocabulary_not_local_labels(tmp_path: Path) -> None:
+    # One vocabulary: the terminal receipt prints the SAME strings the app and
+    # --markdown print, taken from the receipt payload (field labels, who
+    # asserted the decision, the check tally) — never a CLI-local variant.
+    from agentacct.receipt_markdown import receipt_lead
+
+    _seed(tmp_path)
+    task_id = json.loads(
+        runner.invoke(app, ["receipts", "--json", "--store-dir", str(tmp_path)]).output
+    )["tasks"][0]["task_id"]
+    receipt = json.loads(runner.invoke(app, ["receipt", task_id, "--json", "--store-dir", str(tmp_path)]).output)
+    result = runner.invoke(app, ["receipt", task_id, "--store-dir", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    # Rich wraps long lines to the terminal width; compare word sequences.
+    output = " ".join(result.output.split())
+    lead = receipt_lead(receipt)
+    # DIMENSION labels only. `field_labels` also ships the four record-page
+    # SECTION headings (Goal / Outcome / Evidence / Next), which the macOS
+    # record page owns; the terminal receipt renders dimensions and has no
+    # section to head with them, so requiring it to print them would force a
+    # heading into existence rather than share a word.
+    from agentacct.display_vocabulary import RECORD_SECTION_LABEL_KEYS
+
+    for key, label in receipt["field_labels"].items():
+        if key in RECORD_SECTION_LABEL_KEYS:
+            continue
+        assert label in output
+    # Prose takes the grammatical phrase; the chip label never lands after "asserted by".
+    assert f"asserted by {receipt['axes']['decision_status']['asserted_by_phrase']}" in output
+    assert f"asserted by {receipt['axes']['decision_status']['asserted_by_label']}" not in output
+    assert receipt["dimensions"]["evidence"]["check_tally_text"] in output
+    assert lead["coverage_hero"] in output
+    if lead["outcome_summary_line"]:
+        assert " ".join(lead["outcome_summary_line"].split()) in output
+    assert "Actors" not in output
+    assert "asserted by agent_report" not in output
 
 
 def test_receipt_detail_discloses_touched_files_overflow(tmp_path: Path) -> None:
@@ -411,10 +458,13 @@ def test_receipt_detail_discloses_touched_files_overflow(tmp_path: Path) -> None
                 "identity_scope_state": "explicit",
                 "section_id": "sec-many",
                 "section_status": "completed",
+                "next_step": "Re-run the focused suite and close the section",
                 "section_title": "t",
                 "objective": "t",
                 "kind": "implementation",
                 "files": files,
+                "section_title": "Fixture section title",
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )
@@ -460,10 +510,13 @@ def test_receipt_detail_escapes_markup_in_touched_paths(tmp_path: Path) -> None:
                 "identity_scope_state": "explicit",
                 "section_id": "sec-markup",
                 "section_status": "completed",
+                "next_step": "Re-run the focused suite and close the section",
                 "section_title": "t",
                 "objective": "t",
                 "kind": "implementation",
                 "files": ["src/[red]evil[/red].py"],
+                "section_title": "Fixture section title",
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )

@@ -680,6 +680,12 @@ def _recent_sessions(
             return "completed"
         return None
 
+    def _status_label(statuses: set[str]) -> str | None:
+        from .display_vocabulary import work_status_label
+
+        status = _reduce_status(statuses)
+        return work_status_label(status) if status else None
+
     cutoff = now - ACTIVE_SESSION_WINDOW_SECONDS
     rows: list[dict[str, Any]] = []
     for key, last_activity_at in activity.items():
@@ -695,11 +701,50 @@ def _recent_sessions(
                 "session_id": session_id,
                 "title": title_entry[1] if title_entry else None,
                 "status": _reduce_status(statuses),
+                # The recorded WORK status word (the agent's report, from
+                # WORK_STATUS_LABELS — never a decision word); null when no
+                # step status was recorded. The Task's decision rides
+                # decision_key / decision_label when a task projection joins
+                # the row (see api /v1/glance).
+                "status_label": _status_label(statuses),
                 "last_activity_at": last_activity_at,
             }
         )
     rows.sort(key=lambda row: row["last_activity_at"], reverse=True)
     return rows[:ACTIVE_SESSION_LIMIT]
+
+
+def client_plan_share_fields(state: Any) -> dict[str, str]:
+    """A client-level plan-share state's words (no percentage of its own):
+    ``{chip_text, sentence_text, headline}`` from the one vocabulary table."""
+
+    from .display_vocabulary import plan_share_state_text
+
+    return plan_share_state_text(state)
+
+
+def headline_limit_key(limits: list[dict[str, Any]], now: float) -> str | None:
+    """The glance's headline window key, by the shared rule
+    (:func:`agentacct.usage_snapshot.headline_limit_choice`): the most
+    constrained live reading, never a stale or passed-reset one."""
+
+    from .usage_snapshot import headline_limit_choice
+
+    return headline_limit_choice(
+        (
+            (
+                window.get("limit_key"),
+                limit.get("stale") is True,
+                window.get("used_percent"),
+                window.get("window_minutes"),
+                window.get("resets_at"),
+            )
+            for limit in limits
+            for window in (limit.get("windows") or [])
+            if isinstance(window, dict)
+        ),
+        now,
+    )
 
 
 def build_glance_snapshot(
@@ -715,10 +760,24 @@ def build_glance_snapshot(
     importing this module stays cheap for CLI cold starts and tests.
     """
 
-    from .usage_snapshot import build_live_snapshot, limit_is_stale
+    from .display_vocabulary import (
+        COST_CHART_LEGEND,
+        COST_LEGEND,
+        data_age_text,
+        limit_value_text,
+        plan_share_fields,
+        reset_text,
+        window_label_for,
+    )
+    from .usage_snapshot import build_live_snapshot, limit_is_stale, window_reset_passed
 
     moment = time.time() if now is None else float(now)
     live = build_live_snapshot(events, now=moment)
+    # Plan calibration first: each limit row names its client's plan-share state.
+    # The per-client entries already carry the vocabulary's chip/sentence text
+    # and plain headline (plan_cost.plan_status_entry).
+    plan, session_pcts, _weights, _records = plan_status_and_session_pcts(events)
+    plan_state_by_client = {str(entry.get("client") or ""): entry.get("calibration_state") for entry in plan}
 
     usage_windows = [
         {"label": window.label, "days": window.days, "totals": window.totals}
@@ -735,6 +794,31 @@ def build_glance_snapshot(
         # remains byte-stable.
         entry["stream_id"] = limit.raw_event.get("run_id")
         entry["stale"] = limit_is_stale(limit, moment)
+        # How old the reading is (from the provider capture time, not the poll).
+        entry["data_age_text"] = data_age_text(limit.captured_at, moment)
+        # Reducer-owned display text (copies: the raw window dicts belong to
+        # the event and to the byte-stable `limits --json` shape). One reset
+        # phrase with three named states, one window-name map, one value
+        # phrase (``99% used`` / ``last reported 3%`` once the reset passed).
+        windows: list[Any] = []
+        for window_index, window in enumerate(entry.get("windows") or []):
+            if not isinstance(window, dict):
+                windows.append(window)
+                continue
+            passed = window_reset_passed(window.get("resets_at"), moment)
+            windows.append(
+                {
+                    **window,
+                    "limit_key": f"{len(limits)}|{entry.get('client') or ''}|{window.get('kind') or ''}|{window_index}",
+                    "window_label": window_label_for(window.get("kind"), window.get("window_minutes")),
+                    "reset_text": reset_text(window.get("resets_at"), moment),
+                    "reset_passed": passed,
+                    "value_text": limit_value_text(window.get("used_percent"), reset_passed=passed),
+                }
+            )
+        entry["windows"] = windows
+        state = plan_state_by_client.get(str(entry.get("client") or ""))
+        entry["plan_share"] = {"calibration_state": state, **client_plan_share_fields(state)}
         limits.append(entry)
 
     # Plan calibration per plan-bearing client (calibrated-or-nothing; see
@@ -745,7 +829,6 @@ def build_glance_snapshot(
     # row (it records sections but its usage folded away) shows None rather
     # than a share its root's row already includes. ONE fold map drives both
     # the activity fold and the share fold, so they can never disagree.
-    plan, session_pcts, _weights, _records = plan_status_and_session_pcts(events)
     fold_map = child_root_plan_fold(events)
     folded_pcts = fold_plan_pcts_to_roots(session_pcts, fold_map)
 
@@ -755,6 +838,12 @@ def build_glance_snapshot(
         # exact 0 for a nonzero share. Shells format like the TUI does —
         # "≈{pct:.1f}%" with a "<0.1%" band — the payload carries the float.
         row["plan_pct"] = folded_pcts.get((row["client"], row["session_id"]))
+        state = plan_state_by_client.get(str(row.get("client") or "")) or "never"
+        row["plan_share"] = {
+            "pct": row["plan_pct"],
+            "calibration_state": state,
+            **plan_share_fields(row["plan_pct"], state),
+        }
 
     return {
         "schema": GLANCE_SCHEMA_VERSION,
@@ -767,8 +856,14 @@ def build_glance_snapshot(
             "windows": usage_windows,
             "by_client": live.usage.by_client,
             "breakdown_window": live.usage.breakdown_window,
+            # The cost-prefix legend the usage rows' `$` / `≈$` / `~$` follow.
+            "cost_legend": COST_LEGEND,
+            "cost_chart_legend": COST_CHART_LEGEND,
         },
         "limits": limits,
+        # The one headline window (see headline_limit_key): the menu hero, the
+        # Dashboard CAPACITY signal and the TUI all lead with it.
+        "headline_limit_key": headline_limit_key(limits, moment),
         "plan": plan,
         "recent_sessions": recent_sessions,
     }

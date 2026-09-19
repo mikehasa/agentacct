@@ -9,6 +9,52 @@ enum WorkTimelineRangeNavigation {
         return .init(lower: start - context, upper: end + context)
     }
 
+    /// Whether a window would draw at least one CARD. A card is drawn at its
+    /// record's start, so this is a test of card positions — never of span
+    /// overlap. A 70-minute section whose tail crosses the window puts no card
+    /// on screen, and the canvas then prints its named-empty state.
+    ///
+    /// That IS `WorkTimelineInterval.contains` now (F5): the heading's count,
+    /// the list and this test all ask the one predicate, so a window can never
+    /// be reported populated by a rule the canvas does not draw by. Undated
+    /// records are excluded here — they have no position to draw at, whereas
+    /// the shared rule declines to exclude them from a filtered READING.
+    static func holdsACard(_ window: WorkTimelineInterval, records: [WorkTimelineRecord]) -> Bool {
+        records.contains { record in
+            guard WorkTimelineProjection.validTime(record.start) != nil else { return false }
+            return window.contains(record)
+        }
+    }
+
+    /// A window the APP chose must draw at least one card. When the chosen span
+    /// lands where no card is drawn, fall back to the newest dated record's own
+    /// focused window rather than opening on a named-empty canvas. A reviewer's
+    /// own pan is never passed through here: dragging into a quiet stretch is a
+    /// request to see it.
+    static func populated(_ window: WorkTimelineInterval,
+                          records: [WorkTimelineRecord],
+                          newest: WorkTimelineRecord?,
+                          within full: WorkTimelineInterval) -> WorkTimelineInterval {
+        let dated = records.filter { $0.start != nil }
+        guard !dated.isEmpty, !holdsACard(window, records: dated) else { return window }
+        guard let newest, let focused = focused(on: newest) else { return full }
+        return WorkTimeCanvasLayout.clampedWindow(focused, to: full)
+    }
+
+    /// The window that must be shown when the request to select a record came
+    /// from ELSEWHERE on the record page — the Checks table — rather than from
+    /// a click inside the surface itself.
+    ///
+    /// `nil` means the visible window already draws that record's card, so the
+    /// selection re-frames nothing: a reviewer who can already see the mark
+    /// keeps their zoom. Re-framing is internal to the canvas/list either way;
+    /// the document never moves for it (F9).
+    static func reframed(_ window: WorkTimelineInterval,
+                         toShow record: WorkTimelineRecord) -> WorkTimelineInterval? {
+        guard !holdsACard(window, records: [record]) else { return nil }
+        return focused(on: record)
+    }
+
     /// Select only a visible recorded mark. An empty gap is not evidence.
     static func hitRecord(_ records: [WorkTimelineRecord], laneID: String, x: Double, width: Double,
                           within full: WorkTimelineInterval, tolerance: Double = 6) -> WorkTimelineRecord? {
@@ -45,9 +91,26 @@ enum WorkTimelineRangeNavigation {
 }
 
 enum WorkTimelineTimeAxis {
+    /// The exact source value, for the record inspector's labelled `Source
+    /// time` line and the export. It is UTC and says so.
     static func preciseLabel(_ time: Double) -> String {
         let date = Date(timeIntervalSince1970: time)
-        return "\(date.ISO8601Format(.init(includingFractionalSeconds: true))) · Unix \(time)"
+        return "\(date.ISO8601Format(.init(includingFractionalSeconds: true))) UTC"
+    }
+
+    /// The exact source value written to an EXPORTED file, which a machine may
+    /// read back: the UTC instant plus its raw epoch seconds. Screens use
+    /// `preciseLabel`; nothing spoken uses either (K122).
+    static func exportLabel(_ time: Double) -> String {
+        "\(preciseLabel(time)) · Unix \(time)"
+    }
+
+    /// The time a person hears or reads: the shared local date and clock (C55)
+    /// to the second, so two records a moment apart stay distinguishable and
+    /// VoiceOver never reads an epoch (K122).
+    static func spokenLabel(_ time: Double) -> String {
+        let date = Date(timeIntervalSince1970: time)
+        return "\(Fmt.displayDate(date)), \(Fmt.clockTimeWithSeconds(date))"
     }
     static func showsDates(in range: WorkTimelineInterval, calendar: Calendar = .current) -> Bool {
         !calendar.isDate(Date(timeIntervalSince1970: range.lower), inSameDayAs: Date(timeIntervalSince1970: range.upper))

@@ -91,6 +91,14 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
             let representation = try XCTUnwrap(image.representations.first, artifact.filename)
             XCTAssertEqual(representation.pixelsWide, artifact.pixelsWide)
             XCTAssertEqual(representation.pixelsHigh, artifact.pixelsHigh)
+            // No review render may show an unsupported-view placeholder in
+            // place of a control the live app draws (K68). The recording-health
+            // notice's dismiss button kept drawing one here long after the
+            // timeline menu was fixed, because only the Work harness asserted it.
+            XCTAssertEqual(
+                try VisualSnapshotImage(contentsOf: imageURL).unsupportedControlPlaceholderPixels, 0,
+                "\(artifact.filename) draws the renderer's #FFCC00 placeholder where a control belongs."
+            )
             let difference = try VisualSnapshotHarness.compare(
                 expectedURL: imageURL,
                 actualURL: secondOutputDirectory.appendingPathComponent(artifact.filename)
@@ -255,8 +263,8 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
         SnapshotMode.setFixtureDate(Date(timeIntervalSince1970: 1_000_000))
         defer { SnapshotMode.setFixtureDate(nil) }
 
-        XCTAssertEqual(Theme.resetsIn(1_000_000 + 6 * 86_400 + 13 * 3_600), "6d 13h")
         XCTAssertEqual(agoText(1_000_000 - 3_600), "1h ago")
+        XCTAssertEqual(agoText(1_000_000 - 12 * 60), "12m ago")
     }
 
     private func dashboardFixtureURL() throws -> URL {

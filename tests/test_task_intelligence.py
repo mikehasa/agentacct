@@ -92,7 +92,34 @@ def test_decision_brief_keeps_finding_separate_from_control_failure() -> None:
     assert result["states"]["control"]["key"] == "ready"
     assert result["decision_brief"]["unresolved_finding"] == "Target test failed"
     assert result["decision_brief"]["owner"] is None
+    # No owner is ever recorded; the step's own next_step still surfaces while
+    # the Task is not a completion (here it is an open finding).
+    assert result["decision_brief"]["next_action"] == "Ship it"
+    assert result["decision_brief"]["next_action_state"] == "recorded"
+
+
+def test_decision_brief_withholds_next_step_on_a_completed_outcome() -> None:
+    task = _task()
+    task["work_items"][0]["evidence_events"] = [
+        {"event_id": "check-1", "result": "passed", "summary": "Target test passed", "created_at": 11.0}
+    ]
+    result = build_task_intelligence(task, public_task_id="task_" + "1" * 32, title="Feature")
+
+    assert result["states"]["outcome"]["key"] in {"verified", "reported"}
     assert result["decision_brief"]["next_action"] is None
+    assert result["decision_brief"]["next_action_state"] == "not_recorded"
+
+
+def test_decision_brief_next_step_is_the_newest_step_that_recorded_one() -> None:
+    task = _task()
+    task["work_items"] = [
+        {"work_id": "newer", "latest_status": "handed_off", "updated_at": 20.0, "next_step": "Resume in a new session"},
+        {"work_id": "older", "latest_status": "handed_off", "updated_at": 5.0, "next_step": "Old plan"},
+    ]
+    result = build_task_intelligence(task, public_task_id="task_" + "1" * 32, title="Feature")
+
+    assert result["states"]["outcome"]["key"] == "handed_off"
+    assert result["decision_brief"]["next_action"] == "Resume in a new session"
 
 
 def test_task_usage_is_not_readded_from_work_or_lanes() -> None:

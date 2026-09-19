@@ -186,7 +186,7 @@ struct NativeClientActivationView: View {
             }
             .padding(.top, Space.m)
         } label: {
-            Text("Saved setup output · \(lines.count) lines").workFont(.rowLabel).foregroundStyle(Theme.ink)
+            Text("Saved setup output · \(Fmt.count(lines.count, "line"))").workFont(.rowLabel).foregroundStyle(Theme.ink)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("client-activation-output")

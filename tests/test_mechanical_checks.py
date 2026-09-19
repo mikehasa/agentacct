@@ -139,6 +139,9 @@ def test_mechanical_check_projection_never_copies_command_or_output() -> None:
     assert len(events) == 1
     assert events[0]["command"] is None
     assert events[0]["command_redacted"] is True
+    # Only a digest was ever sent, so no command text exists anywhere: this is
+    # the one state the "was not stored" sentence describes truthfully.
+    assert events[0]["command_state"] == "digest_only"
     assert canary not in rendered
 
 

@@ -19,6 +19,45 @@ enum WorkTimelinePreferences {
     }
 }
 
+/// The reading surface a reviewer prefers, across every task.
+///
+/// The per-task bookmark holds the WINDOW, which is genuinely about one task.
+/// Which SURFACE to read records on is a habit, not a fact about a task, so
+/// storing it per task meant a reviewer who wants the canvas had to ask for it
+/// on every task, forever. `@AppStorage` cannot hold `Bool?`, and the third
+/// state matters — "never chosen" must stay distinguishable from "chose the
+/// list" so the data still decides the opening view for a reviewer who has
+/// never pressed the switch — so it travels as an Int.
+enum WorkTimelineSurfaceDefault {
+    static let key = "work.timeline.surface.default.v1"
+    static let unset = 0
+    private static let list = 1
+    private static let canvas = 2
+
+    /// The stored value read back as a choice, or nil when nobody has chosen.
+    static func choice(_ stored: Int) -> Bool? {
+        switch stored {
+        case list: return true
+        case canvas: return false
+        default: return nil
+        }
+    }
+
+    /// The value to store for an explicit press of the switch.
+    static func stored(_ usesRecordList: Bool) -> Int { usesRecordList ? list : canvas }
+}
+
+/// WHEN the timeline was last observed, for the export header.
+///
+/// This deliberately is not SwiftUI state. Nothing in `body` reads it — only
+/// `exportReview()` does — but SwiftUI state invalidates its view on every
+/// write regardless, so stamping it on each three-second poll rebuilt the
+/// Activity surface twenty times a minute for a value nobody was looking at.
+/// A reference the view holds keeps the fact and drops the invalidation.
+final class WorkTimelineObservationStamp {
+    var lastObserved: Date?
+}
+
 private struct WorkCompactViewportKey: EnvironmentKey {
     static let defaultValue = false
 }
@@ -33,6 +72,9 @@ extension EnvironmentValues {
 struct WorkTimelineView: View {
     let receipt: Receipt
     var reviewSelectedRecord = false
+    /// The record page's Escape router. The timeline publishes a dismissal
+    /// here while it holds a transient layer open (K116).
+    var layers: WorkRecordLayers? = nil
     var onRevealInspector: (() -> Void)? = nil
     var onRevealRecords: (() -> Void)? = nil
     var onRevealHeading: (() -> Void)? = nil
@@ -41,6 +83,8 @@ struct WorkTimelineView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.workCompactViewport) private var compactViewport
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// The app-wide reading-surface preference (see `WorkTimelineSurfaceDefault`).
+    @AppStorage(WorkTimelineSurfaceDefault.key) private var storedSurfaceDefault = WorkTimelineSurfaceDefault.unset
     @State private var navigation = WorkTimelineNavigation()
     @State private var feed = WorkTimelineFeed()
     @State private var followWindowSpan: Double = 30 * 60
@@ -49,7 +93,7 @@ struct WorkTimelineView: View {
     @State private var activeTaskID: String?
     @State private var loadingInitialSnapshot = false
     @State private var restoredPositionFromCurrentEvidence = false
-    @State private var lastObserved: Date?
+    @State private var observation = WorkTimelineObservationStamp()
     @State private var scrollTarget: String?
     @State private var showingArrivals = false
     @State private var clusterMembers: [WorkTimelineRecord] = []
@@ -57,6 +101,7 @@ struct WorkTimelineView: View {
     @State private var chooserPosition: String?
     @State private var exportError: String?
     @FocusState private var focusedEvidence: String?
+    @FocusState private var searchFocused: Bool
     @AccessibilityFocusState private var accessibleEvidence: String?
     @State private var requestedRowFocus: String?
     @State private var scrollRequest = 0
@@ -64,6 +109,11 @@ struct WorkTimelineView: View {
     @State private var focusGeneration = 0
     @State private var viewport = WorkTimelineViewport()
     @State private var preferenceSaveTask: Task<Void, Never>?
+    /// Whether the page may scroll itself to reveal the selection region. Only
+    /// a user action arms it (inspecting a record, opening a dense group,
+    /// returning to a remembered one); appearing or restoring never does, so
+    /// opening a record cannot pull the verdict off-screen (K104).
+    @State private var revealArmed = false
 
     private var projection: WorkTimelineProjection {
         (timeline ?? receipt.timeline)?.projection(taskID: receipt.taskId) ?? .empty
@@ -105,8 +155,42 @@ struct WorkTimelineView: View {
     }
     private func initialWindow(_ full: WorkTimelineInterval?) -> WorkTimelineInterval? {
         guard let full else { return nil }
-        return WorkTimeCanvasLayout.latestWindow(within: full,
-            latest: displayProjection.newestRecord?.latestTime, span: 30 * 60)
+        // Anchor on the newest record's CARD position — its start — not on its
+        // latest update. A long section's card is drawn at its start, so a
+        // window anchored on its end opened onto empty canvas while the
+        // overview strip beside it showed a populated task (B3).
+        let newest = displayProjection.newestRecord
+        let anchor = newest?.start ?? newest?.latestTime
+        return populated(WorkTimeCanvasLayout.latestWindow(within: full, latest: anchor, span: 30 * 60),
+                         within: full)
+    }
+
+    /// A window the APP chose must draw at least one card; the rule itself is
+    /// pure and lives in `WorkTimelineRangeNavigation` so it is unit-tested
+    /// without a view. It tests CARD POSITIONS, not span overlap: a window
+    /// holding nothing but the tail of a long section draws no card and prints
+    /// "No activity in this time window" (B3).
+    private func populated(_ window: WorkTimelineInterval, within full: WorkTimelineInterval) -> WorkTimelineInterval {
+        WorkTimelineRangeNavigation.populated(window,
+                                              records: displayProjection.records,
+                                              newest: displayProjection.newestRecord,
+                                              within: full)
+    }
+
+    /// The visible window's own span, in the axis's words, or its named
+    /// absence. Printed in the heading so the slice on screen always carries
+    /// the denominator it is a slice OF.
+    private var windowSpanText: String {
+        guard let interval else { return PayloadAbsence.activityTime }
+        return "\(WorkTimelineTimeAxis.label(interval.lower, range: interval))"
+            + " to \(WorkTimelineTimeAxis.label(interval.upper, range: interval))"
+    }
+
+    /// Whether the visible window is narrower than everything loaded — the
+    /// predicate behind both the heading's count line and the reveal control.
+    private var showsPartialWindow: Bool {
+        guard let interval, let full = displayProjection.interval else { return false }
+        return interval.lower > full.lower || interval.upper < full.upper
     }
 
     var body: some View {
@@ -118,8 +202,12 @@ struct WorkTimelineView: View {
                     .workFont(.caption).foregroundStyle(Theme.amber)
             }
             if restoredPositionFromCurrentEvidence {
-                Text("Position restored using current records. The earlier snapshot is no longer available.")
+                // Plain words for what happened, pointing at the control that
+                // resolves it (the Live button in this heading) rather than
+                // naming an internal snapshot the reader never saw (K102).
+                Text("Showing where you left off. Newer records may exist; choose Live to catch up.")
                     .workFont(.caption).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("work.timeline.restored-position")
             }
             if let file = navigation.view.file {
@@ -187,11 +275,21 @@ struct WorkTimelineView: View {
             let recordID = id == "inspector" ? navigation.view.selectedID : id
             appSelection.workReturnFocus.remember(taskID: receipt.taskId, recordID: recordID)
         }
+        .onChange(of: selectionActive, initial: true) { _, active in
+            layers?.dismissInnermost = active ? { dismissSelection() } : nil
+        }
+        // The Checks table above asked for one recorded event. The two
+        // surfaces then agree about what is being looked at.
+        .onChange(of: layers?.selectRequest ?? 0) { _, _ in
+            guard let event = layers?.selectEventID else { return }
+            inspectEvent(event)
+        }
         .onAppear { viewIsVisible = true }
         .onDisappear {
             viewIsVisible = false
             focusGeneration += 1
             preferenceSaveTask?.cancel()
+            layers?.dismissInnermost = nil
             saveMemory()
         }
         .accessibilityElement(children: .contain)
@@ -203,8 +301,15 @@ struct WorkTimelineView: View {
     /// by scrolling the outer page only when it would open out of view.
     private var evidenceAndInspector: some View {
         VStack(alignment: .leading, spacing: Space.m) {
-            recordsSurface.id("work.timeline.records")
-                .background(WorkTimelineScrollObserver(viewport: viewport) { hold() })
+            if SnapshotMode.enabled && !SnapshotMode.interactiveFixture {
+                // The offscreen renderer draws an AppKit-backed observer as a
+                // full-surface placeholder (visible behind the empty state);
+                // a static render has no scrolling to observe.
+                recordsSurface.id("work.timeline.records")
+            } else {
+                recordsSurface.id("work.timeline.records")
+                    .background(WorkTimelineScrollObserver(viewport: viewport) { hold() })
+            }
             selectionRegion
         }
     }
@@ -234,13 +339,10 @@ struct WorkTimelineView: View {
                     }
                     clearSelection()
                 }.buttonStyle(QuietButtonStyle(horizontalPadding: 8))
-                .disabled(clusterBounds.map { $0.span <= 1 || $0.span >= (interval?.span ?? 0) * 0.9 } ?? true)
-                .help("Resize the visible window to this group's time range")
-                Button { dismissSelection() } label: { Image(systemName: "xmark") }
-                    .buttonStyle(QuietButtonStyle(horizontalPadding: 7))
-                    .accessibilityLabel("Close record group")
-                    .accessibilityIdentifier("work.timeline.cluster.close")
-                    .help("Close record group")
+                .disabled(zoomHereUnavailableReason != nil)
+                .help(zoomHereUnavailableReason ?? "Resize the visible window to this group's time range")
+                IconButton(systemName: "xmark", label: "Close record group",
+                           identifier: "work.timeline.cluster.close") { dismissSelection() }
             }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
@@ -249,7 +351,7 @@ struct WorkTimelineView: View {
                             inspect(record)
                         } label: {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(record.title).workFont(.rowLabel)
+                                Text(record.displayTitle).workFont(.rowLabel)
                                 Text("\(record.laneTitle) · \(record.resultLabel)")
                                     .workFont(.caption).foregroundStyle(color(record))
                             }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
@@ -260,13 +362,21 @@ struct WorkTimelineView: View {
             }.scrollPosition(id: $chooserPosition).frame(maxHeight: 300)
         }
         .padding(Space.m).frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.canvas, in: RoundedRectangle(cornerRadius: Metrics.radius))
+        .background(Theme.well, in: RoundedRectangle(cornerRadius: Metrics.radius))
         .overlay(RoundedRectangle(cornerRadius: Metrics.radius).strokeBorder(Theme.cardLine))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("work.timeline.cluster.chooser")
         .accessibilityLabel("\(clusterMembers.count) records in a time group")
-        .background(WorkTimelineRevealProbe { onRevealInspector?() })
+        .background(WorkTimelineRevealProbe { if revealArmed { revealArmed = false; onRevealInspector?() } })
         .onKeyPress(.escape) { dismissSelection(); return .handled }
+    }
+
+    /// Why "Zoom here" is disabled, derived from the same predicate (C108).
+    private var zoomHereUnavailableReason: String? {
+        guard let bounds = clusterBounds else { return "This group's time range is unavailable" }
+        if bounds.span <= 1 { return "This group spans under a second" }
+        if bounds.span >= (interval?.span ?? 0) * 0.9 { return "This group already fills the visible window" }
+        return nil
     }
 
     private var selectionActive: Bool { !clusterMembers.isEmpty || navigation.view.selectedID != nil }
@@ -286,6 +396,8 @@ struct WorkTimelineView: View {
 
     private func presentCluster(_ members: [WorkTimelineRecord], bounds: WorkTimelineInterval) {
         hold()
+        // A user asked for this group, so the page may scroll to show it.
+        revealArmed = true
         clusterBounds = bounds
         clusterMembers = members
         navigation.view.selectedID = nil
@@ -306,8 +418,96 @@ struct WorkTimelineView: View {
         }
     }
 
+    /// Whether the ordered list, rather than the time canvas, is the reading
+    /// surface. Resolution order, widest-scope last: this task's own override,
+    /// then the reviewer's app-wide preference (written on every explicit
+    /// press, so choosing the canvas once does not have to be repeated on
+    /// every task forever), and only then the data.
+    private var usesRecordList: Bool {
+        Self.usesRecordList(chosenForTask: navigation.view.recordListChosen,
+                            appDefault: WorkTimelineSurfaceDefault.choice(storedSurfaceDefault),
+                            records: displayProjection.records)
+    }
+
+    /// The resolution order itself, away from the view body so a test can pin
+    /// it: per-task override, then app-wide default, then the data.
+    static func usesRecordList(chosenForTask: Bool?, appDefault: Bool?,
+                               records: [WorkTimelineRecord]) -> Bool {
+        if let chosenForTask { return chosenForTask }
+        if let appDefault { return appDefault }
+        return listSuitsData(records: records)
+    }
+
+    /// The opening-view rule, kept testable and away from the view body.
+    ///
+    /// A list ORDERS; a canvas POSITIONS. So the only question that separates
+    /// the two surfaces is whether the time axis distinguishes these records
+    /// at all — never how many there are. Three records at 8:13:12/:14/:17
+    /// have a shape (bunched, then a pause) that ordering destroys, and twenty
+    /// records sharing one stamp are a list at any N. A record is drawn at its
+    /// recorded start, so those starts are the stamps that decide it: with one
+    /// distinct stamp or none, or a span that is not a positive finite number,
+    /// position carries nothing and the list is right.
+    static func listSuitsData(records: [WorkTimelineRecord]) -> Bool {
+        guard !records.isEmpty else { return false }
+        let stamps = Set(records.compactMap { WorkTimelineProjection.validTime($0.start) })
+        guard stamps.count > 1, let lower = stamps.min(), let upper = stamps.max() else { return true }
+        let span = upper - lower
+        guard span.isFinite, span > 0 else { return true }
+        return false
+    }
+
+    /// The presentation switch. Both surfaces read the same records, the same
+    /// filters and the same window, so moving between them loses nothing —
+    /// which is why this deliberately does NOT call `hold()`. Changing how
+    /// records are DRAWN is not an investigation: the window, the filters and
+    /// live follow all survive the press.
+    private var surfacePicker: some View {
+        Button {
+            let wantsList = !usesRecordList
+            navigation.view.recordListChosen = wantsList
+            storedSurfaceDefault = WorkTimelineSurfaceDefault.stored(wantsList)
+        } label: {
+            Label(usesRecordList ? "Show timeline" : "Show list",
+                  systemImage: usesRecordList ? "chart.bar.doc.horizontal" : "list.bullet")
+        }
+        .buttonStyle(QuietButtonStyle(horizontalPadding: 8, resting: true))
+        .accessibilityIdentifier("work.timeline.surface")
+        .help("Switch between the ordered record list and the time canvas. Both show the same records and honour the same filters.")
+    }
+
     @ViewBuilder private var recordsSurface: some View {
-        if let full = displayProjection.interval, let interval {
+        if hasActiveFilters {
+            let outside = WorkTimelineFilterReveal.outside(matchingRecords, window: interval)
+            if let cue = WorkTimelineFilterReveal.cueText(outside, failuresOnly: navigation.view.failuresOnly),
+               let newest = outside.newest {
+                HStack(spacing: Space.s) {
+                    Text(cue).workFont(.caption).foregroundStyle(Theme.muted)
+                    Button("Show") { moveWindow(to: newest) }
+                        .buttonStyle(QuietButtonStyle(horizontalPadding: 8))
+                        .accessibilityLabel("Show \(cue)")
+                        .accessibilityIdentifier("work.timeline.outside-matches")
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        if let full = displayProjection.interval, let interval, usesRecordList {
+            // The canvas is DEMOTED to its navigation strip: the overview keeps
+            // zoom and panning over the same window, and the ordered records
+            // below it are the reading surface.
+            WorkTimeWindowScroller(records: matchingRecords, full: full, window: interval,
+                domain: WorkTimeCanvasLayout.expandedDomain(full, by: 0),
+                onWindow: { value in hold(); navigation.view.interval = value })
+                .frame(height: 32)
+            WorkTimelineRecordList(records: filtered, selectedID: navigation.view.selectedID,
+                range: full,
+                onSelect: { record in
+                    clusterMembers = []
+                    clusterBounds = nil
+                    inspect(record)
+                },
+                onFocusEnter: { onRevealRecords?() })
+        } else if let full = displayProjection.interval, let interval {
             WorkTimeCanvas(records: matchingRecords, full: full, window: interval,
                 selectedRecord: selected,
                 onWindow: { value in hold(); navigation.view.interval = value },
@@ -321,7 +521,10 @@ struct WorkTimelineView: View {
                 },
                 onCluster: { members, bounds in presentCluster(members, bounds: bounds) },
                 onDismiss: { clearSelection() },
-                onHold: hold, focusRecordID: requestedRowFocus, focusRequest: scrollRequest, compact: compactViewport)
+                onHold: hold, focusRecordID: requestedRowFocus, focusRequest: scrollRequest,
+                onFocusEnter: { onRevealRecords?() },
+                compact: compactViewport,
+                showsLaneCaptions: Set(displayProjection.records.map(\.laneID)).count > 1)
         } else {
             Text(displayProjection.records.isEmpty ? "No activity recorded yet." : "Recorded times are unavailable.")
                 .workFont(.body).foregroundStyle(Theme.muted)
@@ -329,20 +532,20 @@ struct WorkTimelineView: View {
         }
         let undated = matchingRecords.filter { $0.start == nil }
         if !undated.isEmpty {
-            Menu {
+            SnapshotSafeLabelMenu(
+                title: "Time unavailable · \(undated.count)",
+                systemName: "clock.badge.questionmark",
+                help: "These records have no usable timestamp and cannot be placed on the timeline.",
+                identifier: "work.timeline.undated"
+            ) {
                 ForEach(undated) { record in
-                    Button("\(record.title) · \(record.laneTitle) · \(record.resultLabel)") {
+                    Button("\(record.displayTitle) · \(record.laneTitle) · \(record.resultLabel)") {
                         clusterMembers = []
                         clusterBounds = nil
                         inspect(record, focusInspector: false)
                     }.buttonStyle(QuietButtonStyle())
                 }
-            } label: {
-                Label("Time unavailable · \(undated.count)", systemImage: "clock.badge.questionmark")
             }
-            .menuStyle(.borderlessButton).buttonStyle(QuietButtonStyle())
-            .fixedSize().accessibilityIdentifier("work.timeline.undated")
-            .help("These records have no usable timestamp and cannot be placed on the timeline.")
         }
     }
 
@@ -350,23 +553,28 @@ struct WorkTimelineView: View {
 
     private var heading: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) { headingLabel; Spacer(minLength: 0); liveControls; activityMenu }
+            HStack(spacing: 12) { headingLabel; Spacer(minLength: 0); surfacePicker; liveControls; activityMenu }
             VStack(alignment: .leading, spacing: 8) {
                 headingLabel
-                HStack(spacing: 8) { Spacer(minLength: 0); liveControls; activityMenu }
+                HStack(spacing: 8) { Spacer(minLength: 0); surfacePicker; liveControls; activityMenu }
             }
         }
     }
     private var headingLabel: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 4) {
+            // A static heading is NOT a keyboard stop: `.focusable()` here put
+            // Tab on a heading that sits under the toolbar, with no ring and
+            // nothing to activate (K115). It stays a programmatic and
+            // VoiceOver landing target through accessibilityFocused, which is
+            // what the return paths below actually use.
             Text("Activity").workFont(.titleCard)
                 .id("work.timeline.heading")
-                .focusable().focused($focusedEvidence, equals: "timeline-heading")
                 .accessibilityFocused($accessibleEvidence, equals: "timeline-heading")
                 .accessibilityAddTraits(.isHeader)
                 ContextHelp(title: "About activity",
-                    message: "Drag the canvas to move through time. Scroll to make the visible time span smaller or larger, or pinch to zoom around the pointer. Drag the overview window to move it and its edges to resize it. Select a record to read its details below the timeline; dense groups list their members there. Stems mark recorded times, not causal links. Section spans end at the latest reported update, not a measured execution finish. Check markers are points. Loaded history refreshes every 3 seconds while this view is open; search covers loaded records.",
+                    message: "Pinch or Option-scroll to change the visible time span; scroll sideways or drag the canvas to move through time. Plain vertical scrolling moves the page. Drag the overview window to move it and its edges to resize it. Select a record to read its details below the timeline; dense groups list their members there. Stems mark recorded times, not causal links. Section spans end at the latest reported update, not a measured execution finish. Check markers are points. Loaded history refreshes every 3 seconds while this view is open; search covers loaded records.",
+                    summary: "How to navigate Activity",
                     identifier: "work.timeline.help")
             }
             HStack(spacing: 5) {
@@ -377,34 +585,57 @@ struct WorkTimelineView: View {
                     Text("Saved copy · offline").workFont(.caption).foregroundStyle(Theme.muted)
                 }
             }
+            // ALWAYS the denominator, not only while a filter is on: the
+            // canvas shows a slice, and a slice with no count and no span is
+            // indistinguishable from the whole task (B3).
+            windowScopeLine
         }
     }
 
-    @ViewBuilder private var activityMenu: some View {
-        if SnapshotMode.rendersStaticControls {
-            // The offscreen docs renderer draws a SwiftUI Menu as a yellow
-            // "unsupported control" placeholder, so the docs screenshots show
-            // the menu's label as a static primitive instead. The live app and
-            // the golden fixture renders (which never set this flag) are unchanged.
-            Image(systemName: "ellipsis")
-                .padding(.horizontal, 8)
-                .accessibilityLabel("Activity actions")
-        } else {
-            Menu {
-                Button("Show all time") { hold(); navigation.view.interval = displayProjection.interval }
-                    .buttonStyle(QuietButtonStyle())
-                Button("Export visible records…", action: exportReview)
-                    .disabled(filtered.isEmpty)
-                    .buttonStyle(QuietButtonStyle())
-            } label: {
-                Image(systemName: "ellipsis")
+    private var windowScopeLine: some View {
+        HStack(spacing: Space.s) {
+            Text("\(filtered.count) of \(displayProjection.records.count) loaded records · \(windowSpanText)")
+                .workFont(.caption).foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("work.timeline.window-scope")
+            // A count of "20 records" hides the fact that some of them are
+            // narration rather than steps. The reducer ships the definition
+            // beside the count for exactly this reason (F2); it is offered
+            // here, on the count itself, rather than restated in Swift.
+            if (receipt.timeline?.beatCount ?? 0) > 0,
+               let definition = PayloadAbsence.text(receipt.timeline?.beatDefinition) {
+                ContextHelp(title: "About progress notes", message: definition,
+                            summary: "What a progress note is",
+                            identifier: "work.timeline.beats.help")
             }
-            .menuStyle(.borderlessButton)
-            .buttonStyle(QuietButtonStyle(horizontalPadding: 8))
-            .fixedSize()
-            .accessibilityLabel("Activity actions")
-            .accessibilityIdentifier("work.timeline.actions")
-            .help("Activity actions")
+            if showsPartialWindow {
+                // The one control that answers the count — in the heading
+                // beside it, not behind the ellipsis menu.
+                // The control that UNDOES a narrowed window earns a resting
+                // affordance for the same reason the surface switch does: with
+                // no chrome it reads as part of the count's prose.
+                Button("Show all time") { showAllTime() }
+                    .buttonStyle(QuietButtonStyle(horizontalPadding: 8, resting: true))
+                    .accessibilityIdentifier("work.timeline.show-all-time")
+                    .help("Widen the visible window to every loaded record")
+            }
+        }
+    }
+
+    private func showAllTime() {
+        hold()
+        navigation.view.interval = displayProjection.interval
+    }
+
+    private var activityMenu: some View {
+        SnapshotSafeMenu(
+            systemName: "ellipsis",
+            label: "Activity actions",
+            identifier: "work.timeline.actions"
+        ) {
+            Button("Export visible records…", action: exportReview)
+                .disabled(filtered.isEmpty)
+                .buttonStyle(QuietButtonStyle())
         }
     }
 
@@ -420,11 +651,11 @@ struct WorkTimelineView: View {
             let content = WorkTimelineExport.text(taskID: receipt.taskId, title: receipt.title,
                 records: filtered, projection: displayProjection, following: navigation.following,
                 query: navigation.view.query, file: navigation.view.file, generatedAt: Date(),
-                snapshotAt: lastObserved,
+                snapshotAt: observation.lastObserved,
                 failuresOnly: navigation.view.failuresOnly, interval: interval,
                 offlineReceiptAt: dashboard.receiptSavedAt,
                 outcome: receipt.axes.decisionStatus.key,
-                handoff: receipt.axes.handoff.map { "\($0.handedOff == true ? "Handed off" : "Not the current handoff frontier") · \($0.statement ?? "No handoff statement supplied")" })
+                handoff: receipt.axes.handoff?.markerLine)
             try content.write(to: destination, atomically: true, encoding: .utf8)
             exportError = nil
         } catch { exportError = "Could not export this review: \(error.localizedDescription)" }
@@ -436,6 +667,7 @@ struct WorkTimelineView: View {
         Button {
             cancelDeferredFocus()
             if navigation.following { hold() } else {
+                restoredPositionFromCurrentEvidence = false
                 followWindowSpan = interval?.span ?? 30 * 60
                 navigation.following = true
                 showingArrivals = false
@@ -483,18 +715,30 @@ struct WorkTimelineView: View {
                 recordSearch
             }
             let failureCount = displayProjection.records.filter(\.isCurrentFailure).count
+            if failureCount == 0, !navigation.view.failuresOnly,
+               let notRun = PayloadAbsence.text(receipt.axes.evidenceStrength.checksNotRunText) {
+                // Checks that could not run are a named gap beside the record
+                // search — never counted or offered as failures.
+                Label(notRun, systemImage: CheckResultTone.notRun.symbol)
+                    .workFont(.caption).foregroundStyle(Theme.muted)
+                    .accessibilityIdentifier("work.timeline.not-run")
+            }
             if failureCount > 0 || navigation.view.failuresOnly || hasActiveFilters {
                 layout {
                     if failureCount > 0 || navigation.view.failuresOnly {
-                        Button(navigation.view.failuresOnly ? "Show all records" : "\(failureCount) failed \(failureCount == 1 ? "record" : "records")") {
+                        Button(navigation.view.failuresOnly ? "Show all records"
+                               : WorkTimelineFilterReveal.failuresButtonTitle(
+                                   tallyFailed: receipt.axes.evidenceStrength.checksFailed,
+                                   currentFailureRecords: failureCount)) {
                             hold(); navigation.view.failuresOnly.toggle()
+                            if navigation.view.failuresOnly { revealMatchesIfWindowEmpty() }
                         }.buttonStyle(QuietButtonStyle(horizontalPadding: 8))
                         .accessibilityIdentifier("work.timeline.failures")
-                        .help("Current failures in loaded records; one check may appear in more than one source.")
+                        .help("Show only failed checks that still need attention; one check may appear in more than one source.")
                     }
                     if hasActiveFilters {
-                        Text("\(filtered.count) of \(displayProjection.records.count) loaded records")
-                            .workFont(.caption).foregroundStyle(Theme.muted)
+                        // The count itself now lives in the heading, printed
+                        // for every window rather than only a filtered one.
                         Button("Clear filters") { clearFilters() }
                             .buttonStyle(QuietButtonStyle(horizontalPadding: 8))
                             .accessibilityIdentifier("work.timeline.clear-filters")
@@ -519,31 +763,33 @@ struct WorkTimelineView: View {
     }
 
     private var recordSearch: some View {
-        HStack(spacing: Space.s) {
-            Image(systemName: "magnifyingglass").foregroundStyle(Theme.muted)
-                .accessibilityHidden(true)
-            if SnapshotMode.enabled && !SnapshotMode.interactiveFixture {
-                // ImageRenderer cannot draw AppKit text fields, and their
-                // placeholder height varies between accessibility renders.
-                Text(navigation.view.query.isEmpty ? "Search activity" : navigation.view.query)
-                    .workFont(.body)
-                    .foregroundStyle(navigation.view.query.isEmpty ? Theme.muted : Theme.ink)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 6).padding(.vertical, 3)
-                    .background(Theme.card, in: RoundedRectangle(cornerRadius: 4))
-                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Theme.cardLine))
-            } else {
-                TextField("Search activity", text: Binding(
-                    get: { navigation.view.query },
-                    set: { hold(); navigation.view.query = $0 }
-                ))
-                .textFieldStyle(.roundedBorder)
-                .workFont(.body)
-                .accessibilityLabel("Search loaded activity, sessions and files")
-                .accessibilityIdentifier("work.timeline.search")
-            }
-        }
+        // The shared app-chrome field (K15); snapshots keep its chrome and
+        // swap only the inner field for text.
+        AppTextField(
+            placeholder: "Search activity",
+            text: Binding(
+                get: { navigation.view.query },
+                set: { query in
+                    // AppKit writes the unchanged value back when the field
+                    // becomes first responder, and holding on that alone
+                    // stopped Live follow the moment focus landed here — a
+                    // mode change nobody asked for (K78). Only an actual edit
+                    // is an investigation.
+                    guard query != navigation.view.query else { return }
+                    hold()
+                    navigation.view.query = query
+                }
+            ),
+            systemImage: "magnifyingglass",
+            font: .body,
+            focus: $searchFocused,
+            accessibilityLabel: "Search loaded activity, sessions and files",
+            accessibilityIdentifier: "work.timeline.search"
+        )
         .frame(minWidth: 240, maxWidth: .infinity)
+        // ⌘F reaches the record's own search too, so the command is never
+        // dead while a search field is on screen (K114).
+        .focusedSceneValue(\.focusSearch, FocusSearchAction { searchFocused = true })
     }
 
     private func evidenceIdentity(_ record: WorkTimelineRecord) -> String {
@@ -564,12 +810,22 @@ struct WorkTimelineView: View {
                 }
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(record.title).workFont(.titleCard)
+                        Text(record.displayTitle).workFont(.titleCard)
                             .fixedSize(horizontal: false, vertical: true)
                             .accessibilityFocused($accessibleEvidence, equals: "inspector")
                             .accessibilityAddTraits(.isHeader)
+                        if record.kind == .step, let gradeLabel = record.evidenceGradeLabel {
+                            // The reducer's tier word and its reason answer
+                            // "is this the agent's own claim?" (C04).
+                            TierBadge(grade: record.evidenceGrade, text: gradeLabel)
+                            if let reason = record.evidenceGradeReason {
+                                Text(reason).workFont(.body)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .textSelection(.enabled)
+                            }
+                        }
                         HStack(spacing: 6) {
-                            Text(record.resultLabel + (record.superseded ? " · Superseded" : ""))
+                            Text(record.resultLabel)
                                 .foregroundStyle(color(record))
                             Text(record.source).foregroundStyle(Theme.muted)
                             if let note = record.identityNote {
@@ -580,25 +836,74 @@ struct WorkTimelineView: View {
                         }.workFont(.caption)
                         Text(record.start.map(Self.dateText) ?? "Source time unavailable")
                             .workFont(.caption).foregroundStyle(Theme.muted)
+                        if record.kind == .check, let revision = record.revisionLabel {
+                            Text(revision).workFont(.caption).foregroundStyle(Theme.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                        }
                     }.frame(maxWidth: .infinity, alignment: .leading)
-                    Button { dismissInspector(record) } label: { Image(systemName: "xmark") }
-                        .buttonStyle(QuietButtonStyle(horizontalPadding: 7))
+                    IconButton(systemName: "xmark", label: "Close record details",
+                               identifier: "work.timeline.inspector.close") { dismissInspector(record) }
                         .focused($focusedEvidence, equals: "inspector")
                         .onKeyPress(.escape) { dismissInspector(record); return .handled }
-                        .accessibilityLabel("Close record details")
-                        .accessibilityIdentifier("work.timeline.inspector.close")
-                        .help("Close record details")
                 }
                 Divider().overlay(Theme.hairline)
+                // WHY this record is marked in the list and on the canvas, in
+                // the reducer's own sentence. The leading rule is the visual
+                // half of the same fact; without the sentence the mark is a
+                // riddle (F3).
+                if record.isSalient, let reason = record.salienceReason {
+                    HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                        Rectangle().fill(Theme.rule).frame(width: 3, height: 14)
+                            .accessibilityHidden(true)
+                        Text(reason).workFont(FieldFont.qualifier).foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("work.timeline.inspector.salience")
+                }
                 if let summary = record.summary, summary != record.title {
                     Text(summary).workFont(.body).textSelection(.enabled)
+                }
+                // What a progress note IS, in the reducer's words — so a
+                // reviewer reading a beat's prose beside a step's cannot take
+                // it for a step of its own (F2). Only the receipt carries the
+                // definition; the paged timeline route does not, and an
+                // absence here is simply no line.
+                if record.isBeat, let definition = PayloadAbsence.text(receipt.timeline?.beatDefinition) {
+                    Text(definition).workFont(FieldFont.qualifier).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: Metrics.readingMeasure, alignment: .leading)
+                        .accessibilityIdentifier("work.timeline.inspector.beat-definition")
                 }
                 if let warning = record.timeWarning { Text(warning).workFont(.caption).foregroundStyle(Theme.amber) }
                 if let disposition = record.disposition {
                     Text("Human disposition: \(disposition). The recorded check result is unchanged.").workFont(.caption)
                 }
                 if let resolution = record.resolutionDescription { Text(resolution).workFont(.caption).textSelection(.enabled) }
-                if let code = record.exitCode, code != 0 { Text("Exit code: \(code)").workFont(.caption) }
+                if let code = record.exitCode { Text("Exit code: \(code)").workFont(.caption) }
+                // The reducer's named result/exit-code disagreement, directly
+                // under the exit code it disagrees with. It reached the model
+                // and had no render site on any surface at all.
+                if let note = record.noteText {
+                    Label(note, systemImage: "exclamationmark.triangle")
+                        .workFont(.caption).foregroundStyle(Theme.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("work.timeline.inspector.note")
+                }
+                // The step's recorded continuation point, verbatim, under its
+                // own label — the one line that says what happens next.
+                if let next = record.nextStep {
+                    VStack(alignment: .leading, spacing: 3) {
+                        CapsLabel(text: "Next step")
+                        Text(next).workFont(.body).textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("work.timeline.inspector.next-step")
+                }
                 if !filtered.contains(where: { $0.id == record.id }) {
                     Text("Outside the current filters").workFont(.caption).foregroundStyle(Theme.amber)
                     Button("Show this record") { clearFilters(); focusSelectedRange(); returnToRecord(record) }
@@ -608,11 +913,14 @@ struct WorkTimelineView: View {
                 if !associatedChecks.isEmpty {
                     DisclosureGroup("Checks · \(associatedChecks.count)") {
                         ForEach(associatedChecks) { check in
-                            Button("\(check.title) · \(check.resultLabel)\(check.superseded ? " · Superseded" : "") · \(check.source)") { inspect(check) }
+                            Button(([check.displayTitle, check.resultLabel, check.source]
+                                    + [check.revisionLabel].compactMap { $0 }).joined(separator: " · ")) { inspect(check) }
                                 .buttonStyle(QuietButtonStyle(horizontalPadding: 8))
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                    }.workFont(.caption)
+                    }
+                    .disclosureGroupStyle(FullRowDisclosureStyle())
+                    .workFont(.caption)
                 }
                 if let supersededBy = record.supersededBy {
                     if displayProjection.records.contains(where: { $0.eventID == supersededBy }) {
@@ -623,6 +931,14 @@ struct WorkTimelineView: View {
                     }
                 } else if record.superseded {
                     Text("The source marks this check superseded; a target event is not supplied.").workFont(.caption)
+                }
+                if let earlier = record.supersedesCheckEventID {
+                    if displayProjection.records.contains(where: { $0.eventID == earlier }) {
+                        Button("View earlier result") { inspectEvent(earlier) }
+                            .buttonStyle(QuietButtonStyle(horizontalPadding: 8))
+                    } else {
+                        Text("The earlier result is not in loaded activity.").workFont(.caption).foregroundStyle(Theme.muted)
+                    }
                 }
                 ForEach(record.sectionRecordIDs, id: \.self) { sectionID in
                     if let section = displayProjection.records.first(where: { $0.id == sectionID }) {
@@ -637,50 +953,81 @@ struct WorkTimelineView: View {
                                 HStack(alignment: .top, spacing: 8) {
                                     Text(file).workFont(.caption).textSelection(.enabled)
                                         .frame(maxWidth: .infinity, alignment: .leading)
-                                    Button { hold(); clearSelection(); navigation.showFile(file) } label: {
-                                        Image(systemName: "line.3.horizontal.decrease.circle")
+                                    IconButton(systemName: "line.3.horizontal.decrease.circle",
+                                               label: "Find loaded activity referencing \(file)",
+                                               help: "Find loaded activity referencing this file") {
+                                        hold(); clearSelection(); navigation.showFile(file)
+                                        revealMatchesIfWindowEmpty()
                                     }
-                                    .buttonStyle(QuietButtonStyle(horizontalPadding: 6))
-                                    .help("Find loaded activity referencing this file")
-                                    .accessibilityLabel("Find loaded activity referencing \(file)")
                                 }
                             }
                             DisclosureGroup("About file references") {
                                 Text("These paths are recorded associations. File contents and diffs are not captured here. Filtering by a file temporarily replaces the other filters; Back to previous filters restores them.")
                                     .workFont(.caption).foregroundStyle(Theme.muted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }
+                            .disclosureGroupStyle(FullRowDisclosureStyle())
                         }.padding(.top, 6)
-                    }.workFont(.caption)
+                    }
+                    .disclosureGroupStyle(FullRowDisclosureStyle())
+                    .workFont(.caption)
                 }
                 if !record.artifactDescriptions.isEmpty {
                     DisclosureGroup("Artifacts") {
-                        ForEach(record.artifactDescriptions, id: \.self) { Text($0).textSelection(.enabled) }
-                    }.workFont(.caption)
+                        ForEach(record.artifactDescriptions, id: \.self) {
+                            Text($0).textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .disclosureGroupStyle(FullRowDisclosureStyle())
+                    .workFont(.caption)
                 }
                 DisclosureGroup("Record details") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        if let note = record.identityNote { Text(note).foregroundStyle(Theme.muted) }
-                        Text("Scope: \(record.scope ?? "unavailable")")
-                        if let exitCode = record.exitCode { Text("Recorded exit code: \(exitCode)") }
-                        Text(record.timeNote)
-                        Text("Session: \(record.laneTitle)")
-                        Text(evidenceIdentity(record))
-                        Text(record.lineage)
-                        Text("Event: \(record.eventID ?? "not supplied")")
-                        if let start = record.start { Text("Source time: \(WorkTimelineTimeAxis.preciseLabel(start))") }
-                        if let end = record.end { Text("Latest update: \(WorkTimelineTimeAxis.preciseLabel(end))") }
-                        if let supersededBy = record.supersededBy { Text("Superseded by event: \(supersededBy)") }
-                        if record.commandRedacted { Text("Command text was deliberately not captured.") }
-                    }.fixedSize(horizontal: false, vertical: true).textSelection(.enabled).padding(.top, 6)
+                    // A label/value grid on the panel's own leading edge, like
+                    // the record page's fact rows. The old centered VStack read
+                    // as a detached floating column (K101).
+                    Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: Space.m, verticalSpacing: 6) {
+                        if let note = record.identityNote { detailNote(note, muted: true) }
+                        // The lane this record's canvas position states, in the
+                        // reducer's own words, and the step kind behind the
+                        // card's eyebrow.
+                        if let lane = record.laneLabel { detailRow("Lane", lane) }
+                        if let kind = record.sectionKind { detailRow("Kind", kind) }
+                        detailRow("Scope", record.scope ?? "unavailable")
+                        detailNote(record.timeNote)
+                        detailRow("Session", record.laneTitle)
+                        detailNote(evidenceIdentity(record))
+                        detailNote(record.lineage)
+                        detailRow("Event", record.eventID ?? "not supplied")
+                        // The local clock the header and axis show, to the
+                        // second, then the exact source value labelled UTC —
+                        // the two no longer disagree on the date (K101).
+                        if let start = record.start {
+                            detailRow("Source time",
+                                "\(WorkTimelineTimeAxis.spokenLabel(start)) · source \(WorkTimelineTimeAxis.preciseLabel(start))")
+                        }
+                        if let end = record.end {
+                            detailRow("Latest update",
+                                "\(WorkTimelineTimeAxis.spokenLabel(end)) · source \(WorkTimelineTimeAxis.preciseLabel(end))")
+                        }
+                        if let supersededBy = record.supersededBy { detailRow("Superseded by event", supersededBy) }
+                        if let commandState = record.commandStateText { detailNote(commandState) }
+                    }
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 6)
                 }
+                .disclosureGroupStyle(FullRowDisclosureStyle())
                 .workFont(.caption)
                 .accessibilityIdentifier("work.timeline.inspector.identity")
             }
             .id(record.id)
             .padding(Space.m).frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.canvas, in: RoundedRectangle(cornerRadius: Metrics.radius))
+            .background(Theme.well, in: RoundedRectangle(cornerRadius: Metrics.radius))
             .id("work.timeline.inspector")
-            .background(WorkTimelineRevealProbe { onRevealInspector?() })
+            .background(WorkTimelineRevealProbe { if revealArmed { revealArmed = false; onRevealInspector?() } })
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("work.timeline.inspector")
             .onKeyPress(.escape) { dismissInspector(record); return .handled }
@@ -693,14 +1040,45 @@ struct WorkTimelineView: View {
         }
     }
 
+    /// One labelled identity fact: its caps label and its value, aligned on
+    /// the same baseline in the details grid.
+    private func detailRow(_ label: String, _ value: String) -> some View {
+        GridRow {
+            CapsLabel(text: label)
+                .gridColumnAlignment(.leading)
+            Text(value)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// A recorded sentence that carries its own subject (a time note, a
+    /// lineage) spans both columns rather than inventing a label for it.
+    private func detailNote(_ text: String, muted: Bool = false) -> some View {
+        GridRow {
+            Text(text)
+                .foregroundStyle(muted ? Theme.muted : Theme.ink)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .gridCellColumns(2)
+        }
+    }
+
     private func dismissInspector(_ record: WorkTimelineRecord) {
         clearSelection()
         requestedRowFocus = record.id
         scrollRequest += 1
     }
 
-    private func inspect(_ record: WorkTimelineRecord, focusInspector: Bool = true) {
+    /// `revealsRegion` is the page's permission to scroll the DOCUMENT so the
+    /// selection region comes into view. A click inside this surface grants it
+    /// — the reviewer is looking here. A request from another part of the
+    /// record page does not: see `inspectEvent` (F9).
+    private func inspect(_ record: WorkTimelineRecord, focusInspector: Bool = true,
+                         revealsRegion: Bool = true) {
         hold()
+        // A user asked for these details, so the page may scroll to show them.
+        revealArmed = revealsRegion
         navigation.view.selectedID = record.id
         navigation.view.anchorID = record.id
         appSelection.workReturnFocus.remember(taskID: receipt.taskId, recordID: record.id)
@@ -743,7 +1121,9 @@ struct WorkTimelineView: View {
                 returnToRecord(record)
             } else {
                 onRevealHeading?()
-                focusedEvidence = "timeline-heading"; accessibleEvidence = "timeline-heading"
+                // The heading takes VoiceOver focus only; keyboard focus stays
+                // where the reviewer left it rather than on static text (K115).
+                accessibleEvidence = "timeline-heading"
             }
         }
     }
@@ -753,6 +1133,8 @@ struct WorkTimelineView: View {
         switch target {
         case .record(let id):
             hold()
+            // A deliberate return to a remembered record may reveal it.
+            revealArmed = true
             navigation.view.selectedID = id
             navigation.view.anchorID = id
             onRevealRecords?()
@@ -766,9 +1148,26 @@ struct WorkTimelineView: View {
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(180))
                 guard viewIsVisible, activeTaskID == taskID, appSelection.taskId == taskID, generation == focusGeneration else { return }
-                focusedEvidence = "timeline-heading"; accessibleEvidence = "timeline-heading"
+                // The heading takes VoiceOver focus only; keyboard focus stays
+                // where the reviewer left it rather than on static text (K115).
+                accessibleEvidence = "timeline-heading"
             }
         }
+    }
+
+    /// A discrete filter change (failures toggle, file filter) that leaves the
+    /// visible window without a match moves to the newest match and stops
+    /// following. Search keystrokes never move the window (C12).
+    private func revealMatchesIfWindowEmpty() {
+        guard let range = WorkTimelineFilterReveal.interval(for: matchingRecords, window: interval) else { return }
+        hold()
+        navigation.view.interval = range
+    }
+
+    private func moveWindow(to record: WorkTimelineRecord) {
+        guard let range = WorkTimelineRangeNavigation.focused(on: record) else { return }
+        hold()
+        navigation.view.interval = range
     }
 
     private func focusSelectedRange() {
@@ -778,8 +1177,23 @@ struct WorkTimelineView: View {
         scrollTarget = selected.id
         scrollRequest += 1
     }
+    /// A selection asked for by the Checks table above. The reviewer is reading
+    /// the row they pressed — several screens up — so this path re-frames the
+    /// canvas/list INTERNALLY and leaves the document exactly where it is.
+    ///
+    /// It used to take the ordinary `inspect` route, which arms the reveal
+    /// probe, and the probe then scrolled the whole record page down to the
+    /// Activity region: one press threw the document ~2,600 pt PAST the detail
+    /// it had just expanded, and the expanded row was never seen (F9).
     private func inspectEvent(_ eventID: String) {
-        if let record = displayProjection.records.first(where: { $0.eventID == eventID }) { inspect(record) }
+        guard let record = displayProjection.records.first(where: { $0.eventID == eventID }) else { return }
+        if let window = interval,
+           let reframed = WorkTimelineRangeNavigation.reframed(window, toShow: record) {
+            navigation.view.interval = reframed
+        }
+        // No inspector focus either: moving the VoiceOver cursor to a region
+        // three screens away is the same displacement by another route.
+        inspect(record, focusInspector: false, revealsRegion: false)
     }
     private func cancelDeferredFocus() {
         appSelection.workReturnFocus.cancel()
@@ -791,11 +1205,21 @@ struct WorkTimelineView: View {
         cancelDeferredFocus()
         loadingInitialSnapshot = false
         navigation.following = false
+        // Any window or filter move leaves the restored position behind, so
+        // the note describing it stops applying (K102).
+        restoredPositionFromCurrentEvidence = false
     }
     private func trailingWindow(_ full: WorkTimelineInterval?, span: Double?) -> WorkTimelineInterval? {
         guard let full else { return nil }
-        return WorkTimeCanvasLayout.latestWindow(within: full,
+        // Following keeps its anchor on the newest activity — the point a
+        // reviewer watching live wants at the right edge. It is an APP-chosen
+        // window, though, so it goes through the same populated() guarantee as
+        // the opening one: when the newest record is a long section, the 30
+        // minutes after its last update hold only its tail line and no card at
+        // all, and the canvas then opened on its named-empty state (B3).
+        let window = WorkTimeCanvasLayout.latestWindow(within: full,
             latest: displayProjection.newestRecord?.latestTime, span: span ?? 30 * 60)
+        return populated(window, within: full)
     }
     private func receive(_ projection: WorkTimelineProjection) {
         feed.ingest(projection, following: navigation.following || loadingInitialSnapshot)
@@ -813,7 +1237,15 @@ struct WorkTimelineView: View {
         let taskID = receipt.taskId
         saveMemory()
         activeTaskID = taskID
+        revealArmed = false
         navigation = WorkTimelinePreferences.load(taskID: taskID)
+        if appSelection.workEntry == .navigate {
+            // Opening a record shows the whole record. A selection saved on an
+            // earlier visit would otherwise re-open its inspector and pull the
+            // page down to it (K104). The saved window and filters stay — both
+            // are named on screen, and an inspector is not.
+            navigation.view.selectedID = nil
+        }
         followWindowSpan = max(navigation.view.interval?.span ?? 0, 30 * 60)
         let cached = dashboard.isOfflineSnapshot || SnapshotMode.enabled ? nil : WorkTimelineMemory.cache.load(taskID)
         feed = cached?.feed ?? WorkTimelineFeed()
@@ -822,7 +1254,7 @@ struct WorkTimelineView: View {
         if dashboard.isOfflineSnapshot { navigation.following = false }
         loadingInitialSnapshot = cached == nil && !SnapshotMode.enabled && !dashboard.isOfflineSnapshot
         timelineError = nil
-        lastObserved = nil
+        observation.lastObserved = nil
         showingArrivals = navigation.history != nil
         scrollTarget = navigation.view.anchorID
         if dashboard.isOfflineSnapshot {
@@ -830,6 +1262,14 @@ struct WorkTimelineView: View {
             guard !Task.isCancelled, activeTaskID == taskID else { return }
         }
         if cached == nil { receive(projection) }
+        // A window RESTORED from an earlier visit can land in a gap that this
+        // snapshot no longer fills. Opening on a named-empty canvas is not a
+        // reading position worth keeping, so repair it once, here, where it is
+        // the app's choice rather than a reviewer's pan.
+        if let saved = navigation.view.interval, let full = displayProjection.interval {
+            let repaired = populated(saved, within: full)
+            if repaired != saved { navigation.view.interval = repaired }
+        }
         if SnapshotMode.enabled && reviewSelectedRecord {
             navigation.following = false
             navigation.view.selectedID = displayProjection.records.first?.id
@@ -844,13 +1284,19 @@ struct WorkTimelineView: View {
                     timeline = page
                     receive(page.projection(taskID: taskID))
                 }
-                timelineError = nil
-                lastObserved = Date()
+                // Writing SwiftUI state invalidates the view whether or not the
+                // value moved, so a three-second poll that re-stamped these on
+                // every tick rebuilt the whole Activity surface — canvas,
+                // record list and inspector — to show what it already showed.
+                // The observation stamp is not state at all: only the export
+                // reads it, never `body`.
+                if timelineError != nil { timelineError = nil }
+                observation.lastObserved = Date()
             } catch {
                 guard !Task.isCancelled, activeTaskID == taskID else { return }
                 timelineError = error.localizedDescription
             }
-            loadingInitialSnapshot = false
+            if loadingInitialSnapshot { loadingInitialSnapshot = false }
             // Missing/filtered evidence focuses the heading, never another row.
             restoreReturnFocusIfReady()
             do { try await Task.sleep(for: .seconds(3)) } catch { return }
@@ -861,18 +1307,16 @@ struct WorkTimelineView: View {
     private func symbol(_ record: WorkTimelineRecord) -> String {
         if record.superseded { return "clock.arrow.circlepath" }
         if record.kind == .step { return "text.alignleft" }
-        switch record.result {
-        case "failed", "error": return "xmark.circle"
-        case "passed": return "checkmark.circle"
-        case "skipped": return "forward.end"
-        default: return "questionmark.circle"
+        switch record.checkTone {
+        case .failure: return "xmark.circle"
+        case .pass: return "checkmark.circle"
+        case .notRun: return CheckResultTone.notRun.symbol
         }
     }
+    /// `Sep 14, 10:50 PM`: the shared date and locale clock helpers (C55).
     private static func dateText(_ time: Double) -> String {
-        Date(timeIntervalSince1970: time).formatted(date: .abbreviated, time: .standard)
-    }
-    private static func shortTime(_ time: Double) -> String {
-        Date(timeIntervalSince1970: time).formatted(date: .omitted, time: .standard)
+        let date = Date(timeIntervalSince1970: time)
+        return "\(Fmt.displayDate(date)), \(Fmt.clockTime(date))"
     }
 }
 
@@ -939,6 +1383,13 @@ private struct WorkTimelineScrollObserver: NSViewRepresentable {
             monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
                 guard let self, event.window == self.window,
                       self.visibleRect.contains(self.convert(event.locationInWindow, from: nil)) else { return event }
+                // Plain vertical scrolling moves the page and must not pause
+                // Live; only input the canvas interprets holds the timeline.
+                let dx = Double(event.scrollingDeltaX), dy = Double(event.scrollingDeltaY)
+                let precise = event.hasPreciseScrollingDeltas, modifiers = event.modifierFlags
+                guard WorkTimeCanvasInputIntent.zoomScroll(deltaX: dx, deltaY: dy, precise: precise, modifiers: modifiers) != nil
+                        || WorkTimeCanvasInputIntent.panScroll(deltaX: dx, deltaY: dy, precise: precise, modifiers: modifiers) != nil
+                else { return event }
                 self.onScroll?()
                 return event
             }

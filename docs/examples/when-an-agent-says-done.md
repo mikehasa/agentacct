@@ -12,23 +12,29 @@ An agent worked on **"Fix the flaky checkout-total test"** and reported it done.
 
 `task_flaky_total`
 
-- **Decision status — `REPORTED`** · asserted by `agent_report`
+- **Reported — 1/2 self-checked**
+  Not yet proven: 1 completed step unchecked
+  Counts since May 28
+
+- **Decision — Reported** · asserted by the agent's report
   The agent reported completing work; no check verifies the completion claim itself.
-- **Evidence coverage — 1/2 self-checked · 1 unchecked**
-  1 non-verifiable (research/docs)
-  X of Y checkable steps carry a passing check; the tiers show how independent that check is. These are counts, not a probability of correctness.
+  Outcome (agent-reported): Moved rounding into money.round_half_up(); the agent reported done here.
+- **Coverage — 1/2 self-checked · 1 unchecked**
+  1 not check-relevant
+  Not check-relevant: review, research, planning, docs
+  Counts are passing checks over checkable steps, split by how independent each check is. These are counts, not a probability of correctness.
 
 > Evidence coverage and decision status are separate axes: an agent reporting 'done' never adds a passing check, and a human review or approval never counts as machine verification.
 
 | Dimension | Summary | Source |
 | --- | --- | --- |
-| Task | Reproduce the flaky total; Fix the rounding in the total · project storefront | client_log, mcp |
-| Actors | claude-code · claude-opus-4-8 | client_log |
-| Actions | edit×6 execute×4 read×10 search×2 · touched 3 files · ran 1 command | hook, mcp |
-| Cost | $18.60 · pricing_table | client_log |
+| Task | Reproduce the flaky total; Fix the rounding in the total · project storefront | Client log, Agent-reported |
+| Agents | claude-code · claude-opus-4-8 | Client log |
+| Tool calls | 22 tool calls captured · edit×6 execute×4 read×10 search×2 · 3 related paths · ran 1 command | Hook-captured, Agent-reported |
+| Cost | ≈$18.60 · pricing estimate | Client log |
 | Weekly plan | calibrating — not enough 7-day history yet |  |
-| Evidence | 1 checks · 1 passed · 0 failed | mcp |
-| Outcome | reported · asserted by agent_report | mcp |
+| Checks | 1/1 passed · 1 earlier run failed | Agent-reported |
+| Decision | Reported · asserted by the agent's report | Agent-reported |
 
 **What ran**
 
@@ -38,23 +44,26 @@ An agent worked on **"Fix the flaky checkout-total test"** and reported it done.
 
 **Timeline**
 
-| When | Lane | Event | Status | Source |
+| When | Session | Event | Status | Source |
 | --- | --- | --- | --- | --- |
-| +0s | primary | Reproduce the flaky total | completed | claude-code |
-| +3m00s | primary | Fix the rounding in the total | completed | claude-code |
-| +4m00s | evidence | 3 failed (red) | failed | mcp |
-| +7m40s | evidence | 14 passed | passed | mcp |
-| +11m40s | primary | Extract a rounding helper | completed | claude-code |
+| +0s | Reproduce the flaky total | Reproduce the flaky total | Reported completed | Agent-reported |
+| +3m00s | Reproduce the flaky total | Fix the rounding in the total | Reported completed | Agent-reported |
+| +4m00s | Reproduce the flaky total | pytest · revision not captured | Failed · superseded | Agent-reported |
+| +7m40s | Reproduce the flaky total | pytest · revision not captured | Passed | Agent-reported |
+| +11m40s | Reproduce the flaky total | Extract a rounding helper | Reported completed | Agent-reported |
 
-**Gaps (1)** — what could not be proven
+**Gaps (4)** — what could not be proven
 
-- **evidence** — 1 completed step has no linked passing check.
+- **Tool calls** — Tool-call capture did not cover this Task: captured 22 calls covering May 28 20:38 of a May 28 20:26–20:39 task · the ledger holds 3 recorded sections but capture saw no record_section call · the ledger holds 2 recorded checks but capture saw no record_machine_check call.
+- **Checks** — 1 completed step has no linked passing check.
+- **Checks** — No commit was recorded with this work, so it cannot be located in the repository.
+- **Tool calls** — File operations were not ordered, so the recorded paths cannot be read as a sequence of edits.
 
 **Provenance**
 
-- `client_log` — Observed in the agent's own local session / usage log.
-- `hook` — Captured by an agentacct client hook (tool categories, mechanical checks).
-- `mcp` — Recorded by the agent through agentacct's MCP tools (sections, files, checks).
+- **Client log** — Observed in the agent's own local session / usage log.
+- **Hook-captured** — Captured by an agentacct client hook (tool categories, mechanical checks).
+- **Agent-reported** — Recorded by the agent through agentacct's MCP tools (sections, files, checks).
 
 ## How to read this
 
@@ -74,4 +83,4 @@ That is why the decision status is not a clean "verified": the evidence coverage
 
 **Follow-up the receipt makes obvious:** re-run `pytest tests/test_checkout.py -q` after the refactor. If it passes and postdates the last edit, the last edit earns a check; until then, "done" is a claim, not proof.
 
-Each timeline row is sourced from the client that recorded it (here, Claude Code); the **Lane** column separates the work steps (`primary`) from the checks (`evidence`). The checks are **self-checked** — agent-recorded through MCP, shown by the Evidence row's `mcp` source — while the tool categories were hook-captured (the Actions row's `hook` source). What each source can and cannot prove is in the [coverage matrix](../coverage-matrix.md); the capture boundaries (agentacct stores tool categories, files and commands — never full prompts or transcripts) are in the [privacy threat model](../multi-source-privacy-threat-model.md).
+Each timeline row is sourced from the client that recorded it (here, Claude Code); the **Lane** column separates the work steps (`primary`) from the checks (`evidence`). The checks are **self-checked** — agent-recorded through MCP, shown by the Checks row's **Agent-reported** source — while the tool categories were hook-captured (the Actions row's **Hook-captured** source). What each source can and cannot prove is in the [coverage matrix](../coverage-matrix.md); the capture boundaries (agentacct stores tool categories, files and commands — never full prompts or transcripts) are in the [privacy threat model](../multi-source-privacy-threat-model.md).

@@ -558,3 +558,39 @@ def test_regime_change_calibrates_on_the_trailing_window(tmp_path):
         _record_7d(service2, captured=float(t0 + (i + 1) * spacing), pct=pct, index=i + 1)
     weights2 = pc.calibrate_plan_weights(service2.list_all_events(), client="claude-code", now=now)
     assert weights2.confidence == "baseline"
+
+
+def test_beyond_the_ceiling_is_a_terminal_out_of_band_state_not_calibrating(tmp_path):
+    """A fit past the stability ceiling will never calibrate at this ratio, so
+    the state key names that instead of a warming-up 'calibrating' with a
+    nonsensical '160/3 intervals' progress fraction."""
+
+    service = SentinelService(tmp_path)
+    now = _consistent_history(service, ratio=pc._STABILITY_HARD_BAND[1] * 1.5,
+                              intervals=pc._STABILITY_MIN_INTERVALS + 2, tokens=20_000_000)
+    weights = pc.calibrate_plan_weights(service.list_all_events(), client="claude-code", now=now)
+    assert weights.confidence == "baseline"
+    assert pc.calibration_state(weights) == "out_of_band"
+    entry = pc.plan_status_entry(weights)
+    assert entry["calibration_state"] == "out_of_band"
+    assert entry["intervals_used"] is None and entry["intervals_needed"] is None
+    assert entry["raw_scale"] is not None
+    assert "will not calibrate at this ratio" in entry["state_detail"]
+
+    from agentacct.receipt import plan_share_headline
+
+    assert plan_share_headline({"pct": None, "calibration_state": entry["calibration_state"]}) == (
+        "won't calibrate at current ratio"
+    )
+    assert entry["chip_text"] == "plan share unavailable"
+    assert entry["headline"].startswith("Won't calibrate:")
+    assert "stability ceiling" in entry["basis_text"]
+
+
+def test_an_out_of_band_fit_that_may_still_stabilize_keeps_calibrating_progress(tmp_path):
+    service = SentinelService(tmp_path)
+    now = _consistent_history(service, ratio=4.0, intervals=6)
+    weights = pc.calibrate_plan_weights(service.list_all_events(), client="claude-code", now=now)
+    entry = pc.plan_status_entry(weights)
+    assert entry["calibration_state"] == "calibrating"
+    assert entry["intervals_used"] == weights.intervals_used and entry["intervals_needed"] == pc._MIN_SCALE_INTERVALS
