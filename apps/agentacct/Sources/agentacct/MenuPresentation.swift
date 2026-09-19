@@ -113,7 +113,7 @@ struct MenuUsagePresentation {
             legend.append("≈ estimate")
         }
         if costTexts.contains(where: { $0.hasPrefix("~$") }) {
-            legend.append("~ priced subtotal")
+            legend.append("~ partial subtotal")
         }
         legendText = legend.isEmpty ? nil : legend.joined(separator: " · ")
     }
@@ -149,9 +149,10 @@ struct MenuCalibrationPresentation: Equatable {
         }
         let client = MenuLimitPresentation.clientLabel(entry.client)
         if let used = entry.intervalsUsed, let needed = entry.intervalsNeeded {
-            summary = "\(client) session share calibrating · \(used)/\(needed) intervals"
+            // Kept to one popover line: the old wording's length was the limit.
+            summary = "Learning \(client) weekly share · \(used)/\(needed) intervals"
         } else {
-            summary = "\(client) session share calibrating"
+            summary = "Learning \(client) weekly share"
         }
         detail = entry.stateDetail
     }
