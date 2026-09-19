@@ -6,6 +6,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Receipts now record **refused (user-denied) tool calls** as their own signal.
+  When a Claude Code user declines a tool's permission prompt (refuse-before-dispatch
+  — the tool never runs), the Actions dimension shows a distinct
+  `refused_action_count` and an "N actions refused — user denied" line, read from
+  the host's own transcript with `transcript_scan` provenance. It is additive: it
+  never folds into, nor subtracts from, executed tool counts, and it never touches
+  the evidence/outcome tiers. Forgery-guarded like worksets and finding
+  dispositions — only the transcript-scan emit path may stamp the trusted contract;
+  a generic `record_event` caller is stripped — so an agent cannot mint a "user
+  denied" claim with a stray write. Claude Code only today; a client with no clean
+  per-call refusal signal shows nothing rather than a fabricated zero. The exact
+  host transcript wording is best-effort and should be reconfirmed against a real
+  interactive-mode transcript.
+
 ## [0.11.1] — 2026-09-17
 
 Makes the dashboard fast again — the API-serving caches no longer rebuild the multi-second work ledger on every idle poll, and the recorder stops shadowing its highest-cardinality events into an unbounded store — plus a way to reclaim that store and one-click recorder self-update.

@@ -866,6 +866,15 @@ def _actions_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
         gaps.append(
             "Tool categories were not instrumented for this session; Actions shows touched files only."
         )
+    # Tool calls the USER DECLINED before dispatch (refuse-before-dispatch), read
+    # from the client's own transcript. A distinct, additive signal: NEVER folded
+    # into or subtracted from the executed counts above (a refused call that also
+    # appears in the hook-observed categories is deliberately not netted out). Its
+    # provenance is the transcript scan, not the hook.
+    refused_action_count = int(actions.get("refused_action_count") or 0)
+    if refused_action_count > 0:
+        gaps.append(f"{count_noun(refused_action_count, 'action')} refused — user denied.")
+        provenance.append(SOURCE_TRANSCRIPT_SCAN)
     # Compute the capped preview + disclosed overflow ONCE, here, so every surface
     # (CLI, TUI, and the macOS app) renders the daemon-provided slice and never
     # re-derives the cap client-side — the single source of truth for the cap.
@@ -886,6 +895,7 @@ def _actions_dimension(task: Mapping[str, Any]) -> dict[str, Any]:
         "command_count": len(commands),
         "commands_preview": commands_shown,
         "commands_elided": commands_elided,
+        "refused_action_count": refused_action_count,
         "provenance": sorted(set(provenance)) or [SOURCE_NONE],
         "gaps": gaps,
     }

@@ -8548,6 +8548,59 @@ def _local_usage_import_payload(
                     )
             except Exception:  # noqa: BLE001 - deriving Actions must never fail the import.
                 pass
+            # Emit transcript-scan-derived REFUSED tool calls (a user DECLINED the
+            # permission prompt; the tool never ran) as a distinct, additive
+            # ``refused_tool_call_observed`` event — never folded into, nor
+            # subtracted from, executed Actions (a different event_type the executed
+            # reducers ignore). Scoped-replace per (client, session) with a stable
+            # event_id, exactly like the discovery Actions above. Best-effort.
+            try:
+                from .tool_activity import (
+                    build_refused_tool_call_event,
+                    is_refused_tool_call_event,
+                )
+
+                refused_captured_at = time.time()
+                refused_events_by_id: dict[str, dict[str, Any]] = {}
+                for carrier in (
+                    *discovery.session_observations,
+                    *discovery.events,
+                ):
+                    built = build_refused_tool_call_event(
+                        client=getattr(carrier, "client", ""),
+                        session_id=getattr(carrier, "client_session_id", ""),
+                        refused_action_count=getattr(carrier, "refused_action_count", 0) or 0,
+                        captured_at=refused_captured_at,
+                    )
+                    if built is not None:
+                        refused_events_by_id[built["event_id"]] = built
+                refused_events = list(refused_events_by_id.values())
+                if refused_events:
+                    refused_activity_keys = {
+                        (
+                            event["metadata"]["client"],
+                            event["metadata"]["client_session_id"],
+                        )
+                        for event in refused_events
+                    }
+
+                    def _should_replace_refused_activity(
+                        existing_event: dict[str, Any],
+                    ) -> bool:
+                        if not is_refused_tool_call_event(existing_event):
+                            return False
+                        metadata = existing_event.get("metadata") or {}
+                        return (
+                            metadata.get("client"),
+                            metadata.get("client_session_id"),
+                        ) in refused_activity_keys
+
+                    service.replace_events(
+                        _should_replace_refused_activity,
+                        refused_events,
+                    )
+            except Exception:  # noqa: BLE001 - deriving refusals must never fail the import.
+                pass
             # Emit transcript-scan-derived mechanical checks — the independent
             # (harness-observed) exit codes that lift a step to
             # ``independently_checked`` — for a client whose hook does not fire.

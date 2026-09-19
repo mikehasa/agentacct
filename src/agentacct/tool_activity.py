@@ -615,6 +615,134 @@ def build_discovery_tool_activity_event(
     }
 
 
+# A tool call the USER DENIED before it ran (refuse-before-dispatch): the host
+# wrote the decline into its own transcript, so agentacct reads it back at
+# discovery time. This is a DISTINCT event_type — never ``tool_activity_observed``
+# — for two reasons: (1) the executed-count reducers all filter on
+# ``TOOL_ACTIVITY_EVENT_TYPE``, so a refusal can never be summed into, or subtract
+# from, an executed tally; (2) ``_sum_additive_tool_activity`` supersedes a
+# session's hook events the moment any transcript-scan ``tool_activity_observed``
+# exists, which would wrongly DROP a Claude session's hook-observed categories.
+# A refusal is a separate, additive "what the user blocked" signal, kept off the
+# evidence/outcome tiers entirely.
+REFUSED_TOOL_CALL_EVENT_TYPE = "refused_tool_call_observed"
+
+# Reserved contract key: the trusted transcript-scan emit path (build_refused_tool_call_event,
+# only ever called from the import orchestrator, inserted via replace_events) stamps
+# it; the REDUCER trusts a refused count ONLY when it is present. A generic
+# ``record_event`` / ``POST /events`` caller has it stripped
+# (service.strip_refused_tool_call_provenance), so the agent-under-test cannot mint
+# a "user denied" signal with a single MCP write — the same forgery defense worksets
+# and finding dispositions use. Because this event never rides the ``record_event``
+# lane (the hook does not emit it; only transcript discovery does), the strip has no
+# legitimate false positive.
+REFUSED_TOOL_CALL_CONTRACT_KEY = "reserved_refused_tool_call"
+REFUSED_TOOL_CALL_CONTRACT_VERSION = 1
+
+
+def build_refused_tool_call_event(
+    *,
+    client: str,
+    session_id: str,
+    refused_action_count: int,
+    captured_at: float,
+) -> dict[str, Any] | None:
+    """Build ONE ``refused_tool_call_observed`` event for a (client, session).
+
+    Content-free metadata: only the integer count (never tool arguments, paths,
+    or the user's feedback text). The event_id is stable per (client, session),
+    so a scoped ``replace_events`` refreshes it on each import and a re-import
+    never double-counts. Returns ``None`` when there is no real refusal signal, so
+    a client that exposes none records nothing — an honest gap, never a zero.
+    """
+
+    count = int(refused_action_count or 0)
+    client = str(client or "").strip()
+    session_id = str(session_id or "").strip()
+    if count <= 0 or not client or not session_id:
+        return None
+    metadata = {
+        "client": client,
+        "client_session_id": session_id,
+        "capture_basis": DISCOVERY_TOOL_ACTIVITY_CAPTURE_BASIS,
+        "captured_at": captured_at,
+        "sentinel_semantic_kind": "refused_tool_call",
+        "refused_action_count": count,
+        # Trusted-provenance stamp — the reducer requires it; the generic
+        # record_event lane strips it, so a forged event never counts.
+        REFUSED_TOOL_CALL_CONTRACT_KEY: REFUSED_TOOL_CALL_CONTRACT_VERSION,
+    }
+    digest = uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"{REFUSED_TOOL_CALL_EVENT_TYPE}\0{client}\0{session_id}",
+    ).hex
+    return {
+        "event_id": f"refusedtool:{digest}",
+        "created_at": captured_at,
+        "source": client,
+        "event_type": REFUSED_TOOL_CALL_EVENT_TYPE,
+        "run_id": None,
+        "metadata": metadata,
+    }
+
+
+def is_refused_tool_call_event(event: Mapping[str, Any]) -> bool:
+    """Whether an event is a user-denied-tool-call row BY TYPE (trusted or not).
+
+    Used by the import orchestrator's scoped-replace predicate, which operates on
+    already-stored (trusted) events. The REDUCER must use
+    ``is_trusted_refused_tool_call_event`` instead, so a forged event that reached
+    the log via the generic write lane (contract key stripped) never counts.
+    """
+
+    return isinstance(event, Mapping) and event.get("event_type") == REFUSED_TOOL_CALL_EVENT_TYPE
+
+
+def is_trusted_refused_tool_call_event(event: Mapping[str, Any]) -> bool:
+    """A refused-tool-call row that carries the reserved contract stamp.
+
+    Only ``build_refused_tool_call_event`` (the transcript-scan emit path) stamps
+    it, and the generic ``record_event`` lane strips it — so this is True only for
+    a count the import orchestrator actually derived from a transcript, never one an
+    agent forged through ``record_event`` / ``POST /events``.
+    """
+
+    if not is_refused_tool_call_event(event):
+        return False
+    metadata = event.get("metadata")
+    return isinstance(metadata, Mapping) and REFUSED_TOOL_CALL_CONTRACT_KEY in metadata
+
+
+def build_refused_actions_by_session(
+    events: Iterable[Mapping[str, Any]],
+) -> dict[tuple[str, str], int]:
+    """Sum TRUSTED ``refused_tool_call_observed`` counts per (client, session).
+
+    Gates on ``is_trusted_refused_tool_call_event`` (the reserved contract stamp),
+    so a forged event whose stamp was stripped on the generic write lane is ignored.
+    Each session emits at most one such event (stable event_id + scoped replace), so
+    the sum equals that session's count; summing stays correct even if two ever
+    coexist. Only positive integer counts are kept — no fabricated zero.
+    """
+
+    result: dict[tuple[str, str], int] = {}
+    for event in events:
+        if not is_trusted_refused_tool_call_event(event):
+            continue
+        metadata = event.get("metadata")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        client = str(metadata.get("client") or "").strip()
+        session = str(metadata.get("client_session_id") or "").strip()
+        if not client or not session:
+            continue
+        count = metadata.get("refused_action_count")
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+            continue
+        key = (client, session)
+        result[key] = result.get(key, 0) + count
+    return result
+
+
 def ingest_tool_activity_spool(
     store_dir: Path | str,
     *,
