@@ -2463,9 +2463,15 @@ struct WorkRecordPage: View {
 /// demand. Kept out of the Steps spine and below the timeline so a task with
 /// many subagents never buries the record; a short preview shows first, the
 /// rest fold under one counted trigger.
-private struct RecordSubagentsSection: View {
+struct RecordSubagentsSection<Row: View>: View {
     let members: [ReceiptSessionMember]
-    private static let previewLimit = 6
+    /// Opens the overflow fold on first render, for deterministic renders and
+    /// tests; the live record always starts with it closed.
+    var overflowInitiallyExpanded = false
+    /// Builds one session's row. The record uses `SessionDrillRow`; a test
+    /// substitutes a row that reports when it is built.
+    let row: (ReceiptSessionMember) -> Row
+    static var previewLimit: Int { 6 }
 
     private var preview: [ReceiptSessionMember] { Array(members.prefix(Self.previewLimit)) }
     private var overflow: [ReceiptSessionMember] { Array(members.dropFirst(Self.previewLimit)) }
@@ -2473,18 +2479,22 @@ private struct RecordSubagentsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(preview.enumerated()), id: \.element.id) { index, member in
-                SessionDrillRow(member: member)
+                row(member)
                 if index < preview.count - 1 { hairline }
             }
             if !overflow.isEmpty {
                 hairline
                 OverflowDisclosure(
                     label: "\(overflow.count) more session\(overflow.count == 1 ? "" : "s")",
-                    identifier: "work.overflow.subagents"
+                    identifier: "work.overflow.subagents",
+                    initiallyExpanded: overflowInitiallyExpanded
                 ) {
-                    VStack(alignment: .leading, spacing: 0) {
+                    // A task can carry hundreds of sessions; building every row
+                    // when the fold opens stalls the window, so only the rows
+                    // scrolled into view are built.
+                    ScrollContentStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(overflow.enumerated()), id: \.element.id) { index, member in
-                            SessionDrillRow(member: member)
+                            row(member)
                             if index < overflow.count - 1 { hairline }
                         }
                     }
@@ -2496,6 +2506,14 @@ private struct RecordSubagentsSection: View {
 
     private var hairline: some View {
         Rectangle().fill(Theme.hairline).frame(height: 1).padding(.vertical, 2)
+    }
+}
+
+extension RecordSubagentsSection where Row == SessionDrillRow {
+    init(members: [ReceiptSessionMember], overflowInitiallyExpanded: Bool = false) {
+        self.init(members: members, overflowInitiallyExpanded: overflowInitiallyExpanded) {
+            SessionDrillRow(member: $0)
+        }
     }
 }
 
@@ -2549,11 +2567,23 @@ private struct ReceiptSection<Content: View>: View {
 /// and nudges on hover. Internal so the Usage digest can reuse it.
 struct OverflowDisclosure<Content: View>: View {
     let label: String
-    var identifier: String? = nil
-    @ViewBuilder let content: () -> Content
+    let identifier: String?
+    let content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var expanded = false
+    @State private var expanded: Bool
     @State private var hovering = false
+
+    init(
+        label: String,
+        identifier: String? = nil,
+        initiallyExpanded: Bool = false,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.label = label
+        self.identifier = identifier
+        self.content = content
+        _expanded = State(initialValue: initiallyExpanded)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
