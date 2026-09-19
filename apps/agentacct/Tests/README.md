@@ -308,6 +308,8 @@ from the same versioned fixture as Dashboard.
 | `usage-reference-dark.png` | 1120 × 900 pt standard window, dark; same hierarchy | 2240 × 1800 px |
 | `usage-disconnected-reference-light.png` | 1120 × 900 pt, light; capacity unavailable while retained usage includes By client | 2240 × 1800 px |
 | `usage-disconnected-reference-dark.png` | 1120 × 900 pt, dark; same independent-lane fallback | 2240 × 1800 px |
+| `usage-about-expanded-light.png` | 1120 × 2400 pt, light; the whole page with "About these numbers" open (This range basis, cost grammar, windows, plan share) | 2240 × 4800 px |
+| `usage-about-expanded-dark.png` | 1120 × 2400 pt, dark; same state | 2240 × 4800 px |
 
 `UsageCapacityTests` separately covers row union/order, duplicate windows,
 stale visibility, unnamed identity isolation, threshold copy, elapsed reset

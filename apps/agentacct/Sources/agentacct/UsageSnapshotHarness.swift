@@ -15,6 +15,9 @@ struct UsageSnapshotConfiguration {
     let colorScheme: ColorScheme
     let capacityState: CapacityState
     let recordedUsageState: SnapshotRecordedUsageState
+    /// Render the About disclosure open (its "This range" basis block and
+    /// definitions are otherwise folded away).
+    var aboutExpanded = false
 
     var filename: String {
         let appearance = colorScheme == .dark ? "dark" : "light"
@@ -37,6 +40,9 @@ struct UsageSnapshotConfiguration {
         Self(viewport: "weekly-reference", width: 1120, height: 1120, colorScheme: .dark, capacityState: .connected, recordedUsageState: .ninetyDays),
         Self(viewport: "disconnected-reference", width: 1120, height: 900, colorScheme: .light, capacityState: .disconnected, recordedUsageState: .sevenDays),
         Self(viewport: "disconnected-reference", width: 1120, height: 900, colorScheme: .dark, capacityState: .disconnected, recordedUsageState: .sevenDays),
+        // Tall enough to reach the page's About disclosure, rendered open.
+        Self(viewport: "about-expanded", width: 1120, height: 2400, colorScheme: .light, capacityState: .connected, recordedUsageState: .sevenDays, aboutExpanded: true),
+        Self(viewport: "about-expanded", width: 1120, height: 2400, colorScheme: .dark, capacityState: .connected, recordedUsageState: .sevenDays, aboutExpanded: true),
     ]
 }
 
@@ -68,12 +74,14 @@ enum UsageSnapshotRenderer {
         defer {
             SnapshotMode.enabled = false
             SnapshotMode.boundsScrollContentToViewport = false
+            SnapshotMode.expandsUsageAbout = false
             SnapshotMode.setFixtureDate(nil)
             SnapshotScheme.override = nil
         }
 
         return try configurations.map { configuration in
             SnapshotScheme.override = configuration.colorScheme
+            SnapshotMode.expandsUsageAbout = configuration.aboutExpanded
             let glance: GlanceState
             switch configuration.capacityState {
             case .connected:
