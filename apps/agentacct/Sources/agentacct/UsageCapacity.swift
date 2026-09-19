@@ -565,9 +565,19 @@ private struct UsageCapacityWindowRow: View {
 }
 
 /// Provider percentage meter. The fill caps visually at 100%, while the text
-/// beside it preserves an over-limit value exactly.
+/// beside it preserves an over-limit value exactly. The two marks are
+/// reference points at 75% and 90% of the window; hovering the meter says so,
+/// since an unlabeled mark on a bar reads as a threshold nobody named.
 struct LimitMeter: View {
     let usedPercent: Double
+
+    /// Where the reference marks sit, as fractions of the window.
+    static let referenceMarks: [Double] = [0.75, 0.9]
+
+    /// The hover definition for the marks, shared with any surface that
+    /// draws the same meter.
+    static let referenceMarksHelp =
+        "Marks at 75% and 90% of the window. The reading turns amber from 75% used and coral at the limit."
 
     var body: some View {
         GeometryReader { proxy in
@@ -581,7 +591,7 @@ struct LimitMeter: View {
             }
             .overlay {
                 ZStack {
-                    ForEach([0.75, 0.9], id: \.self) { notch in
+                    ForEach(Self.referenceMarks, id: \.self) { notch in
                         Rectangle()
                             .fill(Theme.rule)
                             .frame(width: 1.5, height: Metrics.meterH + 4)
@@ -594,6 +604,7 @@ struct LimitMeter: View {
             }
         }
         .frame(height: Metrics.meterH)
+        .help(Self.referenceMarksHelp)
     }
 }
 

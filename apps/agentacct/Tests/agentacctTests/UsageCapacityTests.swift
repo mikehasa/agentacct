@@ -290,3 +290,11 @@ final class UsageCapacityTests: XCTestCase {
         try JSONDecoder().decode(type, from: Data(json.utf8))
     }
 }
+
+final class LimitMeterReferenceMarkTests: XCTestCase {
+    func testReferenceMarksAreNamedWhereTheyAreDrawn() {
+        XCTAssertEqual(LimitMeter.referenceMarks, [0.75, 0.9])
+        XCTAssertTrue(LimitMeter.referenceMarksHelp.contains("75%"))
+        XCTAssertTrue(LimitMeter.referenceMarksHelp.contains("90%"))
+    }
+}
