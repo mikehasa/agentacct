@@ -515,6 +515,16 @@ struct StripRow: View {
 /// an optional single-client group filter. Always ONE series — a stack never
 /// appears (v7 chart discipline). Periods without a priced value render as flat
 /// neutral stubs and their tooltip says so; heights are strictly proportional.
+/// When the chart prints its peak label. The tooltip already names the bar
+/// it is on, so the label yields whenever that bar is the peak; one value is
+/// never printed twice.
+enum UsageChartPeakLabel {
+    static func isShown(peakIndex: Int?, activeIndex: Int?, peakValue: Double?) -> Bool {
+        guard let peakIndex, let peakValue, peakValue > 0 else { return false }
+        return activeIndex != peakIndex
+    }
+}
+
 struct UsagePeriodChart: View {
     let periods: [PeriodBucket]
     let presentation: UsagePeriodPresentation
@@ -538,7 +548,10 @@ struct UsagePeriodChart: View {
         self.presentation = presentation
         let initialSeries: Series = periods.contains { $0.estimatedCostUsd != nil } ? .cost : .tokens
         _series = State(initialValue: initialSeries)
-        _selectedIndex = State(initialValue: periods.indices.last)
+        // Deterministic renders may pin the selection to show the tooltip on
+        // a chosen bar; the live app starts on the newest period.
+        let pinned = SnapshotMode.enabled ? SnapshotMode.usageChartSelectedIndex : nil
+        _selectedIndex = State(initialValue: pinned.flatMap { periods.indices.contains($0) ? $0 : nil } ?? periods.indices.last)
     }
 
     private var clients: [String] {
@@ -600,13 +613,20 @@ struct UsagePeriodChart: View {
     /// Plot height: the top gridline is exactly the max value's line.
     private static let plotHeight: CGFloat = 128
 
-    /// The peak annotation, centered over the peak bar in its own band.
+    /// The bar whose tooltip is showing (hover wins, then keyboard focus,
+    /// then the click selection).
+    private var activeIndex: Int? { hoveredIndex ?? focusedIndex ?? selectedIndex }
+
+    /// The peak annotation, centered over the peak bar in its own band. It
+    /// yields to the tooltip when that tooltip is already showing the peak
+    /// bar, so one value is never printed twice.
     @ViewBuilder
     private var peakBand: some View {
         HStack(alignment: .bottom, spacing: 3) {
             ForEach(Array(periods.enumerated()), id: \.offset) { index, period in
                 Group {
-                    if index == peakIndex, let peak = value(period), peak > 0 {
+                    if index == peakIndex,
+                       UsageChartPeakLabel.isShown(peakIndex: peakIndex, activeIndex: activeIndex, peakValue: value(period)) {
                         Text("peak \(valueText(period))")
                             .workFont(.dataSmall)
                             .foregroundStyle(Theme.muted)

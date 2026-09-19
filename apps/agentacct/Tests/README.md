@@ -294,6 +294,10 @@ from the same versioned fixture as Dashboard.
 
 | Artifact | Viewport | Pixel size |
 | --- | --- | --- |
+| `usage-chart-peak-selected-light.png` | 1120 × 1120 pt, light; the peak bar selected, so the tooltip carries the value and no peak label prints | 2240 × 2240 px |
+| `usage-chart-peak-selected-dark.png` | same state, dark | 2240 × 2240 px |
+| `usage-chart-peak-elsewhere-light.png` | 1120 × 1120 pt, light; another bar selected, so the tooltip and the peak label both show | 2240 × 2240 px |
+| `usage-chart-peak-elsewhere-dark.png` | same state, dark | 2240 × 2240 px |
 | `usage-minimum-light.png` | 960 × 560 pt minimum window, light; full navigation and first complete capacity row | 1920 × 1120 px |
 | `usage-minimum-dark.png` | 960 × 560 pt minimum window, dark; same hierarchy | 1920 × 1120 px |
 | `usage-reference-light.png` | 1120 × 900 pt standard window, light; complete capacity ledger plus history entry | 2240 × 1800 px |
