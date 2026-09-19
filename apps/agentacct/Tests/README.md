@@ -272,8 +272,6 @@ The dashboard renderer owns this complete fixed matrix at 2x scale:
 | `dashboard-next-step-dark.png` | 1120 × 800 pt, dark; same state | 2240 × 1600 px |
 | `dashboard-all-clear-light.png` | 1120 × 800 pt, light; recorded work but nothing needing review (ALL CLEAR eyebrow, one-sentence card) | 2240 × 1600 px |
 | `dashboard-all-clear-dark.png` | 1120 × 800 pt, dark; same state | 2240 × 1600 px |
-| `dashboard-statusless-sessions-light.png` | 1120 × 800 pt, light; recent sessions with no recorded work status (Working now names the agent, not a hash) | 2240 × 1600 px |
-| `dashboard-statusless-sessions-dark.png` | 1120 × 800 pt, dark; same state | 2240 × 1600 px |
 
 References live under `Tests/agentacctTests/ReferenceImages/<platform-id>`.
 They are read directly from the source checkout and excluded from SwiftPM's

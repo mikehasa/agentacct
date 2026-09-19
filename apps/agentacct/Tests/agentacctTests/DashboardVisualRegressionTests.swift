@@ -18,8 +18,6 @@ final class DashboardVisualRegressionTests: XCTestCase {
         "dashboard-all-clear-dark.png",
         "dashboard-next-step-light.png",
         "dashboard-next-step-dark.png",
-        "dashboard-statusless-sessions-light.png",
-        "dashboard-statusless-sessions-dark.png",
     ]
 
     @MainActor

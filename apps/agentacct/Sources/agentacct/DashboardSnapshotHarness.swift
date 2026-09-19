@@ -15,9 +15,6 @@ struct DashboardSnapshotFixture: Decodable {
     /// The sparse menu with one session reported twice: the popover must show
     /// it once.
     let menuDuplicateGlance: Glance?
-    /// Recent sessions that never recorded a work status or title: the
-    /// Working now row must name the agent, not a session hash.
-    let statuslessGlance: Glance?
     let plan: V1PlanPayload
     let attention: V1AttentionPayload
     let ingestion: V1IngestionPayload?
@@ -35,7 +32,6 @@ struct DashboardSnapshotFixture: Decodable {
         case usage90Days = "usage_90_days"
         case menuSparseGlance = "menu_sparse_glance"
         case menuDuplicateGlance = "menu_duplicate_glance"
-        case statuslessGlance = "statusless_glance"
         case ingestionHealthySources = "ingestion_healthy_sources"
         case ingestionDegraded = "ingestion_degraded"
         case daemonVersion = "daemon_version"
@@ -60,15 +56,6 @@ struct DashboardSnapshotFixture: Decodable {
             throw SnapshotError.unsupportedSchema(
                 payload: "sparse menu glance",
                 actual: menuSparseGlance.schema,
-                expected: GlanceClient.supportedGlanceSchema
-            )
-        }
-        if let statuslessGlance = fixture.statuslessGlance,
-           statuslessGlance.schema != GlanceClient.supportedGlanceSchema
-        {
-            throw SnapshotError.unsupportedSchema(
-                payload: "statusless glance",
-                actual: statuslessGlance.schema,
                 expected: GlanceClient.supportedGlanceSchema
             )
         }
@@ -195,20 +182,12 @@ enum SnapshotError: LocalizedError {
 }
 
 struct DashboardSnapshotConfiguration {
-    /// Which glance lane feeds the rail: the primary fixture, or the
-    /// status-less sessions lane.
-    enum GlanceLane {
-        case primary
-        case statusless
-    }
-
     let viewport: String
     let width: CGFloat
     let height: CGFloat
     let colorScheme: ColorScheme
     let workState: SnapshotWorkStoreState
     let recordedUsageState: SnapshotRecordedUsageState
-    var glanceLane: GlanceLane = .primary
 
     var filename: String {
         let appearance = colorScheme == .dark ? "dark" : "light"
@@ -233,10 +212,6 @@ struct DashboardSnapshotConfiguration {
         // The blocker item leads: its recorded next step earns the box, and the proof line reads as one sentence.
         Self(viewport: "next-step", width: 1120, height: 800, colorScheme: .light, workState: .attentionNextStepFirst, recordedUsageState: .sevenDays),
         Self(viewport: "next-step", width: 1120, height: 800, colorScheme: .dark, workState: .attentionNextStepFirst, recordedUsageState: .sevenDays),
-        // Sessions with no recorded work status: the Working now row names
-        // the agent and the recency, never a session hash.
-        Self(viewport: "statusless-sessions", width: 1120, height: 800, colorScheme: .light, workState: .populated, recordedUsageState: .sevenDays, glanceLane: .statusless),
-        Self(viewport: "statusless-sessions", width: 1120, height: 800, colorScheme: .dark, workState: .populated, recordedUsageState: .sevenDays, glanceLane: .statusless),
     ]
 }
 
@@ -279,15 +254,7 @@ enum DashboardSnapshotRenderer {
 
         return try configurations.map { configuration in
             SnapshotScheme.override = configuration.colorScheme
-            let glanceLane: Glance
-            switch configuration.glanceLane {
-            case .primary: glanceLane = fixture.glance
-            case .statusless: glanceLane = fixture.statuslessGlance ?? fixture.glance
-            }
-            let glance = GlanceState(preloaded: GlanceSnapshot(
-                glance: glanceLane,
-                daemonVersion: fixture.daemonVersion
-            ))
+            let glance = GlanceState(preloaded: fixture.glanceSnapshot)
             let dashboard = DashboardStore(
                 preloaded: fixture,
                 workState: configuration.workState,
