@@ -43,6 +43,8 @@ def _section_event(section_id: str) -> dict:
             "section_status": "completed",
             "client": "codex",
             "client_session_id": "concurrent-session",
+            "section_title": "Fixture section title",
+            "summary": "Recorded outcome for this fixture section.",
         },
     }
 

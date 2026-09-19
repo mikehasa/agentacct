@@ -66,6 +66,7 @@ def _claude_section(session: str = "S") -> dict:
             "section_id": "claude-work",
             "section_status": "completed",
             "section_title": "Claude work",
+            "summary": "Recorded outcome for this fixture section.",
         },
     }
 

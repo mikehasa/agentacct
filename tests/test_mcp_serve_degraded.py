@@ -37,7 +37,7 @@ _REQUESTS = (
         "method": "tools/call",
         "params": {
             "name": "agentacct_record_section",
-            "arguments": {"source": "opencode", "section_id": "x", "section_status": "started"},
+            "arguments": {"source": "opencode", "section_id": "x", "section_status": "started", "section_title": "Fixture section title"},
         },
     },
 )

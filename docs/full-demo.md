@@ -110,6 +110,7 @@ Current tools:
 - `agentacct_record_agent_usage_debug`
 - `agentacct_list_events`
 - `agentacct_get_event_summary`
+- `agentacct_work_status`
 
 ## 6. Longer 10-minute-style run
 

@@ -170,6 +170,7 @@ Current MCP tools are safe/local:
 - `agentacct_record_agent_usage_debug`
 - `agentacct_list_events`
 - `agentacct_get_event_summary`
+- `agentacct_work_status`
 
 The event tools read and write the v1 event ledger — by default the SQLite event
 log (`events.sqlite3`); set `AGENTACCT_EVENT_LOG_AUTHORITATIVE=0` for the legacy

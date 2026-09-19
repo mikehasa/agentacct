@@ -366,7 +366,7 @@ def _seed_example_b(store: Path) -> None:
     # 2) Failing check — the "failed command".
     _section(svc, client=c, session=s, project=p, ns=ns, section_id="fix", title="Fix the rounding in the total",
              status="completed", kind="implementation", at=BASE + 240, files=["src/checkout/total.py"],
-             summary="Rounded each line item before summing.")
+             summary="Rounded each line item before summing, which removes the drift.")
     _check(svc, client=c, session=s, project=p, ns=ns, section_id="fix", result="failed", at=BASE + 300,
            summary="3 failed (red)", command="pytest tests/test_checkout.py -q", exit_code=1)
     # 3) Re-run after the fix — passes, superseding the red run (the "retry").

@@ -399,6 +399,7 @@ def test_cross_namespace_collision_stays_isolated_from_ledger_through_task_proje
                     "section_id": "foreign-work",
                     "section_status": "completed",
                     "section_title": "Foreign work",
+                    "summary": "Recorded outcome for this fixture section.",
                 },
             },
         ],

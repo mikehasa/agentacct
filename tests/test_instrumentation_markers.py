@@ -131,6 +131,7 @@ def _section(
         "section_id": section_id,
         "section_status": "completed",
         "section_title": f"Section {section_id}",
+        "summary": "Recorded outcome for this fixture section.",
     }
     if transcript is not None:
         metadata["client_transcript_id"] = transcript
