@@ -9,6 +9,7 @@ enum WorkComponentSnapshotKind: String, CaseIterable {
     case decisionBadges = "decision-badges"
     case provenanceChips = "provenance-chips"
     case outcomeCards = "outcome-cards"
+    case filterMenus = "filter-menus"
 }
 
 struct WorkComponentSnapshotConfiguration {
@@ -26,6 +27,7 @@ struct WorkComponentSnapshotConfiguration {
         (WorkComponentSnapshotKind.decisionBadges, CGFloat(760), CGFloat(760)),
         (.provenanceChips, 760, 420),
         (.outcomeCards, 960, 480),
+        (.filterMenus, 760, 210),
     ].flatMap { kind, width, height in
         [
             Self(kind: kind, width: width, height: height, colorScheme: .light),
@@ -112,6 +114,8 @@ struct WorkComponentSnapshotScene: View {
                 provenanceChips
             case .outcomeCards:
                 outcomeCards
+            case .filterMenus:
+                filterMenus
             }
         }
         .padding(Space.l)
@@ -217,6 +221,46 @@ struct WorkComponentSnapshotScene: View {
                         .foregroundStyle(Theme.muted)
                 }
             }
+        }
+    }
+
+    /// Every face the Work status and sort menus can show: the neutral and
+    /// active status faces, each sort order, the narrow glyph-only sort, and
+    /// the 32pt height that sits beside the table's search field. The active
+    /// wash must appear on every chosen status and never on a sort.
+    private var filterMenus: some View {
+        VStack(alignment: .leading, spacing: Space.s) {
+            SectionCaption(text: "Filter menus")
+            filterMenuRow("Status") {
+                WorkStatusMenu(group: .constant(nil), identifier: "gallery.status")
+                ForEach(WorkGroup.allCases.prefix(3)) { group in
+                    WorkStatusMenu(group: .constant(group), identifier: "gallery.status")
+                }
+            }
+            filterMenuRow("") {
+                ForEach(WorkGroup.allCases.dropFirst(3)) { group in
+                    WorkStatusMenu(group: .constant(group), identifier: "gallery.status")
+                }
+            }
+            filterMenuRow("Sort") {
+                ForEach(WorkSort.allCases) { sort in
+                    WorkSortMenu(sort: .constant(sort), identifier: "gallery.sort")
+                }
+                WorkSortMenu(sort: .constant(.latest), identifier: "gallery.sort", showsValue: false)
+            }
+            filterMenuRow("Beside a field") {
+                WorkSortMenu(sort: .constant(.latest), identifier: "gallery.sort", minHeight: 32)
+            }
+        }
+    }
+
+    private func filterMenuRow<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack(alignment: .center, spacing: Space.s) {
+            Text(label)
+                .workFont(.dataSmall)
+                .foregroundStyle(Theme.muted)
+                .frame(width: 110, alignment: .leading)
+            content()
         }
     }
 
