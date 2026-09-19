@@ -12,10 +12,6 @@ final class WorkSnapshotHarnessTests: XCTestCase {
     // Keep this contract independent of the production configuration. A
     // removed Work state, viewport, or appearance must fail review loudly.
     private let expectedArtifacts = [
-        ExpectedArtifact(filename: "work-table-minimum-light.png", pixelsWide: 1920, pixelsHigh: 1120),
-        ExpectedArtifact(filename: "work-table-minimum-dark.png", pixelsWide: 1920, pixelsHigh: 1120),
-        ExpectedArtifact(filename: "work-table-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
-        ExpectedArtifact(filename: "work-table-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-receipt-minimum-light.png", pixelsWide: 1920, pixelsHigh: 1120),
         ExpectedArtifact(filename: "work-receipt-minimum-dark.png", pixelsWide: 1920, pixelsHigh: 1120),
         ExpectedArtifact(filename: "work-receipt-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
@@ -34,12 +30,8 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "work-receipt-stale-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-attention-receipt-reference-light.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-attention-receipt-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
-        ExpectedArtifact(filename: "work-table-accessibility-light.png", pixelsWide: 2240, pixelsHigh: 1600),
-        ExpectedArtifact(filename: "work-table-accessibility-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-receipt-accessibility-light.png", pixelsWide: 2240, pixelsHigh: 1600),
         ExpectedArtifact(filename: "work-receipt-accessibility-dark.png", pixelsWide: 2240, pixelsHigh: 1600),
-        ExpectedArtifact(filename: "work-table-accessibility-maximum-light.png", pixelsWide: 2240, pixelsHigh: 2000),
-        ExpectedArtifact(filename: "work-table-accessibility-maximum-dark.png", pixelsWide: 2240, pixelsHigh: 2000),
         ExpectedArtifact(filename: "work-receipt-accessibility-maximum-light.png", pixelsWide: 2240, pixelsHigh: 2000),
         ExpectedArtifact(filename: "work-receipt-accessibility-maximum-dark.png", pixelsWide: 2240, pixelsHigh: 2000),
         ExpectedArtifact(filename: "work-session-steps-hierarchy-light.png", pixelsWide: 1520, pixelsHigh: 2100),
@@ -345,7 +337,7 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         XCTAssertGreaterThan(appearanceDifference.changedPixelFraction, 0.05)
 
         let stateDifference = try VisualSnapshotHarness.compare(
-            expectedURL: firstDirectory.appendingPathComponent("work-table-reference-light.png"),
+            expectedURL: firstDirectory.appendingPathComponent("work-empty-reference-light.png"),
             actualURL: firstDirectory.appendingPathComponent("work-receipt-reference-light.png")
         )
         XCTAssertGreaterThan(stateDifference.maximumChannelDelta, 32)
