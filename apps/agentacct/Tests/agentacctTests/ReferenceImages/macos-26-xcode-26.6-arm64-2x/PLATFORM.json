@@ -16,7 +16,7 @@
     "lang": "en_US.UTF-8",
     "lc_all": "en_US.UTF-8"
   },
-  "recorded_at_commit": "bb3c246bd7fb6f70a73774d5e6ad142e21ac6749",
-  "recorded_at_utc": "2026-09-19T09:07:44Z",
+  "recorded_at_commit": "8718125378f3628ad78c86b92c2e381d2cbf7734",
+  "recorded_at_utc": "2026-09-19T18:08:52Z",
   "note": "compared_axes is the gate. recorded_on is provenance only and is never compared; drift inside macOS 26.x is absorbed by VisualSnapshotTolerance.crossMinorRenderingNoise, whose measured basis is documented in Tests/agentacctTests/Support/VisualSnapshotHarness.swift."
 }
