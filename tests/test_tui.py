@@ -1370,7 +1370,7 @@ def test_work_search_reaches_stale_blocker_and_discloses_total(tmp_path):
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
-            await pilot.press("2")
+            await pilot.press("3")  # Sessions (receipts)
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
@@ -1418,7 +1418,7 @@ def test_work_under_cap_surfaces_blocker_with_no_truncation_disclosure(tmp_path)
             dash = Text.from_markup(app._dashboard_text).plain
             assert "All clear" not in dash
             assert blocker_title in dash
-            await pilot.press("2")
+            await pilot.press("3")  # Sessions (receipts)
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
