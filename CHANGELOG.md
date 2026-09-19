@@ -6,6 +6,24 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Receipts now name a **rollback owner** for a partial change. When a run ends
+  unverified (blocked, failed, or with a failing check) yet recorded touched
+  files, the outcome dimension carries a `rollback` block — the trusted session
+  that ran it (the revert owner), the at-risk files, and a gap line on every
+  surface — so a half-applied change is no longer silently left behind. It is
+  derived and read-only: agentacct never auto-reverts, and with no
+  working-tree/diff signal `status: "unreconciled"` means only that no
+  reconciliation was recorded, never "not reverted". It adds no agent-writable
+  field, so nothing here can be forged into a "reverted" claim.
+- Receipts disclose a **passed check with no observed change**. A Task that
+  reached `verified` on a passing check but touched zero files is flagged
+  `no_observed_change` with a gap line, so a no-op cannot hide behind a green
+  check. The disclosure never demotes the decision word (a check-only task is
+  legitimate) and never touches evidence strength; agentacct records no file
+  diff, so it discloses the absence of an observed change, not a no-op.
+
 ## [0.11.1] — 2026-09-17
 
 Makes the dashboard fast again — the API-serving caches no longer rebuild the multi-second work ledger on every idle poll, and the recorder stops shadowing its highest-cardinality events into an unbounded store — plus a way to reclaim that store and one-click recorder self-update.

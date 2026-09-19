@@ -951,6 +951,9 @@ def _outcome_dimension(
     decision_brief: Mapping[str, Any],
     checks: list[Mapping[str, Any]],
     canonical: Mapping[str, Any] | None = None,
+    *,
+    actions: Mapping[str, Any] | None = None,
+    primary_root: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     asserted_by = _text(decision.get("asserted_by")) or "none"
     gaps: list[str] = []
@@ -986,6 +989,67 @@ def _outcome_dimension(
     else:
         dimension["quiet_since"] = None
         dimension["newer_session_started_at"] = None
+
+    # --- Rollback owner (unreconciled changes) --------------------------------
+    # An unverified run (blocked / failed / finding) that LEFT recorded touched
+    # files has, by definition, no passing check reconciling them. Name who owns
+    # reverting them (the trusted session that ran it) and the at-risk files —
+    # DERIVED and read-only. This never auto-reverts and never asserts a revert
+    # did or did not happen: ``status="unreconciled"`` means only that NO
+    # reconciliation was recorded, never "not reverted" (agentacct has no
+    # working-tree/diff signal). It adds NO agent-writable field, so nothing here
+    # can be forged into a "reverted" claim. The human disclosure is the gap line
+    # (rendered on every surface via the gaps roll-up); the structured ``rollback``
+    # block is machine-readable wire data for a future rollback-owner affordance.
+    # Its ``revert_owner`` uses the same ``{client, client_session_id}`` the
+    # receipt already exposes (sessions block / summary), which the app resolves to
+    # the ledger's canonical short label — the id is deliberately NOT truncated or
+    # re-derived here, and never rendered into the pasteable gap prose.
+    actions_map = _mapping(actions)
+    touched_count = int(actions_map.get("touched_file_count") or 0)
+    if _text(decision.get("key")) in {"blocked", "failed", "finding"} and touched_count > 0:
+        root = _mapping(primary_root)
+        dimension["rollback"] = {
+            "status": "unreconciled",
+            "revert_owner": {
+                "client": _text(root.get("client")) or None,
+                "client_session_id": _text(root.get("client_session_id")) or None,
+            },
+            # The self-reported section owner is an UNVERIFIED hint, not the
+            # trusted revert owner above (which is the session identity).
+            "section_owner_hint": decision_brief.get("owner"),
+            "at_risk_file_count": touched_count,
+            "at_risk_files_preview": list(actions_map.get("touched_files_preview") or []),
+            "at_risk_files_elided": int(actions_map.get("touched_files_elided") or 0),
+        }
+        gaps.append(
+            f"{count_noun(touched_count, 'file')} touched by an unverified run "
+            f"({_text(decision.get('key'))}) with no recorded reconciliation; "
+            "the run's primary session owns reverting them."
+        )
+    else:
+        dimension["rollback"] = None
+
+    # --- No observed change (empty-diff disclosure) ---------------------------
+    # A Task that reached ``verified`` on a PASSING check but touched ZERO files
+    # is a possible no-op hiding behind a green check. Disclose it; do NOT demote
+    # the decision word (a check-only task — e.g. a test run with nothing to edit
+    # — is legitimate) and do NOT touch evidence strength. agentacct captures no
+    # file diff, so this discloses the ABSENCE of an observed change, never proof
+    # the work was a no-op. Gated on a real passing check so the check-less
+    # ``strong_without_checks`` verified path never trips it.
+    passed_checks = [c for c in checks if _text(c.get("result")).lower() == "passed"]
+    no_observed_change = (
+        _text(decision.get("key")) == "verified" and bool(passed_checks) and touched_count == 0
+    )
+    dimension["no_observed_change"] = no_observed_change
+    if no_observed_change:
+        gaps.append(
+            "Checks passed but no file change was observed for this Task — a possible "
+            "no-op. The outcome stays a machine-checked pass; agentacct records no file "
+            "diff, so this discloses the absence of an observed change, not a no-op."
+        )
+
     return dimension
 
 
@@ -1144,14 +1208,25 @@ def build_receipt(
     handoff = _handoff_marker(canonical)
     decision_brief = _mapping(intelligence.get("decision_brief"))
 
+    actions_dimension = _actions_dimension(task)
     dimensions: dict[str, dict[str, Any]] = {
         "task": _task_dimension(task, title),
         "actors": _actors_dimension(task, intelligence),
-        "actions": _actions_dimension(task),
+        "actions": actions_dimension,
         "cost": _cost_dimension(task),
         "evidence": _evidence_dimension(checks, evidence_strength),
+        # The outcome dimension also derives the reconciliation (rollback-owner)
+        # block and the no-observed-change disclosure, so it needs the Task's
+        # touched files (from the Actions dimension) and the trusted revert-owner
+        # session identity (primary_root).
         "outcome": _outcome_dimension(
-            decision, verification, decision_brief, checks, canonical
+            decision,
+            verification,
+            decision_brief,
+            checks,
+            canonical,
+            actions=actions_dimension,
+            primary_root=task.get("primary_root"),
         ),
     }
     coverage = intelligence.get("coverage") if isinstance(intelligence.get("coverage"), list) else []
