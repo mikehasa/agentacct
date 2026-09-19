@@ -36,11 +36,11 @@ final class SetupSnapshotHarnessTests: XCTestCase {
             )
             XCTAssertLessThanOrEqual(
                 difference.maximumChannelDelta,
-                VisualSnapshotTolerance.setupRenderingNoise.maximumChannelDelta
+                VisualSnapshotTolerance.crossMinorRenderingNoise.maximumChannelDelta
             )
             XCTAssertLessThanOrEqual(
                 difference.changedChannelFraction,
-                VisualSnapshotTolerance.setupRenderingNoise.maximumChangedChannelFraction
+                VisualSnapshotTolerance.crossMinorRenderingNoise.maximumChangedChannelFraction
             )
         }
 

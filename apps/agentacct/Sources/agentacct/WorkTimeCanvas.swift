@@ -226,7 +226,7 @@ struct WorkTimeCanvas: View {
         return Button { activate(item, members: members) } label: {
             VStack(alignment: .leading, spacing: 2) {
                 if item.isCluster {
-                    Text("\(members.count) records").workFont(.rowLabel).foregroundStyle(Theme.ink)
+                    Text(Fmt.count(members.count, "record")).workFont(.rowLabel).foregroundStyle(Theme.ink)
                     let sessionCount = Set(members.map(\.laneID)).count
                     Text(sessionCount == 1 ? (members.first?.laneTitle ?? "Activity") : "\(sessionCount) sessions")
                         .workFont(.caption).foregroundStyle(Theme.muted).lineLimit(1)

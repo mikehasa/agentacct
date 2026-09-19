@@ -13,6 +13,7 @@ Client support is capability-based, not a binary badge:
 | Hermes | Global onboard writes profile config; project setup previews it | `state.db` importer | Global onboard installs observe-only v1 shell hooks (consent + gateway restart required); no generic Evidence v2 adapter | Usage + MCP work + hook-observed activity/checks after consent |
 | OpenCode | Global onboard writes user config; project setup previews it | Native SQLite `session` rollup importer (JSON export fallback) | Global onboard installs an observe-only v1 plugin; no generic Evidence v2 adapter | Usage + MCP work + plugin/import activity and checks |
 | OpenClaw | Manual profile command preview | JSONL importer | Typed plugin hooks and `sessions.json` routing are not integrated yet | Usage plus MCP work when separately configured |
+| DeepSeek Harness (dsh) | Global onboard writes the home patch (`$DSH_HOME/cordis.patch.yml`) + `AGENTS.md`; project setup previews | Zstandard-compressed JSONL importer | Typed plugin hooks are not integrated; MCP self-report verified live on one machine (dsh 0.1.5-rc.1), usage-import fixture-only | Usage + MCP work once dsh loads the home patch |
 | Cursor | Portable MCP definition only | Primary `state.vscdb` composer observations only; no token importer | Metadata payload normalization exists, but onboarding does not install it | A metadata-only composer Task after explicit refresh/manual capture; usage, cache, and cost unavailable |
 | Other MCP clients | Portable stdio definition | None unless a client-specific importer exists | None | MCP work context only |
 
@@ -59,6 +60,7 @@ Currently implemented local import paths:
 - Hermes local `state.db` session rows
 - OpenCode native `opencode.db` SQLite `session` rollups (per-session token/cost totals), with exported/captured `opencode run --format json` event streams as a fallback when no database is present
 - OpenClaw JSONL session logs
+- DeepSeek Harness (dsh) Zstandard-compressed JSONL session logs (`session.vN.jsonl.zstd` under `~/.dsh`; input/output/cache/reasoning tokens, no cost recorded)
 - Cursor primary `User/globalStorage/state.vscdb` composer identities, timestamps, explicit model metadata, and exact child links (observation-only; no usage/cost rows)
 
 Measured imports are labeled `client_reported`, and pricing-table estimates are labeled `estimated_from_tokens`. Cursor is deliberately different: the same command surface saves only trusted session observations, so missing usage remains unavailable rather than a measured zero. It rejects symlinked source components, active WAL state, schema drift, corrupt JSON/SQLite, replacement races, and invalid parent graphs; it never falls back to `state.vscdb.backup` or ai-tracking stores. Other agents need client-specific importers because every client can store sessions in a different format.
@@ -197,6 +199,16 @@ OpenClaw stores MCP server config in its active OpenClaw profile. agentacct prev
 
 Maintainer-probed on VPS with an isolated OpenClaw profile: OpenClaw 2026.6.10 saved a stdio MCP server definition for Sentinel.
 
+### DeepSeek Harness (dsh)
+
+```bash
+agentacct onboard --agent dsh
+```
+
+Global onboard writes both legs at the HOME level, which every profile the dsh CLI boots layers on top of (the plain `dsh` command has no default profile — `--profile` is required): the `@deepseek-ai/dsh-mcp-client` registration goes to `$DSH_HOME/cordis.patch.yml` (the home patch applied over every profile) and the record-your-work directive goes to `$DSH_HOME/AGENTS.md` (loaded by dsh-base's agent-instructions on every base-backed session). dsh hot-reloads the patch and exposes the tools as `mcp__agentacct__*`, so a dsh session records like Codex/OpenCode. `agentacct setup mcp --agent dsh` previews the same registration without writing.
+
+Verified: a live dsh 0.1.5-rc.1 session loaded the bundled `@deepseek-ai/dsh-mcp-client` plugin in-box (no `dsh plugin add` step needed) and recorded a work section over MCP with `source=dsh` — on one machine and version, with the recording task explicitly requested. Onboarding still prints a one-line `dsh plugin --profile <name> add @deepseek-ai/dsh-mcp-client` fallback for environments where the plugin does not resolve.
+
 ### Generic MCP-capable agents
 
 ```bash
@@ -270,6 +282,12 @@ Import OpenClaw JSONL logs explicitly:
 
 ```bash
 agentacct usage import-local --client openclaw --openclaw-home ~/.openclaw --json
+```
+
+Import DeepSeek Harness (dsh) logs explicitly:
+
+```bash
+agentacct usage import-local --client dsh --dsh-home ~/.dsh --json
 ```
 
 Run one background-style scan, or keep scanning on an interval (the watcher does not wrap or launch your coding agents; it periodically imports sessions from implemented local usage paths that clients have already written to disk):

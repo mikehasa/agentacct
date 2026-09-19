@@ -20,7 +20,7 @@ enum RecordingHealthAction: String, Equatable, Codable {
     var title: String {
         switch self {
         case .setup: return "Open Connections"
-        case .sources: return "View Sources"
+        case .sources: return "View Diagnostics"
         case .refresh: return "Check again"
         }
     }
@@ -51,6 +51,11 @@ struct RecordingHealthCause: Equatable, Identifiable, Codable {
         default: return "Source issue no longer reported"
         }
     }
+
+    /// The recorder-unreachable fault is the one a one-click "Start recorder"
+    /// (an in-app `agentacct start`) can address. Every other cause routes to
+    /// setup or diagnostics instead, so only this one carries the restart button.
+    var isRecorderUnreachable: Bool { id == "endpoint:unreachable" }
 }
 
 struct RecordingHealthDimension: Equatable, Identifiable {
@@ -161,7 +166,7 @@ struct RecordingHealthSnapshot: Equatable {
             let hasIssues = !(ingestion.issues ?? []).isEmpty || ingestion.state == "degraded"
             dimensions.append(.init(id: "coverage", title: "Evidence coverage", value: hasIssues ? "Needs review" : ingestion.issues == nil ? "Not assessed" : "No issues reported", detail: hasIssues ? "Reported import or attribution issues may affect coverage. New capture does not repair missing or conflicting history." : "A health snapshot cannot establish complete historical coverage.", tone: hasIssues ? .caution : .neutral))
             if ingestion.state == "degraded", (ingestion.issues ?? []).isEmpty {
-                causes.append(.init(id: "ingestion:degraded", scope: .ingestion, title: "Import coverage needs review", detail: "The recorder reports degraded ingestion without a specific cause. Review Sources for the reported source states.", tone: .caution, action: .sources, affectedSources: [], recoveryDetail: "The recorder no longer reports degraded ingestion. Historical completeness is still not established."))
+                causes.append(.init(id: "ingestion:degraded", scope: .ingestion, title: "Import coverage needs review", detail: "The recorder reports degraded ingestion without a specific cause. Open Diagnostics for the reported source states.", tone: .caution, action: .sources, affectedSources: [], recoveryDetail: "The recorder no longer reports degraded ingestion. Historical completeness is still not established."))
             }
         } else {
             dimensions.append(.init(id: "imports", title: "Imports and coverage", value: "Not confirmed", detail: ingestion == nil ? "Waiting for source health." : "The last source snapshot is retained, but current health cannot be confirmed while the recorder is unreachable.", tone: .neutral))
@@ -210,10 +215,10 @@ struct RecordingHealthSnapshot: Equatable {
         return grouped.keys.sorted().compactMap { key in
             guard let entries = grouped[key], let first = entries.first else { return nil }
             let isGlobal = first.code == globalCode
-            let sources = Array(Set(entries.compactMap(\.source))).sorted()
-            let title = isGlobal ? "Evidence reconciliation needs review" : readableIssue(first.code)
+            let sources = Array(Set(entries.flatMap(\.namedSources))).sorted()
+            let title = isGlobal ? "Usage totals may be incomplete" : readableIssue(first.code)
             let detail = isGlobal
-                ? "One reconciliation fault is reported across \(sources.count) source \(sources.count == 1 ? "summary" : "summaries"). Usage history may be incomplete or conflicting; this does not establish that every client stopped recording."
+                ? "One reconciliation fault is reported for \(Fmt.count(sources.count, "source")). Recorded usage may be incomplete or conflicting; this does not establish that any client stopped recording."
                 : first.action ?? "Review the source diagnostics for the reported issue."
             return .init(id: key, scope: .ingestion, title: title, detail: detail, tone: .caution, action: .sources, affectedSources: sources, recoveryDetail: "The latest source health no longer reports this issue. Any historical gap still requires separate evidence to establish its extent.")
         }

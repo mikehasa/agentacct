@@ -15,6 +15,130 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   search reaches an older blocker, and the Work head discloses "showing 300 of
   N" when its list is truncated. (#220)
 
+## [0.11.1] — 2026-09-17
+
+Makes the dashboard fast again — the API-serving caches no longer rebuild the multi-second work ledger on every idle poll, and the recorder stops shadowing its highest-cardinality events into an unbounded store — plus a way to reclaim that store and one-click recorder self-update.
+
+### Added
+
+- One-click recorder self-update. `GET /v1/version` now also reports `current`,
+  `latest`, `update_available`, and `is_dev_install` (read from a short-TTL
+  cache; PyPI is only checked on a background thread so the handshake never
+  blocks). The Diagnostics pane shows the recorder version and, when a newer
+  release is published, an **Update** button that installs it and restarts the
+  recorder (`POST /v1/self-update`; `agentacct self-update`). Refused for a
+  development/editable checkout at the UI, the route, and the CLI — no daemon
+  ever silently drifts onto an old release again.
+- `agentacct evidence prune` reclaims the evidence-v2 projection: a
+  transactional, batched delete of non-consumed shadow rows (default: the
+  `tool_activity_observed` shadow that never feeds a correctness lane) plus an
+  optional `VACUUM`. The append-only spool is never touched, so the evidence log
+  stays complete and recoverable; `client_hook` and refreshable-usage rows are
+  refused three ways (denylist, exclusion subqueries, foreign keys).
+- One-click recorder recovery in the app. When the recorder is unreachable, the always-visible recording-health surfaces (the toolbar popover and the notice stack) and the menu-bar dropdown now offer a **Start recorder** button that runs the same `agentacct start` the CLI would — so a stuck recorder no longer strands the user with only a passive `agentacct start` hint and no way to act. It is shown only when the app owns a matching recorder it can start; a development backend keeps the existing Connections/setup path, and on a failed start the full recovery flow opens with its log. (#292)
+- `agentacct help`, plus a friendly overview for a bare `agentacct` invocation: both list the everyday commands (start, status, stop, onboard, tui, now, receipts, doctor) and point at `agentacct --help` for the complete list. `agentacct --help` itself is unchanged. (#292)
+
+### Changed
+
+- Terminal UI (`agentacct tui`): the Sessions master list is now a sortable
+  DataTable (Task / Outcome / Evidence / Cost / Age, `s` to cycle sort,
+  `ctrl+d`/`ctrl+u` to scroll the detail, CJK-safe truncation); every pane docks
+  a key-guidance footer; Work cards share one global time axis; and the
+  session-detail activity timeline is sized to its column and built from the raw
+  task checks so every check carries its real time. (#289)
+- The recorder no longer shadows the highest-cardinality event types
+  (`tool_activity_observed`, `rate_limit_observed`) into the evidence-v2 store —
+  they were ~99% of it and fed no correctness-critical lane. Stops the shadow
+  store's unbounded growth (configurable via
+  `AGENTACCT_EVIDENCE_V2_SHADOW_SKIP_EVENT_TYPES`). The `independently_checked`
+  lift (client_hook mechanical checks) is untouched.
+- The API-serving work-ledger and sessions caches drop their 30-second wall-clock
+  TTL for a composite change key (events fingerprint + an append-only signature
+  of the cost / run-report / evidence-spool stores). Unchanged stores reuse the
+  build regardless of age — no more periodic multi-second rebuild on idle polls —
+  and any secondary-store change still invalidates it, so no stale reduced state
+  is ever served. The dashboard also warms these caches on startup.
+- The managed usage watcher scans every 300 s (was 60 s) and skips the heavy
+  parse when no source file changed since the last scan (recording a zero-parse
+  "unchanged" scan so freshness still advances), with `--estimate-costs`
+  now opt-out. Far fewer cache-invalidating ledger writes while agents work.
+  Tunable via `--interval-seconds`, `--skip-unchanged/--no-skip-unchanged`, and
+  `AGENTACCT_WATCH_INTERVAL_SECONDS` / `AGENTACCT_WATCH_ESTIMATE_COSTS`.
+- Read-path JSON parsing uses `orjson` (byte-identical to the stdlib parse; the
+  write/serialize path stays on stdlib `json` for ledger byte-parity), and the
+  legacy `/overview`, `/timeline`, `/work-items` routes now reuse the shared
+  revision-cached event snapshot instead of re-reading and re-hashing the whole
+  ledger on every request. The work-ledger reduce memoizes its hottest steps
+  (credential-scrub, nearest-usage attribution, project-label derivation) with
+  byte-identical output.
+- Bare `agentacct` (no subcommand) now prints the command overview and exits 0, instead of the terse `Missing command.` error (exit 2). (#292)
+
+### Fixed
+
+- The Work tab no longer shows "work groups fetch failed: cancelled". A benign in-flight fetch cancelled by a normal pane switch or view teardown is now ignored — matching every other pane's fetch — instead of surfacing as a failure; the last groups are retained. The folder-candidates fetch gets the same guard, and a daemon predating `/v1/workset-candidates` now reads as an empty state rather than a fetch error. (#292)
+
+## [0.11.0] — 2026-09-17
+
+The Work tab lands — folder-anchored session groupings across every agent on one cross-agent timeline, in the app and the terminal — alongside DeepSeek Harness support, readable Session and Work detail records, calmer Diagnostics, and a rewritten product README.
+
+### Added
+
+- Work tab: folder-anchored session groupings across every agent you run. A group is an overlay — a labeled sum of independently-attributed sessions, never a combined verdict. New append-only `worksets` lane with `service.record_workset_action` and routes `GET /v1/worksets|/v1/workset|/v1/workset-candidates` plus `POST /v1/worksets`; reserved workset provenance is stripped on every raw write path so a grouping can never be forged. The former Work tab (the receipts table) is now **Sessions**. (#256)
+- Diagnostics: a per-agent Connections view (`GET /v1/connections`). A source reads as recording only behind a running watcher that actually covers it, and a semi-active agent is never offered a false one-click connect. The Sources tab is renamed **Diagnostics**. (#261)
+- Terminal parity with the app's five-tab layout: `agentacct tui` gains the folder-anchored **Work** tab with the cross-agent timeline (each session a duration bar, colour by agent, status by pip), a keyboard-zoomable and scrubbable group detail, inline create/rename/delete, a per-task activity timeline in the receipt drill-down, a Dashboard review deep-link, and severity-graded Diagnostics. Worksets read through one shared `build_store_worksets` so the app, the CLI, and the terminal can never disagree about a grouping. (#264)
+- DeepSeek Harness (dsh) local usage import. agentacct now reads dsh's
+  Zstandard-compressed JSONL session logs under `$DSH_HOME`/`~/.dsh`
+  (`session.vN.jsonl.zstd`), summing input/output/cache/reasoning tokens per
+  session into the Work, Usage, and Sources views. Drive it with `agentacct
+  usage import-local --client dsh` (also `usage watch`, `usage sources`, and a
+  `--dsh-home` override). dsh records no cost in its logs, so imported rows stay
+  cost-unknown unless `--estimate-costs` applies agentacct's local pricing
+  table (never a provider invoice). Adds a `zstandard` dependency for the
+  compressed logs. Experimental tier: the session-log schema was verified
+  against dsh source and two independent third-party parsers, not yet a
+  live-client smoke on the maintainer's machine.
+- dsh MCP self-reporting onboarding. `agentacct onboard --agent dsh` writes the
+  `@deepseek-ai/dsh-mcp-client` registration into `$DSH_HOME/cordis.patch.yml`
+  (the home patch layer applied over every profile the dsh CLI boots — the plain
+  `dsh` command has no default profile) and the record-your-work directive into
+  `$DSH_HOME/AGENTS.md`, so a dsh session records its own work over MCP like
+  Codex or OpenCode. Writes are idempotent and non-destructive (existing user
+  patches are preserved). `agentacct setup mcp --agent dsh` previews the same
+  registration, and the macOS app's guided setup flow offers DeepSeek Harness as
+  a client. A live dsh 0.1.5-rc.1 session confirmed the loop end to end — the
+  bundled plugin resolves in-box (no `dsh plugin add` needed) and a work section
+  recorded with `source=dsh` — so the dsh MCP self-reporting lanes are marked
+  `verified_partial` (single-machine live observation) rather than experimental;
+  onboarding still prints the `dsh plugin add` fallback for environments where the
+  plugin does not resolve. Usage-import lanes remain synthetic-fixture verified.
+
+### Changed
+
+- Session and Work detail views are readable records: Steps/Checks outcome bars, a numbered step spine with checks and files inline, and an activity timeline below. A passed check stays agent-reported-colored unless independently observed, and Work detail gains KPI tiles and a per-session outcome bar. (#260)
+- Ingestion-health issues carry a severity (`error` / `attention` / `advisory`) with hysteresis, so a transient blip no longer flips the Diagnostics panel red. (#261)
+- The README is rewritten as a product page with regenerated screenshots, and a Simplified Chinese README ships with Chinese-content screenshots. A Work group spanning under two days labels its timeline axis with the clock in the viewer's time zone. (#262, #263)
+- The recording instructions given to every agent (the MCP server instructions,
+  the SessionStart hook context, and the `CLAUDE.md`/`AGENTS.md` workflow block)
+  now cue a session-level completion: when the user signals the whole deliverable
+  is done ("ship it", a merge), the agent records a final `section_status=completed`
+  summarizing the whole deliverable and leaves no section open, so the session's
+  outcome is stated rather than left inferable from the sub-task sections. No new
+  status word and no UI change — the completion is still graded from evidence,
+  surfacing as "Verified" or "Reported", never as an un-graded "Completed".
+
+## [0.10.11] — 2026-09-15
+
+Drains the codex reconcile conflicts left over from before 0.10.10, so sources
+recover from Degraded instead of staying stuck.
+
+### Fixed
+
+- Legacy usage rows written before their lane emitted a revision watermark now
+  adopt one on the next refresh, so refreshable-usage `source_order` can order
+  same-second codex snapshots instead of parking a permanent `existing_conflict`
+  that kept every source Degraded. One-time and additivity-safe; already-
+  watermarked rows are untouched. (#254)
+
 ## [0.10.10] — 2026-09-14
 
 Fixes source-recording faults that surfaced once 0.10.9 made the Sources panel
@@ -1142,7 +1266,10 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.10.10...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.11.1
+[0.11.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.11.0
+[0.10.11]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.11
 [0.10.10]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.10
 [0.10.9]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.9
 [0.10.8]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.8

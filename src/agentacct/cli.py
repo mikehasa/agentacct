@@ -17,6 +17,8 @@ import threading
 import time
 import tomllib
 import uuid
+
+import yaml
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +39,7 @@ from rich.markup import escape as _rich_escape
 from rich.table import Table
 
 from . import version as version_info
+from .plural import count_noun
 from .activation import ActivationStateError, ActivationStateStore, RuntimeManager, RuntimeManagerError
 from . import autostart as autostart_mod
 from .autostart import AutostartError
@@ -157,6 +160,7 @@ from .supervisor import OwnedSupervisor, SupervisorError
 from .source_discovery import discover_usage_sources
 from . import store_merge
 from .env_compat import read_env_alias
+from .evidence import normalize_timestamp
 from .evidence_runtime import EvidenceRuntime
 from .store_resolution import (
     ENV_STORE_DIR,
@@ -203,8 +207,47 @@ def _version_callback(value: bool) -> None:
     raise typer.Exit()
 
 
-@app.callback()
+def _print_help_overview() -> None:
+    """Print a short, friendly overview of the commands most users need.
+
+    `agentacct --help` still lists every command; this curated overview is what
+    bare `agentacct` and `agentacct help` print, so a new user immediately sees
+    what the tool does and how to start the recorder.
+    """
+    from rich.table import Table
+
+    console.print()
+    console.print("[bold]agentacct[/bold] — local-first work intelligence for coding agents.")
+    console.print("Usage truth, recorded work, and honest joins — all on your own machine.")
+    console.print()
+    common = Table.grid(padding=(0, 3))
+    common.add_column(style="bold cyan", no_wrap=True, justify="right")
+    common.add_column()
+    common.add_row("onboard", "Install agentacct for your coding agents (one-time setup).")
+    common.add_row(
+        "start",
+        "Start the local recorder (background daemon + API). Run this if the app "
+        "says the recorder is unreachable.",
+    )
+    common.add_row("status", "Show whether the recorder and local API are running.")
+    common.add_row("stop", "Stop the recorder processes this install owns.")
+    common.add_row("tui", "Open the live terminal dashboard.")
+    common.add_row("now", "Print a usage & cost snapshot by client and model.")
+    common.add_row("receipts", "List recent work receipts — what your agents actually did.")
+    common.add_row("doctor", "Check local readiness without printing secrets.")
+    console.print("[bold]Common commands[/bold]")
+    console.print(common)
+    console.print()
+    console.print(
+        "Run [bold]agentacct --help[/bold] for the full command list, "
+        "or [bold]agentacct <command> --help[/bold] for one command's options."
+    )
+    console.print()
+
+
+@app.callback(invoke_without_command=True)
 def _app_main(
+    ctx: typer.Context,
     version: Annotated[
         Optional[bool],
         typer.Option(
@@ -217,7 +260,17 @@ def _app_main(
 ) -> None:
     # No docstring: Typer falls back to the app-level help= above, so adding this
     # callback for --version does not change `agentacct --help` output.
-    return
+    # With no subcommand, print a friendly overview instead of Click's terse
+    # "Missing command." error (exit 2), so bare `agentacct` is useful on its own.
+    if ctx.invoked_subcommand is None:
+        _print_help_overview()
+        raise typer.Exit()
+
+
+@app.command("help")
+def help_overview() -> None:
+    """Show a short overview of the most useful agentacct commands."""
+    _print_help_overview()
 cost_app = typer.Typer(help="Usage cost ledger and subscription commands.")
 hooks_app = typer.Typer(help="Hook pack commands for agent runtimes.")
 policy_app = typer.Typer(help="Project policy commands.")
@@ -582,9 +635,12 @@ AGENT_INSTRUCTION_TARGETS = {
     "hermes": "AGENTS.md",
     "opencode": "AGENTS.md",
     "openclaw": "AGENTS.md",
+    # dsh reads $DSH_HOME/AGENTS.md and project AGENTS.md/CLAUDE.md (verified
+    # against deepseek-ai/deepseek-harness packages/context/agent-instructions).
+    "dsh": "AGENTS.md",
 }
 
-MCP_SETUP_AGENTS = {"claude-code", "codex", "generic", "hermes", "opencode", "openclaw"}
+MCP_SETUP_AGENTS = {"claude-code", "codex", "generic", "hermes", "opencode", "openclaw", "dsh"}
 
 
 def _append_missing_gitignore_entries(project_dir: Path) -> list[str]:
@@ -985,6 +1041,8 @@ def _managed_runtime(
     host: str = "127.0.0.1",
     port: int = 8765,
     project_dir: Path | None = None,
+    watch_interval_seconds: float | None = None,
+    watch_estimate_costs: bool | None = None,
 ) -> RuntimeManager:
     executable = (
         _current_agentacct_executable()
@@ -997,12 +1055,30 @@ def _managed_runtime(
             "the managed runtime needs an installed agentacct console script; "
             "run this command from the environment where agentacct is installed"
         )
+    # Ops can tune the managed watcher cadence without a code change.
+    if watch_interval_seconds is None:
+        raw_interval = read_env_alias("AGENTACCT_WATCH_INTERVAL_SECONDS")
+        try:
+            watch_interval_seconds = float(raw_interval) if raw_interval is not None else 300.0
+        except (TypeError, ValueError):
+            watch_interval_seconds = 300.0
+    if watch_interval_seconds < 1:
+        watch_interval_seconds = 300.0
+    if watch_estimate_costs is None:
+        raw_estimate = read_env_alias("AGENTACCT_WATCH_ESTIMATE_COSTS")
+        watch_estimate_costs = (
+            str(raw_estimate).strip().lower() not in {"0", "false", "no", "off"}
+            if raw_estimate is not None
+            else True
+        )
     return RuntimeManager(
         store_dir,
         executable=executable,
         host=host,
         port=port,
         cwd=project_dir,
+        watch_interval_seconds=watch_interval_seconds,
+        watch_estimate_costs=watch_estimate_costs,
     )
 
 
@@ -2055,7 +2131,58 @@ def _print_agent_mcp_preview(agent: str, config_store_dir: Path | str, *, comman
             f"--command {quoted_command} --arg mcp --arg serve --arg --store-dir --arg {quoted_store_dir}"
         )
         return
+    if agent == "dsh":
+        console.print("DeepSeek Harness (dsh)")
+        # dsh registers MCP servers through the @deepseek-ai/dsh-mcp-client plugin
+        # in a cordis.patch.yml patch file, not a CLI command; the HOME-level patch
+        # ($DSH_HOME/cordis.patch.yml) applies to every profile the CLI boots (the
+        # plain `dsh` command has no default profile), so it is the reliable target.
+        console.print(
+            "dsh registers MCP servers via the @deepseek-ai/dsh-mcp-client plugin in a cordis.patch.yml "
+            "patch file (not a CLI command). Add this entry to dsh's HOME patch file "
+            "$DSH_HOME/cordis.patch.yml (default ~/.dsh/cordis.patch.yml) — it applies to every profile the "
+            "dsh CLI boots — or a specific profile's ~/.dsh/profiles/<name>/cordis.patch.yml. dsh hot-reloads "
+            "it and exposes the tools as mcp__agentacct__*:"
+        )
+        print(_dsh_mcp_patch_block(config_store_dir, command=command).rstrip())
+        console.print(
+            "If dsh reports the @deepseek-ai/dsh-mcp-client plugin is missing for your profile, install it once "
+            "with `dsh plugin --profile <name> add @deepseek-ai/dsh-mcp-client`. Remove any pre-rename "
+            "(agent-sentinel/agent-chronicle) entry from that patch file first."
+        )
+        return
     raise ValueError(f"unsupported MCP agent target: {agent}")
+
+
+def _dsh_yaml_double_quote(value: str) -> str:
+    """Render a YAML double-quoted scalar so an arbitrary path/command is safe."""
+
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _dsh_mcp_patch_block(config_store_dir: Path | str, *, command: str = "agentacct") -> str:
+    """The dsh cordis.patch.yml entry registering agentacct as a stdio MCP server.
+
+    Uses the @deepseek-ai/dsh-mcp-client plugin (dsh's own MCP mechanism); the
+    command and store path are YAML-double-quoted so a path with spaces or
+    special characters stays valid.
+    """
+
+    return (
+        "- insert:\n"
+        "    - id: mcp-agentacct\n"
+        "      name: '@deepseek-ai/dsh-mcp-client'\n"
+        "      config:\n"
+        "        serverName: agentacct\n"
+        "        transport: stdio\n"
+        f"        command: {_dsh_yaml_double_quote(command)}\n"
+        "        args:\n"
+        "          - mcp\n"
+        "          - serve\n"
+        "          - --store-dir\n"
+        f"          - {_dsh_yaml_double_quote(str(config_store_dir))}\n"
+    )
 
 
 def _upsert_toml_block(
@@ -2133,7 +2260,7 @@ def init_project(
     force: Annotated[bool, typer.Option(help="Overwrite an existing policy file.")] = False,
     agent: Annotated[
         list[str] | None,
-        typer.Option(help="Install observe-only instructions for an agent: claude-code, codex, generic, hermes, opencode, or openclaw. Repeatable."),
+        typer.Option(help="Install observe-only instructions for an agent: claude-code, codex, generic, hermes, opencode, openclaw, or dsh. Repeatable."),
     ] = None,
     mcp: Annotated[bool, typer.Option("--mcp/--no-mcp", help="Preview MCP setup for requested agents.")] = True,
     write_mcp: Annotated[
@@ -2435,6 +2562,147 @@ def _onboard_global_hermes(store_dir: Path, command: str) -> str | bool:
     return "recording"
 
 
+def _dsh_patch_tolerant_load(text: str):
+    """Parse a dsh cordis.patch.yml tolerantly.
+
+    Standard YAML resolves normally, but custom ``!!js`` / ``!`` tags (which
+    ``safe_load`` rejects, and which dsh patch files may carry) construct as
+    ``None`` — the empty-prefix multi-constructor is the lowest-priority
+    catch-all, so exact standard-tag constructors still win and only unknown tags
+    fall through. Nothing in the document is executed.
+    """
+
+    class _Loader(yaml.SafeLoader):
+        pass
+
+    _Loader.add_multi_constructor("", lambda loader, tag_suffix, node: None)
+    return yaml.load(text, Loader=_Loader)
+
+
+def _dsh_patch_rows(text: str) -> list | None:
+    """The top-level patch-op list if ``text`` is a valid dsh patch file, else None.
+
+    An empty/whitespace file is a valid empty list ([]); a file that does not
+    parse, or whose root is not a sequence, returns None.
+    """
+
+    try:
+        parsed = _dsh_patch_tolerant_load(text)
+    except yaml.YAMLError:
+        return None
+    if parsed is None:
+        return []
+    return parsed if isinstance(parsed, list) else None
+
+
+def _dsh_patch_has_agentacct(text: str) -> bool:
+    """True iff a real ``insert`` op registers a row with id ``mcp-agentacct``.
+
+    A structural check, not a substring match, so a comment or a ``remove`` op
+    that merely mentions the id never reads as an active registration.
+    """
+
+    for op in _dsh_patch_rows(text) or []:
+        if not isinstance(op, Mapping):
+            continue
+        inserted = op.get("insert")
+        if not isinstance(inserted, list):
+            continue
+        for row in inserted:
+            if isinstance(row, Mapping) and row.get("id") == "mcp-agentacct":
+                return True
+    return False
+
+
+def _write_dsh_home_patch_mcp(store_dir: Path, command: str) -> tuple[Path, str]:
+    """Register agentacct as an MCP server in dsh's home patch ($DSH_HOME/cordis.patch.yml).
+
+    Safe and non-destructive: CREATE when absent; if our ``insert`` op is already
+    registered leave it (``kept``); otherwise APPEND one ``- insert:`` op ONLY
+    when the appended result still parses as a top-level patch list. The file may
+    carry custom ``!!js`` tags and comments, so it is never parsed-and-rewritten;
+    the append is validated with a tolerant loader and, if the existing file's
+    shape (flow root, indented sequence, mapping root, or already-broken) would
+    make a column-0 append invalid YAML, the file is left untouched and ``manual``
+    is returned so the caller previews the block instead of claiming a write.
+    Returns the path and one of ``wrote`` / ``appended`` / ``kept`` / ``manual``.
+    """
+
+    path = _dsh_home_dir() / "cordis.patch.yml"
+    block = _dsh_mcp_patch_block(store_dir, command=command)
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(block, encoding="utf-8")
+        return path, "wrote"
+    existing = path.read_text(encoding="utf-8")
+    if _dsh_patch_has_agentacct(existing):
+        return path, "kept"
+    separator = "" if not existing or existing.endswith("\n") else "\n"
+    candidate = existing + separator + block
+    if _dsh_patch_rows(existing) is not None and _dsh_patch_rows(candidate) is not None:
+        path.write_text(candidate, encoding="utf-8")
+        return path, "appended"
+    return path, "manual"
+
+
+def _onboard_global_dsh(store_dir: Path, command: str) -> str:
+    """Configure dsh (DeepSeek Harness) at USER scope (zero repo files).
+
+    dsh has no default profile (the plain CLI requires ``--profile``), so BOTH
+    legs are installed at the HOME level, which every profile the CLI boots
+    layers on top of: the standing 'record your work' directive goes to
+    ``$DSH_HOME/AGENTS.md`` (loaded by dsh-base's agent-instructions on every
+    base-backed session), and the agentacct MCP server goes to
+    ``$DSH_HOME/cordis.patch.yml`` (the home patch applied over every profile).
+
+    Returns ``wired`` when both legs are written (dsh should record like Codex/
+    OpenCode, subject to the plugin resolving), or ``tools-pending`` when the
+    instruction was written but the MCP patch must be pasted by hand (an existing
+    patch file agentacct cannot safely extend, or a write error). Never claims a
+    write it did not make.
+    """
+
+    # 1. standing "record your work" instructions -> $DSH_HOME/AGENTS.md (always safe:
+    #    a managed block that leaves any existing content untouched).
+    setup_instructions(
+        agent="dsh", user=True, path=None, remove=False, dry_run=False, store_dir=store_dir
+    )
+    # 2. all-profiles MCP registration -> $DSH_HOME/cordis.patch.yml
+    try:
+        patch_path, action = _write_dsh_home_patch_mcp(store_dir, command)
+    except (OSError, UnicodeError) as exc:
+        console.print(f"dsh instructions written, but the MCP patch could not be written ({exc}).")
+        return "tools-pending"
+    if action == "manual":
+        console.print(
+            f"Left {patch_path} unchanged — its structure is not a plain patch list agentacct can safely "
+            "extend without risking your other patches. Add this entry to it yourself so dsh loads the server:"
+        )
+        print(_dsh_mcp_patch_block(store_dir, command=command).rstrip())
+        console.print(
+            "Then start a NEW dsh session ($DSH_HOME/AGENTS.md instructions are already installed)."
+        )
+        return "tools-pending"
+    if action == "kept":
+        console.print(
+            f"Left {patch_path} unchanged: an agentacct MCP insert (id: mcp-agentacct) is already registered."
+        )
+    else:
+        verb = "Wrote" if action == "wrote" else "Appended"
+        console.print(
+            f"{verb} the agentacct MCP server in {patch_path} (dsh home patch — applies to every profile)."
+        )
+    console.print(
+        "Start a NEW dsh session so it loads the server + $DSH_HOME/AGENTS.md instructions "
+        "(tools appear as mcp__agentacct__*)."
+    )
+    console.print(
+        "If dsh reports @deepseek-ai/dsh-mcp-client is missing for your profile, install it once: "
+        "dsh plugin --profile <name> add @deepseek-ai/dsh-mcp-client"
+    )
+    return "wired"
+
+
 def _warn_global_store_mismatches(store_dir: Path, command: str) -> None:
     """Warn when a surface agentacct does NOT rewrite still points elsewhere.
 
@@ -2547,6 +2815,12 @@ def _resync_integration(
                 resynced.append("hermes")
         except Exception:  # noqa: BLE001
             errored.append("hermes")
+    if "dsh" in client_set:
+        try:
+            if _onboard_global_dsh(store_dir, command):
+                resynced.append("dsh")
+        except Exception:  # noqa: BLE001
+            errored.append("dsh")
     return resynced, errored
 
 
@@ -2628,14 +2902,14 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
     # has no always-on global instruction slot, so its hook adapter injects the same
     # standing 'record your work' directive on each session's first turn (pre_llm_call)
     # — so hermes records too, once its one-time hook consent is granted.
-    configurable = ("claude-code", "codex", "opencode", "hermes")
+    configurable = ("claude-code", "codex", "opencode", "hermes", "dsh")
     if agent in {"auto", "all"}:
         targets = [client for client in configurable if client in found] or ["claude-code", "codex"]
     elif agent in configurable:
         targets = [agent]
     else:
         raise typer.BadParameter(
-            "global scope configures claude-code, codex, opencode, or hermes. "
+            "global scope configures claude-code, codex, opencode, hermes, or dsh. "
             "Use --scope project for other clients."
         )
 
@@ -2648,6 +2922,7 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
 
     recording_clients: list[str] = []
     tools_only_clients: list[str] = []
+    configured_experimental_clients: list[str] = []
     if mcp and "claude-code" in targets:
         if _onboard_global_claude(store_dir, command, assume_yes=assume_yes):
             recording_clients.append("claude-code")
@@ -2668,6 +2943,16 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
             recording_clients.append("hermes")
         elif hermes_status == "tools-only":
             tools_only_clients.append("hermes")
+    if mcp and "dsh" in targets:
+        # dsh reads $DSH_HOME/AGENTS.md on every base-backed session AND loads the
+        # home-patch MCP server, so once both are written it should record like
+        # codex/opencode. But whether dsh resolves the bundled
+        # @deepseek-ai/dsh-mcp-client plugin in-box for every profile is unproven
+        # (no live smoke), so a configured dsh is tracked for resync but reported
+        # as EXPERIMENTAL — it is never folded into the unqualified 'recording is
+        # machine-wide now' claim.
+        if _onboard_global_dsh(store_dir, command) in {"wired", "tools-pending"}:
+            configured_experimental_clients.append("dsh")
 
     imported = _local_usage_import_payload(
         store_dir=store_dir,
@@ -2689,10 +2974,11 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
         f"refreshed={int(imported.get('refreshed_events', 0) or 0)}"
     )
 
-    if recording_clients:
+    tracked_clients = recording_clients + configured_experimental_clients
+    if tracked_clients:
         try:
             ActivationStateStore(store_dir).mark_configured(
-                project_dir=Path.home(), clients=recording_clients,
+                project_dir=Path.home(), clients=tracked_clients,
                 agentacct_version=_package_version(),
             )
         except ActivationStateError as exc:
@@ -2723,9 +3009,15 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
             f"{', '.join(tools_only_clients)}: agentacct MCP tools registered. Semantic recording needs the "
             "client's hook adapter (installed separately)."
         )
+    if configured_experimental_clients:
+        console.print(
+            f"{', '.join(configured_experimental_clients)}: agentacct MCP server + $DSH_HOME/AGENTS.md written "
+            "(experimental). Start a NEW dsh session and confirm the @deepseek-ai/dsh-mcp-client plugin loads "
+            "for your profile — recording is not yet verified end-to-end."
+        )
     if recording_clients:
         console.print("Ready. Open a NEW agent session (in ANY repo) — recording is machine-wide now.")
-    elif not tools_only_clients:
+    elif not tools_only_clients and not configured_experimental_clients:
         console.print("Local usage capture is ready; no semantic recording client was configured.")
 
 
@@ -2734,7 +3026,7 @@ def onboard(
     project_dir: Annotated[Path, typer.Option(help="Project directory to connect (project scope only).")] = Path("."),
     agent: Annotated[
         str,
-        typer.Option(help="Client to configure: auto, all, codex, claude-code, hermes, opencode, or openclaw."),
+        typer.Option(help="Client to configure: auto, all, codex, claude-code, hermes, opencode, dsh, or openclaw."),
     ] = "auto",
     scope: Annotated[
         str,
@@ -3281,6 +3573,66 @@ def runtime_repair(
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         console.print(f"Repair: {payload.get('action')} (runtime={payload.get('state')})")
+
+
+@app.command("self-update")
+def self_update_cmd(
+    store_dir: Annotated[Optional[Path], typer.Option(help=_DASHBOARD_STORE_DIR_HELP)] = None,
+    host: Annotated[str, typer.Option(help="Managed API host (localhost only).")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Managed API port.")] = 8765,
+    yes: Annotated[bool, typer.Option("--yes", help="Apply without the confirmation prompt.")] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Update the packaged agentacct install to the latest PyPI release and restart the runtime.
+
+    Refuses a development/editable checkout — update that working tree with git.
+    """
+
+    from . import self_update as _su
+
+    resolved = _resolve_dashboard_cli_store_dir(store_dir).path
+    status = _su.update_status(store_dir=resolved, allow_network=True)
+    if status.is_dev_install:
+        if json_output:
+            print(json.dumps({"applied": False, "reason": "dev_install", "current": status.current}, indent=2, sort_keys=True))
+        else:
+            console.print(
+                f"Refusing to self-update a development/editable checkout (running {status.current}). "
+                "Update that working tree with git instead."
+            )
+        raise typer.Exit(2)
+    if not status.update_available or not status.latest:
+        if json_output:
+            print(json.dumps({"applied": False, "reason": "already_latest", "current": status.current}, indent=2, sort_keys=True))
+        else:
+            console.print(f"Already on the latest version ({status.current}).")
+        return
+    if not yes:
+        console.print(f"Update available: {status.current} → {status.latest}")
+        if not typer.confirm("Install it and restart the recorder?"):
+            raise typer.Exit(1)
+    try:
+        result = _su.apply_update(status.latest)
+    except Exception as exc:
+        console.print(f"Update failed: {exc}")
+        raise typer.Exit(1) from exc
+    restarted = False
+    try:
+        runtime = _managed_runtime(resolved, host=host, port=port)
+        runtime.stop()
+        _, external = _runtime_ingestion_health(resolved)
+        runtime.start(external_watcher_running=external)
+        restarted = True
+    except Exception as exc:
+        console.print(
+            f"Installed {status.latest} but could not restart the runtime automatically: {exc}. "
+            "Run `agentacct start`."
+        )
+    payload = {"applied": True, "from": result.get("from"), "to": result.get("to"), "restarted": restarted}
+    if json_output:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        console.print(f"Updated {result.get('from')} → {result.get('to')}. Runtime restarted: {restarted}.")
 
 
 @app.command("install-autostart")
@@ -4939,7 +5291,7 @@ def setup_global_store_path(
 
 @setup_app.command("prompt")
 def setup_prompt(
-    agent: Annotated[str, typer.Option(help="Agent client for the install prompt: claude-code, codex, generic, hermes, opencode, or openclaw.")],
+    agent: Annotated[str, typer.Option(help="Agent client for the install prompt: claude-code, codex, generic, hermes, opencode, openclaw, or dsh.")],
     full: Annotated[
         bool,
         typer.Option(
@@ -4958,7 +5310,7 @@ def setup_prompt(
     from the same install_guide content, so the two cannot drift.
     """
     if agent not in MCP_SETUP_AGENTS:
-        raise typer.BadParameter("agent must be one of: claude-code, codex, generic, hermes, opencode, openclaw")
+        raise typer.BadParameter("agent must be one of: claude-code, codex, generic, hermes, opencode, openclaw, dsh")
     if full:
         print(install_guide_full_prompt(agent).rstrip())
     else:
@@ -5198,6 +5550,21 @@ def setup_mark_instrumented(
         print("An earlier marker for this client+surface already existed; the original (earliest) install time is kept.")
 
 
+def _dsh_home_dir() -> Path:
+    """Resolve dsh's home ($DSH_HOME, then DSH_DIR, else ~/.dsh).
+
+    Matches the dsh usage importer's env handling so the instruction file and any
+    profile config land under the same home dsh actually reads.
+    """
+
+    env = os.environ.get("DSH_HOME") or os.environ.get("DSH_DIR")
+    if env:
+        first = next((value.strip() for value in env.split(",") if value.strip()), "")
+        if first:
+            return Path(first).expanduser()
+    return Path.home() / ".dsh"
+
+
 def _instruction_target_path(agent: str, *, user: bool, path: Path | None) -> Path:
     """Resolve the instruction file for `setup instructions`.
 
@@ -5216,13 +5583,17 @@ def _instruction_target_path(agent: str, *, user: bool, path: Path | None) -> Pa
         # in the ONE directory OpenCode actually reads.
         if agent == "opencode":
             return _opencode_config_dir() / "AGENTS.md"
+        # dsh reads $DSH_HOME/AGENTS.md (default ~/.dsh); honor the env override so
+        # the directive lands in the ONE home dsh actually reads.
+        if agent == "dsh":
+            return _dsh_home_dir() / "AGENTS.md"
         return Path.home() / install_guide.INSTRUCTION_USER_FILES[agent]
     return Path.cwd() / install_guide.INSTRUCTION_PROJECT_FILES[agent]
 
 
 @setup_app.command("preview")
 def setup_preview(
-    agent: Annotated[str, typer.Option(help="Client to preview: codex, claude-code, opencode, or hermes.")],
+    agent: Annotated[str, typer.Option(help="Client to preview: codex, claude-code, opencode, hermes, or dsh.")],
     user: Annotated[bool, typer.Option("--user", help="Preview the user-level onboarding content.")] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit the versioned read-only preview payload.")] = False,
     store_dir: Annotated[Optional[Path], typer.Option(help="Proposed absolute recording store; no store is created or opened.")] = None,
@@ -5257,12 +5628,12 @@ def setup_preview(
 
 @setup_app.command("instructions")
 def setup_instructions(
-    agent: Annotated[str, typer.Option(help="Agent whose instruction file to edit: claude-code, codex, or opencode.")],
+    agent: Annotated[str, typer.Option(help="Agent whose instruction file to edit: claude-code, codex, opencode, or dsh.")],
     user: Annotated[
         bool,
         typer.Option(
             "--user",
-            help="Target the user-level instruction file (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, or ~/.config/opencode/AGENTS.md) instead of the project-level file in the current directory.",
+            help="Target the user-level instruction file (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, ~/.config/opencode/AGENTS.md, or $DSH_HOME/AGENTS.md) instead of the project-level file in the current directory.",
         ),
     ] = False,
     path: Annotated[
@@ -5361,7 +5732,7 @@ def setup_instructions(
 
 @setup_app.command("mcp")
 def setup_mcp(
-    agent: Annotated[str, typer.Option(help="Agent client to configure: claude-code, codex, generic, hermes, opencode, or openclaw.")],
+    agent: Annotated[str, typer.Option(help="Agent client to configure: claude-code, codex, generic, hermes, opencode, openclaw, or dsh.")],
     project_dir: Annotated[Path, typer.Option(help="Project directory that should own local agentacct state.")] = Path("."),
     store_dir: Annotated[Optional[Path], typer.Option(help="Override agentacct state directory for the MCP server.")] = None,
     mcp_command: Annotated[
@@ -5392,7 +5763,7 @@ def setup_mcp(
     # (now safe-ish: `mcp serve` resolves it against the project root).
     config_store_dir: Path | str = ".agent-sentinel/state" if relative_store_path else effective_store_dir
     if agent not in MCP_SETUP_AGENTS:
-        raise typer.BadParameter("agent must be one of: claude-code, codex, generic, hermes, opencode, openclaw")
+        raise typer.BadParameter("agent must be one of: claude-code, codex, generic, hermes, opencode, openclaw, dsh")
 
     console.print("agentacct MCP setup")
     console.print("Source: PyPI (pipx install agentacct)")
@@ -5413,7 +5784,7 @@ def setup_mcp(
             # owner store for committed config.
             _print_claude_worktree_store_hint(project_dir, command=mcp_command)
 
-    if agent in {"generic", "hermes", "opencode", "openclaw"}:
+    if agent in {"generic", "hermes", "opencode", "openclaw", "dsh"}:
         _print_agent_mcp_preview(agent, config_store_dir, command=mcp_command)
         if write:
             console.print("--write is not available for this agent because its MCP config is profile/global or client-specific.")
@@ -6246,6 +6617,112 @@ def evidence_status(
     print(f"Conflict groups: {stats.get('conflict_groups', 0)}")
     print(f"Invalid spool records: {stats.get('invalid_spool_records', 0)}")
     print(f"Spool: {payload.get('spool_path')}")
+
+
+_DURATION_RE = re.compile(r"^\s*(\d+)\s*([smhd])\s*$", re.IGNORECASE)
+_DURATION_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def _parse_older_than(value: str) -> str:
+    """Resolve a duration (14d/72h/30m/45s) or an ISO-8601 timestamp to a stored
+    RFC3339-microsecond UTC cutoff string, so the lexicographic event_timestamp
+    comparison in prune_versions is exact."""
+
+    match = _DURATION_RE.match(value)
+    if match:
+        seconds = int(match.group(1)) * _DURATION_UNITS[match.group(2).lower()]
+        return normalize_timestamp(time.time() - seconds)
+    try:
+        return normalize_timestamp(value)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            f"--older-than must be a duration like 14d/72h/30m or an ISO-8601 timestamp ({exc})"
+        )
+
+
+@evidence_app.command("prune")
+def evidence_prune(
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    event_type: Annotated[
+        Optional[list[str]],
+        typer.Option("--event-type", help="Event type(s) to prune; repeatable. Default: tool_activity_observed."),
+    ] = None,
+    source_type: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--source-type",
+            help="Source type(s) to prune; repeatable. Default: mcp_agent_reported. client_hook/local_client_log are refused.",
+        ),
+    ] = None,
+    older_than: Annotated[
+        Optional[str],
+        typer.Option("--older-than", help="Only prune rows older than a duration (14d/72h/30m) or ISO-8601 UTC timestamp."),
+    ] = None,
+    batch_size: Annotated[int, typer.Option(help="Rows per delete transaction (100-100000).")] = 5000,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run/--no-dry-run", help="Count only (default). Pass --no-dry-run to delete.")
+    ] = True,
+    vacuum: Annotated[
+        bool,
+        typer.Option(
+            "--vacuum/--no-vacuum",
+            help="VACUUM after a real prune to return pages to the OS (needs an exclusive lock; stop the daemon first).",
+        ),
+    ] = True,
+    yes: Annotated[
+        bool, typer.Option("--yes", help="Proceed with a real prune even if a live watcher owns the store.")
+    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Reclaim evidence-v2 projection bloat (default: the tool_activity shadow rows).
+
+    The append-only spool.jsonl is NEVER touched, so the evidence log stays
+    complete and recoverable; only the derived projection index is pruned. The
+    honesty-critical client_hook and refreshable-usage lanes are refused.
+    """
+
+    if not (100 <= batch_size <= 100_000):
+        raise typer.BadParameter("--batch-size must be between 100 and 100000")
+    resolved = _resolve_cli_store_dir(store_dir).path
+    cutoff = _parse_older_than(older_than) if older_than else None
+    if not dry_run:
+        _, external_watcher = _runtime_ingestion_health(resolved)
+        if external_watcher and not yes:
+            raise typer.BadParameter(
+                "a live usage watcher owns this store; run `agentacct stop` first "
+                "(VACUUM needs an exclusive lock), or pass --yes"
+            )
+    runtime = EvidenceRuntime(resolved)
+    if not runtime.enabled:
+        print("Evidence v2: disabled")
+        return
+    try:
+        result = runtime.store.prune_versions(
+            source_types=source_type or None,
+            event_types=event_type or None,
+            older_than=cutoff,
+            batch_size=batch_size,
+            dry_run=dry_run,
+            vacuum=(vacuum and not dry_run),
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc))
+    payload = {
+        **result.to_dict(),
+        "projection_path": str(runtime.store.projection_path),
+        "spool_path": str(runtime.store.spool_path),
+        "spool_left_intact": True,
+    }
+    if json_output:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    prefix = "DRY RUN — " if dry_run else ""
+    print(
+        f"{prefix}matched={result.matched_versions} deleted_versions={result.deleted_versions} "
+        f"receipts={result.deleted_receipts} dimensions={result.deleted_dimensions} "
+        f"reclaimed={result.bytes_reclaimed()} bytes" + (" (vacuumed)" if result.vacuumed else "")
+    )
+    print("spool.jsonl left intact — the evidence log is preserved and recoverable.")
 
 
 @evidence_app.command("list")
@@ -7710,6 +8187,44 @@ def _selected_usage_sources(client: str) -> tuple[str, ...]:
     return tuple(SUPPORTED_CLIENTS) if client == "all" else (client,)
 
 
+def _usage_sources_change_fingerprint(
+    *,
+    client: str,
+    codex_home: Path | None,
+    claude_home: Path | None,
+    opencode_home: Path | None,
+    hermes_home: Path | None,
+    openclaw_home: Path | None,
+    dsh_home: Path | None,
+    cursor_home: Path | None,
+) -> tuple[tuple[str, int, int | None], ...]:
+    """Glob+stat-only change key for the selected usage sources.
+
+    Uses the cheap discovery enumerator (file counts + latest mtime, NO parse)
+    so the watcher can skip the multi-second import scan when nothing changed.
+    Must NOT call the heavy discover_client_usage_with_diagnostics."""
+
+    from .source_discovery import discover_usage_sources
+
+    selected = set(_selected_usage_sources(client))
+    rows = discover_usage_sources(
+        codex_home=codex_home,
+        claude_home=claude_home,
+        opencode_home=opencode_home,
+        hermes_home=hermes_home,
+        openclaw_home=openclaw_home,
+        dsh_home=dsh_home,
+        cursor_home=cursor_home,
+    )
+    return tuple(
+        sorted(
+            (row.client, int(row.file_count), row.latest_updated_at)
+            for row in rows
+            if row.client in selected
+        )
+    )
+
+
 def _local_usage_import_payload(
     *,
     store_dir: Path,
@@ -7719,6 +8234,7 @@ def _local_usage_import_payload(
     opencode_home: Path | None = None,
     hermes_home: Path | None = None,
     openclaw_home: Path | None = None,
+    dsh_home: Path | None = None,
     cursor_home: Path | None = None,
     limit_sessions: int = 20,
     dry_run: bool = False,
@@ -7761,6 +8277,7 @@ def _local_usage_import_payload(
                 opencode_home=opencode_home,
                 hermes_home=hermes_home,
                 openclaw_home=openclaw_home,
+                dsh_home=dsh_home,
                 cursor_home=cursor_home,
                 limit_sessions=limit_sessions,
             )
@@ -8345,6 +8862,7 @@ def _local_usage_import_payload(
                 opencode_home=opencode_home,
                 hermes_home=hermes_home,
                 openclaw_home=openclaw_home,
+                dsh_home=dsh_home,
                 cursor_home=cursor_home,
             ),
             "scanned_sessions": len(observed_session_keys),
@@ -8660,12 +9178,13 @@ def usage_import_local(
         Optional[Path],
         typer.Option(help=_STORE_DIR_HELP),
     ] = None,
-    client: Annotated[str, typer.Option(help="Client to import: all, codex, claude-code, opencode, hermes, openclaw, or observation-only cursor.")] = "all",
+    client: Annotated[str, typer.Option(help="Client to import: all, codex, claude-code, opencode, hermes, openclaw, dsh, or observation-only cursor.")] = "all",
     codex_home: Annotated[Optional[Path], typer.Option(help="Codex home directory. Defaults to CODEX_HOME or ~/.codex.")] = None,
     claude_home: Annotated[Optional[Path], typer.Option(help="Claude Code home directory. Defaults to CLAUDE_CONFIG_DIR, then XDG and ~/.claude homes.")] = None,
     opencode_home: Annotated[Optional[Path], typer.Option(help="OpenCode home/export directory. Defaults to ~/.local/share/opencode.")] = None,
     hermes_home: Annotated[Optional[Path], typer.Option(help="Hermes home directory. Defaults to ~/.hermes.")] = None,
     openclaw_home: Annotated[Optional[Path], typer.Option(help="OpenClaw home directory. Defaults to ~/.openclaw and related roots.")] = None,
+    dsh_home: Annotated[Optional[Path], typer.Option(help="DeepSeek Harness home directory. Defaults to DSH_HOME/DSH_DIR or ~/.dsh.")] = None,
     cursor_home: Annotated[Optional[Path], typer.Option(help="Cursor application-support root. Defaults to ~/Library/Application Support/Cursor; only User/globalStorage/state.vscdb is inspected.")] = None,
     limit_sessions: Annotated[int, typer.Option(help="Recent sessions to inspect per client.")] = 20,
     dry_run: Annotated[bool, typer.Option(help="Preview importable usage without writing agentacct events.")] = False,
@@ -8691,6 +9210,7 @@ def usage_import_local(
         opencode_home=opencode_home,
         hermes_home=hermes_home,
         openclaw_home=openclaw_home,
+        dsh_home=dsh_home,
         cursor_home=cursor_home,
         limit_sessions=limit_sessions,
         dry_run=dry_run,
@@ -8728,16 +9248,18 @@ def usage_watch(
         Optional[Path],
         typer.Option(help=_STORE_DIR_HELP),
     ] = None,
-    client: Annotated[str, typer.Option(help="Client to import: all, codex, claude-code, opencode, hermes, openclaw, or observation-only cursor.")] = "all",
+    client: Annotated[str, typer.Option(help="Client to import: all, codex, claude-code, opencode, hermes, openclaw, dsh, or observation-only cursor.")] = "all",
     codex_home: Annotated[Optional[Path], typer.Option(help="Codex home directory. Defaults to CODEX_HOME or ~/.codex.")] = None,
     claude_home: Annotated[Optional[Path], typer.Option(help="Claude Code home directory. Defaults to CLAUDE_CONFIG_DIR, then XDG and ~/.claude homes.")] = None,
     opencode_home: Annotated[Optional[Path], typer.Option(help="OpenCode home/export directory. Defaults to ~/.local/share/opencode.")] = None,
     hermes_home: Annotated[Optional[Path], typer.Option(help="Hermes home directory. Defaults to ~/.hermes.")] = None,
     openclaw_home: Annotated[Optional[Path], typer.Option(help="OpenClaw home directory. Defaults to ~/.openclaw and related roots.")] = None,
+    dsh_home: Annotated[Optional[Path], typer.Option(help="DeepSeek Harness home directory. Defaults to DSH_HOME/DSH_DIR or ~/.dsh.")] = None,
     cursor_home: Annotated[Optional[Path], typer.Option(help="Cursor application-support root. Defaults to ~/Library/Application Support/Cursor; only User/globalStorage/state.vscdb is inspected.")] = None,
-    interval_seconds: Annotated[float, typer.Option(help="Seconds between import scans when running continuously.")] = 60.0,
+    interval_seconds: Annotated[float, typer.Option(help="Seconds between import scans. Default 300; the managed runtime passes this explicitly. A calmer cadence means far fewer cache-invalidating ledger writes.")] = 300.0,
     limit_sessions: Annotated[int, typer.Option(help="Recent sessions to inspect per client per scan.")] = 20,
-    estimate_costs: Annotated[bool, typer.Option(help="Estimate equivalent cost from known model pricing rows. Not provider billing.")] = False,
+    estimate_costs: Annotated[bool, typer.Option("--estimate-costs/--no-estimate-costs", help="Estimate equivalent cost from known model pricing rows on every scan. Not provider billing. --no-estimate-costs skips the per-scan pricing recompute.")] = False,
+    skip_unchanged: Annotated[bool, typer.Option("--skip-unchanged/--no-skip-unchanged", help="Skip the heavy parse when no source file changed since the last scan (mtime+count fingerprint), recording a zero-parse 'unchanged' scan so freshness still advances. Default on. A full scan is forced periodically regardless.")] = True,
     refresh: Annotated[bool, typer.Option("--refresh", help="Also update already-imported sessions on every scan: replace each re-observed row whose totals CHANGED with fresh totals. Pricing estimates are recomputed only with --estimate-costs. Unchanged rows are left untouched, so idle sessions never churn the ledger. Default: each session is imported once at first observation and never updated.")] = False,
     once: Annotated[bool, typer.Option(help="Run one scan and exit. Useful for cron, launchd, and smoke tests.")] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit one JSON payload per scan.")] = False,
@@ -8778,9 +9300,14 @@ def usage_watch(
                     "an active usage watcher already owns this store; stop or restart that watcher before starting another"
                 )
             lease_id = candidate_lease_id
-        while not stop_requested.is_set():
-            if lease_id is not None and not health_store.heartbeat_watcher(lease_id):
-                raise typer.BadParameter("usage watcher lease was lost; restart the watcher")
+        last_fingerprint: tuple[tuple[str, int, int | None], ...] | None = None
+        skips_since_full = 0
+        MAX_SKIPS_BEFORE_FULL = 12
+
+        def _scan_and_report() -> bool:
+            """Run one real import scan; return True on success. On a handled
+            failure (not --once) it logs and returns False so the caller does
+            not commit the unchanged fingerprint."""
             try:
                 payload = _local_usage_import_payload(
                     store_dir=resolved_store_dir,
@@ -8790,6 +9317,7 @@ def usage_watch(
                     opencode_home=opencode_home,
                     hermes_home=hermes_home,
                     openclaw_home=openclaw_home,
+                    dsh_home=dsh_home,
                     cursor_home=cursor_home,
                     limit_sessions=limit_sessions,
                     dry_run=False,
@@ -8805,42 +9333,99 @@ def usage_watch(
                     file=sys.stderr,
                     flush=True,
                 )
+                return False
+            if json_output:
+                print(json.dumps(payload, sort_keys=True), flush=True)
             else:
-                if json_output:
-                    print(json.dumps(payload, sort_keys=True), flush=True)
-                else:
-                    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-                    totals = payload.get("usage_totals") if isinstance(payload.get("usage_totals"), dict) else {}
-                    refreshed_events = int(payload.get("refreshed_events", 0) or 0)
-                    repriced_events = int(payload.get("repriced_events", 0) or 0)
-                    imported_events = int(payload.get("imported_events", 0) or 0)
-                    migrated_events = int(payload.get("migrated_events", 0) or 0)
-                    new_sessions = max(
-                        0,
-                        imported_events
-                        - refreshed_events
-                        - repriced_events
-                        - migrated_events,
+                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                totals = payload.get("usage_totals") if isinstance(payload.get("usage_totals"), dict) else {}
+                refreshed_events = int(payload.get("refreshed_events", 0) or 0)
+                repriced_events = int(payload.get("repriced_events", 0) or 0)
+                imported_events = int(payload.get("imported_events", 0) or 0)
+                migrated_events = int(payload.get("migrated_events", 0) or 0)
+                new_sessions = max(
+                    0,
+                    imported_events
+                    - refreshed_events
+                    - repriced_events
+                    - migrated_events,
+                )
+                print(
+                    f"[{timestamp}] imported={imported_events} "
+                    f"new_sessions={new_sessions} "
+                    f"refreshed={refreshed_events} "
+                    f"repriced={repriced_events} "
+                    f"observed_sessions={payload.get('observed_sessions', 0)} "
+                    f"usage_sessions={payload.get('usage_sessions', 0)} "
+                    f"usage_unavailable={payload.get('sessions_without_usage', 0)} "
+                    f"saved_observations={payload.get('imported_session_observations', 0)} "
+                    f"tokens={totals.get('input_tokens', 0)} in/{totals.get('output_tokens', 0)} out "
+                    f"cache_create={totals.get('cache_creation_input_tokens', 0)} "
+                    f"cache_read={totals.get('cache_read_input_tokens', 0)} "
+                    f"incomplete_alias_migrations={payload.get('incomplete_alias_migrations', 0)}",
+                    flush=True,
+                )
+                _print_evidence_refreshable_usage_warning(
+                    payload,
+                    prefix=f"[{timestamp}] ",
+                )
+            return True
+
+        while not stop_requested.is_set():
+            if lease_id is not None and not health_store.heartbeat_watcher(lease_id):
+                raise typer.BadParameter("usage watcher lease was lost; restart the watcher")
+            fingerprint: tuple[tuple[str, int, int | None], ...] | None = None
+            if skip_unchanged and not once:
+                try:
+                    fingerprint = _usage_sources_change_fingerprint(
+                        client=client,
+                        codex_home=codex_home,
+                        claude_home=claude_home,
+                        opencode_home=opencode_home,
+                        hermes_home=hermes_home,
+                        openclaw_home=openclaw_home,
+                        dsh_home=dsh_home,
+                        cursor_home=cursor_home,
                     )
+                except Exception:
+                    fingerprint = None
+            if (
+                fingerprint is not None
+                and last_fingerprint is not None
+                and fingerprint == last_fingerprint
+                and skips_since_full < MAX_SKIPS_BEFORE_FULL
+            ):
+                # Nothing changed since the last scan: record a zero-parse
+                # 'unchanged' scan so per-source freshness still advances, and
+                # skip the multi-second parse that would otherwise churn the
+                # ledger and bust every derived cache.
+                try:
+                    _sid = health_store.begin_scan(
+                        sources=_selected_usage_sources(client),
+                        scan_limit=limit_sessions,
+                        importer_version=_usage_importer_version(),
+                    )
+                    health_store.complete_scan(
+                        _sid,
+                        results={
+                            src: {"discovered": count, "parsed": 0, "skipped": count, "error_count": 0}
+                            for (src, count, _mt) in fingerprint
+                        },
+                    )
+                except Exception:
+                    pass
+                skips_since_full += 1
+                if not json_output:
+                    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
                     print(
-                        f"[{timestamp}] imported={imported_events} "
-                        f"new_sessions={new_sessions} "
-                        f"refreshed={refreshed_events} "
-                        f"repriced={repriced_events} "
-                        f"observed_sessions={payload.get('observed_sessions', 0)} "
-                        f"usage_sessions={payload.get('usage_sessions', 0)} "
-                        f"usage_unavailable={payload.get('sessions_without_usage', 0)} "
-                        f"saved_observations={payload.get('imported_session_observations', 0)} "
-                        f"tokens={totals.get('input_tokens', 0)} in/{totals.get('output_tokens', 0)} out "
-                        f"cache_create={totals.get('cache_creation_input_tokens', 0)} "
-                        f"cache_read={totals.get('cache_read_input_tokens', 0)} "
-                        f"incomplete_alias_migrations={payload.get('incomplete_alias_migrations', 0)}",
+                        f"[{timestamp}] scan_skipped_unchanged sources={len(fingerprint)} skips_since_full={skips_since_full}",
                         flush=True,
                     )
-                    _print_evidence_refreshable_usage_warning(
-                        payload,
-                        prefix=f"[{timestamp}] ",
-                    )
+            else:
+                if _scan_and_report():
+                    if fingerprint is not None:
+                        last_fingerprint = fingerprint
+                    skips_since_full = 0
             if once:
                 break
             if stop_requested.is_set():
@@ -9102,6 +9687,7 @@ def usage_discover_sources(
     opencode_home: Annotated[Optional[Path], typer.Option(help="OpenCode data/export directory. Defaults to OPENCODE_DATA_DIR or ~/.local/share/opencode.")] = None,
     hermes_home: Annotated[Optional[Path], typer.Option(help="Hermes home directory. Defaults to HERMES_HOME or ~/.hermes.")] = None,
     openclaw_home: Annotated[Optional[Path], typer.Option(help="OpenClaw home directory. Defaults to OPENCLAW_DIR or known OpenClaw roots.")] = None,
+    dsh_home: Annotated[Optional[Path], typer.Option(help="DeepSeek Harness home directory. Defaults to DSH_HOME/DSH_DIR or ~/.dsh.")] = None,
     cursor_home: Annotated[Optional[Path], typer.Option(help="Cursor application-support root. Defaults to ~/Library/Application Support/Cursor; only User/globalStorage/state.vscdb is inspected.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
@@ -9113,6 +9699,7 @@ def usage_discover_sources(
         opencode_home=opencode_home,
         hermes_home=hermes_home,
         openclaw_home=openclaw_home,
+        dsh_home=dsh_home,
         cursor_home=cursor_home,
     )
     payload = {"sources": [source.to_dict() for source in sources]}
@@ -9770,10 +10357,10 @@ def _render_receipt_text(receipt: dict[str, Any]) -> None:
 
     actions = dims.get("actions", {})
     actions_summary = _receipt_category_text(actions.get("tool_category_counts") or {})
-    actions_summary += f"  · touched {int(actions.get('touched_file_count') or 0)} file(s)"
+    actions_summary += f"  · touched {count_noun(int(actions.get('touched_file_count') or 0), 'file')}"
     _command_count = int(actions.get("command_count") or 0)
     if _command_count:
-        actions_summary += f"  · ran {_command_count} command(s)"
+        actions_summary += f"  · ran {count_noun(int(_command_count), 'command')}"
     names_preview = actions.get("tool_names_preview") or []
     if names_preview:
         # The SPECIFIC tools/connectors the agent used (most-used first). Names are

@@ -41,6 +41,7 @@ def discover_usage_sources(
     opencode_home: Path | None = None,
     hermes_home: Path | None = None,
     openclaw_home: Path | None = None,
+    dsh_home: Path | None = None,
     cursor_home: Path | None = None,
 ) -> list[UsageSourceDiscovery]:
     """Detect known local stores without retaining prompt or response content."""
@@ -51,6 +52,7 @@ def discover_usage_sources(
         _discover_opencode_source(opencode_home),
         _discover_hermes_source(hermes_home),
         _discover_openclaw_source(openclaw_home),
+        _discover_dsh_source(dsh_home),
         _discover_cursor_source(cursor_home),
     ]
 
@@ -335,6 +337,49 @@ def _discover_openclaw_source(openclaw_home: Path | None) -> UsageSourceDiscover
         usage_confidence=USAGE_UNKNOWN,
         cost_confidence=COST_UNKNOWN,
         importer="agentacct usage import-local --client openclaw" if found else None,
+        notes=notes,
+    )
+
+
+def _discover_dsh_source(dsh_home: Path | None) -> UsageSourceDiscovery:
+    if dsh_home is not None:
+        homes = [dsh_home.expanduser()]
+    else:
+        env_value = os.environ.get("DSH_HOME") or os.environ.get("DSH_DIR")
+        homes = (
+            [
+                Path(value.strip()).expanduser()
+                for value in env_value.split(",")
+                if value.strip()
+            ]
+            if env_value
+            else [Path.home() / ".dsh"]
+        )
+    files = _dedupe_paths(
+        path
+        for home in homes
+        for path in _matching_files(home, ["session*.jsonl", "session*.jsonl.zstd"])
+    )
+    found = bool(files)
+    # Presence detection only globs the session-log names; it does not decode the
+    # Zstandard frames, so token/cost confidence stays unknown until an import
+    # actually parses them (matching the OpenClaw glob-only detector).
+    notes = [
+        "assistant/message usage rows; message text is not imported",
+        "session logs are Zstandard-compressed (.jsonl.zstd) by default",
+    ]
+    return UsageSourceDiscovery(
+        client="dsh",
+        display_name="DeepSeek Harness",
+        status="found" if found else "missing",
+        evidence="jsonl-logs",
+        paths=_existing_or_attempted_paths(homes),
+        file_count=len(files),
+        session_count=len(files) if files else None,
+        latest_updated_at=_latest_mtime(files),
+        usage_confidence=USAGE_UNKNOWN,
+        cost_confidence=COST_UNKNOWN,
+        importer="agentacct usage import-local --client dsh" if found else None,
         notes=notes,
     )
 

@@ -28,7 +28,7 @@ The same task — **"Add retry-with-backoff to the payments HTTP client"**, from
 | --- | --- | --- |
 | Task | Plan the retry policy; Write the retry tests · project payments-svc | client_log, mcp |
 | Actors | claude-code · claude-opus-4-8 | client_log |
-| Actions | edit×5 execute×6 read×12 search×3 · touched 2 file(s) · ran 2 command(s) | hook, mcp |
+| Actions | edit×5 execute×6 read×12 search×3 · touched 2 files · ran 2 commands | hook, mcp |
 | Cost | $27.40 · pricing_table | client_log |
 | Weekly plan | calibrating — not enough 7-day history yet |  |
 | Evidence | 1 checks · 1 passed · 0 failed | mcp |
@@ -42,7 +42,7 @@ The same task — **"Add retry-with-backoff to the payments HTTP client"**, from
 
 **Gaps (1)** — what could not be proven
 
-- **evidence** — 1 completed step(s) have no linked passing check.
+- **evidence** — 1 completed step has no linked passing check.
 
 **Provenance**
 
@@ -69,7 +69,7 @@ The same task — **"Add retry-with-backoff to the payments HTTP client"**, from
 | --- | --- | --- |
 | Task | Add backoff to the HTTP client; Run the payment tests · project payments-svc | client_log, mcp |
 | Actors | codex · gpt-5.6-sol | client_log |
-| Actions | edit×3 execute×4 read×9 search×2 · touched 2 file(s) · ran 1 command(s) | mcp, transcript_scan |
+| Actions | edit×3 execute×4 read×9 search×2 · touched 2 files · ran 1 command | mcp, transcript_scan |
 | Cost | $3.10 · pricing_table | client_log |
 | Weekly plan | calibrating — not enough 7-day history yet |  |
 | Evidence | 1 checks · 1 passed · 0 failed | mcp |
@@ -83,7 +83,7 @@ The same task — **"Add retry-with-backoff to the payments HTTP client"**, from
 
 **Gaps (1)** — what could not be proven
 
-- **evidence** — 1 completed step(s) have no linked passing check.
+- **evidence** — 1 completed step has no linked passing check.
 
 **Provenance**
 

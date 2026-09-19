@@ -48,7 +48,7 @@ final class SetupVisualRegressionTests: XCTestCase {
                     actualURL: actualURL,
                     artifactDirectory: artifactDirectory,
                     mode: mode,
-                    tolerance: .setupRenderingNoise
+                    tolerance: .crossMinorRenderingNoise
                 )
             } catch {
                 XCTFail(error.localizedDescription)

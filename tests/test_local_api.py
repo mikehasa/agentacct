@@ -12,6 +12,8 @@ from agentacct.cli import _local_usage_import_payload, app
 from agentacct.cost import CostLedger, UsageEstimate
 from agentacct.event_log import RAW_EVENT_LOG_FILENAME, RawEventLog
 from agentacct.mcp import SentinelMCPServer
+from agentacct.self_update import UpdateStatus
+from agentacct.service import SentinelService
 from agentacct.pricing_catalog import default_pricing_catalog_snapshot_path
 from agentacct.runner import RunOptions, start_guarded_run
 from agentacct.service import SentinelService
@@ -1484,3 +1486,118 @@ def test_local_api_payloads_carry_additive_cache_triple_keys(tmp_path):
     assert item["usage_fresh_total"] == 125
     assert item["usage_cache_read_total"] == 50
     assert item["usage_cache_creation_total"] == 0
+
+
+def _fixed_status(**overrides) -> UpdateStatus:
+    base = dict(
+        current="0.11.0",
+        latest="0.12.0",
+        update_available=True,
+        is_dev_install=False,
+        checked_at=1.0,
+        source="cache",
+    )
+    base.update(overrides)
+    return UpdateStatus(**base)
+
+
+def test_v1_version_includes_additive_self_update_fields(tmp_path, monkeypatch):
+    from agentacct import self_update as su
+
+    monkeypatch.setattr(su, "update_status", lambda **_k: _fixed_status())
+    monkeypatch.setattr(su, "refresh_in_background", lambda *_a, **_k: None)
+    SentinelService(tmp_path / "state")
+    client = TestClient(create_local_api_app(store_dir=tmp_path / "state", v1_auth_token="tok"))
+
+    body = client.get("/v1/version", headers={"Authorization": "Bearer tok"}).json()
+
+    # Legacy handshake keys unchanged.
+    assert body["schema"] == "agentacct.v1-version.v1"
+    assert isinstance(body["version"], str) and body["version"]
+    assert "sessions_schema" in body
+    # Additive self-update fields.
+    assert body["current"] == "0.11.0"
+    assert body["latest"] == "0.12.0"
+    assert body["update_available"] is True
+    assert body["is_dev_install"] is False
+
+
+def test_v1_self_update_refuses_dev_install(tmp_path, monkeypatch):
+    from agentacct import self_update as su
+
+    monkeypatch.setattr(
+        su, "update_status", lambda **_k: _fixed_status(current="0.0.0+source", update_available=False, is_dev_install=True)
+    )
+    SentinelService(tmp_path / "state")
+    client = TestClient(create_local_api_app(store_dir=tmp_path / "state", v1_auth_token="tok"))
+
+    response = client.post("/v1/self-update", headers={"Authorization": "Bearer tok"})
+    assert response.status_code == 409
+
+
+def test_v1_self_update_already_latest(tmp_path, monkeypatch):
+    from agentacct import self_update as su
+
+    monkeypatch.setattr(su, "update_status", lambda **_k: _fixed_status(current="0.12.0", update_available=False))
+    SentinelService(tmp_path / "state")
+    client = TestClient(create_local_api_app(store_dir=tmp_path / "state", v1_auth_token="tok"))
+
+    response = client.post("/v1/self-update", headers={"Authorization": "Bearer tok"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["applied"] is False
+    assert body["reason"] == "already_latest"
+
+
+def test_v1_self_update_spawns_detached_updater(tmp_path, monkeypatch):
+    import agentacct.api as api_mod
+    from agentacct import self_update as su
+
+    monkeypatch.setattr(su, "update_status", lambda **_k: _fixed_status(source="pypi"))
+    captured = {}
+
+    class _Popen:
+        def __init__(self, argv, **kwargs):
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(api_mod.subprocess, "Popen", _Popen)
+    SentinelService(tmp_path / "state")
+    client = TestClient(create_local_api_app(store_dir=tmp_path / "state", v1_auth_token="tok"))
+
+    response = client.post("/v1/self-update", headers={"Authorization": "Bearer tok"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["applied"] is True
+    assert body["to"] == "0.12.0"
+    assert "self-update" in captured["argv"]
+    assert captured["kwargs"].get("start_new_session") is True
+
+
+def test_usage_sources_change_fingerprint_is_glob_only_and_sorted(monkeypatch):
+    import types
+
+    import agentacct.cli as cli_mod
+    import agentacct.source_discovery as sd
+
+    rows = [
+        types.SimpleNamespace(client="claude-code", file_count=1, latest_updated_at=None),
+        types.SimpleNamespace(client="codex", file_count=3, latest_updated_at=100),
+    ]
+    monkeypatch.setattr(sd, "discover_usage_sources", lambda **_k: rows)
+
+    fingerprint = cli_mod._usage_sources_change_fingerprint(
+        client="all",
+        codex_home=None,
+        claude_home=None,
+        opencode_home=None,
+        hermes_home=None,
+        openclaw_home=None,
+        dsh_home=None,
+        cursor_home=None,
+    )
+
+    assert ("codex", 3, 100) in fingerprint
+    assert ("claude-code", 1, None) in fingerprint
+    # Stable ordering so equal source state always compares equal.
+    assert list(fingerprint) == sorted(fingerprint)

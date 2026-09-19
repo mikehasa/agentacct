@@ -112,9 +112,29 @@ final class DashboardStore {
     private(set) var ingestionError: String?
     private(set) var ingestionLastUpdated: Date?
     private(set) var isRefreshingIngestion = false
+
+    /// Per-agent connection rows from /v1/connections (the Diagnostics pane).
+    private(set) var connections: [V1Connection]?
+    private(set) var connectionsError: String?
+    private(set) var isRefreshingConnections = false
+
+    private(set) var versionInfo: VersionInfo?
+    private(set) var versionError: String?
+    private(set) var isApplyingUpdate = false
+    private(set) var updateRestarting = false
     private(set) var isRefreshing = false
     private(set) var isLoadingReceipts = false
     private(set) var lastUpdated: Date?
+
+    /// Folder-anchored Work groupings (the Work tab). Membership is re-queried
+    /// live on every fetch, so a new session in a folder joins on its own.
+    private(set) var worksets: [WorksetCard] = []
+    private(set) var worksetsError: String?
+    private(set) var isLoadingWorksets = false
+    private(set) var worksetsLastUpdated: Date?
+    /// Folders the recorder has seen, for the "point at a folder" picker.
+    private(set) var worksetCandidates: [WorksetCandidate] = []
+    private(set) var worksetCandidatesError: String?
     /// Freshness of the independently published receipt collection.
     /// A Work-only retry must not relabel the other dashboard panes as fresh.
     private(set) var receiptListLastUpdated: Date?
@@ -171,7 +191,8 @@ final class DashboardStore {
     init(
         preloaded fixture: DashboardSnapshotFixture,
         workState: SnapshotWorkStoreState = .populated,
-        usageState: SnapshotUsageStoreState? = nil
+        usageState: SnapshotUsageStoreState? = nil,
+        ingestionOverride: V1IngestionSnapshot? = nil
     ) {
         client = GlanceClient()
         savedWork = nil
@@ -179,7 +200,7 @@ final class DashboardStore {
         usage = usageState?.summary ?? fixture.usage
         usageDays = usageState?.days ?? 7
         attention = fixture.attention
-        ingestion = fixture.ingestion?.ingestion
+        ingestion = ingestionOverride ?? fixture.ingestion?.ingestion
         switch workState {
         case .populated:
             receiptTasks = fixture.tasks.tasks
@@ -282,6 +303,8 @@ final class DashboardStore {
         async let planRequest: V1PlanPayload = client.getAuthed("/v1/plan?days=\(days)")
         async let usageRequest: UsageSummary = client.getLocal("/usage/summary?days=\(days)")
         async let ingestionRefresh: Void = refreshIngestion()
+        async let connectionsRefresh: Void = refreshConnections()
+        async let versionRefresh: Void = refreshVersion()
 
         var tasksSucceeded = false
         do {
@@ -330,6 +353,8 @@ final class DashboardStore {
         }
 
         _ = await ingestionRefresh
+        _ = await connectionsRefresh
+        _ = await versionRefresh
 
         do {
             let (plan, summary) = try await (planRequest, usageRequest)
@@ -354,7 +379,13 @@ final class DashboardStore {
     /// Sources retries only its own endpoint (upstream PR #158). A cancelled
     /// window refresh leaves retained source health and its timestamp intact.
     func refreshIngestion() async {
-        guard !isOfflineSnapshot, !SnapshotMode.enabled, !isRefreshingIngestion else { return }
+        // Snapshot mode is allowed through (unlike the live-only retry loops the
+        // other panes gate off): the docs `--snapshot` render calls refresh()
+        // once against the demo daemon, so source health — the dashboard's
+        // Evidence-trust signal and the Sources pane — renders populated instead
+        // of a perpetual "checking" state. Golden fixture renders never call
+        // refresh(), so their pixels are unaffected.
+        guard !isOfflineSnapshot, !isRefreshingIngestion else { return }
         isRefreshingIngestion = true
         defer { isRefreshingIngestion = false }
         do {
@@ -376,6 +407,79 @@ final class DashboardStore {
             if !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
                 ingestionError = "source health fetch failed: \(error.localizedDescription)"
             }
+        }
+    }
+
+    /// Per-agent connection rows for the Diagnostics pane. Retains the last rows
+    /// on a cancelled/failed refresh, like source health.
+    func refreshConnections() async {
+        // Snapshot mode is allowed through for the same reason as
+        // refreshIngestion(): the docs `--snapshot` render calls refresh() once
+        // against the demo daemon, so the Diagnostics pane renders its per-agent
+        // Connections card instead of the older per-source fallback. Golden
+        // fixture renders never call refresh(), so their pixels are unaffected.
+        guard !isOfflineSnapshot, !isRefreshingConnections else { return }
+        isRefreshingConnections = true
+        defer { isRefreshingConnections = false }
+        do {
+            let payload: V1ConnectionsPayload = try await client.getAuthed("/v1/connections")
+            try Task.checkCancellation()
+            connections = payload.connections
+            connectionsError = nil
+        } catch GlanceClientError.http(404) {
+            if !Task.isCancelled {
+                connectionsError = "this daemon predates /v1/connections"
+            }
+        } catch GlanceClientError.noDiscovery(_) {
+            if !Task.isCancelled {
+                connectionsError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            }
+        } catch {
+            if !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
+                connectionsError = "connections fetch failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Recorder version + whether a newer release is published. Retains the last
+    /// value on a cancelled/failed refresh, like source health.
+    func refreshVersion() async {
+        guard !isOfflineSnapshot, !isApplyingUpdate else { return }
+        do {
+            let payload: VersionInfo = try await client.getAuthed("/v1/version")
+            try Task.checkCancellation()
+            versionInfo = payload
+            versionError = nil
+        } catch GlanceClientError.http(404) {
+            if !Task.isCancelled {
+                versionError = "this daemon predates /v1/version"
+            }
+        } catch GlanceClientError.noDiscovery(_) {
+            if !Task.isCancelled {
+                // Expected while a self-update restart is in flight: the daemon
+                // drops its discovery file as it respawns on the new binary.
+                if !updateRestarting {
+                    versionError = "daemon not running (no discovery file) — start it with `agentacct start`"
+                }
+            }
+        } catch {
+            if !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
+                versionError = "version fetch failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// One-click apply of a published update. The daemon installs the new
+    /// version and restarts itself, so a subsequent noDiscovery is expected, not
+    /// an error. Never offered for a dev/editable install (the button is hidden).
+    func applyUpdate() async throws {
+        guard !isOfflineSnapshot else { throw SavedWorkError.readOnly }
+        guard !isApplyingUpdate else { return }
+        isApplyingUpdate = true
+        defer { isApplyingUpdate = false }
+        let response: SelfUpdateResponse = try await client.postAuthed("/v1/self-update", body: [:])
+        if response.applied == true {
+            updateRestarting = true
         }
     }
 
@@ -651,6 +755,106 @@ final class DashboardStore {
         await fetchAttention()
     }
 
+    // MARK: - Worksets (folder-anchored Work groupings)
+
+    func fetchWorksets() async {
+        guard !isOfflineSnapshot else { return }
+        isLoadingWorksets = true
+        defer { isLoadingWorksets = false }
+        do {
+            let payload: WorksetsPayload = try await client.getAuthed("/v1/worksets")
+            try Task.checkCancellation()
+            worksets = payload.worksets
+            worksetsError = nil
+            worksetsLastUpdated = SnapshotMode.enabled ? nil : Date()
+        } catch GlanceClientError.noDiscovery(_) {
+            if !Task.isCancelled {
+                worksetsError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            }
+        } catch GlanceClientError.http(404) {
+            worksets = []
+            worksetsError = nil
+        } catch {
+            // A cancelled fetch (pane switch / view teardown) is benign and must
+            // never surface as a failure — every sibling fetch in this file guards
+            // this the same way. Retain the last rows instead of showing "cancelled".
+            if !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
+                worksetsError = "work groups fetch failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func fetchWorksetCandidates() async {
+        guard !isOfflineSnapshot else { return }
+        do {
+            let payload: WorksetCandidatesPayload = try await client.getAuthed("/v1/workset-candidates")
+            try Task.checkCancellation()
+            worksetCandidates = payload.candidates
+            worksetCandidatesError = nil
+        } catch GlanceClientError.noDiscovery(_) {
+            if !Task.isCancelled { worksetCandidatesError = "daemon not running" }
+        } catch GlanceClientError.http(404) {
+            // A daemon predating /v1/workset-candidates: no candidates is a named
+            // empty state, not an error toast (mirrors fetchWorksets' 404 branch).
+            worksetCandidates = []
+            worksetCandidatesError = nil
+        } catch {
+            if !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
+                worksetCandidatesError = "folders fetch failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// The caller supplies a STABLE `worksetId` (minted once per create intent)
+    /// so a retry after a lost response replays idempotently on the server —
+    /// the operation is keyed by this id, never a fresh one per call — instead
+    /// of forking a second grouping for the same folder.
+    @discardableResult
+    func createWorkset(name: String, directory: String, worksetId: String) async throws -> WorksetWriteResponse {
+        guard !isOfflineSnapshot else { throw SavedWorkError.readOnly }
+        let body: [String: Any] = [
+            "action": "create",
+            "workset_id": worksetId,
+            "name": name,
+            "directory": directory,
+            "expected_revision": 0,
+        ]
+        let response: WorksetWriteResponse = try await client.postAuthed("/v1/worksets", body: body)
+        await fetchWorksets()
+        return response
+    }
+
+    /// A fresh workset id for one create intent, reused across retries by the UI.
+    static func newWorksetId() -> String { "ws_" + UUID().uuidString }
+
+    func renameWorkset(id: String, name: String, expectedRevision: Int) async throws {
+        guard !isOfflineSnapshot else { throw SavedWorkError.readOnly }
+        do {
+            let _: WorksetWriteResponse = try await client.postAuthed("/v1/worksets", body: [
+                "action": "rename", "workset_id": id, "name": name, "expected_revision": expectedRevision,
+            ])
+        } catch {
+            // A 409 means it moved under us — re-read so the next attempt uses
+            // the current revision instead of re-offering the stale one.
+            await fetchWorksets()
+            throw error
+        }
+        await fetchWorksets()
+    }
+
+    func deleteWorkset(id: String, expectedRevision: Int) async throws {
+        guard !isOfflineSnapshot else { throw SavedWorkError.readOnly }
+        do {
+            let _: WorksetWriteResponse = try await client.postAuthed("/v1/worksets", body: [
+                "action": "delete", "workset_id": id, "expected_revision": expectedRevision,
+            ])
+        } catch {
+            await fetchWorksets()
+            throw error
+        }
+        await fetchWorksets()
+    }
+
     /// Preload one session's deep view into `preloadedSessions` (snapshot support).
     func preloadSession(client clientName: String, sessionId: String) async {
         if let detail = try? await loadSession(client: clientName, sessionId: sessionId) {
@@ -775,8 +979,15 @@ enum DashboardDestination: Equatable {
 
 enum MainPane: String, CaseIterable, Identifiable {
     case dashboard = "Dashboard"
-    case work = "Work"
+    // Folder-anchored Work groupings across Claude Code and Codex. The internal
+    // case is `worksets`; its user-facing tab is "Work". The `work` case below
+    // (the receipts collection) keeps its name for its many call sites but now
+    // shows as "Sessions" — the granular runs a Work groups the higher level.
+    case worksets = "Work"
+    case work = "Sessions"
     case usage = "Usage"
-    case sources = "Sources"
+    // Internal case stays `.sources`; it now shows as "Diagnostics" because the
+    // panel is where you check the whole service's health and what went wrong.
+    case sources = "Diagnostics"
     var id: String { rawValue }
 }

@@ -579,6 +579,32 @@ def test_setup_mcp_openclaw_preview_uses_repeatable_arg_syntax(tmp_path: Path) -
     assert "Preview only" in result.output
 
 
+def test_setup_mcp_dsh_preview_prints_cordis_patch_yaml(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["setup", "mcp", "--agent", "dsh", "--project-dir", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "DeepSeek Harness (dsh)" in result.output
+    # dsh has no `mcp add` CLI verb — it registers via a cordis.patch.yml plugin entry.
+    assert "cordis.patch.yml" in result.output
+    assert "@deepseek-ai/dsh-mcp-client" in result.output
+    assert "serverName: agentacct" in result.output
+    # Recommends the HOME patch (applies to every profile — the plain CLI has no default).
+    assert "$DSH_HOME/cordis.patch.yml" in result.output
+    expected_store = str((tmp_path / ".agent-sentinel" / "state").resolve())
+    assert expected_store in result.output
+    assert "Preview only" in result.output
+    # The emitted block must be valid YAML with the expected registration shape.
+    import yaml
+
+    start = result.output.index("- insert:")
+    end = result.output.index("If dsh reports", start)
+    parsed = yaml.safe_load(result.output[start:end])
+    entry = parsed[0]["insert"][0]
+    assert entry["name"] == "@deepseek-ai/dsh-mcp-client"
+    assert entry["config"]["transport"] == "stdio"
+    assert entry["config"]["args"] == ["mcp", "serve", "--store-dir", expected_store]
+
+
 def test_setup_mcp_generic_preview_prints_portable_json(tmp_path: Path) -> None:
     result = runner.invoke(app, ["setup", "mcp", "--agent", "generic", "--project-dir", str(tmp_path)])
 
@@ -591,7 +617,7 @@ def test_setup_mcp_generic_preview_prints_portable_json(tmp_path: Path) -> None:
 
 
 def test_setup_mcp_profile_global_agents_reject_write(tmp_path: Path) -> None:
-    for agent in ["generic", "hermes", "opencode", "openclaw"]:
+    for agent in ["generic", "hermes", "opencode", "openclaw", "dsh"]:
         result = runner.invoke(app, ["setup", "mcp", "--agent", agent, "--project-dir", str(tmp_path), "--write"])
 
         assert result.exit_code != 0, agent

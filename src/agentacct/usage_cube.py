@@ -40,7 +40,7 @@ USAGE_SUMMARY_SCHEMA_VERSION = "agent-sentinel.usage-summary.v1"
 
 # The measured local-usage lanes. Cursor is intentionally absent because its
 # adapter emits session observations only, never a token/cost row.
-KNOWN_USAGE_CLIENTS = ("claude-code", "codex", "hermes", "opencode", "openclaw")
+KNOWN_USAGE_CLIENTS = ("claude-code", "codex", "hermes", "opencode", "openclaw", "dsh")
 # Shared visual/client vocabulary also covers observation-only adapters.
 KNOWN_LOCAL_CLIENTS = (*KNOWN_USAGE_CLIENTS, "cursor")
 

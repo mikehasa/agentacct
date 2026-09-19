@@ -24,7 +24,7 @@ An agent worked on **"Fix the flaky checkout-total test"** and reported it done.
 | --- | --- | --- |
 | Task | Reproduce the flaky total; Fix the rounding in the total · project storefront | client_log, mcp |
 | Actors | claude-code · claude-opus-4-8 | client_log |
-| Actions | edit×6 execute×4 read×10 search×2 · touched 3 file(s) · ran 1 command(s) | hook, mcp |
+| Actions | edit×6 execute×4 read×10 search×2 · touched 3 files · ran 1 command | hook, mcp |
 | Cost | $18.60 · pricing_table | client_log |
 | Weekly plan | calibrating — not enough 7-day history yet |  |
 | Evidence | 1 checks · 1 passed · 0 failed | mcp |
@@ -48,7 +48,7 @@ An agent worked on **"Fix the flaky checkout-total test"** and reported it done.
 
 **Gaps (1)** — what could not be proven
 
-- **evidence** — 1 completed step(s) have no linked passing check.
+- **evidence** — 1 completed step has no linked passing check.
 
 **Provenance**
 

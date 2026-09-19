@@ -56,6 +56,10 @@ Run a local smoke demo:
 agentacct demo
 ```
 
+## Regenerating the README screenshots
+
+Every screenshot in the README is rendered from a synthetic demo store; no real session data is involved. The macOS app shots come from `scripts/gen_app_screenshots.py` (needs a built app from `apps/agentacct/Scripts/build-app.sh`, macOS 14+); the terminal shots come from `scripts/gen_tui_screenshots.py` (needs Chrome for the SVG-to-PNG step). Both write into `docs/assets/`; `scripts/gen_app_screenshots.py --locale zh-CN` renders the same store with its demo content in Chinese into `docs/assets/zh-CN/` for `README.zh-CN.md`. If you change what a screenshot shows, update the README alt text to match.
+
 ## Before opening a PR
 
 Please check:

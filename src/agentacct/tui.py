@@ -29,18 +29,22 @@ from __future__ import annotations
 import os
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
+from rich.cells import cell_len as _cell_len, set_cell_size as _set_cells
 from rich.markup import escape as _escape
+from rich.text import Text as _RText
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.theme import Theme
-from textual.widgets import ContentSwitcher, Input, ListItem, ListView, Static
+from textual.widgets import ContentSwitcher, DataTable, Footer, Input, ListItem, ListView, Static
 
+from .plural import count_noun
 from .service import SentinelService
 from .usage_snapshot import (
     ClientLimit,
@@ -75,6 +79,9 @@ _DARK: dict[str, str] = {
     "line": "#313D44", "hair": "#2C363C",
     "ink": "#F2F4F3", "muted": "#A5B0B4", "dim": "#71808A",
     "accent": "#82A6FF", "green": "#78D5A8", "amber": "#E7C66A", "coral": "#FF9B88",
+    # Per-agent source hues (mirror Swift Theme.sourceColor): Claude=accent,
+    # Codex=purple, OpenCode=teal, Hermes=magenta; every other client = muted.
+    "codex": "#B6A2F0", "opencode": "#53C6D6", "hermes": "#E39AC8",
     "ta": "#24365C", "tg": "#1E3B2F", "tm": "#3D3420", "tc": "#412620",
     "tn": "#2A343B", "chip": "#232E34", "spark": "#31456F",
 }
@@ -83,6 +90,9 @@ _LIGHT: dict[str, str] = {
     "line": "#DDDACF", "hair": "#E4E1D7",
     "ink": "#171A1D", "muted": "#59636B", "dim": "#79848B",
     "accent": "#245BDB", "green": "#1F7653", "amber": "#7A5A00", "coral": "#B63F2F",
+    # Per-agent source hues (mirror Swift Theme.sourceColor): Claude=accent,
+    # Codex=purple, OpenCode=teal, Hermes=magenta; every other client = muted.
+    "codex": "#6A4BC0", "opencode": "#0E8494", "hermes": "#A5457F",
     "ta": "#E8EEFB", "tg": "#E2F0E9", "tm": "#F7EFDA", "tc": "#F8E5E1",
     "tn": "#EDEBE3", "chip": "#F7F5F0", "spark": "#B9CBF2",
 }
@@ -295,12 +305,13 @@ _MARKUP_TAG = re.compile(r"\[/?[^\]]*\]")
 
 
 def _plainlen(markup: str) -> int:
-    """Visible width of a Rich-markup string — tags stripped, escaped ``\\[``
-    counted as one column. Used to right-justify a two-edge row by hand (a Static
-    has no built-in justify)."""
+    """Terminal CELL width of a Rich-markup string — tags stripped, escaped ``\\[``
+    counted as one column, and every glyph measured by how many columns it
+    actually occupies (a CJK/wide character is 2, a zero-width combining mark 0).
+    Character COUNT would drift on non-ASCII text and misalign every column."""
 
-    stripped = _MARKUP_TAG.sub("", markup)
-    return len(stripped.replace("\\[", "["))
+    stripped = _MARKUP_TAG.sub("", markup).replace("\\[", "[")
+    return _cell_len(stripped)
 
 
 def _two_edge(left: str, right: str, width: int) -> str:
@@ -435,13 +446,13 @@ def sparkline(values: list[float], pal: dict[str, str]) -> str:
 # ============================================================================ #
 
 _HELP_ROWS: tuple[tuple[str, str], ...] = (
-    ("1 – 4", "switch pane · Dashboard / Work / Usage / Sources"),
+    ("1 – 5", "switch pane · Dashboard / Work / Sessions / Usage / Diagnostics"),
     ("↑ ↓ / j k", "move cursor · detail follows"),
-    ("↵", "open · drill into a receipt"),
+    ("↵", "open · a work group's timeline, or drill into a receipt"),
     ("esc", "close this help overlay"),
-    ("/", "filter the current list (Work)"),
-    ("[ ]", "previous / next status tab (Work)"),
-    ("s", "cycle sort — attention / latest / cost (Work)"),
+    ("/", "filter the current list (Sessions)"),
+    ("[ ]", "previous / next status tab (Sessions)"),
+    ("s", "cycle sort — attention / latest / cost (Sessions)"),
     ("d", "cycle range — 7d / 30d / 90d / all (Usage)"),
     ("T", "cycle theme · dark / light / auto"),
     ("r", "refresh · re-import from client logs"),
@@ -471,25 +482,339 @@ class HelpScreen(ModalScreen):
         self.app.pop_screen()
 
 
+class WorksetDetailScreen(ModalScreen):
+    """One work group's full cross-agent timeline, keyboard-zoomable. The honest
+    terminal answer to the app's pinch/drag canvas: ↑↓ move a scrubber cursor
+    (its session's facts read out below), +/− zoom around it (discrete steps, the
+    exact WorksetZoomWindow math), 0 resets, ←→ pan. Positions snap to cells."""
+
+    BINDINGS = [
+        Binding("down", "focus(1)", "Move", key_display="↑↓"),
+        Binding("up", "focus(-1)", "Move", show=False),
+        Binding("k", "focus(-1)", show=False),
+        Binding("j", "focus(1)", show=False),
+        Binding("plus", "zoom(1.6)", "Zoom in"),
+        Binding("equals_sign", "zoom(1.6)", show=False),
+        Binding("minus", "zoom(0.625)", "Zoom out"),
+        Binding("underscore", "zoom(0.625)", show=False),
+        Binding("0", "reset_zoom", "Reset"),
+        Binding("right", "pan(1)", "Pan", key_display="←→"),
+        Binding("left", "pan(-1)", "Pan", show=False),
+        Binding("h", "pan(-1)", show=False),
+        Binding("l", "pan(1)", show=False),
+        Binding("escape", "close", "Back"),
+        Binding("q", "close", "Back", show=False),
+    ]
+
+    def __init__(self, card: dict, pal: dict[str, str]) -> None:
+        super().__init__()
+        self._card = card
+        self._pal = pal
+        self._lanes = [l for l in (card.get("sessions") or []) if isinstance(l, dict)]
+        self._lo, self._hi = _timeline_bounds(self._lanes)
+        self._zoom = 1.0
+        self._pan = 0.5
+        self._focus = 0
+        self._recenter()
+        self._body_text = self._body_markup()  # plain-string mirror for headless tests
+
+    def compose(self) -> ComposeResult:
+        # A scroll container (not a plain Vertical): the full timeline + facts can
+        # exceed the box's max height, and an un-scrollable overflow fails to lay
+        # out. Content is built in compose so the Static is populated on first
+        # render.
+        # The box must NOT take focus: a focusable VerticalScroll would swallow the
+        # arrow keys for scrolling, so ↑↓ (move scrubber) / ←→ (pan) would never
+        # reach the screen bindings — and the Footer, which mirrors the active
+        # bindings, would drop them. With focus on the screen the scrubber drives
+        # the arrows; the mouse wheel still scrolls a tall body.
+        box = VerticalScroll(Static(self._body_text, id="ws-detail-body"), id="ws-detail-box")
+        box.can_focus = False
+        yield box
+        yield Footer()
+
+    def on_mount(self) -> None:
+        # After the first layout the body Static has a real content width; repaint
+        # against it so the axis/track fit exactly (the compose-time estimate is
+        # conservative). Named on_mount (a message handler) — never _render.
+        self.call_after_refresh(self._repaint)
+
+    def _content_width(self) -> int:
+        try:
+            w = int(self.query_one("#ws-detail-body", Static).content_size.width)
+            if w > 10:
+                return w
+        except Exception:  # noqa: BLE001
+            pass
+        app = getattr(self, "app", None)
+        return max(48, int(getattr(getattr(app, "size", None), "width", 0) or 150) - 18)
+
+    def _body_markup(self) -> str:
+        return _workset_detail_markup(
+            self._card, self._pal, self._content_width(), zoom=self._zoom, pan=self._pan, focus_key=self._focus_key()
+        )
+
+    def _focus_key(self) -> str | None:
+        if 0 <= self._focus < len(self._lanes):
+            return str(self._lanes[self._focus].get("session_key"))
+        return None
+
+    def _focus_time(self) -> float | None:
+        if 0 <= self._focus < len(self._lanes):
+            t = self._lanes[self._focus].get("first_activity_at")
+            if isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0:
+                return float(t)
+        return None
+
+    def _recenter(self) -> None:
+        ft = self._focus_time()
+        if ft is not None and self._lo is not None and self._hi is not None and self._hi > self._lo:
+            self._pan = min(1.0, max(0.0, (ft - self._lo) / (self._hi - self._lo)))
+
+    def _repaint(self) -> None:
+        # NB: never name this ``_render`` — Textual reserves ``Widget._render``
+        # (it must return the visual; a None-returning override crashes the
+        # compositor with 'NoneType has no attribute render_strips').
+        body = self._body_markup()
+        self._body_text = body
+        try:
+            self.query_one("#ws-detail-body", Static).update(body)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def action_close(self) -> None:
+        self.app.pop_screen()
+
+    def action_focus(self, delta: int) -> None:
+        if not self._lanes:
+            return
+        self._focus = min(len(self._lanes) - 1, max(0, self._focus + delta))
+        self._recenter()
+        self._repaint()
+
+    def action_zoom(self, factor: float) -> None:
+        if self._lo is None or self._hi is None or self._hi <= self._lo:
+            return
+        # After a recenter the focused session sits at window centre, so anchoring
+        # the zoom at 0.5 keeps it fixed under the cursor.
+        self._zoom, self._pan = _ZoomWindow.apply_zoom(self._zoom, self._pan, factor, 0.5, self._lo, self._hi)
+        self._repaint()
+
+    def action_reset_zoom(self) -> None:
+        self._zoom, self._pan = 1.0, 0.5
+        self._recenter()
+        self._repaint()
+
+    def action_pan(self, direction: int) -> None:
+        if self._lo is None or self._hi is None or self._hi <= self._lo:
+            return
+        win = _ZoomWindow(self._lo, self._hi, self._zoom, self._pan)
+        step = (win.end - win.start) * 0.25 * direction
+        full = self._hi - self._lo
+        self._pan = min(1.0, max(0.0, self._pan + (step / full if full else 0.0)))
+        self._repaint()
+
+
+class _WorksetPromptScreen(ModalScreen):
+    """A one-line text prompt (rename). Enter submits, esc cancels."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, title: str, initial: str, pal: dict[str, str], on_submit) -> None:
+        super().__init__()
+        self._title = title
+        self._initial = initial
+        self._pal = pal
+        self._on_submit = on_submit
+
+    def compose(self) -> ComposeResult:
+        pal = self._pal
+        with Vertical(id="ws-prompt-box"):
+            yield Static(f"[b {pal['ink']}]{_escape(self._title)}[/]", id="ws-prompt-title")
+            yield Input(value=self._initial, placeholder="Name", id="ws-prompt-input")
+            yield Static(f"[{pal['dim']}][b {pal['accent']}]↵[/] save   [b {pal['accent']}]esc[/] cancel[/]")
+
+    def on_mount(self) -> None:
+        inp = self.query_one("#ws-prompt-input", Input)
+        inp.focus()
+        inp.cursor_position = len(self._initial)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "ws-prompt-input":
+            self.app.pop_screen()
+            self._on_submit(event.value.strip())
+
+    def action_cancel(self) -> None:
+        self.app.pop_screen()
+
+
+class _WorksetConfirmScreen(ModalScreen):
+    """A destructive-action confirm (delete). y/Enter confirms, n/esc cancels."""
+
+    BINDINGS = [
+        Binding("y", "confirm", "Delete"),
+        Binding("enter", "confirm", "Delete", show=False),
+        Binding("n", "cancel", "Keep", show=False),
+        Binding("escape", "cancel", "Keep"),
+    ]
+
+    def __init__(self, title: str, body: str, pal: dict[str, str], on_confirm) -> None:
+        super().__init__()
+        self._title = title
+        self._body = body
+        self._pal = pal
+        self._on_confirm = on_confirm
+
+    def compose(self) -> ComposeResult:
+        pal = self._pal
+        with Vertical(id="ws-confirm-box"):
+            yield Static(f"[b {pal['coral']}]{_escape(self._title)}[/]", id="ws-confirm-title")
+            yield Static(f"[{pal['muted']}]{_escape(self._body)}[/]")
+            yield Static(f"[{pal['dim']}][b {pal['coral']}]y[/] delete   [b {pal['accent']}]n[/] keep[/]")
+
+    def action_confirm(self) -> None:
+        self.app.pop_screen()
+        self._on_confirm()
+
+    def action_cancel(self) -> None:
+        self.app.pop_screen()
+
+
+class WorksetCreateScreen(ModalScreen):
+    """The 'point at a folder' create flow: pick an ungrouped folder (its sessions
+    across every agent join the group live), name it, and create. The write goes
+    through record_workset_action like the app — never a raw event."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, candidates: list[dict], pal: dict[str, str], on_create) -> None:
+        super().__init__()
+        self._cands = candidates
+        self._pal = pal
+        self._on_create = on_create
+        self._selected: str | None = None
+
+    def compose(self) -> ComposeResult:
+        pal = self._pal
+        with Vertical(id="ws-create-box"):
+            yield Static(f"[b {pal['ink']}]New work group[/]  [{pal['dim']}]point at a folder[/]", id="ws-create-title")
+            yield ListView(id="ws-create-list")
+            yield Input(placeholder="Group name", id="ws-create-name")
+            yield Static(
+                f"[{pal['dim']}][b {pal['accent']}]↑↓[/] pick folder   "
+                f"[b {pal['accent']}]↵[/] on the name to create   [b {pal['accent']}]esc[/] cancel[/]"
+            )
+
+    def on_mount(self) -> None:
+        pal = self._pal
+        lv = self.query_one("#ws-create-list", ListView)
+        for c in self._cands:
+            label = c.get("label") or c.get("project_identity")
+            sc = c.get("session_count")
+            srcs = ", ".join(_agent_label(s) for s in (c.get("sources") or []))
+            lv.append(ListItem(Static(
+                f"[{pal['ink']}]{_escape(str(label))}[/]  "
+                f"[{pal['dim']}]{sc} session{'s' if sc != 1 else ''} · {_escape(srcs)}[/]"
+            )))
+        if self._cands:
+            lv.index = 0
+            self._select(0)
+        lv.focus()
+
+    def _select(self, i: int) -> None:
+        if 0 <= i < len(self._cands):
+            self._selected = self._cands[i].get("project_identity")
+            self.query_one("#ws-create-name", Input).value = str(self._cands[i].get("label") or "")
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        if event.list_view.id == "ws-create-list" and event.list_view.index is not None:
+            self._select(event.list_view.index)
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        # Enter on a folder row moves to the name field.
+        if event.list_view.id == "ws-create-list":
+            self.query_one("#ws-create-name", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "ws-create-name":
+            name = event.value.strip()
+            if self._selected and name:
+                self.app.pop_screen()
+                self._on_create(self._selected, name)
+
+    def action_cancel(self) -> None:
+        self.app.pop_screen()
+
+
 # ============================================================================ #
 # The application.                                                             #
 # ============================================================================ #
 
+# The five destinations, in the macOS app's order. The internal ids keep their
+# original names (many call sites: the receipts pane is `work`, ingestion is
+# `sources`) but the LABELS mirror the renamed GUI: the receipts collection is
+# "Sessions", the new folder-anchored grouping pane is "Work" (`worksets`), and
+# ingestion health is "Diagnostics".
 _PANES: tuple[tuple[str, str], ...] = (
     ("dashboard", "Dashboard"),
-    ("work", "Work"),
+    ("worksets", "Work"),
+    ("work", "Sessions"),
     ("usage", "Usage"),
-    ("sources", "Sources"),
+    ("sources", "Diagnostics"),
 )
 
-# Contextual keybind hints shown in the status bar per pane. (key, label) pairs;
-# rendered with the key in accent. Global keys (?, q) are appended.
-_PANE_HINTS: dict[str, tuple[tuple[str, str], ...]] = {
-    "dashboard": (("1-4", "pane"),),
-    "work": (("↑↓", "move"), ("↵", "open"), ("/", "filter"), ("[ ]", "status"), ("s", "sort")),
-    "usage": (("d", "range"), ("↑↓", "scroll")),
-    "sources": (("↑↓", "source"),),
-}
+
+
+# Focusable pane widgets carry their OWN key bindings, so Textual's Footer shows
+# exactly the keys that apply wherever focus is — the fix for "the keys vanish
+# when I drill in". Actions resolve up the DOM to the App (bare action names), so
+# the App keeps every action method and each pane just declares which keys apply.
+# The list panes focus their inner ListView (its up/down/enter work); these
+# pane-level keys bubble up from the focused list, and the Footer shows them all.
+class _DashboardPane(VerticalScroll):
+    can_focus = True
+    BINDINGS = [Binding("enter", "app.dash_review", "Review queue")]
+
+
+class _WorksetsPane(Vertical):
+    can_focus = True
+    BINDINGS = [
+        Binding("g", "app.worksets_new", "New group"),
+        Binding("e", "app.worksets_rename", "Rename"),
+        Binding("x", "app.worksets_delete", "Delete"),
+        # vim aliases for ↑↓ — the help overlay advertises j/k, so honour them.
+        Binding("j", "app.list_nav(1)", show=False),
+        Binding("k", "app.list_nav(-1)", show=False),
+    ]
+
+
+class _SessionsPane(Vertical):
+    can_focus = True
+    BINDINGS = [
+        Binding("slash", "app.work_filter", "Filter"),
+        Binding("left_square_bracket", "app.work_status(-1)", "Prev tab"),
+        Binding("right_square_bracket", "app.work_status(1)", "Next tab"),
+        Binding("s", "app.work_sort", "Sort"),
+        # Scroll the receipt/steps detail (the right pane) from the list — its own
+        # VerticalScroll never holds focus, so without this a tall receipt or steps
+        # timeline is unreachable from the keyboard. ctrl+d/ctrl+u (not pagedown:
+        # the focused ListView already binds pagedown to scroll ITSELF and would
+        # shadow us).
+        Binding("ctrl+d", "app.work_scroll(1)", "Scroll"),
+        Binding("ctrl+u", "app.work_scroll(-1)", "Scroll", show=False),
+        # vim aliases for ↑↓ (the help overlay advertises j/k).
+        Binding("j", "app.list_nav(1)", show=False),
+        Binding("k", "app.list_nav(-1)", show=False),
+    ]
+
+
+class _UsagePane(VerticalScroll):
+    can_focus = True
+    BINDINGS = [Binding("d", "app.usage_range", "Range")]
+
+
+class _DiagnosticsPane(VerticalScroll):
+    can_focus = True
 
 
 class AgentAcctTUI(App):
@@ -504,7 +829,6 @@ class AgentAcctTUI(App):
        a pane switch. Plain vertical stacking keeps it the first row everywhere. */
     #topbar { height: 1; padding: 0 2; background: $surface; color: $foreground; }
     #toprule { height: 1; background: $surface; color: $border; }
-    #statusbar { height: 1; padding: 0 2; background: $surface; color: $text-muted; }
 
     #switcher { height: 1fr; }
 
@@ -544,14 +868,20 @@ class AgentAcctTUI(App):
     #work-split { height: 1fr; }
     #work-detail { width: 1fr; height: 1fr; padding: 0 0 0 2; }
 
-    /* Master: a selectable card list (not a table). Each receipt is a padded
-       ListItem; the highlighted one wears the accent edge + selected wash. */
+    /* Master: a DataTable of receipts — one row per receipt, sortable columns and
+       a proper row cursor. The detail pane (right) is authoritative for the rest. */
     #work-list { width: 46%; height: 1fr; background: $background; }
-    #work-list > ListItem { padding: 0 1 0 1; height: auto; background: $background; }
-    #work-list > ListItem > Static { padding: 1 1; border-left: wide $background; }
-    #work-list > ListItem.-highlight, #work-list > ListItem.--highlight { background: $block-cursor-background; }
-    #work-list > ListItem.-highlight > Static,
-    #work-list > ListItem.--highlight > Static { background: $block-cursor-background; border-left: wide $primary; }
+    #work-list > .datatable--header { background: $background; color: $text-muted; text-style: none; }
+    #work-list > .datatable--cursor { background: $block-cursor-background; }
+    #work-list > .datatable--hover { background: $background; }
+
+    /* Worksets (the "Work" tab): a full-width stack of cards, each a selectable
+       ListItem; the highlighted group wears the accent edge + selected wash. */
+    #worksets-list { height: 1fr; background: $background; }
+    #worksets-list > ListItem { padding: 0 0 1 0; height: auto; background: $background; }
+    #worksets-list > ListItem > Static { padding: 1 2; background: $panel; border-left: wide $panel; }
+    #worksets-list > ListItem.-highlight > Static,
+    #worksets-list > ListItem.--highlight > Static { background: $block-cursor-background; border-left: wide $primary; }
 
     HelpScreen { align: center middle; }
     #help-box {
@@ -559,24 +889,50 @@ class AgentAcctTUI(App):
         background: $panel; border: round $primary;
     }
     #help-body { height: auto; }
+
+    /* The zoomable work-group timeline overlay. */
+    WorksetDetailScreen { align: center middle; }
+    #ws-detail-box {
+        width: 92%; max-width: 160; height: auto; max-height: 90%; padding: 1 2;
+        background: $panel; border: round $primary;
+    }
+    #ws-detail-body { height: auto; }
+
+    /* Worksets write overlays (create / rename / delete). */
+    _WorksetPromptScreen, _WorksetConfirmScreen, WorksetCreateScreen { align: center middle; }
+    #ws-prompt-box, #ws-confirm-box {
+        width: 64; height: auto; padding: 1 2; background: $panel; border: round $primary;
+    }
+    #ws-create-box {
+        width: 80; height: auto; max-height: 80%; padding: 1 2;
+        background: $panel; border: round $primary;
+    }
+    #ws-create-list { height: auto; max-height: 12; background: $background; margin: 1 0; }
+    #ws-create-list > ListItem { padding: 0 1; background: $background; }
+    #ws-create-list > ListItem.-highlight, #ws-create-list > ListItem.--highlight { background: $block-cursor-background; }
+    #ws-prompt-input, #ws-create-name {
+        margin: 1 0; border: round $border; background: $background; padding: 0 1;
+    }
+    #ws-prompt-input:focus, #ws-create-name:focus { border: round $primary; }
+    #ws-prompt-title, #ws-confirm-title, #ws-create-title { height: auto; }
     """
 
+    # Global keys only. Pane-scoped keys live on the focusable pane widgets above
+    # (_WorksetsPane, _SessionsPane, _UsagePane, _DashboardPane) so Textual's
+    # Footer shows the right keys for wherever focus is — the fix for guidance
+    # vanishing on drill-in. `escape` (back out of the steps sub-mode) stays here
+    # because it is only meaningful in the Sessions pane and is gated in its action.
     BINDINGS = [
         Binding("1", "show_pane('dashboard')", "Dashboard"),
-        Binding("2", "show_pane('work')", "Work"),
-        Binding("3", "show_pane('usage')", "Usage"),
-        Binding("4", "show_pane('sources')", "Sources"),
+        Binding("2", "show_pane('worksets')", "Work"),
+        Binding("3", "show_pane('work')", "Sessions"),
+        Binding("4", "show_pane('usage')", "Usage"),
+        Binding("5", "show_pane('sources')", "Diagnostics"),
         Binding("question_mark", "help", "Help"),
         Binding("r", "refresh", "Refresh"),
-        Binding("T", "cycle_theme", "Theme"),
-        Binding("p", "screenshot", "Snapshot"),
+        Binding("T", "cycle_theme", "Theme", show=False),
+        Binding("p", "screenshot", "Snapshot", show=False),
         Binding("q", "quit", "Quit"),
-        # Work-pane keys (gated to the Work pane in their actions).
-        Binding("left_square_bracket", "work_status(-1)", "Prev status", show=False),
-        Binding("right_square_bracket", "work_status(1)", "Next status", show=False),
-        Binding("s", "work_sort", "Sort", show=False),
-        Binding("slash", "work_filter", "Filter", show=False),
-        Binding("d", "usage_range", "Range", show=False),
         Binding("escape", "steps_back", "Back", show=False),
     ]
 
@@ -624,14 +980,22 @@ class AgentAcctTUI(App):
         self._work_latest: float | None = None
         self._work_starts: dict[str, float] = {}
         self._work_status: str = "all"
-        self._work_sort: str = "attention"
+        self._work_sort: str = "latest"  # default to time order (newest first)
         self._work_filter: str = ""
         self._work_loading: bool = False
         self._work_built: bool = False
         self._work_visible_ids: list[str] = []
         self._work_visible_rows: list[dict] = []
-        self._expanded_index: int | None = None
+        self._work_rows_text: str = ""  # plain-string mirror of the DataTable rows
+        self._work_task_colkey = None   # DataTable ColumnKey for the resizable Task column
+        # True only while _render_work_list is repopulating the DataTable, so the
+        # transient RowHighlighted events that add_row/move_cursor post are ignored
+        # (the final detail is set synchronously in the rebuild).
+        self._rebuilding: bool = False
         self._selected_task_id: str | None = None
+        # The highlighted work group, remembered by its stable workset_id so the
+        # cursor survives the periodic rebuild instead of snapping back to the top.
+        self._selected_workset_id: str | None = None
         self._work_detail_text: str = ""
         # Work detail sub-mode: the receipt (default) vs the sessions & steps
         # drill-down (Enter opens, esc backs out).
@@ -641,6 +1005,16 @@ class AgentAcctTUI(App):
         self._receipt_head: str = ""
         self._steps_head: str = ""
 
+        # Worksets ("Work" tab) state — folder-anchored groupings across agents.
+        self._worksets: list[dict] = []
+        self._worksets_total: int = 0
+        self._workset_candidates: list[dict] = []
+        self._worksets_built: bool = False
+        self._worksets_loading: bool = False
+        self._worksets_err: str | None = None
+        self._worksets_notice: str | None = None  # transient result of a write
+        self._worksets_text: str = ""  # plain-string mirror for headless tests
+
         # Usage + Sources pane state / test hooks.
         self._usage_range_index: int = 0
         self._usage_text: str = ""
@@ -648,7 +1022,6 @@ class AgentAcctTUI(App):
 
         # Test/inspection hooks: the last composed text for key regions, so
         # headless tests assert against strings, never Rich renderable internals.
-        self._status_text: str = ""
         self._topbar_text: str = ""
         self._dashboard_text: str = ""
         self._work_head_text: str = ""
@@ -659,19 +1032,22 @@ class AgentAcctTUI(App):
         yield Static("", id="topbar")
         yield Static("", id="toprule")
         with ContentSwitcher(initial="dashboard", id="switcher"):
-            with VerticalScroll(id="dashboard", classes="pane"):
+            with _DashboardPane(id="dashboard", classes="pane"):
                 yield Static("", id="dash-head")
                 with Horizontal(id="dash-hero"):
                     yield Static("", id="dash-attention", classes="card")
                     yield Static("", id="dash-rail", classes="card")
                 yield Static("", id="dash-recent", classes="card")
                 yield Static("", id="dash-spark", classes="card")
-            with Vertical(id="work", classes="pane"):
+            with _WorksetsPane(id="worksets", classes="pane"):
+                yield Static("", id="worksets-head", classes="pane-block")
+                yield ListView(id="worksets-list")
+            with _SessionsPane(id="work", classes="pane"):
                 yield Static("", id="work-head", classes="pane-block")
                 yield Static("", id="work-tabs", classes="pane-block")
                 yield Input(placeholder="Filter by task, client, or id", id="work-filter")
                 with Horizontal(id="work-split"):
-                    yield ListView(id="work-list")
+                    yield DataTable(id="work-list", cursor_type="row", zebra_stripes=False)
                     with VerticalScroll(id="work-detail"):
                         yield Static("", id="work-detail-head")
                         yield Static("", id="work-outcome", classes="card")
@@ -680,18 +1056,18 @@ class AgentAcctTUI(App):
                         # The sessions & steps drill-down (Enter opens it, esc backs
                         # out); hidden until the receipt is expanded into it.
                         yield Static("", id="work-steps", classes="card")
-            with VerticalScroll(id="usage", classes="pane"):
+            with _UsagePane(id="usage", classes="pane"):
                 yield Static("", id="usage-head")
                 yield Static("", id="usage-capacity", classes="card")
                 yield Static("", id="usage-recorded", classes="card")
-            with VerticalScroll(id="sources", classes="pane"):
+            with _DiagnosticsPane(id="sources", classes="pane"):
                 yield Static("", id="sources-head")
                 yield Static("", id="sources-connected", classes="card")
                 yield Static("", id="sources-watcher", classes="card")
                 yield Static("", id="sources-verifiers", classes="card")
                 yield Static("", id="sources-issues", classes="card")
                 yield Static("", id="sources-local", classes="card")
-        yield Static("", id="statusbar")
+        yield Footer()
 
     def on_mount(self) -> None:
         self.register_theme(_THEME_DARK)
@@ -700,7 +1076,6 @@ class AgentAcctTUI(App):
         self.title = "agentacct"
         self.query_one("#toprule", Static).update("─" * 400)
         self._render_topbar()
-        self._render_statusbar()
         self.query_one("#work-detail-head", Static).update(
             f"[{self.pal['dim']}]Select a receipt (↑↓) to read it; ↵ opens its sessions & steps.[/]"
         )
@@ -709,6 +1084,7 @@ class AgentAcctTUI(App):
         self._start_import()
         self.set_interval(self.refresh_seconds, self.refresh_data)
         self.set_interval(1.0, self._tick)
+        self._focus_pane("dashboard")  # so the Footer shows the Dashboard's keys
 
     # -- theme --------------------------------------------------------------- #
 
@@ -735,10 +1111,11 @@ class AgentAcctTUI(App):
         # (semantic content colour is baked into the markup, so a bare refresh is
         # not enough — every pane must recompose from its cached data).
         self._render_topbar()
-        self._render_statusbar()
         pane = self.current_pane
         if pane == "dashboard":
             self._start_dashboard(force=True)
+        elif pane == "worksets":
+            self._start_worksets(force=True)
         elif pane == "work":
             self._render_work_head()
             self._render_work_tabs()
@@ -769,17 +1146,18 @@ class AgentAcctTUI(App):
         except Exception:  # noqa: BLE001
             return
         self._render_topbar()
-        self._render_statusbar()
-        if pane == "work":
+        if pane == "worksets":
+            self._start_worksets()
+        elif pane == "work":
             self._start_work()
-            try:
-                self.query_one("#work-list", ListView).focus()
-            except Exception:  # noqa: BLE001
-                pass
         elif pane == "usage":
             self._render_usage()
         elif pane == "sources":
             self._render_sources()
+        # Focus the pane (its list, if it has one) so Textual's Footer shows that
+        # view's keys. Focusing the inner ListView keeps up/down/enter native while
+        # the pane-level keys (g/e/x, sort/filter, range) bubble up into the Footer.
+        self._focus_pane(pane)
         # A ContentSwitcher change can leave the docked chrome (top bar) un-
         # composited for an offscreen screenshot; force a clean full repaint.
         try:
@@ -787,8 +1165,26 @@ class AgentAcctTUI(App):
         except Exception:  # noqa: BLE001
             pass
 
+    def _focus_pane(self, pane: str) -> None:
+        target = {"worksets": "#worksets-list", "work": "#work-list"}.get(pane, f"#{pane}")
+        try:
+            self.query_one(target).focus()
+        except Exception:  # noqa: BLE001
+            pass
+
     def action_help(self) -> None:
         self.push_screen(HelpScreen())
+
+    def action_dash_review(self) -> None:
+        """The Dashboard's ↵ 'Review evidence' deep-link: jump to Sessions filtered
+        to the attention queue, with its top item selected (the app's review-queue
+        navigation). Gated to the Dashboard so the global ↵ does nothing elsewhere
+        (list panes consume Enter for their own cursor)."""
+
+        if self.current_pane != "dashboard":
+            return
+        self._work_status = "attention"
+        self.action_show_pane("work")
 
     # -- top bar + status bar ------------------------------------------------ #
 
@@ -824,25 +1220,6 @@ class AgentAcctTUI(App):
         label = "just now" if ago == "0s ago" else ago
         return f"{dot} Local data · {label}"
 
-    def _render_statusbar(self) -> None:
-        pal = self.pal
-
-        def _cells(pairs):
-            return "   ".join(f"[b {pal['accent']}]{k}[/] [{pal['muted']}]{v}[/]" for k, v in pairs)
-
-        left = _cells(_PANE_HINTS.get(self.current_pane, ()))
-        r_label = "rescan" if self.current_pane == "sources" else "refresh"
-        right = _cells((("r", r_label), ("?", "help"), ("q", "quit")))
-        # Extra margin: the left hints use symbol glyphs (↑↓ ↵ [ ]) that some
-        # terminal fonts render wider than one column, so keep the right group
-        # off the very edge rather than risk a clipped last word.
-        width = max(60, int(getattr(self.size, "width", 0) or 150) - 8)
-        text = _two_edge(left, right, width)
-        self._status_text = text
-        try:
-            self.query_one("#statusbar", Static).update(text)
-        except Exception:  # noqa: BLE001
-            pass
 
     # -- refresh (the usage cube; drives the Dashboard signal rail) ---------- #
 
@@ -878,16 +1255,18 @@ class AgentAcctTUI(App):
         self._snapshot = snapshot
         self._last_refresh_at = time.time()
         self._work_built = False
+        self._worksets_built = False
         self._render_all()
         if self.current_pane == "dashboard":
             self._start_dashboard()
+        elif self.current_pane == "worksets":
+            self._start_worksets(force=True)
         elif self.current_pane == "work":
             self._start_work(force=True)
 
     def _render_all(self) -> None:
         try:
             self._render_topbar()
-            self._render_statusbar()
             pane = self.current_pane
             if pane == "usage":
                 self._render_usage()
@@ -1102,7 +1481,7 @@ class AgentAcctTUI(App):
         self._work_loading = True
         try:
             self.query_one("#work-head", Static).update(
-                f"[b {self.pal['ink']}]Work receipts[/]  [{self.pal['dim']}]building… (a few seconds)[/]"
+                f"[b {self.pal['ink']}]Sessions[/]  [{self.pal['dim']}]building… (a few seconds)[/]"
             )
         except Exception:  # noqa: BLE001
             pass
@@ -1179,6 +1558,125 @@ class AgentAcctTUI(App):
         self._render_work_tabs()
         self._render_work_list()
 
+    # -- Worksets ("Work"): folder-anchored groupings across agents ----------- #
+
+    def _start_worksets(self, force: bool = False) -> None:
+        if self._worksets_built and not force:
+            self._render_worksets_head()
+            self._render_worksets_list()
+            return
+        if self._worksets_loading and not force:
+            return
+        self._worksets_loading = True
+        try:
+            self.query_one("#worksets-head", Static).update(
+                f"[b {self.pal['ink']}]Work[/]  [{self.pal['dim']}]building… (a few seconds)[/]"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        self._build_worksets()
+
+    @work(thread=True, exclusive=True, group="worksets")
+    def _build_worksets(self) -> None:
+        from textual.worker import get_current_worker
+
+        worker = get_current_worker()
+        try:
+            # The SAME shared assembly the macOS app's /v1/worksets route reads,
+            # so a grouping can never render differently here than in the app.
+            from .api import build_store_worksets
+
+            payload = build_store_worksets(self.store_dir)
+            worksets = [w for w in payload.get("worksets", []) if isinstance(w, dict)]
+            total = int(payload.get("total") or len(worksets))
+            candidates = [c for c in payload.get("candidates", []) if isinstance(c, dict)]
+        except Exception as exc:  # noqa: BLE001
+            if not worker.is_cancelled:
+                self.call_from_thread(self._worksets_error, str(exc))
+            return
+        if worker.is_cancelled:
+            return
+        self.call_from_thread(self._populate_worksets, worksets, total, candidates)
+
+    def _worksets_error(self, message: str) -> None:
+        self._worksets_loading = False
+        self._worksets_err = message
+        try:
+            self.query_one("#worksets-head", Static).update(
+                f"[{self.pal['coral']}]could not build work groups:[/] {_escape(message)}"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _populate_worksets(self, worksets: list[dict], total: int, candidates: list[dict] | None = None) -> None:
+        self._worksets_loading = False
+        self._worksets_built = True
+        self._worksets_err = None
+        self._worksets = worksets
+        self._worksets_total = total
+        if candidates is not None:
+            self._workset_candidates = candidates
+        self._render_worksets_head()
+        self._render_worksets_list()
+
+    def _render_worksets_head(self) -> None:
+        pal = self.pal
+        n = len(self._worksets)
+        ungrouped = sum(1 for c in self._workset_candidates if not c.get("existing_workset_id"))
+        right = f"[b {pal['accent']}]g[/] [{pal['muted']}]new group[/]" if ungrouped else ""
+        top = _two_edge(
+            f"{caps('Work', pal)}  [{pal['dim']}]· {n} group{'s' if n != 1 else ''}[/]",
+            right,
+            max(40, int(getattr(self.size, "width", 0) or 150) - 8),
+        )
+        sub = self._worksets_notice or "Group a folder's sessions across every agent you run."
+        sub_color = pal["accent"] if self._worksets_notice else pal["muted"]
+        head = f"{top}\n[{sub_color}]{_escape(sub)}[/]"
+        try:
+            self.query_one("#worksets-head", Static).update(head)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _render_worksets_list(self) -> None:
+        pal = self.pal
+        try:
+            lv = self.query_one("#worksets-list", ListView)
+        except Exception:  # noqa: BLE001
+            return
+        # The card's usable content width: subtract the pane gutter, the item
+        # padding + accent edge, and the list scrollbar, so a full-width timeline
+        # row never wraps (a wrapped row throws every bar's column off).
+        width = max(48, int(getattr(self.size, "width", 0) or 150) - 14)
+        lv.clear()
+        if not self._worksets:
+            lv.append(ListItem(Static(_worksets_empty_markup(pal))))
+            self._worksets_text = "No work groups yet"
+            return
+        # One shared axis across every card, so bars are comparable card-to-card.
+        axis_bounds = _worksets_axis_bounds(self._worksets)
+        parts: list[str] = []
+        for w in self._worksets:
+            markup = _workset_card_markup(w, pal, width, axis_bounds=axis_bounds)
+            parts.append(markup)
+            lv.append(ListItem(Static(markup)))
+        # Keep the cursor on the SAME group across a rebuild (the 5s refresh fires
+        # whenever the store changes). Fall back to the top only if that group is
+        # gone. Without this the highlight snapped back to the first card on every
+        # refresh — unusable while live sessions are writing.
+        target_idx = 0
+        if self._selected_workset_id is not None:
+            for i, w in enumerate(self._worksets):
+                if str(w.get("workset_id")) == self._selected_workset_id:
+                    target_idx = i
+                    break
+        try:
+            lv.index = target_idx  # fires Highlighted → _selected_workset_id re-synced
+        except Exception:  # noqa: BLE001
+            pass
+        self._selected_workset_id = str(self._worksets[target_idx].get("workset_id"))
+        # Plain-string mirror for headless tests (markup stripped downstream).
+        self._worksets_text = "\n".join(parts)
+
     def _bucket_counts(self) -> dict[str, int]:
         counts = {tab: 0 for tab, _label in _WORK_TABS}
         for s in self._work_summaries:
@@ -1222,7 +1720,7 @@ class AgentAcctTUI(App):
     def _render_work_head(self) -> None:
         pal = self.pal
         n = len(self._work_summaries)
-        segs = [f"{caps('Work receipts', pal)} [{pal['dim']}]· {n}[/]"]
+        segs = [f"{caps('Sessions', pal)} [{pal['dim']}]· {n}[/]"]
         # Disclose the display cap when the current view has more matches than
         # the list can show (#220), so a hidden older row is never silent.
         shown = len(self._filtered_work())
@@ -1254,86 +1752,241 @@ class AgentAcctTUI(App):
         except Exception:  # noqa: BLE001
             pass
 
+    # Fixed content widths for the non-Task columns; Task takes the remainder.
+    _WORK_FIXED_W = {"outcome": 14, "evidence": 8, "cost": 9, "age": 9}
+
+    def _work_task_col_width(self) -> int:
+        """Content width for the Task cell/column. The list is ~46% of the terminal;
+        reserve room for the fixed columns + DataTable per-cell padding (2 each × 5)
+        so a long (CJK) title never forces a horizontal scroll (it ellipsizes)."""
+        list_w = int((int(getattr(self.size, "width", 0) or 150)) * 0.46)
+        return max(12, list_w - sum(self._WORK_FIXED_W.values()) - 12)
+
     def _render_work_list(self) -> None:
         pal = self.pal
         try:
-            lv = self.query_one("#work-list", ListView)
+            dt = self.query_one("#work-list", DataTable)
         except Exception:  # noqa: BLE001
             return
+        tcol = self._work_task_col_width()
+        if not dt.columns:  # one-time column setup, fixed widths so nothing grows
+            self._work_task_colkey = dt.add_column("Task", key="task", width=tcol)
+            dt.add_column("Outcome", key="outcome", width=self._WORK_FIXED_W["outcome"])
+            dt.add_column("Evidence", key="evidence", width=self._WORK_FIXED_W["evidence"])
+            dt.add_column(_RText("Cost", justify="right"), key="cost", width=self._WORK_FIXED_W["cost"])
+            dt.add_column("Age", key="age", width=self._WORK_FIXED_W["age"])
+        else:
+            # Keep the Task column matched to the current terminal width (resize);
+            # the fixed columns don't change. clear()+add_row below relays it out.
+            col = dt.columns.get(getattr(self, "_work_task_colkey", None))
+            if col is not None and col.width != tcol:
+                col.width = tcol
+                col.auto_width = False
         # The full-store filter runs first (#220 — so an older blocked task is
         # findable by search); only the DISPLAY is capped here, to the newest
         # _RECEIPTS_LIMIT matches (rows are newest-first within each sort).
         rows = self._filtered_work()[:_RECEIPTS_LIMIT]
         self._work_visible_ids = [str(s.get("task_id")) for s in rows]
         self._work_visible_rows = rows
+        # Was the user drilled into the steps view, and on which task? A rebuild
+        # (the 5s refresh) rebuilds the receipt and would otherwise drop them back
+        # to the receipt view — so we re-open steps for the SAME task afterwards.
+        was_steps = self._work_detail_mode == "steps"
+        steps_task = self._selected_task_id if was_steps else None
         target = None
         sel_idx = None
         if rows:
             target = self._selected_task_id if self._selected_task_id in self._work_visible_ids else self._work_visible_ids[0]
             sel_idx = self._work_visible_ids.index(target)
-        self._expanded_index = sel_idx
-        # clear() queues removal of the current items (async); the fresh cards are
-        # appended without ids so a re-render can't collide on a stale id. The
-        # highlighted card is built EXPANDED, the rest compact.
-        lv.clear()
-        for i, s in enumerate(rows):
-            lv.append(ListItem(Static(_work_card_markup(s, pal, expanded=(i == sel_idx)))))
+        # Repopulate under the rebuild guard: add_row re-homes the DataTable cursor
+        # to row 0 and move_cursor then jumps to the target, each posting an async
+        # RowHighlighted. Without the guard the intermediate row-0 highlight fires
+        # _highlight_to_receipt(row0) and clobbers a sticky steps drill-in for any
+        # non-top row. We set the final detail synchronously here and clear the
+        # guard once those transient events have drained (call_after_refresh).
+        self._rebuilding = True
+        dt.clear()  # rows only — columns are kept
+        mirror: list[str] = []
+        for s in rows:
+            cells, plain = _work_row_cells(s, pal, tcol)
+            dt.add_row(*cells, key=str(s.get("task_id")))
+            mirror.append(plain)
+        # Plain-string mirror for headless tests (DataTable cells aren't a Static).
+        self._work_rows_text = "\n".join(mirror)
         if rows:
             try:
-                lv.index = sel_idx  # fires Highlighted → cursor-follows
+                dt.move_cursor(row=sel_idx)
             except Exception:  # noqa: BLE001
                 pass
-            self._show_receipt(target)
+            sticky = was_steps and target == steps_task
+            # For a sticky in-place refresh keep the reader's scroll position (the
+            # checks list is uncapped, so scroll matters); a genuine selection change
+            # falls through to the default top-of-detail.
+            self._show_receipt(target, preserve_scroll=sticky)
+            if sticky:
+                self._open_steps(preserve_scroll=True)
         else:
             self._selected_task_id = None
+            self._rebuilding = False  # no rows → no transient highlights to guard
+            # Drop any stale steps drill-in so it isn't left showing under the
+            # "No receipts" head with blank receipt cards.
+            self._work_detail_mode = "receipt"
+            self._apply_detail_mode()
             self.query_one("#work-detail-head", Static).update(
                 f"[{pal['dim']}]No receipts match this filter.[/]"
             )
             for wid in ("#work-outcome", "#work-summary", "#work-dimensions"):
                 self.query_one(wid, Static).update("")
 
-    def _highlight_to_receipt(self, index: int | None) -> None:
-        if index is None:
+    def _highlight_to_receipt(self, task_id: str | None) -> None:
+        # Cursor-follows: the detail tracks the highlighted row (↑↓ / j/k), like
+        # lazygit. Re-highlighting the SAME row must not reset the detail — only a
+        # move to a DIFFERENT receipt swaps it (and drops out of any steps drill-in).
+        if not task_id or task_id == self._selected_task_id:
             return
-        ids = getattr(self, "_work_visible_ids", [])
-        if 0 <= index < len(ids):
-            self._reflow_expanded(index)
-            self._show_receipt(ids[index])
+        self._show_receipt(task_id)
 
-    def _reflow_expanded(self, index: int) -> None:
-        """Move the expanded-card treatment to the newly-highlighted row without
-        rebuilding the whole list (cheap, and it avoids the async clear/append
-        churn on every arrow key). Only the outgoing + incoming cards repaint."""
-
-        old = getattr(self, "_expanded_index", None)
-        if old == index:
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if event.data_table.id != "work-list" or event.row_key is None:
             return
-        rows = getattr(self, "_work_visible_rows", [])
-        try:
-            items = list(self.query_one("#work-list", ListView).children)
-        except Exception:  # noqa: BLE001
+        key = str(event.row_key.value)
+        if self._rebuilding:
+            # The rebuild sets the detail synchronously and posts transient
+            # highlights (an intermediate row-0 from add_row, then the target from
+            # move_cursor). Swallow them; clear the guard when the TARGET highlight
+            # arrives (always posted last, FIFO — or the sole one when coalesced), so
+            # a genuine later cursor move is honoured but the transient row-0 can't
+            # clobber a sticky steps drill-in. Deterministic, not timing-based.
+            if key == self._selected_task_id:
+                self._rebuilding = False
             return
-        for i in {old, index}:
-            if i is None or not (0 <= i < len(items) and i < len(rows)):
-                continue
-            try:
-                items[i].query_one(Static).update(_work_card_markup(rows[i], self.pal, expanded=(i == index)))
-            except Exception:  # noqa: BLE001
-                pass
-        self._expanded_index = index
+        self._highlight_to_receipt(key)
 
-    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        # Cursor-follows: the detail tracks the highlighted card (j/k), like lazygit.
-        if event.list_view.id == "work-list":
-            self._highlight_to_receipt(event.list_view.index)
-
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         # Enter drills the highlighted receipt into its sessions & steps.
-        if event.list_view.id == "work-list":
-            self._highlight_to_receipt(event.list_view.index)
+        if event.data_table.id == "work-list" and event.row_key is not None:
+            self._highlight_to_receipt(str(event.row_key.value))
             self._open_steps()
 
-    def _show_receipt(self, task_id: str) -> None:
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        if event.list_view.id == "worksets-list":
+            # Remember which group is highlighted so the cursor survives a rebuild.
+            idx = event.list_view.index
+            if idx is not None and 0 <= idx < len(self._worksets):
+                self._selected_workset_id = str(self._worksets[idx].get("workset_id"))
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if event.list_view.id == "worksets-list":
+            self._open_workset_detail(event.list_view.index)
+
+    def _open_workset_detail(self, index: int | None) -> None:
+        if index is None or not (0 <= index < len(self._worksets)):
+            return  # the empty-state card is inert
+        card = self._worksets[index]
+        if not isinstance(card, dict) or not card.get("sessions"):
+            return
+        self.push_screen(WorksetDetailScreen(card, self.pal))
+
+    # -- Worksets writes (create / rename / delete) -------------------------- #
+
+    def _focused_workset(self) -> dict | None:
+        try:
+            i = self.query_one("#worksets-list", ListView).index
+        except Exception:  # noqa: BLE001
+            return None
+        if i is None or not (0 <= i < len(self._worksets)):
+            return None
+        return self._worksets[i]
+
+    def _record_workset(self, *, action: str, workset_id: str, name: str | None = None,
+                        project_identity: str | None = None, expected_revision: int,
+                        success_notice: str) -> None:
+        """The ONLY sanctioned workset write: service.record_workset_action, which
+        server-stamps a trusted grouping event (a raw record_event is stripped).
+        A workset never re-grades a session's receipt or evidence — it is a human
+        overlay. Optimistic revision: a concurrent change surfaces, never a silent
+        overwrite."""
+
+        try:
+            svc = SentinelService(self.store_dir, create=False)
+            if action in ("create", "redirect") and project_identity:
+                # One group per folder (best-effort, mirrors the app's route); the
+                # store stays the integrity authority.
+                from .api import _grouped_workset_identities
+
+                existing = _grouped_workset_identities(svc.list_all_events()).get(project_identity)
+                if existing is not None and existing != workset_id:
+                    self._worksets_notice = "A work group for this folder already exists."
+                    self._start_worksets(force=True)
+                    return
+            svc.record_workset_action(
+                action=action,
+                workset_id=workset_id,
+                name=name,
+                project_identity=project_identity,
+                expected_revision=expected_revision,
+                idempotency_key=f"tui:workset:{workset_id}:{action}:{expected_revision}",
+            )
+            self._worksets_notice = success_notice
+        except Exception as exc:  # noqa: BLE001
+            self._worksets_notice = f"couldn't {action}: {exc}"
+        # Re-read the store so the new grouping (and its live membership) appears.
+        self.refresh_data(force=True)
+        self._start_worksets(force=True)
+
+    def action_worksets_new(self) -> None:
+        if self.current_pane != "worksets":
+            return
+        self._worksets_notice = None
+        ungrouped = [c for c in self._workset_candidates if not c.get("existing_workset_id")]
+        if not ungrouped:
+            self._worksets_notice = "No ungrouped folders yet — run an agent in a project first."
+            self._render_worksets_head()
+            return
+
+        def on_create(identity: str, name: str) -> None:
+            self._record_workset(action="create", workset_id=f"ws_{uuid.uuid4().hex}", name=name,
+                                 project_identity=identity, expected_revision=0,
+                                 success_notice=f"Created “{name}”.")
+
+        self.push_screen(WorksetCreateScreen(ungrouped, self.pal, on_create))
+
+    def action_worksets_rename(self) -> None:
+        if self.current_pane != "worksets":
+            return
+        w = self._focused_workset()
+        if not w:
+            return
+        self._worksets_notice = None
+
+        def on_submit(name: str) -> None:
+            if name and name != w.get("name"):
+                self._record_workset(action="rename", workset_id=str(w.get("workset_id")), name=name,
+                                     expected_revision=int(w.get("revision") or 0),
+                                     success_notice=f"Renamed to “{name}”.")
+
+        self.push_screen(_WorksetPromptScreen(f"Rename “{w.get('name')}”", str(w.get("name") or ""), self.pal, on_submit))
+
+    def action_worksets_delete(self) -> None:
+        if self.current_pane != "worksets":
+            return
+        w = self._focused_workset()
+        if not w:
+            return
+        self._worksets_notice = None
+
+        def on_confirm() -> None:
+            self._record_workset(action="delete", workset_id=str(w.get("workset_id")),
+                                 expected_revision=int(w.get("revision") or 0),
+                                 success_notice=f"Deleted “{w.get('name')}”.")
+
+        self.push_screen(_WorksetConfirmScreen(
+            f"Delete work group “{w.get('name')}”?",
+            "This only ungroups the folder — the sessions and their receipts are untouched.",
+            self.pal, on_confirm,
+        ))
+
+    def _show_receipt(self, task_id: str, preserve_scroll: bool = False) -> None:
         self._selected_task_id = task_id
         # Moving to a receipt always returns to the receipt view (out of steps).
         self._work_detail_mode = "receipt"
@@ -1373,11 +2026,14 @@ class AgentAcctTUI(App):
             self._set_card("#work-dimensions", parts["dims_title"], parts["dims"])
         except Exception:  # noqa: BLE001
             pass
-        self._apply_detail_mode()
+        self._apply_detail_mode(preserve_scroll=preserve_scroll)
 
-    def _apply_detail_mode(self) -> None:
+    def _apply_detail_mode(self, preserve_scroll: bool = False) -> None:
         """Show the receipt cards or the sessions & steps card per the sub-mode,
-        and swap the breadcrumb head to match."""
+        and swap the breadcrumb head to match. ``preserve_scroll`` keeps the
+        detail's scroll position (an in-place refresh of the same view) instead of
+        snapping to the top — so a reader deep in a long checks list isn't yanked
+        up every time the store changes."""
 
         steps = self._work_detail_mode == "steps"
         try:
@@ -1387,11 +2043,12 @@ class AgentAcctTUI(App):
             self.query_one("#work-detail-head", Static).update(
                 self._steps_head if steps else self._receipt_head
             )
-            self.query_one("#work-detail", VerticalScroll).scroll_home(animate=False)
+            if not preserve_scroll:
+                self.query_one("#work-detail", VerticalScroll).scroll_home(animate=False)
         except Exception:  # noqa: BLE001
             pass
 
-    def _open_steps(self) -> None:
+    def _open_steps(self, preserve_scroll: bool = False) -> None:
         """Drill the selected receipt into its sessions & steps (checks timeline)."""
 
         if self.current_pane != "work" or not self._selected_task_id:
@@ -1405,7 +2062,7 @@ class AgentAcctTUI(App):
             from .receipt import _project_checks
 
             checks = _project_checks(task)
-            parts = _build_steps_parts(receipt, checks, pal, int(getattr(self.size, "width", 0) or 150))
+            parts = _build_steps_parts(receipt, checks, pal, int(getattr(self.size, "width", 0) or 150), task=task)
         except Exception as exc:  # noqa: BLE001
             parts = {"head": f"[{pal['dim']}]‹ Receipt[/]",
                      "title": "SESSIONS & STEPS", "body": f"[{pal['coral']}]could not render steps:[/] {_escape(str(exc))}"}
@@ -1413,7 +2070,7 @@ class AgentAcctTUI(App):
         self._steps_text = parts["title"] + "\n" + parts["body"]
         self._set_card("#work-steps", parts["title"], parts["body"])
         self._work_detail_mode = "steps"
-        self._apply_detail_mode()
+        self._apply_detail_mode(preserve_scroll=preserve_scroll)
 
     def action_steps_back(self) -> None:
         if self.current_pane == "work" and self._work_detail_mode == "steps":
@@ -1447,6 +2104,38 @@ class AgentAcctTUI(App):
         except Exception:  # noqa: BLE001
             pass
 
+    def action_list_nav(self, delta: int) -> None:
+        """j/k cursor move for the focused master list (vim aliases for ↑↓). The
+        Sessions list is a DataTable, the Work list a ListView — both expose
+        action_cursor_up/down."""
+        if self.current_pane == "work":
+            widget: Any = None
+            try:
+                widget = self.query_one("#work-list", DataTable)
+            except Exception:  # noqa: BLE001
+                return
+        elif self.current_pane == "worksets":
+            try:
+                widget = self.query_one("#worksets-list", ListView)
+            except Exception:  # noqa: BLE001
+                return
+        else:
+            return
+        try:
+            widget.action_cursor_down() if delta > 0 else widget.action_cursor_up()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def action_work_scroll(self, direction: int) -> None:
+        """Page the receipt/steps detail pane (its VerticalScroll never has focus)."""
+        if self.current_pane != "work":
+            return
+        try:
+            ds = self.query_one("#work-detail", VerticalScroll)
+            ds.scroll_page_down(animate=False) if direction > 0 else ds.scroll_page_up(animate=False)
+        except Exception:  # noqa: BLE001
+            pass
+
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "work-filter":
             return
@@ -1457,7 +2146,10 @@ class AgentAcctTUI(App):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "work-filter":
             try:
-                self.query_one("#work-list", ListView).focus()
+                # #work-list is a DataTable now — a stale ListView type here raised
+                # WrongType (swallowed), leaving focus stuck in the filter Input so
+                # j/k/arrows typed into the box instead of navigating the list.
+                self.query_one("#work-list", DataTable).focus()
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1536,7 +2228,8 @@ class AgentAcctTUI(App):
             iss = self.query_one("#sources-issues", Static)
             iss.display = bool(parts["issues"])
             if parts["issues"]:
-                self._set_card("#sources-issues", parts["issues_title"], parts["issues"], pal["amber"])
+                self._set_card("#sources-issues", parts["issues_title"], parts["issues"],
+                               parts.get("issues_color") or pal["amber"])
             self._set_card("#sources-local", "LOCAL ONLY", parts["local"])
         except Exception:  # noqa: BLE001
             pass
@@ -1576,6 +2269,539 @@ class AgentAcctTUI(App):
             self.screen.refresh(repaint=True, layout=True)
         if saved is not None:
             self.notify(f"Saved a shareable snapshot →\n{saved}", title="◆ agentacct", timeout=6)
+
+
+# ============================================================================ #
+# Worksets ("Work" tab): folder-anchored groupings + the cross-agent timeline. #
+# Pure data+palette → Rich markup, so both the live render and the screenshot   #
+# fixtures share one drawing path. Every figure is a session's own, verbatim    #
+# from workset_session_lane / summarize_members — never re-graded here.         #
+# ============================================================================ #
+
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+# How many session lanes a card draws before it discloses the rest as a note —
+# mirrors the GUI card's 8-row window (the full group opens in the detail view).
+_CARD_TIMELINE_ROWS = 8
+# The detail (zoomable) timeline shows more rows since it fills the screen.
+_DETAIL_TIMELINE_ROWS = 20
+_MAX_ZOOM = 64.0
+
+
+class _ZoomWindow:
+    """A sub-range of [lo, hi], ``zoom``× narrower, centred at ``pan`` (0…1) and
+    clamped so it never leaves the data. A faithful Python port of the Swift
+    ``WorksetZoomWindow`` so the terminal's zoom math matches the app's exactly
+    (positions still snap to character cells — that is the honest ceiling)."""
+
+    def __init__(self, lo: float, hi: float, zoom: float, pan: float) -> None:
+        full = max(0.0, hi - lo)
+        z = min(_MAX_ZOOM, max(1.0, zoom if _finite(zoom) else 1.0))
+        width = full / z if z > 0 else full
+        center_frac = min(1.0, max(0.0, pan if _finite(pan) else 0.5))
+        center = lo + center_frac * full
+        s = center - width / 2
+        e = center + width / 2
+        if s < lo:
+            e = min(hi, e + (lo - s))
+            s = lo
+        if e > hi:
+            s = max(lo, s - (e - hi))
+            e = hi
+        self.start = s
+        self.end = e
+
+    @staticmethod
+    def lane_visible(first: Any, last: Any, start: float, end: float) -> bool:
+        if not (isinstance(first, (int, float)) and not isinstance(first, bool) and first and first > 0):
+            return True  # a timeless lane has no position — always kept, shown faded
+        lo = float(first)
+        hi = float(last) if isinstance(last, (int, float)) and not isinstance(last, bool) and last else lo
+        return not (hi < start or lo > end)
+
+    def coverage(self, lo: float, hi: float) -> float:
+        full = max(0.0, hi - lo)
+        if full <= 0:
+            return 1.0
+        return min(1.0, max(0.0, (self.end - self.start) / full))
+
+    @staticmethod
+    def apply_zoom(zoom: float, pan: float, factor: float, anchor: float, lo: float, hi: float) -> tuple[float, float]:
+        full = max(0.0, hi - lo)
+        z0 = min(_MAX_ZOOM, max(1.0, zoom if _finite(zoom) else 1.0))
+        center0 = min(1.0, max(0.0, pan if _finite(pan) else 0.5))
+        if not (full > 0 and _finite(factor) and factor > 0):
+            return z0, center0
+        win = _ZoomWindow(lo, hi, z0, center0)
+        a = min(1.0, max(0.0, anchor if _finite(anchor) else 0.5))
+        anchor_time = win.start + a * (win.end - win.start)
+        z1 = min(_MAX_ZOOM, max(1.0, z0 * factor))
+        new_width = full / z1
+        new_start = anchor_time - a * new_width
+        new_center = new_start + new_width / 2
+        return z1, min(1.0, max(0.0, (new_center - lo) / full if full else 0.5))
+
+
+def _finite(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and v not in (float("inf"), float("-inf"))
+
+
+def _agent_color(client: Any, pal: dict[str, str]) -> str:
+    """Per-agent hue, mirroring Swift Theme.sourceColor: Claude=accent, Codex=
+    purple, OpenCode=teal, Hermes=magenta, everything else muted."""
+
+    c = str(client or "").strip().lower()
+    if c in ("claude-code", "claude", "claude code"):
+        return pal["accent"]
+    if c in ("codex", "openai-codex", "codex-cli"):
+        return pal["codex"]
+    if c in ("opencode", "open-code"):
+        return pal["opencode"]
+    if c == "hermes":
+        return pal["hermes"]
+    return pal["muted"]
+
+
+def _agent_label(client: Any) -> str:
+    """A friendly agent name for the legend (mirrors WorksetFormat.sourceLabel)."""
+
+    c = str(client or "").strip().lower()
+    return {
+        "claude-code": "Claude Code",
+        "claude": "Claude Code",
+        "claude code": "Claude Code",
+        "codex": "Codex",
+        "openai-codex": "Codex",
+        "codex-cli": "Codex",
+        "opencode": "OpenCode",
+        "open-code": "OpenCode",
+        "hermes": "Hermes",
+        "dsh": "DeepSeek",
+        "deepseek": "DeepSeek",
+    }.get(c, (str(client).strip() or "unknown"))
+
+
+def _lane_pip(status: Any, pal: dict[str, str]) -> str:
+    """A session's own status as a coloured pip (SHAPE + colour, never colour
+    alone): blocked/failed → coral ●, live → accent ●, a clean terminal → ink ●,
+    and a bare observed/unknown → muted ○. Mirrors WorksetTimeline.pipColor."""
+
+    s = str(status or "").strip().lower()
+    if s in ("blocked", "failed"):
+        return f"[{pal['coral']}]●[/]"
+    if s in ("active", "in_progress", "started", "checkpoint", "handed_off"):
+        return f"[{pal['accent']}]●[/]"
+    if s in ("completed", "resolved"):
+        return f"[{pal['ink']}]●[/]"
+    return f"[{pal['dim']}]○[/]"
+
+
+def _axis_date(ts: Any) -> str:
+    """A local-time 'Mon D' axis label. The app's activity canvas renders dates with
+    Calendar.current (WorkTimelineOverview), so the terminal uses local time too — a
+    UTC label would read hours off from the work the user actually did. (The app's
+    worksets-card axis happens to format in UTC; we prefer local everywhere here as
+    the more honest, internally-consistent choice — the shift is date-only there.)"""
+
+    if not (isinstance(ts, (int, float)) and not isinstance(ts, bool) and ts > 0):
+        return ""
+    t = time.localtime(float(ts))
+    return f"{_MONTHS[t.tm_mon - 1]} {t.tm_mday}"
+
+
+def _span_text(first: Any, last: Any) -> str:
+    """A rough human span for the KPI row (mirrors WorksetFormat.span: '~4 days',
+    '~3 hr', '~12 min'). A labelled approximation, never a precise duration."""
+
+    if not (
+        isinstance(first, (int, float)) and not isinstance(first, bool)
+        and isinstance(last, (int, float)) and not isinstance(last, bool)
+        and last >= first
+    ):
+        return "—"
+    secs = float(last) - float(first)
+    if secs >= 86400:
+        n = round(secs / 86400)
+        return f"~{n} day" + ("s" if n != 1 else "")
+    if secs >= 3600:
+        n = round(secs / 3600)
+        return f"~{n} hr" + ("s" if n != 1 else "")
+    n = max(1, round(secs / 60))
+    return f"~{n} min"
+
+
+def _workset_cost_text(summary: dict) -> str:
+    """The cost KPI value under the shared cost grammar: a knowingly partial sum
+    (some members unpriced) reads ``~$``, a complete estimate ``≈$``/``$`` per
+    confidence, and nothing priced names its absence rather than a fake $0."""
+
+    cost = summary.get("estimated_cost_usd")
+    if cost is None:
+        return "unpriced"
+    priced = int(summary.get("priced_sessions") or 0)
+    unpriced = int(summary.get("unpriced_sessions") or 0)
+    conf = summary.get("cost_confidence")
+    if unpriced > 0 and priced > 0:
+        shown = cost_display(None, complete=False, confidence=conf, known_additive=float(cost))
+    else:
+        shown = cost_display(float(cost), complete=bool(summary.get("cost_complete")), confidence=conf)
+    return shown if shown is not None else "unpriced"
+
+
+def _trunc(text: str, n: int) -> str:
+    """Truncate to ``n`` terminal CELLS (not characters) with a trailing ellipsis,
+    so a wide/CJK title is cut at the right visual width and never over-runs its
+    column. ``set_cell_size`` truncates on a cell boundary (it won't split a wide
+    glyph) and reserves one cell for the ellipsis."""
+
+    text = str(text)
+    if _cell_len(text) <= n:
+        return text
+    return _set_cells(text, max(1, n - 1)) + "…"
+
+
+def _pad_vis(markup: str, n: int) -> str:
+    """Right-pad a markup string to ``n`` terminal CELLS (tags/escapes ignored),
+    so a colour-tagged left label still aligns the timeline track — even when the
+    title contains wide/CJK glyphs that occupy two columns each."""
+
+    vis = _plainlen(markup)
+    return markup + " " * max(0, n - vis) if vis < n else markup
+
+
+def _lane_title(lane: dict) -> str:
+    """A member session's display title, with the GUI's 'client · id[:8]' fallback
+    so a nameless session still reads as itself, never blank."""
+
+    title = lane.get("title")
+    if isinstance(title, str) and title.strip():
+        return title.strip()
+    client = str(lane.get("client") or "session")
+    tail = str(lane.get("client_session_id") or lane.get("session_key") or "")[:8]
+    return f"{client} · {tail}" if tail else client
+
+
+def _axis_stamp(ts: Any, span: float) -> str:
+    """An axis label: 'Mon D', plus HH:MM once the window is narrow enough (a
+    zoomed-in day) that the bare date would repeat on both ends."""
+
+    if not (isinstance(ts, (int, float)) and not isinstance(ts, bool) and ts > 0):
+        return ""
+    t = time.localtime(float(ts))   # local time — see _axis_date
+    base = f"{_MONTHS[t.tm_mon - 1]} {t.tm_mday}"
+    if span and 0 < span < 36 * 3600:
+        return f"{base} {t.tm_hour:02d}:{t.tm_min:02d}"
+    return base
+
+
+def _timeline_bounds(lanes: list[dict]) -> tuple[float | None, float | None]:
+    """The full data window: earliest start → latest of any start/end."""
+
+    firsts = [float(l["first_activity_at"]) for l in lanes
+              if isinstance(l.get("first_activity_at"), (int, float)) and not isinstance(l.get("first_activity_at"), bool) and l["first_activity_at"] > 0]
+    lasts = [float(l["last_activity_at"]) for l in lanes
+             if isinstance(l.get("last_activity_at"), (int, float)) and not isinstance(l.get("last_activity_at"), bool) and l["last_activity_at"] > 0]
+    w0 = min(firsts) if firsts else None
+    w1 = max(firsts + lasts) if (firsts or lasts) else None
+    return w0, w1
+
+
+def _worksets_axis_bounds(worksets: list[dict]) -> tuple[float | None, float | None]:
+    """The one axis every Work card shares: earliest start → latest activity across
+    ALL groups. Threaded into each card so a bar at a given column means the same
+    instant on every card, and you can read which group's work came first."""
+
+    los: list[float] = []
+    his: list[float] = []
+    for w in worksets:
+        lanes = [l for l in (w.get("sessions") or []) if isinstance(l, dict)]
+        lo, hi = _timeline_bounds(lanes)
+        if lo is not None:
+            los.append(lo)
+        if hi is not None:
+            his.append(hi)
+    return (min(los) if los else None, max(his) if his else None)
+
+
+def _workset_timeline(
+    lanes: list[dict],
+    pal: dict[str, str],
+    width: int,
+    *,
+    win_start: float | None = None,
+    win_end: float | None = None,
+    axis_bounds: tuple[float | None, float | None] | None = None,
+    max_rows: int = _CARD_TIMELINE_ROWS,
+    focus_key: str | None = None,
+) -> dict[str, Any]:
+    """The shared cross-agent axis: one row per member session — a status pip +
+    title in a fixed left column, then a track where a block glyph sits at the
+    session's start time, coloured by its agent. With ``win_start/win_end`` it
+    draws a ZOOMED window (lanes outside it are culled, timeless lanes kept).
+    ``axis_bounds`` instead pins the axis to an OUTER window (e.g. one shared
+    across every Work card) without culling — every lane is drawn, positioned
+    against that common range so bars line up card-to-card. ``focus_key`` bolds
+    the row whose session_key matches (the scrubber cursor). Positions snap to
+    character cells — a duration under one cell quantises to one column (the
+    honest terminal ceiling). Returns markup rows + counts + geometry."""
+
+    left_col = max(20, min(34, width // 3))
+    track = max(12, width - left_col - 1)
+    data0, data1 = _timeline_bounds(lanes)
+    zoomed = win_start is not None and win_end is not None
+    shared = (not zoomed and axis_bounds is not None
+              and axis_bounds[0] is not None and axis_bounds[1] is not None
+              and axis_bounds[1] > axis_bounds[0])
+    if zoomed:
+        a0, a1 = win_start, win_end
+    elif shared:
+        a0, a1 = axis_bounds
+    else:
+        a0, a1 = data0, data1
+
+    if zoomed:
+        visible = [l for l in lanes if _ZoomWindow.lane_visible(l.get("first_activity_at"), l.get("last_activity_at"), a0, a1)]
+    else:
+        visible = list(lanes)
+    hidden_by_window = len(lanes) - len(visible)
+    shown = visible[:max_rows]
+    hidden = max(0, len(visible) - len(shown))
+    span = (a1 - a0) if (a0 is not None and a1 is not None and a1 > a0) else 0.0
+
+    rows: list[str] = []
+    timeless = 0
+    for i, lane in enumerate(shown):
+        focused = focus_key is not None and str(lane.get("session_key")) == focus_key
+        title = _escape(_trunc(_lane_title(lane), left_col - 2))
+        title_m = f"[b {pal['accent']}]{title}[/]" if focused else f"[{pal['ink']}]{title}[/]"
+        left = _pad_vis(f"{_lane_pip(lane.get('status'), pal)} {title_m}", left_col)
+        agent = _agent_color(lane.get("client"), pal)
+        t = lane.get("first_activity_at")
+        if isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0 and a0 is not None:
+            # A session is a BAR spanning first→last activity (not a point): a long
+            # run reads as a long bar, a quick one as a single cell. Mirrors the
+            # GUI's leftFraction/widthFraction. Clamped to the (possibly zoomed)
+            # window so a session overflowing the edge stays on-axis.
+            last = lane.get("last_activity_at")
+            end_t = float(last) if isinstance(last, (int, float)) and not isinstance(last, bool) and last and last >= t else float(t)
+            start_col = min(track - 1, max(0, round(((float(t) - a0) / span) * (track - 1)))) if span > 0 else 0
+            end_col = min(track - 1, max(0, round(((end_t - a0) / span) * (track - 1)))) if span > 0 else start_col
+            end_col = max(end_col, start_col)  # never narrower than one cell
+            bar_w = end_col - start_col + 1
+            line = pal["accent"] if focused else pal["hair"]
+            trackstr = (f"[{line}]{'─' * start_col}[/][{agent}]{'█' * bar_w}[/]"
+                        f"[{line}]{'─' * (track - end_col - 1)}[/]")
+        else:
+            timeless += 1
+            trackstr = f"[{pal['dim']}]█[/][{pal['hair']}]{'─' * (track - 1)}[/]"
+        rows.append(f"{left} {trackstr}")
+
+    if a0 is not None and a1 is not None:
+        axis = " " * (left_col + 1) + _two_edge(
+            f"[{pal['dim']}]{_axis_stamp(a0, span)}[/]", f"[{pal['dim']}]{_axis_stamp(a1, span)}[/]", track
+        )
+    else:
+        axis = ""
+    return {
+        "rows": rows,
+        "axis": axis,
+        "timeless": timeless,
+        "hidden": hidden,
+        "hidden_by_window": hidden_by_window,
+        "shown": len(shown),
+        "left_col": left_col,
+        "track": track,
+    }
+
+
+def _workset_card_markup(w: dict, pal: dict[str, str], width: int = 140,
+                         *, axis_bounds: tuple[float | None, float | None] | None = None) -> str:
+    """One folder grouping as a card: name + 'grouped by folder' chip, the KPI
+    SUM row, the agent legend, the shared cross-agent timeline, and the honesty
+    note (the total is a labelled sum of independent receipts, not a verdict).
+    ``axis_bounds`` pins this card's timeline to a window shared across every
+    card, so a bar's horizontal position is comparable from one card to the next."""
+
+    summary = w.get("summary") if isinstance(w.get("summary"), dict) else {}
+    lanes = [l for l in (w.get("sessions") or []) if isinstance(l, dict)]
+    name = str(w.get("name") or w.get("project_identity") or "work group")
+
+    header = (
+        f"[b {pal['ink']}]{_escape(name)}[/]  "
+        f"[{pal['accent']} on {pal['ta']}] grouped by folder [/]"
+    )
+
+    sc = int(summary.get("session_count") or len(lanes))
+    sources = summary.get("sources") if isinstance(summary.get("sources"), list) else []
+    cost_label = "cost, sum of receipts" if summary.get("cost_complete") else "cost, partial sum"
+    col_w = max(18, min(30, width // 4))
+    kpi = _kpi_cells(
+        [
+            ("sessions", str(sc), ""),
+            ("sources", str(len(sources)), ""),
+            ("span", _span_text(summary.get("first_activity_at"), summary.get("last_activity_at")), ""),
+            (cost_label, _workset_cost_text(summary), ""),
+        ],
+        pal,
+        col_w,
+    )
+
+    legend = "   ".join(
+        f"[{_agent_color(s.get('client'), pal)}]■[/] [{pal['muted']}]{_escape(_agent_label(s.get('client')))}[/]"
+        for s in sources
+        if isinstance(s, dict)
+    )
+
+    tl = _workset_timeline(lanes, pal, width, axis_bounds=axis_bounds)
+
+    notes = [
+        f"[{pal['dim']}]ⓘ Grouped because you pointed this at a folder. Each session keeps its own "
+        f"receipt and evidence; the total is a sum of {sc} session{'s' if sc != 1 else ''}, "
+        f"not a combined verdict.[/]"
+    ]
+    if int(summary.get("unpriced_sessions") or 0) > 0:
+        notes.append(f"[{pal['dim']}]Some sessions here carry no imported cost, so the total is a partial sum.[/]")
+    if tl["hidden"] or w.get("sessions_truncated"):
+        total = int(w.get("sessions_total") or len(lanes))
+        notes.append(f"[{pal['dim']}]Showing {tl['shown']} of {total} sessions — press ↵ to open the group's full timeline.[/]")
+    if tl["timeless"]:
+        n = tl["timeless"]
+        notes.append(f"[{pal['dim']}]{n} session{'s' if n != 1 else ''} with no recorded time — shown faded at the start, not a real position.[/]")
+
+    blocks = [header, "", kpi]
+    if legend:
+        blocks += ["", legend]
+    if tl["rows"]:
+        blocks += [""] + tl["rows"] + ([tl["axis"]] if tl["axis"] else [])
+    blocks += [""] + notes
+    return "\n".join(blocks)
+
+
+def _worksets_empty_markup(pal: dict[str, str]) -> str:
+    """The empty state: what a work group is and how to make one."""
+
+    return (
+        f"[b {pal['ink']}]No work groups yet[/]\n"
+        f"[{pal['muted']}]A work group gathers one folder's sessions across every agent you run "
+        f"— Claude Code, Codex, OpenCode — onto a single cross-agent timeline. Each session keeps "
+        f"its own receipt; the group only sums them.[/]\n"
+        f"[{pal['dim']}]Press [b {pal['accent']}]g[/][{pal['dim']}] to point at a folder and create one.[/]"
+    )
+
+
+def _workset_scrubber(lanes: list[dict], pal: dict[str, str], left_col: int, track: int,
+                      lo: float | None, hi: float | None, win_start: float, win_end: float) -> str:
+    """The overview rail: the full range with a tick per session start and an
+    accent bar marking the currently-visible zoom window (the GUI's scrubber,
+    which drags to pan — here it's a read-only orientation strip driven by keys)."""
+
+    if lo is None or hi is None or hi <= lo:
+        return ""
+    full = hi - lo
+    cells = [f"[{pal['hair']}]┈[/]"] * track
+
+    def col_of(t: float) -> int:
+        return min(track - 1, max(0, round((t - lo) / full * (track - 1))))
+
+    s_col, e_col = col_of(win_start), col_of(win_end)
+    for c in range(min(s_col, e_col), max(s_col, e_col) + 1):
+        cells[c] = f"[{pal['accent']}]━[/]"
+    for lane in lanes:
+        t = lane.get("first_activity_at")
+        if isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0:
+            cells[col_of(float(t))] = f"[{pal['muted']}]╽[/]"
+    return " " * (left_col + 1) + "".join(cells)
+
+
+def _lane_facts(lane: dict, pal: dict[str, str], width: int) -> str:
+    """The focused session's own facts (the terminal stand-in for the GUI's hover
+    card): every figure verbatim from the lane, never re-graded or combined."""
+
+    title = _escape(_trunc(_lane_title(lane), max(24, width - 30)))
+    head = (f"{_lane_pip(lane.get('status'), pal)} [b {pal['ink']}]{title}[/]  "
+            f"[{pal['dim']}]{_escape(_agent_label(lane.get('client')))} · {_escape(str(lane.get('status') or 'observed'))}[/]")
+    dur = lane.get("duration_seconds")
+    cost = cost_display(lane.get("estimated_cost_usd"), complete=True, confidence=lane.get("cost_confidence"))
+    toks = lane.get("total_tokens")
+    checks = lane.get("checks")
+    facts = [
+        ("duration", humanize_seconds(float(dur)) if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > 0 else "—"),
+        ("cost", cost or "unpriced"),
+        ("tokens", abbr_tokens(toks) if isinstance(toks, (int, float)) and not isinstance(toks, bool) and toks else "—"),
+        ("tool calls", str(lane.get("tool_calls")) if lane.get("tool_calls") else "—"),
+        ("steps", str(lane.get("steps")) if lane.get("steps") else "—"),
+        ("checks", f"{checks} · {lane.get('checks_failed') or 0} failed" if checks else "—"),
+    ]
+    factline = "   ".join(f"[{pal['dim']}]{k}[/] [{pal['ink']}]{v}[/]" for k, v in facts)
+    return f"{head}\n{factline}"
+
+
+def _workset_detail_markup(card: dict, pal: dict[str, str], width: int = 140, *,
+                           zoom: float = 1.0, pan: float = 0.5, focus_key: str | None = None) -> str:
+    """The zoomable/scrubbable detail body for one work group: header, a zoom
+    coverage line, the windowed cross-agent timeline, the overview scrubber, and
+    the focused session's facts. Same honesty as the card — a labelled sum, never
+    a combined verdict; every lane figure is that session's own."""
+
+    lanes = [l for l in (card.get("sessions") or []) if isinstance(l, dict)]
+    summary = card.get("summary") if isinstance(card.get("summary"), dict) else {}
+    name = str(card.get("name") or card.get("project_identity") or "work group")
+    sources = summary.get("sources") if isinstance(summary.get("sources"), list) else []
+    sc = int(summary.get("session_count") or len(lanes))
+
+    lo, hi = _timeline_bounds(lanes)
+    windowed = lo is not None and hi is not None and hi > lo
+    if windowed:
+        win = _ZoomWindow(lo, hi, zoom, pan)
+        ws, we = win.start, win.end
+        coverage = win.coverage(lo, hi)
+        tl = _workset_timeline(lanes, pal, width, win_start=ws, win_end=we,
+                               max_rows=_DETAIL_TIMELINE_ROWS, focus_key=focus_key)
+    else:
+        ws = we = lo if lo is not None else 0.0
+        coverage = 1.0
+        tl = _workset_timeline(lanes, pal, width, max_rows=_DETAIL_TIMELINE_ROWS, focus_key=focus_key)
+
+    cov_text = "full range" if coverage >= 0.999 else f"~{max(1, round(coverage * 100))}% of range"
+    header = (f"[b {pal['ink']}]{_escape(name)}[/]  "
+              f"[{pal['dim']}]{sc} session{'s' if sc != 1 else ''} · "
+              f"{len(sources)} source{'s' if len(sources) != 1 else ''} · "
+              f"{_span_text(summary.get('first_activity_at'), summary.get('last_activity_at'))}[/]")
+    legend = "   ".join(
+        f"[{_agent_color(s.get('client'), pal)}]■[/] [{pal['muted']}]{_escape(_agent_label(s.get('client')))}[/]"
+        for s in sources if isinstance(s, dict)
+    )
+    zoom_line = f"[{pal['dim']}]zoom[/] [{pal['accent']}]{cov_text}[/]"
+
+    blocks: list[str] = [header]
+    if legend:
+        blocks.append(legend)
+    blocks += ["", zoom_line, ""]
+    blocks += tl["rows"]
+    if tl["axis"]:
+        blocks.append(tl["axis"])
+    scrub = _workset_scrubber(lanes, pal, tl["left_col"], tl["track"], lo, hi, ws, we)
+    if scrub:
+        blocks += ["", scrub]
+
+    notes: list[str] = []
+    if tl["hidden_by_window"]:
+        notes.append(f"[{pal['dim']}]{count_noun(int(tl['hidden_by_window']), 'session')} outside this range — zoom out (−) to see them.[/]")
+    if tl["hidden"]:
+        notes.append(f"[{pal['dim']}]Showing {tl['shown']} rows in view — zoom into a range to see the rest.[/]")
+    if tl["timeless"]:
+        n = tl["timeless"]
+        notes.append(f"[{pal['dim']}]{n} session{'s' if n != 1 else ''} with no recorded time — shown faded at the start.[/]")
+    if notes:
+        blocks += [""] + notes
+
+    focused = next((l for l in lanes if str(l.get("session_key")) == focus_key), None)
+    if focused is not None:
+        blocks += ["", _lane_facts(focused, pal, width)]
+
+    # No inline key hint: the screen docks a native Footer driven by the real
+    # bindings (Move / Zoom / Reset / Pan / Back), so guidance stays visible and
+    # never scrolls away with the body.
+    return "\n".join(blocks)
 
 
 # ============================================================================ #
@@ -1667,8 +2893,9 @@ def _build_dashboard_parts(
             for line in _wrap_words(str(next_step), half_w - 2):
                 rows.append(f"[{pal['ink']} on {pal['chip']}]{(' ' + _escape(line)):<{half_w}}[/]")
         rows.append("")
+        # Only ↵ (dash_review) is wired; the old " y Copy review brief " chip had no
+        # binding or clipboard path, so it is dropped rather than left a dead cue.
         rows.append(f"[{pal['accent']} on {pal['ta']}] ↵ Review evidence [/]  "
-                    f"[{pal['muted']} on {pal['chip']}] y Copy review brief [/]  "
                     f"[{pal['accent']}]View queue →[/]")
         attn = "\n".join(rows)
     else:
@@ -1683,7 +2910,7 @@ def _build_dashboard_parts(
         act = _humanize_ago(summaries[0].get("last_activity_at"), now)
         working_sub = " · ".join(p for p in (proj, (f"activity {act}" if act != "—" else "")) if p)
     rail_blocks = [_rail_block(
-        "Working now", f"{active} active session(s)",
+        "Working now", count_noun(int(active), "active session"),
         working_sub or ("in progress" if active else "none in progress right now"), pal)]
     rail_blocks.append(_capacity_block(limits, pal))
     if snap is not None:
@@ -1716,21 +2943,21 @@ def _build_dashboard_parts(
             ) if p and p != "—")
             # Truncate title so title+meta always fit the fixed TASK column, so the
             # OUTCOME and EVIDENCE columns snap to the same x on every row.
-            avail = max(8, tcol - 4 - (len(suffix) if suffix else 0))
-            tt = title if len(title) <= avail else title[: avail - 1] + "…"
+            avail = max(8, tcol - 4 - (_cell_len(suffix) if suffix else 0))
+            tt = _trunc(title, avail)
             if suffix:
                 tmarkup = f"[{pal['ink']}]{_escape(tt)}[/]  [{pal['dim']}]{_escape(suffix)}[/]"
-                tvis = len(tt) + 2 + len(suffix)
+                tvis = _cell_len(tt) + 2 + _cell_len(suffix)
             else:
                 tmarkup = f"[{pal['ink']}]{_escape(tt)}[/]"
-                tvis = len(tt)
+                tvis = _cell_len(tt)
             blabel = decision_label(dkey)
             _fg, wash = _decision_colors(dkey, pal)
-            bvis = len(blabel) + (2 if wash is not None else 0)
+            bvis = _cell_len(blabel) + (2 if wash is not None else 0)
             short = _coverage_short(ev_s)
             cov = f"{short} supported" if "/" in short else short
             ev = f"{pip(ekey, pal)} [{pal['muted']}]{_escape(cov)}[/]"
-            evis = 2 + len(cov)
+            evis = 2 + _cell_len(cov)
             trows.append((tmarkup, tvis, decision_badge(dkey, pal), bvis, ev, evis,
                           receipt_cost_text(s.get("cost") or {})))
         # Reserve margin for the pane's vertical scrollbar (~2 cols) plus the
@@ -1791,30 +3018,44 @@ def _checks_count(ev: dict, pal: dict[str, str]) -> tuple[str, str]:
     return f"{passed}/{total}", (pal["coral"] if failed else pal["green"])
 
 
-def _work_card_markup(s: dict, pal: dict[str, str], *, expanded: bool = False) -> str:
-    """One receipt as a master-list card. The highlighted card EXPANDS to a
-    Claims/Checks grid (the GUI's selected card); the rest stay compact — a title,
-    badge, and one pip-led meta line — so the list keeps a clear hierarchy."""
+def _work_row_cells(s: dict, pal: dict[str, str], tcol: int) -> tuple[list[Any], str]:
+    """One receipt as a DataTable row: Task / Outcome / Evidence / Cost / Age, each
+    a single-line Rich Text so columns align and sort. The Task title is truncated
+    cell-width-aware (CJK-safe) to ``tcol`` so it never forces a horizontal scroll.
+    Also returns a plain-text mirror of the row for headless tests. The detail pane
+    is authoritative for everything a compact row can't show."""
 
     tid = str(s.get("task_id"))
     dkey = str((s.get("decision_status") or {}).get("key"))
     ev = s.get("evidence_strength") or {}
     ekey = str(ev.get("key"))
-    client = str((s.get("primary_root") or {}).get("client") or s.get("project") or "")
     cost = receipt_cost_text(s.get("cost") or {})
     age = _humanize_ago(s.get("last_activity_at"), time.time())
-    title_line = f"[b {pal['ink']}]{_escape(str(s.get('title') or tid))}[/]"
-    if expanded:
-        cov = _coverage_short(ev)
-        cval, ccol = _checks_count(ev, pal)
-        col = 15
-        grid = (f"[{pal['dim']}]{'CLAIMS':<{col}}CHECKS[/]\n"
-                f"[{pal['ink']}]{pip(ekey, pal)} {_escape(cov):<{col - 2}}[/][{ccol}]{cval}[/]")
-        meta = " · ".join(p for p in (client, cost, age) if p and p != "—")
-        return f"{title_line}\n{decision_badge(dkey, pal)}\n{grid}\n[{pal['dim']}]{_escape(meta)}[/]"
-    meta = " · ".join(p for p in (_coverage_short(ev), client, cost, age) if p and p != "—")
-    return (f"{title_line}\n{decision_badge(dkey, pal)}\n"
-            f"{pip(ekey, pal)} [{pal['dim']}]{_escape(meta)}[/]")
+    cov = _coverage_short(ev)
+    full_title = str(s.get("title") or tid)
+    title = _trunc(full_title, tcol)
+    outcome = decision_label(dkey)
+    fg, _wash = _decision_colors(dkey, pal)
+
+    task_cell = _RText(title, style=pal["ink"], no_wrap=True, overflow="ellipsis")
+    outcome_cell = _RText(_trunc(outcome, 14), style=fg, no_wrap=True)
+    # Evidence: the pip shape carries the grade; add a compact P/T checks count only
+    # when the receipt is GRADEABLE and checks ran. Never show a green passing tally
+    # next to an ungradeable receipt (its checks are unattributed pool runs, not
+    # evidence for this task) — that would overstate. The hollow pip says the rest.
+    cval, ccol = _checks_count(ev, pal)
+    ev_text = _RText.from_markup(pip(ekey, pal))
+    if ev.get("gradeable") and cval != "no runs":
+        ev_text.append(" ")
+        ev_text.append(cval, style=ccol)
+    cost_cell = _RText(cost, style=pal["dim"], justify="right")
+    # The "Age" header already says "ago"; drop the suffix so the cell fits.
+    age_cell = _RText(age.replace(" ago", ""), style=pal["dim"], no_wrap=True)
+    cells: list[Any] = [task_cell, outcome_cell, ev_text, cost_cell, age_cell]
+    # Mirror carries the FULL title (not the width-truncated cell) so headless
+    # tests can assert row content independent of the terminal width.
+    plain = " · ".join(p for p in (full_title, outcome, cov, cost, age) if p and p != "—")
+    return cells, plain
 
 
 def _kv_grid(cells: list[tuple[str, str]], pal: dict[str, str], width: int) -> str:
@@ -1823,7 +3064,7 @@ def _kv_grid(cells: list[tuple[str, str]], pal: dict[str, str], width: int) -> s
     (a lighter look than the KPI strips, which do carry ``│`` dividers)."""
 
     def pad(text: str) -> str:
-        return _escape(text + " " * max(3, width - len(text)))
+        return _escape(text + " " * max(3, width - _cell_len(text)))
 
     labels = "".join(f"[{pal['dim']}]{pad(c[0].upper())}[/]" for c in cells)
     values = "".join(f"[{pal['ink']}]{pad(str(c[1]))}[/]" for c in cells)
@@ -1856,7 +3097,7 @@ def _recent_table(rows: list[tuple[str, int, str, int, str, int, str]], pal: dic
         return markup + " " * max(2, target - vis)
 
     def head_cell(text: str, target: int) -> str:
-        return f"[{pal['dim']}]{_escape(text.upper())}[/]" + " " * max(2, target - len(text))
+        return f"[{pal['dim']}]{_escape(text.upper())}[/]" + " " * max(2, target - _cell_len(text.upper()))
 
     header = (head_cell("Task", tcol) + head_cell("Outcome", ocol)
               + head_cell("Evidence", ecol) + f"[{pal['dim']}]{'COST':>{max(4, tw - tcol - ocol - ecol)}}[/]")
@@ -1867,7 +3108,7 @@ def _recent_table(rows: list[tuple[str, int, str, int, str, int, str]], pal: dic
         title_cell = tmarkup + " " * max(1, tcol - tvis)
         left = title_cell + pad_vis(badge, bvis, ocol) + pad_vis(ev, evis, ecol)
         left_vis = tcol + max(ocol, bvis + 2) + max(ecol, evis + 2)
-        gap = max(1, tw - left_vis - len(cost))
+        gap = max(1, tw - left_vis - _cell_len(cost))
         out.append("")  # a blank line before each row — the artifact's airier rhythm
         out.append(left + " " * gap + f"[{pal['ink']}]{_escape(cost)}[/]")
     return "\n".join(out)
@@ -1879,7 +3120,7 @@ def _kpi_cells(cells: list[tuple[str, str, str]], pal: dict[str, str], width: in
     size, so prominence comes from weight + the labelled block, not size)."""
 
     def pad(text: str) -> str:
-        return _escape(text + " " * max(2, width - len(text)))
+        return _escape(text + " " * max(2, width - _cell_len(text)))
 
     sep = f"[{pal['line']}]│[/] "
     labels = sep.join(f"[{pal['dim']}]{pad(c[0].upper())}[/]" for c in cells)
@@ -1916,7 +3157,7 @@ def _wrap_words(text: str, width: int) -> list[str]:
     lines: list[str] = []
     cur = ""
     for w in words:
-        if cur and len(cur) + 1 + len(w) > width:
+        if cur and _cell_len(cur) + 1 + _cell_len(w) > width:
             lines.append(cur)
             cur = w
         else:
@@ -1978,7 +3219,7 @@ def _build_receipt_parts(receipt: dict, pal: dict[str, str], width: int = 150) -
 
     # head — breadcrumb, title + decision badge, meta line.
     head_lines = [
-        f"[{pal['accent']}]‹ All receipts[/]   [{pal['dim']}]WORK / {_escape(short.upper())}[/]",
+        f"[{pal['accent']}]‹ All receipts[/]   [{pal['dim']}]SESSIONS / {_escape(short.upper())}[/]",
         f"[b {pal['ink']}]{_escape(str(receipt.get('title') or 'Task'))}[/]  {decision_badge(dkey, pal)}",
     ]
     updated = _humanize_ago(receipt.get("last_activity_at"), time.time())
@@ -2121,10 +3362,67 @@ def _check_rows(check: dict, pal: dict[str, str], now: float) -> list[str]:
     return [head, line2]
 
 
-def _build_steps_parts(receipt: dict, checks: list[dict], pal: dict[str, str], width: int = 150) -> dict[str, str]:
-    """The sessions & steps drill-down: a checks timeline grouped into NEEDS
+def _activity_mark(event: dict, pal: dict[str, str]) -> tuple[str, str]:
+    """(glyph, colour) for one activity event — a check wears its result mark
+    (✓/✗/»), other work a status pip (● live/done, ○ observed, coral if failed)."""
+
+    kind = str(event.get("kind") or "")
+    status = str(event.get("status") or "").lower()
+    if kind == "check":
+        return check_mark(status, pal)
+    if status in ("blocked", "failed"):
+        return "●", pal["coral"]
+    if status in ("active", "in_progress", "started", "checkpoint"):
+        return "●", pal["accent"]
+    if status in ("completed", "resolved"):
+        return "●", pal["ink"]
+    return "○", pal["muted"]
+
+
+def _task_activity_timeline(events: list[dict], pal: dict[str, str], width: int, max_rows: int = 12) -> dict[str, Any]:
+    """One task's recorded work + checks on a shared time axis — the terminal
+    stand-in for the app's Activity canvas. Each event is a row (its result mark
+    + title) with a block at its occurred_at; a timeless event sits faded at the
+    start. Chronological (oldest first), matching build_timeline_events order."""
+
+    left_col = max(24, min(44, width // 2))
+    track = max(12, width - left_col - 1)
+    times = [float(e["occurred_at"]) for e in events
+             if isinstance(e.get("occurred_at"), (int, float)) and not isinstance(e.get("occurred_at"), bool) and e["occurred_at"] > 0]
+    w0 = min(times) if times else None
+    w1 = max(times) if times else None
+    span = (w1 - w0) if (w0 is not None and w1 is not None and w1 > w0) else 0.0
+    shown = events[:max_rows]
+    rows: list[str] = []
+    timeless = 0
+    for e in shown:
+        glyph, color = _activity_mark(e, pal)
+        title = _escape(_trunc(str(e.get("title") or "event"), left_col - 2))
+        left = _pad_vis(f"[{color}]{glyph}[/] [{pal['ink']}]{title}[/]", left_col)
+        t = e.get("occurred_at")
+        if isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0 and w0 is not None:
+            frac = ((float(t) - w0) / span) if span > 0 else 0.0
+            col = min(track - 1, max(0, round(frac * (track - 1))))
+            trackstr = f"[{pal['hair']}]{'─' * col}[/][{color}]█[/][{pal['hair']}]{'─' * (track - col - 1)}[/]"
+        else:
+            timeless += 1
+            trackstr = f"[{pal['dim']}]█[/][{pal['hair']}]{'─' * (track - 1)}[/]"
+        rows.append(f"{left} {trackstr}")
+    if w0 is not None and w1 is not None:
+        axis = " " * (left_col + 1) + _two_edge(
+            f"[{pal['dim']}]{_axis_stamp(w0, span)}[/]", f"[{pal['dim']}]{_axis_stamp(w1, span)}[/]", track
+        )
+    else:
+        axis = ""
+    return {"rows": rows, "axis": axis, "hidden": max(0, len(events) - len(shown)), "timeless": timeless}
+
+
+def _build_steps_parts(receipt: dict, checks: list[dict], pal: dict[str, str], width: int = 150,
+                       task: dict | None = None) -> dict[str, str]:
+    """The sessions & steps drill-down: a per-task ACTIVITY timeline (recorded
+    work + checks on a shared axis) atop a checks list grouped into NEEDS
     ATTENTION (failing) and OTHER CURRENT CHECKS (passed/skipped), plus files.
-    Mirrors the artifact's sessions-&-steps frame."""
+    Mirrors the app's activity timeline + sessions-&-steps frame."""
 
     now = time.time()
     dw = max(46, int(width * 0.54) - 10)
@@ -2136,7 +3434,7 @@ def _build_steps_parts(receipt: dict, checks: list[dict], pal: dict[str, str], w
     short = _short_task_id(str(receipt.get("task_id") or ""))
     title = str(receipt.get("title") or "Task")
 
-    head = f"[{pal['accent']}]‹ Receipt[/]   [{pal['dim']}]WORK / {_escape(short.upper())} / SESSIONS[/]"
+    head = f"[{pal['accent']}]‹ Receipt[/]   [{pal['dim']}]SESSIONS / {_escape(short.upper())} / STEPS[/]"
 
     def _cap(text: str, color: str) -> str:
         return f"[{color}]{_escape(text.upper())}[/]"
@@ -2163,6 +3461,41 @@ def _build_steps_parts(receipt: dict, checks: list[dict], pal: dict[str, str], w
     if attn and dkey not in _DANGER:
         body.append(f"[{pal['amber']}]Marked done, but a recorded check is currently failing.[/]")
 
+    # Activity timeline: the task's recorded work + checks on a shared time axis
+    # (the app's Activity canvas, as a keyboard-friendly lane view).
+    if task is not None:
+        try:
+            from .task_timeline import build_timeline_events
+
+            # Let build_timeline_events use the RAW task checks (checks=None), exactly
+            # like the app's /v1 timeline route. The projected `checks` list carries
+            # its time as "at", but build_timeline_events reads "created_at" — so
+            # passing it made every check timeless (all bunched, faded, at the start:
+            # the old 'messy' activity timeline). The raw checks carry created_at.
+            events = build_timeline_events(task)
+        except Exception:  # noqa: BLE001
+            events = []
+        if events:
+            # Size the timeline to the DETAIL COLUMN (dw), not the full terminal.
+            # This card renders in the ~54% right column, so a full-width track
+            # would overflow and wrap — and a wrapped row throws every block off
+            # its axis (the old 'messy' timeline). Match the section rules' width.
+            tl = _task_activity_timeline(events, pal, dw)
+            body.append("")
+            body.append(f"[{pal['line']}]{'─' * dw}[/]")
+            body.append(_cap(f"Activity · {len(events)} events", pal["dim"]))
+            body.append("")
+            body.extend(tl["rows"])
+            if tl["axis"]:
+                body.append(tl["axis"])
+            tail_notes = []
+            if tl["hidden"]:
+                tail_notes.append(f"{count_noun(int(tl['hidden']), 'earlier event')} not shown")
+            if tl["timeless"]:
+                tail_notes.append(f"{tl['timeless']} with no recorded time (faded at start)")
+            if tail_notes:
+                body.append(f"[{pal['dim']}]{_escape(' · '.join(tail_notes))}[/]")
+
     # Needs attention (failing checks).
     if attn:
         body.append("")
@@ -2173,16 +3506,15 @@ def _build_steps_parts(receipt: dict, checks: list[dict], pal: dict[str, str], w
             body.extend(_check_rows(c, pal, now))
             body.append("")
 
-    # Other current checks (passed / skipped), capped.
+    # Other current checks (passed / skipped) — all of them. The detail pane
+    # scrolls by keyboard (ctrl+d / ctrl+u — pagedown is taken by the list cursor),
+    # so we list the full set like the app does rather than capping at 4 behind a
+    # "▾ Show more" cue that nothing could open.
     body.append(f"[{pal['line']}]{'─' * dw}[/]")
     body.append(_cap(f"Other current checks · {len(other)}", pal["dim"]))
     body.append("")
-    shown = other[:4]
-    for c in shown:
+    for c in other:
         body.extend(_check_rows(c, pal, now))
-        body.append("")
-    if len(other) > len(shown):
-        body.append(f"[{pal['accent']}]▾ Show {len(other) - len(shown)} more current checks[/]")
         body.append("")
 
     # Files touched by the checks.
@@ -2379,13 +3711,28 @@ def _source_lozenge(s: dict, running: bool, pal: dict[str, str]) -> str:
 
 
 def _overall_lozenge(state: str, running: bool, pal: dict[str, str]) -> str:
+    # Severity-graded, matching the app's calmer Diagnostics: only a real "error"
+    # (or a genuinely degraded source) is loud; a transient "attention" is amber,
+    # and an advisory (a self-healing blip) never turns the surface red.
     if state == "healthy" and running:
         return _loz("Reporting", pal["green"], pal["tg"], "●")
     if state == "healthy":
         return _loz("Idle", pal["muted"], pal["tn"], "○")
+    if state == "error":
+        return _loz("Needs attention", pal["coral"], pal["tc"], "○")
     if state == "degraded":
         return _loz("Degraded", pal["amber"], pal["tm"], "○")
+    if state == "attention":
+        return _loz("Attention", pal["amber"], pal["tm"], "○")
     return _loz(state.capitalize() or "Unknown", pal["muted"], pal["tn"], "○")
+
+
+# Ingestion issue severity → (content colour, wash) and a loud-first sort rank.
+_ISSUE_SEV_RANK = {"error": 0, "attention": 1, "advisory": 2}
+
+
+def _issue_severity_color(sev: str, pal: dict[str, str]) -> str:
+    return {"error": pal["coral"], "attention": pal["amber"]}.get(sev, pal["dim"])
 
 
 def _watcher_lozenge(watcher: dict, pal: dict[str, str]) -> str:
@@ -2422,8 +3769,8 @@ def _watcher_detail(watcher: dict) -> str:
 
 def _build_sources_parts(snapshot: dict, store_dir: Any, pal: dict[str, str], width: int = 150) -> dict[str, str]:
     card_w = max(60, width - 10)
-    head = (f"[b {pal['ink']}]Evidence sources[/]   "
-            f"[{pal['dim']}]what feeds the store · capture is local only[/]")
+    head = (f"[b {pal['ink']}]Diagnostics[/]   "
+            f"[{pal['dim']}]what feeds the store · recording health · capture is local only[/]")
 
     if snapshot.get("_error"):
         return {
@@ -2461,13 +3808,24 @@ def _build_sources_parts(snapshot: dict, store_dir: Any, pal: dict[str, str], wi
         f"[{pal['muted']}]{_escape(_watcher_detail(watcher))}[/]", _watcher_lozenge(watcher, pal), card_w)
 
     issues = snapshot.get("issues") or []
+    issues_sorted = sorted(issues, key=lambda i: _ISSUE_SEV_RANK.get(str(i.get("severity") or "error"), 0))
     issue_lines: list[str] = []
-    for issue in issues:
+    worst = "advisory"
+    for issue in issues_sorted:
+        sev = str(issue.get("severity") or "error")
+        if _ISSUE_SEV_RANK.get(sev, 0) < _ISSUE_SEV_RANK.get(worst, 2):
+            worst = sev
+        color = _issue_severity_color(sev, pal)
         code = str(issue.get("code") or "issue").replace("_", " ")
-        src = f" — {issue.get('source')}" if issue.get("source") else ""
-        issue_lines.append(f"[{pal['amber']}]{_escape(code.capitalize() + src)}[/]")
+        affected = issue.get("affected_sources")
+        src_names = issue.get("source") or (", ".join(str(a) for a in affected) if isinstance(affected, list) and affected else "")
+        src = f" — {src_names}" if src_names else ""
+        tag = "" if sev == "error" else f" [{pal['dim']}]· {sev}[/]"
+        issue_lines.append(f"[{color}]{_escape(code.capitalize() + src)}[/]{tag}")
         if issue.get("action"):
             issue_lines.append(f"  [{pal['dim']}]{_escape(str(issue.get('action')))}[/]")
+    # Loud (error) → coral card, an attention blip → amber, advisory-only → quiet.
+    issues_color = pal["coral"] if worst == "error" else pal["amber"] if worst == "attention" else pal["dim"]
 
     return {
         "head": head,
@@ -2475,6 +3833,7 @@ def _build_sources_parts(snapshot: dict, store_dir: Any, pal: dict[str, str], wi
         "watcher_title": "CONTINUOUS SYNC", "watcher": watcher_body,
         "verifiers_title": "VERIFIERS · NOT CONNECTED · UPGRADE SELF-CHECKED → VERIFIED", "verifiers": _verifiers_markup(pal, card_w),
         "issues_title": f"NEEDS ATTENTION · {len(issues)}", "issues": "\n".join(issue_lines),
+        "issues_color": issues_color,
         "local": _sources_local_markup(store_dir, pal, card_w),
     }
 

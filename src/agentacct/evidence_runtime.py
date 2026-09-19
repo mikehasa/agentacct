@@ -62,6 +62,36 @@ def evidence_v2_enabled() -> bool:
     return str(value if value is not None else "1").strip().lower() not in _FALSE_VALUES
 
 
+EVIDENCE_V2_SHADOW_SKIP_ENV = "AGENTACCT_EVIDENCE_V2_SHADOW_SKIP_EVENT_TYPES"
+# Default-on skip set. Both types map to source_type=mcp_agent_reported/claimed
+# (evidence._legacy_source_type) and are never machine_check_observed, so the
+# client_hook mechanical-check lane and the local_client_log refreshable-usage
+# lane are untouched (see consumer enumeration in the perf PR). They are the
+# ~566x write amplifier into projection.sqlite3 / spool.jsonl. The primary
+# events.jsonl ledger still keeps these rows; only the redundant v2 shadow copy
+# is skipped.
+_DEFAULT_SHADOW_SKIP_EVENT_TYPES = frozenset({"tool_activity_observed", "rate_limit_observed"})
+_SHADOW_SKIP_DISABLE_TOKENS = frozenset({"none", "off", "-"})
+
+
+def evidence_v2_shadow_skip_event_types() -> frozenset[str]:
+    """Resolve the shadow-write skip set (default-on).
+
+    Unset -> the default high-cardinality set. A comma-separated value overrides
+    it entirely; a single ``none``/``off``/``-`` token disables skipping so every
+    ledger event shadows again. (read_env_alias treats whitespace-only as unset,
+    so ``none`` is the documented opt-out rather than an empty string.)
+    """
+    raw = read_env_alias(EVIDENCE_V2_SHADOW_SKIP_ENV)
+    if raw is None:
+        return _DEFAULT_SHADOW_SKIP_EVENT_TYPES
+    tokens = {token.strip() for token in str(raw).split(",")}
+    tokens.discard("")
+    if not tokens or tokens <= _SHADOW_SKIP_DISABLE_TOKENS:
+        return frozenset()
+    return frozenset(tokens)
+
+
 @dataclass(frozen=True)
 class ShadowWriteResult:
     enabled: bool
@@ -135,9 +165,22 @@ class EvidenceRuntime:
     a proven v1 MCP, HTTP, CLI, import, or runner write fail.
     """
 
-    def __init__(self, store_dir: Path | str, *, enabled: bool | None = None) -> None:
+    def __init__(
+        self,
+        store_dir: Path | str,
+        *,
+        enabled: bool | None = None,
+        shadow_skip_event_types: Iterable[str] | None = None,
+    ) -> None:
         self.store_dir = Path(store_dir).expanduser()
         self.enabled = evidence_v2_enabled() if enabled is None else bool(enabled)
+        # Resolve ONCE: shadow_v1_event runs per recorded event (millions of
+        # tool_activity rows), so never read env / re-parse per call.
+        self._shadow_skip_event_types = (
+            evidence_v2_shadow_skip_event_types()
+            if shadow_skip_event_types is None
+            else frozenset(shadow_skip_event_types)
+        )
         self._store: EvidenceStore | None = None
 
     @property
@@ -533,6 +576,14 @@ class EvidenceRuntime:
                 )
             # Atomic increments are intentionally excluded from the mutable
             # current lane and continue through ordinary immutable Evidence.
+        # Drop non-consumed high-cardinality types at the shadow boundary.
+        # Placed AFTER the refreshable-usage branch so model_usage/local imports
+        # keep their dedicated current-state lane. These types resolve to
+        # source_type=mcp_agent_reported and are never machine_check_observed, so
+        # this cannot affect the client_hook mechanical-check lane (whose rows
+        # arrive via evidence.append from mechanical_capture, not this path).
+        if str(event.get("event_type") or "") in self._shadow_skip_event_types:
+            return ShadowWriteResult(enabled=True, appended=False, disposition="skipped")
         normalized_transport = self._transport(transport)
         shadow = dict(event)
         metadata_value = shadow.get("metadata")
@@ -745,8 +796,10 @@ class EvidenceRuntime:
 __all__ = [
     "EVIDENCE_V2_ENV",
     "EVIDENCE_V2_ENV_LEGACY",
+    "EVIDENCE_V2_SHADOW_SKIP_ENV",
     "EvidenceRuntime",
     "RefreshableUsageSnapshotResult",
     "ShadowWriteResult",
     "evidence_v2_enabled",
+    "evidence_v2_shadow_skip_event_types",
 ]

@@ -31,34 +31,152 @@ FAKE_HOME = "/tmp/agentacct-app-demo-home"
 STORE = Path(FAKE_HOME) / ".local" / "state" / "agentacct" / "state"
 SHOTS_TMP = Path("/tmp/agentacct-app-shots")
 OUT = REPO_ROOT / "docs" / "assets"
+
+# --- demo-content locale ------------------------------------------------------
+# `--locale zh-CN` renders the same store with its CONTENT (task and step
+# titles, summaries, blockers, check results) in Chinese and writes the assets
+# to docs/assets/zh-CN/ for README.zh-CN.md. The app's own chrome stays English:
+# that is what the product looks like, and file paths, commands, and model names
+# are English in real use too.
+LOCALE = "en"
+_UNTRANSLATED: set[str] = set()
+
+ZH_CN = {
+    # flagship receipt
+    "Add a token-bucket rate limiter to the login API": "给登录接口加一个令牌桶限流",
+    "Design the token-bucket limiter": "设计令牌桶限流方案",
+    "Chose a Redis token bucket — 100 req/min per IP, burst 20.": "选用 Redis 令牌桶：每个 IP 每分钟 100 次，突发上限 20。",
+    "Write the failing tests": "先写会失败的测试",
+    "Added 12 cases: under limit, at limit, burst, window reset.": "加了 12 个用例：未达上限、刚到上限、突发、窗口重置。",
+    "Implement the token-bucket middleware": "实现令牌桶中间件",
+    "Implemented the bucket + refill; the 12 tests pass.": "实现了令牌桶和补充逻辑，12 个测试通过。",
+    "Handle bursts + concurrent requests": "处理突发和并发请求",
+    "Made the refill atomic under concurrent hits (Lua CAS).": "并发场景下把补充改成原子操作（Lua CAS）。",
+    "Code review + document the limits": "代码评审并把限流规则写进文档",
+    "Addressed review comments; documented the limits in the API guide.": "处理了评审意见，限流规则已写进 API 文档。",
+    "12 failed (red)": "12 个失败",
+    "12 passed": "12 个通过",
+    "38 passed": "38 个通过",
+    "6 passed": "6 个通过",
+    "ruff clean": "ruff 无告警",
+    # the workday on billing-svc
+    "Wire the Stripe webhook handler": "接入 Stripe webhook 处理",
+    "Plan the webhook + idempotency keys": "设计 webhook 和幂等键",
+    "Scoped the handler, replay protection, and the tests.": "定了处理逻辑、防重放和测试范围。",
+    "Handler + signature check in; retries still to do.": "处理逻辑和签名校验已提交，重试还没做。",
+    "14 passed": "14 个通过",
+    "Trace the slow query path": "排查慢查询路径",
+    "Trace the slow invoice query": "排查发票慢查询",
+    "Found the missing index on invoices(account_id, created_at).": "发现 invoices(account_id, created_at) 缺索引。",
+    "Paginate the invoices API": "给发票接口加分页",
+    "Add cursor pagination to /invoices": "给 /invoices 加游标分页",
+    "Cursor pagination + a covering index; p95 down 40%.": "游标分页加覆盖索引，p95 降了 40%。",
+    "Rotate the webhook signing secret": "轮换 webhook 签名密钥",
+    "Rotated the secret and updated the deploy config.": "换了密钥并更新了部署配置。",
+    "Emit OTLP metrics from the API": "API 输出 OTLP 指标",
+    "Plan the metrics + exporter": "设计指标和导出器",
+    "Chose the OTLP exporter and the request/latency histograms.": "选定 OTLP 导出器和请求/延迟直方图。",
+    "Instrumented the handlers; exporter wired to the collector.": "各处理函数已埋点，导出器接到了 collector。",
+    "9 passed": "9 个通过",
+    "Backfill the invoice index": "回填发票索引",
+    "Backfilled 2.1M rows in batches; verified the covering index is used.": "分批回填了 210 万行，确认覆盖索引已生效。",
+    "4 passed": "4 个通过",
+    "Add a CSV export endpoint": "加一个 CSV 导出接口",
+    "Add the /export.csv route + tests": "加 /export.csv 路由和测试",
+    "Streamed the CSV; added 6 tests for quoting and large results.": "CSV 改为流式输出，补了 6 个引号和大结果集的测试。",
+    "Fix the flaky payment test": "修复不稳定的支付测试",
+    "Plan & write the tests": "梳理改动并补测试",
+    "Scoped the change and the tests to add.": "确定了改动范围和要补的测试。",
+    "Started, then hit a blocker on staging.": "开始后在 staging 环境卡住了。",
+    "staging DB credentials unavailable": "拿不到 staging 数据库的凭证",
+    "1 failed, 7 passed": "1 个失败，7 个通过",
+    # the week's backdrop
+    "Migrate the event log to SQLite": "把事件日志迁移到 SQLite",
+    "Refactor the auth session store": "重构登录会话存储",
+    "Add full-text search to the docs": "给文档加全文搜索",
+    "Cache the dashboard queries": "缓存仪表盘查询",
+    "Add the weekly usage report": "加每周用量报告",
+    "Implemented the change.": "改动已完成。",
+    "18 passed": "18 个通过",
+    "Format + type-check the API package": "格式化并类型检查 API 包",
+    "Formatted + type-checked the API package; zero new findings.": "API 包格式化和类型检查完成，没有新问题。",
+    "Bump the pinned dependencies": "升级锁定的依赖",
+    "Bumped 14 pinned dependencies; lockfile regenerated.": "升级了 14 个锁定依赖，重新生成了 lockfile。",
+    "Quarantine a flaky integration test": "隔离一个不稳定的集成测试",
+    "Investigate the perf regression": "排查性能回退",
+    "Trace the N+1 query": "排查 N+1 查询",
+    "Traced the N+1 in the order loader and cached it.": "在订单加载器里找到 N+1 并加了缓存。",
+    "21 passed": "21 个通过",
+    "Rebuild the search index": "重建搜索索引",
+    "Rebuild the search index nightly": "搜索索引改成每晚重建",
+    "Moved the index rebuild to an incremental nightly job.": "索引重建改成每晚增量任务。",
+    "Add a health-check probe": "加一个健康检查探针",
+    "Add /healthz + wire the probe": "加 /healthz 并接上探针",
+    "Added a readiness probe and documented it.": "加了就绪探针并写了说明。",
+    "Instrument the checkout funnel": "给结账漏斗加埋点",
+    "Adding step events to the checkout funnel pages.": "正在给结账流程各页面加步骤事件。",
+}
+
+
+def _t(text):
+    """Localize one piece of demo CONTENT (a title, summary, blocker, or check
+    result). English is the identity; an untranslated string falls back to
+    English and is reported at the end so the table can be completed."""
+    if LOCALE == "en" or not text:
+        return text
+    table = ZH_CN if LOCALE == "zh-CN" else {}
+    if text in table:
+        return table[text]
+    _UNTRANSLATED.add(text)
+    return text
 APP_BIN = REPO_ROOT / "apps" / "agentacct" / ".build" / "agentacct.app" / "Contents" / "MacOS" / "agentacct"
 
 # Curated: the light-mode panes we surface in the README, renamed for the docs.
-# The simple panes are copied 1:1; the Work Receipt hero and the Sessions & steps
-# shot are cropped out of one wide, tall Work render (WIDE_CROPS below).
+# Whole panes are copied 1:1 (CURATE); everything else is a crop of a raw render
+# (CROPS below) — the receipt hero and timeline come out of one wide Sessions
+# render, the Work card and the Usage capacity table out of their own panes.
+#
+# The tab labels: `worksets` (the pane loop writes it as window-work-*.png) is
+# the "Work" tab — folder-anchored groupings across agents. The receipts
+# collection (window-work-table-*.png, rendered task-unselected) is the
+# "Sessions" tab. Keep those two straight when re-measuring crops.
 CURATE = {
-    "window-work-table-light.png": "app-work-table.png",
     "window-dashboard-light.png": "app-dashboard.png",
-    "window-usage-light.png": "app-usage.png",
 }
 
 # The Work Receipt is the README hero. SnapshotRunner renders the flagship record
-# once more at a WIDE, tall canvas (window-work-wide-light.png) so the receipt's
-# adaptive two-column layout — record detail on the left, the evidence side rail
-# (coverage · sources · gaps) on the right — is visible, with the full Sessions &
-# steps drill-down below it. We crop two docs assets out of that one render.
-# Regions are (left, top, right, bottom) in device pixels; None means the render's
-# own edge. These pin the deterministic demo layout — if the demo store or the
-# Work pane layout changes materially, re-measure them (the raw render is kept in
-# SHOTS_TMP for exactly that).
+# once more at a WIDE canvas (window-work-wide-light.png) sized so the receipt
+# fills it without the timeline card stretching (a shorter frame keeps the
+# offscreen ScrollBox from top-padding a flexible child into a tall empty band).
+# The single-column receipt reads top to bottom: verdict + summary strip, the
+# activity timeline (steps + their checks over time), then the Usage / Cost /
+# Weekly plan / Sessions / Recording dimensions. We crop two docs assets — the
+# hero (verdict + timeline) and the dimensions ledger — from the detail column
+# (right of the ~320 pt master list · 2 + 1 px divider). Regions are
+# (left, top, right, bottom) in device pixels; None means the render's own edge.
+# Re-measure if the demo store or the receipt layout changes materially (the raw
+# render is kept in SHOTS_TMP for exactly that).
 WIDE_SRC = "window-work-wide-light.png"
-WIDE_CROPS = {
-    # Hero: summary strip + the two-column Receipt dimensions / evidence rail,
-    # ending at the dimensions card (before the standalone Checks card).
-    "app-work-receipt.png": (0, 0, None, 2830),
-    # "The work, not just the tokens": the Sessions & steps drill-down, detail
-    # column only (right of the master-list divider at 368 pt · 2 + 1 px).
-    "app-work-sessions-steps.png": (738, 3712, None, 5185),
+# The wide render's frame height in points. It must sit at the record's natural
+# height: the offscreen ScrollBox pins content to the top, so a taller frame
+# stretches the flexible timeline card into an empty band, and a shorter one
+# clips the supporting sections. SnapshotRunner reads it from the environment.
+WIDE_HEIGHT = 1993
+# Which steps the receipt opens in the docs render: "<with checks>,<without>".
+# One expanded step keeps the spine short enough for the hero to fit the step
+# spine and the activity timeline in one screenshot.
+EXPANDED_STEPS = "1,0"
+# Crops out of the raw renders: dst -> (raw render, (left, top, right, bottom)).
+# Regions are device pixels; None means the render's own edge.
+CROPS = {
+    # Hero: the task list, then the open receipt — title + verdict, the Steps /
+    # Checks outcome bars, the numbered step spine (one step expanded), and the
+    # activity timeline card — from the wide Sessions render.
+    "app-work-receipt.png": (WIDE_SRC, (0, 130, None, 2760)),
+    # The Work tab: the nav bar, the page title, and the first (workday) card.
+    "app-work.png": ("window-work-light.png", (0, 0, None, 1122)),
+    # Usage: the page title and the per-client Current capacity table only.
+    "app-usage.png": ("window-usage-light.png", (0, 0, None, 1640)),
 }
 
 sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -78,7 +196,7 @@ FRESH_W = baseline_weight_fresh(OPUS)
 
 # --- event helpers (mirror the shapes the receipt/glance projections read) ----
 
-def _usage(svc, *, client, model, session, title, tokens, at, cost, project, cache_read=None):
+def _usage(svc, *, client, model, session, title, tokens, at, cost, project, cache_read=None, started_at=None):
     # Agents with prompt caching read far more from cache than they spend fresh;
     # default the cache-read tokens to a realistic multiple of the fresh tokens so
     # the Usage pane's CACHE READ stat reflects real usage instead of a bare 0.
@@ -86,11 +204,12 @@ def _usage(svc, *, client, model, session, title, tokens, at, cost, project, cac
         cache_read = int(tokens * 4)
     ev = ClientUsageEvent(
         client=client, client_session_id=session,
-        source_path=Path(f"/demo/{client}/{session}.jsonl"), title=title, cwd=f"/demo/{project}",
+        source_path=Path(f"/demo/{client}/{session}.jsonl"), title=_t(title), cwd=f"/demo/{project}",
         model=model, input_tokens=tokens, output_tokens=0, cached_input_tokens=0,
         cache_creation_input_tokens=0, cache_read_input_tokens=cache_read,
         cache_creation_tokens_reported=True, cache_read_tokens_reported=True,
-        reasoning_output_tokens=0, provider_name=client, started_at=int(at), updated_at=int(at),
+        reasoning_output_tokens=0, provider_name=client,
+        started_at=int(started_at if started_at is not None else at), updated_at=int(at),
         turn_count=1, usage_row_lane=f"model:{model}", source_namespace_fingerprint=f"sha256:{client}",
         input_tokens_reported=True, output_tokens_reported=True, reasoning_output_tokens_reported=True,
         total_tokens=tokens, total_tokens_reported=True,
@@ -114,8 +233,8 @@ def _section(svc, *, session, title, section_id, status, at, client="claude-code
             "client_context_keys_authored": ["client_session_id", "client_transcript_id"],
             "demo_occurred_at": float(at),
             "project_dir": f"/demo/{project}", "section_id": section_id, "section_status": status,
-            "section_title": title, "summary": summary, "kind": kind,
-            "files": files if files is not None else ["src/app/module.py"], "blocker": blocker, "next_step": None,
+            "section_title": _t(title), "summary": _t(summary), "kind": kind,
+            "files": files if files is not None else ["src/app/module.py"], "blocker": _t(blocker), "next_step": None,
         },
     })
 
@@ -128,7 +247,7 @@ def _check(svc, *, session, section_id, result, at, summary, command, exit_code,
             "sentinel_semantic_kind": "evidence", "client": client, "client_session_id": session,
             "demo_occurred_at": float(at),
             "section_id": section_id, "evidence_type": "test", "result": result, "name": name,
-            "summary": summary, "command": command, "exit_code": exit_code,
+            "summary": _t(summary), "command": command, "exit_code": exit_code,
         },
     })
 
@@ -179,22 +298,22 @@ def build_store():
     # real heavy day looks like); the weekly-plan chain starts at a base % and
     # each reading's DELTA is FRESH_W x the tracked tokens since the last, which
     # is all the calibrator needs to fit cleanly.
+    # billing-svc's sessions live in yesterday's WORKDAY block below (the Work
+    # tab's shared-axis timeline needs sessions that span hours and overlap).
     cc_sessions = [
         ("cc-sqlite",  "Migrate the event log to SQLite",    2_500_000, 38.0, "handed_off", "agentacct",   6),
         ("cc-auth",    "Refactor the auth session store",    1_400_000, 21.0, "checkpoint", "acme-web",    6),
-        ("cc-metrics", "Emit OTLP metrics from the API",     1_600_000, 24.0, "completed",  "billing-svc", 5),
-        ("cc-search",  "Add full-text search to the docs",   2_000_000, 30.0, "completed",  "acme-web",    4),
-        ("cc-webhook", "Wire the Stripe webhook handler",    1_500_000, 23.0, "checkpoint", "billing-svc", 3),
-        ("cc-cache",   "Cache the dashboard queries",        1_300_000, 20.0, "completed",  "acme-web",    2),
+        ("cc-search",  "Add full-text search to the docs",   2_000_000, 30.0, "completed",  "acme-web",    5),
+        ("cc-cache",   "Cache the dashboard queries",        1_300_000, 20.0, "completed",  "acme-web",    3),
         ("cc-report",  "Add the weekly usage report",        1_100_000, 17.0, "completed",  "agentacct",   1),
-        ("cc-pay",     "Fix the flaky payment test",         1_100_000, 17.0, "blocked",    "billing-svc", 1),
     ]
     cc_sessions.sort(key=lambda s: -s[6])  # oldest (largest days_ago) first
     at_by: dict[str, float] = {}
     for i, (sid, title, tokens, cost, status, project, days_ago) in enumerate(cc_sessions):
-        at = NOW - days_ago * DAY - 5 * 3600 + (i % 3) * 2400
+        at = _clock(days_ago, 14) + (i % 3) * 2400
         at_by[sid] = at
-        _usage(svc, client="claude-code", model=OPUS, session=sid, title=title, tokens=tokens, at=at, cost=cost, project=project)
+        _usage(svc, client="claude-code", model=OPUS, session=sid, title=title, tokens=tokens, at=at, cost=cost,
+               project=project, started_at=at - 2 * 3600)
         _section(svc, session=sid, title="Plan & write the tests", section_id=f"{sid}-plan",
                  status="completed", at=at - 300, project=project, kind="planning",
                  summary="Scoped the change and the tests to add.")
@@ -203,8 +322,6 @@ def build_store():
                  blocker="staging DB credentials unavailable" if status == "blocked" else None)
     _check(svc, session="cc-report", section_id="cc-report-impl", result="passed", at=at_by["cc-report"] + 120,
            summary="18 passed", command="pytest tests/test_report.py -q", exit_code=0)
-    _check(svc, session="cc-pay", section_id="cc-pay-impl", result="failed", at=at_by["cc-pay"] + 120,
-           summary="1 failed, 7 passed", command="pytest tests/test_payment.py -q", exit_code=1)
 
     # ---- Weekly-plan calibration chain (claude-code) -------------------------
     # The plan-cost estimator only calibrates from consecutive 7-day-limit
@@ -257,13 +374,12 @@ def build_store():
 
     # ---- Codex — three runs spread across the week, each a comparable bar so no
     # single session dwarfs the daily chart (the old single 1.4B run did) ----
-    cx_at = NOW - DAY - 2 * 3600
+    cx_at = _clock(2, 16)
     _usage(svc, client="codex", model="gpt-5.6-sol", session="cx-perf", title="Investigate the perf regression",
-           tokens=6_500_000, at=cx_at, cost=4.20, project="acme-web")
+           tokens=6_500_000, at=cx_at, cost=4.20, project="acme-web", started_at=cx_at - 2 * 3600)
+    cx_index_at = _clock(4, 15)
     _usage(svc, client="codex", model="gpt-5.6-sol", session="cx-index", title="Rebuild the search index",
-           tokens=5_800_000, at=NOW - 4 * DAY - 3 * 3600, cost=3.70, project="acme-web")
-    _usage(svc, client="codex", model="gpt-5.6-sol", session="cx-trace", title="Trace the slow query path",
-           tokens=4_600_000, at=NOW - 5 * DAY - 3 * 3600, cost=2.90, project="billing-svc")
+           tokens=5_800_000, at=cx_index_at, cost=3.70, project="acme-web", started_at=cx_index_at - 2 * 3600)
     # Codex's meter is a rolling window, so its reset time is independent of
     # Claude's — sharing one resets_at constant read as copy-paste fake data.
     _rl(svc, client="codex", captured=NOW - 300, index=0, windows=[
@@ -274,11 +390,8 @@ def build_store():
              status="completed", at=cx_at, client="codex", project="acme-web", kind="debugging",
              summary="Traced the N+1 in the order loader and cached it.")
     _section(svc, session="cx-index", title="Rebuild the search index nightly", section_id="cx-index-1",
-             status="completed", at=NOW - 4 * DAY - 3 * 3600, client="codex", project="acme-web", kind="implementation",
+             status="completed", at=cx_index_at, client="codex", project="acme-web", kind="implementation",
              summary="Moved the index rebuild to an incremental nightly job.")
-    _section(svc, session="cx-trace", title="Trace the slow invoice query", section_id="cx-trace-1",
-             status="completed", at=NOW - 5 * DAY - 3 * 3600, client="codex", project="billing-svc", kind="debugging",
-             summary="Found the missing index on invoices(account_id, created_at).")
     _check(svc, session="cx-perf", section_id="cx-perf-1", result="passed", at=cx_at + 200,
            summary="21 passed", command="pytest tests/test_orders.py -q", exit_code=0, client="codex")
     _tool_activity(svc, session="cx-perf", at=cx_at + 100, client="codex", basis="transcript_scan_tool_activity",
@@ -287,28 +400,7 @@ def build_store():
                    touched=["src/orders/loader.py", "src/orders/cache.py"],
                    commands=["pytest tests/test_orders.py -q", "python -m pyinstrument bench/orders.py"])
 
-    # ---- OpenCode (yesterday) — discovery-side Actions + an independent check ----
-    oc_at = NOW - DAY - 4 * 3600
-    _usage(svc, client="opencode", model="gpt-5.6-luna", session="oc-export", title="Add a CSV export endpoint",
-           tokens=3_200_000, at=oc_at, cost=2.30, project="billing-svc")
-    _section(svc, session="oc-export", title="Add the /export.csv route + tests", section_id="oc-export-1",
-             status="completed", at=oc_at, client="opencode", project="billing-svc",
-             summary="Streamed the CSV; added 6 tests for quoting and large results.",
-             files=["src/billing/export.py", "tests/test_export.py"])
-    _tool_activity(svc, session="oc-export", at=oc_at + 100, client="opencode", basis="transcript_scan_tool_activity",
-                   categories={"read": 9, "edit": 4, "execute": 5, "search": 3},
-                   names=[("read", 9), ("apply_patch", 4), ("bash", 5), ("glob", 3)],
-                   touched=["src/billing/export.py", "tests/test_export.py"],
-                   commands=["npm test", "npm run build"])
-    _check(svc, session="oc-export", section_id="oc-export-1", result="passed", at=oc_at + 150,
-           summary="6 passed", command="npm test", exit_code=0, client="opencode")
-    # A second OpenCode run mid-week (a 5th model, and a bar on an otherwise thin day).
-    _usage(svc, client="opencode", model="gpt-5.6-nova", session="oc-invoices", title="Paginate the invoices API",
-           tokens=1_900_000, at=NOW - 3 * DAY - 4 * 3600, cost=1.30, project="billing-svc")
-    _section(svc, session="oc-invoices", title="Add cursor pagination to /invoices", section_id="oc-invoices-1",
-             status="completed", at=NOW - 3 * DAY - 4 * 3600, client="opencode", project="billing-svc",
-             summary="Cursor pagination + a covering index; p95 down 40%.",
-             files=["src/billing/invoices.py"])
+    seed_workday(svc)
 
     # ---- Hermes (recent) ----
     _usage(svc, client="hermes", model="claude-sonnet-5", session="hm-infra", title="Add a health-check probe",
@@ -379,7 +471,152 @@ def build_store():
                    touched=[RL, TST],
                    commands=["pytest tests/test_ratelimit.py -q", "ruff check src/", "git diff --stat"])
 
+    seed_worksets(svc)
     return svc
+
+
+# ---- Yesterday's workday on billing-svc (the Work tab's timeline) -------------
+# The Work tab draws one bar per session from its first to its last activity on
+# a shared axis, so the group has to look like a real day: long runs, short
+# runs nested inside them, and runs from different agents overlapping. Anchored
+# to yesterday's local wall clock so the axis reads 09:05 → 18:20.
+
+def _clock(days_ago, hour, minute=0):
+    """Epoch for ``hour:minute`` local wall-clock time ``days_ago`` days back.
+    Anchoring on the wall clock (not on NOW minus hours) keeps a session on the
+    calendar day it belongs to whatever time of day the script runs, so the
+    seven-day charts have a bar every day and the workday axis reads 09:05."""
+    import datetime as _dt
+    day = (_dt.datetime.fromtimestamp(NOW) - _dt.timedelta(days=days_ago)).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    return (day + _dt.timedelta(hours=hour, minutes=minute)).timestamp()
+
+
+def _workday_clock(hour, minute=0):
+    return _clock(1, hour, minute)
+
+
+def seed_workday(svc):
+    P = "billing-svc"
+    c = _workday_clock
+
+    # A. Claude Code, 09:05–12:40 — the long morning run (still open at day end).
+    _usage(svc, client="claude-code", model=OPUS, session="cc-webhook", title="Wire the Stripe webhook handler",
+           tokens=1_500_000, at=c(12, 40), cost=23.0, project=P, started_at=c(9, 5))
+    _section(svc, session="cc-webhook", title="Plan the webhook + idempotency keys", section_id="cc-webhook-plan",
+             status="completed", at=c(9, 20), project=P, kind="planning",
+             summary="Scoped the handler, replay protection, and the tests.")
+    _section(svc, session="cc-webhook", title="Wire the Stripe webhook handler", section_id="cc-webhook-impl",
+             status="checkpoint", at=c(12, 35), project=P,
+             summary="Handler + signature check in; retries still to do.", files=["src/billing/webhooks.py"])
+    _check(svc, session="cc-webhook", section_id="cc-webhook-impl", result="passed", at=c(11, 50),
+           summary="14 passed", command="pytest tests/test_webhook.py -q", exit_code=0)
+
+    # B. Codex, 09:40–10:25 — nested inside A.
+    _usage(svc, client="codex", model="gpt-5.6-sol", session="cx-trace", title="Trace the slow query path",
+           tokens=4_600_000, at=c(10, 25), cost=2.90, project=P, started_at=c(9, 40))
+    _section(svc, session="cx-trace", title="Trace the slow invoice query", section_id="cx-trace-1",
+             status="completed", at=c(10, 20), client="codex", project=P, kind="debugging",
+             summary="Found the missing index on invoices(account_id, created_at).")
+
+    # C. OpenCode, 11:20–13:50 — overlaps the end of A.
+    _usage(svc, client="opencode", model="gpt-5.6-nova", session="oc-invoices", title="Paginate the invoices API",
+           tokens=1_900_000, at=c(13, 50), cost=1.30, project=P, started_at=c(11, 20))
+    _section(svc, session="oc-invoices", title="Add cursor pagination to /invoices", section_id="oc-invoices-1",
+             status="completed", at=c(13, 45), client="opencode", project=P,
+             summary="Cursor pagination + a covering index; p95 down 40%.",
+             files=["src/billing/invoices.py"])
+
+    # D. Hermes, 12:05–12:20 — a short run nested inside A and C.
+    _usage(svc, client="hermes", model="claude-sonnet-5", session="hm-secret", title="Rotate the webhook signing secret",
+           tokens=300_000, at=c(12, 20), cost=0.21, project=P, started_at=c(12, 5))
+    _section(svc, session="hm-secret", title="Rotate the webhook signing secret", section_id="hm-secret-1",
+             status="completed", at=c(12, 18), client="hermes", project=P, kind="other",
+             summary="Rotated the secret and updated the deploy config.", files=["deploy/secrets.yml"])
+
+    # E. Claude Code, 13:30–17:10 — the long afternoon run.
+    _usage(svc, client="claude-code", model=OPUS, session="cc-metrics", title="Emit OTLP metrics from the API",
+           tokens=1_600_000, at=c(17, 10), cost=24.0, project=P, started_at=c(13, 30))
+    _section(svc, session="cc-metrics", title="Plan the metrics + exporter", section_id="cc-metrics-plan",
+             status="completed", at=c(13, 40), project=P, kind="planning",
+             summary="Chose the OTLP exporter and the request/latency histograms.")
+    _section(svc, session="cc-metrics", title="Emit OTLP metrics from the API", section_id="cc-metrics-impl",
+             status="completed", at=c(17, 5), project=P,
+             summary="Instrumented the handlers; exporter wired to the collector.", files=["src/api/metrics.py"])
+    _check(svc, session="cc-metrics", section_id="cc-metrics-impl", result="passed", at=c(16, 40),
+           summary="9 passed", command="pytest tests/test_metrics.py -q", exit_code=0)
+
+    # F. Codex, 14:15–16:00 — nested inside E.
+    _usage(svc, client="codex", model="gpt-5.6-sol", session="cx-backfill", title="Backfill the invoice index",
+           tokens=3_100_000, at=c(16, 0), cost=2.00, project=P, started_at=c(14, 15))
+    _section(svc, session="cx-backfill", title="Backfill the invoice index", section_id="cx-backfill-1",
+             status="completed", at=c(15, 55), client="codex", project=P,
+             summary="Backfilled 2.1M rows in batches; verified the covering index is used.")
+    _check(svc, session="cx-backfill", section_id="cx-backfill-1", result="passed", at=c(15, 50),
+           summary="4 passed", command="pytest tests/test_index_backfill.py -q", exit_code=0, client="codex")
+
+    # G. OpenCode, 16:30–18:20 — overlaps the end of E; discovery-side Actions + an independent check.
+    _usage(svc, client="opencode", model="gpt-5.6-luna", session="oc-export", title="Add a CSV export endpoint",
+           tokens=3_200_000, at=c(18, 20), cost=2.30, project=P, started_at=c(16, 30))
+    _section(svc, session="oc-export", title="Add the /export.csv route + tests", section_id="oc-export-1",
+             status="completed", at=c(18, 15), client="opencode", project=P,
+             summary="Streamed the CSV; added 6 tests for quoting and large results.",
+             files=["src/billing/export.py", "tests/test_export.py"])
+    _tool_activity(svc, session="oc-export", at=c(17, 30), client="opencode", basis="transcript_scan_tool_activity",
+                   categories={"read": 9, "edit": 4, "execute": 5, "search": 3},
+                   names=[("read", 9), ("apply_patch", 4), ("bash", 5), ("glob", 3)],
+                   touched=["src/billing/export.py", "tests/test_export.py"],
+                   commands=["npm test", "npm run build"])
+    _check(svc, session="oc-export", section_id="oc-export-1", result="passed", at=c(18, 10),
+           summary="6 passed", command="npm test", exit_code=0, client="opencode")
+
+    # H. Claude Code, 17:40–18:15 — short, nested inside G, and blocked (the
+    # Dashboard's primary attention item).
+    _usage(svc, client="claude-code", model=OPUS, session="cc-pay", title="Fix the flaky payment test",
+           tokens=1_100_000, at=c(18, 15), cost=17.0, project=P, started_at=c(17, 40))
+    _section(svc, session="cc-pay", title="Plan & write the tests", section_id="cc-pay-plan",
+             status="completed", at=c(17, 45), project=P, kind="planning",
+             summary="Scoped the change and the tests to add.")
+    _section(svc, session="cc-pay", title="Fix the flaky payment test", section_id="cc-pay-impl",
+             status="blocked", at=c(18, 12), project=P,
+             summary="Started, then hit a blocker on staging.",
+             blocker="staging DB credentials unavailable")
+    _check(svc, session="cc-pay", section_id="cc-pay-impl", result="failed", at=c(18, 5),
+           summary="1 failed, 7 passed", command="pytest tests/test_payment.py -q", exit_code=1)
+
+
+# ---- Worksets (the Work tab) --------------------------------------------------
+# Folder-anchored groupings the user defines: a workset says "the sessions under
+# this folder are one piece of work" and gathers a project's runs across every
+# agent onto one shared timeline. It never re-grades a session — each keeps its
+# own receipt; the group is a labeled sum of independently-attributed parts.
+#
+# `project_identity` is NOT the raw path: a session's identity is
+# `project:{leaf}:{sha256(path)[:16]}` (agentacct.work_ledger._project_identity),
+# and the workset's stored project_identity must be byte-identical to it or
+# membership resolves empty. Seeded via record_workset_action (the only trusted
+# workset-stamping path — a workset from a raw record_event is stripped). Two
+# groups so the pane renders a populated list; billing-svc is created last so,
+# ordered newest-first, its 3-agent (Claude Code + Codex + OpenCode) card leads.
+
+def _workset_identity(project: str) -> str:
+    """The hashed session identity for `/demo/{project}`, computed from the real
+    projection function so the seed can never drift from what membership joins on."""
+    from agentacct.work_ledger import _project_identity
+    return _project_identity(f"/demo/{project}")
+
+
+def seed_worksets(svc):
+    svc.record_workset_action(
+        action="create", workset_id="ws-acme-web", name="acme-web",
+        project_identity=_workset_identity("acme-web"),
+        expected_revision=0, idempotency_key="demo-workset-acme-web",
+    )
+    svc.record_workset_action(
+        action="create", workset_id="ws-billing-svc", name="billing-svc",
+        project_identity=_workset_identity("billing-svc"),
+        expected_revision=0, idempotency_key="demo-workset-billing-svc",
+    )
 
 
 def backdate_ledger():
@@ -445,6 +682,20 @@ def seed_ingestion():
     health.heartbeat_watcher("demo-watcher")
 
 
+def seed_activation():
+    """Seed the activation record the Diagnostics pane's per-agent Connections
+    card joins against: agentacct "set up" the four demo agents, so their live,
+    healthy sources read as Recording. Unlisted agents stay honest — dsh renders
+    as not connected (with its Connect action), OpenClaw and Cursor as read-only."""
+    from agentacct.activation import ActivationStateStore
+    from agentacct.cli import _package_version
+
+    ActivationStateStore(STORE).mark_configured(
+        project_dir=FAKE_HOME, clients=["claude-code", "codex", "opencode", "hermes"],
+        configured_at=NOW - 3 * DAY, agentacct_version=_package_version(),
+    )
+
+
 # --- orchestration ------------------------------------------------------------
 
 def _daemon_env():
@@ -465,6 +716,7 @@ def main():
     build_store()
     backdate_ledger()
     seed_ingestion()
+    seed_activation()
 
     if not APP_BIN.exists():
         sys.exit(f"app binary not found: {APP_BIN}\n  build it first: apps/agentacct/Scripts/build-app.sh")
@@ -490,7 +742,9 @@ def main():
         print("rendering app panes (offscreen)…")
         # Real HOME for the app process (GUI/WindowServer); AGENTACCT_STORE_DIR
         # is the only thing that points it at the demo store.
-        app_env = {**os.environ, "AGENTACCT_STORE_DIR": str(STORE)}
+        app_env = {**os.environ, "AGENTACCT_STORE_DIR": str(STORE),
+                   "AGENTACCT_SNAPSHOT_WIDE_HEIGHT": str(WIDE_HEIGHT),
+                   "AGENTACCT_SNAPSHOT_EXPANDED_STEPS": EXPANDED_STEPS}
         r = subprocess.run([str(APP_BIN), "--snapshot", str(SHOTS_TMP)], env=app_env,
                            capture_output=True, text=True, timeout=180)
         if r.returncode != 0:
@@ -517,19 +771,19 @@ def main():
         shutil.copyfile(src, OUT / dst_name)
         curated.append(dst_name)
 
-    # Crop the Work Receipt hero and the Sessions & steps shot out of the wide
-    # render (see WIDE_CROPS). Cropping the region, then framing, makes each read
-    # like its own window in the docs.
-    wide_path = SHOTS_TMP / WIDE_SRC
-    if wide_path.exists():
-        wide = Image.open(wide_path)
-        for dst_name, (left, top, right, bottom) in WIDE_CROPS.items():
-            box = (left, top, wide.width if right is None else right,
-                   wide.height if bottom is None else bottom)
-            wide.crop(box).save(OUT / dst_name)
-            curated.append(dst_name)
-    else:
-        print(f"  WARNING: missing {WIDE_SRC} (hero + sessions shots)")
+    # Crop the receipt hero, the timeline, the Work card, and the Usage capacity
+    # table out of their raw renders (see CROPS). Cropping the region, then
+    # framing, makes each read like its own window in the docs.
+    for dst_name, (src_name, (left, top, right, bottom)) in CROPS.items():
+        src = SHOTS_TMP / src_name
+        if not src.exists():
+            print(f"  WARNING: missing {src_name} (for {dst_name})")
+            continue
+        raw = Image.open(src)
+        box = (left, top, raw.width if right is None else right,
+               raw.height if bottom is None else bottom)
+        raw.crop(box).save(OUT / dst_name)
+        curated.append(dst_name)
     print(f"curated -> {OUT}: {', '.join(curated)}")
 
     # Wrap each curated asset in the macOS window chrome (frame_screenshots.py is
@@ -543,4 +797,17 @@ def main():
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--locale", choices=["en", "zh-CN"], default="en",
+                        help="language of the demo CONTENT (titles, summaries, check results); "
+                             "zh-CN writes to docs/assets/zh-CN/ for README.zh-CN.md")
+    args = parser.parse_args()
+    LOCALE = args.locale
+    if LOCALE != "en":
+        OUT = OUT / LOCALE
     main()
+    if _UNTRANSLATED:
+        print(f"WARNING: {len(_UNTRANSLATED)} demo strings have no {LOCALE} translation (rendered in English):")
+        for text in sorted(_UNTRANSLATED):
+            print(f"  - {text}")

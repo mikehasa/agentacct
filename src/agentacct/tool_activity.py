@@ -28,6 +28,7 @@ counts (the Receipt shows a Gap), never a fabricated zero.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -283,8 +284,19 @@ _SECRET_SUBS: tuple[tuple[re.Pattern[str], Any], ...] = (
 )
 
 
+@functools.lru_cache(maxsize=16384)
 def _scrub_command(command: str) -> str:
-    """Mask obvious credential VALUES in a command (best-effort — see ``_SECRET_SUBS``)."""
+    """Mask obvious credential VALUES in a command (best-effort — see ``_SECRET_SUBS``).
+
+    Memoized and byte-identical: this is a pure function of its argument and the
+    module-constant ``_SECRET_SUBS`` (never mutated at runtime), so an identical
+    input always yields an identical output. The cache only removes the redundant
+    re-scrub of the SAME command (git/ls/pytest recur across additive batches and
+    every 30s rebuild). The read-time re-scrub honesty is preserved: a scrub-rule
+    change ships as a code edit => new process => empty cache, so newer rules still
+    re-mask older commands on read. Input is always the ≤1600-char lead from the
+    sole caller (``_normalize_command``), so keys and memory stay bounded.
+    """
     for pattern, repl in _SECRET_SUBS:
         command = pattern.sub(repl, command)
     return command
