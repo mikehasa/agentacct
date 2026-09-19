@@ -492,17 +492,12 @@ struct DashboardActiveWorkSignal: Equatable {
         let statuslessSessions = sessions.filter { $0.status == nil }
 
         if activeSessions.isEmpty, !statuslessSessions.isEmpty {
-            // Lead with what the user recognises (the session's title, else
-            // its agent), never a session hash, and state the absence once.
-            title = "Work status not recorded"
+            title = "Work status unavailable"
             let validActivity = Self.validActivity(statuslessSessions, now: now)
-            let others = statuslessSessions.count > 1
-                ? " · \(Fmt.count(statuslessSessions.count - 1, "more session")) without status"
-                : ""
             if let mostRecent = validActivity.min(by: { $0.1 < $1.1 }) {
-                detail = "\(Self.sessionLabel(mostRecent.0)) · activity \(Self.elapsedText(mostRecent.1)) ago\(others)"
+                detail = "\(Self.sessionLabel(mostRecent.0)) · activity \(Self.elapsedText(mostRecent.1)) ago · \(statuslessSessions.count)/\(sessions.count) shown with no work status"
             } else {
-                detail = "\(Self.sessionLabel(statuslessSessions[0])) · activity time unavailable\(others)"
+                detail = "\(statuslessSessions.count)/\(sessions.count) shown with no work status · activity time unavailable"
             }
             promotesInactivity = false
             hasConfirmedActiveWork = false
@@ -553,13 +548,11 @@ struct DashboardActiveWorkSignal: Equatable {
         }
     }
 
-    /// A session's title when it has one, else its agent's name. A session
-    /// hash identifies nothing to the reader, so it never appears here.
     private static func sessionLabel(_ session: RecentSession) -> String {
         if let title = session.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
             return title
         }
-        return "\(MenuLimitPresentation.clientLabel(session.client)) session"
+        return "\(session.client) · \(session.shortSessionId)"
     }
 
     private static func elapsedText(_ seconds: TimeInterval) -> String {

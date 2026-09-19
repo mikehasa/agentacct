@@ -937,7 +937,7 @@ final class DashboardInteractionTests: XCTestCase {
                 availability: .connected,
                 now: Date(timeIntervalSince1970: 1_000)
             ).detail,
-            "Codex session · activity 10s ago"
+            "codex · unknown · activity 10s ago"
         )
     }
 
@@ -964,12 +964,10 @@ final class DashboardInteractionTests: XCTestCase {
             now: Date(timeIntervalSince1970: 1_000)
         )
 
-        XCTAssertEqual(signal.title, "Work status not recorded")
-        // No session hash, no "N/N shown" bookkeeping: the agent, the recency,
-        // and how many other sessions share the absence.
+        XCTAssertEqual(signal.title, "Work status unavailable")
         XCTAssertEqual(
             signal.detail,
-            "Codex session · activity 10s ago · 1 more session without status"
+            "codex · usage-on · activity 10s ago · 2/2 shown with no work status"
         )
         XCTAssertFalse(signal.promotesInactivity)
         XCTAssertFalse(signal.hasConfirmedActiveWork)
