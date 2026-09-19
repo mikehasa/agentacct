@@ -94,6 +94,8 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "work-components-provenance-chips-dark.png", pixelsWide: 1520, pixelsHigh: 840),
         ExpectedArtifact(filename: "work-components-outcome-cards-light.png", pixelsWide: 1920, pixelsHigh: 960),
         ExpectedArtifact(filename: "work-components-outcome-cards-dark.png", pixelsWide: 1920, pixelsHigh: 960),
+        ExpectedArtifact(filename: "work-components-filter-menus-light.png", pixelsWide: 1520, pixelsHigh: 420),
+        ExpectedArtifact(filename: "work-components-filter-menus-dark.png", pixelsWide: 1520, pixelsHigh: 420),
     ]
 
     @MainActor
