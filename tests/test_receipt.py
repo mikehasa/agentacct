@@ -798,3 +798,124 @@ def test_plan_share_headline_is_calibrated_or_nothing() -> None:
     # Absent payload stays a dash, never a fabricated zero.
     assert plan_share_headline(None) == "—"
     assert plan_share_headline({}) == "—"
+
+
+# --- Reconciliation (rollback owner) + no-observed-change disclosure ----------
+
+
+def _touched(files: list[str]) -> dict[str, Any]:
+    return {
+        "tool_category_counts": {},
+        "tool_category_total": 0,
+        "touched_files": list(files),
+        "touched_file_count": len(files),
+    }
+
+
+def test_unverified_blocked_run_with_file_changes_names_a_revert_owner() -> None:
+    # A blocked run that LEFT recorded file changes must name who owns reverting
+    # them + the at-risk files, and raise a gap — accountability for a partial
+    # change, never an auto-revert or a claim a revert did/did not happen.
+    task = _task(
+        [{"work_id": "w", "latest_status": "blocked", "updated_at": 100.0, "blocker": "migration half-applied"}],
+        actions=_touched(["src/a.py", "src/b.py"]),
+    )
+    receipt = _receipt(task)
+    outcome = receipt["dimensions"]["outcome"]
+    assert receipt["axes"]["decision_status"]["key"] in {"blocked", "failed"}
+    rollback = outcome["rollback"]
+    assert rollback is not None
+    assert rollback["status"] == "unreconciled"
+    assert rollback["revert_owner"] == {"client": "claude-code", "client_session_id": "s1"}
+    assert rollback["at_risk_file_count"] == 2
+    assert rollback["at_risk_files_preview"][:2] == ["src/a.py", "src/b.py"]
+    # The gap surfaces in the top-level roll-up, so every surface renders it.
+    reasons = [g["reason"] for g in receipt["dimensions"]["gaps"]["items"]]
+    assert any("no recorded reconciliation" in r and "touched" in r for r in reasons)
+    # The pasteable gap prose must NOT leak a raw session id (single source of
+    # truncation rule): the id lives only in the structured rollback block.
+    assert all("s1" not in r for r in reasons)
+    # Additive only: it never promotes the decision to a machine assertion.
+    assert receipt["axes"]["decision_status"]["asserted_by"] != "machine"
+
+
+def test_finding_run_with_file_changes_has_reconciliation() -> None:
+    # A machine-check FAILURE (decision key "finding") that left file changes
+    # also owes a reconciliation owner.
+    check = _check("failed", at=200.0, exit_code=1)
+    task = _task(
+        [{"work_id": "w", "latest_status": "completed", "updated_at": 100.0, "current_check_events": [check]}],
+        task_checks=[check],
+        actions=_touched(["src/x.py"]),
+    )
+    receipt = _receipt(task)
+    assert receipt["axes"]["decision_status"]["key"] == "finding"
+    recon = receipt["dimensions"]["outcome"]["rollback"]
+    assert recon is not None
+    assert recon["at_risk_file_count"] == 1
+
+
+def test_verified_run_has_no_reconciliation_block() -> None:
+    check = _check("passed", at=200.0)
+    task = _task(
+        [{"work_id": "w", "latest_status": "completed", "updated_at": 100.0, "current_check_events": [check]}],
+        task_checks=[check],
+        actions=_touched(["src/a.py"]),
+    )
+    receipt = _receipt(task)
+    assert receipt["axes"]["decision_status"]["key"] == "verified"
+    assert receipt["dimensions"]["outcome"]["rollback"] is None
+
+
+def test_blocked_run_without_file_changes_has_no_reconciliation() -> None:
+    # No recorded file changes -> nothing at risk to revert -> no nag.
+    task = _task(
+        [{"work_id": "w", "latest_status": "blocked", "updated_at": 100.0, "blocker": "waiting on creds"}],
+        actions=_touched([]),
+    )
+    receipt = _receipt(task)
+    assert receipt["axes"]["decision_status"]["key"] in {"blocked", "failed"}
+    assert receipt["dimensions"]["outcome"]["rollback"] is None
+
+
+def test_verified_passing_check_but_zero_touched_files_flags_no_observed_change() -> None:
+    # A green check with an EMPTY change set is disclosed as a possible no-op, but
+    # the decision word stays "verified" (a check-only task is legitimate) and
+    # evidence strength is untouched.
+    check = _check("passed", at=200.0)
+    task = _task(
+        [{"work_id": "w", "latest_status": "completed", "updated_at": 100.0, "current_check_events": [check]}],
+        task_checks=[check],
+        actions=_touched([]),
+    )
+    receipt = _receipt(task)
+    outcome = receipt["dimensions"]["outcome"]
+    assert receipt["axes"]["decision_status"]["key"] == "verified"  # NOT demoted
+    assert outcome["no_observed_change"] is True
+    reasons = [g["reason"] for g in receipt["dimensions"]["gaps"]["items"]]
+    assert any("no file change was observed" in r for r in reasons)
+    # Disclosure only: evidence strength is unchanged (still a real passing check).
+    assert receipt["axes"]["evidence_strength"]["checks_passed"] == 1
+
+
+def test_verified_with_touched_files_is_not_no_observed_change() -> None:
+    check = _check("passed", at=200.0)
+    task = _task(
+        [{"work_id": "w", "latest_status": "completed", "updated_at": 100.0, "current_check_events": [check]}],
+        task_checks=[check],
+        actions=_touched(["src/a.py"]),
+    )
+    receipt = _receipt(task)
+    assert receipt["axes"]["decision_status"]["key"] == "verified"
+    assert receipt["dimensions"]["outcome"]["no_observed_change"] is False
+
+
+def test_agent_reported_completion_is_not_flagged_no_observed_change() -> None:
+    # An unbacked "completed" is already "reported" (not verified); the empty-diff
+    # disclosure is scoped to a PASSING check, so it does not double-flag here.
+    receipt = _receipt(
+        _task([{"work_id": "w", "latest_status": "completed", "updated_at": 100.0}], actions=_touched([]))
+    )
+    assert receipt["axes"]["decision_status"]["key"] == "reported"
+    assert receipt["dimensions"]["outcome"]["no_observed_change"] is False
+    assert receipt["dimensions"]["outcome"]["rollback"] is None
