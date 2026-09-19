@@ -698,6 +698,12 @@ class ClientSessionObservation:
     # separate ``tool_activity_observed`` event; it is NOT part of the session
     # observation's own sentinel event (to_sentinel_event never reads it).
     rollout_tool_activity: Mapping[str, Any] | None = None
+    # Count of tool calls the USER DECLINED before dispatch (refuse-before-dispatch),
+    # read from the client's own transcript. Like rollout_tool_activity, an INTERNAL
+    # carrier: the import orchestrator emits it as a separate
+    # ``refused_tool_call_observed`` event; it is NOT on this observation's own
+    # sentinel event. 0 means none observed (an honest gap), never a fabricated zero.
+    refused_action_count: int = 0
 
     @property
     def session_identity(self) -> tuple[str, str]:
@@ -2426,6 +2432,9 @@ def _discover_claude_code_usage_from_home(
                     ),
                     refused_recording_attempts=_safe_refused_recording_attempts(
                         observation_metadata.get("refused_recording_attempts")
+                    ),
+                    refused_action_count=_safe_nonnegative_int(
+                        observation_metadata.get("refused_action_count")
                     ),
                     source_parse_complete=observation_parse_complete,
                 )
@@ -8659,6 +8668,22 @@ def _read_codex_rollout_usage_uncached(
     return latest
 
 
+# The canonical text Claude Code writes into its own transcript when the USER
+# DECLINES a tool's permission prompt (refuse-before-dispatch: the tool never ran).
+# HONEST LIMITS: the host normally writes this, but a tool_result's CONTENT is
+# tool-authored, so a determined agent-under-test COULD emit the same text from a
+# failing tool call. This is therefore a best-effort CAPTURE on the Actions
+# ("what happened") axis, NOT a trust boundary — it never touches the
+# evidence/outcome tiers, and it only ever INFLATES an additive count (it can never
+# subtract from or disguise an executed action). Anchored on the exact prefix
+# (never a bare "rejected"/"denied" substring, which would catch ordinary tool
+# errors); the Ctrl-C interrupt string ("[Request interrupted by user for tool
+# use]") is a different signal, excluded by the prefix. The exact host wording and
+# structure should be reconfirmed against a REAL interactive-mode transcript — a
+# bypass/auto-approve machine records none, so this is validated against a fixture.
+_CLAUDE_USER_DENIAL_ANCHOR = "The user doesn't want to proceed with this tool use."
+
+
 def _read_claude_project_usage(path: Path) -> dict[str, Any] | None:
     usages = _read_claude_project_usages(path)
     return usages[0] if usages else None
@@ -8695,6 +8720,11 @@ def _read_claude_project_usages(
     # event-id echoes (e.g. Task-prompt echoes) are structurally invisible.
     accepted_tool_ids: dict[str, str] = {}
     rejected_tool_ids: set[str] = set()
+    # Every tool_use id seen (any tool, not just agentacct's own), so a later
+    # user-denial tool_result can be attributed to a real call and a stray/free-text
+    # id can never trigger a refused count.
+    all_tool_use_ids: set[str] = set()
+    refused_action_count = 0
     evidence = LogEvidenceAccumulator()
     saw_nonempty_line = False
     saw_valid_object = False
@@ -8760,6 +8790,7 @@ def _read_claude_project_usages(
             if observed_model is not None and observed_model not in observed_models:
                 observed_models.append(observed_model)
             content = message.get("content")
+            is_user_message = obj.get("type") == "user" or message.get("role") == "user"
             if isinstance(content, list):
                 for block in content:
                     if not isinstance(block, dict):
@@ -8768,6 +8799,7 @@ def _read_claude_project_usages(
                     if block_type == "tool_use":
                         block_id = block.get("id")
                         if isinstance(block_id, str) and block_id:
+                            all_tool_use_ids.add(block_id)
                             verdict = classify_claude_tool_use(block.get("name"))
                             if verdict == "accepted":
                                 accepted_tool_ids[block_id] = str(block.get("name"))
@@ -8786,6 +8818,24 @@ def _read_claude_project_usages(
                             )
                         elif isinstance(tool_use_id, str) and tool_use_id in rejected_tool_ids:
                             evidence.record_skip()
+                        # The USER declined this tool's permission prompt: a
+                        # distinct, additive refuse-before-dispatch signal (the
+                        # tool never ran). Anchored on user role + a KNOWN tool_use
+                        # id + is_error + the host's canonical decline text, so an
+                        # ordinary tool error (is_error alone) or a stray id never
+                        # counts. The text is read then dropped — only the count is
+                        # kept, never the tool args or the user's words.
+                        if (
+                            is_user_message
+                            and block.get("is_error") is True
+                            and isinstance(tool_use_id, str)
+                            and tool_use_id in all_tool_use_ids
+                        ):
+                            _denial_text = _claude_tool_result_text(block.get("content"))
+                            if _denial_text and _denial_text.strip().startswith(
+                                _CLAUDE_USER_DENIAL_ANCHOR
+                            ):
+                                refused_action_count += 1
             usage_present = "usage" in message
             usage = message.get("usage")
             is_assistant_message = (
@@ -8912,6 +8962,10 @@ def _read_claude_project_usages(
                 **evidence.as_usage_fields(),
             }
         )
+        # Only surface a refusal count when there IS one — a session with no
+        # user-declined tool call carries no field, never a fabricated zero.
+        if refused_action_count > 0:
+            _observation_metadata["refused_action_count"] = refused_action_count
     usages = []
     for model in model_order:
         totals = totals_by_model[model]

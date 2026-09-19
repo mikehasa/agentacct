@@ -17,6 +17,7 @@ from .confidence import (
 from .session_lifecycle import build_session_end_by_session
 from .tool_activity import (
     build_commands_by_session,
+    build_refused_actions_by_session,
     build_tool_activity_by_session,
     build_tool_activity_capture_basis_by_session,
     build_tool_names_by_session,
@@ -224,7 +225,18 @@ def build_work_ledger(
     # scan). Carried so the Receipt names Actions provenance honestly instead of
     # assuming a hook — Codex/OpenCode Actions are transcript-scan-derived.
     capture_basis_by_session = build_tool_activity_capture_basis_by_session(events)
-    if tool_activity_by_session or tool_names_by_session or touched_files_by_session or commands_by_session:
+    # Tool calls the user DECLINED before dispatch (refuse-before-dispatch), read
+    # from the client's own transcript. A distinct, additive signal: never part of
+    # the executed tool_category/name counts above. A session with none gets NO
+    # key, so the Receipt shows an honest gap, never a fabricated zero.
+    refused_actions_by_session = build_refused_actions_by_session(events)
+    if (
+        tool_activity_by_session
+        or tool_names_by_session
+        or touched_files_by_session
+        or commands_by_session
+        or refused_actions_by_session
+    ):
         for entry in session_rollup.get("sessions", []):
             entry_key = (str(entry.get("client") or ""), str(entry.get("client_session_id") or ""))
             counts = tool_activity_by_session.get(entry_key)
@@ -250,6 +262,10 @@ def build_work_ledger(
             commands = commands_by_session.get(entry_key)
             if commands:
                 entry["commands"] = list(commands)
+            # Additive-only: a refusal count never alters the executed tallies above.
+            refused_count = refused_actions_by_session.get(entry_key)
+            if refused_count:
+                entry["refused_action_count"] = int(refused_count)
     # Ambient session-end (SessionEnd hook): stamp each work item with the end
     # time of its OWN session so the outcome reducer can honestly derive the
     # ``ended_open`` disposition — an open step whose session stopped without a

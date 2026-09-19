@@ -65,6 +65,7 @@ from .worksets import (
     workset_operation_digest,
     workset_transition,
 )
+from .tool_activity import REFUSED_TOOL_CALL_CONTRACT_KEY
 from .usage_truth import (
     is_local_usage_import_event,
     is_local_session_observation_event,
@@ -216,6 +217,29 @@ def strip_workset_provenance(event: dict[str, Any]) -> dict[str, Any]:
     sanitized = dict(metadata)
     sanitized.pop(WORKSET_CONTRACT_KEY, None)
     sanitized["reserved_workset_provenance_stripped"] = True
+    recorded = dict(event)
+    recorded["metadata"] = sanitized
+    return recorded
+
+
+def strip_refused_tool_call_provenance(event: dict[str, Any]) -> dict[str, Any]:
+    """Neutralize a refused-tool-call trust stamp on the generic ingestion path.
+
+    A ``refused_tool_call_observed`` count ("N actions the user denied") is trusted
+    by the reducer ONLY when it carries the reserved contract key, which is stamped
+    exclusively by the transcript-scan emit path. A raw ``record_event`` /
+    ``POST /events`` caller could otherwise mint a fabricated "user denied" signal —
+    attributing an action to the USER — so its stamp is stripped here, exactly like
+    worksets and finding dispositions. The audit row survives (tombstoned); the
+    reducer simply never counts it.
+    """
+
+    metadata = event.get("metadata")
+    if not isinstance(metadata, dict) or REFUSED_TOOL_CALL_CONTRACT_KEY not in metadata:
+        return event
+    sanitized = dict(metadata)
+    sanitized.pop(REFUSED_TOOL_CALL_CONTRACT_KEY, None)
+    sanitized["reserved_refused_tool_call_provenance_stripped"] = True
     recorded = dict(event)
     recorded["metadata"] = sanitized
     return recorded
@@ -1431,6 +1455,10 @@ class SentinelService:
         # Worksets share the same forgery surface: only record_workset_action
         # may stamp the reserved contract, so strip any generic caller's stamp.
         event = strip_workset_provenance(event)
+        # Refused-tool-call counts ("user denied N actions") are only trusted from
+        # the transcript-scan emit path; a generic caller's stamp is stripped so it
+        # cannot forge a user-attributed refusal signal.
+        event = strip_refused_tool_call_provenance(event)
         metadata = event.get("metadata")
         idempotency_key = metadata.get("idempotency_key") if isinstance(metadata, dict) else None
         with self._events_write_lock():
@@ -1462,6 +1490,7 @@ class SentinelService:
         candidate = strip_blocker_resolution_provenance(candidate)
         candidate = strip_finding_disposition_provenance(candidate)
         candidate = strip_workset_provenance(candidate)
+        candidate = strip_refused_tool_call_provenance(candidate)
         candidate = mark_trusted_local_session_observation_event(candidate)
         if not is_local_session_observation_event(candidate):
             raise SessionObservationConflict(

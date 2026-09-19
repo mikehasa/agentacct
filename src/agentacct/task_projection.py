@@ -1038,6 +1038,14 @@ def build_task_projection(
                 if command and command not in seen_commands:
                     seen_commands.add(command)
                     commands.append(command)
+        # Tool calls the user DECLINED before dispatch (refuse-before-dispatch),
+        # summed across the Task's sessions. Additive-only: it never feeds the
+        # executed tool_category/name/command tallies above.
+        refused_action_count = 0
+        for key in ordered_members:
+            count = sessions[key].get("refused_action_count")
+            if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+                refused_action_count += count
         actions = {
             "tool_category_counts": dict(sorted(tool_category_counts.items())),
             "tool_category_total": sum(tool_category_counts.values()),
@@ -1047,6 +1055,7 @@ def build_task_projection(
             "touched_file_count": len(touched_files),
             "commands": commands,
             "command_count": len(commands),
+            "refused_action_count": refused_action_count,
             "capture_bases": sorted(capture_bases),
         }
         tasks.append(
