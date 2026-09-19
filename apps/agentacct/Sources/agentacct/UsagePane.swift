@@ -27,9 +27,10 @@ struct UsagePane: View {
     }
 
     private var header: some View {
-        // The recorded-usage window sits on the title row, the way the
-        // Dashboard's usage card keeps its Tokens/Cost switch on its own
-        // header: one caps label and the house segmented control, trailing.
+        // Title only. The recorded-usage range lives on the Recorded usage
+        // section it governs (below), not up here: the page's top-trailing
+        // corner is where recording notices surface, and a control there
+        // disappears behind them.
         HStack(alignment: .center, spacing: Space.m) {
             HStack(alignment: .firstTextBaseline, spacing: Space.s) {
                 Text("Usage & limits")
@@ -37,13 +38,6 @@ struct UsagePane: View {
                     .foregroundStyle(Theme.ink)
                 ContextHelp(title: "About usage and limits", message: "Provider-reported capacity and locally recorded usage have separate time windows. Changing the recorded usage range updates client totals, history and attribution; it does not change provider quota windows or today's summary.", identifier: "usage.range-help")
             }
-            Spacer(minLength: Space.m)
-            HStack(spacing: Space.s) {
-                CapsLabel(text: UsageRangePresentation.caption)
-                usageRangeControl
-            }
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel(UsageRangePresentation.accessibilityName)
         }
     }
 
@@ -195,11 +189,24 @@ struct UsagePane: View {
     private var recordedUsageSection: some View {
         VStack(alignment: .leading, spacing: Space.m) {
             VStack(alignment: .leading, spacing: Space.s) {
-                HStack(alignment: .firstTextBaseline, spacing: Space.s) {
-                    Text("Recorded usage")
-                        .workFont(.titleSection).tracking(Type.titleSectionTracking)
-                        .foregroundStyle(Theme.ink)
-                    ContextHelp(title: "About recorded cost", message: "Cost is usage reporting, not a provider invoice or balance due. Verify charges with your provider. Cost basis and completeness are shown beside each total.", identifier: "usage.cost-help")
+                // The window this section (and the capacity table's
+                // "Recorded use" column) is measured over sits on the section's
+                // own title row, trailing — the composition the Dashboard's
+                // usage card uses for its Tokens/Cost switch.
+                HStack(alignment: .center, spacing: Space.m) {
+                    HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                        Text("Recorded usage")
+                            .workFont(.titleSection).tracking(Type.titleSectionTracking)
+                            .foregroundStyle(Theme.ink)
+                        ContextHelp(title: "About recorded cost", message: "Cost is usage reporting, not a provider invoice or balance due. Verify charges with your provider. Cost basis and completeness are shown beside each total.", identifier: "usage.cost-help")
+                    }
+                    Spacer(minLength: Space.m)
+                    HStack(spacing: Space.s) {
+                        CapsLabel(text: UsageRangePresentation.caption)
+                        usageRangeControl
+                    }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel(UsageRangePresentation.accessibilityName)
                 }
             }
 
