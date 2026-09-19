@@ -500,9 +500,12 @@ def _evidence_strength(
         "verified_step_count": int(verification.get("verified_step_count") or 0),
         "total_step_count": int(verification.get("total_step_count") or 0),
         "agent_reported_step_count": int(verification.get("agent_reported_step_count") or 0),
+        # Wording, not a formula: this line is printed under the coverage headline
+        # in the CLI, the TUI and every exported Markdown receipt, and a literal
+        # "X of Y" reads as a template the renderer failed to fill.
         "definition": (
-            "X of Y checkable steps carry a passing check; the tiers show how independent "
-            "that check is. These are counts, not a probability of correctness."
+            "Counts are passing checks over checkable steps, split by how independent each "
+            "check is. These are counts, not a probability of correctness."
         ),
     }
 

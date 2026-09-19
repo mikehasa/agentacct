@@ -155,12 +155,37 @@ _HOOK_CONTEXT_TMP_MAX_AGE_SECONDS = 300.0
 _MAX_HOOK_ANCESTOR_PIDS = 16
 
 
-def claude_code_hook_context_path(store_dir: Path | str) -> Path:
-    return Path(store_dir) / CLAUDE_CODE_HOOK_CONTEXT_RELATIVE_PATH
+# Clients whose hook bridge captures a session context file. The bridge is
+# mechanism-identical across them (same snake_case stdio keys), so the only
+# per-client part is which file the context lives in and which client name the
+# validator accepts. Measured reason this matters: Codex recorded 1,161 sections
+# with ZERO carrying a client_session_id, because the validator below hardcoded
+# "claude-code" and dropped every Codex context before it could be inherited --
+# which is why 61% of work items never joined to usage.
+HOOK_CONTEXT_CLIENTS = ("claude-code", "codex")
 
 
-def claude_code_hook_context_dir(store_dir: Path | str) -> Path:
-    return Path(store_dir) / CLAUDE_CODE_HOOK_CONTEXT_DIR_RELATIVE_PATH
+def _client_context_slug(client: str) -> str:
+    """The client name that owns a context slot, defaulting for anything else."""
+    return client if client in HOOK_CONTEXT_CLIENTS else HOOK_CONTEXT_CLIENTS[0]
+
+
+def claude_code_hook_context_path(store_dir: Path | str, client: str = "claude-code") -> Path:
+    """The single-slot context file for ``client``.
+
+    Claude Code keeps the historical path; every other client gets its own file
+    under ``client-context/`` so one client can never overwrite another's ids.
+    """
+    if _client_context_slug(client) == HOOK_CONTEXT_CLIENTS[0]:
+        return Path(store_dir) / CLAUDE_CODE_HOOK_CONTEXT_RELATIVE_PATH
+    return Path(store_dir) / "client-context" / f"{_client_context_slug(client)}.json"
+
+
+def claude_code_hook_context_dir(store_dir: Path | str, client: str = "claude-code") -> Path:
+    """The per-session slot directory for ``client`` (mirrors the path rule)."""
+    if _client_context_slug(client) == HOOK_CONTEXT_CLIENTS[0]:
+        return Path(store_dir) / CLAUDE_CODE_HOOK_CONTEXT_DIR_RELATIVE_PATH
+    return Path(store_dir) / "client-context" / _client_context_slug(client)
 
 
 def process_ancestor_pids(pid: int | None = None, *, max_depth: int = _HOOK_ANCESTOR_MAX_DEPTH) -> list[int]:
@@ -237,7 +262,7 @@ def _is_home_directory_text(path_text: str) -> bool:
         return False
 
 
-def derive_claude_code_client_context(event: dict[str, Any]) -> dict[str, Any] | None:
+def derive_claude_code_client_context(event: dict[str, Any], *, client: str = "claude-code") -> dict[str, Any] | None:
     """Derive joinable client context from a Claude Code hook event.
 
     Only identity fields are kept: never tool_input, prompts, or other payload
@@ -278,7 +303,7 @@ def derive_claude_code_client_context(event: dict[str, Any]) -> dict[str, Any] |
     hook_event_name = event.get("hook_event_name")
     return {
         "schema_version": CLAUDE_CODE_HOOK_CONTEXT_SCHEMA,
-        "client": "claude-code",
+        "client": _client_context_slug(client),
         "client_session_id": session_id,
         "client_transcript_id": transcript_id,
         "project_label": project_label or None,
@@ -348,6 +373,15 @@ def _prune_hook_context_dir(
 def write_claude_code_hook_context(store_dir: Path | str, context: dict[str, Any], *, now: float | None = None) -> Path:
     current = time.time() if now is None else float(now)
     payload = {**context, "observed_at": current}
+    client = _client_context_slug(str(context.get("client") or "claude-code"))
+    if client != HOOK_CONTEXT_CLIENTS[0]:
+        # A non-Claude client owns its own slot: the legacy path is Claude
+        # Code's, and overwriting it would mis-attribute one client's session
+        # id to the other.
+        path = claude_code_hook_context_path(store_dir, client)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(path, payload)
+        return path
     # Legacy single slot: dual-written so old MCP server processes (which read
     # only this file) keep today's behavior until they restart on new code.
     path = claude_code_hook_context_path(store_dir)
@@ -450,13 +484,20 @@ def _hook_store_dir_from_event(event: dict[str, Any]) -> Path | None:
         candidate = parent
 
 
-def capture_claude_code_client_context(raw: str, *, store_dir: Path | str | None = None) -> Path | None:
-    """Best-effort context capture from raw hook stdin. Never raises."""
+def capture_claude_code_client_context(
+    raw: str, *, store_dir: Path | str | None = None, client: str = "claude-code"
+) -> Path | None:
+    """Best-effort context capture from raw hook stdin. Never raises.
+
+    ``client`` names the agent whose session this is. The stdio keys are the
+    same across the supported clients, so one function serves them all and the
+    client name decides which slot the context lands in.
+    """
     try:
         event = json.loads(raw or "{}")
         if not isinstance(event, dict):
             return None
-        context = derive_claude_code_client_context(event)
+        context = derive_claude_code_client_context(event, client=client)
         if context is None:
             return None
         target = Path(store_dir) if store_dir is not None else _hook_store_dir_from_event(event)
@@ -862,7 +903,14 @@ def claude_session_start_response(raw: str) -> dict[str, Any]:
 
 def _validate_hook_context_payload(payload: Any, *, now: float, max_age_seconds: float) -> dict[str, Any] | None:
     """Validate and normalize one hook-context payload (any slot)."""
-    if not isinstance(payload, dict) or payload.get("client") != "claude-code" or payload.get("source") != "claude_code_hook":
+    # `source` names the MECHANISM (the agentacct hook bridge), not the agent:
+    # the same wrapper and the same stdio shape serve every bridged client, and
+    # the string is frozen because events already stored carry it. The agent is
+    # `client`, which is what the per-client slots and this check key on.
+    if not isinstance(payload, dict) or payload.get("source") != "claude_code_hook":
+        return None
+    client = payload.get("client")
+    if client not in HOOK_CONTEXT_CLIENTS:
         return None
     session_id = payload.get("client_session_id")
     if not isinstance(session_id, str) or not session_id or len(session_id) > _MAX_CONTEXT_ID_LENGTH:
@@ -887,7 +935,7 @@ def _validate_hook_context_payload(payload: Any, *, now: float, max_age_seconds:
         # it only disables pid-lineage disambiguation for this candidate.
         hook_ancestor_pids = [int(pid) for pid in ancestors_raw]
     return {
-        "client": "claude-code",
+        "client": str(client),
         "client_session_id": session_id,
         "client_transcript_id": transcript_id,
         "project_label": project_label if isinstance(project_label, str) and project_label else None,
@@ -925,8 +973,14 @@ def load_claude_code_hook_contexts(
     *,
     now: float | None = None,
     max_age_seconds: float = CLAUDE_CODE_HOOK_CONTEXT_MAX_AGE_SECONDS,
+    clients: tuple[str, ...] = ("claude-code",),
 ) -> list[dict[str, Any]]:
     """Load every valid fresh hook context (per-session dir + legacy slot).
+
+    ``clients`` selects which clients' slots to read. The default stays
+    claude-code only so every existing caller keeps today's behavior; the MCP
+    inheritance path passes every supported client, which is what lets a Codex
+    section inherit its own session id.
 
     Deduped by client_session_id keeping the larger observed_at; on an exact
     tie the LEGACY slot entry wins (in production dual-write both copies are
@@ -958,16 +1012,17 @@ def load_claude_code_hook_contexts(
         ):
             candidates[normalized["client_session_id"]] = normalized
 
-    context_dir = claude_code_hook_context_dir(root)
-    try:
-        entries = sorted(entry for entry in context_dir.iterdir() if entry.suffix == ".json" and entry.is_file())
-    except OSError:
-        entries = []
-    for entry in entries:
-        _consider(entry, prefer_on_tie=False)
-    legacy_path = claude_code_hook_context_path(root)
-    if legacy_path.is_file():
-        _consider(legacy_path, prefer_on_tie=True)
+    for client in clients:
+        context_dir = claude_code_hook_context_dir(root, client)
+        try:
+            entries = sorted(entry for entry in context_dir.iterdir() if entry.suffix == ".json" and entry.is_file())
+        except OSError:
+            entries = []
+        for entry in entries:
+            _consider(entry, prefer_on_tie=False)
+        legacy_path = claude_code_hook_context_path(root, client)
+        if legacy_path.is_file():
+            _consider(legacy_path, prefer_on_tie=True)
     return sorted(candidates.values(), key=lambda context: context["observed_at"], reverse=True)
 
 
@@ -994,6 +1049,7 @@ def select_claude_code_hook_context(
     max_age_seconds: float = CLAUDE_CODE_HOOK_CONTEXT_MAX_AGE_SECONDS,
     env_session_id: str | None = None,
     consumer_ancestor_pids: Sequence[int] | Callable[[], Sequence[int]] | None = None,
+    clients: tuple[str, ...] = ("claude-code",),
 ) -> HookContextSelection:
     """Select the hook context the consumer may safely inherit, if any.
 
@@ -1002,7 +1058,9 @@ def select_claude_code_hook_context(
     exact CLAUDE_CODE_SESSION_ID env match that is also STRICTLY newest, or
     (3) a unique process-lineage match. Anything else refuses inheritance.
     """
-    candidates = load_claude_code_hook_contexts(store_dir, now=now, max_age_seconds=max_age_seconds)
+    candidates = load_claude_code_hook_contexts(
+        store_dir, now=now, max_age_seconds=max_age_seconds, clients=clients
+    )
     if not candidates:
         return HookContextSelection(None, "none", "no_fresh_context", 0)
     if len(candidates) == 1:
@@ -1413,15 +1471,25 @@ def render_codex_hook_wrapper(agentacct_executable: str | None = None, *, store_
 
 
 def codex_hooks_json_block(wrapper_path: Path | str, *, python_executable: str | None = None) -> dict[str, Any]:
-    """The ``~/.codex/hooks.json`` content wiring PreToolUse + SessionEnd to the
-    agentacct Codex wrapper. Codex uses the SAME hooks.json schema as Claude Code
+    """The ``~/.codex/hooks.json`` content wiring SessionStart + PreToolUse +
+    SessionEnd to the agentacct Codex wrapper. Codex uses the SAME hooks.json
+    schema as Claude Code
     (``{"hooks": {"<Event>": [{"matcher"?, "hooks": [{"type": "command", ...}]}]}}``),
-    so this mirrors the Claude settings block shape. One wrapper serves both
-    events (it dispatches on ``hook_event_name``)."""
+    so this mirrors the Claude settings block shape. One wrapper serves all three
+    events (it dispatches on ``hook_event_name``).
+
+    SessionStart is the one that carries the session identity. Measured before it
+    was wired: Codex recorded 1,161 sections and NOT ONE carried a
+    client_session_id, so nothing could join to imported usage. Codex exposes
+    eight hook events and its SessionStart output is injected into the model's
+    context, which is also the delivery path for the recording directive --
+    exactly the lever INSTALL.md documents for Claude Code.
+    """
     python_command = python_executable or sys.executable or "python3"
     command = f"{shlex.quote(python_command)} {shlex.quote(str(wrapper_path))}"
     return {
         "hooks": {
+            "SessionStart": [{"hooks": [{"type": "command", "command": command}]}],
             "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": command}]}],
             "SessionEnd": [{"hooks": [{"type": "command", "command": command}]}],
         }

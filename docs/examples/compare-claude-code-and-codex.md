@@ -20,7 +20,7 @@ The same task — **"Add retry-with-backoff to the payments HTTP client"**, from
   Recorded machine evidence verifies the latest outcome.
 - **Evidence coverage — 1/2 self-checked · 1 unchecked**
   1 non-verifiable (research/docs)
-  X of Y checkable steps carry a passing check; the tiers show how independent that check is. These are counts, not a probability of correctness.
+  Counts are passing checks over checkable steps, split by how independent each check is. These are counts, not a probability of correctness.
 
 > Evidence coverage and decision status are separate axes: an agent reporting 'done' never adds a passing check, and a human review or approval never counts as machine verification.
 
@@ -61,7 +61,7 @@ The same task — **"Add retry-with-backoff to the payments HTTP client"**, from
 - **Decision status — `VERIFIED`** · asserted by `machine`
   Recorded machine evidence verifies the latest outcome.
 - **Evidence coverage — 1/2 self-checked · 1 unchecked**
-  X of Y checkable steps carry a passing check; the tiers show how independent that check is. These are counts, not a probability of correctness.
+  Counts are passing checks over checkable steps, split by how independent each check is. These are counts, not a probability of correctness.
 
 > Evidence coverage and decision status are separate axes: an agent reporting 'done' never adds a passing check, and a human review or approval never counts as machine verification.
 

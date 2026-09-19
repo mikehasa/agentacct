@@ -65,6 +65,7 @@ The MCP server currently exposes these nine safe local tools only:
 - `agentacct_record_agent_usage_debug`
 - `agentacct_list_events`
 - `agentacct_get_event_summary`
+- `agentacct_work_status`
 
 MCP tool arguments are validated before dispatch. Invalid limits, missing required fields, and malformed run IDs return MCP invalid-params errors instead of generic server crashes.
 

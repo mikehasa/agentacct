@@ -98,8 +98,16 @@ USAGE_EVENT_CLIENTS: tuple[str, ...] = (
     "dsh",
 )
 _MAX_SESSION_TITLE_LENGTH = 240
-_CLAUDE_IDENTITY_SCAN_MAX_BYTES = 256 * 1024
-_CLAUDE_IDENTITY_SCAN_MAX_LINES = 256
+# Identity scan budget. Measured over the 6,595 transcripts in
+# ~/.claude/projects: a normal transcript carries `sessionId` at roughly byte
+# 4,000 on its FIRST line, so 256 KiB resolved 94.87% of files and the 41 that
+# failed were the genuinely large ones. Raising the budget to 2 MiB resolves 17
+# of those 41 and costs no measurable time (0.8s for the whole corpus either
+# way, because the scan stops at the first match). The remainder are files that
+# contain no `sessionId` at all -- workflow journals, not transcripts -- which
+# this cannot fix and must not guess at.
+_CLAUDE_IDENTITY_SCAN_MAX_BYTES = 2 * 1024 * 1024
+_CLAUDE_IDENTITY_SCAN_MAX_LINES = 512
 _CLAUDE_WORKFLOW_JOURNAL_MAX_BYTES = 8 * 1024 * 1024
 _CLAUDE_WORKFLOW_JOURNAL_MAX_LINES = 8_192
 # The Workflow tool writes one metadata row per agent lifecycle transition.

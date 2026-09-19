@@ -81,7 +81,7 @@ def test_codex_hooks_json_writer_fresh_idempotent_and_merge(tmp_path: Path) -> N
     assert wrapper.exists()
     assert (wrapper.stat().st_mode & 0o777) == 0o755
     hooks = json.loads((home / CODEX_HOOKS_JSON_RELATIVE_PATH).read_text())
-    assert set(hooks["hooks"].keys()) == {"PreToolUse", "SessionEnd"}
+    assert set(hooks["hooks"].keys()) == {"SessionStart", "PreToolUse", "SessionEnd"}
     assert CODEX_HOOK_RELATIVE_PATH.name in hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
 
     before = (home / CODEX_HOOKS_JSON_RELATIVE_PATH).read_text()

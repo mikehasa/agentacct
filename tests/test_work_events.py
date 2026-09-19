@@ -49,6 +49,8 @@ def test_handed_off_section_round_trips_without_losing_its_terminal_status() -> 
                 "sentinel_semantic_kind": "section",
                 "section_id": "handoff",
                 "section_status": "handed_off",
+                "section_title": "Fixture section title",
+                "summary": "Recorded outcome for this fixture section.",
             },
         },
         transport="mcp",
