@@ -1,13 +1,19 @@
 import SwiftUI
 
-/// The house segmented control: a tinted track holding one 24 pt button per
-/// choice, the selected one lifted onto a card fill. Designed surfaces use it
+/// The house segmented control: a tinted track holding one 26 pt button per
+/// choice, each at least 52 pt wide, the selected one lifted onto a card fill. Designed surfaces use it
 /// instead of the native segmented picker — the Dashboard's Tokens/Cost
 /// switch, the Usage page's recorded-usage range and its chart measure — so
 /// every choice control shares one shape, one type role (`captionSemibold`)
 /// and one hover/press/focus feedback model. Buttons render under
 /// ImageRenderer, so snapshots show the real control rather than a stand-in.
 struct SegmentedChoice<Option: Hashable>: View {
+    /// Every segment is at least this wide, so short labels (7d, 30d, 90d,
+    /// Cost) get equal, roomy cells instead of hugging their glyphs, while a
+    /// long label still grows to fit.
+    static var minimumSegmentWidth: CGFloat { 52 }
+    static var segmentHeight: CGFloat { 26 }
+
     let options: [Option]
     let label: (Option) -> String
     @Binding var selection: Option
@@ -22,8 +28,9 @@ struct SegmentedChoice<Option: Hashable>: View {
                     selection = option
                 } label: {
                     Text(label(option)).workFont(.captionSemibold)
-                        .padding(.horizontal, 9)
-                        .frame(height: 24)
+                        .padding(.horizontal, 12)
+                        .frame(minWidth: Self.minimumSegmentWidth)
+                        .frame(height: Self.segmentHeight)
                 }
                 .buttonStyle(SegmentedChoiceButtonStyle(selected: selected))
                 .accessibilityAddTraits(selected ? .isSelected : [])
