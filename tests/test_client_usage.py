@@ -4157,6 +4157,83 @@ def test_discover_claude_code_usage_sums_assistant_usage_without_transcript(tmp_
     assert "content" not in json.dumps(payload).lower()
 
 
+def test_timestamp_seconds_returns_none_for_non_finite_values():
+    # Regression for #223: json.loads accepts NaN/Infinity tokens by default, so
+    # those values reach _timestamp_seconds from real codex/claude-code log
+    # lines. int(float("nan")) raises ValueError and int(float("inf")) raises
+    # OverflowError, escaping the per-client except and aborting the whole
+    # usage refresh. A non-finite value means "no usable timestamp" -- mirror
+    # the sibling _cursor_timestamp_seconds guard.
+    assert client_usage_module._timestamp_seconds(float("nan")) is None
+    assert client_usage_module._timestamp_seconds(float("inf")) is None
+    assert client_usage_module._timestamp_seconds(float("-inf")) is None
+    # Finite values are unchanged.
+    assert client_usage_module._timestamp_seconds(1_781_949_600) == 1_781_949_600
+    assert client_usage_module._timestamp_seconds(0) is None
+
+
+def test_optional_float_returns_none_for_non_finite_values():
+    # Regression for #223: a NaN/Infinity cost token must not survive as a
+    # non-finite float that later crashes int()/arithmetic downstream.
+    assert client_usage_module._optional_float(float("nan")) is None
+    assert client_usage_module._optional_float(float("inf")) is None
+    assert client_usage_module._optional_float(float("-inf")) is None
+    # Finite values are unchanged.
+    assert client_usage_module._optional_float("1.5") == 1.5
+    assert client_usage_module._optional_float(3) == 3.0
+    assert client_usage_module._optional_float(None) is None
+    assert client_usage_module._optional_float("nope") is None
+
+
+def test_discover_claude_code_usage_skips_non_finite_timestamp_without_crashing(tmp_path):
+    # Regression for #223: a real transcript line can carry a NaN timestamp
+    # (json.loads accepts the NaN token), which reaches _timestamp_seconds
+    # unfiltered. It must be treated as "no timestamp" rather than raising and
+    # aborting the entire usage refresh -- the row's usage is still counted.
+    claude_home = tmp_path / "claude-home"
+    project = claude_home / "projects" / "-tmp-project"
+    project.mkdir(parents=True)
+    session = project / "claude-session.jsonl"
+    rows = [
+        {
+            "type": "assistant",
+            "sessionId": "claude-session",
+            "cwd": "/work/project",
+            "timestamp": "2026-06-20T10:00:00Z",
+            "message": {
+                "model": "claude-opus-4-8",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            },
+        },
+        {
+            "type": "assistant",
+            "sessionId": "claude-session",
+            "cwd": "/work/project",
+            "timestamp": float("nan"),
+            "message": {
+                "model": "claude-opus-4-8",
+                "usage": {"input_tokens": 20, "output_tokens": 7},
+            },
+        },
+    ]
+    serialized = "\n".join(json.dumps(row) for row in rows) + "\n"
+    # json emits the NaN timestamp as a bare NaN token, exactly as a real log
+    # line would; guard against a stdlib change that would defuse the repro.
+    assert "NaN" in serialized
+    session.write_text(serialized, encoding="utf-8")
+
+    events = discover_claude_code_usage(claude_home=claude_home, limit_sessions=10)
+
+    assert len(events) == 1
+    event = events[0]
+    # Usage from BOTH rows is summed; the NaN-timestamp row is not discarded.
+    assert event.input_tokens == 30
+    assert event.output_tokens == 12
+    # Activity timestamps come only from the finite row.
+    assert event.started_at == 1_781_949_600
+    assert event.updated_at == 1_781_949_600
+
+
 def test_claude_usage_event_emits_transcript_mtime_us_revision_watermark(tmp_path):
     claude_home = _make_claude_home(tmp_path)
     transcript = claude_home / "projects" / "-tmp-project" / "claude-session.jsonl"

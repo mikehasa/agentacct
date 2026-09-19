@@ -1412,25 +1412,27 @@ def latest_store_activity(tasks: list[Mapping[str, Any]]) -> float | None:
     return newest or None
 
 
-def session_start_index(tasks: list[Mapping[str, Any]]) -> dict[str, float]:
+def session_start_index(tasks: list[Mapping[str, Any]]) -> dict[tuple[str, str], float]:
     """Each session's START (earliest event timestamp) across the whole store.
 
     The sibling of ``latest_store_activity``: computed once by the caller that
     already holds every Task and threaded into ``reduce_task_outcome`` /
-    ``build_receipt*`` as ``session_starts``. It maps ``client_session_id`` to the
-    MINIMUM of that session's earliest event timestamp seen in any Task (a session
-    may contribute work items / checks to more than one Task projection). Sessions'
-    ``last_activity_at`` is a latest, not a start, so it is never used — see
-    ``task_session_starts``. The went-quiet predicate uses this to require a
+    ``build_receipt*`` as ``session_starts``. It maps each session's
+    ``(client, client_session_id)`` pair to the MINIMUM of that session's earliest
+    event timestamp seen in any Task (a session may contribute work items / checks
+    to more than one Task projection). Keying on the (client, id) PAIR keeps two
+    clients that reuse one id string as distinct sessions — see
+    ``task_session_starts``. Sessions' ``last_activity_at`` is a latest, not a
+    start, so it is never used. The went-quiet predicate uses this to require a
     genuinely NEWER session before it downgrades a Task."""
 
-    starts: dict[str, float] = {}
+    starts: dict[tuple[str, str], float] = {}
     for task in tasks:
         if not isinstance(task, Mapping):
             continue
-        for session_id, start in task_session_starts(task).items():
-            if session_id not in starts or start < starts[session_id]:
-                starts[session_id] = start
+        for session_key, start in task_session_starts(task).items():
+            if session_key not in starts or start < starts[session_key]:
+                starts[session_key] = start
     return starts
 
 

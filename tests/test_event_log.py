@@ -216,6 +216,39 @@ def test_corrupt_and_nonobject_lines_are_mirrored_verbatim(tmp_path: Path) -> No
     assert log.read_events() == [_event("e0"), _event("e1")]
 
 
+def test_out_of_range_created_at_is_mirrored_and_left_unindexed(tmp_path: Path) -> None:
+    # Regression for #226: a valid-JSON object whose created_at is an integer too
+    # large to fit a float raises OverflowError inside _extract_columns. That is
+    # NOT a ValueError, so it escapes json.loads' guard and used to abort the
+    # whole-file reconcile / store open. One poison line must be mirrored verbatim
+    # like any other, with only its indexed created_at column left empty.
+    ledger = tmp_path / "events.jsonl"
+    poison = serialize_event(_event("big", created_at=10**400))
+    ledger.write_text(
+        serialize_event(_event("e0")) + "\n"
+        + poison + "\n"
+        + serialize_event(_event("e1")) + "\n",
+        encoding="utf-8",
+    )
+    log = RawEventLog(tmp_path / "events.sqlite3")
+    result = log.reconcile_from_file(ledger)  # must not raise OverflowError
+    assert result.matches  # all three lines mirrored verbatim, store opens cleanly
+    assert log.count() == 3
+    assert poison in log.read_lines()  # oversized line preserved byte-for-byte
+    # Its indexed created_at column is NULL, not a coerced float; the good rows
+    # keep their real timestamp column.
+    database = tmp_path / "events.sqlite3"
+    with sqlite3.connect(database) as connection:
+        columns = dict(
+            connection.execute(
+                "SELECT event_id, created_at FROM event_lines WHERE event_id IN (?, ?)",
+                ("big", "e0"),
+            )
+        )
+    assert columns["big"] is None
+    assert columns["e0"] == 1.0
+
+
 def test_absorb_new_events_unions_by_id_and_never_truncates(tmp_path: Path) -> None:
     # absorb is the rolling-upgrade drain: it appends events the file has but the
     # log lacks (by event_id), never removes an event the log already leads with.

@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from agentacct.finding_disposition import finding_target_digest
+from agentacct.receipt import latest_store_activity, session_start_index
 from agentacct.task_intelligence import build_task_intelligence
 from agentacct.task_outcome import (
     _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS,
@@ -985,7 +986,8 @@ def test_task_went_quiet_elsewhere_predicate_edge_cases() -> None:
     own = _multi_task(
         [_sitem("started", _NOW, sid="mine"), _sitem("checkpoint", _NOW, sid="mine")]
     )
-    own_later = {"mine": task_newest_event_at(own) + 60.0}
+    # Sessions are keyed by the (client, id) PAIR: _sitem stamps client="claude-code".
+    own_later = {("claude-code", "mine"): task_newest_event_at(own) + 60.0}
     own_latest = min(own_later.values()) + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
     assert task_went_quiet_elsewhere(own, own_latest, own_later) is False
 
@@ -1018,13 +1020,90 @@ def test_reducer_same_task_later_session_never_reads_inactive() -> None:
     task = _multi_task(
         [_sitem("started", _NOW, sid="mine"), _sitem("checkpoint", _NOW, sid="mine")]
     )
-    later = {"mine": task_newest_event_at(task) + 60.0}
+    # Keyed by the (client, id) PAIR; _sitem stamps client="claude-code".
+    later = {("claude-code", "mine"): task_newest_event_at(task) + 60.0}
     latest = min(later.values()) + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
     outcome = reduce_task_outcome(
         task, latest_store_activity_at=latest, session_starts=later
     )
     assert outcome["key"] == "in_progress"
     assert outcome["went_quiet"] is False
+
+
+def _client_session_task(client: str, sid: str) -> dict[str, Any]:
+    # An open-only Task (nothing finished) whose steps all belong to ONE session,
+    # identified by the (client, client_session_id) PAIR the store keys sessions on.
+    def _open(status: str) -> dict[str, Any]:
+        return {
+            "latest_status": status,
+            "updated_at": _NOW,
+            "started_at": _NOW,
+            "client": client,
+            "client_session_id": sid,
+            "evidence_status": "none",
+            "evidence_events": [],
+        }
+
+    return _multi_task([_open("started"), _open("checkpoint")])
+
+
+def _elsewhere_session_task(client: str, sid: str) -> dict[str, Any]:
+    # A genuinely NEWER session: it starts just after the Task-under-test went
+    # quiet and also carries the store's latest activity well past the 48h buffer.
+    start = _NOW + 60.0
+    latest = start + _LEFT_BEHIND_AFTER_ELSEWHERE_SECONDS + 60.0
+    return _multi_task(
+        [
+            {
+                "latest_status": "completed",
+                "started_at": start,
+                "updated_at": latest,
+                "client": client,
+                "client_session_id": sid,
+                "evidence_status": "none",
+                "evidence_events": [],
+            }
+        ]
+    )
+
+
+def test_same_raw_session_id_across_clients_does_not_suppress_the_downgrade() -> None:
+    # #225: session identity is the (client, client_session_id) PAIR, not the raw
+    # id string. Two clients can each mint a session named "shared-1". Keying on
+    # the raw id alone let the newer OTHER-client session be mistaken for THIS
+    # Task's own session and get excluded, so the left-behind inference UNDER-fired
+    # and the Task read a misleadingly live "in_progress" where it should read
+    # "inactive". The whole store pipeline (session_start_index +
+    # latest_store_activity) is exercised so the id collision is reproduced the way
+    # the real projection produces it, not hand-waved into the session_starts map.
+    task = _client_session_task("client-A", "shared-1")
+
+    # Baseline: the newer session uses a DISTINCT id -> the store demonstrably
+    # moved on elsewhere -> inactive. This case always worked.
+    distinct_tasks = [task, _elsewhere_session_task("client-B", "session-B")]
+    distinct_outcome = reduce_task_outcome(
+        task,
+        latest_store_activity_at=latest_store_activity(distinct_tasks),
+        session_starts=session_start_index(distinct_tasks),
+    )
+    assert distinct_outcome["key"] == "inactive"
+
+    # Collision: the genuinely-newer session belongs to a DIFFERENT client but
+    # REUSES this Task's raw id "shared-1". It must STILL count as elsewhere, so the
+    # outcome matches the distinct-id baseline. Before the fix the two sessions
+    # collapsed onto one raw-id key, the newer session was excluded as "own", and
+    # the Task wrongly stayed in_progress (the designed-safe under-fire direction).
+    colliding_tasks = [task, _elsewhere_session_task("client-B", "shared-1")]
+    colliding_outcome = reduce_task_outcome(
+        task,
+        latest_store_activity_at=latest_store_activity(colliding_tasks),
+        session_starts=session_start_index(colliding_tasks),
+    )
+    assert colliding_outcome["key"] == "inactive"
+    assert colliding_outcome["went_quiet"] is True
+
+    # The id collision no longer changes the outcome vs distinct ids.
+    assert colliding_outcome["key"] == distinct_outcome["key"]
 
 
 def test_quiet_timestamps_present_on_inactive_and_mostly_done() -> None:
