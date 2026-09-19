@@ -3189,16 +3189,23 @@ def create_local_api_app(
                 events, fingerprint=fingerprint, cache_key=ledger_key, for_reader=False
             )
             v1_sessions_cache.view(ledger_key, lambda: build_v1_sessions_view(ledger, events))
+            # The Tasks list and every receipt are assembled over that ledger;
+            # build them here too so opening a Task after a write is warm.
+            _v1_task_projection(for_reader=False)
         except Exception:
             pass
 
     def _ledger_change_token() -> tuple[Any, int]:
-        # What _ledger_cache_key depends on, without loading an event: the
-        # ledger's revision plus the secondary stores' stat signature. It only
+        # What the warmed caches' keys depend on, without loading an event: the
+        # ledger's revision, the secondary stores' stat signature and (through
+        # the task projection's key) the continuation store. It only
         # decides WHEN to warm. A change it somehow missed costs a reader one
         # rebuild; it can never make a request reuse an out-of-date build,
         # because requests key on the store's content, not on this token.
-        return (service.events_change_token(), _ledger_secondary_signature())
+        return (
+            service.events_change_token(),
+            _task_projection_cache_key(_ledger_secondary_signature()),
+        )
 
     @app.get("/v1/sessions")
     def v1_sessions(
@@ -3290,32 +3297,59 @@ def create_local_api_app(
     v1_attention_projection_cache: dict[str, Any] = {}
     v1_attention_projection_lock = threading.Lock()
 
-    def _v1_task_projection() -> dict[str, Any]:
-        # Keyed on the v1 event log. Machine checks ARE v1 events, so they
-        # invalidate this the instant they land; the only writes it does not
-        # notice within the TTL are evidence-store-only imports (connector /
-        # capture-hook), the same bound every sibling /v1 cache already has —
-        # the real fix for that is materialization, not a hotter key. Reusing
-        # the shared ledger stacks that ledger's own 30s TTL under this cache's,
-        # so those fingerprint-invisible inputs (cost/run-report/mechanical-obs
-        # imports) can lag up to ~60s here — the SAME staleness class and the
-        # SAME reused-ledger profile the sessions lane already accepts.
-        # A reader even when this projection is served from its own cache and
-        # never reaches the shared ledger below.
-        ledger_warmer.note_reader()
+    def _task_projection_cache_key(ledger_key: int) -> int:
+        """The change key for the task projection: everything it is built from.
+
+        That is the shared ledger's own key (the events plus the cost, run and
+        Evidence stores) AND the continuation store, whose user-confirmed
+        groupings decide which sessions form one Task. The continuation store
+        mints no ledger event, so it needs its own signature here; a link or
+        rename must be visible to the very next reader."""
+
+        try:
+            st = continuation_store.actions_path.stat()
+            continuation_signature = (st.st_size, st.st_mtime_ns)
+        except OSError:
+            continuation_signature = (0, 0)
+        return hash((ledger_key, continuation_signature))
+
+    def _v1_task_projection(*, for_reader: bool = True) -> dict[str, Any]:
+        # Change-keyed like the shared ledger it is assembled over: any change
+        # to the events, the secondary stores or the continuation store is a
+        # different key, so the projection can never lag a store change.
+        #
+        # The 30 s bound that remains is NOT a staleness allowance for store
+        # changes. One input is the wall clock: the weekly-plan shares are
+        # calibrated over a window that ends "now", so on an unchanged store
+        # they still have to be recomputed as time passes.
+        if for_reader:
+            # A reader even when this projection is served from its own cache
+            # and never reaches the shared ledger below. The warmer's own build
+            # passes for_reader=False so it cannot keep itself awake.
+            ledger_warmer.note_reader()
         events, fingerprint = _dashboard_events()
+        ledger_key = _ledger_cache_key(fingerprint)
+        projection_key = _task_projection_cache_key(ledger_key)
+
+        def _fresh(cached: tuple[int, float, dict[str, Any]] | None) -> bool:
+            return (
+                cached is not None
+                and cached[0] == projection_key
+                and (time.time() - cached[1]) < 30.0
+            )
+
         cached = v1_receipt_projection_cache.get("projection")
-        if cached is not None and cached[0] == fingerprint and (time.time() - cached[1]) < 30.0:
-            return cached[2]
+        if _fresh(cached):
+            return cached[2]  # type: ignore[index]
         with v1_receipt_projection_lock:
             # Double-check: a concurrent request may have just built it.
             cached = v1_receipt_projection_cache.get("projection")
-            if cached is not None and cached[0] == fingerprint and (time.time() - cached[1]) < 30.0:
-                return cached[2]
+            if _fresh(cached):
+                return cached[2]  # type: ignore[index]
             # Assemble the projection over the SHARED derived ledger instead of
             # rebuilding the full ledger here. That ledger (WorkLedgerCache,
-            # single-flighted, fingerprint + TTL cached) is the same one the
-            # sessions lane keeps warm under polling, so the tasks/receipts the
+            # single-flighted, change-keyed) is the same one the sessions lane
+            # and the background warmer keep built, so the tasks/receipts the
             # app fires alongside it pay the multi-second reduce at most once,
             # shared — never once per request. The reduce sees the SAME inputs
             # build_page_data would have used: the run-report cap is the shared
@@ -3324,7 +3358,9 @@ def create_local_api_app(
             # the projection is byte-identical to the self-built one it
             # replaces — for any store, not only the MCP-first (runs/ empty)
             # case verified on the live store.
-            ledger = _derived_work_ledger(events, fingerprint=fingerprint)
+            ledger = _derived_work_ledger(
+                events, fingerprint=fingerprint, cache_key=ledger_key, for_reader=for_reader
+            )
             projection = _dashboard_task_projection(_page_data(events=events, ledger=ledger))
             # Weekly-plan shares ride the same cached projection: deterministic
             # from the same event log, so the cache key already covers them.
@@ -3339,7 +3375,7 @@ def create_local_api_app(
                 latest_store_activity_at=latest_store_activity(attention_tasks),
                 session_starts=session_start_index(attention_tasks),
             )
-            v1_receipt_projection_cache["projection"] = (fingerprint, time.time(), projection)
+            v1_receipt_projection_cache["projection"] = (projection_key, time.time(), projection)
             return projection
 
     def _visible_tasks(projection: Mapping[str, Any]) -> list[dict[str, Any]]:
