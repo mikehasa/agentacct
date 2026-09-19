@@ -929,13 +929,11 @@ struct ReceiptPlanShare: Decodable {
 
     /// The dedicated "Weekly plan" receipt row. Calibrated → the percentage
     /// (≈0% when calibrated-but-negligible, never a bare "—"); otherwise a
-    /// named calibration state, never a fabricated number. The row label
-    /// already says "Weekly plan", so the value names the allowance instead
-    /// of repeating the label. Mirrors receipt.plan_share_headline so every
-    /// surface reads identically.
+    /// named calibration state, never a fabricated number. Mirrors
+    /// receipt.plan_share_headline so every surface reads identically.
     var rowSummary: String {
         if calibrationState == "calibrated", let pct {
-            return (Fmt.planPct(pct) ?? "≈0%") + " of allowance"
+            return (Fmt.planPct(pct) ?? "≈0%") + " of weekly plan"
         }
         switch calibrationState {
         case "calibrating": return "still learning — not enough 7-day history yet"
