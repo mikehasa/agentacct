@@ -123,11 +123,14 @@ struct OutcomeBar: View {
     let segments: [OutcomeSegment]
     var note: String? = nil
     var noteTint: Color = Theme.coral
+    /// Stretch to the height the parent offers, so cards laid out side by side
+    /// share one bottom edge. A standalone card keeps its intrinsic height.
+    var fillsHeight = false
 
     private var visible: [OutcomeSegment] { segments.filter { $0.count > 0 } }
 
     var body: some View {
-        Card {
+        Card(fillsHeight: fillsHeight) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(title).workFont(.titleCard).foregroundStyle(Theme.ink)
@@ -283,18 +286,24 @@ struct RecordOutcomeBars: View {
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(alignment: .top, spacing: Space.m) { bars }
-            VStack(alignment: .leading, spacing: Space.m) { bars }
+            // Side by side, both cards take the taller card's height: only
+            // Checks carries the attention note, and a shorter Steps card next
+            // to it reads as misaligned. fixedSize holds the row at that
+            // intrinsic height so the stretched cards never grow past it.
+            HStack(alignment: .top, spacing: Space.m) { bars(fillsHeight: true) }
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: Space.m) { bars(fillsHeight: false) }
         }
     }
 
-    @ViewBuilder private var bars: some View {
-        OutcomeBar(title: "Steps", total: stepTotal, segments: stepSegments)
+    @ViewBuilder private func bars(fillsHeight: Bool) -> some View {
+        OutcomeBar(title: "Steps", total: stepTotal, segments: stepSegments, fillsHeight: fillsHeight)
         OutcomeBar(
             title: "Checks",
             total: "\(digest.currentCount) recorded",
             segments: RecordOutcome.checkSegments(digest),
-            note: checkNote
+            note: checkNote,
+            fillsHeight: fillsHeight
         )
     }
 }
