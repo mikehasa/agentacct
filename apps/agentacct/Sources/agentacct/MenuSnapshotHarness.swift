@@ -3,6 +3,8 @@ import SwiftUI
 struct MenuSnapshotConfiguration {
     enum Density: String {
         case sparse, dense
+        /// The sparse lane with one session reported twice: rendered once.
+        case duplicateSessions = "duplicate-sessions"
     }
 
     let density: Density
@@ -18,6 +20,8 @@ struct MenuSnapshotConfiguration {
         Self(density: .sparse, colorScheme: .dark),
         Self(density: .dense, colorScheme: .light),
         Self(density: .dense, colorScheme: .dark),
+        Self(density: .duplicateSessions, colorScheme: .light),
+        Self(density: .duplicateSessions, colorScheme: .dark),
     ]
 }
 
@@ -68,6 +72,8 @@ enum MenuSnapshotRenderer {
                 selectedGlance = fixture.menuSparseGlance ?? fixture.glance
             case .dense:
                 selectedGlance = fixture.glance
+            case .duplicateSessions:
+                selectedGlance = fixture.menuDuplicateGlance ?? fixture.menuSparseGlance ?? fixture.glance
             }
             let glance = GlanceState(preloaded: GlanceSnapshot(
                 glance: selectedGlance,

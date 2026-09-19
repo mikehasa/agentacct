@@ -362,8 +362,9 @@ struct MenuContent: View {
     }
 
     private func sessions(_ allSessions: [RecentSession], plan: [PlanEntry]) -> some View {
-        let visible = Array(allSessions.prefix(2))
-        let hiddenCount = max(0, allSessions.count - visible.count)
+        let distinctSessions = MenuSessionPresentation.distinct(allSessions)
+        let visible = Array(distinctSessions.prefix(2))
+        let hiddenCount = max(0, distinctSessions.count - visible.count)
         let calibration = MenuCalibrationPresentation(plan)
 
         return VStack(alignment: .leading, spacing: 5) {

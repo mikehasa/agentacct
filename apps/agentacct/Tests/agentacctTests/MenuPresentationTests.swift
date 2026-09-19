@@ -2,6 +2,21 @@ import XCTest
 @testable import agentacct
 
 final class MenuPresentationTests: XCTestCase {
+    func testSessionRowsAreDistinctPerClientAndSession() throws {
+        let sessions = try JSONDecoder().decode([RecentSession].self, from: Data("""
+        [
+          {"client": "codex", "session_id": "01a091c5-aaaa", "title": null, "status": null, "last_activity_at": 990},
+          {"client": "codex", "session_id": "01a091c5-aaaa", "title": null, "status": "in_progress", "last_activity_at": 980},
+          {"client": "claude-code", "session_id": "01a091c5-aaaa", "title": null, "status": null, "last_activity_at": 970}
+        ]
+        """.utf8))
+        let distinct = MenuSessionPresentation.distinct(sessions)
+        XCTAssertEqual(distinct.count, 2)
+        XCTAssertEqual(distinct.map(\.client), ["codex", "claude-code"])
+        // The newest row for a repeated identity is the one kept.
+        XCTAssertEqual(distinct.first?.lastActivityAt, 990)
+    }
+
     func testWeeklyHeroNamesPreferredSourceAndRemovesItsDuplicate() throws {
         let fixture = try DashboardSnapshotFixture.load(from: fixtureURL())
         let presentation = MenuLimitPresentation(glance: fixture.glance)

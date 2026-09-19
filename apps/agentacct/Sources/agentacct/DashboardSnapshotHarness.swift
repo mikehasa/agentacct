@@ -12,6 +12,9 @@ struct DashboardSnapshotFixture: Decodable {
     let daemonVersion: String
     let glance: Glance
     let menuSparseGlance: Glance?
+    /// The sparse menu with one session reported twice: the popover must show
+    /// it once.
+    let menuDuplicateGlance: Glance?
     /// Recent sessions that never recorded a work status or title: the
     /// Working now row must name the agent, not a session hash.
     let statuslessGlance: Glance?
@@ -31,6 +34,7 @@ struct DashboardSnapshotFixture: Decodable {
         case glance, plan, attention, ingestion, tasks, usage, work
         case usage90Days = "usage_90_days"
         case menuSparseGlance = "menu_sparse_glance"
+        case menuDuplicateGlance = "menu_duplicate_glance"
         case statuslessGlance = "statusless_glance"
         case ingestionHealthySources = "ingestion_healthy_sources"
         case ingestionDegraded = "ingestion_degraded"
@@ -65,6 +69,15 @@ struct DashboardSnapshotFixture: Decodable {
             throw SnapshotError.unsupportedSchema(
                 payload: "statusless glance",
                 actual: statuslessGlance.schema,
+                expected: GlanceClient.supportedGlanceSchema
+            )
+        }
+        if let menuDuplicateGlance = fixture.menuDuplicateGlance,
+           menuDuplicateGlance.schema != GlanceClient.supportedGlanceSchema
+        {
+            throw SnapshotError.unsupportedSchema(
+                payload: "duplicate-session menu glance",
+                actual: menuDuplicateGlance.schema,
                 expected: GlanceClient.supportedGlanceSchema
             )
         }
