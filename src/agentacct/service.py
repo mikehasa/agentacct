@@ -2904,6 +2904,18 @@ class SentinelService:
             self._event_snapshot = snapshot
             return snapshot
 
+    def events_change_token(self) -> tuple[str, object]:
+        """A cheap value that differs whenever the event ledger changed.
+
+        The same key ``all_events_snapshot`` reuses its parsed snapshot under,
+        without reading or parsing any event: one stat plus the SQLite revision
+        (or the flat file's signature). For callers that only need to notice a
+        change, such as the background projection warmer.
+        """
+
+        self._sync_event_log()
+        return self._event_snapshot_change_token()
+
     def _event_snapshot_change_token(self) -> tuple[str, object]:
         if self._authoritative():
             assert self.event_log is not None  # _authoritative fails loud otherwise.
