@@ -9815,7 +9815,7 @@ def now(
     store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
     window: Annotated[
         str,
-        typer.Option(help="Window for the by-client/by-model breakdown: today, 7d, 30d, or all."),
+        typer.Option(help="Window for the by-client/by-model breakdown: today (or 24h), 7d, 30d, or all."),
     ] = "7d",
     client: Annotated[
         Optional[str],
@@ -10060,7 +10060,7 @@ def tui(
     store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
     window: Annotated[
         str,
-        typer.Option(help="Initial breakdown window: today, 7d, 30d, or all (cycle in the Usage tab with 'd')."),
+        typer.Option(help="Initial breakdown window: today (or 24h), 7d, 30d, or all (cycle in the Usage tab with 'd')."),
     ] = "7d",
     client: Annotated[
         Optional[str],
