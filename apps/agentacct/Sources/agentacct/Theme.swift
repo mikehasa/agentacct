@@ -331,7 +331,10 @@ enum Type {
     static let dataSmallSemibold = Face.monoFont(12, .semibold)
     /// Eyebrows, column headers, strip captions — 12/700 mono, tracking +0.9.
     /// Reserved for the label species; row content stays sentence case.
-    static let labelCaps = Face.monoFont(12, .bold)
+    /// Caps eyebrows are labels, not values: they set in the sans face so
+    /// monospace stays reserved for numbers, ids and paths, and pages stop
+    /// reading as terminal output.
+    static let labelCaps = Face.sansFont(11, .bold)
     static let labelCapsTracking: CGFloat = 0.9
 }
 
@@ -355,7 +358,7 @@ enum WorkFontRole {
         case .captionSemibold: return (12, .semibold, .caption, false)
         case .dataSmall: return (12, .regular, .caption, true)
         case .dataSmallSemibold: return (12, .semibold, .caption, true)
-        case .labelCaps: return (12, .bold, .caption, true)
+        case .labelCaps: return (11, .bold, .caption, false)
         }
     }
 
