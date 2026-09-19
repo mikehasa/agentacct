@@ -6,6 +6,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A passing check in an unrelated, unlinked session that merely reused the same
+  project, section, and command no longer retroactively marks an earlier
+  session's finding as superseded: inferred supersession is now scoped to the
+  session that raised the finding, while an explicitly declared resolution still
+  applies across a linked continuation. (#218)
+- A passing check whose transcript conflicts with the task's own (same session,
+  different `client_transcript_id`) no longer marks the Task verified or credits
+  a checked step — the transcript-compatibility veto now applies on the direct
+  session-key attribution path, not only the explicit section reference. (#219)
+
 ## [0.11.1] — 2026-09-17
 
 Makes the dashboard fast again — the API-serving caches no longer rebuild the multi-second work ledger on every idle poll, and the recorder stops shadowing its highest-cardinality events into an unbounded store — plus a way to reclaim that store and one-click recorder self-update.

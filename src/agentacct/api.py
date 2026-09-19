@@ -1449,6 +1449,13 @@ def _attach_evidence_to_task_projection(
     }
     task_for_session: dict[tuple[str, str], str] = {}
     session_scope_for_key: dict[tuple[str, str], str] = {}
+    # Transcript identities the task's own facts assert for each owned session.
+    # The direct session-key candidate path (below) credits a check to the task
+    # that owns its (client, session); a check naming a CONFLICTING transcript
+    # for that session must fail closed instead — the same veto the explicit
+    # section-ref path already applies via _evidence_work_fact_compatible, so
+    # both paths reach one identity-compatibility decision (#219).
+    transcripts_for_session: dict[tuple[str, str], set[str]] = {}
     mechanical_session_keys: set[tuple[str, str]] = set()
     work_facts_for_ref: dict[str, list[tuple[str, dict[str, Any]]]] = {}
     task_facts_for_run: dict[tuple[str, str, str], list[tuple[str, dict[str, Any]]]] = {}
@@ -1493,6 +1500,9 @@ def _attach_evidence_to_task_projection(
             fingerprint = str(session.get("namespace_fingerprint") or "")
             if fingerprint:
                 session_scope_for_key[key] = fingerprint
+            session_transcript = str(session.get("client_transcript_id") or "")
+            if session_transcript:
+                transcripts_for_session.setdefault(key, set()).add(session_transcript)
             mechanical_capture = session.get("mechanical_capture") if isinstance(session.get("mechanical_capture"), Mapping) else {}
             if int(mechanical_capture.get("observation_count") or 0) > 0:
                 mechanical_session_keys.add(key)
@@ -1502,6 +1512,14 @@ def _attach_evidence_to_task_projection(
             item = item_value
             item["current_check_events"] = []
             namespace_facts_by_task[task_id].append(item)
+            item_transcript = str(item.get("client_transcript_id") or "")
+            if item_transcript:
+                item_session_key = (
+                    str(item.get("client") or item.get("reporting_source") or ""),
+                    str(item.get("client_session_id") or ""),
+                )
+                if item_session_key[0] and item_session_key[1]:
+                    transcripts_for_session.setdefault(item_session_key, set()).add(item_transcript)
             for ref in (item.get("work_id"), item.get("section_id")):
                 if ref:
                     work_facts_for_ref.setdefault(str(ref), []).append((task_id, item))
@@ -1600,7 +1618,22 @@ def _attach_evidence_to_task_projection(
             task_id = task_for_session.get(session_key) if namespace_compatible else None
             if task_id:
                 observed_task_ids.add(task_id)
-                if not event.get("log_evidence_conflict"):
+                # A check that names a transcript the task never recorded for
+                # this session is a transcript conflict, not a session match:
+                # the weaker (client, session) key must not credit it. Mirrors
+                # the transcript veto in _evidence_work_fact_compatible so the
+                # explicit section-ref and direct session-key paths reach one
+                # identity-compatibility decision (#219). Session identity is
+                # still enforced structurally — a conflicting session never
+                # resolves to this task_id at all.
+                event_transcript = str(event.get("client_transcript_id") or "")
+                known_transcripts = transcripts_for_session.get(session_key)
+                transcript_conflict = bool(
+                    event_transcript
+                    and known_transcripts
+                    and event_transcript not in known_transcripts
+                )
+                if not event.get("log_evidence_conflict") and not transcript_conflict:
                     candidate_task_ids.add(task_id)
         candidate_sessions = event.get("log_evidence_candidate_sessions")
         if isinstance(candidate_sessions, list) and candidate_sessions:

@@ -125,9 +125,19 @@ def _pair_basis(
 
 
 def _scope_key(event: Mapping[str, Any]) -> tuple[str, ...]:
-    """Pairwise scope identity. A pass in a different project / session / section
-    can never supersede: this subsumes any "section maps to one project" guard,
-    because a reused section_id across projects has mixed project_identity here.
+    """Pairwise scope identity. A pass in a different project / section can never
+    supersede: this subsumes any "section maps to one project" guard, because a
+    reused section_id across projects has mixed project_identity here.
+
+    Session identity is deliberately NOT part of this key. The namespace
+    fingerprint here is per-project/org (session_observations), not per-session,
+    so two unlinked sessions in one project share a group. That is intentional:
+    an EXPLICIT agent-declared link (supersedes_check_event_id) may legitimately
+    retire a failure across a linked continuation, and it needs both events in
+    the same group to be seen. The per-session guard for the INFERRED bases
+    (same_command / command_shape) is applied inside the pairwise gate via
+    ``_same_session`` (see #218), so an unlinked different-session pass can no
+    longer retire a finding on a coincidental command match.
     """
 
     return (
@@ -138,6 +148,28 @@ def _scope_key(event: Mapping[str, Any]) -> tuple[str, ...]:
         _text(event.get("section_id")),
         _text(event.get("evidence_type")),
     )
+
+
+def _same_session(failure: Mapping[str, Any], candidate: Mapping[str, Any]) -> bool:
+    """True only when both events provably belong to the same client session.
+
+    An INFERRED basis (same_command / command_shape) may retire a finding only
+    within the session that raised it (#218). Session identity mirrors the
+    ledger's own join: a shared non-empty ``client_session_id`` OR a shared
+    non-empty ``client_transcript_id``. When neither side carries any session
+    identity the two are NOT provably the same session, so an inferred pass is
+    refused -- the honest, safe direction (a finding is never falsely retired).
+    """
+
+    fail_session = _text(failure.get("client_session_id"))
+    candidate_session = _text(candidate.get("client_session_id"))
+    if fail_session and candidate_session and fail_session == candidate_session:
+        return True
+    fail_transcript = _text(failure.get("client_transcript_id"))
+    candidate_transcript = _text(candidate.get("client_transcript_id"))
+    if fail_transcript and candidate_transcript and fail_transcript == candidate_transcript:
+        return True
+    return False
 
 
 def _order_key(event: Mapping[str, Any]) -> tuple[float, str]:
@@ -200,31 +232,54 @@ def _stamp_failure(
     failure_id = _text(failure.get("event_id"))
     failure_command = raw_command_by_id.get(failure_id)
 
-    # Same-scope is guaranteed by the group; only the time ordering remains.
+    # Project / section / type scope is guaranteed by the group; only the time
+    # ordering remains here.
     later_events = [
         event for event in ordered_group if _num(event.get("created_at")) > failure_created
     ]
-    later_passes = [event for event in later_events if _result(event) == "passed"]
-    if not later_passes:
-        # No later same-scope pass at all: the finding stands unchanged.
-        return
 
-    def basis_for(candidate: Mapping[str, Any]) -> str | None:
-        candidate_id = _text(candidate.get("event_id"))
-        agent_declared = (
+    def _is_agent_declared(candidate: Mapping[str, Any]) -> bool:
+        return (
             _result(candidate) == "passed"
             and bool(failure_id)
             and _text(candidate.get("supersedes_check_event_id")) == failure_id
         )
+
+    def basis_for(candidate: Mapping[str, Any]) -> str | None:
+        # An EXPLICIT declaration is intentional and may cross a linked
+        # continuation (a different session in the same project/section), so it
+        # is never gated on session identity.
+        if _is_agent_declared(candidate):
+            return "agent_declared"
+        # The INFERRED bases (same_command / command_shape) only speak to this
+        # finding when the pass ran in the SAME session (#218): a coincidental
+        # command match from an unlinked different session must not retire it.
+        if not _same_session(failure, candidate):
+            return None
         return _pair_basis(
             failure_command,
-            raw_command_by_id.get(candidate_id),
-            agent_declared=agent_declared,
+            raw_command_by_id.get(_text(candidate.get("event_id"))),
+            agent_declared=False,
         )
+
+    # The only later passes that speak to this finding are those in its own
+    # session scope, plus any pass that explicitly declares it superseded. A pass
+    # from an unlinked different session is out of scope entirely -- it leaves the
+    # finding standing (not even "unconfirmed"), because it never measured this
+    # finding's work.
+    scoped_later_passes = [
+        candidate
+        for candidate in later_events
+        if _result(candidate) == "passed"
+        and (_same_session(failure, candidate) or _is_agent_declared(candidate))
+    ]
+    if not scoped_later_passes:
+        # No later in-scope pass at all: the finding stands unchanged.
+        return
 
     gate_passes = [
         (candidate, basis)
-        for candidate in later_passes
+        for candidate in scoped_later_passes
         if (basis := basis_for(candidate)) is not None
     ]
     if not gate_passes:

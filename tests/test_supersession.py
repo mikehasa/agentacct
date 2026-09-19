@@ -181,6 +181,72 @@ def test_agent_declared_link_is_ignored_across_scope() -> None:
     assert projected["fail"]["supersession_state"] is None
 
 
+def test_unlinked_second_session_pass_never_supersedes_first_session_finding() -> None:
+    # #218: two UNLINKED sessions, identical project + section + command. A pass
+    # in the second session must NOT retire the first session's failure on a
+    # coincidental command match. It is not "unconfirmed" either -- a
+    # different-session pass never measured this finding's work, so the finding
+    # simply stands.
+    events = [
+        _raw_check(event_id="fail", created_at=1000.0, result="failed", name="suite", command="pytest", exit_code=1, session="sess-1"),
+        _raw_check(event_id="pass", created_at=1044.0, result="passed", name="suite", command="pytest", exit_code=0, session="sess-2"),
+    ]
+    # annotate_supersession runs store-wide (over both sessions) here, exactly as
+    # build_evidence_events does before Task assignment.
+    projected = _by_id(build_evidence_events(events))
+    failure = projected["fail"]
+    assert failure["supersession_state"] is None
+    assert failure["superseded_by_event_id"] is None
+    assert failure["supersession_basis"] is None
+
+    # Downstream: the first session's Task carries only its OWN failed check (the
+    # second session's pass belongs to a different, correctly-separated Task). It
+    # must stay a standing finding -- pre-fix the store-wide "superseded" stamp
+    # leaked onto this failure and flipped the Task to finding_superseded.
+    outcome = reduce_task_outcome(_task_with_checks([failure]))
+    assert outcome["key"] == "finding"
+    assert any(str(c.get("result")) == "failed" for c in outcome["latest_checks"])
+
+
+def test_same_session_retry_still_supersedes_via_same_command() -> None:
+    # LEGIT: a later passing run of the same command IN THE SAME session is a
+    # genuine retry and still retires the failure.
+    events = [
+        _raw_check(event_id="fail", created_at=1000.0, result="failed", name="suite", command="pytest", exit_code=1, session="sess-1"),
+        _raw_check(event_id="pass", created_at=1044.0, result="passed", name="suite", command="pytest", exit_code=0, session="sess-1"),
+    ]
+    projected = _by_id(build_evidence_events(events))
+    failure = projected["fail"]
+    assert failure["supersession_state"] == "superseded"
+    assert failure["superseded_by_event_id"] == "pass"
+    assert failure["supersession_basis"] == "same_command"
+
+
+def test_explicit_declaration_supersedes_across_sessions() -> None:
+    # LEGIT: an EXPLICIT agent-declared link (supersedes_check_event_id) is
+    # intentional and may cross a linked continuation -- a different session in
+    # the same project/section. It stays working across sessions where the
+    # INFERRED bases deliberately do not.
+    events = [
+        _raw_check(event_id="fail", created_at=1000.0, result="failed", name="alpha", command="cmd-a", exit_code=1, session="sess-1"),
+        _raw_check(
+            event_id="pass",
+            created_at=1044.0,
+            result="passed",
+            name="totally different",
+            command="cmd-z",
+            exit_code=0,
+            session="sess-2",
+            supersedes_check_event_id="fail",
+        ),
+    ]
+    projected = _by_id(build_evidence_events(events))
+    failure = projected["fail"]
+    assert failure["supersession_state"] == "superseded"
+    assert failure["superseded_by_event_id"] == "pass"
+    assert failure["supersession_basis"] == "agent_declared"
+
+
 # --- reducer / decider parity -------------------------------------------------
 
 
