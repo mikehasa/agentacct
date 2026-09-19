@@ -59,6 +59,7 @@ rm -rf "$DIST_DIR" "$WORK_DIR" "$HERE"/*.spec
     --collect-all agentacct \
     --collect-all uvicorn \
     --collect-all textual \
+    --collect-all zstandard \
     --collect-submodules pydantic \
     --hidden-import=agentacct.statusline_hook \
     --hidden-import=uvicorn.loops.auto \

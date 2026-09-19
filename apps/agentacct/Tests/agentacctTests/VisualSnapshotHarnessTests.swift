@@ -32,7 +32,7 @@ final class VisualSnapshotHarnessTests: XCTestCase {
         let image = image(width: 2, height: 2, fill: [32, 64, 96, 255])
         let comparison = VisualSnapshotHarness.compare(expected: image, actual: image)
 
-        XCTAssertTrue(comparison.isWithin(.renderingNoise))
+        XCTAssertTrue(comparison.isWithin(.crossMinorRenderingNoise))
         XCTAssertEqual(comparison.changedPixels, 0)
         XCTAssertEqual(comparison.maximumChannelDelta, 0)
     }
@@ -71,7 +71,7 @@ final class VisualSnapshotHarnessTests: XCTestCase {
             expected: expected,
             actual: VisualSnapshotImage(width: 10, height: 10, rgba: widespreadDelta)
         )
-        XCTAssertFalse(widespreadNoise.isWithin(.renderingNoise))
+        XCTAssertFalse(widespreadNoise.isWithin(.crossMinorRenderingNoise))
     }
 
     func testMismatchWritesExpectedActualAndDiffArtifacts() throws {
@@ -127,7 +127,7 @@ final class VisualSnapshotHarnessTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: referenceURL.path))
         XCTAssertTrue(
             try VisualSnapshotHarness.compare(expectedURL: referenceURL, actualURL: actualURL)
-                .isWithin(.renderingNoise)
+                .isWithin(.crossMinorRenderingNoise)
         )
     }
 
@@ -156,7 +156,7 @@ final class VisualSnapshotHarnessTests: XCTestCase {
             try VisualSnapshotHarness.compare(
                 expectedURL: referenceURL,
                 actualURL: actualURL
-            ).isWithin(.renderingNoise)
+            ).isWithin(.crossMinorRenderingNoise)
         )
     }
 
@@ -238,7 +238,7 @@ final class VisualSnapshotHarnessTests: XCTestCase {
         let comparison = VisualSnapshotHarness.compare(expected: expected, actual: actual)
 
         XCTAssertFalse(comparison.dimensionsMatch)
-        XCTAssertFalse(comparison.isWithin(.renderingNoise))
+        XCTAssertFalse(comparison.isWithin(.crossMinorRenderingNoise))
         XCTAssertEqual(comparison.changedPixelFraction, 1)
         XCTAssertEqual(comparison.changedChannelFraction, 1)
     }
@@ -330,7 +330,7 @@ final class VisualSnapshotHarnessTests: XCTestCase {
         XCTAssertEqual(result, .recorded)
         XCTAssertTrue(
             try VisualSnapshotHarness.compare(expectedURL: referenceURL, actualURL: actualURL)
-                .isWithin(.renderingNoise)
+                .isWithin(.crossMinorRenderingNoise)
         )
     }
 

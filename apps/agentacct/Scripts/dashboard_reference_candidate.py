@@ -23,6 +23,9 @@ EXPECTED_IMAGES = {
 FULL_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 SAFE_RENDERER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 SAFE_REFERENCE_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.png")
+# Written beside the references by `visual-snapshots record`. Provenance only:
+# never compared, never promoted, and excluded from the reference inventory.
+PROVENANCE_FILENAME = "PLATFORM.json"
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_PNG_BYTES = 64 * 1024 * 1024
@@ -169,6 +172,13 @@ def _reference_files(directory: Path) -> dict[str, Path]:
 
     files: dict[str, Path] = {}
     for path in directory.iterdir():
+        # PLATFORM.json is provenance, not a reference image: `visual-snapshots
+        # record` writes it beside the PNGs so the recording machine stays on
+        # the record even though the gate no longer spells it out in the
+        # directory name. It is named here rather than matched loosely, so any
+        # OTHER stray file still fails this inventory.
+        if path.name == PROVENANCE_FILENAME and path.is_file() and not path.is_symlink():
+            continue
         if (
             path.is_symlink()
             or not path.is_file()
@@ -463,6 +473,18 @@ def promote_candidate_bundle(
                 continue
             preserved_hashes[filename] = file_sha256(source)
             _copy_regular_file(source, staging / filename)
+        # `_reference_files` returns PNGs only, so the provenance file would be
+        # dropped by the directory swap below unless it is carried across
+        # explicitly. It describes the machine that recorded the PNGs being
+        # preserved here, so losing it would silently orphan them the same way
+        # the old platform-id-in-the-name scheme did.
+        existing_provenance = destination / PROVENANCE_FILENAME
+        if (
+            destination.exists()
+            and existing_provenance.is_file()
+            and not existing_provenance.is_symlink()
+        ):
+            _copy_regular_file(existing_provenance, staging / PROVENANCE_FILENAME)
         for filename in EXPECTED_IMAGES:
             _copy_regular_file(candidate / "images" / filename, staging / filename)
         staged_files = _reference_files(staging)

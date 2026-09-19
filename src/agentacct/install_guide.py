@@ -44,8 +44,8 @@ ONE_LINE_PROMPT = (
 # Agents accepted by `setup prompt` / `setup mcp`. The last four share one
 # INSTALL.md section (their MCP config lives in client-specific/profile
 # locations, so agentacct previews instead of writing).
-PROMPT_AGENTS = ("claude-code", "codex", "hermes", "opencode", "openclaw", "generic")
-MCP_PREVIEW_AGENTS = ("hermes", "opencode", "openclaw", "generic")
+PROMPT_AGENTS = ("claude-code", "codex", "hermes", "opencode", "openclaw", "dsh", "generic")
+MCP_PREVIEW_AGENTS = ("hermes", "opencode", "openclaw", "dsh", "generic")
 
 # INSTALL.md section headings (level-3, under "Step 2").
 INSTALL_MD_SECTION_TITLES = {
@@ -288,6 +288,16 @@ _RECORDING_CONTRACT_LINES = (
     "- Open a section with `agentacct_record_section` BEFORE your first other tool call, and again before each meaningful task. REQUIRED args: `source` (your client name, e.g. \"codex\" or \"claude-code\"), a stable `section_id` (reuse the SAME id across this section's started/checkpoint/terminal calls), and `section_status`; also set `section_title` to a short human goal. Start with `section_status=started`; normally finish with `completed` or `blocked`. Example: agentacct_record_section(source=\"codex\", section_id=\"add-rate-limit\", section_status=\"started\", section_title=\"add rate-limit to login\").",
     "- For a long task, send `section_status=checkpoint` updates rather than one giant section.",
     "- When the user hands the work off or says they are continuing in a new session, record the section as `section_status=handed_off` (a clean stop) — do not leave it `started`/`checkpoint`.",
+    # The whole-job-done capstone. The per-task bullet above closes each task,
+    # but nothing cued a SESSION-level close when the user signals the whole
+    # deliverable is finished ("ship it" / a merge). Without it a finished session
+    # reads as a pile of sub-tasks, its done-ness only inferable. Deliberately
+    # NOT promising a decision word: the work views grade completion from evidence
+    # (verified vs. reported) and a late completed update can even re-stale earlier
+    # checks — so this cues only the honest close, and the machine_check bullet
+    # below owns the evidence. Triggers stay unambiguous (a mid-task "looks good"
+    # must not fire it).
+    "- When the user signals the whole job is done (\"ship it\", or after a merge), record a final `section_status=completed` summarizing the whole deliverable, and leave no section on `started`/`checkpoint`.",
     "- After running tests or a build, record the objective result with `agentacct_record_machine_check`.",
     "- Keep MCP/event evidence separate from token/cost claims: MCP events prove what work happened; a token or cost figure is only real if it comes from actual client usage the importer read — never fabricate one.",
 )
@@ -469,6 +479,9 @@ INSTRUCTION_USER_FILES = {
     "claude-code": ".claude/CLAUDE.md",
     "codex": ".codex/AGENTS.md",
     "opencode": ".config/opencode/AGENTS.md",
+    # dsh reads $DSH_HOME/AGENTS.md on every session; the CLI resolves the real
+    # $DSH_HOME (this ~/.dsh value is the default and the fallback documentation).
+    "dsh": ".dsh/AGENTS.md",
 }
 
 # Default project-level instruction file per agent (relative to the repo root).
@@ -476,6 +489,7 @@ INSTRUCTION_PROJECT_FILES = {
     "claude-code": "CLAUDE.md",
     "codex": "AGENTS.md",
     "opencode": "AGENTS.md",
+    "dsh": "AGENTS.md",
 }
 
 INSTRUCTION_AGENTS = tuple(INSTRUCTION_USER_FILES)
@@ -613,6 +627,7 @@ CAPABILITY_MATRIX = (
     "Hermes: `agentacct onboard --scope global --agent hermes` writes the user-scope MCP registration and an observe-only v1 shell-hook bridge for tool activity, recognized check exit codes, per-turn liveness, and the first-turn record-your-work nudge. One-time hook consent and a running-gateway restart are still required; unsafe hooks YAML is preserved and leaves tools-only setup. Project-scope setup only previews the profile command. Hermes has no generic Evidence v2 manifest adapter.",
     "OpenCode: `agentacct onboard --scope global --agent opencode` writes user-scope MCP config, global rules, and an observe-only v1 plugin for tool activity and recognized check exit codes; a new session auto-loads the plugin. Project-scope setup only previews the user-config command. Native `opencode.db` session totals remain the usage path (JSON export fallback; per-message granularity pending). OpenCode has no generic Evidence v2 manifest adapter.",
     "OpenClaw: local JSONL usage import plus a manual MCP registration preview; agentacct does not yet join `sessions.json` routing metadata or install typed plugin hooks.",
+    "DeepSeek Harness (dsh): local usage import from its Zstandard-compressed JSONL session logs under ~/.dsh (input/output/cache/reasoning tokens; dsh records no cost), plus MCP self-reporting — `agentacct onboard --agent dsh` writes the @deepseek-ai/dsh-mcp-client registration into $DSH_HOME/cordis.patch.yml (the home patch applied over every profile the CLI boots) and the record-your-work directive into $DSH_HOME/AGENTS.md, so a dsh session records over MCP like Codex or OpenCode (`setup mcp --agent dsh` previews the same registration). A live dsh 0.1.5-rc.1 session loaded the plugin in-box and recorded over MCP, verified on one machine and version; onboarding still prints a `dsh plugin add` fallback for environments where it does not. The usage-import lanes are synthetic-fixture verified only, and there is no typed dsh plugin hook.",
     "Cursor: the primary `User/globalStorage/state.vscdb` can produce observation-only composer sessions through an explicit local import/refresh. It never emits usage or cost, never scans backups or ai-tracking stores, and onboarding does not install or activate it. Metadata-only hook payload normalization remains a separate manual primitive.",
     "Generic MCP clients: recorded work context only unless a separate trusted usage importer exists; join confidence depends on ids the client actually exposes.",
     "Generic Evidence v2 capture is a separate render-only/manual path for Claude Code, Codex, and Cursor: `capture manifest` does not edit host settings, and onboarding does not enable those manifests. The installed Codex/Hermes/OpenCode v1 bridges above may feed activity/check evidence through their own spool/import paths, but neither capture family reports token/cost truth or invents named work steps; MCP remains the richer semantic source.",

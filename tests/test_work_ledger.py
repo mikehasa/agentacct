@@ -1,7 +1,16 @@
 from __future__ import annotations
 
 from agentacct.service import summarize_events
-from agentacct.work_ledger import build_work_ledger
+from agentacct.work_ledger import (
+    _nearest_usage_summary,
+    _plain_project_label,
+    _plain_project_label_cached,
+    _project_identity,
+    _project_identity_cached,
+    _safe_optional_float,
+    build_join_inspector,
+    build_work_ledger,
+)
 
 
 def _usage_event(
@@ -1822,3 +1831,73 @@ def test_evidence_link_index_matches_a_full_scan_byte_for_byte() -> None:
     assert statuses.get("sec-1") == "strong"  # single passing check
     assert statuses.get("sec-3") == "strong"
     assert statuses.get("sec-2") not in (None, "none")  # evidenced (fail + pass both attached)
+
+
+def _nearest_usage_row(client, created_at, total_tokens):
+    return {
+        "client": client,
+        "created_at": created_at,
+        "total_tokens": total_tokens,
+        "provider": "openai",
+        "model": "gpt-5.5",
+        "estimated_cost_usd": 0.1,
+        "usage_confidence": "client_reported",
+        "cost_confidence": "estimated_from_tokens",
+    }
+
+
+def test_nearest_usage_summary_tie_break_byte_identical() -> None:
+    # item_time == 100. Rows a and c are equidistant BELOW (95); row b is
+    # equidistant ABOVE (105) — three rows tie at abs-distance 5. min() returns
+    # the FIRST such row in candidates order (row a). The precompute path
+    # (created_at_by_id) must return byte-identical output to the original
+    # reparse path (created_at_by_id=None), including that first-tie pick.
+    item = {"client": "codex", "updated_at": 100.0}
+    usage_events = [
+        _nearest_usage_row("codex", 95.0, 111),   # first at distance 5
+        _nearest_usage_row("codex", 105.0, 222),  # tie at distance 5
+        _nearest_usage_row("codex", 95.0, 333),   # tie at distance 5
+        _nearest_usage_row("codex", 130.0, 444),  # farther
+    ]
+    created_at_by_id = {id(u): (_safe_optional_float(u.get("created_at")) or 0.0) for u in usage_events}
+
+    with_precompute = _nearest_usage_summary(item, usage_events, created_at_by_id)
+    original_reparse = _nearest_usage_summary(item, usage_events)  # fallback path == pre-change code
+
+    assert with_precompute == original_reparse
+    assert with_precompute is not None
+    assert with_precompute["total_tokens"] == 111  # first equidistant row wins
+
+    # And the same picks the same row when embedded through build_join_inspector
+    # (which now supplies the precomputed map).
+    section = {
+        "work_id": "codex::sess::sec",
+        "section_id": "sec",
+        "client": "codex",
+        "client_session_id": "sess",
+        "updated_at": 100.0,
+    }
+    inspector = build_join_inspector(list(usage_events), [section], [])
+    nearest = inspector["work_item_join_explanations"]["codex::sess::sec"]["nearest_usage_summary"]
+    assert nearest["total_tokens"] == 111
+
+
+def test_project_label_cache_respects_home(monkeypatch) -> None:
+    _plain_project_label_cached.cache_clear()
+    _project_identity_cached.cache_clear()
+
+    monkeypatch.setenv("HOME", "/a")
+    assert _plain_project_label("/a") == "~"
+    assert _plain_project_label("/a/proj") == "proj"
+
+    # A different HOME must NOT reuse the cached "~" verdict for /a (home is a
+    # mandatory component of the cache key, else the verdict would leak).
+    monkeypatch.setenv("HOME", "/b")
+    assert _plain_project_label("/b") == "~"
+    assert _plain_project_label("/a") != "~"
+
+    # Identity is stable/equal across repeated calls for the same path.
+    first = _project_identity("/tmp/x")
+    second = _project_identity("/tmp/x")
+    assert first == second
+    assert first is not None

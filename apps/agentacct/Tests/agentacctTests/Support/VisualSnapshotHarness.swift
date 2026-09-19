@@ -7,25 +7,51 @@ struct VisualSnapshotTolerance: Equatable {
     let maximumChannelDelta: Int
     let maximumChangedChannelFraction: Double
 
-    /// Absorbs only known one-step raster rounding, not visible UI changes.
-    static let renderingNoise = Self(
+    /// The ONE tolerance every visual reference is compared at.
+    ///
+    /// It absorbs the antialiasing drift between two macOS minor versions
+    /// inside the pinned major, and nothing else. `./Scripts/visual-snapshots`
+    /// pins macOS MAJOR (26), Xcode MAJOR.MINOR, arch, TZ, and locale; the
+    /// minor version is deliberately free, so this tolerance has to cover it.
+    ///
+    /// MEASURED BASIS — macOS 26.5.1 (25F80) render vs references recorded on
+    /// macOS 26.6 (25G72), same Xcode 26.6 (17F113), same arm64, TZ=UTC, at the
+    /// commit that produced those references (ea75e2d), 98 images:
+    ///   - 69 images byte-identical; 27 differed; 2 failed on dimensions for an
+    ///     unrelated raster-scale bug (since fixed in `AboutSnapshotHarness`).
+    ///   - `maximumChannelDelta` was EXACTLY 1 on every one of the 96
+    ///     dimension-matching images. Alpha never moved.
+    ///   - Worst `changedChannelFraction` 0.001469 (setup-failure-light), then
+    ///     0.001220 (menu-connected-sparse-light); 20 of the 27 sat between
+    ///     5.1e-8 and 1.5e-6.
+    ///   - 0.003 leaves 2.04x headroom over that worst case. The old 0.0015
+    ///     budget was 97.96% consumed by this single minor-version hop.
+    ///
+    /// WHY `maximumChannelDelta` STAYS AT 1 — this is the whole instrument.
+    /// The only real UI change in that run (a two-character clock text, "13:46"
+    /// vs "06:46") moved just 0.0000538-0.0000678 of channels, i.e. 1/15th of
+    /// even the old 0.001 area budget: the area budget waved it straight
+    /// through. It was caught solely because its channel delta was 139-166.
+    /// Measured real changes land at delta 139-232; measured cross-minor noise
+    /// never exceeded 1. Raise this to 2 and the comparator stops detecting
+    /// small real changes at all.
+    ///
+    /// WHAT 0.003 GIVES UP: a change where EVERY altered channel moves by
+    /// exactly 1 level over 0.1%-0.3% of channels — a one-step colour-token or
+    /// 1/255 opacity change on a MEDIUM element. The same change on a large
+    /// region still fails the area budget, and on a small element it was
+    /// already missed at 0.001. That class is guarded structurally instead, by
+    /// `ColorTokenLintTests` / `ThemeContrastTests` / `FieldFontRoleTests`.
+    ///
+    /// EXPIRY: this value and the major-only pin are a BRIDGE, calibrated from
+    /// ONE minor-version hop (n=1) because macOS 26.6 is no longer obtainable.
+    /// It carries no evidence about a new macOS MAJOR. When macOS 27 lands,
+    /// `platform-id` yields a directory that does not exist and the suite fails
+    /// loudly on `missingReference` — that is the moment to move to a pinned CI
+    /// runner and tighten this back, not to widen it again.
+    static let crossMinorRenderingNoise = Self(
         maximumChannelDelta: 1,
-        maximumChangedChannelFraction: 0.001
-    )
-
-    /// The compact 360 pt menu packs more antialiased glyph edges into each
-    /// pixel row. It still permits only one-channel-step raster noise.
-    static let menuRenderingNoise = Self(
-        maximumChannelDelta: 1,
-        maximumChangedChannelFraction: 0.0015
-    )
-
-    /// Selectable diagnostics add dense antialiased glyph edges. Repeated
-    /// renders may move only one channel step on a similarly small fraction
-    /// of channels; visible changes remain far outside this bound.
-    static let setupRenderingNoise = Self(
-        maximumChannelDelta: 1,
-        maximumChangedChannelFraction: 0.0015
+        maximumChangedChannelFraction: 0.003
     )
 }
 
@@ -216,7 +242,7 @@ enum VisualSnapshotHarness {
         actualURL: URL,
         artifactDirectory: URL,
         mode: VisualSnapshotMode,
-        tolerance: VisualSnapshotTolerance = .renderingNoise
+        tolerance: VisualSnapshotTolerance = .crossMinorRenderingNoise
     ) throws -> VisualSnapshotResult {
         switch mode {
         case .verify:
@@ -323,7 +349,7 @@ enum VisualSnapshotHarness {
         expectedURL: URL,
         actualURL: URL,
         artifactDirectory: URL,
-        tolerance: VisualSnapshotTolerance = .renderingNoise
+        tolerance: VisualSnapshotTolerance = .crossMinorRenderingNoise
     ) throws {
         try removeFailureArtifacts(name: name, from: artifactDirectory)
         guard FileManager.default.fileExists(atPath: expectedURL.path) else {
@@ -406,6 +432,26 @@ enum VisualSnapshotHarness {
             if FileManager.default.fileExists(atPath: artifact.path) {
                 try FileManager.default.removeItem(at: artifact)
             }
+        }
+    }
+}
+
+extension VisualSnapshotImage {
+    /// Pixels at the offscreen renderer's unsupported-view yellow, #FFCC00.
+    ///
+    /// That exact colour is in no token (the amber family is 0x7A5A00,
+    /// 0xA67B00 and 0xE7C66A), so any of it in a review render means an
+    /// AppKit-backed control drew a placeholder instead of itself (K68). Every
+    /// fixture harness asserts this, so the rule cannot be fixed on one
+    /// surface and left broken on another.
+    var unsupportedControlPlaceholderPixels: Int {
+        rgba.withUnsafeBytes { (pixels: UnsafeRawBufferPointer) in
+            var found = 0
+            for index in stride(from: 0, to: width * height * 4, by: 4)
+            where pixels[index] == 255 && pixels[index + 1] == 204 && pixels[index + 2] == 0 {
+                found += 1
+            }
+            return found
         }
     }
 }

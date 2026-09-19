@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from .plural import count_noun
 from .receipt import (
     PROVENANCE_LEGEND,
     evidence_coverage_headline,
@@ -89,9 +90,9 @@ def _dimension_rows(receipt: Mapping[str, Any]) -> list[tuple[str, str, str]]:
 
     actions = dims.get("actions", {}) if isinstance(dims.get("actions"), Mapping) else {}
     actions_summary = receipt_category_text(actions.get("tool_category_counts") or {})
-    actions_summary += f" · touched {int(actions.get('touched_file_count') or 0)} file(s)"
+    actions_summary += f" · touched {count_noun(int(actions.get('touched_file_count') or 0), 'file')}"
     if int(actions.get("command_count") or 0):
-        actions_summary += f" · ran {int(actions.get('command_count') or 0)} command(s)"
+        actions_summary += f" · ran {count_noun(int(actions.get('command_count') or 0), 'command')}"
 
     cost = dims.get("cost", {}) if isinstance(dims.get("cost"), Mapping) else {}
     evidence = dims.get("evidence", {}) if isinstance(dims.get("evidence"), Mapping) else {}

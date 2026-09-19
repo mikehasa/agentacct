@@ -75,12 +75,12 @@ final class MenuSnapshotHarnessTests: XCTestCase {
             )
             XCTAssertLessThanOrEqual(
                 difference.maximumChannelDelta,
-                VisualSnapshotTolerance.menuRenderingNoise.maximumChannelDelta,
+                VisualSnapshotTolerance.crossMinorRenderingNoise.maximumChannelDelta,
                 artifact.filename
             )
             XCTAssertLessThanOrEqual(
                 difference.changedChannelFraction,
-                VisualSnapshotTolerance.menuRenderingNoise.maximumChangedChannelFraction,
+                VisualSnapshotTolerance.crossMinorRenderingNoise.maximumChangedChannelFraction,
                 artifact.filename
             )
         }

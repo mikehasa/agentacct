@@ -58,6 +58,14 @@ struct SetupConfigurationPlan {
                 Change(path: home(".hermes/config.yaml"), action: "Merge agentacct's MCP server and tool, check, turn-boundary, and recording-instruction hooks."),
                 Change(path: home(".hermes/hooks/agentacct_hermes_hook.py"), action: "Install the hook wrapper. Hermes requires separate approval before hooks run.")
             ]
+        case .deepseekHarness:
+            let dshEnv = (environment["DSH_HOME"] ?? environment["DSH_DIR"])?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let dshHome = dshEnv.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+                ?? homeDirectory.appendingPathComponent(".dsh")
+            changes = [
+                Change(path: dshHome.appendingPathComponent("cordis.patch.yml").path, action: "Add the @deepseek-ai/dsh-mcp-client MCP server to the home patch applied over every dsh profile (non-destructive append; previewed if the file cannot be safely extended)."),
+                Change(path: dshHome.appendingPathComponent("AGENTS.md").path, action: "Add or update the managed instruction to record work sections and checks.")
+            ]
         }
     }
 
@@ -79,6 +87,8 @@ struct SetupConfigurationPlan {
             return "Open a new OpenCode session so it loads the MCP server, rules, and activity plugin."
         case .hermes:
             return "Approve the agentacct hooks in Hermes, then restart its gateway or open a new session. The setup output contains the exact consent steps."
+        case .deepseekHarness:
+            return "Start a new dsh session so it loads the home-patch MCP server and $DSH_HOME/AGENTS.md instructions. If dsh reports the @deepseek-ai/dsh-mcp-client plugin is missing, run: dsh plugin --profile <name> add @deepseek-ai/dsh-mcp-client."
         }
     }
 }

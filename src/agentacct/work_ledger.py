@@ -4,6 +4,7 @@ import json
 import math
 import re
 from collections import Counter
+from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -1458,6 +1459,11 @@ def build_join_inspector(
     """Explain why each work item did or did not receive usage attribution."""
 
     usage_events = annotate_usage_source_namespace_ambiguity(usage_events)
+    # Parse each usage row's created_at ONCE (was reparsed per work_item × usage row
+    # inside _nearest_usage_summary). Keyed by object identity; the same dict objects
+    # flow through candidate_usage / usage_events below, so lookups are exact and the
+    # min()-based nearest pick stays byte-identical (only the reparse is removed).
+    created_at_by_id = {id(u): (_safe_optional_float(u.get("created_at")) or 0.0) for u in usage_events}
     attributions_by_work: dict[str, list[dict[str, Any]]] = {}
     for attribution in attributions:
         work_id = attribution.get("work_id")
@@ -1509,7 +1515,7 @@ def build_join_inspector(
         explanation["candidate_usage_count"] = len(candidate_usage)
         explanation["attributed_usage_count"] = len(attributed)
         explanation["context_matched_usage_count"] = len(candidate_usage)
-        explanation["nearest_usage_summary"] = _nearest_usage_summary(item, candidate_usage or usage_events)
+        explanation["nearest_usage_summary"] = _nearest_usage_summary(item, candidate_usage or usage_events, created_at_by_id)
         explanations[work_id] = explanation
 
     attributed_usage = [attr for attr in attributions if _is_attributed_attribution(attr)]
@@ -4311,13 +4317,22 @@ def _missing_work_join_keys(item: dict[str, Any]) -> list[str]:
     return missing
 
 
-def _nearest_usage_summary(item: dict[str, Any], usage_events: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _nearest_usage_summary(item: dict[str, Any], usage_events: list[dict[str, Any]], created_at_by_id: dict[int, float] | None = None) -> dict[str, Any] | None:
     if not usage_events:
         return None
     same_client = [usage for usage in usage_events if not item.get("client") or not usage.get("client") or usage.get("client") == item.get("client")]
     candidates = same_client or usage_events
     item_time = _safe_optional_float(item.get("updated_at")) or _safe_optional_float(item.get("started_at")) or 0.0
-    nearest = min(candidates, key=lambda usage: abs((_safe_optional_float(usage.get("created_at")) or 0.0) - item_time))
+
+    # Read the precomputed created_at float when the caller supplied the map (the
+    # cached values are always floats, never None, so this is exact). Falls back to
+    # the original reparse when called directly without the map — byte-identical.
+    def _created(usage: dict[str, Any]) -> float:
+        if created_at_by_id is not None:
+            return created_at_by_id.get(id(usage), _safe_optional_float(usage.get("created_at")) or 0.0)
+        return _safe_optional_float(usage.get("created_at")) or 0.0
+
+    nearest = min(candidates, key=lambda usage: abs(_created(usage) - item_time))
     return {
         "client": nearest.get("client"),
         "provider_model": _provider_model_label(nearest.get("provider"), nearest.get("model")),
@@ -4730,6 +4745,16 @@ def _safe_relative_paths(value: Any) -> list[str]:
     return safe
 
 
+@lru_cache(maxsize=4096)
+def _worktree_owner_path_text_cached(text: str) -> str | None:
+    """Memoized wrapper over ``claude_worktree_owner_path_text`` (pure string parse).
+
+    Byte-identical: caches the SAME ~190 distinct path strings that were re-parsed
+    ~11k times per build. Wrapping locally avoids editing the shared
+    ``store_resolution`` module (other callers must keep the uncached function)."""
+    return claude_worktree_owner_path_text(text)
+
+
 def _project_label_info(value: Any) -> tuple[str | None, str | None]:
     """(display label, source) for a project path.
 
@@ -4746,27 +4771,15 @@ def _project_label_info(value: Any) -> tuple[str | None, str | None]:
     text = _optional_str(value)
     if text is None:
         return None, None
-    owner_text = claude_worktree_owner_path_text(text)
+    owner_text = _worktree_owner_path_text_cached(text)
     if owner_text is not None:
         return _plain_project_label(owner_text), "claude_worktree"
     return _plain_project_label(text), None
 
 
-def _project_identity(value: Any) -> str | None:
-    """Pseudonymous full-path identity for safety decisions.
-
-    Display labels intentionally keep only a friendly basename, which is not
-    strong enough for blocker reconciliation: two unrelated repositories can
-    share that basename. Hash the normalized historical path instead (without
-    touching the filesystem) and keep the friendly leaf only as a diagnostic
-    prefix. Claude temporary worktrees resolve to their owner path so an
-    explicit continuation in the owner repo can still match safely.
-    """
-
-    text = _optional_str(value)
-    if text is None:
-        return None
-    identity_text = claude_worktree_owner_path_text(text) or text
+@lru_cache(maxsize=4096)
+def _project_identity_cached(text: str, home_text: str) -> str | None:
+    identity_text = _worktree_owner_path_text_cached(text) or text
     normalized = identity_text.replace("\\", "/").rstrip("/") or identity_text
     # Windows drive letters are case-insensitive identity syntax; normalizing
     # only the drive avoids conflating case-sensitive path segments elsewhere.
@@ -4780,18 +4793,45 @@ def _project_identity(value: Any) -> str | None:
     return f"project:{label}:{digest}"
 
 
+def _project_identity(value: Any) -> str | None:
+    """Pseudonymous full-path identity for safety decisions.
+
+    Display labels intentionally keep only a friendly basename, which is not
+    strong enough for blocker reconciliation: two unrelated repositories can
+    share that basename. Hash the normalized historical path instead (without
+    touching the filesystem) and keep the friendly leaf only as a diagnostic
+    prefix. Claude temporary worktrees resolve to their owner path so an
+    explicit continuation in the owner repo can still match safely.
+
+    Delegates to a home-keyed memoized core: the same ~190 distinct paths are
+    otherwise re-hashed/re-regexed thousands of times. ``home_text`` is a cache
+    key only (the embedded label depends on HOME, which tests monkeypatch).
+    """
+
+    text = _optional_str(value)
+    if text is None:
+        return None
+    try:
+        home_text = str(Path.home())
+    except (OSError, RuntimeError):
+        home_text = ""
+    return _project_identity_cached(text, home_text)
+
+
 def _safe_project_label(value: Any) -> str | None:
     return _project_label_info(value)[0]
 
 
-def _plain_project_label(text: str) -> str | None:
-    try:
-        # A session run from the home directory must render "~", never the
-        # account username (the last path segment IS the username there).
-        if Path(text.rstrip("/\\")).expanduser() == Path.home():
-            return "~"
-    except (OSError, RuntimeError, ValueError):
-        pass
+@lru_cache(maxsize=8192)
+def _plain_project_label_cached(text: str, home_text: str) -> str | None:
+    if home_text:
+        try:
+            # A session run from the home directory must render "~", never the
+            # account username (the last path segment IS the username there).
+            if Path(text.rstrip("/\\")).expanduser() == Path(home_text):
+                return "~"
+        except (OSError, RuntimeError, ValueError):
+            pass
     normalized = text.replace("\\", "/").rstrip("/")
     normalized = re.sub(r"^[A-Za-z]:", "", normalized)
     normalized = normalized.lstrip("/")
@@ -4799,6 +4839,19 @@ def _plain_project_label(text: str) -> str | None:
     if parts:
         return _short_public_text(parts[-1])
     return _short_public_text(text)
+
+
+def _plain_project_label(text: str) -> str | None:
+    # Memoize over the ~190 distinct paths (Path()/expanduser()/Path.home() were
+    # rebuilt per call). ``home_text`` is in the cache key because the "~" verdict
+    # depends on HOME (tests monkeypatch it between cases); an empty home_text
+    # (Path.home() unavailable) skips the "~" check, matching the original
+    # except-and-fall-through behaviour byte-for-byte.
+    try:
+        home_text = str(Path.home())
+    except (OSError, RuntimeError):
+        home_text = ""
+    return _plain_project_label_cached(text, home_text)
 
 
 def _safe_artifact_path(value: Any) -> str | None:
@@ -4903,51 +4956,44 @@ def _provider_model_label(provider: Any, model: Any) -> str:
 
 
 class WorkLedgerCache:
-    """Fingerprint + TTL cache for the derived work ledger (API-serving path).
+    """Change-keyed cache for the derived work ledger (API-serving path).
 
     Every ledger-backed route used to rebuild the ENTIRE ledger from the full
     event list on every request — a multi-second build under any polling
-    client. Same pattern as ``glance.GlanceCache``: the events fingerprint
-    catches every event-list change (append, supersede, namespace bind);
-    ``max_age_seconds`` bounds the staleness of the ledger's SECONDARY inputs
-    (run reports, cost events, mechanical session observations), which the
-    fingerprint deliberately does not cover — hashing three more stores per
-    request would cost more than it saves, and a bounded lag on those lanes is
-    acceptable where a wrong total would not be.
+    client. There is NO wall-clock TTL: the caller passes a composite ``key``
+    that already folds in the events fingerprint AND a cheap append-only
+    signature of the ledger's SECONDARY inputs (cost events, run reports, the
+    evidence client_hook spool) which the events fingerprint deliberately does
+    not cover. Because the key changes iff any of those inputs changed, an
+    unchanged store reuses the build regardless of age (no periodic cold
+    rebuild), and no stale REDUCED state is ever served — the honesty guarantee
+    that a wall-clock bound only approximated.
 
     Concurrency posture (same as GlanceCache): the cached value is one atomic
-    tuple assignment, so a reader never observes a torn triple; two racing
+    tuple assignment, so a reader never observes a torn pair; two racing
     rebuilds waste one build and the last writer wins. A rebuild racing an
     import can briefly win with a slightly older event list — one poll may
     regress and self-heals on the next; it never fabricates a number.
     """
 
-    def __init__(self, max_age_seconds: float = 30.0) -> None:
+    def __init__(self) -> None:
         from threading import Lock
 
         self._lock = Lock()
-        # (fingerprint, built_at, ledger) — always assigned as one tuple.
-        self._cached: tuple[int, float, dict[str, Any]] | None = None
-        self.max_age_seconds = float(max_age_seconds)
+        # (key, ledger) — always assigned as one tuple.
+        self._cached: tuple[int, dict[str, Any]] | None = None
 
-    def _fresh(self, cached: tuple[int, float, dict[str, Any]] | None, fingerprint: int, moment: float) -> bool:
-        return (
-            cached is not None
-            and cached[0] == fingerprint
-            and (moment - cached[1]) < self.max_age_seconds
-        )
+    def _fresh(self, cached: tuple[int, dict[str, Any]] | None, key: int) -> bool:
+        return cached is not None and cached[0] == key
 
-    def ledger(self, fingerprint: int, builder: Any, *, now: float | None = None) -> dict[str, Any]:
-        import time as _time
-
-        moment = _time.time() if now is None else float(now)
+    def ledger(self, key: int, builder: Any) -> dict[str, Any]:
         cached = self._cached
-        if self._fresh(cached, fingerprint, moment):
-            return cached[2]
+        if self._fresh(cached, key):
+            return cached[1]
         with self._lock:
             cached = self._cached
-            if self._fresh(cached, fingerprint, moment):
-                return cached[2]
+            if self._fresh(cached, key):
+                return cached[1]
             ledger = builder()
-            self._cached = (fingerprint, moment, ledger)
+            self._cached = (key, ledger)
             return ledger

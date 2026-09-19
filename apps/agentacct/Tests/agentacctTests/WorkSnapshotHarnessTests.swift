@@ -311,7 +311,7 @@ final class WorkSnapshotHarnessTests: XCTestCase {
                 expectedURL: imageURL,
                 actualURL: secondDirectory.appendingPathComponent(artifact.filename)
             )
-            if !difference.isWithin(.renderingNoise) {
+            if !difference.isWithin(.crossMinorRenderingNoise) {
                 // The render directories are temporary, but retain a failed
                 // pair and pixel diff so the specific state can be diagnosed.
                 do {
@@ -327,12 +327,12 @@ final class WorkSnapshotHarnessTests: XCTestCase {
             }
             XCTAssertLessThanOrEqual(
                 difference.maximumChannelDelta,
-                VisualSnapshotTolerance.renderingNoise.maximumChannelDelta,
+                VisualSnapshotTolerance.crossMinorRenderingNoise.maximumChannelDelta,
                 artifact.filename
             )
             XCTAssertLessThanOrEqual(
                 difference.changedChannelFraction,
-                VisualSnapshotTolerance.renderingNoise.maximumChangedChannelFraction,
+                VisualSnapshotTolerance.crossMinorRenderingNoise.maximumChangedChannelFraction,
                 artifact.filename
             )
         }

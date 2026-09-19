@@ -57,7 +57,7 @@ final class MenuVisualRegressionTests: XCTestCase {
                     actualURL: actualURL,
                     artifactDirectory: artifactDirectory,
                     mode: mode,
-                    tolerance: .menuRenderingNoise
+                    tolerance: .crossMinorRenderingNoise
                 )
             } catch {
                 XCTFail(error.localizedDescription)

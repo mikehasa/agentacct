@@ -4,6 +4,7 @@ import contextvars
 import copy
 import errno
 import hashlib
+import io
 import json
 import math
 import os
@@ -18,6 +19,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Literal, TextIO
+
+try:  # DeepSeek Harness (dsh) session logs are Zstandard-compressed JSONL.
+    import zstandard  # noqa: F401  (declared runtime dependency; guarded so a
+    # stripped build degrades to a stable diagnostic code instead of ImportError)
+except ImportError:  # pragma: no cover - exercised only on a decoder-less build
+    zstandard = None  # type: ignore[assignment]
 
 from .codex_rollout_adapter import (
     CodexEvidenceFragment,
@@ -67,9 +74,9 @@ from .tool_activity import (
 )
 from .mechanical_capture import classify_command, command_digest
 
-UsageClientName = Literal["codex", "claude-code", "opencode", "hermes", "openclaw"]
+UsageClientName = Literal["codex", "claude-code", "opencode", "hermes", "openclaw", "dsh"]
 ObservedClientName = Literal[
-    "codex", "claude-code", "opencode", "hermes", "openclaw", "cursor"
+    "codex", "claude-code", "opencode", "hermes", "openclaw", "dsh", "cursor"
 ]
 # Local clients agentacct can inspect. Cursor is intentionally observation-only:
 # it belongs in discovery/import routing, but never in the usage-event subset.
@@ -79,6 +86,7 @@ SUPPORTED_CLIENTS: tuple[str, ...] = (
     "opencode",
     "hermes",
     "openclaw",
+    "dsh",
     "cursor",
 )
 USAGE_EVENT_CLIENTS: tuple[str, ...] = (
@@ -87,6 +95,7 @@ USAGE_EVENT_CLIENTS: tuple[str, ...] = (
     "opencode",
     "hermes",
     "openclaw",
+    "dsh",
 )
 _MAX_SESSION_TITLE_LENGTH = 240
 _CLAUDE_IDENTITY_SCAN_MAX_BYTES = 256 * 1024
@@ -219,6 +228,7 @@ _DEFAULT_CLIENT_HOME_LABELS: dict[str, str] = {
     "opencode": "~/.local/share/opencode",
     "hermes": "~/.hermes",
     "openclaw": "~/.openclaw (and related roots)",
+    "dsh": "~/.dsh",
     "cursor": "~/Library/Application Support/Cursor",
 }
 
@@ -231,6 +241,7 @@ def describe_scanned_client_homes(
     opencode_home: "Path | None" = None,
     hermes_home: "Path | None" = None,
     openclaw_home: "Path | None" = None,
+    dsh_home: "Path | None" = None,
     cursor_home: "Path | None" = None,
 ) -> list[str]:
     """Human ``client: home`` labels for exactly the clients a scan inspects.
@@ -247,6 +258,7 @@ def describe_scanned_client_homes(
         "opencode": opencode_home,
         "hermes": hermes_home,
         "openclaw": openclaw_home,
+        "dsh": dsh_home,
         "cursor": cursor_home,
     }
     core_plans = resolve_core_usage_source_plans(codex_home=codex_home, claude_home=claude_home)
@@ -447,6 +459,8 @@ class ClientUsageEvent:
             return "hermes"
         if self.client == "openclaw":
             return "openclaw"
+        if self.client == "dsh":
+            return "dsh"
         return "claude-code"
 
     @property
@@ -465,6 +479,8 @@ class ClientUsageEvent:
             return "hermes_state_db_session_rows"
         if self.client == "openclaw":
             return "openclaw_assistant_usage_rows"
+        if self.client == "dsh":
+            return "dsh_assistant_usage_rows"
         return "claude_assistant_message_usage_rows"
 
     @property
@@ -3936,6 +3952,85 @@ def discover_openclaw_usage(*, openclaw_home: Path | None = None, limit_sessions
     return events
 
 
+def discover_dsh_usage(
+    *,
+    dsh_home: Path | None = None,
+    limit_sessions: int = 20,
+    _discovery_stats: dict[str, Any] | None = None,
+) -> list[ClientUsageEvent]:
+    """Read DeepSeek Harness (dsh) session logs and return sanitized usage summaries.
+
+    A per-file read that cannot be decoded at all (missing/too-old zstd decoder,
+    or a session log corrupt from the first byte) is recorded as a stable
+    diagnostic code and skipped rather than aborting the whole scan or importing
+    a silent empty total; a session whose scan was capped/partial is imported but
+    flagged so the diagnostics never present a truncated count as an exact total.
+    """
+
+    sources = _dsh_session_paths(dsh_home)[:limit_sessions]
+    events: list[ClientUsageEvent] = []
+    error_codes: list[str] = []
+    error_count = 0
+
+    def _note_error(code: str) -> None:
+        nonlocal error_count
+        error_count += 1
+        if code not in error_codes:
+            error_codes.append(code)
+
+    for source in sources:
+        path = source.path
+        status = _DshReadStatus()
+        try:
+            usage = _read_dsh_jsonl_usage(source, status)
+        except _ClientUsageDiscoveryReadError as exc:
+            # Structural read failure for this file (e.g. no zstd decoder). Record
+            # and keep scanning the other sessions instead of failing the client.
+            _note_error(exc.code)
+            continue
+        # A globbed-as-importable log that could not be read surfaces a stable
+        # code (never a silent empty import); classify by the actual failure mode
+        # — a decode error means a corrupt file, a byte cap means a too-big one.
+        if status.decode_failed:
+            _note_error("dsh_zstd_decode_failed")
+        elif status.truncated:
+            _note_error("dsh_session_scan_capped")
+        if usage is None:
+            continue
+        session_id = str(usage.get("session_id") or _dsh_session_id(path, None))
+        events.append(
+            ClientUsageEvent(
+                client="dsh",
+                client_session_id=session_id,
+                source_path=path,
+                title=None,
+                cwd=_limited_optional_text(usage.get("cwd"), _MAX_SESSION_TITLE_LENGTH),
+                model=_limited_optional_text(usage.get("model"), 120),
+                input_tokens=_safe_nonnegative_int(usage.get("input_tokens")),
+                output_tokens=_safe_nonnegative_int(usage.get("output_tokens")),
+                cached_input_tokens=_safe_nonnegative_int(usage.get("cache_read_tokens")) + _safe_nonnegative_int(usage.get("cache_write_tokens")),
+                cache_creation_input_tokens=_safe_nonnegative_int(usage.get("cache_write_tokens")),
+                cache_read_input_tokens=_safe_nonnegative_int(usage.get("cache_read_tokens")),
+                cache_creation_tokens_reported=bool(usage.get("cache_write_tokens_reported")),
+                cache_read_tokens_reported=bool(usage.get("cache_read_tokens_reported")),
+                reasoning_output_tokens=_safe_nonnegative_int(usage.get("reasoning_tokens")),
+                provider_name=_limited_optional_text(usage.get("provider"), 80),
+                started_at=_optional_int(usage.get("started_at")),
+                updated_at=_optional_int(source.mtime),
+                turn_count=_safe_nonnegative_int(usage.get("turn_count")),
+                # dsh persists no cost; leave the client-reported cost unset so
+                # the row reads as cost-unknown rather than a fabricated $0.
+                client_reported_cost_usd=None,
+                client_cost_source=None,
+                client_transcript_id=session_id,
+            )
+        )
+    if _discovery_stats is not None:
+        _discovery_stats["error_codes"] = error_codes
+        _discovery_stats["error_count"] = error_count
+    return events
+
+
 def discover_hermes_usage(
     *,
     hermes_home: Path | None = None,
@@ -4698,6 +4793,7 @@ def discover_client_usage_with_diagnostics(
     opencode_home: Path | None = None,
     hermes_home: Path | None = None,
     openclaw_home: Path | None = None,
+    dsh_home: Path | None = None,
     cursor_home: Path | None = None,
     limit_sessions: int = 20,
 ) -> ClientUsageDiscoveryResult:
@@ -4755,11 +4851,19 @@ def discover_client_usage_with_diagnostics(
                     _discovery_stats=stats,
                     _session_observations=session_observations,
                 )
-            else:
+            elif client_name == "dsh":
+                discovered_events = discover_dsh_usage(
+                    dsh_home=dsh_home,
+                    limit_sessions=limit_sessions,
+                    _discovery_stats=stats,
+                )
+            elif client_name == "openclaw":
                 discovered_events = discover_openclaw_usage(
                     openclaw_home=openclaw_home,
                     limit_sessions=limit_sessions,
                 )
+            else:  # pragma: no cover - every SUPPORTED_CLIENTS name is handled above
+                discovered_events = []
         except (_ClientUsageDiscoveryReadError, OSError, sqlite3.DatabaseError) as exc:
             discovered_events = []
             error_codes.append(_client_usage_discovery_error_code(exc))
@@ -4858,6 +4962,7 @@ def discover_client_usage(
     opencode_home: Path | None = None,
     hermes_home: Path | None = None,
     openclaw_home: Path | None = None,
+    dsh_home: Path | None = None,
     cursor_home: Path | None = None,
     limit_sessions: int = 20,
 ) -> list[ClientUsageEvent]:
@@ -4870,6 +4975,7 @@ def discover_client_usage(
         opencode_home=opencode_home,
         hermes_home=hermes_home,
         openclaw_home=openclaw_home,
+        dsh_home=dsh_home,
         cursor_home=cursor_home,
         limit_sessions=limit_sessions,
     ).events
@@ -4985,12 +5091,23 @@ def _local_usage_candidate_matches_stored_row(candidate_event: dict[str, Any], s
             continue
         # The revision watermark is ordering provenance, not usage content.
         # A transcript file's mtime advances whenever the session appends —
-        # including turns that leave THIS lane's usage untouched — so
-        # comparing it would rewrite unchanged rows on every scan of an
-        # active session, which is exactly the churn this gate exists to
-        # prevent. Rows adopt the current watermark when real content changes.
+        # including turns that leave THIS lane's usage untouched — so once a row
+        # already carries a watermark, comparing it would rewrite unchanged rows
+        # on every scan of an active session, which is exactly the churn this
+        # gate exists to prevent. But a stored row with NO watermark at all must
+        # adopt one ONCE: a legacy row written before this lane emitted
+        # source_revision_at otherwise keeps a whole-second source_order forever,
+        # so two same-second refreshable-usage snapshots stay tied and park a
+        # permanent reconcile conflict. Treat "stored has no watermark, candidate
+        # has one" as a real (one-time) change so the refresh adopts it; after
+        # that write the stored row carries a watermark and this branch is inert
+        # again — no perpetual churn.
         if key in {"source_revision_at", "source_revision_basis"}:
-            continue
+            if stored_md.get("source_revision_at") is not None:
+                continue
+            if candidate_md.get("source_revision_at") is None:
+                continue
+            return False
         if stored_md.get(key) != value:
             return False
     return True
@@ -9112,6 +9229,338 @@ def _openclaw_timestamp_seconds(value: Any) -> int | None:
             return None
         return int(parsed.timestamp())
     return _timestamp_seconds(value)
+
+
+# ---------------------------------------------------------------------------
+# DeepSeek Harness (dsh) session-log usage import.
+#
+# dsh writes one append-only, event-sourced log per session under ``$DSH_HOME``
+# (default ``~/.dsh``): ``session.jsonl`` (v0) or ``session.vN.jsonl`` (v1+),
+# each optionally Zstandard-compressed as ``.jsonl.zstd``.  The compressed form
+# is CONCATENATED zstd frames (one frame per appended row/batch), so a reader
+# must decode ACROSS frames, not with a single ``decompress()`` call.  Once
+# decompressed the stream is newline-delimited JSON: the first line is a
+# SessionHeader (``type == "session"``) and the rest are ``SessionEvent`` rows
+# ``{type, seq, time, data}``.  Token usage lives on ``assistant/message``
+# events at ``data.usage.{inputTokens, outputTokens, cacheReadTokens,
+# cacheWriteTokens, reasoningTokens}`` — ``inputTokens`` is the UNCACHED input
+# only (billed input = input + cacheRead + cacheWrite, handled the same way as
+# every other client), and ``reasoningTokens`` is a SUBSET of ``outputTokens``
+# so it is recorded separately and never re-added to the total.  Model/provider
+# are at ``data.message.source.{model, provider}`` (provider may be null); the
+# event ``time`` is a top-level sibling in epoch MILLISECONDS.  dsh does NOT
+# persist a cost figure, so imported dsh rows carry no client-reported cost
+# (agentacct's own ``--estimate-costs`` pricing estimate still applies
+# downstream, like every other client).  These field paths were corroborated
+# against the primary dsh TypeScript source and two independent third-party
+# parsers.
+# ---------------------------------------------------------------------------
+
+_DSH_SESSION_FILE_RE = re.compile(r"^session(?:\.v[1-9][0-9]*)?\.jsonl(?:\.zstd)?$")
+_DSH_USAGE_EVENT_TYPES = frozenset({"assistant/message"})
+# Bound the decompressed text a single session log may expand to.  A small
+# zstd file can inflate enormously, so the reader pulls FIXED-SIZE chunks and
+# stops once this many decoded chars have been read — the memory bound holds
+# regardless of newline structure (a newline-free payload cannot balloon before
+# the check fires, which a readline-based loop would allow).  A session whose
+# decoded text exceeds this budget is summed only up to the cap and flagged
+# ``truncated`` so the scan is reported as capped, never as an exact total.
+_DSH_MAX_DECOMPRESSED_BYTES = 64 * 1024 * 1024
+# Read granularity: chars pulled from the (decompressed) stream per read().
+_DSH_READ_CHUNK = 1 << 20
+# A single JSONL row this long has no legitimate reason to exist (agentacct only
+# reads the small ``data.usage`` object); drop it rather than let one newline-free
+# line grow the buffer, and flag the scan truncated.
+_DSH_MAX_LINE_CHARS = 16 * 1024 * 1024
+# Errors a decode/read may raise mid-stream. ZstdError only exists when the
+# decoder imported, so it is appended conditionally.
+_DSH_READ_ERRORS: tuple[type[BaseException], ...] = (OSError, ValueError, UnicodeError)
+if zstandard is not None:  # pragma: no branch - decoder is a declared dependency
+    _DSH_READ_ERRORS = _DSH_READ_ERRORS + (zstandard.ZstdError,)
+
+
+class _DshReadStatus:
+    """Mutable outcome of reading one dsh session log's lines.
+
+    ``decode_failed`` means a zstd/read error interrupted the stream (a corrupt
+    file). ``truncated`` means the scan stopped at the byte budget or dropped an
+    over-long line on an otherwise-valid stream (a too-big file). The two are
+    distinct failure modes and map to distinct diagnostics, so a caller never
+    has to guess whether a partial read was corruption or size.
+    """
+
+    __slots__ = ("truncated", "decode_failed")
+
+    def __init__(self) -> None:
+        self.truncated = False
+        self.decode_failed = False
+
+
+def _is_dsh_session_file(name: str) -> bool:
+    return bool(_DSH_SESSION_FILE_RE.match(name))
+
+
+def _dsh_session_paths(dsh_home: Path | None) -> list[_RegularSourceFile]:
+    if dsh_home is not None:
+        roots = [dsh_home.expanduser()]
+    else:
+        env_value = _env_text("DSH_HOME") or _env_text("DSH_DIR")
+        roots = (
+            [Path(value).expanduser() for value in env_value.split(",") if value.strip()]
+            if env_value
+            else [Path.home() / ".dsh"]
+        )
+    sources: list[_RegularSourceFile] = []
+    for root in roots:
+        sources.extend(
+            source
+            for source in _matching_regular_source_files(
+                root,
+                patterns=("session*.jsonl", "session*.jsonl.zstd"),
+            )
+            if _is_dsh_session_file(source.path.name)
+        )
+    deduped = {source.path: source for source in sources}
+    return sorted(
+        deduped.values(),
+        key=lambda source: source.mtime,
+        reverse=True,
+    )
+
+
+def _dsh_session_id(path: Path, header_id: Any) -> str:
+    text = _limited_optional_text(header_id, _MAX_SESSION_TITLE_LENGTH)
+    if text:
+        return text
+    # The header id equals the session directory name; fall back to it when a
+    # log has no readable header, then to the file stem as a last resort.
+    parent = path.parent.name
+    if parent and parent not in {"", ".", ".."}:
+        return parent
+    return path.stem
+
+
+def _open_regular_source_bytes(source: _RegularSourceFile):
+    """Re-open a previously discovered regular source for binary reads.
+
+    Mirrors ``_open_regular_source_text`` (same no-follow trust boundary and
+    post-open inode check) but hands back a binary handle so a compressed
+    session log can be streamed through a decompressor.
+    """
+
+    file_fd, _root_path, _file_path, opened_stat = _open_regular_source_file_fd(
+        source.path,
+        root=source.root,
+    )
+    if (
+        int(opened_stat.st_dev) != source.device
+        or int(opened_stat.st_ino) != source.inode
+    ):
+        os.close(file_fd)
+        raise OSError("local source changed during open")
+    return os.fdopen(file_fd, "rb")
+
+
+def _dsh_bounded_lines(text: "io.TextIOBase", status: _DshReadStatus) -> Iterator[str]:
+    """Yield newline-delimited lines from a text stream under a hard char budget.
+
+    Reads FIXED-SIZE chunks and splits lines itself, so the total decoded text
+    held can never exceed ``_DSH_MAX_DECOMPRESSED_BYTES`` no matter how the
+    payload is (or is not) newlined — the memory bound a readline loop could not
+    guarantee. An over-long single line is dropped (its bytes still count toward
+    the budget) so a newline-free payload cannot grow the buffer past one line
+    cap. On a mid-stream read/decode error ``decode_failed`` is set; when the
+    byte budget is reached the stream is probed once more so an exact-boundary
+    EOF is NOT mislabelled — ``truncated`` is set only when data genuinely remains.
+    """
+
+    buf = ""
+    decoded = 0
+    hit_budget = False
+    while True:
+        try:
+            chunk = text.read(_DSH_READ_CHUNK)
+        except _DSH_READ_ERRORS:
+            status.decode_failed = True
+            break
+        if not chunk:
+            break  # clean EOF
+        decoded += len(chunk)
+        buf += chunk
+        if len(buf) > _DSH_MAX_LINE_CHARS and "\n" not in buf:
+            # One pathological newline-free line — drop it and keep scanning
+            # within the remaining budget rather than accumulate unbounded.
+            status.truncated = True
+            buf = ""
+        else:
+            newline = buf.find("\n")
+            while newline >= 0:
+                yield buf[:newline]
+                buf = buf[newline + 1 :]
+                newline = buf.find("\n")
+        if decoded >= _DSH_MAX_DECOMPRESSED_BYTES:
+            hit_budget = True
+            break
+    if hit_budget:
+        # Disambiguate an exact-budget EOF from a genuinely capped stream: only
+        # data actually remaining past the budget counts as truncation.
+        try:
+            if text.read(1):
+                status.truncated = True
+        except _DSH_READ_ERRORS:
+            status.decode_failed = True
+    elif not status.decode_failed and buf:
+        # Clean EOF with a final line that had no trailing newline.
+        if len(buf) <= _DSH_MAX_LINE_CHARS:
+            yield buf
+        else:
+            status.truncated = True
+
+
+def _dsh_iter_jsonl_lines(source: _RegularSourceFile, status: _DshReadStatus) -> Iterator[str]:
+    """Yield decoded JSONL lines from a dsh session log (zstd or plaintext).
+
+    A missing/too-old zstd decoder facing a ``.zstd`` file is a hard structural
+    failure and raises a stable diagnostic code (never a silent empty import).
+    A mid-stream decode error or a capped scan is reported through ``status`` so
+    the caller can distinguish "unreadable file" from "read cleanly, no usage".
+    """
+
+    is_zstd = source.path.name.endswith(".zstd")
+    if is_zstd and zstandard is None:
+        raise _ClientUsageDiscoveryReadError("dsh_zstd_decoder_unavailable")
+    if is_zstd:
+        raw = _open_regular_source_bytes(source)
+        try:
+            try:
+                reader = zstandard.ZstdDecompressor().stream_reader(
+                    raw, read_across_frames=True
+                )
+            except TypeError:
+                # A pre-0.18 zstandard lacks read_across_frames and its default
+                # reader stops after the first frame.  Refuse rather than import
+                # a truncated first-frame-only total as if it were the session.
+                raise _ClientUsageDiscoveryReadError("dsh_zstd_decoder_unavailable")
+            text = io.TextIOWrapper(reader, encoding="utf-8", errors="replace")
+            yield from _dsh_bounded_lines(text, status)
+        finally:
+            raw.close()
+        return
+    with _open_regular_source_text(source) as handle:
+        yield from _dsh_bounded_lines(handle, status)
+
+
+def _read_dsh_jsonl_usage(
+    source: _RegularSourceFile, status: _DshReadStatus
+) -> dict[str, Any] | None:
+    totals = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cache_read_tokens_reported": False,
+        "cache_write_tokens_reported": False,
+        "reasoning_tokens": 0,
+        "turn_count": 0,
+    }
+    session_id: Any = None
+    cwd: str | None = None
+    current_model: str | None = None
+    current_provider: str | None = None
+    created_at: int | None = None
+    first_event_at: int | None = None
+    seen_seq: set[int] = set()
+    seen_records: set[tuple[object, ...]] = set()
+    for line in _dsh_iter_jsonl_lines(source, status):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        row_type = obj.get("type")
+        if row_type == "session":
+            # SessionHeader (the first line of every dsh session log).
+            if session_id is None:
+                session_id = obj.get("id")
+            header_created = _timestamp_seconds(obj.get("createdAt"))
+            if header_created is not None:
+                created_at = header_created
+            cwd = _limited_optional_text(obj.get("cwd"), _MAX_SESSION_TITLE_LENGTH) or cwd
+            continue
+        if row_type not in _DSH_USAGE_EVENT_TYPES:
+            continue
+        data = obj.get("data")
+        if not isinstance(data, dict):
+            continue
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        input_tokens = _safe_nonnegative_int(usage.get("inputTokens"))
+        output_tokens = _safe_nonnegative_int(usage.get("outputTokens"))
+        cache_read = _safe_nonnegative_int(usage.get("cacheReadTokens"))
+        cache_write = _safe_nonnegative_int(usage.get("cacheWriteTokens"))
+        reasoning = _safe_nonnegative_int(usage.get("reasoningTokens"))
+        total_tokens = _safe_nonnegative_int(usage.get("totalTokens"))
+        if input_tokens + output_tokens + cache_read + cache_write == 0 and total_tokens > 0:
+            output_tokens = total_tokens
+        if input_tokens + output_tokens + cache_read + cache_write <= 0:
+            continue
+        message = data.get("message")
+        source_meta = message.get("source") if isinstance(message, dict) else None
+        if isinstance(source_meta, dict):
+            current_model = _limited_optional_text(source_meta.get("model"), 120) or current_model
+            current_provider = _limited_optional_text(source_meta.get("provider"), 80) or current_provider
+        event_at = _timestamp_seconds(obj.get("time"))
+        seq = obj.get("seq")
+        if isinstance(seq, int) and not isinstance(seq, bool):
+            if seq in seen_seq:
+                continue
+            seen_seq.add(seq)
+        else:
+            record_id = (
+                event_at,
+                input_tokens,
+                output_tokens,
+                cache_read,
+                cache_write,
+                reasoning,
+                total_tokens,
+            )
+            if record_id in seen_records:
+                continue
+            seen_records.add(record_id)
+        totals["input_tokens"] += input_tokens
+        totals["output_tokens"] += output_tokens
+        totals["cache_read_tokens"] += cache_read
+        totals["cache_write_tokens"] += cache_write
+        # reasoningTokens is a subset of outputTokens; keep it as a separate
+        # signal and never add it back into the token total (would double-count).
+        totals["reasoning_tokens"] += reasoning
+        if "cacheReadTokens" in usage:
+            totals["cache_read_tokens_reported"] = True
+        if "cacheWriteTokens" in usage:
+            totals["cache_write_tokens_reported"] = True
+        totals["turn_count"] += 1
+        if event_at is not None:
+            first_event_at = event_at if first_event_at is None else min(first_event_at, event_at)
+    if totals["turn_count"] <= 0:
+        return None
+    started_at = created_at if created_at is not None else first_event_at
+    return {
+        **totals,
+        "session_id": _dsh_session_id(source.path, session_id),
+        "model": current_model,
+        "provider": current_provider,
+        "cwd": cwd,
+        "started_at": started_at,
+        # dsh does not persist a cost figure; the estimate-costs pricing path
+        # still applies downstream from the imported token counts.
+        "cost_usd": None,
+    }
 
 
 def _hermes_state_db_plan(

@@ -106,12 +106,44 @@ enum AboutSnapshotRenderer {
         }
     }
 
+    /// Every reviewed reference is a 2x raster, and that is a real axis of the
+    /// platform id (`…-arm64-2x`). The SwiftUI harnesses guarantee it by setting
+    /// `ImageRenderer.scale = 2` explicitly. This AppKit path used to ask
+    /// `bitmapImageRepForCachingDisplay(in:)` for a representation, which sizes
+    /// itself from the window's `backingScaleFactor` — so on a machine whose only
+    /// display is not Retina it silently produced a 1x raster (284x170 where the
+    /// reference is 568x340) and failed on DIMENSIONS, which no tolerance can
+    /// reach. The platform guard never caught this: it compares OS, Xcode and
+    /// architecture and says nothing about the attached display.
+    ///
+    /// Declaring the scale here makes the raster display-independent, the same
+    /// way the SwiftUI harnesses already are.
+    static let rasterScale = 2
+
     @MainActor
     private static func writePNG(of view: NSView, to url: URL) throws {
-        guard let representation = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+        let bounds = view.bounds
+        let pixelsWide = Int((bounds.width * CGFloat(rasterScale)).rounded())
+        let pixelsHigh = Int((bounds.height * CGFloat(rasterScale)).rounded())
+        guard pixelsWide > 0, pixelsHigh > 0,
+              let representation = NSBitmapImageRep(
+                  bitmapDataPlanes: nil,
+                  pixelsWide: pixelsWide,
+                  pixelsHigh: pixelsHigh,
+                  bitsPerSample: 8,
+                  samplesPerPixel: 4,
+                  hasAlpha: true,
+                  isPlanar: false,
+                  colorSpaceName: .deviceRGB,
+                  bytesPerRow: 0,
+                  bitsPerPixel: 0
+              ) else {
             throw AboutSnapshotError.bitmapUnavailable
         }
-        view.cacheDisplay(in: view.bounds, to: representation)
+        // Pixel dimensions are 2x the point size, so AppKit draws the view once
+        // at scale 2 regardless of which display the process happens to be on.
+        representation.size = bounds.size
+        view.cacheDisplay(in: bounds, to: representation)
         guard let png = representation.representation(using: .png, properties: [:]) else {
             throw AboutSnapshotError.pngEncodingFailed
         }

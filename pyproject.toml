@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentacct"
-version = "0.10.10"
+version = "0.11.1"
 description = "Local-first Agent Work Intelligence for coding agents: usage truth, recorded work, and honest joins"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -49,6 +49,19 @@ dependencies = [
   # The TUI is built and tested against Textual 8.x; cap the major so a future
   # Textual release with breaking API changes can't silently break a PyPI install.
   "textual>=8,<9",
+  # DeepSeek Harness (dsh) writes its session logs as Zstandard-compressed JSONL
+  # (session.vN.jsonl.zstd). Python has no stdlib zstd before 3.14, so the dsh
+  # usage importer needs a decoder; zstandard ships prebuilt wheels for the
+  # macOS + Linux targets above and its C extension is bundled into the frozen
+  # CLI. read_across_frames handling is version-agnostic (decompressobj loop).
+  "zstandard>=0.22",
+  # orjson decodes the event ledger on the READ path only (~2x json.loads,
+  # byte-identical on the corpus); the WRITE/serialize path stays on stdlib json
+  # for ledger byte-parity + the revision digest. orjson>=3.9 is the first
+  # release whose orjson.JSONDecodeError subclasses json.JSONDecodeError. It is a
+  # compiled (Rust) wheel and must be bundled into the frozen/notarized DMG CLI
+  # exactly like the zstandard C extension above.
+  "orjson>=3.9",
 ]
 
 [project.urls]

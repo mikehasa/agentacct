@@ -15,6 +15,10 @@ struct DashboardSnapshotFixture: Decodable {
     let plan: V1PlanPayload
     let attention: V1AttentionPayload
     let ingestion: V1IngestionPayload?
+    /// Diagnostics lanes: a fully reporting source ledger, and a degraded one
+    /// where every source shares one store-wide reconciliation fault.
+    let ingestionHealthySources: V1IngestionPayload?
+    let ingestionDegraded: V1IngestionPayload?
     let tasks: ReceiptTasksPayload
     let usage: UsageSummary
     let usage90Days: UsageSummary
@@ -24,6 +28,8 @@ struct DashboardSnapshotFixture: Decodable {
         case glance, plan, attention, ingestion, tasks, usage, work
         case usage90Days = "usage_90_days"
         case menuSparseGlance = "menu_sparse_glance"
+        case ingestionHealthySources = "ingestion_healthy_sources"
+        case ingestionDegraded = "ingestion_degraded"
         case daemonVersion = "daemon_version"
     }
 
@@ -137,6 +143,7 @@ enum SnapshotError: LocalizedError {
     case unsupportedSchema(payload: String, actual: String, expected: String)
     case missingFixtureDate
     case missingWorkFixture
+    case missingSourcesFixture(lane: String)
     case renderProducedNoImage
     case pngEncodingFailed
     case snapshotContentExceedsCanvas(filename: String, requiredHeight: Int, availableHeight: Int)
@@ -149,6 +156,8 @@ enum SnapshotError: LocalizedError {
             return "fixture glance.generated_at is required to pin relative time labels"
         case .missingWorkFixture:
             return "fixture work payload is required to render Work review snapshots"
+        case .missingSourcesFixture(let lane):
+            return "fixture \(lane) payload is required to render Diagnostics review snapshots"
         case .renderProducedNoImage:
             return "render produced no image"
         case .pngEncodingFailed:

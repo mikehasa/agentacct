@@ -90,6 +90,14 @@ def test_post_persist_evidence_failure_degrades_configured_sources_without_leaki
         "private implementation detail" not in issue["action"]
         for issue in snapshot["issues"]
     )
+    # One store-wide fault is reported once, naming every source it touched,
+    # never one copy per source.
+    assert len(snapshot["issues"]) == 1
+    issue = snapshot["issues"][0]
+    assert issue["source"] is None
+    assert issue["affected_sources"] == ["claude-code", "codex"]
+    assert "claude-code, codex" in issue["action"]
+    assert "Evidence v2" not in issue["action"]
 
 
 def test_disabled_or_clean_evidence_reconcile_does_not_degrade_health_results() -> None:
@@ -250,6 +258,7 @@ def test_namespace_conflict_is_a_successful_but_degraded_receipt_and_clean_scan_
                 "Remove the unintended duplicate home or restore the intended path, then "
                 "restart sync and retry only this source."
             ),
+            "severity": "error",
         }
     ]
 
@@ -368,6 +377,7 @@ def test_incomplete_alias_migration_persists_actionable_health_issue(tmp_path: P
                 "agentacct preserved the legacy rows because the current client log did not "
                 "reproduce every stored model lane. Repair the log or source path, then refresh again."
             ),
+            "severity": "error",
         }
     ]
 
@@ -477,8 +487,45 @@ def test_failed_scan_preserves_last_success_and_degrades_with_action(tmp_path: P
             "code": "source_scan_failed",
             "source": "codex",
             "action": "Refresh now or inspect the source setup.",
+            "severity": "error",
         }
     ]
+
+
+def test_transient_scan_race_stays_calm_until_it_persists(tmp_path: Path) -> None:
+    store = IngestionHealthStore(tmp_path / "state")
+    ok = store.begin_scan(
+        sources=("claude-code",), scan_limit=20, importer_version="0.1.0", pid=1, started_at=100.0
+    )
+    store.complete_scan(
+        ok,
+        results={"claude-code": {"discovered": 3, "parsed": 3, "error_count": 0}},
+        completed_at=101.0,
+    )
+    # A live Claude session rewrote its transcript mid-scan: benign, self-heals
+    # next scan. A single one must NOT degrade the source or raise an issue.
+    race = store.begin_scan(
+        sources=("claude-code",), scan_limit=20, importer_version="0.1.0", pid=2, started_at=200.0
+    )
+    store.fail_scan(race, error_code="claude_transcript_changed_during_scan", failed_at=201.0)
+    calm = store.snapshot(now=202.0)
+    assert calm["state"] != "degraded"
+    assert calm["sources"][0]["state"] == "healthy"
+    assert calm["issues"] == []
+
+    # But a persistent streak is a real, surfaced problem (a calm, transient-tier
+    # issue) — the honesty guardrail: nothing is suppressed forever.
+    again = store.begin_scan(
+        sources=("claude-code",), scan_limit=20, importer_version="0.1.0", pid=3, started_at=300.0
+    )
+    store.fail_scan(again, error_code="claude_transcript_changed_during_scan", failed_at=301.0)
+    sustained = store.snapshot(now=302.0)
+    assert sustained["sources"][0]["state"] == "degraded"
+    # Once it has persisted (degraded), it is a real problem and surfaces LOUDLY
+    # (attention, in the alerts card) — never demoted to a quiet "all fine" note.
+    changed = [i for i in sustained["issues"] if i["code"] == "source_changed_during_scan"]
+    assert changed and changed[0]["severity"] == "attention"
+    assert sustained["state"] == "degraded"
 
 
 def test_older_overlapping_scan_cannot_overwrite_newer_source_receipt(tmp_path: Path) -> None:
@@ -805,9 +852,12 @@ def test_stale_watcher_and_stuck_scan_fail_visibly(tmp_path: Path) -> None:
     )
 
     snapshot = store.snapshot(now=200.0)
-    assert snapshot["state"] == "degraded"
+    # A stalled/stuck watcher means collection may be paused — worth attention
+    # (amber), but it is not a "your data is wrong" (red) failure.
+    assert snapshot["state"] == "attention"
     assert snapshot["watcher"]["state"] == "stale"
     assert {issue["code"] for issue in snapshot["issues"]} == {"watcher_stale", "scan_stuck"}
+    assert all(issue["severity"] == "attention" for issue in snapshot["issues"])
     assert any(issue["action"] == "Restart usage watch." for issue in snapshot["issues"])
 
 
@@ -825,9 +875,15 @@ def test_running_watcher_with_old_build_is_not_reported_healthy(tmp_path: Path) 
 
     snapshot = store.snapshot(now=101.0)
 
-    assert snapshot["state"] == "degraded"
+    # A running watcher on a different (e.g. dev/editable) build is not proof the
+    # current importer covers new work — so the panel is NOT reported healthy —
+    # but a version mismatch alone is a cosmetic advisory, never a red failure.
+    assert snapshot["state"] == "unknown"
     assert snapshot["watcher"]["state"] == "running"
-    assert any(issue["code"] == "watcher_version_mismatch" for issue in snapshot["issues"])
+    mismatch = [
+        issue for issue in snapshot["issues"] if issue["code"] == "watcher_version_mismatch"
+    ]
+    assert mismatch and mismatch[0]["severity"] == "advisory"
     assert any(
         issue["action"] == "Restart usage watch to load the current importer."
         for issue in snapshot["issues"]

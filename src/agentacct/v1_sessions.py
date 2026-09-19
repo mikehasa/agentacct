@@ -41,13 +41,6 @@ V1_SESSION_DETAIL_SCHEMA_VERSION = "agentacct.v1-session-detail.v1"
 # Row keys that exist only for the view's own bookkeeping, never on the wire.
 _VIEW_INTERNAL_KEYS = frozenset({"is_root", "fold_top"})
 
-# TTL rationale: the view is mostly event-derived (the fingerprint catches
-# those changes), but plan calibration windows are clock-relative and the
-# ledger's secondary inputs are fingerprint-invisible. 30s matches the ledger
-# cache's TTL so the two stack to a bounded ≤60s worst case for
-# fingerprint-invisible inputs — a 60s view TTL over a 30s ledger TTL
-# compounded to ~90s (adversarial-review finding).
-V1_SESSIONS_CACHE_MAX_AGE_SECONDS = 30.0
 
 # Session-level status reduction — same precedence as the TUI badge:
 # blocked > handed_off > in_progress > completed, with ``resolved`` (the
@@ -410,42 +403,38 @@ def slice_sessions_payload(
 
 
 class V1SessionsCache:
-    """Fingerprint + TTL cache for the enriched view (GlanceCache pattern).
+    """Change-keyed cache for the enriched view (GlanceCache pattern).
 
     Same concurrency posture: the cached value is one atomic tuple assignment,
     racing rebuilds waste one build and the last writer wins. The builder is
-    injected per call so the cache stays free of service wiring.
+    injected per call so the cache stays free of service wiring. There is NO
+    wall-clock TTL: the caller passes the SAME composite key it uses for the
+    work-ledger cache (events fingerprint + the secondary stores' change
+    signature), so the view invalidates exactly when the ledger it is built
+    over does — never serving an old view over a newer ledger.
     """
 
-    def __init__(self, max_age_seconds: float = V1_SESSIONS_CACHE_MAX_AGE_SECONDS) -> None:
+    def __init__(self) -> None:
         self._lock = Lock()
-        self._cached: tuple[int, float, dict[str, Any]] | None = None
-        self.max_age_seconds = float(max_age_seconds)
+        self._cached: tuple[int, dict[str, Any]] | None = None
 
-    def _fresh(self, cached: tuple[int, float, dict[str, Any]] | None, fingerprint: int, moment: float) -> bool:
-        return (
-            cached is not None
-            and cached[0] == fingerprint
-            and (moment - cached[1]) < self.max_age_seconds
-        )
+    def _fresh(self, cached: tuple[int, dict[str, Any]] | None, key: int) -> bool:
+        return cached is not None and cached[0] == key
 
     def view(
         self,
-        fingerprint: int,
+        key: int,
         builder: Callable[[], dict[str, Any]],
-        *,
-        now: float | None = None,
     ) -> dict[str, Any]:
-        moment = time.time() if now is None else float(now)
         cached = self._cached
-        if self._fresh(cached, fingerprint, moment):
-            return cached[2]  # type: ignore[index]
+        if self._fresh(cached, key):
+            return cached[1]  # type: ignore[index]
         with self._lock:
             cached = self._cached
-            if self._fresh(cached, fingerprint, moment):
-                return cached[2]  # type: ignore[index]
+            if self._fresh(cached, key):
+                return cached[1]  # type: ignore[index]
             view = builder()
-            self._cached = (fingerprint, moment, view)
+            self._cached = (key, view)
             return view
 
 

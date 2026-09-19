@@ -33,9 +33,23 @@ struct AgentacctApp: App {
         }
 
         MenuBarExtra {
-            MenuContent(awaitRecorderSynchronization: {
-                await lifecycle.waitUntilReady()
-            })
+            MenuContent(
+                awaitRecorderSynchronization: {
+                    await lifecycle.waitUntilReady()
+                },
+                onStartRecorder: {
+                    // Another surface may already be restarting the recorder (they
+                    // share one SetupModel). Report that as "in progress", not a
+                    // failure, so a second tap never spuriously opens the window.
+                    if lifecycle.setup.reconnectPhase == .working { return true }
+                    let started = await lifecycle.setup.reconnectRecorder()
+                    if started {
+                        lifecycle.glance.refreshNow()
+                        await dashboard.refresh()
+                    }
+                    return started
+                }
+            )
                 .environment(lifecycle.glance)
                 .environment(dashboard)
                 .environment(selection)

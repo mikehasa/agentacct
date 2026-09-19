@@ -1494,128 +1494,350 @@ struct ReceiptProvenanceDim: Decodable {
     }
 }
 
-// MARK: - Receipt summary line items
+// MARK: - /v1 worksets (folder-anchored Work groupings)
+//
+// A workset is the user's own overlay: the sessions under one folder are one
+// piece of work, gathered live across Claude Code and Codex. Every aggregate is
+// a labeled SUM of independently-attributed sessions, never a re-graded verdict
+// — the honesty rides the payload, as everywhere else on this lane.
 
-/// One receipt line item: a value with its qualifier, or a named absence —
-/// never a fabricated zero.
-struct ReceiptSummaryItem: Identifiable, Equatable {
-    let id: String
-    let label: String
-    let value: String?
-    let qualifier: String?
-    let absent: String?
-    let isWarning: Bool
+struct WorksetSource: Decodable, Identifiable {
+    let client: String
+    let sessionCount: Int
+    var id: String { client }
+    enum CodingKeys: String, CodingKey {
+        case client
+        case sessionCount = "session_count"
+    }
 }
 
-/// The receipt's line items, derived once from the receipt and its optional
-/// summary row. The derivation is split from the view so each state can be
-/// tested (including partial and absent payloads) without rendering.
-struct RecordSummaryPresentation: Equatable {
-    struct Inputs: Equatable {
-        var checksTotal: Int?
-        var checksPassed: Int?
-        var checksFailed: Int?
-        var toolCalls: ReceiptActionKPI
-        var costUsd: Double?
-        var costBasis: String?
-        var costComplete: Bool?
-        var costConfidence: String?
-        var sessionCount: Int?
-        var sessionRoots: Int
-        var coverageChecked: Int?
-        var coverageTotal: Int?
-        var coverageInconsistent: Bool
+struct WorksetSummary: Decodable {
+    let sessionCount: Int
+    let sources: [WorksetSource]
+    let firstActivityAt: Double?
+    let lastActivityAt: Double?
+    let totalTokens: Int?
+    let estimatedCostUsd: Double?
+    /// True only when every member session is priced; a partial sum otherwise.
+    let costComplete: Bool?
+    let pricedSessions: Int?
+    let unpricedSessions: Int?
+    let costConfidence: String?
+    let costBasis: String?
+
+    enum CodingKeys: String, CodingKey {
+        case sources
+        case sessionCount = "session_count"
+        case firstActivityAt = "first_activity_at"
+        case lastActivityAt = "last_activity_at"
+        case totalTokens = "total_tokens"
+        case estimatedCostUsd = "estimated_cost_usd"
+        case costComplete = "cost_complete"
+        case pricedSessions = "priced_sessions"
+        case unpricedSessions = "unpriced_sessions"
+        case costConfidence = "cost_confidence"
+        case costBasis = "cost_basis"
+    }
+}
+
+struct WorksetLane: Decodable, Identifiable {
+    let sessionKey: String?
+    let client: String?
+    let clientSessionId: String?
+    let title: String?
+    let sessionKind: String?
+    let status: String?
+    let firstActivityAt: Double?
+    let lastActivityAt: Double?
+    let durationSeconds: Double?
+    let totalTokens: Int?
+    let estimatedCostUsd: Double?
+    let costConfidence: String?
+    let toolCalls: Int?
+    let steps: Int?
+    let checks: Int?
+    let checksFailed: Int?
+
+    var id: String { sessionKey ?? "\(client ?? "")::\(clientSessionId ?? "")" }
+
+    var displayTitle: String {
+        if let title, !title.isEmpty { return title }
+        let short = clientSessionId.map { String($0.prefix(8)) } ?? "session"
+        return "\(client ?? "session") · \(short)"
     }
 
-    let items: [ReceiptSummaryItem]
+    enum CodingKeys: String, CodingKey {
+        case client, title, status, steps, checks
+        case sessionKey = "session_key"
+        case clientSessionId = "client_session_id"
+        case sessionKind = "session_kind"
+        case firstActivityAt = "first_activity_at"
+        case lastActivityAt = "last_activity_at"
+        case durationSeconds = "duration_seconds"
+        case totalTokens = "total_tokens"
+        case estimatedCostUsd = "estimated_cost_usd"
+        case costConfidence = "cost_confidence"
+        case toolCalls = "tool_calls"
+        case checksFailed = "checks_failed"
+    }
+}
 
-    init(receipt: Receipt, summary: ReceiptSummary?) {
-        let dimensions = receipt.dimensions
-        self.init(inputs: Inputs(
-            checksTotal: dimensions.evidence.checksTotal,
-            checksPassed: dimensions.evidence.checksPassed,
-            checksFailed: dimensions.evidence.checksFailed,
-            toolCalls: receiptActionKPI(receiptActionSynopsis(
-                counts: dimensions.actions.toolCategoryCounts,
-                storedTotal: dimensions.actions.toolCategoryTotal
-            )),
-            costUsd: dimensions.cost.estimatedCostUsd,
-            costBasis: dimensions.cost.costBasis,
-            costComplete: dimensions.cost.costComplete,
-            costConfidence: dimensions.cost.costConfidence,
-            sessionCount: summary?.sessionCount ?? dimensions.task.boundary?.sessionCount,
-            sessionRoots: receipt.sessions?.count ?? 0,
-            coverageChecked: receipt.axes.evidenceStrength.checkedTotal,
-            coverageTotal: receipt.axes.evidenceStrength.checkableTotal,
-            coverageInconsistent: ReceiptCoveragePresentation(evidence: receipt.axes.evidenceStrength).isInconsistent
-        ))
+/// GET /v1/workset returns the card fields at the top level (with a `schema`
+/// key alongside), so the detail response decodes as a `WorksetCard` directly.
+struct WorksetCard: Decodable, Identifiable {
+    let worksetId: String
+    let name: String
+    let projectIdentity: String
+    let revision: Int
+    let deleted: Bool?
+    let createdAt: Double?
+    let updatedAt: Double?
+    let summary: WorksetSummary
+    let sessions: [WorksetLane]
+    let sessionsTotal: Int?
+    let sessionsTruncated: Bool?
+
+    var id: String { worksetId }
+
+    enum CodingKeys: String, CodingKey {
+        case name, revision, deleted, summary, sessions
+        case worksetId = "workset_id"
+        case projectIdentity = "project_identity"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case sessionsTotal = "sessions_total"
+        case sessionsTruncated = "sessions_truncated"
+    }
+}
+
+struct WorksetsPayload: Decodable {
+    let schema: String
+    let worksets: [WorksetCard]
+    let total: Int?
+}
+
+struct WorksetCandidate: Decodable, Identifiable {
+    let projectIdentity: String
+    let label: String
+    let sessionCount: Int
+    let sources: [String]
+    let firstActivityAt: Double?
+    let lastActivityAt: Double?
+    /// The id of a live group already anchored at this folder, if any — the
+    /// picker uses it to avoid offering a duplicate.
+    let existingWorksetId: String?
+
+    var id: String { projectIdentity }
+    var alreadyGrouped: Bool { existingWorksetId != nil }
+
+    enum CodingKeys: String, CodingKey {
+        case label, sources
+        case projectIdentity = "project_identity"
+        case sessionCount = "session_count"
+        case firstActivityAt = "first_activity_at"
+        case lastActivityAt = "last_activity_at"
+        case existingWorksetId = "existing_workset_id"
+    }
+}
+
+struct WorksetCandidatesPayload: Decodable {
+    let schema: String
+    let candidates: [WorksetCandidate]
+}
+
+struct WorksetWriteResponse: Decodable {
+    let ok: Bool
+    let worksetId: String?
+    let action: String?
+    let revision: Int?
+    let name: String?
+    let projectIdentity: String?
+    let deleted: Bool?
+    let eventId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, action, revision, name, deleted
+        case worksetId = "workset_id"
+        case projectIdentity = "project_identity"
+        case eventId = "event_id"
+    }
+}
+
+/// Response from POST /v1/self-update. `applied` is false when already on the
+/// latest version; true (HTTP 202) means the daemon is installing + restarting.
+struct SelfUpdateResponse: Decodable {
+    let ok: Bool
+    let applied: Bool?
+    let to: String?
+    let reason: String?
+    let current: String?
+}
+
+/// Places member sessions as bars on ONE shared time axis (the tryairis-style
+/// timeline): each bar's left offset and width are fractions of the group's
+/// total span, so a Claude Code session and a Codex session read against the
+/// same clock instead of two separate orderings. Pure and deterministic so the
+/// geometry can be unit-tested without rendering.
+struct WorksetTimelineLayout {
+    struct Bar: Identifiable {
+        let lane: WorksetLane
+        /// 0…1 offset from the window start; 0 when the session has no time.
+        let leftFraction: Double
+        /// 0…1 width; at least `minWidth` so a zero-duration point still shows.
+        let widthFraction: Double
+        /// The session carries no usable start/end — placed at the start, flagged.
+        let timeUnknown: Bool
+        var id: String { lane.id }
     }
 
-    init(inputs: Inputs) {
-        items = [
-            Self.checks(inputs),
-            ReceiptSummaryItem(id: "actions", label: "Tool calls",
-                               value: inputs.toolCalls.value, qualifier: inputs.toolCalls.qualifier,
-                               absent: inputs.toolCalls.absent, isWarning: false),
-            Self.cost(inputs),
-            Self.sessions(inputs),
-            Self.coverage(inputs),
-        ]
+    /// Bars in start-time order; timeless sessions sort last.
+    let bars: [Bar]
+    let windowStart: Double?
+    let windowEnd: Double?
+    /// Members with no single clean time (rendered but flagged), for honesty.
+    let timelessCount: Int
+
+    static let minWidth = 0.015
+
+    /// `windowStart`/`windowEnd` override the axis with the group's TRUE span
+    /// (from the summary) so a bounded preview of bars still reads against the
+    /// whole window — the bars fill the left, and the empty right honestly
+    /// shows there is more time than the shown sessions cover.
+    init(lanes: [WorksetLane], windowStart windowOverrideStart: Double? = nil, windowEnd windowOverrideEnd: Double? = nil) {
+        let starts = lanes.compactMap { Self.time($0.firstActivityAt) }
+        let ends = lanes.compactMap { Self.time($0.lastActivityAt) }
+        let allTimes = starts + ends
+        let overrideLo = Self.time(windowOverrideStart)
+        let overrideHi = Self.time(windowOverrideEnd)
+        let useOverride = overrideLo != nil && overrideHi != nil && overrideHi! > overrideLo!
+        let lo = useOverride ? overrideLo : allTimes.min()
+        let hi = useOverride ? overrideHi : allTimes.max()
+        windowStart = lo
+        windowEnd = hi
+        let span = (lo != nil && hi != nil) ? max(0.0, hi! - lo!) : 0.0
+
+        let ordered = lanes.sorted { a, b in
+            let ta = Self.time(a.firstActivityAt)
+            let tb = Self.time(b.firstActivityAt)
+            switch (ta, tb) {
+            case let (x?, y?): return x == y ? a.id < b.id : x < y
+            case (nil, _?): return false
+            case (_?, nil): return true
+            case (nil, nil): return a.id < b.id
+            }
+        }
+
+        var built: [Bar] = []
+        var timeless = 0
+        for lane in ordered {
+            let first = Self.time(lane.firstActivityAt)
+            let last = Self.time(lane.lastActivityAt)
+            guard let lo, span > 0, let first else {
+                // No usable clock, or every session shares one instant.
+                if first == nil { timeless += 1 }
+                built.append(Bar(lane: lane, leftFraction: 0, widthFraction: Self.minWidth,
+                                 timeUnknown: first == nil))
+                continue
+            }
+            let left = min(1.0, max(0.0, (first - lo) / span))
+            let rawWidth = (last != nil && last! > first) ? (last! - first) / span : 0.0
+            // Size the bar to at least the minimum, THEN pull its left in so it
+            // stays fully on the axis — a session at the very end still shows.
+            let width = min(1.0, max(Self.minWidth, rawWidth))
+            let clampedLeft = min(max(0.0, left), 1.0 - width)
+            built.append(Bar(lane: lane, leftFraction: clampedLeft, widthFraction: width, timeUnknown: false))
+        }
+        bars = built
+        timelessCount = timeless
     }
 
-    private static func checks(_ inputs: Inputs) -> ReceiptSummaryItem {
-        guard inputs.checksTotal != nil || inputs.checksPassed != nil || inputs.checksFailed != nil else {
-            return ReceiptSummaryItem(id: "checks", label: "Checks", value: nil, qualifier: nil,
-                                      absent: "no checks recorded", isWarning: false)
-        }
-        if let passed = inputs.checksPassed, let total = inputs.checksTotal {
-            let failed = inputs.checksFailed ?? 0
-            return ReceiptSummaryItem(id: "checks", label: "Checks", value: "\(passed)/\(total)",
-                                      qualifier: failed > 0 ? "\(failed) failed" : "passed",
-                                      absent: nil, isWarning: false)
-        }
-        if let passed = inputs.checksPassed {
-            return ReceiptSummaryItem(id: "checks", label: "Checks", value: "\(passed)",
-                                      qualifier: "passed · total not reported", absent: nil, isWarning: false)
-        }
-        return ReceiptSummaryItem(id: "checks", label: "Checks",
-                                  value: inputs.checksTotal.map(String.init),
-                                  qualifier: "checks · results not reported", absent: nil, isWarning: false)
+    private static func time(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, value > 0 else { return nil }
+        return value
+    }
+}
+
+/// The visible time window of a zoomable timeline: a sub-range of the full
+/// [lo, hi], `zoom`× narrower, centered at `panCenter` (0…1) and clamped so it
+/// never leaves the data. Pure so the pan/zoom math is unit-tested without a UI.
+struct WorksetZoomWindow: Equatable {
+    let start: Double
+    let end: Double
+
+    init(lo: Double, hi: Double, zoom: Double, panCenter: Double) {
+        let full = max(0.0, hi - lo)
+        let z = min(WorksetZoomWindow.maxZoom, max(1.0, zoom.isFinite ? zoom : 1.0))
+        let width = z > 0 ? full / z : full
+        let centerFrac = min(1.0, max(0.0, panCenter.isFinite ? panCenter : 0.5))
+        let center = lo + centerFrac * full
+        var s = center - width / 2
+        var e = center + width / 2
+        if s < lo { e = min(hi, e + (lo - s)); s = lo }
+        if e > hi { s = max(lo, s - (e - hi)); e = hi }
+        start = s
+        end = e
     }
 
-    private static func cost(_ inputs: Inputs) -> ReceiptSummaryItem {
-        guard let usd = inputs.costUsd else {
-            return ReceiptSummaryItem(id: "cost", label: "Cost", value: nil, qualifier: nil,
-                                      absent: "no priced usage", isWarning: false)
-        }
-        var qualifier = costBasisLabel(inputs.costBasis)
-        if inputs.costComplete == false { qualifier += " · partial" }
-        return ReceiptSummaryItem(id: "cost", label: "Cost",
-                                  value: receiptCostDisplay(usd, complete: inputs.costComplete,
-                                                            confidence: inputs.costConfidence),
-                                  qualifier: qualifier, absent: nil, isWarning: false)
+    static let maxZoom = 64.0
+
+    /// Whether a session's own [first, last] overlaps a visible window at all —
+    /// used to cull sessions entirely outside a zoomed window instead of
+    /// clamping them to the edge and drawing them as if they were active there.
+    static func laneOverlaps(first: Double?, last: Double?, start: Double, end: Double) -> Bool {
+        guard let first, first.isFinite, first > 0 else { return false }
+        let l = (last ?? first)
+        return !(l < start || first > end)
     }
 
-    private static func sessions(_ inputs: Inputs) -> ReceiptSummaryItem {
-        guard let count = inputs.sessionCount else {
-            return ReceiptSummaryItem(id: "sessions", label: "Sessions", value: nil, qualifier: nil,
-                                      absent: "not recorded", isWarning: false)
-        }
-        return ReceiptSummaryItem(id: "sessions", label: "Sessions", value: "\(count)",
-                                  qualifier: inputs.sessionRoots > 1 ? "\(inputs.sessionRoots) roots" : nil,
-                                  absent: nil, isWarning: false)
+    /// Whether a lane should STAY VISIBLE in a zoomed window. A timed lane must
+    /// overlap the window; a TIMELESS lane (no usable first) has no position at
+    /// all, so it is always kept — shown faded at the start and flagged by its
+    /// own note — never culled and reclassified as "outside this range".
+    static func laneVisible(first: Double?, last: Double?, start: Double, end: Double) -> Bool {
+        guard let first, first.isFinite, first > 0 else { return true }
+        return laneOverlaps(first: first, last: last, start: start, end: end)
     }
 
-    private static func coverage(_ inputs: Inputs) -> ReceiptSummaryItem {
-        if inputs.coverageInconsistent {
-            return ReceiptSummaryItem(id: "coverage", label: "Coverage", value: "Inconsistent",
-                                      qualifier: "counts conflict", absent: nil, isWarning: true)
-        }
-        guard let total = inputs.coverageTotal, let checked = inputs.coverageChecked else {
-            return ReceiptSummaryItem(id: "coverage", label: "Coverage", value: nil, qualifier: nil,
-                                      absent: "not reported", isWarning: false)
-        }
-        return ReceiptSummaryItem(id: "coverage", label: "Coverage", value: "\(checked)/\(total)",
-                                  qualifier: "of checkable claims", absent: nil, isWarning: false)
+    /// The fraction of the full range this window covers (1 = everything).
+    func coverage(lo: Double, hi: Double) -> Double {
+        let full = max(0.0, hi - lo)
+        guard full > 0 else { return 1.0 }
+        return min(1.0, max(0.0, (end - start) / full))
     }
+
+    /// Apply a scroll/pinch zoom `factor` (>1 zooms in, <1 out) anchored at
+    /// `anchor` — a 0…1 fraction across the CURRENTLY VISIBLE window — and
+    /// return the new `(zoom, panCenter)` so the time under the anchor stays
+    /// put. Pure and clamped so the scroll-wheel math is unit-tested without a
+    /// UI; the caller re-clamps panCenter to its own half-window bounds.
+    static func applyZoom(currentZoom: Double, panCenter: Double, factor: Double,
+                          anchor: Double, lo: Double, hi: Double) -> (zoom: Double, panCenter: Double) {
+        let full = max(0.0, hi - lo)
+        let z0 = min(maxZoom, max(1.0, currentZoom.isFinite ? currentZoom : 1.0))
+        let center0 = min(1.0, max(0.0, panCenter.isFinite ? panCenter : 0.5))
+        guard full > 0, factor.isFinite, factor > 0 else { return (z0, center0) }
+        let win = WorksetZoomWindow(lo: lo, hi: hi, zoom: z0, panCenter: center0)
+        let a = min(1.0, max(0.0, anchor.isFinite ? anchor : 0.5))
+        // Absolute time sitting under the anchor right now.
+        let anchorTime = win.start + a * (win.end - win.start)
+        let z1 = min(maxZoom, max(1.0, z0 * factor))
+        let newWidth = full / z1
+        // Keep that time at the same fraction of the new (narrower/wider) window.
+        let newStart = anchorTime - a * newWidth
+        let newCenter = newStart + newWidth / 2
+        let centerFrac = (newCenter - lo) / full
+        return (z1, min(1.0, max(0.0, centerFrac)))
+    }
+}
+
+/// The honest cost grammar for a workset summary: a bare/≈ prefix only when the
+/// sum is complete, `~$` while any member is unpriced (a visibly partial sum),
+/// and nothing when no member is priced — never a fabricated $0.
+func worksetCostLabel(_ summary: WorksetSummary) -> String? {
+    Fmt.costDisplay(
+        usd: summary.estimatedCostUsd,
+        knownAdditive: (summary.costComplete == true) ? nil : summary.estimatedCostUsd,
+        complete: summary.costComplete,
+        confidence: summary.costConfidence
+    )
 }

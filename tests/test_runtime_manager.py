@@ -683,3 +683,34 @@ def test_old_owned_dashboard_with_unreachable_health_is_degraded_not_starting(
         "did not return a valid healthy agentacct response. No process was stopped or "
         f"restarted. Inspect {tmp_path / 'dashboard.log'}."
     ]
+
+
+def test_commands_watcher_argv_uses_interval_and_estimate_costs(tmp_path: Path) -> None:
+    executable = _fake_executable(tmp_path)
+    manager = RuntimeManager(
+        tmp_path / "state",
+        executable=executable,
+        cwd=tmp_path,
+        watch_interval_seconds=300,
+        watch_estimate_costs=True,
+    )
+    watcher = manager._commands()["watcher"]
+    assert "--interval-seconds" in watcher
+    assert watcher[watcher.index("--interval-seconds") + 1] == "300"
+    assert "--estimate-costs" in watcher
+    assert "--no-estimate-costs" not in watcher
+
+
+def test_commands_watcher_argv_can_disable_estimate_costs(tmp_path: Path) -> None:
+    executable = _fake_executable(tmp_path)
+    manager = RuntimeManager(
+        tmp_path / "state",
+        executable=executable,
+        cwd=tmp_path,
+        watch_interval_seconds=120,
+        watch_estimate_costs=False,
+    )
+    watcher = manager._commands()["watcher"]
+    assert "--no-estimate-costs" in watcher
+    assert "--estimate-costs" not in watcher
+    assert watcher[watcher.index("--interval-seconds") + 1] == "120"

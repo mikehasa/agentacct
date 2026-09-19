@@ -6,14 +6,41 @@ app_dir="$(cd "$script_dir/.." && pwd)"
 invocation_dir="$PWD"
 swift_bin="${AGENTACCT_SWIFT_BIN:-swift}"
 failure_dir="${AGENTACCT_SNAPSHOT_ARTIFACT_DIR:-$app_dir/.build/visual-snapshot-failures}"
-expected_os_version="26.6"
-expected_os_build="25G72"
+# PINNED AXES — exactly what check_environment compares, and exactly what the
+# reference directory name spells. Non-compared facts about the recording
+# machine live in the directory's PLATFORM.json, never in the directory name:
+# encoding uncompared provenance in the name is what orphaned the old baseline.
+#
+# macOS MAJOR only. A full minor+build hop (26.5.1/25F80 -> 26.6/25G72, same
+# Xcode, same arch, TZ=UTC) was measured across all 98 references: maximum
+# channel delta was exactly 1 on every dimension-matching image, worst changed
+# channel fraction 0.001469. The tolerance in
+# Tests/agentacctTests/Support/VisualSnapshotHarness.swift absorbs that. The
+# minor version and the OS build string are therefore NOT compared.
+expected_os_major="26"
+# Xcode MAJOR.MINOR. Judgement, not measurement: Xcode was identical on the
+# measuring host, so the toolchain axis is untested. Xcode ships the
+# SwiftUI/CoreText renderer, so the minor stays pinned; only the supplementary
+# build string is dropped, because a same-version toolchain respin cannot move
+# pixels by itself.
 expected_xcode_version="26.6"
-expected_xcode_build="17F113"
+# Never measured under Rosetta or x86_64. Stays exact.
 expected_architecture="arm64"
-platform_id="macos-$expected_os_version-$expected_os_build"
-platform_id+="-xcode-$expected_xcode_version-$expected_xcode_build"
-platform_id+="-$expected_architecture-2x"
+# Raster scale is an axis, but it is enforced in the render path (every harness
+# rasterizes at an explicit scale 2) rather than by the attached display. It is
+# named here so the references say what they are.
+expected_raster_scale="2x"
+platform_id="macos-$expected_os_major"
+platform_id+="-xcode-$expected_xcode_version"
+platform_id+="-$expected_architecture-$expected_raster_scale"
+# Overridable so the CLI tests can exercise `record` — which writes both PNGs
+# and PLATFORM.json — without touching the committed references. A test that
+# writes into the repository leaves the tree dirty, and packaging refuses to
+# stamp a frozen CLI from a dirty tree, so an un-hermetic test here fails a
+# later, unrelated job.
+reference_root="${AGENTACCT_REFERENCE_ROOT:-$app_dir/Tests/agentacctTests/ReferenceImages}"
+reference_dir="$reference_root/$platform_id"
+provenance_file="$reference_dir/PLATFORM.json"
 discovered_file=""
 selected_file=""
 normalized_file=""
@@ -27,10 +54,17 @@ usage:
   ./Scripts/visual-snapshots check-environment
   ./Scripts/visual-snapshots verify [test-selector-or-path ...]
   ./Scripts/visual-snapshots record [test-selector-or-path ...]
+  ./Scripts/visual-snapshots falsify [case-name ...]
 
 Targets are XCTest selectors reported by `swift test list`, unqualified visual
 regression suite names, or paths to *VisualRegressionTests.swift files. With no
 target, the command selects every discovered *VisualRegressionTests suite.
+
+`falsify` proves the tolerance still detects real UI changes: it applies one
+deliberate mutation at a time, runs the visual suite, asserts the expected
+outcome (and on which axis the comparison failed), then reverts. A tolerance
+justified only by a one-off manual run is unverified from the next refactor
+onward. Run it with no arguments for every case, or name cases to run a subset.
 EOF
   exit 2
 }
@@ -53,28 +87,131 @@ cleanup() {
   [[ -z "$matches_file" ]] || rm -f "$matches_file"
 }
 
+observed_os_version=""
+observed_os_build=""
+observed_os_major=""
+observed_xcode_version=""
+observed_xcode_build=""
+observed_architecture=""
+
+read_host_identity() {
+  observed_architecture="$(uname -m)"
+  observed_os_version="$(sw_vers -productVersion)"
+  observed_os_build="$(sw_vers -buildVersion)"
+  observed_os_major="${observed_os_version%%.*}"
+  local xcode_output
+  xcode_output="$(xcodebuild -version)"
+  observed_xcode_version="$(printf '%s\n' "$xcode_output" | awk 'NR == 1 { print $2 }')"
+  observed_xcode_build="$(printf '%s\n' "$xcode_output" | awk 'NR == 2 { print $3 }')"
+}
+
 check_environment() {
-  local kernel architecture os_version os_build xcode_output xcode_version xcode_build
+  local kernel
   kernel="$(uname -s)"
-  architecture="$(uname -m)"
-  if [[ "$kernel" != "Darwin" || "$architecture" != "$expected_architecture" ]]; then
-    fail "canonical references require macOS on $expected_architecture; got $kernel $architecture"
+  read_host_identity
+  if [[ "$kernel" != "Darwin" ]]; then
+    fail "canonical references require macOS; got $kernel"
   fi
 
-  os_version="$(sw_vers -productVersion)"
-  os_build="$(sw_vers -buildVersion)"
-  xcode_output="$(xcodebuild -version)"
-  xcode_version="$(printf '%s\n' "$xcode_output" | awk 'NR == 1 { print $2 }')"
-  xcode_build="$(printf '%s\n' "$xcode_output" | awk 'NR == 2 { print $3 }')"
-  if [[ "$os_version" != "$expected_os_version" || "$os_build" != "$expected_os_build" \
-        || "$xcode_version" != "$expected_xcode_version" || "$xcode_build" != "$expected_xcode_build" ]]; then
+  # Three hard-fail axes. Anything outside them means a DIFFERENT RENDERER, and
+  # a different renderer must never silently redefine what the references mean.
+  # A macOS minor difference is deliberately NOT one of them any more.
+  if [[ "$observed_architecture" != "$expected_architecture" ]]; then
     fail \
-      "renderer mismatch: expected macOS $expected_os_version ($expected_os_build)," \
-      "Xcode $expected_xcode_version ($expected_xcode_build), $expected_architecture;" \
-      "got macOS $os_version ($os_build), Xcode $xcode_version ($xcode_build)," \
-      "$architecture. Treat this as an explicit baseline-platform migration," \
-      "not a pixel failure."
+      "renderer mismatch on the architecture axis: references are arm64-only" \
+      "($expected_architecture); this host is $observed_architecture." \
+      "The arm64 pin was never measured against Rosetta or x86_64, so there is" \
+      "no tolerance covering it. Treat this as an explicit baseline-platform" \
+      "migration, not a pixel failure: run the suite on an $expected_architecture" \
+      "host, or record a reviewed reference set for $observed_architecture under" \
+      "its own platform id."
   fi
+  if [[ "$observed_os_major" != "$expected_os_major" ]]; then
+    fail \
+      "renderer mismatch on the macOS MAJOR axis: references are pinned to" \
+      "macOS $expected_os_major.x; this host is macOS $observed_os_version" \
+      "($observed_os_build). Minor versions inside macOS $expected_os_major are" \
+      "allowed and absorbed by the measured tolerance; a new MAJOR is not —" \
+      "nothing has been measured across it. Treat this as an explicit" \
+      "baseline-platform migration, not a pixel failure: bump" \
+      "expected_os_major in $(basename "${BASH_SOURCE[0]}"), then record a" \
+      "reviewed reference set with ./Scripts/visual-snapshots record and review" \
+      "every changed PNG. './Scripts/visual-snapshots platform-id' prints the" \
+      "directory the new set belongs in."
+  fi
+  if [[ "$observed_xcode_version" != "$expected_xcode_version" ]]; then
+    fail \
+      "renderer mismatch on the Xcode axis: references were recorded with Xcode" \
+      "$expected_xcode_version; this host has Xcode $observed_xcode_version" \
+      "($observed_xcode_build). Xcode ships the SwiftUI/CoreText renderer and" \
+      "its minor version is still pinned exactly, because no measurement has" \
+      "ever varied it — only the supplementary build string is ignored. Treat" \
+      "this as an explicit baseline-platform migration, not a pixel failure:" \
+      "select Xcode $expected_xcode_version with xcode-select, or bump" \
+      "expected_xcode_version and record a reviewed reference set."
+  fi
+}
+
+# Provenance is recorded, not compared. It keeps the record of which machine
+# produced the references even though the gate no longer spells it out.
+write_provenance() {
+  local commit="unknown"
+  if command -v git >/dev/null 2>&1; then
+    commit="$(git -C "$app_dir" rev-parse HEAD 2>/dev/null || printf 'unknown')"
+  fi
+  mkdir -p "$reference_dir"
+  cat > "$provenance_file" <<EOF
+{
+  "platform_id": "$platform_id",
+  "compared_axes": {
+    "macos_major": "$expected_os_major",
+    "xcode_version": "$expected_xcode_version",
+    "architecture": "$expected_architecture"
+  },
+  "recorded_on": {
+    "macos_product_version": "$observed_os_version",
+    "macos_build_version": "$observed_os_build",
+    "xcode_version": "$observed_xcode_version",
+    "xcode_build_version": "$observed_xcode_build",
+    "architecture": "$observed_architecture",
+    "raster_scale": "$expected_raster_scale",
+    "tz": "${TZ:-unset}",
+    "lang": "${LANG:-unset}",
+    "lc_all": "${LC_ALL:-unset}"
+  },
+  "recorded_at_commit": "$commit",
+  "recorded_at_utc": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')",
+  "note": "compared_axes is the gate. recorded_on is provenance only and is never compared; drift inside macOS $expected_os_major.x is absorbed by VisualSnapshotTolerance.crossMinorRenderingNoise, whose measured basis is documented in Tests/agentacctTests/Support/VisualSnapshotHarness.swift."
+}
+EOF
+}
+
+# Non-fatal on verify: drift inside the pinned major stays visible even when the
+# comparison passes, so nobody has to re-derive it later.
+print_provenance_note() {
+  [[ -f "$provenance_file" ]] || return 0
+  local recorded_version recorded_build
+  recorded_version="$(plutil -extract recorded_on.macos_product_version raw -o - "$provenance_file" 2>/dev/null || printf '')"
+  recorded_build="$(plutil -extract recorded_on.macos_build_version raw -o - "$provenance_file" 2>/dev/null || printf '')"
+  [[ -n "$recorded_version" ]] || return 0
+  if [[ "$recorded_version" == "$observed_os_version" && "$recorded_build" == "$observed_os_build" ]]; then
+    echo "visual-snapshots: references recorded on this exact macOS ($recorded_version/$recorded_build)."
+  else
+    echo "visual-snapshots: references recorded on macOS $recorded_version ($recorded_build);" \
+      "running $observed_os_version ($observed_os_build) — inside the pinned macOS" \
+      "$expected_os_major.x, absorbed by the measured tolerance."
+  fi
+}
+
+require_reference_directory() {
+  [[ -d "$reference_dir" ]] && return 0
+  fail \
+    "no reference directory for platform id '$platform_id'" \
+    "(expected $reference_dir). The computed platform id and the committed" \
+    "references disagree, so there is nothing to compare against. Treat this as" \
+    "an explicit baseline-platform migration, not a pixel failure: record a" \
+    "reviewed reference set with ./Scripts/visual-snapshots record. Do NOT" \
+    "compare against another platform id's references."
 }
 
 discover_visual_tests() {
@@ -200,11 +337,177 @@ run_selected() {
     "$swift_bin" test -c release --filter "$combined_filter"
 }
 
+# ---------------------------------------------------------------------------
+# falsify
+#
+# A visual test that cannot fail is worse than no visual test, and a tolerance
+# is only a claim until something proves what it still rejects. Each case below
+# mutates ONE thing, runs the visual suite, and asserts both the outcome and the
+# AXIS the comparison failed on, then reverts.
+#
+# Case format, tab-free, fields separated by '|':
+#   name | relative/file.swift | exact old text | exact new text | expectation
+# Expectation is one of:
+#   fail-delta     the run must fail with a maximum channel delta above 1
+#   fail-fraction  the run must fail with every delta <= 1, on the area budget
+#   pass           the run must stay green (a documented blind spot)
+# ---------------------------------------------------------------------------
+falsify_cases() {
+  cat <<'EOF'
+shift-1pt|Sources/agentacct/Theme.swift|    static let l: CGFloat = 16|    static let l: CGFloat = 17|fail-delta
+shift-half-pt|Sources/agentacct/Theme.swift|    static let l: CGFloat = 16|    static let l: CGFloat = 16.5|fail-delta
+font-weight|Sources/agentacct/Theme.swift|        case .body: return (14, .regular, .body, false)|        case .body: return (14, .medium, .body, false)|fail-delta
+font-size|Sources/agentacct/Theme.swift|        case .caption: return (12, .regular, .caption, false)|        case .caption: return (12.5, .regular, .caption, false)|fail-delta
+opacity-97|Sources/agentacct/DashboardPane.swift|                DashboardCardHeader("Signals")|                DashboardCardHeader("Signals").opacity(0.97)|fail-delta
+text-one-char|Sources/agentacct/DashboardPane.swift|                DashboardCardHeader("Recent work", count: totalCount) {|                DashboardCardHeader("Recent wark", count: totalCount) {|fail-delta
+token-one-step-large|Sources/agentacct/Theme.swift|        static let canvas = AdaptiveColor(lightHex: 0xF4F1E9, darkHex: 0x0D1215)|        static let canvas = AdaptiveColor(lightHex: 0xF4F1EA, darkHex: 0x0D1216)|fail-fraction
+token-one-step-small|Sources/agentacct/Theme.swift|        static let chipLine = AdaptiveColor(lightHex: 0xD8D5CC, darkHex: 0x3B474E)|        static let chipLine = AdaptiveColor(lightHex: 0xD8D5CD, darkHex: 0x3B474F)|pass
+EOF
+}
+
+falsify_apply() {
+  local file="$1" old="$2" new="$3"
+  FALSIFY_FILE="$app_dir/$file" FALSIFY_OLD="$old" FALSIFY_NEW="$new" \
+    /usr/bin/python3 - <<'PY'
+import os, sys
+path, old, new = os.environ["FALSIFY_FILE"], os.environ["FALSIFY_OLD"], os.environ["FALSIFY_NEW"]
+with open(path, encoding="utf-8") as handle:
+    text = handle.read()
+count = text.count(old)
+if count != 1:
+    sys.stderr.write(f"anchor occurs {count} times (need exactly 1) in {path}:\n  {old}\n")
+    sys.exit(3)
+with open(path, "w", encoding="utf-8") as handle:
+    handle.write(text.replace(old, new))
+PY
+}
+
+run_falsify() {
+  local requested=("$@")
+  local log total=0 passed=0
+  log="$(mktemp "${TMPDIR:-/tmp}/agentacct-falsify.XXXXXX")"
+
+  echo "falsify: negative control — two unmutated runs must both be green"
+  if ! run_selected verify > "$log" 2>&1; then
+    echo "falsify: FAILED negative control: the suite is not green before any mutation." >&2
+    sed 's/^/  /' "$log" >&2
+    rm -f "$log"
+    exit 1
+  fi
+  if ! run_selected verify > "$log" 2>&1; then
+    echo "falsify: FAILED negative control: the suite is not reproducible run to run." >&2
+    sed 's/^/  /' "$log" >&2
+    rm -f "$log"
+    exit 1
+  fi
+  echo "  PASS  negative control (deterministic, green twice)"
+
+  local line name file old new expectation status max_delta outcome
+  while IFS='|' read -r name file old new expectation; do
+    [[ -n "$name" ]] || continue
+    if [[ ${#requested[@]} -gt 0 ]]; then
+      local wanted=0 candidate
+      for candidate in "${requested[@]}"; do
+        [[ "$candidate" == "$name" ]] && wanted=1
+      done
+      [[ "$wanted" == "1" ]] || continue
+    fi
+    total=$((total + 1))
+    echo "falsify: $name — expect $expectation"
+
+    local backup
+    backup="$(mktemp "${TMPDIR:-/tmp}/agentacct-falsify-backup.XXXXXX")"
+    cp "$app_dir/$file" "$backup"
+    if ! falsify_apply "$file" "$old" "$new"; then
+      cp "$backup" "$app_dir/$file"
+      rm -f "$backup" "$log"
+      fail "case '$name' could not be applied; its anchor no longer matches the source"
+    fi
+
+    status=0
+    run_selected verify > "$log" 2>&1 || status=$?
+    cp "$backup" "$app_dir/$file"
+    rm -f "$backup"
+
+    # The mismatch message names both budgets for every failing image, so the
+    # axes can be read apart. They are not exclusive: a mutation can trip the
+    # delta budget on one image and the area budget on another, so each is
+    # asked its own question.
+    #   peak channel delta  — did the DELTA axis fire anywhere? That axis is what
+    #                         detects small real changes.
+    #   area-only failures  — did any image fail with every channel within 1,
+    #                         i.e. on the AREA budget ALONE? That is the only
+    #                         job the area budget has, and the only way to show
+    #                         it still does it.
+    max_delta="$(awk '
+      match($0, /maximum channel delta [0-9]+/) {
+        value = substr($0, RSTART + 22, RLENGTH - 22) + 0
+        if (value > peak) peak = value
+      }
+      END { print peak + 0 }
+    ' "$log")"
+    local area_only_failures
+    area_only_failures="$(awk '
+      /Visual snapshot .* changed:/ && match($0, /maximum channel delta [0-9]+/) {
+        value = substr($0, RSTART + 22, RLENGTH - 22) + 0
+        if (value <= 1) count++
+      }
+      END { print count + 0 }
+    ' "$log")"
+
+    outcome="green"
+    [[ "$status" == "0" ]] || outcome="failed (peak channel delta $max_delta, images failing on area alone: $area_only_failures)"
+
+    local satisfied=0
+    case "$expectation" in
+      pass)
+        [[ "$status" == "0" ]] && satisfied=1
+        ;;
+      fail-delta)
+        [[ "$status" != "0" && "$max_delta" -gt 1 ]] && satisfied=1
+        ;;
+      fail-fraction)
+        [[ "$status" != "0" && "$area_only_failures" -gt 0 ]] && satisfied=1
+        ;;
+      *)
+        fail "case '$name' declares an unknown expectation '$expectation'"
+        ;;
+    esac
+
+    if [[ "$satisfied" == "1" ]]; then
+      passed=$((passed + 1))
+      case "$expectation" in
+        pass) echo "  PASS  $name stayed green, as documented" ;;
+        fail-delta) echo "  PASS  $name failed on the delta axis (peak channel delta $max_delta)" ;;
+        fail-fraction) echo "  PASS  $name failed on the area axis ($area_only_failures images exceeded it with every channel still within 1)" ;;
+      esac
+    else
+      echo "  FAIL  $name expected $expectation but was $outcome" >&2
+      sed 's/^/    /' "$log" >&2
+    fi
+  done < <(falsify_cases)
+
+  rm -f "$log"
+  echo "falsify: $passed of $total mutation cases behaved as specified"
+  [[ "$passed" == "$total" ]] || exit 1
+
+  cat <<'EOF'
+falsify: NOT covered by this pass, and not claimable from it:
+  - a macOS MAJOR change. The tolerance is calibrated from one minor-version
+    hop on one machine. Re-run this pass on the new major before trusting it.
+  - a macOS MINOR change other than the measured one. Run `verify` unmutated on
+    the new minor and append the observed distribution to PLATFORM.json; do not
+    re-record.
+  - an Xcode change. The measuring host had the pinned Xcode, so that axis is
+    judgement, not measurement.
+EOF
+}
+
 [[ $# -ge 1 ]] || usage
 action="$1"
 shift
 case "$action" in
-  list|platform-id|check-environment|verify|record) ;;
+  list|platform-id|check-environment|verify|record|falsify) ;;
   *) usage ;;
 esac
 
@@ -231,7 +534,13 @@ export LC_ALL=en_US.UTF-8
 export TZ=UTC
 cd "$app_dir"
 discover_visual_tests
-select_targets "$@"
+if [[ "$action" == "falsify" ]]; then
+  # falsify's arguments name mutation cases, not test selectors: it always runs
+  # every visual suite, because a mutation to a shared token reaches all of them.
+  select_targets
+else
+  select_targets "$@"
+fi
 
 if [[ "$action" == "list" ]]; then
   cat "$selected_file"
@@ -242,12 +551,26 @@ fi
   || fail "no *VisualRegressionTests suites were discovered by 'swift test list'"
 check_environment
 mkdir -p "$failure_dir"
+if [[ "$action" == "verify" || "$action" == "falsify" ]]; then
+  require_reference_directory
+  print_provenance_note
+fi
+
+if [[ "$action" == "falsify" ]]; then
+  run_falsify "$@"
+  exit 0
+fi
+
 run_selected "$action"
 
 if [[ "$action" == "record" ]]; then
+  write_provenance
   echo "Recorded selected references; verifying the replacements now."
   run_selected verify
   echo "References recorded and verified. Review every changed PNG before committing."
+  echo "A green verify immediately after record is tautological and proves nothing:"
+  echo "it compares the new references against themselves. Review the git diff of"
+  echo "every changed PNG against a named product change before committing."
 else
   echo "Selected visual references match."
 fi

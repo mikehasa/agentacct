@@ -100,12 +100,12 @@ final class DashboardSnapshotHarnessTests: XCTestCase {
             // indicate dynamic data, animation, or an unstable layout.
             XCTAssertLessThanOrEqual(
                 difference.maximumChannelDelta,
-                VisualSnapshotTolerance.renderingNoise.maximumChannelDelta,
+                VisualSnapshotTolerance.crossMinorRenderingNoise.maximumChannelDelta,
                 "Repeated fixture renders exceeded the one-step antialiasing budget"
             )
             XCTAssertLessThanOrEqual(
                 difference.changedChannelFraction,
-                VisualSnapshotTolerance.renderingNoise.maximumChangedChannelFraction,
+                VisualSnapshotTolerance.crossMinorRenderingNoise.maximumChangedChannelFraction,
                 "Repeated fixture renders exceeded the normalized-channel stability budget"
             )
         }

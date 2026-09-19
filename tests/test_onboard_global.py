@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from agentacct.cli import app
@@ -223,6 +224,95 @@ def test_onboard_global_agent_opencode_writes_mcp_rules_and_plugin(
     # Zero files leaked into the repo.
     for leaked in ("AGENTS.md", ".mcp.json", ".agent-sentinel"):
         assert not (repo / leaked).exists()
+
+
+def test_onboard_global_agent_dsh_writes_home_patch_and_instructions(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    result = CliRunner().invoke(app, ["onboard", "--scope", "global", "--agent", "dsh", "--no-start"])
+    assert result.exit_code == 0, result.output
+
+    store = isolated_home / ".local" / "state" / "agentacct" / "state"
+    dsh_home = isolated_home / ".dsh"
+    # MCP registered in dsh's HOME patch layer (applies to every profile the CLI
+    # boots — the plain `dsh` command has no default profile).
+    patch = yaml.safe_load((dsh_home / "cordis.patch.yml").read_text())
+    entry = patch[0]["insert"][0]
+    assert entry["id"] == "mcp-agentacct"
+    assert entry["name"] == "@deepseek-ai/dsh-mcp-client"
+    assert entry["config"]["serverName"] == "agentacct"
+    assert entry["config"]["transport"] == "stdio"
+    assert str(store) in entry["config"]["args"]
+    assert Path(entry["config"]["command"]).is_absolute()
+    # Standing 'record your work' directive lands in the user-global AGENTS.md dsh
+    # reads on every base-backed session.
+    agents = dsh_home / "AGENTS.md"
+    assert agents.exists()
+    assert "agentacct" in agents.read_text()
+    # Zero files leaked into the repo.
+    for leaked in ("AGENTS.md", "cordis.patch.yml", ".mcp.json", ".agent-sentinel"):
+        assert not (repo / leaked).exists()
+    # dsh's recording is unproven (plugin resolution), so it is reported as
+    # experimental and NOT folded into the unqualified machine-wide-recording claim.
+    assert "experimental" in result.output.lower()
+    assert "recording is machine-wide now" not in result.output
+
+
+def test_onboard_global_agent_dsh_leaves_an_unsafe_cordis_patch_untouched(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+    # A legal-but-non-canonical patch file (flow-style root) a column-0 append
+    # would corrupt: onboarding must leave it exactly as-is and preview the block.
+    dsh_home = isolated_home / ".dsh"
+    dsh_home.mkdir(parents=True)
+    patch = dsh_home / "cordis.patch.yml"
+    original = "[]\n"
+    patch.write_text(original)
+
+    result = CliRunner().invoke(app, ["onboard", "--scope", "global", "--agent", "dsh", "--no-start"])
+    assert result.exit_code == 0, result.output
+
+    # The user's file is untouched — no silent corruption of their other patches.
+    assert patch.read_text() == original
+    # The block is previewed for manual application instead of a false success claim.
+    assert "@deepseek-ai/dsh-mcp-client" in result.output
+    assert "yourself" in result.output.lower()
+    # The instruction file is still installed (that write is always safe).
+    assert (dsh_home / "AGENTS.md").exists()
+
+
+def test_dsh_patch_registration_check_is_structural_and_preserves_js_tags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agentacct import cli
+
+    # An active registration is a real insert row, not a substring.
+    assert cli._dsh_patch_has_agentacct(
+        "- insert:\n    - id: mcp-agentacct\n      name: '@deepseek-ai/dsh-mcp-client'\n"
+    )
+    # A comment or a `remove` op that merely mentions the id is NOT a registration.
+    assert not cli._dsh_patch_has_agentacct("# id: mcp-agentacct was removed\n- insert:\n    - id: other\n")
+    assert not cli._dsh_patch_has_agentacct("- remove:\n    - id: mcp-agentacct\n")
+
+    # A patch file carrying custom !!js tags is inspected tolerantly and appended
+    # to without destroying the user's expressions.
+    monkeypatch.setenv("DSH_HOME", str(tmp_path / ".dsh"))
+    (tmp_path / ".dsh").mkdir()
+    (tmp_path / ".dsh" / "cordis.patch.yml").write_text(
+        "- insert:\n    - id: mem\n      config:\n        cwd: !!js process.cwd()\n"
+    )
+    _path, action = cli._write_dsh_home_patch_mcp(tmp_path / "store", "/usr/local/bin/agentacct")
+    assert action == "appended"
+    final = (tmp_path / ".dsh" / "cordis.patch.yml").read_text()
+    assert "!!js process.cwd()" in final
+    assert cli._dsh_patch_has_agentacct(final)
 
 
 def test_onboard_global_agent_hermes_installs_record_your_work_hook(

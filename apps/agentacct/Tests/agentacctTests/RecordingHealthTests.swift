@@ -57,6 +57,17 @@ final class RecordingHealthTests: XCTestCase {
         XCTAssertTrue(global?.detail.contains("One reconciliation fault") == true)
     }
 
+    func testSingleGlobalIssueWithAffectedSourcesGroupsTheSameWay() {
+        let causes = RecordingHealthSnapshot.groupedIssues([
+            .init(code: "evidence_refreshable_usage_failed", source: nil, action: "Refresh usage",
+                  affectedSources: ["codex", "claude-code", "hermes"])
+        ])
+        XCTAssertEqual(causes.count, 1)
+        XCTAssertEqual(causes.first?.affectedSources, ["claude-code", "codex", "hermes"])
+        XCTAssertEqual(causes.first?.title, "Usage totals may be incomplete")
+        XCTAssertTrue(causes.first?.detail.contains("3 sources") == true)
+    }
+
     func testDismissalAndRepeatedObservationPreserveOneActiveEpisode() throws {
         let coordinator = RecordingHealthCoordinator()
         let fault = try project(phase: .disconnected("offline"))
@@ -149,6 +160,18 @@ final class RecordingHealthTests: XCTestCase {
         coordinator.update(failed, now: Date(timeIntervalSince1970: 40))
         XCTAssertEqual(coordinator.visibleNotices.map(\.id), [renewedID, firstID])
         XCTAssertEqual(coordinator.recentRecoveries.map(\.id), [firstID])
+    }
+
+    func testUnreachableRecorderIsTheOnlyCauseThatOffersARestart() throws {
+        let offline = try project(phase: .disconnected("connection refused"))
+        let cause = try XCTUnwrap(offline.causes.first)
+        XCTAssertEqual(cause.id, "endpoint:unreachable")
+        XCTAssertTrue(cause.isRecorderUnreachable)
+        // A coverage/reconciliation fault is a different remedy (diagnostics or
+        // setup), never a one-click recorder restart.
+        let coverage = try project(ingestion: conflict())
+        XCTAssertFalse(coverage.causes.isEmpty)
+        XCTAssertTrue(coverage.causes.allSatisfy { !$0.isRecorderUnreachable })
     }
 
     private func project(

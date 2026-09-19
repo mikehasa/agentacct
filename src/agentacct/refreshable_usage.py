@@ -60,6 +60,7 @@ CUMULATIVE_USAGE_SEMANTICS = frozenset(
         "opencode_session_rollup",
         "hermes_state_db_session_rows",
         "openclaw_assistant_usage_rows",
+        "dsh_assistant_usage_rows",
     }
 )
 

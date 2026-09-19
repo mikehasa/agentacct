@@ -20,9 +20,45 @@ extension RecordingHealthTone {
     }
 }
 
+/// A one-click recovery control for an unreachable recorder. `onRestart` runs the
+/// same `agentacct start` the CLI would; `inFlight` reflects the in-progress start
+/// so the button can show progress and disable itself. It is supplied only when
+/// the app owns a matching recorder it can actually start.
+struct RecorderRestartControl {
+    var inFlight: Bool
+    var onRestart: () -> Void
+}
+
+/// The "Start recorder" button shown on the unreachable-recorder health cause, so
+/// a user revives the recorder from inside the app instead of the terminal.
+struct RecorderRestartButton: View {
+    let control: RecorderRestartControl
+    var identifier: String
+
+    var body: some View {
+        Button {
+            control.onRestart()
+        } label: {
+            HStack(spacing: 6) {
+                if control.inFlight {
+                    ProgressView().controlSize(.small)
+                    Text("Starting recorder…")
+                } else {
+                    Image(systemName: "play.circle")
+                    Text("Start recorder")
+                }
+            }
+        }
+        .buttonStyle(NativeSetupActionStyle())
+        .disabled(control.inFlight)
+        .accessibilityIdentifier(identifier)
+    }
+}
+
 struct RecordingHealthToolbarButton: View {
     let snapshot: RecordingHealthSnapshot
     var coordinator: RecordingHealthCoordinator? = nil
+    var restart: RecorderRestartControl? = nil
     let onSetup: () -> Void
     var onSetupCause: ((RecordingHealthCause) -> Void)? = nil
     var onActivateClient: ((String) -> Void)? = nil
@@ -45,6 +81,15 @@ struct RecordingHealthToolbarButton: View {
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
             RecordingHealthPopover(
                 snapshot: snapshot,
+                // Dismiss the popover before starting: unlike every other control
+                // here the restart fires directly (not via onAction), so without
+                // this it would linger over the setup pane on a failed start.
+                restart: restart.map { control in
+                    RecorderRestartControl(inFlight: control.inFlight, onRestart: {
+                        isPresented = false
+                        control.onRestart()
+                    })
+                },
                 lastKnownCauses: coordinator?.notices.filter {
                     !$0.isRecovered && !snapshot.causes.contains($0.cause)
                 }.map(\.cause) ?? [],
@@ -77,6 +122,7 @@ struct RecordingHealthToolbarButton: View {
 
 struct RecordingHealthPopover: View {
     let snapshot: RecordingHealthSnapshot
+    var restart: RecorderRestartControl? = nil
     var lastKnownCauses: [RecordingHealthCause] = []
     var recoveries: [RecordingHealthNotice] = []
     let onAction: (RecordingHealthAction) -> Void
@@ -105,9 +151,13 @@ struct RecordingHealthPopover: View {
                                     Text("Affected summaries: \(cause.affectedSources.map(recordingHealthClientName).joined(separator: ", "))")
                                         .workFont(.caption).foregroundStyle(Theme.muted)
                                 }
-                                Button(cause.action.title) { perform(cause) }
-                                    .buttonStyle(NativeSetupActionStyle())
-                                    .accessibilityIdentifier("recording-health.action.\(cause.id)")
+                                if let restart, cause.isRecorderUnreachable {
+                                    RecorderRestartButton(control: restart, identifier: "recording-health.restart.\(cause.id)")
+                                } else {
+                                    Button(cause.action.title) { perform(cause) }
+                                        .buttonStyle(NativeSetupActionStyle())
+                                        .accessibilityIdentifier("recording-health.action.\(cause.id)")
+                                }
                             }
                         }
                     }
@@ -198,7 +248,7 @@ struct RecordingHealthPopover: View {
                 Button("Connections") { onAction(.setup) }
                     .buttonStyle(NativeSetupActionStyle())
                     .accessibilityIdentifier("recording-health.connections")
-                Button("Sources") { onAction(.sources) }.buttonStyle(NativeSetupActionStyle())
+                Button("Diagnostics") { onAction(.sources) }.buttonStyle(NativeSetupActionStyle())
                 if !layout.stacksControls { Spacer() }
                 Button("Check again") { onAction(.refresh) }.buttonStyle(NativeSetupActionStyle())
             }
@@ -222,6 +272,7 @@ struct RecordingHealthPopover: View {
 /// grants recording health simply because the user dismisses a notice.
 struct RecordingHealthNoticeStack: View {
     let coordinator: RecordingHealthCoordinator
+    var restart: RecorderRestartControl? = nil
     let onSetup: () -> Void
     var onSetupCause: ((RecordingHealthCause) -> Void)? = nil
     let onSources: () -> Void
@@ -266,9 +317,21 @@ struct RecordingHealthNoticeStack: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(notice.title).workFont(.rowLabel).foregroundStyle(Theme.ink)
                 Text(notice.detail).workFont(.caption).foregroundStyle(Theme.muted)
-                Button(notice.cause.action.title) { perform(notice.cause.action, cause: notice.actionableCause) }
-                    .buttonStyle(NativeSetupActionStyle())
-                    .accessibilityIdentifier("recording-health.notice-action.\(notice.cause.id)")
+                if let restart, notice.cause.isRecorderUnreachable, !notice.isRecovered {
+                    // The notice stack has no footer (the popover does), so keep a
+                    // direct route to setup/Connections alongside the one-click
+                    // restart rather than only reaching it after a failed start.
+                    HStack(spacing: Space.s) {
+                        RecorderRestartButton(control: restart, identifier: "recording-health.notice-restart.\(notice.cause.id)")
+                        Button(notice.cause.action.title) { perform(notice.cause.action, cause: notice.actionableCause) }
+                            .buttonStyle(NativeSetupActionStyle())
+                            .accessibilityIdentifier("recording-health.notice-action.\(notice.cause.id)")
+                    }
+                } else {
+                    Button(notice.cause.action.title) { perform(notice.cause.action, cause: notice.actionableCause) }
+                        .buttonStyle(NativeSetupActionStyle())
+                        .accessibilityIdentifier("recording-health.notice-action.\(notice.cause.id)")
+                }
             }
             Spacer(minLength: 0)
             Button {
