@@ -80,6 +80,8 @@ final class WorkVisualRegressionTests: XCTestCase {
         "work-checks-compact-accessibility-dark.png",
         "work-checks-accessibility-rtl-light.png",
         "work-checks-accessibility-rtl-dark.png",
+        "work-components-decision-badges-light.png",
+        "work-components-decision-badges-dark.png",
     ]
 
     @MainActor
@@ -120,7 +122,10 @@ final class WorkVisualRegressionTests: XCTestCase {
         let checkRendered = try ReceiptCheckSnapshotRenderer.render(
             outputDirectory: outputDirectory
         )
-        let rendered = workRendered + sessionStepsRendered + actionRendered + checkRendered
+        let componentRendered = try WorkComponentSnapshotRenderer.render(
+            outputDirectory: outputDirectory
+        )
+        let rendered = workRendered + sessionStepsRendered + actionRendered + checkRendered + componentRendered
         XCTAssertEqual(rendered.map(\.lastPathComponent), expectedFilenames)
 
         let mode = try VisualSnapshotMode.resolve(environment: environment)
