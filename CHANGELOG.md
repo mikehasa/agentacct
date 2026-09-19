@@ -6,6 +6,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Opening a record's "N more sessions" fold no longer freezes the window on a Task with hundreds of sessions. The fold built every session row at once — about 1 ms of main-thread work per row, so roughly a third of a second for 300 sessions; it now builds only the rows scrolled into view (10–20 ms at any count). What each row shows and loads is unchanged, and review renders still draw every row.
+
 ## [0.11.1] — 2026-09-17
 
 Makes the dashboard fast again — the API-serving caches no longer rebuild the multi-second work ledger on every idle poll, and the recorder stops shadowing its highest-cardinality events into an unbounded store — plus a way to reclaim that store and one-click recorder self-update.
